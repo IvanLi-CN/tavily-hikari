@@ -121,16 +121,16 @@ impl TavilyProxy {
                 );
 
                 self.key_store
-                    .log_attempt(
-                        &lease.key,
-                        &request.method,
-                        request.path.as_str(),
-                        request.query.as_deref(),
-                        Some(status),
-                        None,
-                        &body_bytes,
-                        outcome.status,
-                    )
+                    .log_attempt(LogAttempt {
+                        key: &lease.key,
+                        method: &request.method,
+                        path: request.path.as_str(),
+                        query: request.query.as_deref(),
+                        status: Some(status),
+                        error: None,
+                        response_body: &body_bytes,
+                        outcome: outcome.status,
+                    })
                     .await?;
 
                 if status.as_u16() == 432 || outcome.mark_exhausted {
@@ -152,16 +152,16 @@ impl TavilyProxy {
                     &err,
                 );
                 self.key_store
-                    .log_attempt(
-                        &lease.key,
-                        &request.method,
-                        request.path.as_str(),
-                        request.query.as_deref(),
-                        None,
-                        Some(&err.to_string()),
-                        &[],
-                        OUTCOME_ERROR,
-                    )
+                    .log_attempt(LogAttempt {
+                        key: &lease.key,
+                        method: &request.method,
+                        path: request.path.as_str(),
+                        query: request.query.as_deref(),
+                        status: None,
+                        error: Some(&err.to_string()),
+                        response_body: &[],
+                        outcome: OUTCOME_ERROR,
+                    })
                     .await?;
                 Err(ProxyError::Http(err))
             }
@@ -458,17 +458,17 @@ impl KeyStore {
         Ok(())
     }
 
-    async fn log_attempt(
-        &self,
-        key: &str,
-        method: &Method,
-        path: &str,
-        query: Option<&str>,
-        status: Option<StatusCode>,
-        error: Option<&str>,
-        response_body: &[u8],
-        outcome: &str,
-    ) -> Result<(), ProxyError> {
+    async fn log_attempt(&self, attempt: LogAttempt<'_>) -> Result<(), ProxyError> {
+        let LogAttempt {
+            key,
+            method,
+            path,
+            query,
+            status,
+            error,
+            response_body,
+            outcome,
+        } = attempt;
         let created_at = Utc::now().timestamp();
         let status_code = status.map(|code| code.as_u16() as i64);
 
@@ -501,6 +501,17 @@ impl KeyStore {
 
         Ok(())
     }
+}
+
+struct LogAttempt<'a> {
+    key: &'a str,
+    method: &'a Method,
+    path: &'a str,
+    query: Option<&'a str>,
+    status: Option<StatusCode>,
+    error: Option<&'a str>,
+    response_body: &'a [u8],
+    outcome: &'a str,
 }
 
 #[derive(Debug)]
@@ -607,10 +618,10 @@ fn analyze_attempt(status: StatusCode, body: &[u8]) -> AttemptAnalysis {
 
     let mut any_success = false;
     let mut messages = extract_sse_json_messages(text);
-    if messages.is_empty() {
-        if let Ok(value) = serde_json::from_str::<Value>(text) {
-            messages.push(value);
-        }
+    if messages.is_empty()
+        && let Ok(value) = serde_json::from_str::<Value>(text)
+    {
+        messages.push(value);
     }
 
     for message in messages {
@@ -665,15 +676,15 @@ fn analyze_result_payload(result: &Value) -> Option<MessageOutcome> {
 
     if let Some(content) = result.get("content").and_then(|v| v.as_array()) {
         for item in content {
-            if let Some(kind) = item.get("type").and_then(|v| v.as_str()) {
-                if kind.eq_ignore_ascii_case("error") {
-                    return Some(MessageOutcome::Error);
-                }
+            if let Some(kind) = item.get("type").and_then(|v| v.as_str())
+                && kind.eq_ignore_ascii_case("error")
+            {
+                return Some(MessageOutcome::Error);
             }
-            if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
-                if let Some(code) = parse_embedded_status(text) {
-                    return Some(classify_status_code(code));
-                }
+            if let Some(text) = item.get("text").and_then(|v| v.as_str())
+                && let Some(code) = parse_embedded_status(text)
+            {
+                return Some(classify_status_code(code));
             }
         }
     }
@@ -713,10 +724,10 @@ fn analyze_structured_content(result: &Value) -> Option<MessageOutcome> {
         .and_then(|v| v.as_array())
         .and_then(|items| {
             for item in items {
-                if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
-                    if let Some(code) = parse_embedded_status(text) {
-                        return Some(classify_status_code(code));
-                    }
+                if let Some(text) = item.get("text").and_then(|v| v.as_str())
+                    && let Some(code) = parse_embedded_status(text)
+                {
+                    return Some(classify_status_code(code));
                 }
             }
             None
@@ -729,10 +740,10 @@ fn extract_status_code(value: &Value) -> Option<i64> {
         return Some(code);
     }
 
-    if let Some(detail) = value.get("detail") {
-        if let Some(code) = detail.get("status").and_then(|v| v.as_i64()) {
-            return Some(code);
-        }
+    if let Some(detail) = value.get("detail")
+        && let Some(code) = detail.get("status").and_then(|v| v.as_i64())
+    {
+        return Some(code);
     }
 
     None
@@ -785,10 +796,10 @@ fn extract_sse_json_messages(text: &str) -> Vec<Value> {
         }
     }
 
-    if !current.is_empty() {
-        if let Ok(value) = serde_json::from_str::<Value>(&current) {
-            messages.push(value);
-        }
+    if !current.is_empty()
+        && let Ok(value) = serde_json::from_str::<Value>(&current)
+    {
+        messages.push(value);
     }
 
     messages

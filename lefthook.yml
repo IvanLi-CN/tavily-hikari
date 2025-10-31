@@ -10,7 +10,7 @@ pre-commit:
       run: cargo fmt
       stage_fixed: true
     clippy:
-      glob: "**/*.rs"
+      files: git diff --cached --name-only --diff-filter=ACMR -- '*.rs' 'Cargo.toml' 'Cargo.lock' 'rust-toolchain.toml'
       run: cargo clippy -- -D warnings
 
 commit-msg:
