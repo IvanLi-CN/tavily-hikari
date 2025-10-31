@@ -1,0 +1,11 @@
+{
+  "name": "tavily-hikari-hooks",
+  "private": true,
+  "version": "0.0.0",
+  "devDependencies": {
+    "@commitlint/cli": "^20.1.0",
+    "@commitlint/config-conventional": "^20.0.0",
+    "commitlint-plugin-function-rules": "^4.1.0",
+    "dprint": "^0.47.5"
+  }
+}
