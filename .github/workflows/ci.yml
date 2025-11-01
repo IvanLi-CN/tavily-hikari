@@ -140,12 +140,33 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
       - name: Compute effective version
         shell: bash
         run: ./.github/scripts/compute-version.sh
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install front-end dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: TypeScript compile
+        working-directory: web
+        run: npx tsc -b
+
+      - name: Vite build
+        working-directory: web
+        env:
+          VITE_APP_VERSION: ${{ env.APP_EFFECTIVE_VERSION }}
+        run: npx vite build && node scripts/write-version.mjs
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
       - name: Compute lowercase image name
         id: image-name
