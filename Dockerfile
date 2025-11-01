@@ -7,7 +7,10 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY Cargo.toml Cargo.lock ./
-RUN cargo fetch
+RUN mkdir src \
+    && printf 'fn main() {}\n' > src/main.rs \
+    && printf 'pub fn noop() {}\n' > src/lib.rs \
+    && cargo fetch
 
 COPY src ./src
 RUN cargo build --release --locked
