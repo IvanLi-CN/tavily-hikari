@@ -257,7 +257,9 @@ impl KeyStore {
     }
 
     async fn upgrade_api_keys_schema(&self) -> Result<(), ProxyError> {
-        if self.api_keys_column_exists("disabled_at").await? {
+        // Track whether legacy column existed to gate one-time migration logic
+        let had_disabled_at = self.api_keys_column_exists("disabled_at").await?;
+        if had_disabled_at {
             sqlx::query("ALTER TABLE api_keys RENAME COLUMN disabled_at TO status_changed_at")
                 .execute(&self.pool)
                 .await?;
@@ -275,20 +277,22 @@ impl KeyStore {
                 .await?;
         }
 
-        // Keys that previously had disabled_at set should now be marked as exhausted.
-        sqlx::query(
-            r#"
-            UPDATE api_keys
-            SET status = ?
-            WHERE status_changed_at IS NOT NULL
-              AND status_changed_at != 0
-              AND status <> ?
-            "#,
-        )
-        .bind(STATUS_EXHAUSTED)
-        .bind(STATUS_EXHAUSTED)
-        .execute(&self.pool)
-        .await?;
+        // Only when migrating from legacy 'disabled_at' do we mark keys as exhausted.
+        if had_disabled_at {
+            sqlx::query(
+                r#"
+                UPDATE api_keys
+                SET status = ?
+                WHERE status_changed_at IS NOT NULL
+                  AND status_changed_at != 0
+                  AND status <> ?
+                "#,
+            )
+            .bind(STATUS_EXHAUSTED)
+            .bind(STATUS_EXHAUSTED)
+            .execute(&self.pool)
+            .await?;
+        }
 
         sqlx::query(
             r#"
@@ -350,19 +354,18 @@ impl KeyStore {
 
     async fn sync_keys(&self, keys: &[String]) -> Result<(), ProxyError> {
         let mut tx = self.pool.begin().await?;
-        let now = Utc::now().timestamp();
+        let _now = Utc::now().timestamp();
 
         for key in keys {
             sqlx::query(
                 r#"
-                INSERT INTO api_keys (api_key, status, status_changed_at)
-                VALUES (?, ?, ?)
+                INSERT INTO api_keys (api_key, status)
+                VALUES (?, ?)
                 ON CONFLICT(api_key) DO NOTHING
                 "#,
             )
             .bind(key)
             .bind(STATUS_ACTIVE)
-            .bind(now)
             .execute(&mut *tx)
             .await?;
         }
