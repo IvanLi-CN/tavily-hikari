@@ -1,16 +1,4 @@
-########## Stage 1: build the web assets ##########
-FROM node:20-alpine AS web-builder
-ARG APP_EFFECTIVE_VERSION
-WORKDIR /app/web
-
-COPY web/package*.json ./
-RUN npm ci --ignore-scripts
-
-COPY web/ ./
-ENV VITE_APP_VERSION=${APP_EFFECTIVE_VERSION}
-RUN npm run build
-
-########## Stage 2: compile the Rust binary ##########
+########## Stage 1: compile the Rust binary ##########
 FROM rust:1.91 AS builder
 ARG APP_EFFECTIVE_VERSION
 WORKDIR /app
@@ -20,13 +8,17 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY Cargo.toml Cargo.lock ./
-RUN cargo fetch
+# Prepare a temporary stub target so `cargo fetch` doesn't fail on CI builders
+# that require at least one target in the manifest resolution phase.
+RUN mkdir -p src \
+    && printf 'fn main() {}\n' > src/main.rs \
+    && cargo fetch
 
 COPY src ./src
 ENV APP_EFFECTIVE_VERSION=${APP_EFFECTIVE_VERSION}
 RUN cargo build --release --locked
 
-########## Stage 3: create a slim runtime image ##########
+########## Stage 2: create a slim runtime image ##########
 FROM debian:bookworm-slim AS runtime
 ARG APP_EFFECTIVE_VERSION
 
@@ -37,7 +29,8 @@ RUN apt-get update \
 WORKDIR /srv/app
 
 COPY --from=builder /app/target/release/tavily-hikari /usr/local/bin/tavily-hikari
-COPY --from=web-builder /app/web/dist /srv/app/web
+# Copy prebuilt web assets (produced by CI before Docker build)
+COPY web/dist /srv/app/web
 
 ENV PROXY_DB_PATH=/srv/app/data/tavily_proxy.db \
     PROXY_BIND=0.0.0.0 \
