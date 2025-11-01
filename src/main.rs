@@ -1,6 +1,6 @@
 mod server;
 
-use std::net::SocketAddr;
+use std::{net::SocketAddr, path::PathBuf};
 
 use clap::Parser;
 use dotenvy::dotenv;
@@ -34,6 +34,10 @@ struct Cli {
     /// SQLite 数据库存储路径
     #[arg(long, env = "PROXY_DB_PATH", default_value = "tavily_proxy.db")]
     db_path: String,
+
+    /// Web 静态资源目录（指向打包后的前端 dist）
+    #[arg(long, env = "WEB_STATIC_DIR")]
+    static_dir: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -44,8 +48,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let proxy = TavilyProxy::with_endpoint(cli.keys, &cli.upstream, &cli.db_path).await?;
     let addr: SocketAddr = format!("{}:{}", cli.bind, cli.port).parse()?;
 
-    println!("Tavily proxy listening on http://{addr}");
-    server::serve(addr, proxy).await?;
+    let static_dir = cli.static_dir.or_else(|| {
+        let default = PathBuf::from("web/dist");
+        if default.exists() {
+            Some(default)
+        } else {
+            None
+        }
+    });
+
+    server::serve(addr, proxy, static_dir).await?;
 
     Ok(())
 }

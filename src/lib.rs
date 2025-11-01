@@ -8,7 +8,7 @@ use reqwest::{
 };
 use serde_json::Value;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use sqlx::{QueryBuilder, SqlitePool};
+use sqlx::{QueryBuilder, Row, SqlitePool};
 use thiserror::Error;
 use url::form_urlencoded;
 
@@ -121,20 +121,23 @@ impl TavilyProxy {
                 );
 
                 self.key_store
-                    .log_attempt(
-                        &lease.key,
-                        &request.method,
-                        request.path.as_str(),
-                        request.query.as_deref(),
-                        Some(status),
-                        None,
-                        &body_bytes,
-                        outcome.status,
-                    )
+                    .log_attempt(AttemptLog {
+                        key: &lease.key,
+                        method: &request.method,
+                        path: request.path.as_str(),
+                        query: request.query.as_deref(),
+                        status: Some(status),
+                        tavily_status_code: outcome.tavily_status_code,
+                        error: None,
+                        response_body: &body_bytes,
+                        outcome: outcome.status,
+                    })
                     .await?;
 
                 if status.as_u16() == 432 || outcome.mark_exhausted {
                     self.key_store.mark_quota_exhausted(&lease.key).await?;
+                } else {
+                    self.key_store.restore_active_status(&lease.key).await?;
                 }
 
                 Ok(ProxyResponse {
@@ -152,20 +155,39 @@ impl TavilyProxy {
                     &err,
                 );
                 self.key_store
-                    .log_attempt(
-                        &lease.key,
-                        &request.method,
-                        request.path.as_str(),
-                        request.query.as_deref(),
-                        None,
-                        Some(&err.to_string()),
-                        &[],
-                        OUTCOME_ERROR,
-                    )
+                    .log_attempt(AttemptLog {
+                        key: &lease.key,
+                        method: &request.method,
+                        path: request.path.as_str(),
+                        query: request.query.as_deref(),
+                        status: None,
+                        tavily_status_code: None,
+                        error: Some(&err.to_string()),
+                        response_body: &[],
+                        outcome: OUTCOME_ERROR,
+                    })
                     .await?;
                 Err(ProxyError::Http(err))
             }
         }
+    }
+
+    /// 获取全部 API key 的统计信息，按状态与最近使用时间排序。
+    pub async fn list_api_key_metrics(&self) -> Result<Vec<ApiKeyMetrics>, ProxyError> {
+        self.key_store.fetch_api_key_metrics().await
+    }
+
+    /// 获取最近的请求日志，按时间倒序排列。
+    pub async fn recent_request_logs(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<RequestLogRecord>, ProxyError> {
+        self.key_store.fetch_recent_logs(limit).await
+    }
+
+    /// 获取整体运行情况汇总。
+    pub async fn summary(&self) -> Result<ProxySummary, ProxyError> {
+        self.key_store.fetch_summary().await
     }
 }
 
@@ -217,6 +239,7 @@ impl KeyStore {
                 path TEXT NOT NULL,
                 query TEXT,
                 status_code INTEGER,
+                tavily_status_code INTEGER,
                 error_message TEXT,
                 result_status TEXT NOT NULL DEFAULT 'unknown',
                 response_body BLOB,
@@ -300,6 +323,15 @@ impl KeyStore {
             )
             .execute(&self.pool)
             .await?;
+        }
+
+        if !self
+            .request_logs_column_exists("tavily_status_code")
+            .await?
+        {
+            sqlx::query("ALTER TABLE request_logs ADD COLUMN tavily_status_code INTEGER")
+                .execute(&self.pool)
+                .await?;
         }
 
         Ok(())
@@ -443,6 +475,24 @@ impl KeyStore {
         Ok(())
     }
 
+    async fn restore_active_status(&self, key: &str) -> Result<(), ProxyError> {
+        let now = Utc::now().timestamp();
+        sqlx::query(
+            r#"
+            UPDATE api_keys
+            SET status = ?, status_changed_at = ?
+            WHERE api_key = ? AND status <> ?
+            "#,
+        )
+        .bind(STATUS_ACTIVE)
+        .bind(now)
+        .bind(key)
+        .bind(STATUS_ACTIVE)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     async fn touch_key(&self, key: &str, timestamp: i64) -> Result<(), ProxyError> {
         sqlx::query(
             r#"
@@ -458,19 +508,9 @@ impl KeyStore {
         Ok(())
     }
 
-    async fn log_attempt(
-        &self,
-        key: &str,
-        method: &Method,
-        path: &str,
-        query: Option<&str>,
-        status: Option<StatusCode>,
-        error: Option<&str>,
-        response_body: &[u8],
-        outcome: &str,
-    ) -> Result<(), ProxyError> {
+    async fn log_attempt(&self, entry: AttemptLog<'_>) -> Result<(), ProxyError> {
         let created_at = Utc::now().timestamp();
-        let status_code = status.map(|code| code.as_u16() as i64);
+        let status_code = entry.status.map(|code| code.as_u16() as i64);
 
         sqlx::query(
             r#"
@@ -480,32 +520,199 @@ impl KeyStore {
                 path,
                 query,
                 status_code,
+                tavily_status_code,
                 error_message,
                 result_status,
                 response_body,
                 created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
-        .bind(key)
-        .bind(method.as_str())
-        .bind(path)
-        .bind(query)
+        .bind(entry.key)
+        .bind(entry.method.as_str())
+        .bind(entry.path)
+        .bind(entry.query)
         .bind(status_code)
-        .bind(error)
-        .bind(outcome)
-        .bind(response_body)
+        .bind(entry.tavily_status_code)
+        .bind(entry.error)
+        .bind(entry.outcome)
+        .bind(entry.response_body)
         .bind(created_at)
         .execute(&self.pool)
         .await?;
 
         Ok(())
     }
+
+    async fn fetch_api_key_metrics(&self) -> Result<Vec<ApiKeyMetrics>, ProxyError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                ak.api_key,
+                ak.status,
+                ak.status_changed_at,
+                ak.last_used_at,
+                COALESCE(stats.total_requests, 0) AS total_requests,
+                COALESCE(stats.success_count, 0) AS success_count,
+                COALESCE(stats.error_count, 0) AS error_count,
+                COALESCE(stats.quota_exhausted_count, 0) AS quota_exhausted_count
+            FROM api_keys ak
+            LEFT JOIN (
+                SELECT
+                    api_key,
+                    COUNT(*) AS total_requests,
+                    SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END) AS success_count,
+                    SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END) AS error_count,
+                    SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END) AS quota_exhausted_count
+                FROM request_logs
+                GROUP BY api_key
+            ) AS stats
+            ON stats.api_key = ak.api_key
+            ORDER BY ak.status ASC, ak.last_used_at ASC, ak.api_key ASC
+            "#,
+        )
+        .bind(OUTCOME_SUCCESS)
+        .bind(OUTCOME_ERROR)
+        .bind(OUTCOME_QUOTA_EXHAUSTED)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let metrics = rows
+            .into_iter()
+            .map(|row| -> Result<ApiKeyMetrics, sqlx::Error> {
+                let api_key: String = row.try_get("api_key")?;
+                let status: String = row.try_get("status")?;
+                let status_changed_at: Option<i64> = row.try_get("status_changed_at")?;
+                let last_used_at: i64 = row.try_get("last_used_at")?;
+                let total_requests: i64 = row.try_get("total_requests")?;
+                let success_count: i64 = row.try_get("success_count")?;
+                let error_count: i64 = row.try_get("error_count")?;
+                let quota_exhausted_count: i64 = row.try_get("quota_exhausted_count")?;
+
+                Ok(ApiKeyMetrics {
+                    api_key,
+                    status,
+                    status_changed_at: status_changed_at.and_then(normalize_timestamp),
+                    last_used_at: normalize_timestamp(last_used_at),
+                    total_requests,
+                    success_count,
+                    error_count,
+                    quota_exhausted_count,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(metrics)
+    }
+
+    async fn fetch_recent_logs(&self, limit: usize) -> Result<Vec<RequestLogRecord>, ProxyError> {
+        let limit = limit.clamp(1, 500) as i64;
+
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                id,
+                api_key,
+                method,
+                path,
+                query,
+                status_code,
+                tavily_status_code,
+                error_message,
+                result_status,
+                created_at
+            FROM request_logs
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            "#,
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let records = rows
+            .into_iter()
+            .map(|row| -> Result<RequestLogRecord, sqlx::Error> {
+                Ok(RequestLogRecord {
+                    id: row.try_get("id")?,
+                    api_key: row.try_get("api_key")?,
+                    method: row.try_get("method")?,
+                    path: row.try_get("path")?,
+                    query: row.try_get("query")?,
+                    status_code: row.try_get("status_code")?,
+                    tavily_status_code: row.try_get("tavily_status_code")?,
+                    error_message: row.try_get("error_message")?,
+                    result_status: row.try_get("result_status")?,
+                    created_at: row.try_get("created_at")?,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(records)
+    }
+
+    async fn fetch_summary(&self) -> Result<ProxySummary, ProxyError> {
+        let totals_row = sqlx::query(
+            r#"
+            SELECT
+                COUNT(*) AS total_requests,
+                COALESCE(SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END), 0) AS success_count,
+                COALESCE(SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END), 0) AS error_count,
+                COALESCE(SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END), 0) AS quota_exhausted_count
+            FROM request_logs
+            "#,
+        )
+        .bind(OUTCOME_SUCCESS)
+        .bind(OUTCOME_ERROR)
+        .bind(OUTCOME_QUOTA_EXHAUSTED)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let key_counts_row = sqlx::query(
+            r#"
+            SELECT
+                COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0) AS active_keys,
+                COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0) AS exhausted_keys
+            FROM api_keys
+            "#,
+        )
+        .bind(STATUS_ACTIVE)
+        .bind(STATUS_EXHAUSTED)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let last_activity =
+            sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(created_at) FROM request_logs")
+                .fetch_one(&self.pool)
+                .await?;
+
+        Ok(ProxySummary {
+            total_requests: totals_row.try_get("total_requests")?,
+            success_count: totals_row.try_get("success_count")?,
+            error_count: totals_row.try_get("error_count")?,
+            quota_exhausted_count: totals_row.try_get("quota_exhausted_count")?,
+            active_keys: key_counts_row.try_get("active_keys")?,
+            exhausted_keys: key_counts_row.try_get("exhausted_keys")?,
+            last_activity,
+        })
+    }
 }
 
 #[derive(Debug)]
 struct ApiKeyLease {
     key: String,
+}
+
+struct AttemptLog<'a> {
+    key: &'a str,
+    method: &'a Method,
+    path: &'a str,
+    query: Option<&'a str>,
+    status: Option<StatusCode>,
+    tavily_status_code: Option<i64>,
+    error: Option<&'a str>,
+    response_body: &'a [u8],
+    outcome: &'a str,
 }
 
 /// 透传请求描述。
@@ -524,6 +731,46 @@ pub struct ProxyResponse {
     pub status: StatusCode,
     pub headers: HeaderMap,
     pub body: Bytes,
+}
+
+/// 每个 API key 的聚合统计信息。
+#[derive(Debug, Clone)]
+pub struct ApiKeyMetrics {
+    pub api_key: String,
+    pub status: String,
+    pub status_changed_at: Option<i64>,
+    pub last_used_at: Option<i64>,
+    pub total_requests: i64,
+    pub success_count: i64,
+    pub error_count: i64,
+    pub quota_exhausted_count: i64,
+}
+
+/// 单条请求日志记录的关键信息。
+#[derive(Debug, Clone)]
+pub struct RequestLogRecord {
+    pub id: i64,
+    pub api_key: String,
+    pub method: String,
+    pub path: String,
+    pub query: Option<String>,
+    pub status_code: Option<i64>,
+    pub tavily_status_code: Option<i64>,
+    pub error_message: Option<String>,
+    pub result_status: String,
+    pub created_at: i64,
+}
+
+/// 汇总统计信息，用于展示整体代理运行状况。
+#[derive(Debug, Clone)]
+pub struct ProxySummary {
+    pub total_requests: i64,
+    pub success_count: i64,
+    pub error_count: i64,
+    pub quota_exhausted_count: i64,
+    pub active_keys: i64,
+    pub exhausted_keys: i64,
+    pub last_activity: Option<i64>,
 }
 
 #[derive(Debug, Error)]
@@ -548,6 +795,14 @@ fn start_of_month(now: chrono::DateTime<Utc>) -> chrono::DateTime<Utc> {
     Utc.with_ymd_and_hms(now.year(), now.month(), 1, 0, 0, 0)
         .single()
         .expect("valid start of month")
+}
+
+fn normalize_timestamp(timestamp: i64) -> Option<i64> {
+    if timestamp <= 0 {
+        None
+    } else {
+        Some(timestamp)
+    }
 }
 
 fn preview_key(key: &str) -> String {
@@ -578,6 +833,7 @@ fn log_error(key: &str, method: &Method, path: &str, query: Option<&str>, err: &
 struct AttemptAnalysis {
     status: &'static str,
     mark_exhausted: bool,
+    tavily_status_code: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -592,6 +848,7 @@ fn analyze_attempt(status: StatusCode, body: &[u8]) -> AttemptAnalysis {
         return AttemptAnalysis {
             status: OUTCOME_ERROR,
             mark_exhausted: false,
+            tavily_status_code: Some(status.as_u16() as i64),
         };
     }
 
@@ -601,31 +858,38 @@ fn analyze_attempt(status: StatusCode, body: &[u8]) -> AttemptAnalysis {
             return AttemptAnalysis {
                 status: OUTCOME_UNKNOWN,
                 mark_exhausted: false,
+                tavily_status_code: None,
             };
         }
     };
 
     let mut any_success = false;
+    let mut detected_code = None;
     let mut messages = extract_sse_json_messages(text);
-    if messages.is_empty() {
-        if let Ok(value) = serde_json::from_str::<Value>(text) {
-            messages.push(value);
-        }
+    if messages.is_empty()
+        && let Ok(value) = serde_json::from_str::<Value>(text)
+    {
+        messages.push(value);
     }
 
     for message in messages {
-        if let Some(outcome) = analyze_json_message(&message) {
+        if let Some((outcome, code)) = analyze_json_message(&message) {
+            if detected_code.is_none() {
+                detected_code = code;
+            }
             match outcome {
                 MessageOutcome::QuotaExhausted => {
                     return AttemptAnalysis {
                         status: OUTCOME_QUOTA_EXHAUSTED,
                         mark_exhausted: true,
+                        tavily_status_code: code.or(detected_code),
                     };
                 }
                 MessageOutcome::Error => {
                     return AttemptAnalysis {
                         status: OUTCOME_ERROR,
                         mark_exhausted: false,
+                        tavily_status_code: code.or(detected_code),
                     };
                 }
                 MessageOutcome::Success => any_success = true,
@@ -637,18 +901,20 @@ fn analyze_attempt(status: StatusCode, body: &[u8]) -> AttemptAnalysis {
         AttemptAnalysis {
             status: OUTCOME_SUCCESS,
             mark_exhausted: false,
+            tavily_status_code: detected_code,
         }
     } else {
         AttemptAnalysis {
             status: OUTCOME_UNKNOWN,
             mark_exhausted: false,
+            tavily_status_code: detected_code,
         }
     }
 }
 
-fn analyze_json_message(value: &Value) -> Option<MessageOutcome> {
+fn analyze_json_message(value: &Value) -> Option<(MessageOutcome, Option<i64>)> {
     if value.get("error").is_some() {
-        return Some(MessageOutcome::Error);
+        return Some((MessageOutcome::Error, None));
     }
 
     if let Some(result) = value.get("result") {
@@ -658,28 +924,28 @@ fn analyze_json_message(value: &Value) -> Option<MessageOutcome> {
     None
 }
 
-fn analyze_result_payload(result: &Value) -> Option<MessageOutcome> {
+fn analyze_result_payload(result: &Value) -> Option<(MessageOutcome, Option<i64>)> {
     if let Some(outcome) = analyze_structured_content(result) {
         return Some(outcome);
     }
 
     if let Some(content) = result.get("content").and_then(|v| v.as_array()) {
         for item in content {
-            if let Some(kind) = item.get("type").and_then(|v| v.as_str()) {
-                if kind.eq_ignore_ascii_case("error") {
-                    return Some(MessageOutcome::Error);
-                }
+            if let Some(kind) = item.get("type").and_then(|v| v.as_str())
+                && kind.eq_ignore_ascii_case("error")
+            {
+                return Some((MessageOutcome::Error, None));
             }
-            if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
-                if let Some(code) = parse_embedded_status(text) {
-                    return Some(classify_status_code(code));
-                }
+            if let Some(text) = item.get("text").and_then(|v| v.as_str())
+                && let Some(code) = parse_embedded_status(text)
+            {
+                return Some((classify_status_code(code), Some(code)));
             }
         }
     }
 
     if result.get("error").is_some() {
-        return Some(MessageOutcome::Error);
+        return Some((MessageOutcome::Error, None));
     }
 
     if result
@@ -687,17 +953,17 @@ fn analyze_result_payload(result: &Value) -> Option<MessageOutcome> {
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
     {
-        return Some(MessageOutcome::Error);
+        return Some((MessageOutcome::Error, None));
     }
 
-    Some(MessageOutcome::Success)
+    Some((MessageOutcome::Success, None))
 }
 
-fn analyze_structured_content(result: &Value) -> Option<MessageOutcome> {
+fn analyze_structured_content(result: &Value) -> Option<(MessageOutcome, Option<i64>)> {
     let structured = result.get("structuredContent")?;
 
     if let Some(code) = extract_status_code(structured) {
-        return Some(classify_status_code(code));
+        return Some((classify_status_code(code), Some(code)));
     }
 
     if structured
@@ -705,7 +971,7 @@ fn analyze_structured_content(result: &Value) -> Option<MessageOutcome> {
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
     {
-        return Some(MessageOutcome::Error);
+        return Some((MessageOutcome::Error, None));
     }
 
     structured
@@ -713,15 +979,15 @@ fn analyze_structured_content(result: &Value) -> Option<MessageOutcome> {
         .and_then(|v| v.as_array())
         .and_then(|items| {
             for item in items {
-                if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
-                    if let Some(code) = parse_embedded_status(text) {
-                        return Some(classify_status_code(code));
-                    }
+                if let Some(text) = item.get("text").and_then(|v| v.as_str())
+                    && let Some(code) = parse_embedded_status(text)
+                {
+                    return Some((classify_status_code(code), Some(code)));
                 }
             }
             None
         })
-        .or(Some(MessageOutcome::Success))
+        .or(Some((MessageOutcome::Success, None)))
 }
 
 fn extract_status_code(value: &Value) -> Option<i64> {
@@ -729,10 +995,10 @@ fn extract_status_code(value: &Value) -> Option<i64> {
         return Some(code);
     }
 
-    if let Some(detail) = value.get("detail") {
-        if let Some(code) = detail.get("status").and_then(|v| v.as_i64()) {
-            return Some(code);
-        }
+    if let Some(detail) = value.get("detail")
+        && let Some(code) = detail.get("status").and_then(|v| v.as_i64())
+    {
+        return Some(code);
     }
 
     None
@@ -785,10 +1051,10 @@ fn extract_sse_json_messages(text: &str) -> Vec<Value> {
         }
     }
 
-    if !current.is_empty() {
-        if let Ok(value) = serde_json::from_str::<Value>(&current) {
-            messages.push(value);
-        }
+    if !current.is_empty()
+        && let Ok(value) = serde_json::from_str::<Value>(&current)
+    {
+        messages.push(value);
     }
 
     messages

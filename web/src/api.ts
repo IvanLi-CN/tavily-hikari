@@ -1,0 +1,54 @@
+export interface Summary {
+  total_requests: number
+  success_count: number
+  error_count: number
+  quota_exhausted_count: number
+  active_keys: number
+  exhausted_keys: number
+  last_activity: number | null
+}
+
+export interface ApiKeyStats {
+  key_id: string
+  key_preview: string
+  status: string
+  status_changed_at: number | null
+  last_used_at: number | null
+  total_requests: number
+  success_count: number
+  error_count: number
+  quota_exhausted_count: number
+}
+
+export interface RequestLog {
+  id: number
+  key_preview: string
+  key_id: string
+  http_status: number | null
+  mcp_status: number | null
+  result_status: string
+  created_at: number
+  error_message: string | null
+}
+
+async function requestJson<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
+  const response = await fetch(input, init)
+  if (!response.ok) {
+    const message = await response.text().catch(() => response.statusText)
+    throw new Error(message || `Request failed with status ${response.status}`)
+  }
+  return (await response.json()) as T
+}
+
+export function fetchSummary(signal?: AbortSignal): Promise<Summary> {
+  return requestJson('/api/summary', { signal })
+}
+
+export function fetchApiKeys(signal?: AbortSignal): Promise<ApiKeyStats[]> {
+  return requestJson('/api/keys', { signal })
+}
+
+export function fetchRequestLogs(limit = 50, signal?: AbortSignal): Promise<RequestLog[]> {
+  const params = new URLSearchParams({ limit: limit.toString() })
+  return requestJson(`/api/logs?${params.toString()}`, { signal })
+}

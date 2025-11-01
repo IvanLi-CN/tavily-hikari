@@ -9,6 +9,8 @@ Tavily Hikari 是一个轻量级的反向代理：它会把来自客户端的请
 - 旁路审计：每次请求的 method/path/query、状态码、错误信息与响应体都会写入数据库，方便后续诊断配额情况。
 - 健康标记：检测到状态码 432 时自动把对应 key 标记为“额度用尽”，UTC 月初再恢复。
 - 简单部署：通过 CLI 指定监听地址、上游端点、数据库路径即可运行。
+- Web 控制台：构建 `web/dist` 后可直接挂载单页应用，实时查看 key 状态与最近代理请求。
+- 仅透传 `/mcp` 路径：除 `/mcp` 与静态资源外，其余请求在本地响应 404，避免意外直连上游。
 
 ## 快速开始
 
@@ -28,13 +30,23 @@ cargo run -- --bind 127.0.0.1 --port 8080
 
 ## CLI 选项
 
-| Flag / Env                       | 说明                                                      |
-| -------------------------------- | --------------------------------------------------------- |
-| `--keys` / `TAVILY_API_KEYS`     | Tavily API key，支持逗号分隔或多次传入，必填。            |
-| `--upstream` / `TAVILY_UPSTREAM` | 上游 Tavily MCP 端点，默认 `https://mcp.tavily.com/mcp`。 |
-| `--bind` / `PROXY_BIND`          | 监听地址，默认 `127.0.0.1`。                              |
-| `--port` / `PROXY_PORT`          | 监听端口，默认 `8787`。                                   |
-| `--db-path` / `PROXY_DB_PATH`    | SQLite 文件路径，默认 `tavily_proxy.db`。                 |
+| Flag / Env                        | 说明                                                           |
+| --------------------------------- | -------------------------------------------------------------- |
+| `--keys` / `TAVILY_API_KEYS`      | Tavily API key，支持逗号分隔或多次传入，必填。                 |
+| `--upstream` / `TAVILY_UPSTREAM`  | 上游 Tavily MCP 端点，默认 `https://mcp.tavily.com/mcp`。      |
+| `--bind` / `PROXY_BIND`           | 监听地址，默认 `127.0.0.1`。                                   |
+| `--port` / `PROXY_PORT`           | 监听端口，默认 `8787`。                                        |
+| `--db-path` / `PROXY_DB_PATH`     | SQLite 文件路径，默认 `tavily_proxy.db`。                      |
+| `--static-dir` / `WEB_STATIC_DIR` | Web 静态资源目录；若未显式指定且存在 `web/dist` 则会自动挂载。 |
+
+## Web API
+
+- `GET /api/summary`：返回整体成功/失败次数、活跃 key 数以及最近活跃时间。
+- `GET /api/keys`：列出每个 key 的状态、调用次数与成功/失败统计。
+- `GET /api/logs?limit=50`：按时间倒序返回最近的代理请求记录（默认 50 条）。
+- `GET /health`：健康检查端点。
+
+> 只有 `/mcp` 与 `/mcp/*` 会被透传至 Tavily upstream，其余路径仍由本地服务处理或返回 404。
 
 ## 审计与密钥生命周期
 
@@ -49,6 +61,10 @@ cargo run -- --bind 127.0.0.1 --port 8080
   - `cargo fmt`
   - `cargo check`
   - `cargo run -- --help`
+- Web 前端位于 `web/`：
+  - `cd web && npm install`
+  - `npm run dev` 在本地调试（默认 http://localhost:5173 ）
+  - `npm run build` 生成 `web/dist`，代理启动时可自动加载该 SPA
 
 ## Git Hooks
 
