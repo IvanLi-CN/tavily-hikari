@@ -50,6 +50,22 @@ cargo run -- --bind 127.0.0.1 --port 58087
 
 > 管理员身份通过 ForwardAuth 配置的请求头判断，只有管理员请求才能访问 `/api/keys/:id/secret`，前端页面也仅在管理员会话下展示“复制原始 API key”图标按钮。
 
+### 复制真实 API key 示例
+
+```bash
+# 获取 key 列表，注意客户端仅能看到 4 位短 ID
+curl -s http://127.0.0.1:58087/api/keys | jq .
+
+# 以管理员身份请求真实 key（需要满足 ForwardAuth 头部要求）
+curl -s http://127.0.0.1:58087/api/keys/<id>/secret \
+  -H "X-Forwarded-User: admin@example.com" \
+  -H "X-Forwarded-Admin: true"
+
+# 响应内容为 JSON，示例：{"api_key":"dummy-key-123"}
+```
+
+> Web 控制台中，“复制原始 API key” 的图标按钮同样位于可点击区域内，悬浮即可看到提示文字；无管理员权限的用户不会看到该图标。
+
 > 只有 `/mcp` 与 `/mcp/*` 会被透传至 Tavily upstream，其余路径仍由本地服务处理或返回 404。
 
 ## 审计与密钥生命周期
