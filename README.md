@@ -5,6 +5,7 @@ Tavily Hikari 是一个轻量级的反向代理：它会把来自客户端的请
 ## 特性
 
 - 多 key 轮询：SQLite 记录最近使用时间，确保 Tavily API key 均衡出站。
+- 短 ID 主键：为每个 key 生成 4 位 nanoid 作为主键，对外展示安全短 ID，真实 API key 仅管理员可取回。
 - 透传代理：对外保持与官方端点兼容的请求/响应，额外附加 `tavilyApiKey` 查询参数与 `Tavily-Api-Key` 请求头。
 - 旁路审计：每次请求的 method/path/query、状态码、错误信息与响应体都会写入数据库，方便后续诊断配额情况。
 - 健康标记：检测到状态码 432 时自动把对应 key 标记为“额度用尽”，UTC 月初再恢复。
@@ -42,15 +43,18 @@ cargo run -- --bind 127.0.0.1 --port 58087
 ## Web API
 
 - `GET /api/summary`：返回整体成功/失败次数、活跃 key 数以及最近活跃时间。
-- `GET /api/keys`：列出每个 key 的状态、调用次数与成功/失败统计。
+- `GET /api/keys`：列出每个 key 的状态、调用次数与成功/失败统计（以 4 位 `id` 标识）。
 - `GET /api/logs?limit=50`：按时间倒序返回最近的代理请求记录（默认 50 条）。
+- `GET /api/keys/:id/secret`：管理员专用接口，返回指定短 ID 对应的真实 API key。
 - `GET /health`：健康检查端点。
+
+> 管理员身份通过 ForwardAuth 配置的请求头判断，只有管理员请求才能访问 `/api/keys/:id/secret`，前端页面也仅在管理员会话下展示“复制原始 API key”图标按钮。
 
 > 只有 `/mcp` 与 `/mcp/*` 会被透传至 Tavily upstream，其余路径仍由本地服务处理或返回 404。
 
 ## 审计与密钥生命周期
 
-- **请求日志**：`request_logs` 表记录 key、method/path/query、状态码、错误信息以及完整响应体，用于离线分析配额问题。
+- **请求日志**：`request_logs` 表记录 key、method/path/query、状态码、错误信息以及完整响应体，用于离线分析配额问题。日志使用 `api_key_id`（4 位短 ID）与 key 关联。
 - **额度用尽自动标记**：遇到状态码 432 会把 key 标记为禁用，直到下一个 UTC 月初自动清除。
 - **均衡调度**：每次请求都会挑选最久未使用的 key；若所有 key 都被禁用，则按最早禁用时间重试。
 
