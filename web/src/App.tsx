@@ -471,12 +471,8 @@ function App(): JSX.Element {
             (() => {
               const raw = version.backend || ''
               const clean = raw.replace(/-.+$/, '')
-              const isDev = /-/.test(raw)
               const tag = clean.startsWith('v') ? clean : `v${clean}`
-              // For releases, link to the tag page; for dev builds, link to repo root to avoid 404
-              const href = isDev
-                ? 'https://github.com/IvanLi-CN/tavily-hikari'
-                : `https://github.com/IvanLi-CN/tavily-hikari/releases/tag/${tag}`
+              const href = `https://github.com/IvanLi-CN/tavily-hikari/releases/tag/${tag}`
               return (
                 <>
                   {'· '}
