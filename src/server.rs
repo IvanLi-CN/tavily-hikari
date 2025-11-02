@@ -235,6 +235,8 @@ struct RequestLogView {
     result_status: String,
     created_at: i64,
     error_message: Option<String>,
+    forwarded_headers: Vec<String>,
+    dropped_headers: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -385,6 +387,8 @@ impl From<RequestLogRecord> for RequestLogView {
             result_status: record.result_status,
             created_at: record.created_at,
             error_message: record.error_message,
+            forwarded_headers: record.forwarded_headers,
+            dropped_headers: record.dropped_headers,
         }
     }
 }
