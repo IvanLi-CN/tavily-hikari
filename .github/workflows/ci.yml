@@ -125,6 +125,54 @@ jobs:
       - name: Cargo build (release)
         run: cargo build --release --locked
 
+  release-tag:
+    name: Create Tag and Release
+    runs-on: ubuntu-latest
+    needs: [lint, unit-tests]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute effective version
+        shell: bash
+        run: ./.github/scripts/compute-version.sh
+
+      - name: Configure Git user
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Create and push tag (if missing)
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="v${APP_EFFECTIVE_VERSION}"
+          echo "target tag: $tag"
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag ${tag} already exists. Skipping push."
+          else
+            git tag -a "${tag}" -m "${tag}"
+            git push origin "${tag}"
+            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        if: steps.tag.outputs.tag_exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.APP_EFFECTIVE_VERSION }}
+          name: v${{ env.APP_EFFECTIVE_VERSION }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   docker:
     name: Build and Push Docker Image
     runs-on: ubuntu-latest
