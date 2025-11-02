@@ -13,6 +13,7 @@ export interface ApiKeyStats {
   status: string
   status_changed_at: number | null
   last_used_at: number | null
+  deleted_at: number | null
   total_requests: number
   success_count: number
   error_count: number
@@ -76,4 +77,37 @@ export interface Profile {
 
 export function fetchProfile(signal?: AbortSignal): Promise<Profile> {
   return requestJson('/api/profile', { signal })
+}
+
+export interface CreateKeyResponse {
+  id: string
+}
+
+export async function addApiKey(apiKey: string): Promise<CreateKeyResponse> {
+  return await requestJson('/api/keys', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ api_key: apiKey }),
+  })
+}
+
+export async function deleteApiKey(id: string): Promise<void> {
+  const encoded = encodeURIComponent(id)
+  await fetch(`/api/keys/${encoded}`, { method: 'DELETE' }).then((res) => {
+    if (!res.ok) throw new Error(`Failed to delete key: ${res.status}`)
+  })
+}
+
+export type KeyAdminStatus = 'active' | 'disabled'
+
+export async function setKeyStatus(id: string, status: KeyAdminStatus): Promise<void> {
+  const encoded = encodeURIComponent(id)
+  const res = await fetch(`/api/keys/${encoded}/status`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status }),
+  })
+  if (!res.ok) {
+    throw new Error(`Failed to update key status: ${res.status}`)
+  }
 }

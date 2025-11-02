@@ -46,9 +46,23 @@ cargo run -- --bind 127.0.0.1 --port 58087
 - `GET /api/keys`：列出每个 key 的状态、调用次数与成功/失败统计（以 4 位 `id` 标识）。
 - `GET /api/logs?limit=50`：按时间倒序返回最近的代理请求记录（默认 50 条）。
 - `GET /api/keys/:id/secret`：管理员专用接口，返回指定短 ID 对应的真实 API key。
+- `POST /api/keys`：管理员专用接口，新增或“反删除”一个 API key（JSON: `{ "api_key": "..." }`）。
+- `DELETE /api/keys/:id`：管理员专用接口，软删除指定短 ID 的 API key（可通过重新添加同一密钥反向恢复）。
 - `GET /health`：健康检查端点。
 
 > 管理员身份通过 ForwardAuth 配置的请求头判断，只有管理员请求才能访问 `/api/keys/:id/secret`，前端页面也仅在管理员会话下展示“复制原始 API key”图标按钮。
+
+### 关于 `TAVILY_API_KEYS` 同步语义
+
+`TAVILY_API_KEYS` 的职责是与数据库中的 `api_keys` 表保持同步：
+
+- 在列表中的密钥：
+  - 若数据库不存在则新增为 `active`；
+  - 若之前被“软删除”（`deleted`）则恢复为 `active`；
+  - 若状态为其它（如 `exhausted`），保持原状态不改动。
+- 不在列表中的密钥：不会被硬删除，而是标记为 `deleted`（软删除）。
+
+这样可以安全地通过环境变量维护基线集合，同时保留历史统计与日志；需要恢复时只需把密钥放回 `TAVILY_API_KEYS` 或在管理界面重新添加即可。
 
 ### 复制真实 API key 示例
 

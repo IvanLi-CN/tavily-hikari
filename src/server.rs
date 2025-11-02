@@ -13,7 +13,7 @@ use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, HeaderName, Method, Request, Response, StatusCode},
     response::{Json, Redirect},
-    routing::{any, get},
+    routing::{any, delete, get, patch, post},
 };
 use reqwest::header::{HeaderMap as ReqHeaderMap, HeaderValue as ReqHeaderValue};
 use serde::{Deserialize, Serialize};
@@ -254,6 +254,92 @@ async fn list_keys(
         })
 }
 
+#[derive(Debug, Deserialize)]
+struct CreateKeyRequest {
+    api_key: String,
+}
+
+#[derive(Debug, Serialize)]
+struct CreateKeyResponse {
+    id: String,
+}
+
+async fn create_api_key(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateKeyRequest>,
+) -> Result<(StatusCode, Json<CreateKeyResponse>), StatusCode> {
+    if !state.forward_auth.is_request_admin(&headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let api_key = payload.api_key.trim();
+    if api_key.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    match state.proxy.add_or_undelete_key(api_key).await {
+        Ok(id) => Ok((StatusCode::CREATED, Json(CreateKeyResponse { id }))),
+        Err(err) => {
+            eprintln!("create api key error: {err}");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+async fn delete_api_key(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Result<StatusCode, StatusCode> {
+    if !state.forward_auth.is_request_admin(&headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    match state.proxy.soft_delete_key_by_id(&id).await {
+        Ok(()) => Ok(StatusCode::NO_CONTENT),
+        Err(err) => {
+            eprintln!("delete api key error: {err}");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateKeyStatus {
+    status: String,
+}
+
+async fn update_api_key_status(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(payload): Json<UpdateKeyStatus>,
+) -> Result<StatusCode, StatusCode> {
+    if !state.forward_auth.is_request_admin(&headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let status = payload.status.trim().to_ascii_lowercase();
+    match status.as_str() {
+        "disabled" => match state.proxy.disable_key_by_id(&id).await {
+            Ok(()) => Ok(StatusCode::NO_CONTENT),
+            Err(err) => {
+                eprintln!("disable api key error: {err}");
+                Err(StatusCode::INTERNAL_SERVER_ERROR)
+            }
+        },
+        "active" => match state.proxy.enable_key_by_id(&id).await {
+            Ok(()) => Ok(StatusCode::NO_CONTENT),
+            Err(err) => {
+                eprintln!("enable api key error: {err}");
+                Err(StatusCode::INTERNAL_SERVER_ERROR)
+            }
+        },
+        _ => Err(StatusCode::BAD_REQUEST),
+    }
+}
+
 async fn get_api_key_secret(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -308,7 +394,10 @@ pub async fn serve(
         .route("/api/profile", get(get_profile))
         .route("/api/summary", get(fetch_summary))
         .route("/api/keys", get(list_keys))
+        .route("/api/keys", post(create_api_key))
         .route("/api/keys/:id/secret", get(get_api_key_secret))
+        .route("/api/keys/:id", delete(delete_api_key))
+        .route("/api/keys/:id/status", patch(update_api_key_status))
         .route("/api/logs", get(list_logs));
 
     if let Some(dir) = static_dir {
@@ -361,6 +450,7 @@ struct ApiKeyView {
     status: String,
     status_changed_at: Option<i64>,
     last_used_at: Option<i64>,
+    deleted_at: Option<i64>,
     total_requests: i64,
     success_count: i64,
     error_count: i64,
@@ -489,6 +579,7 @@ impl From<ApiKeyMetrics> for ApiKeyView {
             status: metrics.status,
             status_changed_at: metrics.status_changed_at,
             last_used_at: metrics.last_used_at,
+            deleted_at: metrics.deleted_at,
             total_requests: metrics.total_requests,
             success_count: metrics.success_count,
             error_count: metrics.error_count,

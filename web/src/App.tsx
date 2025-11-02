@@ -3,6 +3,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   fetchApiKeys,
   fetchApiKeySecret,
+  addApiKey,
+  deleteApiKey,
+  setKeyStatus,
   fetchProfile,
   fetchRequestLogs,
   fetchSummary,
@@ -54,6 +57,8 @@ function statusClass(status: string): string {
   if (normalized === 'exhausted' || normalized === 'quota_exhausted') {
     return 'status-badge status-exhausted'
   }
+  // 'deleted' 由 deleted_at 字段控制，这里仅兜底
+  if (normalized === 'deleted') return 'status-badge status-unknown'
   if (normalized === 'error') {
     return 'status-badge status-error'
   }
@@ -72,8 +77,10 @@ function statusLabel(status: string): string {
       return 'Error'
     case 'quota_exhausted':
       return 'Quota Exhausted'
-    default:
-      return status
+    case 'deleted':
+      return 'Deleted'
+      default:
+        return status
   }
 }
 
@@ -89,6 +96,14 @@ function App(): JSX.Element {
   const [profile, setProfile] = useState<Profile | null>(null)
   const secretCacheRef = useRef<Map<string, string>>(new Map())
   const [copyState, setCopyState] = useState<Map<string, 'loading' | 'copied'>>(() => new Map())
+  const [newKey, setNewKey] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [togglingId, setTogglingId] = useState<string | null>(null)
+  const deleteDialogRef = useRef<HTMLDialogElement | null>(null)
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
+  const disableDialogRef = useRef<HTMLDialogElement | null>(null)
+  const [pendingDisableId, setPendingDisableId] = useState<string | null>(null)
 
   const copyStateKey = useCallback((scope: 'keys' | 'logs', identifier: string | number) => {
     return `${scope}:${identifier}`
@@ -250,6 +265,7 @@ function App(): JSX.Element {
   const dedupedKeys = useMemo(() => {
     const map = new Map<string, ApiKeyStats>()
     for (const item of keys) {
+      if (item.deleted_at) continue // hide soft-deleted keys
       map.set(item.id, item)
     }
     return Array.from(map.values())
@@ -269,7 +285,95 @@ function App(): JSX.Element {
   const displayName = profile?.displayName ?? null
   const isAdmin = profile?.isAdmin ?? false
 
+  const handleAddKey = async () => {
+    const value = newKey.trim()
+    if (!value) return
+    setSubmitting(true)
+    try {
+      await addApiKey(value)
+      setNewKey('')
+      const controller = new AbortController()
+      setLoading(true)
+      await loadData(controller.signal)
+      controller.abort()
+    } catch (err) {
+      console.error(err)
+      setError(err instanceof Error ? err.message : 'Failed to add API key')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const openDeleteConfirm = (id: string) => {
+    if (!id) return
+    setPendingDeleteId(id)
+    window.requestAnimationFrame(() => deleteDialogRef.current?.showModal())
+  }
+
+  const confirmDelete = async () => {
+    if (!pendingDeleteId) return
+    const id = pendingDeleteId
+    setDeletingId(id)
+    try {
+      await deleteApiKey(id)
+      deleteDialogRef.current?.close()
+      setPendingDeleteId(null)
+      const controller = new AbortController()
+      setLoading(true)
+      await loadData(controller.signal)
+      controller.abort()
+    } catch (err) {
+      console.error(err)
+      setError(err instanceof Error ? err.message : 'Failed to delete API key')
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
+  const cancelDelete = () => {
+    deleteDialogRef.current?.close()
+    setPendingDeleteId(null)
+  }
+
+  const handleToggleDisable = async (id: string, toDisabled: boolean) => {
+    if (!id) return
+    setTogglingId(id)
+    try {
+      await setKeyStatus(id, toDisabled ? 'disabled' : 'active')
+      const controller = new AbortController()
+      setLoading(true)
+      await loadData(controller.signal)
+      controller.abort()
+    } catch (err) {
+      console.error(err)
+      setError(err instanceof Error ? err.message : 'Failed to update key status')
+    } finally {
+      setTogglingId(null)
+    }
+  }
+
+  // DaisyUI disable confirm flow
+  const openDisableConfirm = (id: string) => {
+    if (!id) return
+    setPendingDisableId(id)
+    window.requestAnimationFrame(() => disableDialogRef.current?.showModal())
+  }
+
+  const confirmDisable = async () => {
+    if (!pendingDisableId) return
+    const id = pendingDisableId
+    await handleToggleDisable(id, true)
+    disableDialogRef.current?.close()
+    setPendingDisableId(null)
+  }
+
+  const cancelDisable = () => {
+    disableDialogRef.current?.close()
+    setPendingDisableId(null)
+  }
+
   return (
+    <>
     <main className="app-shell">
       <section className="surface app-header">
         <div className="title-group">
@@ -286,7 +390,7 @@ function App(): JSX.Element {
           <div className="controls">
             <button
               type="button"
-              className={`toggle ${autoRefresh ? 'active' : ''}`}
+              className={`refresh-toggle ${autoRefresh ? 'active' : ''}`}
               onClick={() => setAutoRefresh((value) => !value)}
             >
               {autoRefresh ? 'Auto Refresh On' : 'Auto Refresh Off'}
@@ -327,7 +431,35 @@ function App(): JSX.Element {
             <h2>API Keys</h2>
             <p className="panel-description">Status, usage, and recent success rates per Tavily API key.</p>
           </div>
-          {lastUpdated && <span className="panel-description">Updated {dateTimeFormatter.format(lastUpdated)}</span>}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            {isAdmin && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input
+                  type="text"
+                  placeholder="New Tavily API Key"
+                  value={newKey}
+                  onChange={(e) => setNewKey(e.target.value)}
+                  style={{
+                    padding: '8px 12px',
+                    borderRadius: 10,
+                    border: '1px solid rgba(15, 23, 42, 0.16)',
+                    minWidth: 240,
+                  }}
+                />
+                <button
+                  type="button"
+                  className="button button-primary"
+                  onClick={() => void handleAddKey()}
+                  disabled={submitting || !newKey.trim()}
+                >
+                  {submitting ? 'Adding…' : 'Add Key'}
+                </button>
+              </div>
+            )}
+            {!autoRefresh && lastUpdated && (
+              <span className="panel-description">Updated {dateTimeFormatter.format(lastUpdated)}</span>
+            )}
+          </div>
         </div>
         <div className="table-wrapper">
           {sortedKeys.length === 0 ? (
@@ -345,6 +477,7 @@ function App(): JSX.Element {
                   <th>Success Rate</th>
                   <th>Last Used</th>
                   <th>Status Changed</th>
+                  {isAdmin && <th>Actions</th>}
                 </tr>
               </thead>
               <tbody>
@@ -381,6 +514,45 @@ function App(): JSX.Element {
                       <td>{formatPercent(item.success_count, total)}</td>
                       <td>{formatTimestamp(item.last_used_at)}</td>
                       <td>{formatTimestamp(item.status_changed_at)}</td>
+                      {isAdmin && (
+                        <td>
+                          <div style={{ display: 'flex', gap: 8 }}>
+                            {item.status === 'disabled' ? (
+                              <button
+                                type="button"
+                                className="icon-button"
+                                title="Enable key"
+                                aria-label="Enable key"
+                                onClick={() => void handleToggleDisable(item.id, false)}
+                                disabled={togglingId === item.id}
+                              >
+                                <Icon icon={togglingId === item.id ? 'mdi:progress-helper' : 'mdi:play-circle-outline'} width={18} height={18} />
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                className="icon-button"
+                                title="Disable key"
+                                aria-label="Disable key"
+                                onClick={() => openDisableConfirm(item.id)}
+                                disabled={togglingId === item.id}
+                              >
+                                <Icon icon={togglingId === item.id ? 'mdi:progress-helper' : 'mdi:pause-circle-outline'} width={18} height={18} />
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              className="icon-button icon-button-danger"
+                              title="Remove key"
+                              aria-label="Remove key"
+                              onClick={() => openDeleteConfirm(item.id)}
+                              disabled={deletingId === item.id}
+                            >
+                              <Icon icon={deletingId === item.id ? 'mdi:progress-helper' : 'mdi:trash-outline'} width={18} height={18} />
+                            </button>
+                          </div>
+                        </td>
+                      )}
                     </tr>
                   )
                 })}
@@ -488,6 +660,34 @@ function App(): JSX.Element {
         </span>
       </div>
     </main>
+    {/* Disable Confirmation (daisyUI modal) */}
+    <dialog id="confirm_disable_modal" ref={disableDialogRef} className="modal">
+      <div className="modal-box">
+        <h3 className="font-bold text-lg" style={{ marginTop: 0 }}>Disable API Key</h3>
+        <p className="py-2">This will stop using the key until you enable it again. No data will be removed.</p>
+        <div className="modal-action">
+          <form method="dialog" onSubmit={(e) => e.preventDefault()} style={{ display: 'flex', gap: 8 }}>
+            <button type="button" className="btn" onClick={cancelDisable}>Cancel</button>
+            <button type="button" className="btn" onClick={() => void confirmDisable()} disabled={!!togglingId}>Disable</button>
+          </form>
+        </div>
+      </div>
+    </dialog>
+
+    {/* Delete Confirmation (daisyUI modal) */}
+    <dialog id="confirm_delete_modal" ref={deleteDialogRef} className="modal">
+      <div className="modal-box">
+        <h3 className="font-bold text-lg" style={{ marginTop: 0 }}>Remove API Key</h3>
+        <p className="py-2">This will mark the key as Deleted. You can restore it later by re-adding the same secret.</p>
+        <div className="modal-action">
+          <form method="dialog" onSubmit={(e) => e.preventDefault()} style={{ display: 'flex', gap: 8 }}>
+            <button type="button" className="btn" onClick={cancelDelete}>Cancel</button>
+            <button type="button" className="btn btn-error" onClick={() => void confirmDelete()} disabled={!!deletingId}>Remove</button>
+          </form>
+        </div>
+      </div>
+    </dialog>
+    </>
   )
 }
 
