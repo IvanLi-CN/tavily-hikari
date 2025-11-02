@@ -2,13 +2,14 @@ use std::{cmp::min, sync::Arc};
 
 use bytes::Bytes;
 use chrono::{Datelike, TimeZone, Utc};
+use nanoid::nanoid;
 use reqwest::{
     Client, Method, StatusCode, Url,
     header::{CONTENT_LENGTH, HOST, HeaderMap, HeaderValue},
 };
 use serde_json::Value;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use sqlx::{QueryBuilder, Row, SqlitePool};
+use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 use thiserror::Error;
 use url::form_urlencoded;
 
@@ -146,7 +147,7 @@ impl TavilyProxy {
                     pairs.append_pair(&key, &value);
                 }
             }
-            pairs.append_pair("tavilyApiKey", lease.key.as_str());
+            pairs.append_pair("tavilyApiKey", lease.secret.as_str());
         }
 
         drop(url.query_pairs_mut());
@@ -162,7 +163,7 @@ impl TavilyProxy {
             builder = builder.header(name, value);
         }
 
-        builder = builder.header("Tavily-Api-Key", lease.key.as_str());
+        builder = builder.header("Tavily-Api-Key", lease.secret.as_str());
 
         let response = builder.body(request.body.clone()).send().await;
 
@@ -174,7 +175,7 @@ impl TavilyProxy {
                 let outcome = analyze_attempt(status, &body_bytes);
 
                 log_success(
-                    &lease.key,
+                    &lease.secret,
                     &request.method,
                     &request.path,
                     request.query.as_deref(),
@@ -183,7 +184,7 @@ impl TavilyProxy {
 
                 self.key_store
                     .log_attempt(AttemptLog {
-                        key: &lease.key,
+                        key_id: &lease.id,
                         method: &request.method,
                         path: request.path.as_str(),
                         query: request.query.as_deref(),
@@ -198,9 +199,9 @@ impl TavilyProxy {
                     .await?;
 
                 if status.as_u16() == 432 || outcome.mark_exhausted {
-                    self.key_store.mark_quota_exhausted(&lease.key).await?;
+                    self.key_store.mark_quota_exhausted(&lease.secret).await?;
                 } else {
-                    self.key_store.restore_active_status(&lease.key).await?;
+                    self.key_store.restore_active_status(&lease.secret).await?;
                 }
 
                 Ok(ProxyResponse {
@@ -211,7 +212,7 @@ impl TavilyProxy {
             }
             Err(err) => {
                 log_error(
-                    &lease.key,
+                    &lease.secret,
                     &request.method,
                     &request.path,
                     request.query.as_deref(),
@@ -219,7 +220,7 @@ impl TavilyProxy {
                 );
                 self.key_store
                     .log_attempt(AttemptLog {
-                        key: &lease.key,
+                        key_id: &lease.id,
                         method: &request.method,
                         path: request.path.as_str(),
                         query: request.query.as_deref(),
@@ -248,6 +249,11 @@ impl TavilyProxy {
         limit: usize,
     ) -> Result<Vec<RequestLogRecord>, ProxyError> {
         self.key_store.fetch_recent_logs(limit).await
+    }
+
+    /// 根据 ID 获取真实 API key，仅供管理员调用。
+    pub async fn get_api_key_secret(&self, key_id: &str) -> Result<Option<String>, ProxyError> {
+        self.key_store.fetch_api_key_secret(key_id).await
     }
 
     /// 获取整体运行情况汇总。
@@ -287,7 +293,8 @@ impl KeyStore {
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS api_keys (
-                api_key TEXT PRIMARY KEY,
+                id TEXT PRIMARY KEY,
+                api_key TEXT NOT NULL UNIQUE,
                 status TEXT NOT NULL DEFAULT 'active',
                 status_changed_at INTEGER,
                 last_used_at INTEGER NOT NULL DEFAULT 0
@@ -303,7 +310,7 @@ impl KeyStore {
             r#"
             CREATE TABLE IF NOT EXISTS request_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                api_key TEXT NOT NULL,
+                api_key_id TEXT NOT NULL,
                 method TEXT NOT NULL,
                 path TEXT NOT NULL,
                 query TEXT,
@@ -315,7 +322,7 @@ impl KeyStore {
                 forwarded_headers TEXT,
                 dropped_headers TEXT,
                 created_at INTEGER NOT NULL,
-                FOREIGN KEY (api_key) REFERENCES api_keys(api_key)
+                FOREIGN KEY (api_key_id) REFERENCES api_keys(id)
             )
             "#,
         )
@@ -377,7 +384,111 @@ impl KeyStore {
         .execute(&self.pool)
         .await?;
 
+        self.ensure_api_key_ids().await?;
+        self.ensure_api_keys_primary_key().await?;
+
         Ok(())
+    }
+
+    async fn ensure_api_key_ids(&self) -> Result<(), ProxyError> {
+        if !self.api_keys_column_exists("id").await? {
+            sqlx::query("ALTER TABLE api_keys ADD COLUMN id TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
+
+        let mut tx = self.pool.begin().await?;
+        let keys = sqlx::query_scalar::<_, String>(
+            "SELECT api_key FROM api_keys WHERE id IS NULL OR id = ''",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+
+        for api_key in keys {
+            let id = Self::generate_unique_key_id(&mut tx).await?;
+            sqlx::query("UPDATE api_keys SET id = ? WHERE api_key = ?")
+                .bind(&id)
+                .bind(&api_key)
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn ensure_api_keys_primary_key(&self) -> Result<(), ProxyError> {
+        if self.api_keys_primary_key_is_id().await? {
+            return Ok(());
+        }
+
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS api_keys_new (
+                id TEXT PRIMARY KEY,
+                api_key TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL DEFAULT 'active',
+                status_changed_at INTEGER,
+                last_used_at INTEGER NOT NULL DEFAULT 0
+            )
+            "#,
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO api_keys_new (id, api_key, status, status_changed_at, last_used_at)
+            SELECT id, api_key, status, status_changed_at, last_used_at
+            FROM api_keys
+            "#,
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query("DROP TABLE api_keys").execute(&mut *tx).await?;
+        sqlx::query("ALTER TABLE api_keys_new RENAME TO api_keys")
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn api_keys_primary_key_is_id(&self) -> Result<bool, ProxyError> {
+        let rows = sqlx::query("SELECT name, pk FROM pragma_table_info('api_keys')")
+            .fetch_all(&self.pool)
+            .await?;
+
+        for row in rows {
+            let name: String = row.try_get("name")?;
+            let pk: i64 = row.try_get("pk")?;
+            if name == "id" {
+                return Ok(pk > 0);
+            }
+        }
+
+        Ok(false)
+    }
+
+    async fn generate_unique_key_id(
+        tx: &mut Transaction<'_, Sqlite>,
+    ) -> Result<String, ProxyError> {
+        loop {
+            let candidate = nanoid!(4);
+            let exists = sqlx::query_scalar::<_, Option<String>>(
+                "SELECT id FROM api_keys WHERE id = ? LIMIT 1",
+            )
+            .bind(&candidate)
+            .fetch_optional(&mut **tx)
+            .await?;
+
+            if exists.is_none() {
+                return Ok(candidate);
+            }
+        }
     }
 
     async fn api_keys_column_exists(&self, column: &str) -> Result<bool, ProxyError> {
@@ -421,6 +532,102 @@ impl KeyStore {
                 .await?;
         }
 
+        self.ensure_request_logs_key_ids().await?;
+
+        Ok(())
+    }
+
+    async fn ensure_request_logs_key_ids(&self) -> Result<(), ProxyError> {
+        if !self.request_logs_column_exists("api_key_id").await? {
+            sqlx::query("ALTER TABLE request_logs ADD COLUMN api_key_id TEXT")
+                .execute(&self.pool)
+                .await?;
+
+            sqlx::query(
+                r#"
+                UPDATE request_logs
+                SET api_key_id = (
+                    SELECT id FROM api_keys WHERE api_keys.api_key = request_logs.api_key
+                )
+                "#,
+            )
+            .execute(&self.pool)
+            .await?;
+        }
+
+        if self.request_logs_column_exists("api_key").await? {
+            let mut tx = self.pool.begin().await?;
+
+            sqlx::query(
+                r#"
+                CREATE TABLE IF NOT EXISTS request_logs_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    api_key_id TEXT NOT NULL,
+                    method TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    query TEXT,
+                    status_code INTEGER,
+                    tavily_status_code INTEGER,
+                    error_message TEXT,
+                    result_status TEXT NOT NULL DEFAULT 'unknown',
+                    response_body BLOB,
+                    forwarded_headers TEXT,
+                    dropped_headers TEXT,
+                    created_at INTEGER NOT NULL,
+                    FOREIGN KEY (api_key_id) REFERENCES api_keys(id)
+                )
+                "#,
+            )
+            .execute(&mut *tx)
+            .await?;
+
+            sqlx::query(
+                r#"
+                INSERT INTO request_logs_new (
+                    id,
+                    api_key_id,
+                    method,
+                    path,
+                    query,
+                    status_code,
+                    tavily_status_code,
+                    error_message,
+                    result_status,
+                    response_body,
+                    forwarded_headers,
+                    dropped_headers,
+                    created_at
+                )
+                SELECT
+                    id,
+                    api_key_id,
+                    method,
+                    path,
+                    query,
+                    status_code,
+                    tavily_status_code,
+                    error_message,
+                    result_status,
+                    response_body,
+                    forwarded_headers,
+                    dropped_headers,
+                    created_at
+                FROM request_logs
+                "#,
+            )
+            .execute(&mut *tx)
+            .await?;
+
+            sqlx::query("DROP TABLE request_logs")
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("ALTER TABLE request_logs_new RENAME TO request_logs")
+                .execute(&mut *tx)
+                .await?;
+
+            tx.commit().await?;
+        }
+
         Ok(())
     }
 
@@ -437,16 +644,27 @@ impl KeyStore {
 
     async fn sync_keys(&self, keys: &[String]) -> Result<(), ProxyError> {
         let mut tx = self.pool.begin().await?;
-        let _now = Utc::now().timestamp();
 
         for key in keys {
+            let exists = sqlx::query_scalar::<_, Option<String>>(
+                "SELECT id FROM api_keys WHERE api_key = ? LIMIT 1",
+            )
+            .bind(key)
+            .fetch_optional(&mut *tx)
+            .await?;
+
+            if exists.is_some() {
+                continue;
+            }
+
+            let id = Self::generate_unique_key_id(&mut tx).await?;
             sqlx::query(
                 r#"
-                INSERT INTO api_keys (api_key, status)
-                VALUES (?, ?)
-                ON CONFLICT(api_key) DO NOTHING
+                INSERT INTO api_keys (id, api_key, status)
+                VALUES (?, ?, ?)
                 "#,
             )
+            .bind(&id)
             .bind(key)
             .bind(STATUS_ACTIVE)
             .execute(&mut *tx)
@@ -478,12 +696,12 @@ impl KeyStore {
 
         let now = Utc::now().timestamp();
 
-        if let Some(api_key) = sqlx::query_scalar::<_, String>(
+        if let Some((id, api_key)) = sqlx::query_as::<_, (String, String)>(
             r#"
-            SELECT api_key
+            SELECT id, api_key
             FROM api_keys
             WHERE status = ?
-            ORDER BY last_used_at ASC, api_key ASC
+            ORDER BY last_used_at ASC, id ASC
             LIMIT 1
             "#,
         )
@@ -492,18 +710,21 @@ impl KeyStore {
         .await?
         {
             self.touch_key(&api_key, now).await?;
-            return Ok(ApiKeyLease { key: api_key });
+            return Ok(ApiKeyLease {
+                id,
+                secret: api_key,
+            });
         }
 
-        if let Some(api_key) = sqlx::query_scalar::<_, String>(
+        if let Some((id, api_key)) = sqlx::query_as::<_, (String, String)>(
             r#"
-            SELECT api_key
+            SELECT id, api_key
             FROM api_keys
             WHERE status <> ?
             ORDER BY
                 CASE WHEN status_changed_at IS NULL THEN 1 ELSE 0 END ASC,
                 status_changed_at ASC,
-                api_key ASC
+                id ASC
             LIMIT 1
             "#,
         )
@@ -512,7 +733,10 @@ impl KeyStore {
         .await?
         {
             self.touch_key(&api_key, now).await?;
-            return Ok(ApiKeyLease { key: api_key });
+            return Ok(ApiKeyLease {
+                id,
+                secret: api_key,
+            });
         }
 
         Err(ProxyError::NoAvailableKeys)
@@ -606,7 +830,7 @@ impl KeyStore {
         sqlx::query(
             r#"
             INSERT INTO request_logs (
-                api_key,
+                api_key_id,
                 method,
                 path,
                 query,
@@ -621,7 +845,7 @@ impl KeyStore {
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
-        .bind(entry.key)
+        .bind(entry.key_id)
         .bind(entry.method.as_str())
         .bind(entry.path)
         .bind(entry.query)
@@ -643,7 +867,7 @@ impl KeyStore {
         let rows = sqlx::query(
             r#"
             SELECT
-                ak.api_key,
+                ak.id,
                 ak.status,
                 ak.status_changed_at,
                 ak.last_used_at,
@@ -654,16 +878,16 @@ impl KeyStore {
             FROM api_keys ak
             LEFT JOIN (
                 SELECT
-                    api_key,
+                    api_key_id,
                     COUNT(*) AS total_requests,
                     SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END) AS success_count,
                     SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END) AS error_count,
                     SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END) AS quota_exhausted_count
                 FROM request_logs
-                GROUP BY api_key
+                GROUP BY api_key_id
             ) AS stats
-            ON stats.api_key = ak.api_key
-            ORDER BY ak.status ASC, ak.last_used_at ASC, ak.api_key ASC
+            ON stats.api_key_id = ak.id
+            ORDER BY ak.status ASC, ak.last_used_at ASC, ak.id ASC
             "#,
         )
         .bind(OUTCOME_SUCCESS)
@@ -675,7 +899,7 @@ impl KeyStore {
         let metrics = rows
             .into_iter()
             .map(|row| -> Result<ApiKeyMetrics, sqlx::Error> {
-                let api_key: String = row.try_get("api_key")?;
+                let id: String = row.try_get("id")?;
                 let status: String = row.try_get("status")?;
                 let status_changed_at: Option<i64> = row.try_get("status_changed_at")?;
                 let last_used_at: i64 = row.try_get("last_used_at")?;
@@ -685,7 +909,7 @@ impl KeyStore {
                 let quota_exhausted_count: i64 = row.try_get("quota_exhausted_count")?;
 
                 Ok(ApiKeyMetrics {
-                    api_key,
+                    id,
                     status,
                     status_changed_at: status_changed_at.and_then(normalize_timestamp),
                     last_used_at: normalize_timestamp(last_used_at),
@@ -707,7 +931,7 @@ impl KeyStore {
             r#"
             SELECT
                 id,
-                api_key,
+                api_key_id,
                 method,
                 path,
                 query,
@@ -737,7 +961,7 @@ impl KeyStore {
                     parse_header_list(row.try_get::<Option<String>, _>("dropped_headers")?);
                 Ok(RequestLogRecord {
                     id: row.try_get("id")?,
-                    api_key: row.try_get("api_key")?,
+                    key_id: row.try_get("api_key_id")?,
                     method: row.try_get("method")?,
                     path: row.try_get("path")?,
                     query: row.try_get("query")?,
@@ -753,6 +977,16 @@ impl KeyStore {
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(records)
+    }
+
+    async fn fetch_api_key_secret(&self, key_id: &str) -> Result<Option<String>, ProxyError> {
+        let secret =
+            sqlx::query_scalar::<_, String>("SELECT api_key FROM api_keys WHERE id = ? LIMIT 1")
+                .bind(key_id)
+                .fetch_optional(&self.pool)
+                .await?;
+
+        Ok(secret)
     }
 
     async fn fetch_summary(&self) -> Result<ProxySummary, ProxyError> {
@@ -804,11 +1038,12 @@ impl KeyStore {
 
 #[derive(Debug)]
 struct ApiKeyLease {
-    key: String,
+    id: String,
+    secret: String,
 }
 
 struct AttemptLog<'a> {
-    key: &'a str,
+    key_id: &'a str,
     method: &'a Method,
     path: &'a str,
     query: Option<&'a str>,
@@ -842,7 +1077,7 @@ pub struct ProxyResponse {
 /// 每个 API key 的聚合统计信息。
 #[derive(Debug, Clone)]
 pub struct ApiKeyMetrics {
-    pub api_key: String,
+    pub id: String,
     pub status: String,
     pub status_changed_at: Option<i64>,
     pub last_used_at: Option<i64>,
@@ -856,7 +1091,7 @@ pub struct ApiKeyMetrics {
 #[derive(Debug, Clone)]
 pub struct RequestLogRecord {
     pub id: i64,
-    pub api_key: String,
+    pub key_id: String,
     pub method: String,
     pub path: String,
     pub query: Option<String>,

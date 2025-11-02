@@ -2,7 +2,7 @@ use std::{
     fs,
     io::Read,
     net::SocketAddr,
-    path::{Path, PathBuf},
+    path::{Path as FsPath, PathBuf},
     sync::Arc,
 };
 
@@ -10,16 +10,13 @@ use axum::http::header::{CONNECTION, CONTENT_LENGTH, TRANSFER_ENCODING};
 use axum::{
     Router,
     body::{self, Body},
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, HeaderName, Method, Request, Response, StatusCode},
     response::{Json, Redirect},
     routing::{any, get},
 };
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use reqwest::header::{HeaderMap as ReqHeaderMap, HeaderValue as ReqHeaderValue};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use tavily_hikari::{
     ApiKeyMetrics, ProxyRequest, ProxyResponse, ProxySummary, RequestLogRecord, TavilyProxy,
 };
@@ -73,6 +70,36 @@ impl ForwardAuthConfig {
 
     fn admin_override_name(&self) -> Option<&str> {
         self.admin_override_name.as_deref()
+    }
+
+    fn user_value<'a>(&self, headers: &'a HeaderMap) -> Option<&'a str> {
+        self.user_header()
+            .and_then(|name| headers.get(name))
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| !value.is_empty())
+    }
+
+    fn nickname_value(&self, headers: &HeaderMap) -> Option<String> {
+        self.nickname_header()
+            .and_then(|name| headers.get(name))
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    }
+
+    fn is_request_admin(&self, headers: &HeaderMap) -> bool {
+        if self.admin_override_name().is_some() {
+            return true;
+        }
+
+        if !self.is_enabled() {
+            return false;
+        }
+
+        match (self.admin_value(), self.user_value(headers)) {
+            (Some(expected), Some(actual)) => actual == expected,
+            _ => false,
+        }
     }
 }
 
@@ -133,19 +160,10 @@ async fn get_profile(
         }));
     }
 
-    let user_value = config
-        .user_header()
-        .and_then(|name| headers.get(name))
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_string)
-        .filter(|value| !value.is_empty());
+    let user_value = config.user_value(&headers).map(str::to_string);
 
     let nickname = config
-        .nickname_header()
-        .and_then(|name| headers.get(name))
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_string)
-        .filter(|value| !value.is_empty())
+        .nickname_value(&headers)
         .or_else(|| user_value.clone());
 
     if nickname.is_none() {
@@ -155,10 +173,7 @@ async fn get_profile(
         }));
     }
 
-    let is_admin = match (config.admin_value(), user_value.as_deref()) {
-        (Some(expected), Some(actual)) => actual == expected,
-        _ => false,
-    };
+    let is_admin = config.is_request_admin(&headers);
 
     Ok(Json(ProfileView {
         display_name: nickname,
@@ -166,7 +181,7 @@ async fn get_profile(
     }))
 }
 
-fn detect_versions(static_dir: Option<&Path>) -> (String, String) {
+fn detect_versions(static_dir: Option<&FsPath>) -> (String, String) {
     let backend_base = option_env!("APP_EFFECTIVE_VERSION")
         .map(|s| s.to_string())
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
@@ -198,7 +213,7 @@ fn detect_versions(static_dir: Option<&Path>) -> (String, String) {
     // Fallback to web/package.json for dev setups
     let frontend = frontend_from_dist
         .or_else(|| {
-            let path = Path::new("web").join("package.json");
+            let path = FsPath::new("web").join("package.json");
             fs::File::open(&path).ok().and_then(|mut f| {
                 let mut s = String::new();
                 if f.read_to_string(&mut s).is_ok() {
@@ -239,6 +254,25 @@ async fn list_keys(
         })
 }
 
+async fn get_api_key_secret(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<ApiKeySecretView>, StatusCode> {
+    if !state.forward_auth.is_request_admin(&headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    match state.proxy.get_api_key_secret(&id).await {
+        Ok(Some(secret)) => Ok(Json(ApiKeySecretView { api_key: secret })),
+        Ok(None) => Err(StatusCode::NOT_FOUND),
+        Err(err) => {
+            eprintln!("fetch api key secret error: {err}");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
 async fn list_logs(
     State(state): State<Arc<AppState>>,
     Query(params): Query<LogsQuery>,
@@ -274,6 +308,7 @@ pub async fn serve(
         .route("/api/profile", get(get_profile))
         .route("/api/summary", get(fetch_summary))
         .route("/api/keys", get(list_keys))
+        .route("/api/keys/:id/secret", get(get_api_key_secret))
         .route("/api/logs", get(list_logs));
 
     if let Some(dir) = static_dir {
@@ -322,8 +357,7 @@ const DEFAULT_LOG_LIMIT: usize = 50;
 
 #[derive(Debug, Serialize)]
 struct ApiKeyView {
-    key_id: String,
-    key_preview: String,
+    id: String,
     status: String,
     status_changed_at: Option<i64>,
     last_used_at: Option<i64>,
@@ -334,9 +368,13 @@ struct ApiKeyView {
 }
 
 #[derive(Debug, Serialize)]
+struct ApiKeySecretView {
+    api_key: String,
+}
+
+#[derive(Debug, Serialize)]
 struct RequestLogView {
     id: i64,
-    key_preview: String,
     key_id: String,
     http_status: Option<i64>,
     mcp_status: Option<i64>,
@@ -444,35 +482,10 @@ fn value_from_len(len: usize) -> axum::http::HeaderValue {
         .unwrap_or_else(|_| axum::http::HeaderValue::from_static("0"))
 }
 
-fn mask_key(key: &str) -> String {
-    if key.len() <= 12 {
-        return key.to_owned();
-    }
-
-    let prefix: String = key.chars().take(6).collect();
-    let suffix: String = key
-        .chars()
-        .rev()
-        .take(4)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
-    format!("{prefix}…{suffix}")
-}
-
-fn key_identifier(key: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(key.as_bytes());
-    let digest = hasher.finalize();
-    URL_SAFE_NO_PAD.encode(digest)
-}
-
 impl From<ApiKeyMetrics> for ApiKeyView {
     fn from(metrics: ApiKeyMetrics) -> Self {
         Self {
-            key_id: key_identifier(&metrics.api_key),
-            key_preview: mask_key(&metrics.api_key),
+            id: metrics.id,
             status: metrics.status,
             status_changed_at: metrics.status_changed_at,
             last_used_at: metrics.last_used_at,
@@ -488,8 +501,7 @@ impl From<RequestLogRecord> for RequestLogView {
     fn from(record: RequestLogRecord) -> Self {
         Self {
             id: record.id,
-            key_preview: mask_key(&record.api_key),
-            key_id: key_identifier(&record.api_key),
+            key_id: record.key_id,
             http_status: record.status_code,
             mcp_status: record.tavily_status_code,
             result_status: record.result_status,

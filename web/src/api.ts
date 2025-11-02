@@ -9,8 +9,7 @@ export interface Summary {
 }
 
 export interface ApiKeyStats {
-  key_id: string
-  key_preview: string
+  id: string
   status: string
   status_changed_at: number | null
   last_used_at: number | null
@@ -22,13 +21,16 @@ export interface ApiKeyStats {
 
 export interface RequestLog {
   id: number
-  key_preview: string
   key_id: string
   http_status: number | null
   mcp_status: number | null
   result_status: string
   created_at: number
   error_message: string | null
+}
+
+export interface ApiKeySecret {
+  api_key: string
 }
 
 async function requestJson<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
@@ -60,6 +62,11 @@ export function fetchApiKeys(signal?: AbortSignal): Promise<ApiKeyStats[]> {
 export function fetchRequestLogs(limit = 50, signal?: AbortSignal): Promise<RequestLog[]> {
   const params = new URLSearchParams({ limit: limit.toString() })
   return requestJson(`/api/logs?${params.toString()}`, { signal })
+}
+
+export function fetchApiKeySecret(id: string, signal?: AbortSignal): Promise<ApiKeySecret> {
+  const encoded = encodeURIComponent(id)
+  return requestJson(`/api/keys/${encoded}/secret`, { signal })
 }
 
 export interface Profile {

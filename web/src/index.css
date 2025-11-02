@@ -126,6 +126,52 @@ button:disabled {
   box-shadow: 0 14px 28px rgba(99, 102, 241, 0.32);
 }
 
+.icon-button {
+  border: none;
+  border-radius: 999px;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: rgba(99, 102, 241, 0.16);
+  color: #4c51bf;
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease, color 0.12s ease;
+  box-shadow: 0 6px 14px rgba(99, 102, 241, 0.16);
+}
+
+.icon-button:hover {
+  transform: translateY(-1px);
+  background: rgba(79, 70, 229, 0.22);
+  color: #3730a3;
+}
+
+.icon-button-success {
+  background: rgba(34, 197, 94, 0.24);
+  color: #15803d;
+  box-shadow: 0 6px 14px rgba(34, 197, 94, 0.24);
+}
+
+.icon-button-success:hover {
+  background: rgba(22, 163, 74, 0.28);
+  color: #0f5132;
+}
+
+.icon-button-loading {
+  background: rgba(99, 102, 241, 0.12);
+  color: #6366f1;
+  box-shadow: none;
+}
+
+.icon-button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+  transform: none;
+  box-shadow: none;
+}
+
 .toggle {
   background: rgba(99, 102, 241, 0.1);
   color: #4c51bf;

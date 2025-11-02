@@ -1,7 +1,8 @@
 import { Icon } from '@iconify/react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   fetchApiKeys,
+  fetchApiKeySecret,
   fetchProfile,
   fetchRequestLogs,
   fetchSummary,
@@ -86,6 +87,65 @@ function App(): JSX.Element {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
   const [version, setVersion] = useState<{ backend: string; frontend: string } | null>(null)
   const [profile, setProfile] = useState<Profile | null>(null)
+  const secretCacheRef = useRef<Map<string, string>>(new Map())
+  const [copyState, setCopyState] = useState<Map<string, 'loading' | 'copied'>>(() => new Map())
+
+  const copyStateKey = useCallback((scope: 'keys' | 'logs', identifier: string | number) => {
+    return `${scope}:${identifier}`
+  }, [])
+
+  const updateCopyState = useCallback((key: string, next: 'loading' | 'copied' | null) => {
+    setCopyState((previous) => {
+      const clone = new Map(previous)
+      if (next === null) {
+        clone.delete(key)
+      } else {
+        clone.set(key, next)
+      }
+      return clone
+    })
+  }, [])
+
+  const handleCopySecret = useCallback(
+    async (id: string, stateKey: string) => {
+      updateCopyState(stateKey, 'loading')
+      try {
+        let secret = secretCacheRef.current.get(id)
+        if (!secret) {
+          const result = await fetchApiKeySecret(id)
+          secret = result.api_key
+          secretCacheRef.current.set(id, secret)
+        }
+
+        const copyToClipboard = async (value: string) => {
+          if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(value)
+            return
+          }
+
+          const textarea = document.createElement('textarea')
+          textarea.value = value
+          textarea.style.position = 'fixed'
+          textarea.style.opacity = '0'
+          textarea.style.left = '-9999px'
+          document.body.appendChild(textarea)
+          textarea.focus()
+          textarea.select()
+          document.execCommand('copy')
+          document.body.removeChild(textarea)
+        }
+
+        await copyToClipboard(secret)
+        updateCopyState(stateKey, 'copied')
+        window.setTimeout(() => updateCopyState(stateKey, null), 2000)
+      } catch (err) {
+        console.error(err)
+        setError(err instanceof Error ? err.message : 'Failed to copy API key')
+        updateCopyState(stateKey, null)
+      }
+    },
+    [setError, updateCopyState],
+  )
 
   const loadData = useCallback(
     async (signal?: AbortSignal) => {
@@ -190,7 +250,7 @@ function App(): JSX.Element {
   const dedupedKeys = useMemo(() => {
     const map = new Map<string, ApiKeyStats>()
     for (const item of keys) {
-      map.set(item.key_id, item)
+      map.set(item.id, item)
     }
     return Array.from(map.values())
   }, [keys])
@@ -276,7 +336,7 @@ function App(): JSX.Element {
             <table>
               <thead>
                 <tr>
-                  <th>Key</th>
+                  <th>Key ID</th>
                   <th>Status</th>
                   <th>Total</th>
                   <th>Success</th>
@@ -290,9 +350,27 @@ function App(): JSX.Element {
               <tbody>
                 {sortedKeys.map((item) => {
                   const total = item.total_requests || 0
+                  const stateKey = copyStateKey('keys', item.id)
+                  const state = copyState.get(stateKey)
                   return (
-                    <tr key={item.key_id}>
-                      <td>{item.key_preview}</td>
+                    <tr key={item.id}>
+                      <td>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <code>{item.id}</code>
+                          {isAdmin && (
+                            <button
+                              type="button"
+                              className={`icon-button${state === 'copied' ? ' icon-button-success' : ''}${state === 'loading' ? ' icon-button-loading' : ''}`}
+                              title="复制原始 API key"
+                              aria-label="复制原始 API key"
+                              onClick={() => void handleCopySecret(item.id, stateKey)}
+                              disabled={state === 'loading'}
+                            >
+                              <Icon icon={state === 'copied' ? 'mdi:check' : 'mdi:content-copy'} width={18} height={18} />
+                            </button>
+                          )}
+                        </div>
+                      </td>
                       <td>
                         <span className={statusClass(item.status)}>{statusLabel(item.status)}</span>
                       </td>
@@ -335,18 +413,38 @@ function App(): JSX.Element {
                 </tr>
               </thead>
               <tbody>
-                {logs.map((log) => (
-                  <tr key={log.id}>
-                    <td>{formatTimestamp(log.created_at)}</td>
-                    <td>{log.key_preview}</td>
-                    <td>{log.http_status ?? '—'}</td>
+                {logs.map((log) => {
+                  const stateKey = copyStateKey('logs', log.id)
+                  const state = copyState.get(stateKey)
+                  return (
+                    <tr key={log.id}>
+                      <td>{formatTimestamp(log.created_at)}</td>
+                      <td>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <code>{log.key_id}</code>
+                          {isAdmin && (
+                            <button
+                              type="button"
+                              className={`icon-button${state === 'copied' ? ' icon-button-success' : ''}${state === 'loading' ? ' icon-button-loading' : ''}`}
+                              title="复制原始 API key"
+                              aria-label="复制原始 API key"
+                              onClick={() => void handleCopySecret(log.key_id, stateKey)}
+                              disabled={state === 'loading'}
+                            >
+                              <Icon icon={state === 'copied' ? 'mdi:check' : 'mdi:content-copy'} width={18} height={18} />
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                      <td>{log.http_status ?? '—'}</td>
                     <td>{log.mcp_status ?? '—'}</td>
                     <td>
                       <span className={statusClass(log.result_status)}>{statusLabel(log.result_status)}</span>
                     </td>
                     <td>{log.error_message ?? '—'}</td>
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
             </table>
           )}
