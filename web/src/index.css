@@ -343,6 +343,15 @@ tbody tr:hover {
   text-align: right;
 }
 
+.footer .footer-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.footer .footer-link:hover {
+  text-decoration: underline;
+}
+
 @media (max-width: 768px) {
   .app-shell {
     padding: 20px 16px 36px;
