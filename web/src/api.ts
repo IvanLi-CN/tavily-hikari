@@ -61,3 +61,12 @@ export function fetchRequestLogs(limit = 50, signal?: AbortSignal): Promise<Requ
   const params = new URLSearchParams({ limit: limit.toString() })
   return requestJson(`/api/logs?${params.toString()}`, { signal })
 }
+
+export interface Profile {
+  displayName: string | null
+  isAdmin: boolean
+}
+
+export function fetchProfile(signal?: AbortSignal): Promise<Profile> {
+  return requestJson('/api/profile', { signal })
+}

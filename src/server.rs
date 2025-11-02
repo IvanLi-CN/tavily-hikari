@@ -11,7 +11,7 @@ use axum::{
     Router,
     body::{self, Body},
     extract::{Query, State},
-    http::{HeaderMap, Method, Request, Response, StatusCode},
+    http::{HeaderMap, HeaderName, Method, Request, Response, StatusCode},
     response::{Json, Redirect},
     routing::{any, get},
 };
@@ -29,6 +29,44 @@ use tower_http::services::{ServeDir, ServeFile};
 struct AppState {
     proxy: TavilyProxy,
     static_dir: Option<PathBuf>,
+    forward_auth: ForwardAuthConfig,
+}
+
+#[derive(Clone, Debug)]
+pub struct ForwardAuthConfig {
+    user_header: Option<HeaderName>,
+    admin_value: Option<String>,
+    nickname_header: Option<HeaderName>,
+}
+
+impl ForwardAuthConfig {
+    pub fn new(
+        user_header: Option<HeaderName>,
+        admin_value: Option<String>,
+        nickname_header: Option<HeaderName>,
+    ) -> Self {
+        Self {
+            user_header,
+            admin_value,
+            nickname_header,
+        }
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.user_header.is_some()
+    }
+
+    fn user_header(&self) -> Option<&HeaderName> {
+        self.user_header.as_ref()
+    }
+
+    fn nickname_header(&self) -> Option<&HeaderName> {
+        self.nickname_header.as_ref()
+    }
+
+    fn admin_value(&self) -> Option<&str> {
+        self.admin_value.as_deref()
+    }
 }
 
 async fn health_check() -> &'static str {
@@ -59,6 +97,58 @@ struct VersionView {
 async fn get_versions(State(state): State<Arc<AppState>>) -> Result<Json<VersionView>, StatusCode> {
     let (backend, frontend) = detect_versions(state.static_dir.as_deref());
     Ok(Json(VersionView { backend, frontend }))
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProfileView {
+    display_name: Option<String>,
+    is_admin: bool,
+}
+
+async fn get_profile(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<ProfileView>, StatusCode> {
+    let config = &state.forward_auth;
+    if !config.is_enabled() {
+        return Ok(Json(ProfileView {
+            display_name: None,
+            is_admin: false,
+        }));
+    }
+
+    let user_value = config
+        .user_header()
+        .and_then(|name| headers.get(name))
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+        .filter(|value| !value.is_empty());
+
+    let nickname = config
+        .nickname_header()
+        .and_then(|name| headers.get(name))
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+        .filter(|value| !value.is_empty())
+        .or_else(|| user_value.clone());
+
+    if nickname.is_none() {
+        return Ok(Json(ProfileView {
+            display_name: None,
+            is_admin: false,
+        }));
+    }
+
+    let is_admin = match (config.admin_value(), user_value.as_deref()) {
+        (Some(expected), Some(actual)) => actual == expected,
+        _ => false,
+    };
+
+    Ok(Json(ProfileView {
+        display_name: nickname,
+        is_admin,
+    }))
 }
 
 fn detect_versions(static_dir: Option<&Path>) -> (String, String) {
@@ -155,15 +245,18 @@ pub async fn serve(
     addr: SocketAddr,
     proxy: TavilyProxy,
     static_dir: Option<PathBuf>,
+    forward_auth: ForwardAuthConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let state = Arc::new(AppState {
         proxy,
         static_dir: static_dir.clone(),
+        forward_auth,
     });
 
     let mut router = Router::new()
         .route("/health", get(health_check))
         .route("/api/version", get(get_versions))
+        .route("/api/profile", get(get_profile))
         .route("/api/summary", get(fetch_summary))
         .route("/api/keys", get(list_keys))
         .route("/api/logs", get(list_logs));

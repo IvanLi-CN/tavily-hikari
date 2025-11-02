@@ -1,10 +1,13 @@
+import { Icon } from '@iconify/react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   fetchApiKeys,
+  fetchProfile,
   fetchRequestLogs,
   fetchSummary,
   fetchVersion,
   type ApiKeyStats,
+  type Profile,
   type RequestLog,
   type Summary,
 } from './api'
@@ -82,15 +85,17 @@ function App(): JSX.Element {
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
   const [version, setVersion] = useState<{ backend: string; frontend: string } | null>(null)
+  const [profile, setProfile] = useState<Profile | null>(null)
 
   const loadData = useCallback(
     async (signal?: AbortSignal) => {
       try {
-        const [summaryData, keyData, logData, ver] = await Promise.all([
+        const [summaryData, keyData, logData, ver, profileData] = await Promise.all([
           fetchSummary(signal),
           fetchApiKeys(signal),
           fetchRequestLogs(50, signal),
           fetchVersion(signal).catch(() => null),
+          fetchProfile(signal).catch(() => null),
         ])
 
         if (signal?.aborted) {
@@ -101,6 +106,7 @@ function App(): JSX.Element {
         setKeys(keyData)
         setLogs(logData)
         if (ver) setVersion(ver)
+        setProfile(profileData ?? null)
         setLastUpdated(new Date())
         setError(null)
       } catch (err) {
@@ -200,6 +206,9 @@ function App(): JSX.Element {
     })
   }, [dedupedKeys])
 
+  const displayName = profile?.displayName ?? null
+  const isAdmin = profile?.isAdmin ?? false
+
   return (
     <main className="app-shell">
       <section className="surface app-header">
@@ -207,22 +216,30 @@ function App(): JSX.Element {
           <h1>Tavily Hikari Overview</h1>
           <p>Monitor API key allocation, quota health, and recent proxy activity.</p>
         </div>
-        <div className="controls">
-          <button
-            type="button"
-            className={`toggle ${autoRefresh ? 'active' : ''}`}
-            onClick={() => setAutoRefresh((value) => !value)}
-          >
-            {autoRefresh ? 'Auto Refresh On' : 'Auto Refresh Off'}
-          </button>
-          <button
-            type="button"
-            className="button button-primary"
-            onClick={handleManualRefresh}
-            disabled={loading}
-          >
-            {loading ? 'Refreshing…' : 'Refresh Now'}
-          </button>
+        <div className="header-right">
+          {displayName && (
+            <div className={`user-badge${isAdmin ? ' user-badge-admin' : ''}`}>
+              {isAdmin && <Icon icon="mdi:crown-outline" className="user-badge-icon" aria-hidden="true" />}
+              <span>{displayName}</span>
+            </div>
+          )}
+          <div className="controls">
+            <button
+              type="button"
+              className={`toggle ${autoRefresh ? 'active' : ''}`}
+              onClick={() => setAutoRefresh((value) => !value)}
+            >
+              {autoRefresh ? 'Auto Refresh On' : 'Auto Refresh Off'}
+            </button>
+            <button
+              type="button"
+              className="button button-primary"
+              onClick={handleManualRefresh}
+              disabled={loading}
+            >
+              {loading ? 'Refreshing…' : 'Refresh Now'}
+            </button>
+          </div>
         </div>
       </section>
 

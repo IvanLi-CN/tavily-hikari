@@ -51,6 +51,34 @@ button {
   padding: 20px 24px;
 }
 
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.user-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.06);
+  color: #1f2937;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.user-badge-admin {
+  background: rgba(250, 204, 21, 0.22);
+  color: #b45309;
+  box-shadow: 0 6px 18px rgba(250, 204, 21, 0.25);
+}
+
+.user-badge-icon {
+  font-size: 1.05rem;
+}
+
 .title-group h1 {
   margin: 0;
   font-size: 1.9rem;
@@ -278,6 +306,13 @@ tbody tr:hover {
     flex-direction: column;
     align-items: flex-start;
     gap: 14px;
+  }
+
+  .header-right {
+    width: 100%;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
   }
 
   .controls {

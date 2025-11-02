@@ -41,6 +41,18 @@ struct Cli {
     /// Web 静态资源目录（指向打包后的前端 dist）
     #[arg(long, env = "WEB_STATIC_DIR")]
     static_dir: Option<PathBuf>,
+
+    /// Forward proxy 用户标识请求头
+    #[arg(long, env = "FORWARD_AUTH_HEADER")]
+    forward_auth_header: Option<String>,
+
+    /// Forward proxy 管理员标识值
+    #[arg(long, env = "FORWARD_AUTH_ADMIN_VALUE")]
+    forward_auth_admin_value: Option<String>,
+
+    /// Forward proxy 昵称请求头
+    #[arg(long, env = "FORWARD_AUTH_NICKNAME_HEADER")]
+    forward_auth_nickname_header: Option<String>,
 }
 
 #[tokio::main]
@@ -60,6 +72,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let proxy = TavilyProxy::with_endpoint(cli.keys, &cli.upstream, &cli.db_path).await?;
     let addr: SocketAddr = format!("{}:{}", cli.bind, cli.port).parse()?;
 
+    let forward_auth_header = parse_header_name(cli.forward_auth_header, "FORWARD_AUTH_HEADER")?;
+    let forward_auth_nickname_header = parse_header_name(
+        cli.forward_auth_nickname_header,
+        "FORWARD_AUTH_NICKNAME_HEADER",
+    )?;
+    let forward_auth_admin_value = cli
+        .forward_auth_admin_value
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+
+    let forward_auth = server::ForwardAuthConfig::new(
+        forward_auth_header,
+        forward_auth_admin_value,
+        forward_auth_nickname_header,
+    );
+
     let static_dir = cli.static_dir.or_else(|| {
         let default = PathBuf::from("web/dist");
         if default.exists() {
@@ -69,7 +97,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    server::serve(addr, proxy, static_dir).await?;
+    server::serve(addr, proxy, static_dir, forward_auth).await?;
 
     Ok(())
+}
+
+fn parse_header_name(
+    value: Option<String>,
+    field: &str,
+) -> Result<Option<axum::http::HeaderName>, Box<dyn std::error::Error>> {
+    let Some(raw) = value.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty()) else {
+        return Ok(None);
+    };
+
+    match raw.parse::<axum::http::HeaderName>() {
+        Ok(parsed) => Ok(Some(parsed)),
+        Err(err) => Err(format!("invalid header name for {field}: {err}").into()),
+    }
 }
