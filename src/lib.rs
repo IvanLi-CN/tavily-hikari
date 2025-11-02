@@ -18,6 +18,7 @@ pub const DEFAULT_UPSTREAM: &str = "https://mcp.tavily.com/mcp";
 
 const STATUS_ACTIVE: &str = "active";
 const STATUS_EXHAUSTED: &str = "exhausted";
+const STATUS_DISABLED: &str = "disabled";
 
 const OUTCOME_SUCCESS: &str = "success";
 const OUTCOME_ERROR: &str = "error";
@@ -256,6 +257,26 @@ impl TavilyProxy {
         self.key_store.fetch_api_key_secret(key_id).await
     }
 
+    /// Admin: add or undelete an API key. Returns the key ID.
+    pub async fn add_or_undelete_key(&self, api_key: &str) -> Result<String, ProxyError> {
+        self.key_store.add_or_undelete_key(api_key).await
+    }
+
+    /// Admin: soft delete a key by ID.
+    pub async fn soft_delete_key_by_id(&self, key_id: &str) -> Result<(), ProxyError> {
+        self.key_store.soft_delete_key_by_id(key_id).await
+    }
+
+    /// Admin: disable a key by ID.
+    pub async fn disable_key_by_id(&self, key_id: &str) -> Result<(), ProxyError> {
+        self.key_store.disable_key_by_id(key_id).await
+    }
+
+    /// Admin: enable a key by ID (from disabled/exhausted -> active).
+    pub async fn enable_key_by_id(&self, key_id: &str) -> Result<(), ProxyError> {
+        self.key_store.enable_key_by_id(key_id).await
+    }
+
     /// 获取整体运行情况汇总。
     pub async fn summary(&self) -> Result<ProxySummary, ProxyError> {
         self.key_store.fetch_summary().await
@@ -351,6 +372,36 @@ impl KeyStore {
 
         if !self.api_keys_column_exists("status_changed_at").await? {
             sqlx::query("ALTER TABLE api_keys ADD COLUMN status_changed_at INTEGER")
+                .execute(&self.pool)
+                .await?;
+        }
+
+        // Add deleted_at for soft delete marker (timestamp)
+        if !self.api_keys_column_exists("deleted_at").await? {
+            sqlx::query("ALTER TABLE api_keys ADD COLUMN deleted_at INTEGER")
+                .execute(&self.pool)
+                .await?;
+        }
+
+        // Migrate legacy status='deleted' into deleted_at and normalize status
+        let legacy_deleted = sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT 1 FROM api_keys WHERE status = 'deleted' LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if legacy_deleted.is_some() {
+            let now = Utc::now().timestamp();
+            sqlx::query(
+                r#"UPDATE api_keys
+                   SET deleted_at = COALESCE(status_changed_at, ?)
+                   WHERE status = 'deleted' AND (deleted_at IS NULL OR deleted_at = 0)"#,
+            )
+            .bind(now)
+            .execute(&self.pool)
+            .await?;
+
+            sqlx::query("UPDATE api_keys SET status = 'active' WHERE status = 'deleted'")
                 .execute(&self.pool)
                 .await?;
         }
@@ -645,38 +696,51 @@ impl KeyStore {
     async fn sync_keys(&self, keys: &[String]) -> Result<(), ProxyError> {
         let mut tx = self.pool.begin().await?;
 
+        let now = Utc::now().timestamp();
+
         for key in keys {
-            let exists = sqlx::query_scalar::<_, Option<String>>(
-                "SELECT id FROM api_keys WHERE api_key = ? LIMIT 1",
+            // If key exists, undelete by clearing deleted_at
+            if let Some((id, deleted_at)) = sqlx::query_as::<_, (String, Option<i64>)>(
+                "SELECT id, deleted_at FROM api_keys WHERE api_key = ? LIMIT 1",
             )
             .bind(key)
             .fetch_optional(&mut *tx)
-            .await?;
-
-            if exists.is_some() {
+            .await?
+            {
+                if deleted_at.is_some() {
+                    sqlx::query("UPDATE api_keys SET deleted_at = NULL WHERE id = ?")
+                        .bind(id)
+                        .execute(&mut *tx)
+                        .await?;
+                }
                 continue;
             }
 
             let id = Self::generate_unique_key_id(&mut tx).await?;
             sqlx::query(
                 r#"
-                INSERT INTO api_keys (id, api_key, status)
-                VALUES (?, ?, ?)
+                INSERT INTO api_keys (id, api_key, status, status_changed_at)
+                VALUES (?, ?, ?, ?)
                 "#,
             )
             .bind(&id)
             .bind(key)
             .bind(STATUS_ACTIVE)
+            .bind(now)
             .execute(&mut *tx)
             .await?;
         }
 
+        // Soft delete any keys not present in the provided set
         if keys.is_empty() {
-            sqlx::query("DELETE FROM api_keys")
+            sqlx::query("UPDATE api_keys SET deleted_at = ? WHERE deleted_at IS NULL")
+                .bind(now)
                 .execute(&mut *tx)
                 .await?;
         } else {
-            let mut builder = QueryBuilder::new("DELETE FROM api_keys WHERE api_key NOT IN (");
+            let mut builder = QueryBuilder::new("UPDATE api_keys SET deleted_at = ");
+            builder.push_bind(now);
+            builder.push(" WHERE deleted_at IS NULL AND api_key NOT IN (");
             {
                 let mut separated = builder.separated(", ");
                 for key in keys {
@@ -700,7 +764,7 @@ impl KeyStore {
             r#"
             SELECT id, api_key
             FROM api_keys
-            WHERE status = ?
+            WHERE status = ? AND deleted_at IS NULL
             ORDER BY last_used_at ASC, id ASC
             LIMIT 1
             "#,
@@ -720,7 +784,7 @@ impl KeyStore {
             r#"
             SELECT id, api_key
             FROM api_keys
-            WHERE status <> ?
+            WHERE status = ? AND deleted_at IS NULL
             ORDER BY
                 CASE WHEN status_changed_at IS NULL THEN 1 ELSE 0 END ASC,
                 status_changed_at ASC,
@@ -728,7 +792,7 @@ impl KeyStore {
             LIMIT 1
             "#,
         )
-        .bind(STATUS_ACTIVE)
+        .bind(STATUS_EXHAUSTED)
         .fetch_optional(&self.pool)
         .await?
         {
@@ -773,13 +837,14 @@ impl KeyStore {
             r#"
             UPDATE api_keys
             SET status = ?, status_changed_at = ?, last_used_at = ?
-            WHERE api_key = ?
+            WHERE api_key = ? AND status <> ? AND deleted_at IS NULL
             "#,
         )
         .bind(STATUS_EXHAUSTED)
         .bind(now)
         .bind(now)
         .bind(key)
+        .bind(STATUS_DISABLED)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -791,13 +856,98 @@ impl KeyStore {
             r#"
             UPDATE api_keys
             SET status = ?, status_changed_at = ?
-            WHERE api_key = ? AND status <> ?
+            WHERE api_key = ? AND status = ? AND deleted_at IS NULL
             "#,
         )
         .bind(STATUS_ACTIVE)
         .bind(now)
         .bind(key)
+        .bind(STATUS_EXHAUSTED)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    // Admin ops: add/undelete key by secret
+    async fn add_or_undelete_key(&self, api_key: &str) -> Result<String, ProxyError> {
+        let mut tx = self.pool.begin().await?;
+        let now = Utc::now().timestamp();
+        if let Some((id, deleted_at)) = sqlx::query_as::<_, (String, Option<i64>)>(
+            "SELECT id, deleted_at FROM api_keys WHERE api_key = ? LIMIT 1",
+        )
+        .bind(api_key)
+        .fetch_optional(&mut *tx)
+        .await?
+        {
+            if deleted_at.is_some() {
+                sqlx::query("UPDATE api_keys SET deleted_at = NULL WHERE id = ?")
+                    .bind(&id)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+            tx.commit().await?;
+            return Ok(id);
+        }
+
+        let id = Self::generate_unique_key_id(&mut tx).await?;
+        sqlx::query(
+            r#"
+            INSERT INTO api_keys (id, api_key, status, status_changed_at)
+            VALUES (?, ?, ?, ?)
+            "#,
+        )
+        .bind(&id)
+        .bind(api_key)
         .bind(STATUS_ACTIVE)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(id)
+    }
+
+    // Admin ops: soft-delete by ID (mark deleted_at)
+    async fn soft_delete_key_by_id(&self, key_id: &str) -> Result<(), ProxyError> {
+        let now = Utc::now().timestamp();
+        sqlx::query("UPDATE api_keys SET deleted_at = ? WHERE id = ?")
+            .bind(now)
+            .bind(key_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn disable_key_by_id(&self, key_id: &str) -> Result<(), ProxyError> {
+        let now = Utc::now().timestamp();
+        sqlx::query(
+            r#"
+            UPDATE api_keys
+            SET status = ?, status_changed_at = ?
+            WHERE id = ? AND deleted_at IS NULL
+            "#,
+        )
+        .bind(STATUS_DISABLED)
+        .bind(now)
+        .bind(key_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn enable_key_by_id(&self, key_id: &str) -> Result<(), ProxyError> {
+        let now = Utc::now().timestamp();
+        sqlx::query(
+            r#"
+            UPDATE api_keys
+            SET status = ?, status_changed_at = ?
+            WHERE id = ? AND status IN (?, ?) AND deleted_at IS NULL
+            "#,
+        )
+        .bind(STATUS_ACTIVE)
+        .bind(now)
+        .bind(key_id)
+        .bind(STATUS_DISABLED)
+        .bind(STATUS_EXHAUSTED)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -871,6 +1021,7 @@ impl KeyStore {
                 ak.status,
                 ak.status_changed_at,
                 ak.last_used_at,
+                ak.deleted_at,
                 COALESCE(stats.total_requests, 0) AS total_requests,
                 COALESCE(stats.success_count, 0) AS success_count,
                 COALESCE(stats.error_count, 0) AS error_count,
@@ -887,6 +1038,7 @@ impl KeyStore {
                 GROUP BY api_key_id
             ) AS stats
             ON stats.api_key_id = ak.id
+            WHERE ak.deleted_at IS NULL
             ORDER BY ak.status ASC, ak.last_used_at ASC, ak.id ASC
             "#,
         )
@@ -903,6 +1055,7 @@ impl KeyStore {
                 let status: String = row.try_get("status")?;
                 let status_changed_at: Option<i64> = row.try_get("status_changed_at")?;
                 let last_used_at: i64 = row.try_get("last_used_at")?;
+                let deleted_at: Option<i64> = row.try_get("deleted_at")?;
                 let total_requests: i64 = row.try_get("total_requests")?;
                 let success_count: i64 = row.try_get("success_count")?;
                 let error_count: i64 = row.try_get("error_count")?;
@@ -913,6 +1066,7 @@ impl KeyStore {
                     status,
                     status_changed_at: status_changed_at.and_then(normalize_timestamp),
                     last_used_at: normalize_timestamp(last_used_at),
+                    deleted_at: deleted_at.and_then(normalize_timestamp),
                     total_requests,
                     success_count,
                     error_count,
@@ -1012,6 +1166,7 @@ impl KeyStore {
                 COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0) AS active_keys,
                 COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0) AS exhausted_keys
             FROM api_keys
+            WHERE deleted_at IS NULL
             "#,
         )
         .bind(STATUS_ACTIVE)
@@ -1081,6 +1236,7 @@ pub struct ApiKeyMetrics {
     pub status: String,
     pub status_changed_at: Option<i64>,
     pub last_used_at: Option<i64>,
+    pub deleted_at: Option<i64>,
     pub total_requests: i64,
     pub success_count: i64,
     pub error_count: i64,
