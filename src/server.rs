@@ -37,7 +37,7 @@ pub struct ForwardAuthConfig {
     user_header: Option<HeaderName>,
     admin_value: Option<String>,
     nickname_header: Option<HeaderName>,
-    forced_admin_name: Option<String>,
+    admin_override_name: Option<String>,
 }
 
 impl ForwardAuthConfig {
@@ -45,18 +45,18 @@ impl ForwardAuthConfig {
         user_header: Option<HeaderName>,
         admin_value: Option<String>,
         nickname_header: Option<HeaderName>,
-        forced_admin_name: Option<String>,
+        admin_override_name: Option<String>,
     ) -> Self {
         Self {
             user_header,
             admin_value,
             nickname_header,
-            forced_admin_name,
+            admin_override_name,
         }
     }
 
     fn is_enabled(&self) -> bool {
-        self.user_header.is_some() || self.forced_admin_name.is_some()
+        self.user_header.is_some() || self.admin_override_name.is_some()
     }
 
     fn user_header(&self) -> Option<&HeaderName> {
@@ -71,8 +71,8 @@ impl ForwardAuthConfig {
         self.admin_value.as_deref()
     }
 
-    fn forced_admin_name(&self) -> Option<&str> {
-        self.forced_admin_name.as_deref()
+    fn admin_override_name(&self) -> Option<&str> {
+        self.admin_override_name.as_deref()
     }
 }
 
@@ -119,7 +119,7 @@ async fn get_profile(
 ) -> Result<Json<ProfileView>, StatusCode> {
     let config = &state.forward_auth;
 
-    if let Some(name) = config.forced_admin_name() {
+    if let Some(name) = config.admin_override_name() {
         return Ok(Json(ProfileView {
             display_name: Some(name.to_owned()),
             is_admin: true,

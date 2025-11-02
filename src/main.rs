@@ -54,9 +54,9 @@ struct Cli {
     #[arg(long, env = "FORWARD_AUTH_NICKNAME_HEADER")]
     forward_auth_nickname_header: Option<String>,
 
-    /// Forward proxy 管理员模式昵称（强制）
-    #[arg(long, env = "FORWARD_AUTH_FORCE_ADMIN_NAME")]
-    forward_auth_force_admin_name: Option<String>,
+    /// 管理员模式昵称（覆盖前端显示）
+    #[arg(long, env = "ADMIN_MODE_NAME")]
+    admin_mode_name: Option<String>,
 }
 
 #[tokio::main]
@@ -90,7 +90,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         forward_auth_header,
         forward_auth_admin_value,
         forward_auth_nickname_header,
-        cli.forward_auth_force_admin_name
+        cli.admin_mode_name
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty()),
     );
