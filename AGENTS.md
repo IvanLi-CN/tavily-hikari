@@ -68,3 +68,11 @@
 - Validation:
   - Keep Playwright/Chrome DevTools sessions open for review; verify `/api/*`, `/mcp`, and SPA routes.
   - Health: `curl -s http://127.0.0.1:58087/health` → `200`; Summary: `curl -s http://127.0.0.1:58087/api/summary | jq .`.
+
+**IMPORTANT**
+
+- 2025-03-??: During high-anonymity testing we accidentally hit the official Tavily MCP endpoint. Testing is now restricted to stub or sandbox upstreams only. Never point this project at the production Tavily endpoint unless explicitly approved.
+
+### Project-Specific Notes
+
+- 2025-03-??: During high-anonymity testing we accidentally hit the official Tavily MCP endpoint. All future tests must target a local/mock upstream. Never hit production Tavily without explicit approval.

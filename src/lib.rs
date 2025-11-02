@@ -4,7 +4,7 @@ use bytes::Bytes;
 use chrono::{Datelike, TimeZone, Utc};
 use reqwest::{
     Client, Method, StatusCode, Url,
-    header::{CONTENT_LENGTH, HOST, HeaderMap},
+    header::{CONTENT_LENGTH, HOST, HeaderMap, HeaderValue},
 };
 use serde_json::Value;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -23,12 +23,70 @@ const OUTCOME_ERROR: &str = "error";
 const OUTCOME_QUOTA_EXHAUSTED: &str = "quota_exhausted";
 const OUTCOME_UNKNOWN: &str = "unknown";
 
+const BLOCKED_HEADERS: &[&str] = &[
+    "forwarded",
+    "via",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+    "x-forwarded-port",
+    "x-forwarded-server",
+    "x-original-forwarded-for",
+    "x-forwarded-protocol",
+    "x-real-ip",
+    "true-client-ip",
+    "cf-connecting-ip",
+    "cf-true-client-ip",
+    "cf-ipcountry",
+    "cf-ray",
+    "cf-visitor",
+    "x-cluster-client-ip",
+    "x-proxy-user-ip",
+    "fastly-client-ip",
+    "proxy-authorization",
+    "proxy-connection",
+    "akamai-origin-hop",
+    "x-akamai-edgescape",
+    "x-akamai-forwarded-for",
+    "cdn-loop",
+];
+
+const ALLOWED_HEADERS: &[&str] = &[
+    "accept",
+    "accept-encoding",
+    "accept-language",
+    "authorization",
+    "cache-control",
+    "content-type",
+    "pragma",
+    "user-agent",
+    "sec-ch-ua",
+    "sec-ch-ua-mobile",
+    "sec-ch-ua-platform",
+    "sec-fetch-site",
+    "sec-fetch-mode",
+    "sec-fetch-dest",
+    "sec-fetch-user",
+    "origin",
+    "referer",
+];
+
+const ALLOWED_PREFIXES: &[&str] = &["x-mcp-", "x-tavily-", "tavily-"];
+
+#[derive(Debug, Clone)]
+struct SanitizedHeaders {
+    headers: HeaderMap,
+    forwarded: Vec<String>,
+    dropped: Vec<String>,
+}
+
 /// 负责均衡 Tavily API key 并透传请求的代理。
 #[derive(Clone, Debug)]
 pub struct TavilyProxy {
     client: Client,
     upstream: Url,
     key_store: Arc<KeyStore>,
+    upstream_origin: String,
 }
 
 impl TavilyProxy {
@@ -64,11 +122,13 @@ impl TavilyProxy {
             endpoint: upstream.to_owned(),
             source,
         })?;
+        let upstream_origin = origin_from_url(&upstream);
 
         Ok(Self {
             client: Client::new(),
             upstream,
             key_store: Arc::new(key_store),
+            upstream_origin,
         })
     }
 
@@ -93,7 +153,8 @@ impl TavilyProxy {
 
         let mut builder = self.client.request(request.method.clone(), url.clone());
 
-        for (name, value) in request.headers.iter() {
+        let sanitized_headers = self.sanitize_headers(&request.headers);
+        for (name, value) in sanitized_headers.headers.iter() {
             // Host/Content-Length 由 reqwest 重算。
             if name == HOST || name == CONTENT_LENGTH {
                 continue;
@@ -131,6 +192,8 @@ impl TavilyProxy {
                         error: None,
                         response_body: &body_bytes,
                         outcome: outcome.status,
+                        forwarded_headers: &sanitized_headers.forwarded,
+                        dropped_headers: &sanitized_headers.dropped,
                     })
                     .await?;
 
@@ -165,6 +228,8 @@ impl TavilyProxy {
                         error: Some(&err.to_string()),
                         response_body: &[],
                         outcome: OUTCOME_ERROR,
+                        forwarded_headers: &sanitized_headers.forwarded,
+                        dropped_headers: &sanitized_headers.dropped,
                     })
                     .await?;
                 Err(ProxyError::Http(err))
@@ -188,6 +253,10 @@ impl TavilyProxy {
     /// 获取整体运行情况汇总。
     pub async fn summary(&self) -> Result<ProxySummary, ProxyError> {
         self.key_store.fetch_summary().await
+    }
+
+    fn sanitize_headers(&self, headers: &HeaderMap) -> SanitizedHeaders {
+        sanitize_headers_inner(headers, &self.upstream, &self.upstream_origin)
     }
 }
 
@@ -243,6 +312,8 @@ impl KeyStore {
                 error_message TEXT,
                 result_status TEXT NOT NULL DEFAULT 'unknown',
                 response_body BLOB,
+                forwarded_headers TEXT,
+                dropped_headers TEXT,
                 created_at INTEGER NOT NULL,
                 FOREIGN KEY (api_key) REFERENCES api_keys(api_key)
             )
@@ -334,6 +405,18 @@ impl KeyStore {
             .await?
         {
             sqlx::query("ALTER TABLE request_logs ADD COLUMN tavily_status_code INTEGER")
+                .execute(&self.pool)
+                .await?;
+        }
+
+        if !self.request_logs_column_exists("forwarded_headers").await? {
+            sqlx::query("ALTER TABLE request_logs ADD COLUMN forwarded_headers TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
+
+        if !self.request_logs_column_exists("dropped_headers").await? {
+            sqlx::query("ALTER TABLE request_logs ADD COLUMN dropped_headers TEXT")
                 .execute(&self.pool)
                 .await?;
         }
@@ -515,6 +598,11 @@ impl KeyStore {
         let created_at = Utc::now().timestamp();
         let status_code = entry.status.map(|code| code.as_u16() as i64);
 
+        let forwarded_json =
+            serde_json::to_string(entry.forwarded_headers).unwrap_or_else(|_| "[]".to_string());
+        let dropped_json =
+            serde_json::to_string(entry.dropped_headers).unwrap_or_else(|_| "[]".to_string());
+
         sqlx::query(
             r#"
             INSERT INTO request_logs (
@@ -527,8 +615,10 @@ impl KeyStore {
                 error_message,
                 result_status,
                 response_body,
+                forwarded_headers,
+                dropped_headers,
                 created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(entry.key)
@@ -540,6 +630,8 @@ impl KeyStore {
         .bind(entry.error)
         .bind(entry.outcome)
         .bind(entry.response_body)
+        .bind(forwarded_json)
+        .bind(dropped_json)
         .bind(created_at)
         .execute(&self.pool)
         .await?;
@@ -623,6 +715,9 @@ impl KeyStore {
                 tavily_status_code,
                 error_message,
                 result_status,
+                response_body,
+                forwarded_headers,
+                dropped_headers,
                 created_at
             FROM request_logs
             ORDER BY created_at DESC, id DESC
@@ -636,6 +731,10 @@ impl KeyStore {
         let records = rows
             .into_iter()
             .map(|row| -> Result<RequestLogRecord, sqlx::Error> {
+                let forwarded =
+                    parse_header_list(row.try_get::<Option<String>, _>("forwarded_headers")?);
+                let dropped =
+                    parse_header_list(row.try_get::<Option<String>, _>("dropped_headers")?);
                 Ok(RequestLogRecord {
                     id: row.try_get("id")?,
                     api_key: row.try_get("api_key")?,
@@ -647,6 +746,8 @@ impl KeyStore {
                     error_message: row.try_get("error_message")?,
                     result_status: row.try_get("result_status")?,
                     created_at: row.try_get("created_at")?,
+                    forwarded_headers: forwarded,
+                    dropped_headers: dropped,
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -716,6 +817,8 @@ struct AttemptLog<'a> {
     error: Option<&'a str>,
     response_body: &'a [u8],
     outcome: &'a str,
+    forwarded_headers: &'a [String],
+    dropped_headers: &'a [String],
 }
 
 /// 透传请求描述。
@@ -762,6 +865,8 @@ pub struct RequestLogRecord {
     pub error_message: Option<String>,
     pub result_status: String,
     pub created_at: i64,
+    pub forwarded_headers: Vec<String>,
+    pub dropped_headers: Vec<String>,
 }
 
 /// 汇总统计信息，用于展示整体代理运行状况。
@@ -901,18 +1006,126 @@ fn analyze_attempt(status: StatusCode, body: &[u8]) -> AttemptAnalysis {
     }
 
     if any_success {
-        AttemptAnalysis {
+        return AttemptAnalysis {
             status: OUTCOME_SUCCESS,
             mark_exhausted: false,
             tavily_status_code: detected_code,
+        };
+    }
+
+    AttemptAnalysis {
+        status: OUTCOME_UNKNOWN,
+        mark_exhausted: false,
+        tavily_status_code: detected_code,
+    }
+}
+
+fn sanitize_headers_inner(
+    headers: &HeaderMap,
+    upstream: &Url,
+    upstream_origin: &str,
+) -> SanitizedHeaders {
+    let mut sanitized = HeaderMap::new();
+    let mut forwarded = Vec::new();
+    let mut dropped = Vec::new();
+    for (name, value) in headers.iter() {
+        let key = name.as_str().to_ascii_lowercase();
+        if !should_forward_header(name) {
+            dropped.push(key);
+            continue;
         }
-    } else {
-        AttemptAnalysis {
-            status: OUTCOME_UNKNOWN,
-            mark_exhausted: false,
-            tavily_status_code: detected_code,
+        if let Some(transformed) = transform_header_value(name, value, upstream, upstream_origin) {
+            sanitized.insert(name.clone(), transformed);
+            forwarded.push(key);
+        } else {
+            dropped.push(key);
         }
     }
+    SanitizedHeaders {
+        headers: sanitized,
+        forwarded,
+        dropped,
+    }
+}
+
+fn should_forward_header(name: &reqwest::header::HeaderName) -> bool {
+    let lower = name.as_str().to_ascii_lowercase();
+    if BLOCKED_HEADERS.iter().any(|blocked| lower == *blocked) {
+        return false;
+    }
+    if ALLOWED_HEADERS.iter().any(|allowed| lower == *allowed) {
+        return true;
+    }
+    if ALLOWED_PREFIXES
+        .iter()
+        .any(|prefix| lower.starts_with(prefix))
+    {
+        return true;
+    }
+    if lower.starts_with("x-") && !lower.starts_with("x-forwarded-") && lower != "x-real-ip" {
+        return true;
+    }
+    false
+}
+
+fn transform_header_value(
+    name: &reqwest::header::HeaderName,
+    value: &HeaderValue,
+    upstream: &Url,
+    upstream_origin: &str,
+) -> Option<HeaderValue> {
+    let lower = name.as_str().to_ascii_lowercase();
+    match lower.as_str() {
+        "origin" => HeaderValue::from_str(upstream_origin).ok(),
+        "referer" => match value.to_str() {
+            Ok(raw) => {
+                if let Ok(mut url) = Url::parse(raw) {
+                    url.set_scheme(upstream.scheme()).ok()?;
+                    url.set_host(upstream.host_str()).ok()?;
+                    if let Some(port) = upstream.port() {
+                        url.set_port(Some(port)).ok()?;
+                    } else {
+                        url.set_port(None).ok()?;
+                    }
+                    if url.path().is_empty() {
+                        url.set_path("/");
+                    }
+                    HeaderValue::from_str(url.as_str()).ok()
+                } else {
+                    HeaderValue::from_str(upstream_origin).ok()
+                }
+            }
+            Err(_) => HeaderValue::from_str(upstream_origin).ok(),
+        },
+        "sec-fetch-site" => Some(HeaderValue::from_static("same-origin")),
+        _ => Some(value.clone()),
+    }
+}
+
+fn origin_from_url(url: &Url) -> String {
+    let mut origin = match url.host_str() {
+        Some(host) => format!("{}://{}", url.scheme(), host),
+        None => url.as_str().to_string(),
+    };
+
+    match (url.port(), url.port_or_known_default()) {
+        (Some(port), Some(default)) if default != port => {
+            origin.push(':');
+            origin.push_str(&port.to_string());
+        }
+        (Some(port), None) => {
+            origin.push(':');
+            origin.push_str(&port.to_string());
+        }
+        _ => {}
+    }
+
+    origin
+}
+
+fn parse_header_list(raw: Option<String>) -> Vec<String> {
+    raw.and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
 }
 
 fn analyze_json_message(value: &Value) -> Option<(MessageOutcome, Option<i64>)> {
@@ -1061,4 +1274,58 @@ fn extract_sse_json_messages(text: &str) -> Vec<Value> {
     }
 
     messages
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_headers_removes_blocked_and_keeps_allowed() {
+        let upstream = Url::parse("https://mcp.tavily.com/mcp").unwrap();
+        let origin = origin_from_url(&upstream);
+
+        let mut headers = HeaderMap::new();
+        headers.insert("X-Forwarded-For", HeaderValue::from_static("1.2.3.4"));
+        headers.insert("Accept", HeaderValue::from_static("application/json"));
+
+        let sanitized = sanitize_headers_inner(&headers, &upstream, &origin);
+        assert!(!sanitized.headers.contains_key("X-Forwarded-For"));
+        assert_eq!(
+            sanitized.headers.get("Accept").unwrap(),
+            &HeaderValue::from_static("application/json")
+        );
+        assert!(sanitized.dropped.contains(&"x-forwarded-for".to_string()));
+        assert!(sanitized.forwarded.contains(&"accept".to_string()));
+    }
+
+    #[test]
+    fn sanitize_headers_rewrites_origin_and_referer() {
+        let upstream = Url::parse("https://mcp.tavily.com:443/mcp").unwrap();
+        let origin = origin_from_url(&upstream);
+
+        let mut headers = HeaderMap::new();
+        headers.insert("Origin", HeaderValue::from_static("https://proxy.local"));
+        headers.insert(
+            "Referer",
+            HeaderValue::from_static("https://proxy.local/mcp/endpoint"),
+        );
+
+        let sanitized = sanitize_headers_inner(&headers, &upstream, &origin);
+        assert_eq!(
+            sanitized.headers.get("Origin").unwrap(),
+            &HeaderValue::from_str(&origin).unwrap()
+        );
+        assert!(
+            sanitized
+                .headers
+                .get("Referer")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with(&origin)
+        );
+        assert!(sanitized.forwarded.contains(&"origin".to_string()));
+        assert!(sanitized.forwarded.contains(&"referer".to_string()));
+    }
 }
