@@ -454,7 +454,40 @@ function App(): JSX.Element {
       <div className="footer">
         <span>Tavily Hikari Proxy Dashboard</span>
         <span style={{ marginLeft: 12, opacity: 0.85 }}>
-          {version ? `· v${version.backend}` : '· Loading version…'}
+          {/* GitHub repository link with Iconify icon */}
+          <a
+            href="https://github.com/IvanLi-CN/tavily-hikari"
+            className="footer-link"
+            target="_blank"
+            rel="noreferrer"
+            aria-label="Open GitHub repository"
+          >
+            <Icon icon="mdi:github" width={18} height={18} style={{ verticalAlign: '-3px' }} />
+            <span style={{ marginLeft: 6 }}>GitHub</span>
+          </a>
+        </span>
+        <span style={{ marginLeft: 12, opacity: 0.85 }}>
+          {version ? (
+            (() => {
+              const raw = version.backend || ''
+              const clean = raw.replace(/-.+$/, '')
+              const isDev = /-/.test(raw)
+              // For releases, link to the tag page; for dev builds, link to repo root to avoid 404
+              const href = isDev
+                ? 'https://github.com/IvanLi-CN/tavily-hikari'
+                : `https://github.com/IvanLi-CN/tavily-hikari/releases/tag/${clean}`
+              return (
+                <>
+                  {'· '}
+                  <a href={href} className="footer-link" target="_blank" rel="noreferrer">
+                    {`v${raw}`}
+                  </a>
+                </>
+              )
+            })()
+          ) : (
+            '· Loading version…'
+          )}
         </span>
       </div>
     </main>
