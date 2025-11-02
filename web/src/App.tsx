@@ -623,7 +623,7 @@ function App(): JSX.Element {
         </div>
       </section>
 
-      <div className="footer">
+      <div className="app-footer">
         <span>Tavily Hikari Proxy Dashboard</span>
         <span style={{ marginLeft: 12, opacity: 0.85 }}>
           {/* GitHub repository link with Iconify icon */}
@@ -634,7 +634,7 @@ function App(): JSX.Element {
             rel="noreferrer"
             aria-label="Open GitHub repository"
           >
-            <Icon icon="mdi:github" width={18} height={18} style={{ verticalAlign: '-3px' }} />
+            <Icon icon="mdi:github" width={18} height={18} />
             <span style={{ marginLeft: 6 }}>GitHub</span>
           </a>
         </span>

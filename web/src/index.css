@@ -357,19 +357,24 @@ tbody tr:hover {
   margin-top: -12px;
 }
 
-.footer {
+.app-footer {
   padding: 0 24px 12px;
   color: #94a3b8;
   font-size: 0.85rem;
-  text-align: right;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 12px;
 }
 
-.footer .footer-link {
+.app-footer .footer-link {
   color: inherit;
   text-decoration: none;
+  display: inline-flex;
+  align-items: center;
 }
 
-.footer .footer-link:hover {
+.app-footer .footer-link:hover {
   text-decoration: underline;
 }
 
