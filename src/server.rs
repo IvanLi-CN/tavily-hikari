@@ -6,7 +6,7 @@ use std::{
     sync::Arc,
 };
 
-use axum::http::header::{CONNECTION, CONTENT_LENGTH, TRANSFER_ENCODING};
+use axum::http::header::{CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, TRANSFER_ENCODING};
 use axum::{
     Router,
     body::{self, Body},
@@ -105,6 +105,21 @@ impl ForwardAuthConfig {
 
 async fn health_check() -> &'static str {
     "ok"
+}
+
+async fn serve_index(State(state): State<Arc<AppState>>) -> Result<Response<Body>, StatusCode> {
+    let Some(dir) = state.static_dir.as_ref() else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    let path = dir.join("index.html");
+    let Ok(bytes) = tokio::fs::read(path).await else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, "text/html; charset=utf-8")
+        .body(Body::from(bytes))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 async fn fetch_summary(
@@ -422,17 +437,8 @@ pub async fn serve(
         .route("/mcp", any(proxy_handler))
         .route("/mcp/*path", any(proxy_handler));
 
-    // Serve SPA at root ('/') with fallback for unmatched routes, if static_dir is configured
-    if let Some(dir) = static_dir.as_ref() {
-        let index_file = dir.join("index.html");
-        if index_file.exists() {
-            let index_file_service = ServeFile::new(index_file);
-            // Serve the SPA entry at '/'
-            router = router.route_service("/", index_file_service.clone());
-            // Fallback to SPA for all unmatched paths (keeps /api and /mcp working since they are explicit)
-            router = router.fallback_service(index_file_service);
-        }
-    }
+    // Serve SPA at root path
+    router = router.route("/", get(serve_index));
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let bound_addr = listener.local_addr()?;
