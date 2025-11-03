@@ -20,7 +20,8 @@ use serde::{Deserialize, Serialize};
 use tavily_hikari::{
     ApiKeyMetrics, ProxyRequest, ProxyResponse, ProxySummary, RequestLogRecord, TavilyProxy,
 };
-use tower_http::services::{ServeDir, ServeFile};
+use tower::service_fn;
+use tower_http::services::ServeDir;
 
 #[derive(Clone)]
 struct AppState {
@@ -107,6 +108,8 @@ async fn health_check() -> &'static str {
     "ok"
 }
 
+// kept for potential future direct serving; currently ServeDir handles '/'
+#[allow(dead_code)]
 async fn serve_index(State(state): State<Arc<AppState>>) -> Result<Response<Body>, StatusCode> {
     let Some(dir) = state.static_dir.as_ref() else {
         return Err(StatusCode::NOT_FOUND);
@@ -120,6 +123,41 @@ async fn serve_index(State(state): State<Arc<AppState>>) -> Result<Response<Body
         .header(CONTENT_TYPE, "text/html; charset=utf-8")
         .body(Body::from(bytes))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+const NOT_FOUND_HTML: &str = r#"<!doctype html>
+<html lang=\"en\">
+  <head>
+    <meta charset=\"UTF-8\" />
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />
+    <title>404 Not Found</title>
+    <style>
+      html,body{height:100%;margin:0;font-family:ui-sans-serif,system-ui,sans-serif;color:#111}
+      .wrap{min-height:100%;display:flex;align-items:center;justify-content:center;padding:32px}
+      .card{max-width:720px;width:100%;border:1px solid #e5e7eb;border-radius:12px;padding:24px;box-shadow:0 2px 8px rgba(0,0,0,.06)}
+      h1{font-size:24px;margin:0 0 8px}
+      p{margin:6px 0 0;color:#444}
+      a{color:#2563eb;text-decoration:none}
+      a:hover{text-decoration:underline}
+    </style>
+  </head>
+  <body>
+    <main class=\"wrap\">
+      <div class=\"card\">
+        <h1>404 Not Found</h1>
+        <p>The page you’re looking for doesn’t exist.</p>
+        <p><a href=\"/\" aria-label=\"Back to home\">Back to home</a></p>
+      </div>
+    </main>
+  </body>
+</html>"#;
+
+async fn not_found_html_resp() -> Response<Body> {
+    Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .header(CONTENT_TYPE, "text/html; charset=utf-8")
+        .body(Body::from(NOT_FOUND_HTML))
+        .unwrap_or_else(|_| Response::builder().status(500).body(Body::empty()).unwrap())
 }
 
 async fn fetch_summary(
@@ -419,9 +457,12 @@ pub async fn serve(
         if dir.is_dir() {
             let index_file = dir.join("index.html");
             if index_file.exists() {
-                router =
-                    router.route_service("/favicon.svg", ServeFile::new(dir.join("favicon.svg")));
-                router = router.nest_service("/assets", ServeDir::new(dir.join("assets")));
+                let fs_service = ServeDir::new(dir.clone())
+                    .append_index_html_on_directories(true)
+                    .not_found_service(service_fn(|_req| async move {
+                        Ok::<_, std::convert::Infallible>(not_found_html_resp().await)
+                    }));
+                router = router.nest_service("/", fs_service);
             } else {
                 eprintln!(
                     "static index.html not found at {} — skip serving SPA",
@@ -437,8 +478,7 @@ pub async fn serve(
         .route("/mcp", any(proxy_handler))
         .route("/mcp/*path", any(proxy_handler));
 
-    // Serve SPA at root path
-    router = router.route("/", get(serve_index));
+    // Static service handles '/' and 404; no extra fallback needed here
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let bound_addr = listener.local_addr()?;
