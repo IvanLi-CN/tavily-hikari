@@ -12,7 +12,7 @@ use axum::{
     body::{self, Body},
     extract::{Path, Query, State},
     http::{HeaderMap, HeaderName, Method, Request, Response, StatusCode},
-    response::{Json, Redirect},
+    response::Json,
     routing::{any, delete, get, patch, post},
 };
 use reqwest::header::{HeaderMap as ReqHeaderMap, HeaderValue as ReqHeaderValue};
@@ -400,18 +400,13 @@ pub async fn serve(
         .route("/api/keys/:id/status", patch(update_api_key_status))
         .route("/api/logs", get(list_logs));
 
-    if let Some(dir) = static_dir {
+    if let Some(dir) = static_dir.as_ref() {
         if dir.is_dir() {
             let index_file = dir.join("index.html");
             if index_file.exists() {
-                router = router.route("/", get(|| async { Redirect::temporary("/ui") }));
                 router =
                     router.route_service("/favicon.svg", ServeFile::new(dir.join("favicon.svg")));
                 router = router.nest_service("/assets", ServeDir::new(dir.join("assets")));
-                let index_file_service = ServeFile::new(index_file.clone());
-                router = router.route_service("/ui", index_file_service.clone());
-                router = router.route_service("/ui/", index_file_service.clone());
-                router = router.route_service("/ui/*path", index_file_service);
             } else {
                 eprintln!(
                     "static index.html not found at {} — skip serving SPA",
@@ -426,6 +421,18 @@ pub async fn serve(
     router = router
         .route("/mcp", any(proxy_handler))
         .route("/mcp/*path", any(proxy_handler));
+
+    // Serve SPA at root ('/') with fallback for unmatched routes, if static_dir is configured
+    if let Some(dir) = static_dir.as_ref() {
+        let index_file = dir.join("index.html");
+        if index_file.exists() {
+            let index_file_service = ServeFile::new(index_file);
+            // Serve the SPA entry at '/'
+            router = router.route_service("/", index_file_service.clone());
+            // Fallback to SPA for all unmatched paths (keeps /api and /mcp working since they are explicit)
+            router = router.fallback_service(index_file_service);
+        }
+    }
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let bound_addr = listener.local_addr()?;
