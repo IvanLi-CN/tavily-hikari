@@ -41,6 +41,20 @@ export interface ApiKeySecret {
   api_key: string
 }
 
+// ---- Access Tokens (for /mcp auth) ----
+export interface AuthToken {
+  id: string // 4-char code
+  enabled: boolean
+  note: string | null
+  total_requests: number
+  created_at: number
+  last_used_at: number | null
+}
+
+export interface AuthTokenSecret {
+  token: string // th-<id>-<secret>
+}
+
 async function requestJson<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
   const response = await fetch(input, init)
   if (!response.ok) {
@@ -117,4 +131,74 @@ export async function setKeyStatus(id: string, status: KeyAdminStatus): Promise<
   if (!res.ok) {
     throw new Error(`Failed to update key status: ${res.status}`)
   }
+}
+
+// ---- Key details ----
+export interface KeySummary {
+  total_requests: number
+  success_count: number
+  error_count: number
+  quota_exhausted_count: number
+  active_keys: number
+  exhausted_keys: number
+  last_activity: number | null
+}
+
+export function fetchKeyMetrics(id: string, period?: 'day' | 'week' | 'month', since?: number, signal?: AbortSignal): Promise<KeySummary> {
+  const params = new URLSearchParams()
+  if (period) params.set('period', period)
+  if (since != null) params.set('since', String(since))
+  const encoded = encodeURIComponent(id)
+  return requestJson(`/api/keys/${encoded}/metrics?${params.toString()}`, { signal })
+}
+
+export function fetchKeyLogs(id: string, limit = 50, since?: number, signal?: AbortSignal): Promise<RequestLog[]> {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (since != null) params.set('since', String(since))
+  const encoded = encodeURIComponent(id)
+  return requestJson(`/api/keys/${encoded}/logs?${params.toString()}`, { signal })
+}
+
+// Tokens API
+export function fetchTokens(signal?: AbortSignal): Promise<AuthToken[]> {
+  return requestJson('/api/tokens', { signal })
+}
+
+export async function createToken(note?: string): Promise<AuthTokenSecret> {
+  return await requestJson('/api/tokens', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ note }),
+  })
+}
+
+export async function deleteToken(id: string): Promise<void> {
+  const encoded = encodeURIComponent(id)
+  const res = await fetch(`/api/tokens/${encoded}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`Failed to delete token: ${res.status}`)
+}
+
+export async function setTokenEnabled(id: string, enabled: boolean): Promise<void> {
+  const encoded = encodeURIComponent(id)
+  const res = await fetch(`/api/tokens/${encoded}/status`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  })
+  if (!res.ok) throw new Error(`Failed to update token status: ${res.status}`)
+}
+
+export async function updateTokenNote(id: string, note: string): Promise<void> {
+  const encoded = encodeURIComponent(id)
+  const res = await fetch(`/api/tokens/${encoded}/note`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ note }),
+  })
+  if (!res.ok) throw new Error(`Failed to update token note: ${res.status}`)
+}
+
+export function fetchTokenSecret(id: string, signal?: AbortSignal): Promise<AuthTokenSecret> {
+  const encoded = encodeURIComponent(id)
+  return requestJson(`/api/tokens/${encoded}/secret`, { signal })
 }

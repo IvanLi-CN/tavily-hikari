@@ -14,7 +14,23 @@ import {
   type Profile,
   type RequestLog,
   type Summary,
+  fetchTokens,
+  type AuthToken,
+  fetchTokenSecret,
+  createToken,
+  deleteToken,
+  setTokenEnabled,
+  updateTokenNote,
+  fetchKeyMetrics,
+  fetchKeyLogs,
+  type KeySummary,
 } from './api'
+
+function parseHashForKeyId(): string | null {
+  const hash = location.hash || ''
+  const m = hash.match(/^#\/keys\/([^\/?#]+)/)
+  return m ? decodeURIComponent(m[1]) : null
+}
 
 const REFRESH_INTERVAL_MS = 30_000
 
@@ -123,8 +139,13 @@ function formatErrorMessage(log: RequestLog): string {
 }
 
 function App(): JSX.Element {
+  const [route, setRoute] = useState<{ name: 'home' } | { name: 'key'; id: string }>(() => {
+    const id = parseHashForKeyId()
+    return id ? { name: 'key', id } : { name: 'home' }
+  })
   const [summary, setSummary] = useState<Summary | null>(null)
   const [keys, setKeys] = useState<ApiKeyStats[]>([])
+  const [tokens, setTokens] = useState<AuthToken[]>([])
   const [logs, setLogs] = useState<RequestLog[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -136,6 +157,7 @@ function App(): JSX.Element {
   const [copyState, setCopyState] = useState<Map<string, 'loading' | 'copied'>>(() => new Map())
   const [expandedLogs, setExpandedLogs] = useState<Set<number>>(() => new Set())
   const [newKey, setNewKey] = useState('')
+  const [newTokenNote, setNewTokenNote] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [togglingId, setTogglingId] = useState<string | null>(null)
@@ -143,8 +165,14 @@ function App(): JSX.Element {
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
   const disableDialogRef = useRef<HTMLDialogElement | null>(null)
   const [pendingDisableId, setPendingDisableId] = useState<string | null>(null)
+  const tokenDeleteDialogRef = useRef<HTMLDialogElement | null>(null)
+  const [pendingTokenDeleteId, setPendingTokenDeleteId] = useState<string | null>(null)
+  const tokenNoteDialogRef = useRef<HTMLDialogElement | null>(null)
+  const [editingTokenId, setEditingTokenId] = useState<string | null>(null)
+  const [editingTokenNote, setEditingTokenNote] = useState('')
+  const [savingTokenNote, setSavingTokenNote] = useState(false)
 
-  const copyStateKey = useCallback((scope: 'keys' | 'logs', identifier: string | number) => {
+  const copyStateKey = useCallback((scope: 'keys' | 'logs' | 'tokens', identifier: string | number) => {
     return `${scope}:${identifier}`
   }, [])
 
@@ -204,12 +232,13 @@ function App(): JSX.Element {
   const loadData = useCallback(
     async (signal?: AbortSignal) => {
       try {
-        const [summaryData, keyData, logData, ver, profileData] = await Promise.all([
+        const [summaryData, keyData, logData, ver, profileData, tokenData] = await Promise.all([
           fetchSummary(signal),
           fetchApiKeys(signal),
           fetchRequestLogs(50, signal),
           fetchVersion(signal).catch(() => null),
           fetchProfile(signal).catch(() => null),
+          fetchTokens(signal).catch(() => []),
         ])
 
         if (signal?.aborted) {
@@ -219,6 +248,7 @@ function App(): JSX.Element {
         setSummary(summaryData)
         setKeys(keyData)
         setLogs(logData)
+        setTokens(tokenData)
         setExpandedLogs((previous) => {
           if (!isAdmin || previous.size === 0) {
             return new Set()
@@ -267,6 +297,29 @@ function App(): JSX.Element {
     }, REFRESH_INTERVAL_MS)
     return () => window.clearInterval(timer)
   }, [autoRefresh, loadData])
+
+  useEffect(() => {
+    const onHash = () => {
+      const id = parseHashForKeyId()
+      setRoute(id ? { name: 'key', id } : { name: 'home' })
+    }
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
+
+  const navigateHome = () => {
+    history.pushState(null, '', '/')
+    setRoute({ name: 'home' })
+  }
+
+  const navigateKey = (id: string) => {
+    location.hash = `#/keys/${encodeURIComponent(id)}`
+    setRoute({ name: 'key', id })
+  }
+
+  if (route.name === 'key') {
+    return <KeyDetails id={route.id} onBack={navigateHome} isAdmin={profile?.isAdmin ?? false} />
+  }
 
   const handleManualRefresh = () => {
     const controller = new AbortController()
@@ -378,6 +431,118 @@ function App(): JSX.Element {
     }
   }
 
+  const handleAddToken = async () => {
+    const note = newTokenNote.trim()
+    setSubmitting(true)
+    try {
+      const { token } = await createToken(note || undefined)
+      setNewTokenNote('')
+      try { await navigator.clipboard?.writeText(token) } catch {}
+      const controller = new AbortController()
+      setLoading(true)
+      await loadData(controller.signal)
+      controller.abort()
+    } catch (err) {
+      console.error(err)
+      setError(err instanceof Error ? err.message : 'Failed to create token')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const handleCopyToken = async (id: string, stateKey: string) => {
+    updateCopyState(stateKey, 'loading')
+    try {
+      const { token } = await fetchTokenSecret(id)
+      await navigator.clipboard?.writeText(token)
+      updateCopyState(stateKey, 'copied')
+      window.setTimeout(() => updateCopyState(stateKey, null), 2000)
+    } catch (err) {
+      console.error(err)
+      setError(err instanceof Error ? err.message : 'Failed to copy token')
+      updateCopyState(stateKey, null)
+    }
+  }
+
+  const toggleToken = async (id: string, enabled: boolean) => {
+    setTogglingId(id)
+    try {
+      await setTokenEnabled(id, !enabled)
+      const controller = new AbortController()
+      setLoading(true)
+      await loadData(controller.signal)
+      controller.abort()
+    } catch (err) {
+      console.error(err)
+      setError(err instanceof Error ? err.message : 'Failed to update token status')
+    } finally {
+      setTogglingId(null)
+    }
+  }
+
+  const openTokenDeleteConfirm = (id: string) => {
+    if (!id) return
+    setPendingTokenDeleteId(id)
+    window.requestAnimationFrame(() => tokenDeleteDialogRef.current?.showModal())
+  }
+
+  const confirmTokenDelete = async () => {
+    if (!pendingTokenDeleteId) return
+    const id = pendingTokenDeleteId
+    setDeletingId(id)
+    try {
+      await deleteToken(id)
+      tokenDeleteDialogRef.current?.close()
+      setPendingTokenDeleteId(null)
+      const controller = new AbortController()
+      setLoading(true)
+      await loadData(controller.signal)
+      controller.abort()
+    } catch (err) {
+      console.error(err)
+      setError(err instanceof Error ? err.message : 'Failed to delete token')
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
+  const cancelTokenDelete = () => {
+    tokenDeleteDialogRef.current?.close()
+    setPendingTokenDeleteId(null)
+  }
+
+  const openTokenNoteEdit = (id: string, current: string | null) => {
+    setEditingTokenId(id)
+    setEditingTokenNote(current ?? '')
+    window.requestAnimationFrame(() => tokenNoteDialogRef.current?.showModal())
+  }
+
+  const saveTokenNote = async () => {
+    if (!editingTokenId) return
+    setSavingTokenNote(true)
+    try {
+      await updateTokenNote(editingTokenId, editingTokenNote)
+      tokenNoteDialogRef.current?.close()
+      setEditingTokenId(null)
+      setEditingTokenNote('')
+      const controller = new AbortController()
+      setLoading(true)
+      await loadData(controller.signal)
+      controller.abort()
+    } catch (err) {
+      console.error(err)
+      setError(err instanceof Error ? err.message : 'Failed to update token note')
+    } finally {
+      setSavingTokenNote(false)
+    }
+  }
+
+  const cancelTokenNote = () => {
+    tokenNoteDialogRef.current?.close()
+    setEditingTokenId(null)
+    setEditingTokenNote('')
+  }
+
   const openDeleteConfirm = (id: string) => {
     if (!id) return
     setPendingDeleteId(id)
@@ -481,6 +646,124 @@ function App(): JSX.Element {
         </div>
       </section>
 
+      <section className="surface panel">
+        <div className="panel-header">
+          <div>
+            <h2>Access Tokens</h2>
+            <p className="panel-description">Auth for /mcp. Format th-xxxx-xxxxxxxxxxxx</p>
+          </div>
+          {isAdmin && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <input
+                type="text"
+                placeholder="Note (optional)"
+                value={newTokenNote}
+                onChange={(e) => setNewTokenNote(e.target.value)}
+                style={{ padding: '8px 12px', borderRadius: 10, border: '1px solid rgba(15, 23, 42, 0.16)', minWidth: 240 }}
+                aria-label="Token note"
+              />
+              <button type="button" className="button button-primary" onClick={() => void handleAddToken()} disabled={submitting}>
+                {submitting ? 'Creating…' : 'New Token'}
+              </button>
+            </div>
+          )}
+        </div>
+        <div className="table-wrapper">
+          {tokens.length === 0 ? (
+            <div className="empty-state">{loading ? 'Loading tokens…' : 'No tokens yet.'}</div>
+          ) : (
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Note</th>
+                  <th>Usage</th>
+                  <th>Last Used</th>
+                  {isAdmin && <th>Actions</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {tokens.map((t) => {
+                  const stateKey = copyStateKey('tokens', t.id)
+                  const state = copyState.get(stateKey)
+                  return (
+                    <tr key={t.id}>
+                      <td>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <code>{t.id}</code>
+                          <span
+                            className="token-status-slot"
+                            aria-hidden={t.enabled ? true : undefined}
+                            title={t.enabled ? undefined : 'Disabled'}
+                          >
+                            {!t.enabled && (
+                              <Icon
+                                className="token-status-icon"
+                                icon="mdi:pause-circle-outline"
+                                width={14}
+                                height={14}
+                                aria-label="Disabled token"
+                              />
+                            )}
+                          </span>
+                        </div>
+                      </td>
+                      <td>{t.note || '—'}</td>
+                      <td>{formatNumber(t.total_requests)}</td>
+                      <td>{formatTimestamp(t.last_used_at)}</td>
+                      {isAdmin && (
+                        <td>
+                          <div style={{ display: 'flex', gap: 8 }}>
+                            <button
+                              type="button"
+                              className={`icon-button${state === 'copied' ? ' icon-button-success' : ''}${state === 'loading' ? ' icon-button-loading' : ''}`}
+                              title="Copy full token"
+                              aria-label="Copy full token"
+                              onClick={() => void handleCopyToken(t.id, stateKey)}
+                              disabled={state === 'loading'}
+                            >
+                              <Icon icon={state === 'copied' ? 'mdi:check' : 'mdi:content-copy'} width={18} height={18} />
+                            </button>
+                            <button
+                              type="button"
+                              className="icon-button"
+                              title={t.enabled ? 'Disable token' : 'Enable token'}
+                              aria-label={t.enabled ? 'Disable token' : 'Enable token'}
+                              onClick={() => void toggleToken(t.id, t.enabled)}
+                              disabled={togglingId === t.id}
+                            >
+                              <Icon icon={t.enabled ? 'mdi:pause-circle-outline' : 'mdi:play-circle-outline'} width={18} height={18} />
+                            </button>
+                            <button
+                              type="button"
+                              className="icon-button"
+                              title="Edit note"
+                              aria-label="Edit note"
+                              onClick={() => openTokenNoteEdit(t.id, t.note)}
+                            >
+                              <Icon icon="mdi:pencil-outline" width={18} height={18} />
+                            </button>
+                            <button
+                              type="button"
+                              className="icon-button icon-button-danger"
+                              title="Delete token"
+                              aria-label="Delete token"
+                              onClick={() => openTokenDeleteConfirm(t.id)}
+                              disabled={deletingId === t.id}
+                            >
+                              <Icon icon={deletingId === t.id ? 'mdi:progress-helper' : 'mdi:trash-outline'} width={18} height={18} />
+                            </button>
+                          </div>
+                        </td>
+                      )}
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </section>
       {error && <div className="surface error-banner">{error}</div>}
 
       <section className="surface metrics-grid">
@@ -563,7 +846,9 @@ function App(): JSX.Element {
                     <tr key={item.id}>
                       <td>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <code>{item.id}</code>
+                          <button type="button" className="link-button" onClick={() => navigateKey(item.id)} title="Open details">
+                            <code>{item.id}</code>
+                          </button>
                           {isAdmin && (
                             <button
                               type="button"
@@ -623,6 +908,15 @@ function App(): JSX.Element {
                               disabled={deletingId === item.id}
                             >
                               <Icon icon={deletingId === item.id ? 'mdi:progress-helper' : 'mdi:trash-outline'} width={18} height={18} />
+                            </button>
+                            <button
+                              type="button"
+                              className="icon-button"
+                              title="Details"
+                              aria-label="Details"
+                              onClick={() => navigateKey(item.id)}
+                            >
+                              <Icon icon="mdi:eye-outline" width={18} height={18} />
                             </button>
                           </div>
                         </td>
@@ -740,6 +1034,42 @@ function App(): JSX.Element {
           <form method="dialog" onSubmit={(e) => e.preventDefault()} style={{ display: 'flex', gap: 8 }}>
             <button type="button" className="btn" onClick={cancelDelete}>Cancel</button>
             <button type="button" className="btn btn-error" onClick={() => void confirmDelete()} disabled={!!deletingId}>Remove</button>
+          </form>
+        </div>
+      </div>
+    </dialog>
+    {/* Token Delete Confirmation */}
+    <dialog id="confirm_token_delete_modal" ref={tokenDeleteDialogRef} className="modal">
+      <div className="modal-box">
+        <h3 className="font-bold text-lg" style={{ marginTop: 0 }}>Delete Token</h3>
+        <p className="py-2">This will permanently remove the access token. Clients using it will receive 401.</p>
+        <div className="modal-action">
+          <form method="dialog" onSubmit={(e) => e.preventDefault()} style={{ display: 'flex', gap: 8 }}>
+            <button type="button" className="btn" onClick={cancelTokenDelete}>Cancel</button>
+            <button type="button" className="btn btn-error" onClick={() => void confirmTokenDelete()} disabled={!!deletingId}>Delete</button>
+          </form>
+        </div>
+      </div>
+    </dialog>
+
+    {/* Token Edit Note (DaisyUI modal) */}
+    <dialog id="edit_token_note_modal" ref={tokenNoteDialogRef} className="modal">
+      <div className="modal-box">
+        <h3 className="font-bold text-lg" style={{ marginTop: 0 }}>Edit Token Note</h3>
+        <div className="py-2" style={{ display: 'flex', gap: 8 }}>
+          <input
+            type="text"
+            className="input"
+            placeholder="Note"
+            value={editingTokenNote}
+            onChange={(e) => setEditingTokenNote(e.target.value)}
+            style={{ flex: 1 }}
+          />
+        </div>
+        <div className="modal-action">
+          <form method="dialog" onSubmit={(e) => e.preventDefault()} style={{ display: 'flex', gap: 8 }}>
+            <button type="button" className="btn" onClick={cancelTokenNote}>Cancel</button>
+            <button type="button" className="btn btn-primary" onClick={() => void saveTokenNote()} disabled={savingTokenNote}>Save</button>
           </form>
         </div>
       </div>
@@ -879,5 +1209,148 @@ function LogDetails({ log }: { log: RequestLog }): JSX.Element {
         </div>
       )}
     </div>
+  )
+}
+
+function KeyDetails({ id, onBack, isAdmin }: { id: string; onBack: () => void; isAdmin: boolean }): JSX.Element {
+  const [period, setPeriod] = useState<'day' | 'week' | 'month'>('month')
+  const [startDate, setStartDate] = useState<string>(() => new Date().toISOString().slice(0, 10))
+  const [summary, setSummary] = useState<KeySummary | null>(null)
+  const [logs, setLogs] = useState<RequestLog[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const computeSince = useCallback((): number => {
+    const base = new Date(startDate + 'T00:00:00Z')
+    if (Number.isNaN(base.getTime())) return Math.floor(Date.now() / 1000)
+    const d = new Date(base)
+    if (period === 'day') return Math.floor(d.getTime() / 1000)
+    if (period === 'week') {
+      const day = d.getUTCDay() // 0..6 (Sun..Sat)
+      const diff = (day + 6) % 7 // days since Monday
+      d.setUTCDate(d.getUTCDate() - diff)
+      return Math.floor(d.getTime() / 1000)
+    }
+    // month
+    d.setUTCDate(1)
+    return Math.floor(d.getTime() / 1000)
+  }, [period, startDate])
+
+  const load = useCallback(async () => {
+    try {
+      setLoading(true)
+      setError(null)
+      const since = computeSince()
+      const [s, ls] = await Promise.all([
+        fetchKeyMetrics(id, period, since),
+        fetchKeyLogs(id, 50, since),
+      ])
+      setSummary(s)
+      setLogs(ls)
+    } catch (err) {
+      console.error(err)
+      setError(err instanceof Error ? err.message : 'Failed to load details')
+    } finally {
+      setLoading(false)
+    }
+  }, [id, period, computeSince])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  const metricCards = useMemo(() => {
+    if (!summary) return []
+    const total = summary.total_requests
+    return [
+      { id: 'total', label: 'Total', value: formatNumber(summary.total_requests), subtitle: summary.last_activity ? `Last activity ${formatTimestamp(summary.last_activity)}` : 'No activity' },
+      { id: 'success', label: 'Successful', value: formatNumber(summary.success_count), subtitle: formatPercent(summary.success_count, total) },
+      { id: 'errors', label: 'Errors', value: formatNumber(summary.error_count), subtitle: formatPercent(summary.error_count, total) },
+      { id: 'quota', label: 'Quota Exhausted', value: formatNumber(summary.quota_exhausted_count), subtitle: formatPercent(summary.quota_exhausted_count, total) },
+    ]
+  }, [summary])
+
+  return (
+    <main className="app-shell">
+      <section className="surface app-header">
+        <div className="title-group">
+          <h1>Key Details</h1>
+          <p>Inspect usage and recent requests for key: <code>{id}</code></p>
+        </div>
+        <div className="controls">
+          <button type="button" className="button" onClick={onBack}><Icon icon="mdi:arrow-left" width={18} height={18} />&nbsp;Back</button>
+        </div>
+      </section>
+
+      {error && <div className="surface error-banner">{error}</div>}
+
+      <section className="surface panel">
+        <div className="panel-header">
+          <div>
+            <h2>Usage</h2>
+            <p className="panel-description">Aggregated counts for selected period.</p>
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <select value={period} onChange={(e) => setPeriod(e.target.value as any)} className="input" aria-label="Period">
+              <option value="day">Day</option>
+              <option value="week">Week</option>
+              <option value="month">Month</option>
+            </select>
+            <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="input" />
+            <button type="button" className="button button-primary" onClick={() => void load()} disabled={loading}>Apply</button>
+          </div>
+        </div>
+        <section className="metrics-grid">
+          {(!summary || loading) ? (
+            <div className="empty-state" style={{ gridColumn: '1 / -1' }}>Loading…</div>
+          ) : (
+            metricCards.map((m) => (
+              <div key={m.id} className="metric-card">
+                <h3>{m.label}</h3>
+                <div className="metric-value">{m.value}</div>
+                <div className="metric-subtitle">{m.subtitle}</div>
+              </div>
+            ))
+          )}
+        </section>
+      </section>
+
+      <section className="surface panel">
+        <div className="panel-header">
+          <div>
+            <h2>Recent Requests</h2>
+            <p className="panel-description">Up to the latest 50 for this key.</p>
+          </div>
+        </div>
+        <div className="table-wrapper">
+          {logs.length === 0 ? (
+            <div className="empty-state">{loading ? 'Loading…' : 'No request logs for this period.'}</div>
+          ) : (
+            <table>
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>HTTP Status</th>
+                  <th>MCP Status</th>
+                  <th>Result</th>
+                  <th>Error</th>
+                </tr>
+              </thead>
+              <tbody>
+                {logs.map((log) => (
+                  <tr key={log.id}>
+                    <td>{formatTimestamp(log.created_at)}</td>
+                    <td>{log.http_status ?? '—'}</td>
+                    <td>{log.mcp_status ?? '—'}</td>
+                    <td><span className={statusClass(log.result_status)}>{statusLabel(log.result_status)}</span></td>
+                    <td>{formatErrorMessage(log)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </section>
+    </main>
   )
 }

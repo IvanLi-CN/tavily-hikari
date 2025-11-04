@@ -16,10 +16,12 @@ use axum::{
     response::{Json, Redirect},
     routing::{any, delete, get, patch, post},
 };
+use chrono::{Datelike, TimeZone, Utc};
 use reqwest::header::{HeaderMap as ReqHeaderMap, HeaderValue as ReqHeaderValue};
 use serde::{Deserialize, Serialize};
 use tavily_hikari::{
-    ApiKeyMetrics, ProxyRequest, ProxyResponse, ProxySummary, RequestLogRecord, TavilyProxy,
+    ApiKeyMetrics, AuthToken, ProxyRequest, ProxyResponse, ProxySummary, RequestLogRecord,
+    TavilyProxy,
 };
 use tower_http::services::{ServeDir, ServeFile};
 
@@ -610,6 +612,141 @@ async fn list_logs(
         })
 }
 
+// ----- Access token management handlers -----
+async fn list_tokens(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<AuthTokenView>>, StatusCode> {
+    if !state.forward_auth.is_request_admin(&headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    state
+        .proxy
+        .list_access_tokens()
+        .await
+        .map(|items| Json(items.into_iter().map(AuthTokenView::from).collect()))
+        .map_err(|err| {
+            eprintln!("list tokens error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
+#[axum::debug_handler]
+async fn create_token(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateTokenRequest>,
+) -> Result<(StatusCode, Json<AuthTokenSecretView>), StatusCode> {
+    if !state.forward_auth.is_request_admin(&headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    state
+        .proxy
+        .create_access_token(payload.note.as_deref())
+        .await
+        .map(|secret| {
+            (
+                StatusCode::CREATED,
+                Json(AuthTokenSecretView {
+                    token: secret.token,
+                }),
+            )
+        })
+        .map_err(|err| {
+            eprintln!("create token error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
+async fn delete_token(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Result<StatusCode, StatusCode> {
+    if !state.forward_auth.is_request_admin(&headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    state
+        .proxy
+        .delete_access_token(&id)
+        .await
+        .map(|_| StatusCode::NO_CONTENT)
+        .map_err(|err| {
+            eprintln!("delete token error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateTokenStatus {
+    enabled: bool,
+}
+
+async fn update_token_status(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(payload): Json<UpdateTokenStatus>,
+) -> Result<StatusCode, StatusCode> {
+    if !state.forward_auth.is_request_admin(&headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    state
+        .proxy
+        .set_access_token_enabled(&id, payload.enabled)
+        .await
+        .map(|_| StatusCode::NO_CONTENT)
+        .map_err(|err| {
+            eprintln!("update token status error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateTokenNote {
+    note: String,
+}
+
+async fn update_token_note(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(payload): Json<UpdateTokenNote>,
+) -> Result<StatusCode, StatusCode> {
+    if !state.forward_auth.is_request_admin(&headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    state
+        .proxy
+        .update_access_token_note(&id, payload.note.trim())
+        .await
+        .map(|_| StatusCode::NO_CONTENT)
+        .map_err(|err| {
+            eprintln!("update token note error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
+async fn get_token_secret(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<AuthTokenSecretView>, StatusCode> {
+    if !state.forward_auth.is_request_admin(&headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    match state.proxy.get_access_token_secret(&id).await {
+        Ok(Some(secret)) => Ok(Json(AuthTokenSecretView {
+            token: secret.token,
+        })),
+        Ok(None) => Err(StatusCode::NOT_FOUND),
+        Err(err) => {
+            eprintln!("get token secret error: {err}");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
 pub async fn serve(
     addr: SocketAddr,
     proxy: TavilyProxy,
@@ -632,7 +769,17 @@ pub async fn serve(
         .route("/api/keys/:id/secret", get(get_api_key_secret))
         .route("/api/keys/:id", delete(delete_api_key))
         .route("/api/keys/:id/status", patch(update_api_key_status))
-        .route("/api/logs", get(list_logs));
+        .route("/api/logs", get(list_logs))
+        // Key details
+        .route("/api/keys/:id/metrics", get(get_key_metrics))
+        .route("/api/keys/:id/logs", get(get_key_logs))
+        // Access token management (admin only)
+        .route("/api/tokens", get(list_tokens))
+        .route("/api/tokens", post(create_token))
+        .route("/api/tokens/:id", delete(delete_token))
+        .route("/api/tokens/:id/status", patch(update_token_status))
+        .route("/api/tokens/:id/note", patch(update_token_note))
+        .route("/api/tokens/:id/secret", get(get_token_secret));
 
     if let Some(dir) = static_dir.as_ref() {
         if dir.is_dir() {
@@ -761,9 +908,109 @@ struct SummaryView {
     last_activity: Option<i64>,
 }
 
+// ---- Access Token views ----
+#[derive(Debug, Serialize)]
+struct AuthTokenView {
+    id: String,
+    enabled: bool,
+    note: Option<String>,
+    total_requests: i64,
+    created_at: i64,
+    last_used_at: Option<i64>,
+}
+
+impl From<AuthToken> for AuthTokenView {
+    fn from(t: AuthToken) -> Self {
+        Self {
+            id: t.id,
+            enabled: t.enabled,
+            note: t.note,
+            total_requests: t.total_requests,
+            created_at: t.created_at,
+            last_used_at: t.last_used_at,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct AuthTokenSecretView {
+    token: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateTokenRequest {
+    note: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct LogsQuery {
     limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct KeyMetricsQuery {
+    period: Option<String>,
+    since: Option<i64>,
+}
+
+async fn get_key_metrics(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(q): Query<KeyMetricsQuery>,
+) -> Result<Json<SummaryView>, StatusCode> {
+    let since = if let Some(since) = q.since {
+        since
+    } else {
+        // fallback by period
+        let now = chrono::Utc::now();
+        match q.period.as_deref() {
+            Some("day") => (now.date_naive().and_hms_opt(0, 0, 0).unwrap().and_utc()).timestamp(),
+            Some("week") => {
+                let weekday = now.weekday().num_days_from_monday() as i64;
+                (now - chrono::Duration::days(weekday))
+                    .date_naive()
+                    .and_hms_opt(0, 0, 0)
+                    .unwrap()
+                    .and_utc()
+                    .timestamp()
+            }
+            _ => {
+                // month default
+                let first = Utc
+                    .with_ymd_and_hms(now.year(), now.month(), 1, 0, 0, 0)
+                    .single()
+                    .expect("valid start of month");
+                first.timestamp()
+            }
+        }
+    };
+
+    state
+        .proxy
+        .key_summary_since(&id, since)
+        .await
+        .map(|s| Json(s.into()))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+#[derive(Debug, Deserialize)]
+struct KeyLogsQuery {
+    limit: Option<usize>,
+    since: Option<i64>,
+}
+
+async fn get_key_logs(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(q): Query<KeyLogsQuery>,
+) -> Result<Json<Vec<RequestLogView>>, StatusCode> {
+    let limit = q.limit.unwrap_or(DEFAULT_LOG_LIMIT).clamp(1, 500);
+    state
+        .proxy
+        .key_recent_logs(&id, limit, q.since)
+        .await
+        .map(|logs| Json(logs.into_iter().map(RequestLogView::from).collect()))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 async fn proxy_handler(
@@ -783,7 +1030,44 @@ async fn proxy_handler(
         return Ok(response);
     }
 
-    let headers = clone_headers(&parts.headers);
+    // Require Authorization: Bearer th-<id>-<secret>
+    let auth_bearer = parts
+        .headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim().to_string());
+
+    let token = match auth_bearer
+        .as_deref()
+        .and_then(|raw| raw.strip_prefix("Bearer "))
+        .map(str::trim)
+    {
+        Some(t) if !t.is_empty() => t.to_string(),
+        _ => {
+            return Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .header(CONTENT_TYPE, "application/json; charset=utf-8")
+                .body(Body::from("{\"error\":\"missing token\"}"))
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    let valid = state
+        .proxy
+        .validate_access_token(&token)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if !valid {
+        return Response::builder()
+            .status(StatusCode::UNAUTHORIZED)
+            .header(CONTENT_TYPE, "application/json; charset=utf-8")
+            .body(Body::from("{\"error\":\"invalid or disabled token\"}"))
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    let mut headers = clone_headers(&parts.headers);
+    // prevent leaking our Authorization to upstream
+    headers.remove(axum::http::header::AUTHORIZATION);
     let body_bytes = body::to_bytes(body, BODY_LIMIT)
         .await
         .map_err(|_| StatusCode::BAD_REQUEST)?;
