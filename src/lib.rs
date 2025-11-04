@@ -192,6 +192,7 @@ impl TavilyProxy {
                         status: Some(status),
                         tavily_status_code: outcome.tavily_status_code,
                         error: None,
+                        request_body: &request.body,
                         response_body: &body_bytes,
                         outcome: outcome.status,
                         forwarded_headers: &sanitized_headers.forwarded,
@@ -228,6 +229,7 @@ impl TavilyProxy {
                         status: None,
                         tavily_status_code: None,
                         error: Some(&err.to_string()),
+                        request_body: &request.body,
                         response_body: &[],
                         outcome: OUTCOME_ERROR,
                         forwarded_headers: &sanitized_headers.forwarded,
@@ -339,6 +341,7 @@ impl KeyStore {
                 tavily_status_code INTEGER,
                 error_message TEXT,
                 result_status TEXT NOT NULL DEFAULT 'unknown',
+                request_body BLOB,
                 response_body BLOB,
                 forwarded_headers TEXT,
                 dropped_headers TEXT,
@@ -621,6 +624,7 @@ impl KeyStore {
                     tavily_status_code INTEGER,
                     error_message TEXT,
                     result_status TEXT NOT NULL DEFAULT 'unknown',
+                    request_body BLOB,
                     response_body BLOB,
                     forwarded_headers TEXT,
                     dropped_headers TEXT,
@@ -644,6 +648,7 @@ impl KeyStore {
                     tavily_status_code,
                     error_message,
                     result_status,
+                    request_body,
                     response_body,
                     forwarded_headers,
                     dropped_headers,
@@ -659,6 +664,7 @@ impl KeyStore {
                     tavily_status_code,
                     error_message,
                     result_status,
+                    request_body,
                     response_body,
                     forwarded_headers,
                     dropped_headers,
@@ -677,6 +683,12 @@ impl KeyStore {
                 .await?;
 
             tx.commit().await?;
+        }
+
+        if !self.request_logs_column_exists("request_body").await? {
+            sqlx::query("ALTER TABLE request_logs ADD COLUMN request_body BLOB")
+                .execute(&self.pool)
+                .await?;
         }
 
         Ok(())
@@ -988,12 +1000,13 @@ impl KeyStore {
                 tavily_status_code,
                 error_message,
                 result_status,
+                request_body,
                 response_body,
                 forwarded_headers,
                 dropped_headers,
                 created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            "#,
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "#,
         )
         .bind(entry.key_id)
         .bind(entry.method.as_str())
@@ -1003,6 +1016,7 @@ impl KeyStore {
         .bind(entry.tavily_status_code)
         .bind(entry.error)
         .bind(entry.outcome)
+        .bind(entry.request_body)
         .bind(entry.response_body)
         .bind(forwarded_json)
         .bind(dropped_json)
@@ -1093,6 +1107,7 @@ impl KeyStore {
                 tavily_status_code,
                 error_message,
                 result_status,
+                request_body,
                 response_body,
                 forwarded_headers,
                 dropped_headers,
@@ -1113,6 +1128,8 @@ impl KeyStore {
                     parse_header_list(row.try_get::<Option<String>, _>("forwarded_headers")?);
                 let dropped =
                     parse_header_list(row.try_get::<Option<String>, _>("dropped_headers")?);
+                let request_body: Option<Vec<u8>> = row.try_get("request_body")?;
+                let response_body: Option<Vec<u8>> = row.try_get("response_body")?;
                 Ok(RequestLogRecord {
                     id: row.try_get("id")?,
                     key_id: row.try_get("api_key_id")?,
@@ -1124,6 +1141,8 @@ impl KeyStore {
                     error_message: row.try_get("error_message")?,
                     result_status: row.try_get("result_status")?,
                     created_at: row.try_get("created_at")?,
+                    request_body: request_body.unwrap_or_default(),
+                    response_body: response_body.unwrap_or_default(),
                     forwarded_headers: forwarded,
                     dropped_headers: dropped,
                 })
@@ -1205,6 +1224,7 @@ struct AttemptLog<'a> {
     status: Option<StatusCode>,
     tavily_status_code: Option<i64>,
     error: Option<&'a str>,
+    request_body: &'a [u8],
     response_body: &'a [u8],
     outcome: &'a str,
     forwarded_headers: &'a [String],
@@ -1255,6 +1275,8 @@ pub struct RequestLogRecord {
     pub tavily_status_code: Option<i64>,
     pub error_message: Option<String>,
     pub result_status: String,
+    pub request_body: Vec<u8>,
+    pub response_body: Vec<u8>,
     pub created_at: i64,
     pub forwarded_headers: Vec<String>,
     pub dropped_headers: Vec<String>,

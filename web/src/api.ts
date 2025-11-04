@@ -23,11 +23,18 @@ export interface ApiKeyStats {
 export interface RequestLog {
   id: number
   key_id: string
+  method: string
+  path: string
+  query: string | null
   http_status: number | null
   mcp_status: number | null
   result_status: string
   created_at: number
   error_message: string | null
+  request_body: string | null
+  response_body: string | null
+  forwarded_headers: string[]
+  dropped_headers: string[]
 }
 
 export interface ApiKeySecret {
