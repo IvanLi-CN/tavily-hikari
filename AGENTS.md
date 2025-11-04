@@ -50,6 +50,8 @@
 - Backend (Rust):
   - Foreground (debug): `RUST_LOG=info cargo run -- --bind 127.0.0.1 --port 58087 --db-path tavily_proxy.db`
   - Background: `nohup env RUST_LOG=info cargo run -- --bind 127.0.0.1 --port 58087 --db-path tavily_proxy.db > logs/backend.dev.log 2>&1 & echo $! > logs/backend.pid`
+  - Time-limited check: `timeout 120s RUST_LOG=info cargo run -- --bind 127.0.0.1 --port 58087 --db-path tavily_proxy.db --static-dir web/dist`
+    - Always prefer wrapping foreground runs in `timeout` (adjust seconds as needed) so automation never blocks when ports are busy or startup stalls.
 
 - Frontend (Vite):
   - Foreground (debug): `cd web && npm ci && npm run dev -- --host 127.0.0.1 --port 55173`

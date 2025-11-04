@@ -7,12 +7,13 @@ use std::{
 };
 
 use axum::http::header::{CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, TRANSFER_ENCODING};
+use axum::response::IntoResponse;
 use axum::{
     Router,
     body::{self, Body},
     extract::{Path, Query, State},
     http::{HeaderMap, HeaderName, Method, Request, Response, StatusCode},
-    response::Json,
+    response::{Json, Redirect},
     routing::{any, delete, get, patch, post},
 };
 use reqwest::header::{HeaderMap as ReqHeaderMap, HeaderValue as ReqHeaderValue};
@@ -20,8 +21,7 @@ use serde::{Deserialize, Serialize};
 use tavily_hikari::{
     ApiKeyMetrics, ProxyRequest, ProxyResponse, ProxySummary, RequestLogRecord, TavilyProxy,
 };
-use tower::service_fn;
-use tower_http::services::ServeDir;
+use tower_http::services::{ServeDir, ServeFile};
 
 #[derive(Clone)]
 struct AppState {
@@ -125,39 +125,220 @@ async fn serve_index(State(state): State<Arc<AppState>>) -> Result<Response<Body
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
-const NOT_FOUND_HTML: &str = r#"<!doctype html>
-<html lang=\"en\">
-  <head>
-    <meta charset=\"UTF-8\" />
-    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />
-    <title>404 Not Found</title>
-    <style>
-      html,body{height:100%;margin:0;font-family:ui-sans-serif,system-ui,sans-serif;color:#111}
-      .wrap{min-height:100%;display:flex;align-items:center;justify-content:center;padding:32px}
-      .card{max-width:720px;width:100%;border:1px solid #e5e7eb;border-radius:12px;padding:24px;box-shadow:0 2px 8px rgba(0,0,0,.06)}
-      h1{font-size:24px;margin:0 0 8px}
-      p{margin:6px 0 0;color:#444}
-      a{color:#2563eb;text-decoration:none}
-      a:hover{text-decoration:underline}
-    </style>
-  </head>
-  <body>
-    <main class=\"wrap\">
-      <div class=\"card\">
-        <h1>404 Not Found</h1>
-        <p>The page you’re looking for doesn’t exist.</p>
-        <p><a href=\"/\" aria-label=\"Back to home\">Back to home</a></p>
-      </div>
-    </main>
-  </body>
-</html>"#;
+const BASE_404_STYLES: &str = r#"
+  :root {
+    color-scheme: light;
+    font-family: 'Inter', 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    text-rendering: optimizeLegibility;
+  }
 
-async fn not_found_html_resp() -> Response<Body> {
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: radial-gradient(circle at top left, rgba(99, 102, 241, 0.12), transparent 45%),
+      radial-gradient(circle at bottom right, rgba(236, 72, 153, 0.12), transparent 50%),
+      #f5f6fb;
+    color: #1f2937;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+    }
+    body {
+      background: radial-gradient(circle at top left, rgba(129, 140, 248, 0.22), transparent 45%),
+        radial-gradient(circle at bottom right, rgba(236, 72, 153, 0.18), transparent 50%),
+        #0f172a;
+      color: #e2e8f0;
+    }
+  }
+
+  .not-found-shell {
+    max-width: 520px;
+    width: calc(100% - 48px);
+    padding: 48px 40px;
+    border-radius: 28px;
+    background: rgba(255, 255, 255, 0.82);
+    border: 1px solid rgba(15, 23, 42, 0.08);
+    backdrop-filter: blur(18px);
+    box-shadow: 0 28px 65px rgba(15, 23, 42, 0.12);
+    text-align: center;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .not-found-shell {
+      background: rgba(15, 23, 42, 0.7);
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      box-shadow: 0 32px 65px rgba(15, 23, 42, 0.5);
+    }
+  }
+
+  .not-found-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 16px;
+    border-radius: 999px;
+    background: rgba(99, 102, 241, 0.16);
+    color: #4338ca;
+    font-size: 0.85rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+  }
+
+  .not-found-code {
+    margin: 28px 0 12px;
+    font-size: clamp(4rem, 13vw, 6rem);
+    font-weight: 800;
+    line-height: 1;
+    letter-spacing: -0.04em;
+    color: #4f46e5;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .not-found-code {
+      color: #a5b4fc;
+    }
+  }
+
+  .not-found-title {
+    margin: 0;
+    font-size: clamp(1.5rem, 4vw, 2.25rem);
+    font-weight: 700;
+    letter-spacing: -0.01em;
+  }
+
+  .not-found-description {
+    margin: 20px 0 30px;
+    color: rgba(100, 116, 139, 0.95);
+    font-size: 1rem;
+    line-height: 1.7;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .not-found-description {
+      color: rgba(203, 213, 225, 0.82);
+    }
+  }
+
+  .not-found-actions {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: 28px;
+  }
+
+  .not-found-primary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 12px 22px;
+    border-radius: 999px;
+    font-weight: 600;
+    color: #fff;
+    background: linear-gradient(135deg, #6366f1, #8b5cf6);
+    box-shadow: 0 16px 35px rgba(99, 102, 241, 0.35);
+    text-decoration: none;
+    transition: transform 0.12s ease, box-shadow 0.12s ease;
+  }
+
+  .not-found-primary:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 20px 40px rgba(99, 102, 241, 0.4);
+  }
+
+  .not-found-footer {
+    margin-top: 36px;
+    font-size: 0.85rem;
+    color: rgba(100, 116, 139, 0.75);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .not-found-footer {
+      color: rgba(148, 163, 184, 0.78);
+    }
+  }
+"#;
+
+fn find_frontend_css_href(static_dir: Option<&FsPath>) -> Option<String> {
+    let dir = static_dir?;
+    let index_path = dir.join("index.html");
+    let mut s = String::new();
+    if fs::File::open(&index_path)
+        .ok()?
+        .read_to_string(&mut s)
+        .is_ok()
+    {
+        // naive scan for first stylesheet href
+        if let Some(idx) = s.find("rel=\"stylesheet\"") {
+            let frag = &s[idx..];
+            if let Some(href_idx) = frag.find("href=\"") {
+                let frag2 = &frag[href_idx + 6..];
+                if let Some(end_idx) = frag2.find('\"') {
+                    let href = &frag2[..end_idx];
+                    return Some(href.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn load_frontend_css_content(static_dir: Option<&FsPath>) -> Option<String> {
+    let dir = static_dir?;
+    let href = find_frontend_css_href(Some(dir))?;
+    // href like "/assets/index-xxxx.css" => remove leading slash and read from static_dir root
+    let rel = href.trim_start_matches('/');
+    let path = dir.join(
+        rel.strip_prefix("assets/")
+            .map(|s| FsPath::new("assets").join(s))
+            .unwrap_or_else(|| FsPath::new(rel).to_path_buf()),
+    );
+    fs::read_to_string(path).ok()
+}
+
+#[derive(Deserialize)]
+struct FallbackQuery {
+    path: Option<String>,
+}
+
+async fn not_found_landing(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<FallbackQuery>,
+) -> Response<Body> {
+    let css = load_frontend_css_content(state.static_dir.as_deref());
+    let html = build_404_landing_inline(css.as_deref(), q.path.unwrap_or_else(|| "/".to_string()));
     Response::builder()
         .status(StatusCode::NOT_FOUND)
         .header(CONTENT_TYPE, "text/html; charset=utf-8")
-        .body(Body::from(NOT_FOUND_HTML))
+        .header(CONTENT_LENGTH, html.len().to_string())
+        .body(Body::from(html))
         .unwrap_or_else(|_| Response::builder().status(500).body(Body::empty()).unwrap())
+}
+
+fn build_404_landing_inline(css_content: Option<&str>, original: String) -> String {
+    let mut style_block = String::from("<style>\n");
+    style_block.push_str(BASE_404_STYLES);
+    if let Some(content) = css_content {
+        style_block.push_str(content);
+    }
+    style_block.push_str("\n</style>\n");
+    let script = format!(
+        "<script>try{{history.replaceState(null,'', '{}')}}catch(_e){{}}</script>",
+        html_escape::encode_double_quoted_attribute(&original)
+    );
+    format!(
+        "<!doctype html>\n<html lang=\"en\">\n  <head>\n    <meta charset=\"UTF-8\" />\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\n    <title>404 Not Found</title>\n    {}  </head>\n  <body>\n    <main class=\"not-found-shell\" role=\"main\">\n      <span class=\"not-found-badge\" aria-hidden=\"true\">Tavily Hikari Proxy</span>\n      <p class=\"not-found-code\">404</p>\n      <h1 class=\"not-found-title\">Page not found</h1>\n      <p class=\"not-found-description\">The page you’re trying to visit, <code>{}</code>, isn’t available right now.</p>\n      <div class=\"not-found-actions\">\n        <a href=\"/\" class=\"not-found-primary\" aria-label=\"Back to dashboard\">Return to dashboard</a>\n      </div>\n      <p class=\"not-found-footer\">Error reference: 404</p>\n    </main>\n    {}\n  </body>\n</html>",
+        style_block,
+        html_escape::encode_text(&original),
+        script
+    )
 }
 
 async fn fetch_summary(
@@ -457,12 +638,10 @@ pub async fn serve(
         if dir.is_dir() {
             let index_file = dir.join("index.html");
             if index_file.exists() {
-                let fs_service = ServeDir::new(dir.clone())
-                    .append_index_html_on_directories(true)
-                    .not_found_service(service_fn(|_req| async move {
-                        Ok::<_, std::convert::Infallible>(not_found_html_resp().await)
-                    }));
-                router = router.nest_service("/", fs_service);
+                router = router.nest_service("/assets", ServeDir::new(dir.join("assets")));
+                router = router.route("/", get(serve_index));
+                router =
+                    router.route_service("/favicon.svg", ServeFile::new(dir.join("favicon.svg")));
             } else {
                 eprintln!(
                     "static index.html not found at {} — skip serving SPA",
@@ -478,7 +657,45 @@ pub async fn serve(
         .route("/mcp", any(proxy_handler))
         .route("/mcp/*path", any(proxy_handler));
 
-    // Static service handles '/' and 404; no extra fallback needed here
+    // 404 landing page that updates URL back to original via history API
+    router = router.route("/__404", get(not_found_landing));
+
+    // Fallback: if UA/Accept 支持 HTML 则重定向到 __404；否则返回纯 404
+    async fn supports_html(headers: &HeaderMap) -> bool {
+        let accept = headers
+            .get(axum::http::header::ACCEPT)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if accept.contains("text/html") {
+            return true;
+        }
+        let ua = headers
+            .get(axum::http::header::USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        ua.contains("mozilla/")
+    }
+
+    router = router.fallback(|req: Request<Body>| async move {
+        let headers = req.headers().clone();
+        if supports_html(&headers).await {
+            // 302 for GET/HEAD; 303 for others
+            let uri = req.uri();
+            let pq = uri
+                .path_and_query()
+                .map(|v| v.as_str())
+                .unwrap_or(uri.path());
+            let target = format!("/__404?path={}", urlencoding::encode(pq));
+            match *req.method() {
+                Method::GET | Method::HEAD => Redirect::temporary(&target).into_response(),
+                _ => Redirect::to(&target).into_response(), // 303 See Other
+            }
+        } else {
+            (StatusCode::NOT_FOUND, Body::empty()).into_response()
+        }
+    });
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let bound_addr = listener.local_addr()?;
