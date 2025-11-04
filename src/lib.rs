@@ -3,6 +3,7 @@ use std::{cmp::min, sync::Arc};
 use bytes::Bytes;
 use chrono::{Datelike, TimeZone, Utc};
 use nanoid::nanoid;
+use rand::Rng;
 use reqwest::{
     Client, Method, StatusCode, Url,
     header::{CONTENT_LENGTH, HOST, HeaderMap, HeaderValue},
@@ -254,6 +255,54 @@ impl TavilyProxy {
         self.key_store.fetch_recent_logs(limit).await
     }
 
+    // ----- Public auth token management API -----
+
+    /// Validate an access token in format `th-<id>-<secret>` and record usage.
+    /// Returns true if valid and enabled.
+    pub async fn validate_access_token(&self, token: &str) -> Result<bool, ProxyError> {
+        self.key_store.validate_access_token(token).await
+    }
+
+    /// Admin: create a new access token with optional note.
+    pub async fn create_access_token(
+        &self,
+        note: Option<&str>,
+    ) -> Result<AuthTokenSecret, ProxyError> {
+        self.key_store.create_access_token(note).await
+    }
+
+    /// Admin: list tokens for management.
+    pub async fn list_access_tokens(&self) -> Result<Vec<AuthToken>, ProxyError> {
+        self.key_store.list_access_tokens().await
+    }
+
+    /// Admin: delete a token by id code.
+    pub async fn delete_access_token(&self, id: &str) -> Result<(), ProxyError> {
+        self.key_store.delete_access_token(id).await
+    }
+
+    /// Admin: set token enabled/disabled.
+    pub async fn set_access_token_enabled(
+        &self,
+        id: &str,
+        enabled: bool,
+    ) -> Result<(), ProxyError> {
+        self.key_store.set_access_token_enabled(id, enabled).await
+    }
+
+    /// Admin: update token note.
+    pub async fn update_access_token_note(&self, id: &str, note: &str) -> Result<(), ProxyError> {
+        self.key_store.update_access_token_note(id, note).await
+    }
+
+    /// Admin: get full token string for copy.
+    pub async fn get_access_token_secret(
+        &self,
+        id: &str,
+    ) -> Result<Option<AuthTokenSecret>, ProxyError> {
+        self.key_store.get_access_token_secret(id).await
+    }
+
     /// 根据 ID 获取真实 API key，仅供管理员调用。
     pub async fn get_api_key_secret(&self, key_id: &str) -> Result<Option<String>, ProxyError> {
         self.key_store.fetch_api_key_secret(key_id).await
@@ -355,7 +404,70 @@ impl KeyStore {
 
         self.upgrade_request_logs_schema().await?;
 
+        // Access tokens for /mcp authentication
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS auth_tokens (
+                id TEXT PRIMARY KEY,           -- 4-char id code
+                secret TEXT NOT NULL,          -- 12-char secret
+                enabled INTEGER NOT NULL DEFAULT 1,
+                note TEXT,
+                total_requests INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                last_used_at INTEGER
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        self.upgrade_auth_tokens_schema().await?;
+
         Ok(())
+    }
+
+    async fn upgrade_auth_tokens_schema(&self) -> Result<(), ProxyError> {
+        // Future-proof placeholder for migrations
+        // Ensure required columns exist if table is from older version
+        // enabled
+        if !self.auth_tokens_column_exists("enabled").await? {
+            sqlx::query("ALTER TABLE auth_tokens ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
+                .execute(&self.pool)
+                .await?;
+        }
+        if !self.auth_tokens_column_exists("note").await? {
+            sqlx::query("ALTER TABLE auth_tokens ADD COLUMN note TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
+        if !self.auth_tokens_column_exists("total_requests").await? {
+            sqlx::query(
+                "ALTER TABLE auth_tokens ADD COLUMN total_requests INTEGER NOT NULL DEFAULT 0",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
+        if !self.auth_tokens_column_exists("created_at").await? {
+            sqlx::query("ALTER TABLE auth_tokens ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0")
+                .execute(&self.pool)
+                .await?;
+        }
+        if !self.auth_tokens_column_exists("last_used_at").await? {
+            sqlx::query("ALTER TABLE auth_tokens ADD COLUMN last_used_at INTEGER")
+                .execute(&self.pool)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn auth_tokens_column_exists(&self, column: &str) -> Result<bool, ProxyError> {
+        let exists = sqlx::query_scalar::<_, i64>(
+            "SELECT 1 FROM pragma_table_info('auth_tokens') WHERE name = ? LIMIT 1",
+        )
+        .bind(column)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(exists.is_some())
     }
 
     async fn upgrade_api_keys_schema(&self) -> Result<(), ProxyError> {
@@ -816,6 +928,157 @@ impl KeyStore {
         }
 
         Err(ProxyError::NoAvailableKeys)
+    }
+
+    // ----- Access token helpers -----
+
+    fn compose_full_token(id: &str, secret: &str) -> String {
+        format!("th-{}-{}", id, secret)
+    }
+
+    async fn validate_access_token(&self, token: &str) -> Result<bool, ProxyError> {
+        // Expect format th-<id>-<secret>
+        let Some(rest) = token.strip_prefix("th-") else {
+            return Ok(false);
+        };
+        let parts: Vec<&str> = rest.splitn(2, '-').collect();
+        if parts.len() != 2 {
+            return Ok(false);
+        }
+        let id = parts[0];
+        let secret = parts[1];
+        if id.len() != 4 || secret.len() != 12 {
+            return Ok(false);
+        }
+
+        let now = Utc::now().timestamp();
+        let mut tx = self.pool.begin().await?;
+        let row = sqlx::query_as::<_, (i64, i64)>(
+            "SELECT COUNT(1) as cnt, enabled FROM auth_tokens WHERE id = ? AND secret = ? LIMIT 1",
+        )
+        .bind(id)
+        .bind(secret)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        match row {
+            Some((cnt, enabled)) if cnt > 0 && enabled == 1 => {
+                sqlx::query(
+                    "UPDATE auth_tokens SET total_requests = total_requests + 1, last_used_at = ? WHERE id = ?",
+                )
+                .bind(now)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+                tx.commit().await?;
+                Ok(true)
+            }
+            _ => {
+                tx.rollback().await.ok();
+                Ok(false)
+            }
+        }
+    }
+
+    async fn create_access_token(&self, note: Option<&str>) -> Result<AuthTokenSecret, ProxyError> {
+        let now = Utc::now().timestamp();
+        const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        loop {
+            let id = random_string(ALPHABET, 4);
+            let secret = random_string(ALPHABET, 12);
+            let res = sqlx::query(
+                r#"INSERT INTO auth_tokens (id, secret, enabled, note, total_requests, created_at, last_used_at)
+                   VALUES (?, ?, 1, ?, 0, ?, NULL)"#,
+            )
+            .bind(&id)
+            .bind(&secret)
+            .bind(note.unwrap_or(""))
+            .bind(now)
+            .execute(&self.pool)
+            .await;
+
+            match res {
+                Ok(_) => {
+                    let token_str = Self::compose_full_token(&id, &secret);
+                    return Ok(AuthTokenSecret {
+                        id,
+                        token: token_str,
+                    });
+                }
+                Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
+                    // Retry on rare id collision
+                    continue;
+                }
+                Err(e) => return Err(ProxyError::Database(e)),
+            }
+        }
+    }
+
+    // Generate random string of given length from provided alphabet
+    // Alphabet is a byte slice of ASCII alphanumerics
+    // Using ThreadRng for simplicity
+
+    async fn list_access_tokens(&self) -> Result<Vec<AuthToken>, ProxyError> {
+        let rows = sqlx::query_as::<_, (String, i64, Option<String>, i64, i64, Option<i64>)>(
+            r#"SELECT id, enabled, note, total_requests, created_at, last_used_at FROM auth_tokens ORDER BY id ASC"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, enabled, note, total, created_at, last_used)| AuthToken {
+                    id,
+                    enabled: enabled == 1,
+                    note,
+                    total_requests: total,
+                    created_at,
+                    last_used_at: last_used,
+                },
+            )
+            .collect())
+    }
+
+    async fn delete_access_token(&self, id: &str) -> Result<(), ProxyError> {
+        sqlx::query("DELETE FROM auth_tokens WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn set_access_token_enabled(&self, id: &str, enabled: bool) -> Result<(), ProxyError> {
+        sqlx::query("UPDATE auth_tokens SET enabled = ? WHERE id = ?")
+            .bind(if enabled { 1 } else { 0 })
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn update_access_token_note(&self, id: &str, note: &str) -> Result<(), ProxyError> {
+        sqlx::query("UPDATE auth_tokens SET note = ? WHERE id = ?")
+            .bind(note)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn get_access_token_secret(
+        &self,
+        id: &str,
+    ) -> Result<Option<AuthTokenSecret>, ProxyError> {
+        let row =
+            sqlx::query_as::<_, (String,)>("SELECT secret FROM auth_tokens WHERE id = ? LIMIT 1")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.map(|(secret,)| AuthTokenSecret {
+            id: id.to_string(),
+            token: Self::compose_full_token(id, &secret),
+        }))
     }
 
     async fn reset_monthly(&self) -> Result<(), ProxyError> {
@@ -1292,6 +1555,34 @@ pub struct ProxySummary {
     pub active_keys: i64,
     pub exhausted_keys: i64,
     pub last_activity: Option<i64>,
+}
+
+fn random_string(alphabet: &[u8], len: usize) -> String {
+    let mut s = String::with_capacity(len);
+    let mut rng = rand::thread_rng();
+    for _ in 0..len {
+        let idx = rng.gen_range(0..alphabet.len());
+        s.push(alphabet[idx] as char);
+    }
+    s
+}
+
+/// Token list record for management UI
+#[derive(Debug, Clone)]
+pub struct AuthToken {
+    pub id: String, // 4-char id code
+    pub enabled: bool,
+    pub note: Option<String>,
+    pub total_requests: i64,
+    pub created_at: i64,
+    pub last_used_at: Option<i64>,
+}
+
+/// Full token for copy (never store prefix-only here)
+#[derive(Debug, Clone)]
+pub struct AuthTokenSecret {
+    pub id: String,
+    pub token: String, // th-<id>-<secret>
 }
 
 #[derive(Debug, Error)]

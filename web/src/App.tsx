@@ -14,6 +14,13 @@ import {
   type Profile,
   type RequestLog,
   type Summary,
+  fetchTokens,
+  type AuthToken,
+  fetchTokenSecret,
+  createToken,
+  deleteToken,
+  setTokenEnabled,
+  updateTokenNote,
 } from './api'
 
 const REFRESH_INTERVAL_MS = 30_000
@@ -125,6 +132,7 @@ function formatErrorMessage(log: RequestLog): string {
 function App(): JSX.Element {
   const [summary, setSummary] = useState<Summary | null>(null)
   const [keys, setKeys] = useState<ApiKeyStats[]>([])
+  const [tokens, setTokens] = useState<AuthToken[]>([])
   const [logs, setLogs] = useState<RequestLog[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -136,6 +144,7 @@ function App(): JSX.Element {
   const [copyState, setCopyState] = useState<Map<string, 'loading' | 'copied'>>(() => new Map())
   const [expandedLogs, setExpandedLogs] = useState<Set<number>>(() => new Set())
   const [newKey, setNewKey] = useState('')
+  const [newTokenNote, setNewTokenNote] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [togglingId, setTogglingId] = useState<string | null>(null)
@@ -143,8 +152,14 @@ function App(): JSX.Element {
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
   const disableDialogRef = useRef<HTMLDialogElement | null>(null)
   const [pendingDisableId, setPendingDisableId] = useState<string | null>(null)
+  const tokenDeleteDialogRef = useRef<HTMLDialogElement | null>(null)
+  const [pendingTokenDeleteId, setPendingTokenDeleteId] = useState<string | null>(null)
+  const tokenNoteDialogRef = useRef<HTMLDialogElement | null>(null)
+  const [editingTokenId, setEditingTokenId] = useState<string | null>(null)
+  const [editingTokenNote, setEditingTokenNote] = useState('')
+  const [savingTokenNote, setSavingTokenNote] = useState(false)
 
-  const copyStateKey = useCallback((scope: 'keys' | 'logs', identifier: string | number) => {
+  const copyStateKey = useCallback((scope: 'keys' | 'logs' | 'tokens', identifier: string | number) => {
     return `${scope}:${identifier}`
   }, [])
 
@@ -204,12 +219,13 @@ function App(): JSX.Element {
   const loadData = useCallback(
     async (signal?: AbortSignal) => {
       try {
-        const [summaryData, keyData, logData, ver, profileData] = await Promise.all([
+        const [summaryData, keyData, logData, ver, profileData, tokenData] = await Promise.all([
           fetchSummary(signal),
           fetchApiKeys(signal),
           fetchRequestLogs(50, signal),
           fetchVersion(signal).catch(() => null),
           fetchProfile(signal).catch(() => null),
+          fetchTokens(signal).catch(() => []),
         ])
 
         if (signal?.aborted) {
@@ -219,6 +235,7 @@ function App(): JSX.Element {
         setSummary(summaryData)
         setKeys(keyData)
         setLogs(logData)
+        setTokens(tokenData)
         setExpandedLogs((previous) => {
           if (!isAdmin || previous.size === 0) {
             return new Set()
@@ -378,6 +395,118 @@ function App(): JSX.Element {
     }
   }
 
+  const handleAddToken = async () => {
+    const note = newTokenNote.trim()
+    setSubmitting(true)
+    try {
+      const { token } = await createToken(note || undefined)
+      setNewTokenNote('')
+      try { await navigator.clipboard?.writeText(token) } catch {}
+      const controller = new AbortController()
+      setLoading(true)
+      await loadData(controller.signal)
+      controller.abort()
+    } catch (err) {
+      console.error(err)
+      setError(err instanceof Error ? err.message : 'Failed to create token')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const handleCopyToken = async (id: string, stateKey: string) => {
+    updateCopyState(stateKey, 'loading')
+    try {
+      const { token } = await fetchTokenSecret(id)
+      await navigator.clipboard?.writeText(token)
+      updateCopyState(stateKey, 'copied')
+      window.setTimeout(() => updateCopyState(stateKey, null), 2000)
+    } catch (err) {
+      console.error(err)
+      setError(err instanceof Error ? err.message : 'Failed to copy token')
+      updateCopyState(stateKey, null)
+    }
+  }
+
+  const toggleToken = async (id: string, enabled: boolean) => {
+    setTogglingId(id)
+    try {
+      await setTokenEnabled(id, !enabled)
+      const controller = new AbortController()
+      setLoading(true)
+      await loadData(controller.signal)
+      controller.abort()
+    } catch (err) {
+      console.error(err)
+      setError(err instanceof Error ? err.message : 'Failed to update token status')
+    } finally {
+      setTogglingId(null)
+    }
+  }
+
+  const openTokenDeleteConfirm = (id: string) => {
+    if (!id) return
+    setPendingTokenDeleteId(id)
+    window.requestAnimationFrame(() => tokenDeleteDialogRef.current?.showModal())
+  }
+
+  const confirmTokenDelete = async () => {
+    if (!pendingTokenDeleteId) return
+    const id = pendingTokenDeleteId
+    setDeletingId(id)
+    try {
+      await deleteToken(id)
+      tokenDeleteDialogRef.current?.close()
+      setPendingTokenDeleteId(null)
+      const controller = new AbortController()
+      setLoading(true)
+      await loadData(controller.signal)
+      controller.abort()
+    } catch (err) {
+      console.error(err)
+      setError(err instanceof Error ? err.message : 'Failed to delete token')
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
+  const cancelTokenDelete = () => {
+    tokenDeleteDialogRef.current?.close()
+    setPendingTokenDeleteId(null)
+  }
+
+  const openTokenNoteEdit = (id: string, current: string | null) => {
+    setEditingTokenId(id)
+    setEditingTokenNote(current ?? '')
+    window.requestAnimationFrame(() => tokenNoteDialogRef.current?.showModal())
+  }
+
+  const saveTokenNote = async () => {
+    if (!editingTokenId) return
+    setSavingTokenNote(true)
+    try {
+      await updateTokenNote(editingTokenId, editingTokenNote)
+      tokenNoteDialogRef.current?.close()
+      setEditingTokenId(null)
+      setEditingTokenNote('')
+      const controller = new AbortController()
+      setLoading(true)
+      await loadData(controller.signal)
+      controller.abort()
+    } catch (err) {
+      console.error(err)
+      setError(err instanceof Error ? err.message : 'Failed to update token note')
+    } finally {
+      setSavingTokenNote(false)
+    }
+  }
+
+  const cancelTokenNote = () => {
+    tokenNoteDialogRef.current?.close()
+    setEditingTokenId(null)
+    setEditingTokenNote('')
+  }
+
   const openDeleteConfirm = (id: string) => {
     if (!id) return
     setPendingDeleteId(id)
@@ -481,6 +610,124 @@ function App(): JSX.Element {
         </div>
       </section>
 
+      <section className="surface panel">
+        <div className="panel-header">
+          <div>
+            <h2>Access Tokens</h2>
+            <p className="panel-description">Auth for /mcp. Format th-xxxx-xxxxxxxxxxxx</p>
+          </div>
+          {isAdmin && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <input
+                type="text"
+                placeholder="Note (optional)"
+                value={newTokenNote}
+                onChange={(e) => setNewTokenNote(e.target.value)}
+                style={{ padding: '8px 12px', borderRadius: 10, border: '1px solid rgba(15, 23, 42, 0.16)', minWidth: 240 }}
+                aria-label="Token note"
+              />
+              <button type="button" className="button button-primary" onClick={() => void handleAddToken()} disabled={submitting}>
+                {submitting ? 'Creating…' : 'New Token'}
+              </button>
+            </div>
+          )}
+        </div>
+        <div className="table-wrapper">
+          {tokens.length === 0 ? (
+            <div className="empty-state">{loading ? 'Loading tokens…' : 'No tokens yet.'}</div>
+          ) : (
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Note</th>
+                  <th>Usage</th>
+                  <th>Last Used</th>
+                  {isAdmin && <th>Actions</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {tokens.map((t) => {
+                  const stateKey = copyStateKey('tokens', t.id)
+                  const state = copyState.get(stateKey)
+                  return (
+                    <tr key={t.id}>
+                      <td>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <code>{t.id}</code>
+                          <span
+                            className="token-status-slot"
+                            aria-hidden={t.enabled ? true : undefined}
+                            title={t.enabled ? undefined : 'Disabled'}
+                          >
+                            {!t.enabled && (
+                              <Icon
+                                className="token-status-icon"
+                                icon="mdi:pause-circle-outline"
+                                width={14}
+                                height={14}
+                                aria-label="Disabled token"
+                              />
+                            )}
+                          </span>
+                        </div>
+                      </td>
+                      <td>{t.note || '—'}</td>
+                      <td>{formatNumber(t.total_requests)}</td>
+                      <td>{formatTimestamp(t.last_used_at)}</td>
+                      {isAdmin && (
+                        <td>
+                          <div style={{ display: 'flex', gap: 8 }}>
+                            <button
+                              type="button"
+                              className={`icon-button${state === 'copied' ? ' icon-button-success' : ''}${state === 'loading' ? ' icon-button-loading' : ''}`}
+                              title="Copy full token"
+                              aria-label="Copy full token"
+                              onClick={() => void handleCopyToken(t.id, stateKey)}
+                              disabled={state === 'loading'}
+                            >
+                              <Icon icon={state === 'copied' ? 'mdi:check' : 'mdi:content-copy'} width={18} height={18} />
+                            </button>
+                            <button
+                              type="button"
+                              className="icon-button"
+                              title={t.enabled ? 'Disable token' : 'Enable token'}
+                              aria-label={t.enabled ? 'Disable token' : 'Enable token'}
+                              onClick={() => void toggleToken(t.id, t.enabled)}
+                              disabled={togglingId === t.id}
+                            >
+                              <Icon icon={t.enabled ? 'mdi:pause-circle-outline' : 'mdi:play-circle-outline'} width={18} height={18} />
+                            </button>
+                            <button
+                              type="button"
+                              className="icon-button"
+                              title="Edit note"
+                              aria-label="Edit note"
+                              onClick={() => openTokenNoteEdit(t.id, t.note)}
+                            >
+                              <Icon icon="mdi:pencil-outline" width={18} height={18} />
+                            </button>
+                            <button
+                              type="button"
+                              className="icon-button icon-button-danger"
+                              title="Delete token"
+                              aria-label="Delete token"
+                              onClick={() => openTokenDeleteConfirm(t.id)}
+                              disabled={deletingId === t.id}
+                            >
+                              <Icon icon={deletingId === t.id ? 'mdi:progress-helper' : 'mdi:trash-outline'} width={18} height={18} />
+                            </button>
+                          </div>
+                        </td>
+                      )}
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </section>
       {error && <div className="surface error-banner">{error}</div>}
 
       <section className="surface metrics-grid">
@@ -740,6 +987,42 @@ function App(): JSX.Element {
           <form method="dialog" onSubmit={(e) => e.preventDefault()} style={{ display: 'flex', gap: 8 }}>
             <button type="button" className="btn" onClick={cancelDelete}>Cancel</button>
             <button type="button" className="btn btn-error" onClick={() => void confirmDelete()} disabled={!!deletingId}>Remove</button>
+          </form>
+        </div>
+      </div>
+    </dialog>
+    {/* Token Delete Confirmation */}
+    <dialog id="confirm_token_delete_modal" ref={tokenDeleteDialogRef} className="modal">
+      <div className="modal-box">
+        <h3 className="font-bold text-lg" style={{ marginTop: 0 }}>Delete Token</h3>
+        <p className="py-2">This will permanently remove the access token. Clients using it will receive 401.</p>
+        <div className="modal-action">
+          <form method="dialog" onSubmit={(e) => e.preventDefault()} style={{ display: 'flex', gap: 8 }}>
+            <button type="button" className="btn" onClick={cancelTokenDelete}>Cancel</button>
+            <button type="button" className="btn btn-error" onClick={() => void confirmTokenDelete()} disabled={!!deletingId}>Delete</button>
+          </form>
+        </div>
+      </div>
+    </dialog>
+
+    {/* Token Edit Note (DaisyUI modal) */}
+    <dialog id="edit_token_note_modal" ref={tokenNoteDialogRef} className="modal">
+      <div className="modal-box">
+        <h3 className="font-bold text-lg" style={{ marginTop: 0 }}>Edit Token Note</h3>
+        <div className="py-2" style={{ display: 'flex', gap: 8 }}>
+          <input
+            type="text"
+            className="input"
+            placeholder="Note"
+            value={editingTokenNote}
+            onChange={(e) => setEditingTokenNote(e.target.value)}
+            style={{ flex: 1 }}
+          />
+        </div>
+        <div className="modal-action">
+          <form method="dialog" onSubmit={(e) => e.preventDefault()} style={{ display: 'flex', gap: 8 }}>
+            <button type="button" className="btn" onClick={cancelTokenNote}>Cancel</button>
+            <button type="button" className="btn btn-primary" onClick={() => void saveTokenNote()} disabled={savingTokenNote}>Save</button>
           </form>
         </div>
       </div>
