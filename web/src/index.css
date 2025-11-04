@@ -302,6 +302,124 @@ tbody tr:hover {
   background: rgba(76, 201, 240, 0.08);
 }
 
+.log-result-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+
+.log-result-button:focus-visible {
+  outline: 2px solid rgba(99, 102, 241, 0.6);
+  outline-offset: 2px;
+  border-radius: 999px;
+}
+
+.log-result-button .status-badge {
+  margin: 0;
+}
+
+.log-result-button-active .status-badge {
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.25);
+}
+
+.log-result-icon {
+  color: #475569;
+}
+
+.log-details-row td {
+  background: rgba(241, 245, 249, 0.6);
+  border-bottom: none;
+}
+
+.log-details-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.log-details-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  font-size: 0.85rem;
+  color: #475569;
+}
+
+.log-details-summary > div {
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.log-details-label {
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 0.72rem;
+  color: #64748b;
+  letter-spacing: 0.04em;
+}
+
+.log-details-value {
+  font-family: 'JetBrains Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-size: 0.82rem;
+  word-break: break-all;
+}
+
+.log-details-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+}
+
+.log-details-section header {
+  margin: 0 0 6px;
+  font-size: 0.78rem;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.log-details-section pre {
+  margin: 0;
+  padding: 12px;
+  background: rgba(15, 23, 42, 0.04);
+  border-radius: 10px;
+  max-height: 220px;
+  overflow: auto;
+  font-family: 'JetBrains Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-size: 0.82rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.log-details-headers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.log-details-section ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 0.82rem;
+  color: #475569;
+}
+
+.log-details-section ul li {
+  margin: 4px 0;
+}
+
+tbody .log-details-row:hover {
+  background: rgba(241, 245, 249, 0.6);
+}
+
 .status-badge {
   display: inline-flex;
   align-items: center;

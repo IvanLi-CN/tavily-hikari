@@ -736,11 +736,16 @@ struct ApiKeySecretView {
 struct RequestLogView {
     id: i64,
     key_id: String,
+    method: String,
+    path: String,
+    query: Option<String>,
     http_status: Option<i64>,
     mcp_status: Option<i64>,
     result_status: String,
     created_at: i64,
     error_message: Option<String>,
+    request_body: Option<String>,
+    response_body: Option<String>,
     forwarded_headers: Vec<String>,
     dropped_headers: Vec<String>,
 }
@@ -858,16 +863,29 @@ impl From<ApiKeyMetrics> for ApiKeyView {
     }
 }
 
+fn decode_body(bytes: &[u8]) -> Option<String> {
+    if bytes.is_empty() {
+        None
+    } else {
+        Some(String::from_utf8_lossy(bytes).into_owned())
+    }
+}
+
 impl From<RequestLogRecord> for RequestLogView {
     fn from(record: RequestLogRecord) -> Self {
         Self {
             id: record.id,
             key_id: record.key_id,
+            method: record.method,
+            path: record.path,
+            query: record.query,
             http_status: record.status_code,
             mcp_status: record.tavily_status_code,
             result_status: record.result_status,
             created_at: record.created_at,
             error_message: record.error_message,
+            request_body: decode_body(&record.request_body),
+            response_body: decode_body(&record.response_body),
             forwarded_headers: record.forwarded_headers,
             dropped_headers: record.dropped_headers,
         }

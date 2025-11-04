@@ -79,9 +79,47 @@ function statusLabel(status: string): string {
       return 'Quota Exhausted'
     case 'deleted':
       return 'Deleted'
-      default:
-        return status
+    default:
+      return status
   }
+}
+
+function formatErrorMessage(log: RequestLog): string {
+  const message = log.error_message?.trim()
+  if (message) {
+    return message
+  }
+
+  const status = log.result_status.toLowerCase()
+  if (status === 'quota_exhausted') {
+    if (log.http_status != null) {
+      return `Quota exhausted (HTTP ${log.http_status})`
+    }
+    return 'Quota exhausted'
+  }
+
+  if (status === 'error') {
+    if (log.http_status != null && log.mcp_status != null) {
+      return `Request failed (HTTP ${log.http_status}, MCP ${log.mcp_status})`
+    }
+    if (log.http_status != null) {
+      return `Request failed (HTTP ${log.http_status})`
+    }
+    if (log.mcp_status != null) {
+      return `Request failed (MCP ${log.mcp_status})`
+    }
+    return 'Request failed'
+  }
+
+  if (status === 'success') {
+    return '—'
+  }
+
+  if (log.http_status != null) {
+    return `HTTP ${log.http_status}`
+  }
+
+  return '—'
 }
 
 function App(): JSX.Element {
@@ -96,6 +134,7 @@ function App(): JSX.Element {
   const [profile, setProfile] = useState<Profile | null>(null)
   const secretCacheRef = useRef<Map<string, string>>(new Map())
   const [copyState, setCopyState] = useState<Map<string, 'loading' | 'copied'>>(() => new Map())
+  const [expandedLogs, setExpandedLogs] = useState<Set<number>>(() => new Set())
   const [newKey, setNewKey] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
@@ -180,6 +219,19 @@ function App(): JSX.Element {
         setSummary(summaryData)
         setKeys(keyData)
         setLogs(logData)
+        setExpandedLogs((previous) => {
+          if (!isAdmin || previous.size === 0) {
+            return new Set()
+          }
+          const validIds = new Set(logData.map((item) => item.id))
+          const next = new Set<number>()
+          for (const id of previous) {
+            if (validIds.has(id)) {
+              next.add(id)
+            }
+          }
+          return next
+        })
         if (ver) setVersion(ver)
         setProfile(profileData ?? null)
         setLastUpdated(new Date())
@@ -284,6 +336,28 @@ function App(): JSX.Element {
 
   const displayName = profile?.displayName ?? null
   const isAdmin = profile?.isAdmin ?? false
+
+  useEffect(() => {
+    if (!isAdmin && expandedLogs.size > 0) {
+      setExpandedLogs(new Set())
+    }
+  }, [isAdmin, expandedLogs])
+
+  const toggleLogExpansion = useCallback(
+    (id: number) => {
+      if (!isAdmin) return
+      setExpandedLogs((previous) => {
+        const next = new Set(previous)
+        if (next.has(id)) {
+          next.delete(id)
+        } else {
+          next.add(id)
+        }
+        return next
+      })
+    },
+    [isAdmin],
+  )
 
   const handleAddKey = async () => {
     const value = newKey.trim()
@@ -589,32 +663,15 @@ function App(): JSX.Element {
                   const stateKey = copyStateKey('logs', log.id)
                   const state = copyState.get(stateKey)
                   return (
-                    <tr key={log.id}>
-                      <td>{formatTimestamp(log.created_at)}</td>
-                      <td>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <code>{log.key_id}</code>
-                          {isAdmin && (
-                            <button
-                              type="button"
-                              className={`icon-button${state === 'copied' ? ' icon-button-success' : ''}${state === 'loading' ? ' icon-button-loading' : ''}`}
-                              title="复制原始 API key"
-                              aria-label="复制原始 API key"
-                              onClick={() => void handleCopySecret(log.key_id, stateKey)}
-                              disabled={state === 'loading'}
-                            >
-                              <Icon icon={state === 'copied' ? 'mdi:check' : 'mdi:content-copy'} width={18} height={18} />
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                      <td>{log.http_status ?? '—'}</td>
-                    <td>{log.mcp_status ?? '—'}</td>
-                    <td>
-                      <span className={statusClass(log.result_status)}>{statusLabel(log.result_status)}</span>
-                    </td>
-                    <td>{log.error_message ?? '—'}</td>
-                  </tr>
+                    <LogRow
+                      key={log.id}
+                      log={log}
+                      isAdmin={isAdmin}
+                      onCopy={() => void handleCopySecret(log.key_id, stateKey)}
+                      copyState={state}
+                      expanded={expandedLogs.has(log.id)}
+                      onToggle={toggleLogExpansion}
+                    />
                   )
                 })}
               </tbody>
@@ -692,3 +749,135 @@ function App(): JSX.Element {
 }
 
 export default App
+
+type CopyStateValue = 'loading' | 'copied' | undefined
+
+interface LogRowProps {
+  log: RequestLog
+  isAdmin: boolean
+  copyState: CopyStateValue
+  onCopy: () => void
+  expanded: boolean
+  onToggle: (id: number) => void
+}
+
+function LogRow({ log, isAdmin, copyState, onCopy, expanded, onToggle }: LogRowProps): JSX.Element {
+  const copyButtonClass = `icon-button${copyState === 'copied' ? ' icon-button-success' : ''}${copyState === 'loading' ? ' icon-button-loading' : ''}`
+  const requestButtonLabel = expanded ? 'Hide request details' : 'Show request details'
+
+  return (
+    <>
+      <tr>
+        <td>{formatTimestamp(log.created_at)}</td>
+        <td>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <code>{log.key_id}</code>
+            {isAdmin && (
+              <button
+                type="button"
+                className={copyButtonClass}
+                title="复制原始 API key"
+                aria-label="复制原始 API key"
+                onClick={onCopy}
+                disabled={copyState === 'loading'}
+              >
+                <Icon icon={copyState === 'copied' ? 'mdi:check' : 'mdi:content-copy'} width={18} height={18} />
+              </button>
+            )}
+          </div>
+        </td>
+        <td>{log.http_status ?? '—'}</td>
+        <td>{log.mcp_status ?? '—'}</td>
+        <td>
+          {isAdmin ? (
+            <button
+              type="button"
+              className={`log-result-button${expanded ? ' log-result-button-active' : ''}`}
+              onClick={() => onToggle(log.id)}
+              aria-expanded={expanded}
+              aria-controls={`log-details-${log.id}`}
+              aria-label={requestButtonLabel}
+              title={requestButtonLabel}
+            >
+              <span className={statusClass(log.result_status)}>{statusLabel(log.result_status)}</span>
+              <Icon icon={expanded ? 'mdi:chevron-up' : 'mdi:chevron-down'} width={18} height={18} className="log-result-icon" />
+            </button>
+          ) : (
+            <span className={statusClass(log.result_status)}>{statusLabel(log.result_status)}</span>
+          )}
+        </td>
+        <td>{formatErrorMessage(log)}</td>
+      </tr>
+      {isAdmin && expanded && (
+        <tr className="log-details-row">
+          <td colSpan={6} id={`log-details-${log.id}`}>
+            <LogDetails log={log} />
+          </td>
+        </tr>
+      )}
+    </>
+  )
+}
+
+function LogDetails({ log }: { log: RequestLog }): JSX.Element {
+  const query = log.query ? `?${log.query}` : ''
+  const requestLine = `${log.method} ${log.path}${query}`
+  const forwarded = log.forwarded_headers.filter((value) => value.trim().length > 0)
+  const dropped = log.dropped_headers.filter((value) => value.trim().length > 0)
+
+  return (
+    <div className="log-details-panel">
+      <div className="log-details-summary">
+        <div>
+          <span className="log-details-label">Request</span>
+          <span className="log-details-value">{requestLine}</span>
+        </div>
+        <div>
+          <span className="log-details-label">Response</span>
+          <span className="log-details-value">
+            {log.http_status != null ? `HTTP ${log.http_status}` : 'HTTP —'}
+            {log.mcp_status != null ? ` · MCP ${log.mcp_status}` : ''}
+          </span>
+        </div>
+        <div>
+          <span className="log-details-label">Outcome</span>
+          <span className="log-details-value">{statusLabel(log.result_status)}</span>
+        </div>
+      </div>
+      <div className="log-details-body">
+        <div className="log-details-section">
+          <header>Request Body</header>
+          <pre>{log.request_body ?? 'No body captured.'}</pre>
+        </div>
+        <div className="log-details-section">
+          <header>Response Body</header>
+          <pre>{log.response_body ?? 'No body captured.'}</pre>
+        </div>
+      </div>
+      {(forwarded.length > 0 || dropped.length > 0) && (
+        <div className="log-details-headers">
+          {forwarded.length > 0 && (
+            <div className="log-details-section">
+              <header>Forwarded Headers</header>
+              <ul>
+                {forwarded.map((header, index) => (
+                  <li key={`forwarded-${index}-${header}`}>{header}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {dropped.length > 0 && (
+            <div className="log-details-section">
+              <header>Dropped Headers</header>
+              <ul>
+                {dropped.map((header, index) => (
+                  <li key={`dropped-${index}-${header}`}>{header}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
