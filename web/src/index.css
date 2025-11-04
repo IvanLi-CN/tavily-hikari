@@ -487,6 +487,20 @@ tbody .log-details-row:hover {
   margin-top: -12px;
 }
 
+.link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  color: inherit;
+  cursor: pointer;
+}
+
+.link-button code {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .app-footer {
   padding: 0 24px 12px;
   color: #94a3b8;

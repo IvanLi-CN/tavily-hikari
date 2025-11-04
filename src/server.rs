@@ -16,6 +16,7 @@ use axum::{
     response::{Json, Redirect},
     routing::{any, delete, get, patch, post},
 };
+use chrono::{Datelike, TimeZone, Utc};
 use reqwest::header::{HeaderMap as ReqHeaderMap, HeaderValue as ReqHeaderValue};
 use serde::{Deserialize, Serialize};
 use tavily_hikari::{
@@ -769,6 +770,9 @@ pub async fn serve(
         .route("/api/keys/:id", delete(delete_api_key))
         .route("/api/keys/:id/status", patch(update_api_key_status))
         .route("/api/logs", get(list_logs))
+        // Key details
+        .route("/api/keys/:id/metrics", get(get_key_metrics))
+        .route("/api/keys/:id/logs", get(get_key_logs))
         // Access token management (admin only)
         .route("/api/tokens", get(list_tokens))
         .route("/api/tokens", post(create_token))
@@ -941,6 +945,72 @@ struct CreateTokenRequest {
 #[derive(Debug, Deserialize)]
 struct LogsQuery {
     limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct KeyMetricsQuery {
+    period: Option<String>,
+    since: Option<i64>,
+}
+
+async fn get_key_metrics(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(q): Query<KeyMetricsQuery>,
+) -> Result<Json<SummaryView>, StatusCode> {
+    let since = if let Some(since) = q.since {
+        since
+    } else {
+        // fallback by period
+        let now = chrono::Utc::now();
+        match q.period.as_deref() {
+            Some("day") => (now.date_naive().and_hms_opt(0, 0, 0).unwrap().and_utc()).timestamp(),
+            Some("week") => {
+                let weekday = now.weekday().num_days_from_monday() as i64;
+                (now - chrono::Duration::days(weekday))
+                    .date_naive()
+                    .and_hms_opt(0, 0, 0)
+                    .unwrap()
+                    .and_utc()
+                    .timestamp()
+            }
+            _ => {
+                // month default
+                let first = Utc
+                    .with_ymd_and_hms(now.year(), now.month(), 1, 0, 0, 0)
+                    .single()
+                    .expect("valid start of month");
+                first.timestamp()
+            }
+        }
+    };
+
+    state
+        .proxy
+        .key_summary_since(&id, since)
+        .await
+        .map(|s| Json(s.into()))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+#[derive(Debug, Deserialize)]
+struct KeyLogsQuery {
+    limit: Option<usize>,
+    since: Option<i64>,
+}
+
+async fn get_key_logs(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(q): Query<KeyLogsQuery>,
+) -> Result<Json<Vec<RequestLogView>>, StatusCode> {
+    let limit = q.limit.unwrap_or(DEFAULT_LOG_LIMIT).clamp(1, 500);
+    state
+        .proxy
+        .key_recent_logs(&id, limit, q.since)
+        .await
+        .map(|logs| Json(logs.into_iter().map(RequestLogView::from).collect()))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 async fn proxy_handler(

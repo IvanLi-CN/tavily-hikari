@@ -133,6 +133,32 @@ export async function setKeyStatus(id: string, status: KeyAdminStatus): Promise<
   }
 }
 
+// ---- Key details ----
+export interface KeySummary {
+  total_requests: number
+  success_count: number
+  error_count: number
+  quota_exhausted_count: number
+  active_keys: number
+  exhausted_keys: number
+  last_activity: number | null
+}
+
+export function fetchKeyMetrics(id: string, period?: 'day' | 'week' | 'month', since?: number, signal?: AbortSignal): Promise<KeySummary> {
+  const params = new URLSearchParams()
+  if (period) params.set('period', period)
+  if (since != null) params.set('since', String(since))
+  const encoded = encodeURIComponent(id)
+  return requestJson(`/api/keys/${encoded}/metrics?${params.toString()}`, { signal })
+}
+
+export function fetchKeyLogs(id: string, limit = 50, since?: number, signal?: AbortSignal): Promise<RequestLog[]> {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (since != null) params.set('since', String(since))
+  const encoded = encodeURIComponent(id)
+  return requestJson(`/api/keys/${encoded}/logs?${params.toString()}`, { signal })
+}
+
 // Tokens API
 export function fetchTokens(signal?: AbortSignal): Promise<AuthToken[]> {
   return requestJson('/api/tokens', { signal })

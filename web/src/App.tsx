@@ -21,7 +21,16 @@ import {
   deleteToken,
   setTokenEnabled,
   updateTokenNote,
+  fetchKeyMetrics,
+  fetchKeyLogs,
+  type KeySummary,
 } from './api'
+
+function parseHashForKeyId(): string | null {
+  const hash = location.hash || ''
+  const m = hash.match(/^#\/keys\/([^\/?#]+)/)
+  return m ? decodeURIComponent(m[1]) : null
+}
 
 const REFRESH_INTERVAL_MS = 30_000
 
@@ -130,6 +139,10 @@ function formatErrorMessage(log: RequestLog): string {
 }
 
 function App(): JSX.Element {
+  const [route, setRoute] = useState<{ name: 'home' } | { name: 'key'; id: string }>(() => {
+    const id = parseHashForKeyId()
+    return id ? { name: 'key', id } : { name: 'home' }
+  })
   const [summary, setSummary] = useState<Summary | null>(null)
   const [keys, setKeys] = useState<ApiKeyStats[]>([])
   const [tokens, setTokens] = useState<AuthToken[]>([])
@@ -284,6 +297,29 @@ function App(): JSX.Element {
     }, REFRESH_INTERVAL_MS)
     return () => window.clearInterval(timer)
   }, [autoRefresh, loadData])
+
+  useEffect(() => {
+    const onHash = () => {
+      const id = parseHashForKeyId()
+      setRoute(id ? { name: 'key', id } : { name: 'home' })
+    }
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
+
+  const navigateHome = () => {
+    history.pushState(null, '', '/')
+    setRoute({ name: 'home' })
+  }
+
+  const navigateKey = (id: string) => {
+    location.hash = `#/keys/${encodeURIComponent(id)}`
+    setRoute({ name: 'key', id })
+  }
+
+  if (route.name === 'key') {
+    return <KeyDetails id={route.id} onBack={navigateHome} isAdmin={profile?.isAdmin ?? false} />
+  }
 
   const handleManualRefresh = () => {
     const controller = new AbortController()
@@ -810,7 +846,9 @@ function App(): JSX.Element {
                     <tr key={item.id}>
                       <td>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <code>{item.id}</code>
+                          <button type="button" className="link-button" onClick={() => navigateKey(item.id)} title="Open details">
+                            <code>{item.id}</code>
+                          </button>
                           {isAdmin && (
                             <button
                               type="button"
@@ -870,6 +908,15 @@ function App(): JSX.Element {
                               disabled={deletingId === item.id}
                             >
                               <Icon icon={deletingId === item.id ? 'mdi:progress-helper' : 'mdi:trash-outline'} width={18} height={18} />
+                            </button>
+                            <button
+                              type="button"
+                              className="icon-button"
+                              title="Details"
+                              aria-label="Details"
+                              onClick={() => navigateKey(item.id)}
+                            >
+                              <Icon icon="mdi:eye-outline" width={18} height={18} />
                             </button>
                           </div>
                         </td>
@@ -1162,5 +1209,148 @@ function LogDetails({ log }: { log: RequestLog }): JSX.Element {
         </div>
       )}
     </div>
+  )
+}
+
+function KeyDetails({ id, onBack, isAdmin }: { id: string; onBack: () => void; isAdmin: boolean }): JSX.Element {
+  const [period, setPeriod] = useState<'day' | 'week' | 'month'>('month')
+  const [startDate, setStartDate] = useState<string>(() => new Date().toISOString().slice(0, 10))
+  const [summary, setSummary] = useState<KeySummary | null>(null)
+  const [logs, setLogs] = useState<RequestLog[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const computeSince = useCallback((): number => {
+    const base = new Date(startDate + 'T00:00:00Z')
+    if (Number.isNaN(base.getTime())) return Math.floor(Date.now() / 1000)
+    const d = new Date(base)
+    if (period === 'day') return Math.floor(d.getTime() / 1000)
+    if (period === 'week') {
+      const day = d.getUTCDay() // 0..6 (Sun..Sat)
+      const diff = (day + 6) % 7 // days since Monday
+      d.setUTCDate(d.getUTCDate() - diff)
+      return Math.floor(d.getTime() / 1000)
+    }
+    // month
+    d.setUTCDate(1)
+    return Math.floor(d.getTime() / 1000)
+  }, [period, startDate])
+
+  const load = useCallback(async () => {
+    try {
+      setLoading(true)
+      setError(null)
+      const since = computeSince()
+      const [s, ls] = await Promise.all([
+        fetchKeyMetrics(id, period, since),
+        fetchKeyLogs(id, 50, since),
+      ])
+      setSummary(s)
+      setLogs(ls)
+    } catch (err) {
+      console.error(err)
+      setError(err instanceof Error ? err.message : 'Failed to load details')
+    } finally {
+      setLoading(false)
+    }
+  }, [id, period, computeSince])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  const metricCards = useMemo(() => {
+    if (!summary) return []
+    const total = summary.total_requests
+    return [
+      { id: 'total', label: 'Total', value: formatNumber(summary.total_requests), subtitle: summary.last_activity ? `Last activity ${formatTimestamp(summary.last_activity)}` : 'No activity' },
+      { id: 'success', label: 'Successful', value: formatNumber(summary.success_count), subtitle: formatPercent(summary.success_count, total) },
+      { id: 'errors', label: 'Errors', value: formatNumber(summary.error_count), subtitle: formatPercent(summary.error_count, total) },
+      { id: 'quota', label: 'Quota Exhausted', value: formatNumber(summary.quota_exhausted_count), subtitle: formatPercent(summary.quota_exhausted_count, total) },
+    ]
+  }, [summary])
+
+  return (
+    <main className="app-shell">
+      <section className="surface app-header">
+        <div className="title-group">
+          <h1>Key Details</h1>
+          <p>Inspect usage and recent requests for key: <code>{id}</code></p>
+        </div>
+        <div className="controls">
+          <button type="button" className="button" onClick={onBack}><Icon icon="mdi:arrow-left" width={18} height={18} />&nbsp;Back</button>
+        </div>
+      </section>
+
+      {error && <div className="surface error-banner">{error}</div>}
+
+      <section className="surface panel">
+        <div className="panel-header">
+          <div>
+            <h2>Usage</h2>
+            <p className="panel-description">Aggregated counts for selected period.</p>
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <select value={period} onChange={(e) => setPeriod(e.target.value as any)} className="input" aria-label="Period">
+              <option value="day">Day</option>
+              <option value="week">Week</option>
+              <option value="month">Month</option>
+            </select>
+            <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="input" />
+            <button type="button" className="button button-primary" onClick={() => void load()} disabled={loading}>Apply</button>
+          </div>
+        </div>
+        <section className="metrics-grid">
+          {(!summary || loading) ? (
+            <div className="empty-state" style={{ gridColumn: '1 / -1' }}>Loading…</div>
+          ) : (
+            metricCards.map((m) => (
+              <div key={m.id} className="metric-card">
+                <h3>{m.label}</h3>
+                <div className="metric-value">{m.value}</div>
+                <div className="metric-subtitle">{m.subtitle}</div>
+              </div>
+            ))
+          )}
+        </section>
+      </section>
+
+      <section className="surface panel">
+        <div className="panel-header">
+          <div>
+            <h2>Recent Requests</h2>
+            <p className="panel-description">Up to the latest 50 for this key.</p>
+          </div>
+        </div>
+        <div className="table-wrapper">
+          {logs.length === 0 ? (
+            <div className="empty-state">{loading ? 'Loading…' : 'No request logs for this period.'}</div>
+          ) : (
+            <table>
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>HTTP Status</th>
+                  <th>MCP Status</th>
+                  <th>Result</th>
+                  <th>Error</th>
+                </tr>
+              </thead>
+              <tbody>
+                {logs.map((log) => (
+                  <tr key={log.id}>
+                    <td>{formatTimestamp(log.created_at)}</td>
+                    <td>{log.http_status ?? '—'}</td>
+                    <td>{log.mcp_status ?? '—'}</td>
+                    <td><span className={statusClass(log.result_status)}>{statusLabel(log.result_status)}</span></td>
+                    <td>{formatErrorMessage(log)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </section>
+    </main>
   )
 }

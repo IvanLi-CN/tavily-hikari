@@ -255,6 +255,25 @@ impl TavilyProxy {
         self.key_store.fetch_recent_logs(limit).await
     }
 
+    /// 获取指定 key 在起始时间以来的汇总。
+    pub async fn key_summary_since(
+        &self,
+        key_id: &str,
+        since: i64,
+    ) -> Result<ProxySummary, ProxyError> {
+        self.key_store.fetch_key_summary_since(key_id, since).await
+    }
+
+    /// 获取指定 key 的最近日志（可选起始时间过滤）。
+    pub async fn key_recent_logs(
+        &self,
+        key_id: &str,
+        limit: usize,
+        since: Option<i64>,
+    ) -> Result<Vec<RequestLogRecord>, ProxyError> {
+        self.key_store.fetch_key_logs(key_id, limit, since).await
+    }
+
     // ----- Public auth token management API -----
 
     /// Validate an access token in format `th-<id>-<secret>` and record usage.
@@ -815,6 +834,175 @@ impl KeyStore {
         .await?;
 
         Ok(exists.is_some())
+    }
+
+    pub async fn fetch_key_summary_since(
+        &self,
+        key_id: &str,
+        since: i64,
+    ) -> Result<ProxySummary, ProxyError> {
+        let totals_row = sqlx::query(
+            r#"
+            SELECT
+              COUNT(1) AS total_requests,
+              SUM(CASE WHEN result_status = 'success' THEN 1 ELSE 0 END) AS success_count,
+              SUM(CASE WHEN result_status = 'error' THEN 1 ELSE 0 END) AS error_count,
+              SUM(CASE WHEN result_status = 'quota_exhausted' THEN 1 ELSE 0 END) AS quota_exhausted_count
+            FROM request_logs
+            WHERE api_key_id = ? AND created_at >= ?
+            "#,
+        )
+        .bind(key_id)
+        .bind(since)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let last_activity = sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT MAX(created_at) FROM request_logs WHERE api_key_id = ? AND created_at >= ?",
+        )
+        .bind(key_id)
+        .bind(since)
+        .fetch_one(&self.pool)
+        .await?;
+
+        // Active/exhausted counts in this scope are not meaningful per single key; expose 1/0 for convenience
+        // We will compute based on current key status
+        let status: Option<String> =
+            sqlx::query_scalar("SELECT status FROM api_keys WHERE id = ? LIMIT 1")
+                .bind(key_id)
+                .fetch_optional(&self.pool)
+                .await?;
+
+        let (active_keys, exhausted_keys) = match status.as_deref() {
+            Some(STATUS_EXHAUSTED) => (0, 1),
+            _ => (1, 0),
+        };
+
+        Ok(ProxySummary {
+            total_requests: totals_row.try_get("total_requests")?,
+            success_count: totals_row.try_get("success_count")?,
+            error_count: totals_row.try_get("error_count")?,
+            quota_exhausted_count: totals_row.try_get("quota_exhausted_count")?,
+            active_keys,
+            exhausted_keys,
+            last_activity,
+        })
+    }
+
+    pub async fn fetch_key_logs(
+        &self,
+        key_id: &str,
+        limit: usize,
+        since: Option<i64>,
+    ) -> Result<Vec<RequestLogRecord>, ProxyError> {
+        let limit = limit.clamp(1, 500) as i64;
+        let rows = if let Some(since_ts) = since {
+            sqlx::query_as::<_, (
+                i64,
+                String,
+                String,
+                String,
+                Option<String>,
+                Option<i64>,
+                Option<i64>,
+                Option<String>,
+                String,
+                Vec<u8>,
+                Vec<u8>,
+                i64,
+                String,
+                String,
+            )>(
+                r#"
+                SELECT id, api_key_id, method, path, query, status_code, tavily_status_code, error_message,
+                       result_status, request_body, response_body, created_at, forwarded_headers, dropped_headers
+                FROM request_logs
+                WHERE api_key_id = ? AND created_at >= ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                "#,
+            )
+            .bind(key_id)
+            .bind(since_ts)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query_as::<_, (
+                i64,
+                String,
+                String,
+                String,
+                Option<String>,
+                Option<i64>,
+                Option<i64>,
+                Option<String>,
+                String,
+                Vec<u8>,
+                Vec<u8>,
+                i64,
+                String,
+                String,
+            )>(
+                r#"
+                SELECT id, api_key_id, method, path, query, status_code, tavily_status_code, error_message,
+                       result_status, request_body, response_body, created_at, forwarded_headers, dropped_headers
+                FROM request_logs
+                WHERE api_key_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                "#,
+            )
+            .bind(key_id)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+        };
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(
+                    id,
+                    key_id,
+                    method,
+                    path,
+                    query,
+                    status_code,
+                    tavily_status_code,
+                    error_message,
+                    result_status,
+                    request_body,
+                    response_body,
+                    created_at,
+                    forwarded_headers,
+                    dropped_headers,
+                )| RequestLogRecord {
+                    id,
+                    key_id,
+                    method,
+                    path,
+                    query,
+                    status_code,
+                    tavily_status_code,
+                    error_message,
+                    result_status,
+                    request_body,
+                    response_body,
+                    created_at,
+                    forwarded_headers: forwarded_headers
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect(),
+                    dropped_headers: dropped_headers
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect(),
+                },
+            )
+            .collect())
     }
 
     async fn sync_keys(&self, keys: &[String]) -> Result<(), ProxyError> {
