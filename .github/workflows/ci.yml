@@ -164,7 +164,6 @@ jobs:
           fi
 
       - name: Create GitHub Release
-        if: steps.tag.outputs.tag_exists == 'false'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ env.APP_EFFECTIVE_VERSION }}
@@ -173,11 +172,99 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  docker:
-    name: Build and Push Docker Image
+  docker-on-push:
+    name: Build and Push Docker Image (push)
+    runs-on: ubuntu-latest
+    # 确保在 push 到 main 时，先完成打 tag 与创建 Release
+    needs: [lint, unit-tests, release-tag]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+    timeout-minutes: 45
+    outputs:
+      tags: ${{ steps.meta.outputs.tags }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Compute effective version
+        shell: bash
+        run: ./.github/scripts/compute-version.sh
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install front-end dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: TypeScript compile
+        working-directory: web
+        run: npx tsc -b
+
+      - name: Vite build
+        working-directory: web
+        env:
+          VITE_APP_VERSION: ${{ env.APP_EFFECTIVE_VERSION }}
+        run: npx vite build && node scripts/write-version.mjs
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Compute lowercase image name
+        id: image-name
+        shell: bash
+        run: |
+          set -euo pipefail
+          lower="${GITHUB_REPOSITORY,,}"
+          echo "IMAGE_NAME_LOWER=${lower}" >> "$GITHUB_ENV"
+          echo "image_name_lower=${lower}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha
+            type=ref,event=tag
+            type=raw,value=v${{ env.APP_EFFECTIVE_VERSION }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ env.PLATFORMS }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_EFFECTIVE_VERSION=${{ env.APP_EFFECTIVE_VERSION }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:buildcache,mode=max
+
+  docker-on-release:
+    name: Build and Push Docker Image (release)
     runs-on: ubuntu-latest
     needs: [lint, unit-tests]
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'release'
+    if: github.event_name == 'release'
     permissions:
       contents: read
       packages: write
