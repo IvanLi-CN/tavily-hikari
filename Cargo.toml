@@ -23,3 +23,4 @@ tower = { version = "0.4", features = ["util"] }
 nanoid = "0.4"
 urlencoding = "2.1"
 html-escape = "0.2"
+rand = { version = "0.8", features = ["std", "std_rng"] }

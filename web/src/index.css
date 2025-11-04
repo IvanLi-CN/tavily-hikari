@@ -466,6 +466,18 @@ tbody .log-details-row:hover {
   color: #64748b;
 }
 
+/* Reserve a stable slot after token ID to avoid layout shift when toggling status icon */
+.token-status-slot {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  line-height: 0;
+}
+
+.token-status-icon {
+  color: #b91c1c;
+}
+
 .error-banner {
   padding: 14px 18px;
   border-radius: 12px;
