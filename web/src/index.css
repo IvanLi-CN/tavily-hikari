@@ -269,6 +269,12 @@ button:disabled {
   font-size: 0.92rem;
 }
 
+/* Subtle, lighter time text for header updated time */
+.updated-time {
+  font-weight: 500;
+  color: #94a3b8;
+}
+
 .table-wrapper {
   overflow-x: auto;
   border-radius: 14px;

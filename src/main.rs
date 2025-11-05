@@ -57,6 +57,10 @@ struct Cli {
     /// 管理员模式昵称（覆盖前端显示）
     #[arg(long, env = "ADMIN_MODE_NAME")]
     admin_mode_name: Option<String>,
+
+    /// 开发模式：放开管理接口权限（仅本地验证使用）
+    #[arg(long, env = "DEV_OPEN_ADMIN", default_value_t = false)]
+    dev_open_admin: bool,
 }
 
 #[tokio::main]
@@ -104,7 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    server::serve(addr, proxy, static_dir, forward_auth).await?;
+    server::serve(addr, proxy, static_dir, forward_auth, cli.dev_open_admin).await?;
 
     Ok(())
 }
