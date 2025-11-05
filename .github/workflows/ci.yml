@@ -132,6 +132,8 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: write
+    outputs:
+      app_version: ${{ steps.export_version.outputs.version }}
     steps:
       - name: Checkout (full history)
         uses: actions/checkout@v4
@@ -141,6 +143,12 @@ jobs:
       - name: Compute effective version
         shell: bash
         run: ./.github/scripts/compute-version.sh
+
+      - name: Export effective version
+        id: export_version
+        shell: bash
+        run: |
+          echo "version=${APP_EFFECTIVE_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Configure Git user
         run: |
@@ -181,16 +189,14 @@ jobs:
     permissions:
       contents: read
       packages: write
+    env:
+      APP_EFFECTIVE_VERSION: ${{ needs.release-tag.outputs.app_version }}
     timeout-minutes: 45
     outputs:
       tags: ${{ steps.meta.outputs.tags }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Compute effective version
-        shell: bash
-        run: ./.github/scripts/compute-version.sh
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -275,9 +281,18 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Compute effective version
+      - name: Derive version from tag
+        id: derive_version
         shell: bash
-        run: ./.github/scripts/compute-version.sh
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.release.tag_name }}"
+          if [ -z "$tag" ]; then
+            tag="${GITHUB_REF_NAME:-}"
+          fi
+          version="${tag#v}"
+          echo "APP_EFFECTIVE_VERSION=${version}" >> "$GITHUB_ENV"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4

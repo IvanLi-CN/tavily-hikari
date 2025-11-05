@@ -6,8 +6,10 @@ use std::{
     sync::Arc,
 };
 
+use async_stream::stream;
 use axum::http::header::{CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, TRANSFER_ENCODING};
 use axum::response::IntoResponse;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::{
     Router,
     body::{self, Body},
@@ -17,8 +19,11 @@ use axum::{
     routing::{any, delete, get, patch, post},
 };
 use chrono::{Datelike, TimeZone, Utc};
+use futures_util::Stream;
 use reqwest::header::{HeaderMap as ReqHeaderMap, HeaderValue as ReqHeaderValue};
 use serde::{Deserialize, Serialize};
+type SummarySig = (i64, i64, i64, i64, i64, i64, Option<i64>);
+use std::time::Duration;
 use tavily_hikari::{
     ApiKeyMetrics, AuthToken, ProxyRequest, ProxyResponse, ProxySummary, RequestLogRecord,
     TavilyProxy,
@@ -30,6 +35,7 @@ struct AppState {
     proxy: TavilyProxy,
     static_dir: Option<PathBuf>,
     forward_auth: ForwardAuthConfig,
+    dev_open_admin: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -76,10 +82,27 @@ impl ForwardAuthConfig {
     }
 
     fn user_value<'a>(&self, headers: &'a HeaderMap) -> Option<&'a str> {
-        self.user_header()
-            .and_then(|name| headers.get(name))
-            .and_then(|value| value.to_str().ok())
-            .filter(|value| !value.is_empty())
+        // direct get
+        if let Some(name) = self.user_header() {
+            if let Some(value) = headers
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .filter(|v| !v.is_empty())
+            {
+                return Some(value);
+            }
+            // fallback: scan case-insensitively in case upstream mutated header casing
+            let target = name.as_str();
+            for (k, v) in headers.iter() {
+                let Ok(s) = v.to_str() else {
+                    continue;
+                };
+                if k.as_str().eq_ignore_ascii_case(target) && !s.is_empty() {
+                    return Some(s);
+                }
+            }
+        }
+        None
     }
 
     fn nickname_value(&self, headers: &HeaderMap) -> Option<String> {
@@ -104,6 +127,25 @@ impl ForwardAuthConfig {
             _ => false,
         }
     }
+}
+
+#[derive(Debug, Serialize)]
+struct IsAdminDebug {
+    is_admin: bool,
+    user_value: Option<String>,
+}
+
+async fn debug_is_admin(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<IsAdminDebug>, StatusCode> {
+    let cfg = &state.forward_auth;
+    let user_value = cfg.user_value(&headers).map(|s| s.to_string());
+    let is_admin = cfg.is_request_admin(&headers);
+    Ok(Json(IsAdminDebug {
+        is_admin,
+        user_value,
+    }))
 }
 
 async fn health_check() -> &'static str {
@@ -359,6 +401,101 @@ async fn fetch_summary(
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct DashboardSnapshot {
+    summary: SummaryView,
+    keys: Vec<ApiKeyView>,
+    logs: Vec<RequestLogView>,
+}
+
+async fn sse_dashboard(
+    State(state): State<Arc<AppState>>,
+    _headers: HeaderMap,
+) -> Sse<impl Stream<Item = Result<Event, axum::http::Error>>> {
+    let state = state.clone();
+
+    let stream = stream! {
+        let mut last_log_id: Option<i64> = None;
+        let mut last_sig: Option<SummarySig> = None;
+
+        // send initial snapshot regardless
+        if let Some(event) = build_snapshot_event(&state).await {
+            // prime signatures from payload
+            if let Ok((sig, latest_id)) = compute_signatures(&state).await {
+                last_sig = sig;
+                last_log_id = latest_id;
+            }
+            yield Ok(event);
+        }
+
+        loop {
+            // detect changes
+            match compute_signatures(&state).await {
+                Ok((sig, latest_id)) => {
+                    if sig != last_sig || latest_id != last_log_id {
+                        if let Some(event) = build_snapshot_event(&state).await {
+                            yield Ok(event);
+                        }
+                        last_sig = sig;
+                        last_log_id = latest_id;
+                    } else {
+                        // heartbeat to keep connections alive on proxies
+                        let keep = Event::default().event("ping").data("{}");
+                        yield Ok(keep);
+                    }
+                }
+                Err(_e) => {
+                    // On error, still try to keep connection with heartbeat
+                    let keep = Event::default().event("ping").data("{}");
+                    yield Ok(keep);
+                }
+            }
+
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    };
+
+    Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text(""))
+}
+
+async fn build_snapshot_event(state: &Arc<AppState>) -> Option<Event> {
+    let summary = state.proxy.summary().await.ok()?;
+    let keys = state.proxy.list_api_key_metrics().await.ok()?;
+    let logs = state
+        .proxy
+        .recent_request_logs(DEFAULT_LOG_LIMIT)
+        .await
+        .ok()?;
+
+    let payload = DashboardSnapshot {
+        summary: summary.into(),
+        keys: keys.into_iter().map(ApiKeyView::from).collect(),
+        logs: logs.into_iter().map(RequestLogView::from).collect(),
+    };
+
+    let json = serde_json::to_string(&payload).ok()?;
+    Some(Event::default().event("snapshot").data(json))
+}
+
+async fn compute_signatures(
+    state: &Arc<AppState>,
+) -> Result<(Option<SummarySig>, Option<i64>), ()> {
+    let summary = state.proxy.summary().await.map_err(|_| ())?;
+    let logs = state.proxy.recent_request_logs(1).await.map_err(|_| ())?;
+    let latest_id = logs.first().map(|l| l.id);
+    let sig: Option<SummarySig> = Some((
+        summary.total_requests,
+        summary.success_count,
+        summary.error_count,
+        summary.quota_exhausted_count,
+        summary.active_keys,
+        summary.exhausted_keys,
+        summary.last_activity,
+    ));
+    Ok((sig, latest_id))
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct VersionView {
     backend: String,
     frontend: String,
@@ -370,10 +507,55 @@ async fn get_versions(State(state): State<Arc<AppState>>) -> Result<Json<Version
 }
 
 #[derive(Debug, Serialize)]
+struct AdminDebug {
+    dev_open_admin: bool,
+}
+
+async fn get_admin_debug(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<AdminDebug>, StatusCode> {
+    Ok(Json(AdminDebug {
+        dev_open_admin: state.dev_open_admin,
+    }))
+}
+
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ProfileView {
     display_name: Option<String>,
     is_admin: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ForwardAuthDebugView {
+    enabled: bool,
+    user_header: Option<String>,
+    admin_value: Option<String>,
+    nickname_header: Option<String>,
+}
+
+async fn get_forward_auth_debug(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<ForwardAuthDebugView>, StatusCode> {
+    let cfg = &state.forward_auth;
+    Ok(Json(ForwardAuthDebugView {
+        enabled: cfg.is_enabled(),
+        user_header: cfg.user_header().map(|h| h.to_string()),
+        admin_value: cfg.admin_value().map(|s| s.to_string()),
+        nickname_header: cfg.nickname_header().map(|h| h.to_string()),
+    }))
+}
+
+async fn debug_headers(headers: HeaderMap) -> (StatusCode, Json<serde_json::Value>) {
+    let mut map = serde_json::Map::new();
+    for (k, v) in headers.iter() {
+        map.insert(
+            k.as_str().to_string(),
+            serde_json::Value::String(v.to_str().unwrap_or("").to_string()),
+        );
+    }
+    (StatusCode::OK, Json(serde_json::Value::Object(map)))
 }
 
 async fn get_profile(
@@ -505,7 +687,7 @@ async fn create_api_key(
     headers: HeaderMap,
     Json(payload): Json<CreateKeyRequest>,
 ) -> Result<(StatusCode, Json<CreateKeyResponse>), StatusCode> {
-    if !state.forward_auth.is_request_admin(&headers) {
+    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -528,7 +710,7 @@ async fn delete_api_key(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<StatusCode, StatusCode> {
-    if !state.forward_auth.is_request_admin(&headers) {
+    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -552,7 +734,7 @@ async fn update_api_key_status(
     headers: HeaderMap,
     Json(payload): Json<UpdateKeyStatus>,
 ) -> Result<StatusCode, StatusCode> {
-    if !state.forward_auth.is_request_admin(&headers) {
+    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -581,7 +763,7 @@ async fn get_api_key_secret(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<ApiKeySecretView>, StatusCode> {
-    if !state.forward_auth.is_request_admin(&headers) {
+    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -617,7 +799,7 @@ async fn list_tokens(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<AuthTokenView>>, StatusCode> {
-    if !state.forward_auth.is_request_admin(&headers) {
+    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
         return Err(StatusCode::FORBIDDEN);
     }
     state
@@ -637,7 +819,7 @@ async fn create_token(
     headers: HeaderMap,
     Json(payload): Json<CreateTokenRequest>,
 ) -> Result<(StatusCode, Json<AuthTokenSecretView>), StatusCode> {
-    if !state.forward_auth.is_request_admin(&headers) {
+    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
         return Err(StatusCode::FORBIDDEN);
     }
     state
@@ -663,7 +845,7 @@ async fn delete_token(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<StatusCode, StatusCode> {
-    if !state.forward_auth.is_request_admin(&headers) {
+    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
         return Err(StatusCode::FORBIDDEN);
     }
     state
@@ -688,7 +870,7 @@ async fn update_token_status(
     headers: HeaderMap,
     Json(payload): Json<UpdateTokenStatus>,
 ) -> Result<StatusCode, StatusCode> {
-    if !state.forward_auth.is_request_admin(&headers) {
+    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
         return Err(StatusCode::FORBIDDEN);
     }
     state
@@ -713,7 +895,7 @@ async fn update_token_note(
     headers: HeaderMap,
     Json(payload): Json<UpdateTokenNote>,
 ) -> Result<StatusCode, StatusCode> {
-    if !state.forward_auth.is_request_admin(&headers) {
+    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
         return Err(StatusCode::FORBIDDEN);
     }
     state
@@ -732,7 +914,7 @@ async fn get_token_secret(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<AuthTokenSecretView>, StatusCode> {
-    if !state.forward_auth.is_request_admin(&headers) {
+    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
         return Err(StatusCode::FORBIDDEN);
     }
     match state.proxy.get_access_token_secret(&id).await {
@@ -752,15 +934,36 @@ pub async fn serve(
     proxy: TavilyProxy,
     static_dir: Option<PathBuf>,
     forward_auth: ForwardAuthConfig,
+    dev_open_admin: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let state = Arc::new(AppState {
         proxy,
         static_dir: static_dir.clone(),
         forward_auth,
+        dev_open_admin,
     });
+
+    if let Some(h) = state.forward_auth.user_header() {
+        println!(
+            "Forward-Auth: header='{}' admin_value='{}'",
+            h,
+            state.forward_auth.admin_value().unwrap_or("<none>")
+        );
+    } else {
+        println!(
+            "Forward-Auth: disabled (no user header), admin_override={} dev_open_admin={}",
+            state.forward_auth.admin_override_name().unwrap_or("<none>"),
+            state.dev_open_admin
+        );
+    }
 
     let mut router = Router::new()
         .route("/health", get(health_check))
+        .route("/api/debug/headers", get(debug_headers))
+        .route("/api/debug/is-admin", get(debug_is_admin))
+        .route("/api/debug/forward-auth", get(get_forward_auth_debug))
+        .route("/api/debug/admin", get(get_admin_debug))
+        .route("/api/events", get(sse_dashboard))
         .route("/api/version", get(get_versions))
         .route("/api/profile", get(get_profile))
         .route("/api/summary", get(fetch_summary))
@@ -1043,6 +1246,7 @@ async fn proxy_handler(
         .map(str::trim)
     {
         Some(t) if !t.is_empty() => t.to_string(),
+        _ if state.dev_open_admin => "th-dev-override".to_string(),
         _ => {
             return Response::builder()
                 .status(StatusCode::UNAUTHORIZED)
@@ -1052,11 +1256,15 @@ async fn proxy_handler(
         }
     };
 
-    let valid = state
-        .proxy
-        .validate_access_token(&token)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let valid = if state.dev_open_admin {
+        true
+    } else {
+        state
+            .proxy
+            .validate_access_token(&token)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    };
     if !valid {
         return Response::builder()
             .status(StatusCode::UNAUTHORIZED)

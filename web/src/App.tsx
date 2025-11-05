@@ -49,6 +49,14 @@ const dateTimeFormatter = new Intl.DateTimeFormat(undefined, {
   timeStyle: 'medium',
 })
 
+// Time-only formatter for compact "Updated HH:MM:SS"
+const timeOnlyFormatter = new Intl.DateTimeFormat(undefined, {
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hour12: false,
+})
+
 function formatNumber(value: number): string {
   return numberFormatter.format(value)
 }
@@ -149,7 +157,7 @@ function App(): JSX.Element {
   const [logs, setLogs] = useState<RequestLog[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [autoRefresh, setAutoRefresh] = useState(true)
+  const pollingTimerRef = useRef<number | null>(null)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
   const [version, setVersion] = useState<{ backend: string; frontend: string } | null>(null)
   const [profile, setProfile] = useState<Profile | null>(null)
@@ -171,6 +179,7 @@ function App(): JSX.Element {
   const [editingTokenId, setEditingTokenId] = useState<string | null>(null)
   const [editingTokenNote, setEditingTokenNote] = useState('')
   const [savingTokenNote, setSavingTokenNote] = useState(false)
+  const [sseConnected, setSseConnected] = useState(false)
 
   const copyStateKey = useCallback((scope: 'keys' | 'logs' | 'tokens', identifier: string | number) => {
     return `${scope}:${identifier}`
@@ -287,16 +296,75 @@ function App(): JSX.Element {
     return () => controller.abort()
   }, [loadData])
 
+  // Automatic fallback polling when SSE is not connected
   useEffect(() => {
-    if (!autoRefresh) {
+    if (sseConnected) {
+      if (pollingTimerRef.current != null) {
+        window.clearInterval(pollingTimerRef.current)
+        pollingTimerRef.current = null
+      }
       return
     }
-    const timer = window.setInterval(() => {
-      const controller = new AbortController()
-      void loadData(controller.signal).finally(() => controller.abort())
-    }, REFRESH_INTERVAL_MS)
-    return () => window.clearInterval(timer)
-  }, [autoRefresh, loadData])
+    if (pollingTimerRef.current == null) {
+      pollingTimerRef.current = window.setInterval(() => {
+        const controller = new AbortController()
+        void loadData(controller.signal).finally(() => controller.abort())
+      }, REFRESH_INTERVAL_MS) as unknown as number
+    }
+    return () => {
+      if (pollingTimerRef.current != null) {
+        window.clearInterval(pollingTimerRef.current)
+        pollingTimerRef.current = null
+      }
+    }
+  }, [sseConnected, loadData])
+
+  // Establish SSE connection to receive live dashboard updates
+  useEffect(() => {
+    let es: EventSource | null = null
+    let closed = false
+
+    const connect = () => {
+      if (es) {
+        try { es.close() } catch {}
+        es = null
+      }
+      es = new EventSource('/api/events')
+      es.onopen = () => { setSseConnected(true) }
+      es.onerror = () => {
+        // Trigger fallback polling; attempt reconnect automatically
+        setSseConnected(false)
+      }
+      es.addEventListener('snapshot', (ev: MessageEvent) => {
+        try {
+          const data = JSON.parse(ev.data) as { summary: Summary; keys: ApiKeyStats[]; logs: RequestLog[] }
+          setSummary(data.summary)
+          setKeys(data.keys)
+          setLogs(data.logs)
+          setExpandedLogs((previous) => {
+            // keep expansion only for visible ids
+            const valid = new Set(data.logs.map((l) => l.id))
+            const next = new Set<number>()
+            for (const id of previous) if (valid.has(id)) next.add(id)
+            return next
+          })
+          setLastUpdated(new Date())
+          setError(null)
+          setLoading(false)
+        } catch (e) {
+          console.error('SSE parse error', e)
+        }
+      })
+    }
+
+    connect()
+    return () => {
+      closed = true
+      if (es) {
+        try { es.close() } catch {}
+      }
+    }
+  }, [])
 
   useEffect(() => {
     const onHash = () => {
@@ -338,7 +406,7 @@ function App(): JSX.Element {
         id: 'total',
         label: 'Total Requests',
         value: formatNumber(summary.total_requests),
-        subtitle: summary.last_activity ? `Last activity ${formatTimestamp(summary.last_activity)}` : 'No activity yet',
+        subtitle: '—',
       },
       {
         id: 'success',
@@ -627,13 +695,11 @@ function App(): JSX.Element {
             </div>
           )}
           <div className="controls">
-            <button
-              type="button"
-              className={`refresh-toggle ${autoRefresh ? 'active' : ''}`}
-              onClick={() => setAutoRefresh((value) => !value)}
-            >
-              {autoRefresh ? 'Auto Refresh On' : 'Auto Refresh Off'}
-            </button>
+            {lastUpdated && (
+              <span className="panel-description updated-time" style={{ marginRight: 8 }}>
+                Updated {timeOnlyFormatter.format(lastUpdated)}
+              </span>
+            )}
             <button
               type="button"
               className="button button-primary"
@@ -812,9 +878,6 @@ function App(): JSX.Element {
                   {submitting ? 'Adding…' : 'Add Key'}
                 </button>
               </div>
-            )}
-            {!autoRefresh && lastUpdated && (
-              <span className="panel-description">Updated {dateTimeFormatter.format(lastUpdated)}</span>
             )}
           </div>
         </div>
