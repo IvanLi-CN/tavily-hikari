@@ -69,8 +69,70 @@ button {
 .public-home-actions {
   display: flex;
   justify-content: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-top: 24px;
+}
+
+.token-input-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.token-label {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: #1f2937;
+}
+
+.token-input-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.token-input {
+  width: min(380px, 100vw - 160px);
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.18);
+  font-family: 'SF Mono', 'Fira Mono', Consolas, 'Courier New', monospace;
+  font-size: 0.95rem;
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.token-input:focus {
+  outline: none;
+  border-color: #6366f1;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.18);
+}
+
+.public-home-guide {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.guide-steps {
+  list-style: decimal inside;
+  display: flex;
+  flex-direction: column;
   gap: 12px;
-  margin-top: 12px;
+  margin: 0;
+  padding: 0;
+  color: #1f2937;
+}
+
+.guide-steps strong {
+  color: #111827;
+}
+
+.guide-note {
+  margin: 0;
+  font-size: 0.95rem;
+  color: #475569;
 }
 
 .public-home-metrics {

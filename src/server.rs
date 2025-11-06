@@ -172,7 +172,14 @@ async fn load_spa_response(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
-async fn serve_index(State(state): State<Arc<AppState>>) -> Result<Response<Body>, StatusCode> {
+async fn serve_index(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Response<Body>, StatusCode> {
+    if state.dev_open_admin || state.forward_auth.is_request_admin(&headers) {
+        return Ok(Redirect::temporary("/admin").into_response());
+    }
+
     load_spa_response(state.as_ref(), "index.html").await
 }
 
