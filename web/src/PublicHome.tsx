@@ -68,8 +68,11 @@ function PublicHome(): JSX.Element {
             '编辑配置文件 `~/.codex/credentials`（或当前 profile 的 `mcp_headers`）',
             `在 headers 中加入 \`Authorization: Bearer ${token || DEFAULT_TOKEN}\``,
             `将自定义 MCP upstream 指向 \`${baseUrl}/mcp\``,
-            '重新运行 Codex CLI，即可通过 Tavily Hikari 完成搜索请求。',
+            '保存后执行 `codex mcp connect tavily-hikari` 或直接在 CLI 中调用。',
           ],
+          sampleTitle: '示例：~/.codex/credentials',
+          snippetLanguage: 'toml',
+          snippet: `[mcp_servers.tavily-hikari]\nurl = \"${baseUrl}/mcp\"\nheaders = { Authorization = \"Bearer ${token || DEFAULT_TOKEN}\" }`,
         }
       case 'claude':
         return {
@@ -80,6 +83,20 @@ function PublicHome(): JSX.Element {
             `在 HTTP Headers 增加 \`Authorization: Bearer ${token || DEFAULT_TOKEN}\``,
             '保存后在 Claude Code 侧边栏启用该 MCP，即可使用 Tavily 功能。',
           ],
+          sampleTitle: '示例：claude_desktop_config.json',
+          snippetLanguage: 'json',
+          snippet: `{
+  "mcpServers": [
+    {
+      "name": "tavily-hikari",
+      "baseUrl": "${baseUrl}/mcp",
+      "auth": {
+        "type": "bearer",
+        "token": "${token || DEFAULT_TOKEN}"
+      }
+    }
+  ]
+}`,
         }
       default:
         return {
@@ -87,9 +104,12 @@ function PublicHome(): JSX.Element {
           steps: [
             `确保请求地址指向 \`${baseUrl}/mcp\``,
             `向请求添加 Authorization Header：\`Bearer ${token || DEFAULT_TOKEN}\``,
-            '开启 TLS/代理策略时保持对 WebSocket/HTTP 的放行',
+            '参考下方 cURL 调用示例，确认代理能正常响应。',
             '遇到认证失败，请联系管理员更新 Access Token。',
           ],
+          sampleTitle: '示例：curl 测试请求',
+          snippetLanguage: 'bash',
+          snippet: `curl -H "Authorization: Bearer ${token || DEFAULT_TOKEN}" \\\n+     -H "Content-Type: application/json" \\\n+     ${baseUrl}/mcp/health`,
         }
     }
   }, [activeGuide, token])
@@ -188,6 +208,14 @@ function PublicHome(): JSX.Element {
               <li key={index}>{step}</li>
             ))}
           </ol>
+          {guideDescription.sampleTitle && guideDescription.snippet && (
+            <div className="guide-sample">
+              <p className="guide-sample-title">{guideDescription.sampleTitle}</p>
+              <pre className="guide-code" data-lang={guideDescription.snippetLanguage}>
+                <code>{guideDescription.snippet}</code>
+              </pre>
+            </div>
+          )}
           <p className="guide-note">
             想快速分享访问？复制当前链接，我们会把 Access Token 放在 URL Hash 中，例如{' '}
             <code>{window.location.origin}/#{token || DEFAULT_TOKEN}</code>。
