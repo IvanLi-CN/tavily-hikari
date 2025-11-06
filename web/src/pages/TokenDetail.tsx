@@ -211,9 +211,10 @@ export default function TokenDetail(): JSX.Element {
   const periodSelectId = `token-period-select-${id}`
   const sinceInputId = `token-since-input-${id}`
 
-  const applyStartInput = (raw: string, nextPeriod: Period = period) => {
+  const applyStartInput = (raw: string, nextPeriod: Period = period, opts?: { suppressWarning?: boolean }) => {
     const sanitized = sanitizeInput(nextPeriod, raw || defaultInputValue(nextPeriod))
-    setWarning(sanitized !== raw ? 'Start 已自动校正到当前可用范围内' : null)
+    const shouldWarn = !opts?.suppressWarning && raw.trim() !== '' && sanitized !== raw
+    setWarning(shouldWarn ? 'Start 已自动校正到当前可用范围内' : null)
     setSinceInput((prev) => (prev === sanitized ? prev : sanitized))
   }
 
@@ -222,7 +223,7 @@ export default function TokenDetail(): JSX.Element {
   }
 
   useEffect(() => {
-    applyStartInput(sinceInput, period)
+    applyStartInput(sinceInput, period, { suppressWarning: sinceInput.trim() === '' })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [period])
 
@@ -428,8 +429,8 @@ export default function TokenDetail(): JSX.Element {
           </div>
         </div>
         {warning && (
-          <div className="alert alert-warning" role="status">
-            <span>⚠️</span>
+          <div className="token-period-warning alert alert-warning" role="status">
+            <span aria-hidden="true">⚠️</span>
             <span>{warning}</span>
           </div>
         )}
