@@ -300,13 +300,19 @@ button:disabled {
 }
 .token-period-warning {
   margin-top: 12px;
+  margin-bottom: 12px;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 0.9rem;
+  border-radius: 10px;
+  width: fit-content;
+  max-width: 100%;
+  align-self: flex-start;
 }
-.token-period-warning span:first-of-type {
-  font-size: 1.1rem;
-  line-height: 1;
+.token-warning-icon {
+  color: #b45309;
 }
 .token-period-control {
   display: flex;

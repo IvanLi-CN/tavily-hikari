@@ -201,6 +201,7 @@ export default function TokenDetail(): JSX.Element {
   const [loadingMore, setLoadingMore] = useState(false)
   const sseRef = useRef<EventSource | null>(null)
   const [expandedLogs, setExpandedLogs] = useState<Set<number>>(() => new Set())
+  const warningTimerRef = useRef<number | null>(null)
 
   const { sinceIso, untilIso } = useMemo(() => {
     const start = computeStartDate(period, sinceInput)
@@ -226,6 +227,29 @@ export default function TokenDetail(): JSX.Element {
     applyStartInput(sinceInput, period, { suppressWarning: sinceInput.trim() === '' })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [period])
+
+  useEffect(() => {
+    if (!warning) {
+      if (warningTimerRef.current != null) {
+        window.clearTimeout(warningTimerRef.current)
+        warningTimerRef.current = null
+      }
+      return
+    }
+    if (warningTimerRef.current != null) {
+      window.clearTimeout(warningTimerRef.current)
+    }
+    warningTimerRef.current = window.setTimeout(() => {
+      setWarning(null)
+      warningTimerRef.current = null
+    }, 4000)
+    return () => {
+      if (warningTimerRef.current != null) {
+        window.clearTimeout(warningTimerRef.current)
+        warningTimerRef.current = null
+      }
+    }
+  }, [warning])
 
   async function getJson<T = any>(url: string): Promise<T> {
     const res = await fetch(url)
@@ -430,7 +454,7 @@ export default function TokenDetail(): JSX.Element {
         </div>
         {warning && (
           <div className="token-period-warning alert alert-warning" role="status">
-            <span aria-hidden="true">⚠️</span>
+            <Icon icon="mdi:alert-circle-outline" width={18} height={18} aria-hidden="true" className="token-warning-icon" />
             <span>{warning}</span>
           </div>
         )}
