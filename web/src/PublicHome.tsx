@@ -117,20 +117,23 @@ function PublicHome(): JSX.Element {
         </div>
       </section>
       <section className="surface panel public-home-guide">
-        <h2>How to use Tavily Hikari</h2>
+        <h2>如何在常见客户端中使用 Tavily Hikari</h2>
         <ol className="guide-steps">
           <li>
-            <strong>准备 Access Token：</strong> 在上方输入框粘贴从管理员获取的 <code>th-xxxx-xxxxxxxxxxxx</code> 令牌，或直接访问带有 <code>#token</code> 的链接。
+            <strong>准备 Access Token：</strong> 在上方输入框粘贴管理员发放的 <code>th-xxxx-xxxxxxxxxxxx</code> 令牌，或直接访问带有 <code>#token</code> 的链接，页面会自动填充。
           </li>
           <li>
-            <strong>配置客户端：</strong> 在你的 MCP 客户端中，把 Tavily 上游改为 <code>{window.location.origin}/mcp</code>，并携带 Bearer Token 进行认证。
+            <strong>Codex CLI：</strong> 将 <code>{window.location.origin}/mcp</code> 配置为自定义 MCP upstream，把 Access Token 写入 <code>~/.codex/credentials</code> 或对应 profile 的 <code>mcp_headers</code> 中，例如 <code>Authorization: Bearer th-xxxx-xxxxxxxxxxxx</code>。
           </li>
           <li>
-            <strong>查看使用情况：</strong> 请求会自动透传到 Tavily，并在后台记录。需要审计时请联系管理员访问 `/admin` 控制台。
+            <strong>Claude Code：</strong> 在“自定义 MCP 服务器”面板里新增 Endpoint，URL 设置为 <code>{window.location.origin}/mcp</code>，并在 HTTP Headers 中添加 <code>Authorization: Bearer th-xxxx-xxxxxxxxxxxx</code>。保存后即可在 Claude Code 里使用 Tavily 搜索能力。
+          </li>
+          <li>
+            <strong>其他 MCP 客户端：</strong> 只需将 upstream 指向 <code>{window.location.origin}/mcp</code> 并附带相同的 Bearer Token。所有请求会在此代理层记录，方便管理员在 `/admin` 后台追踪。
           </li>
         </ol>
         <p className="guide-note">
-          没有令牌？请联系管理员申请；遗失了也不用担心，可以在新的浏览器标签直接贴入令牌链接，例如 <code>{window.location.origin}/#th-demo-1234567890</code>。
+          如果令牌遗失，只要在网址后加上 <code>#token</code> 即可快速恢复，例如 <code>{window.location.origin}/#th-demo-1234567890</code>。需要新令牌或重置，请联系管理员。
         </p>
       </section>
     </main>
