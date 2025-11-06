@@ -212,6 +212,11 @@ button {
   text-transform: uppercase;
 }
 
+.guide-code code {
+  display: block;
+  white-space: pre;
+}
+
 .public-home-metrics {
   display: flex;
   flex-direction: column;

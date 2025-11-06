@@ -85,18 +85,7 @@ function PublicHome(): JSX.Element {
           ],
           sampleTitle: '示例：claude_desktop_config.json',
           snippetLanguage: 'json',
-          snippet: `{
-  "mcpServers": [
-    {
-      "name": "tavily-hikari",
-      "baseUrl": "${baseUrl}/mcp",
-      "auth": {
-        "type": "bearer",
-        "token": "${token || DEFAULT_TOKEN}"
-      }
-    }
-  ]
-}`,
+          snippet: `{\n  \"mcpServers\": [\n    {\n      \"name\": \"tavily-hikari\",\n      \"baseUrl\": \"${baseUrl}/mcp\",\n      \"auth\": {\n        \"type\": \"bearer\",\n        \"token\": \"${token || DEFAULT_TOKEN}\"\n      }\n    }\n  ]\n}`,
         }
       default:
         return {
