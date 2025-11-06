@@ -307,9 +307,9 @@ button:disabled {
   padding: 6px 12px;
   font-size: 0.9rem;
   border-radius: 10px;
-  width: fit-content;
-  max-width: 100%;
-  align-self: flex-start;
+  width: 100%;
+  max-width: none;
+  align-self: stretch;
 }
 .token-warning-icon {
   color: #b45309;
