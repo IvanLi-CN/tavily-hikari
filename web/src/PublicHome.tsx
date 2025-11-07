@@ -417,11 +417,21 @@ function PublicHome(): JSX.Element {
         )}
       </section>
       <section className="surface panel access-panel">
-        <header className="public-home-metrics-header">
-          <h2>账号与 Access Token</h2>
-          <p className="panel-description">复制 Token 分享给 MCP 客户端，同时可查看今日与本月的成功/失败统计。</p>
-        </header>
         <div className="access-panel-grid">
+          <div className="access-stats">
+            <div className="access-stat">
+              <h4>今日成功</h4>
+              <p>{loading ? '—' : formatNumber(metrics?.dailySuccess ?? 0)}</p>
+            </div>
+            <div className="access-stat">
+              <h4>今日失败</h4>
+              <p>{loading ? '—' : formatNumber((summary?.error_count ?? 0) - (summary?.success_count ?? 0))}</p>
+            </div>
+            <div className="access-stat">
+              <h4>本月成功</h4>
+              <p>{loading ? '—' : formatNumber(metrics?.monthlySuccess ?? 0)}</p>
+            </div>
+          </div>
           <div className="access-token-box">
             <label htmlFor="access-token" className="token-label">
               Access Token
@@ -463,20 +473,6 @@ function PublicHome(): JSX.Element {
                 <img src={`${ICONIFY_ENDPOINT}/mdi/content-copy.svg?color=%23ffffff`} alt="复制" />
                 <span>{copyState === 'copied' ? '已复制' : copyState === 'error' ? '复制失败' : '复制令牌'}</span>
               </button>
-            </div>
-          </div>
-          <div className="access-stats">
-            <div className="access-stat">
-              <h4>今日成功</h4>
-              <p>{loading ? '—' : formatNumber(metrics?.dailySuccess ?? 0)}</p>
-            </div>
-            <div className="access-stat">
-              <h4>今日失败</h4>
-              <p>{loading ? '—' : formatNumber((summary?.error_count ?? 0) - (summary?.success_count ?? 0))}</p>
-            </div>
-            <div className="access-stat">
-              <h4>本月成功</h4>
-              <p>{loading ? '—' : formatNumber(metrics?.monthlySuccess ?? 0)}</p>
             </div>
           </div>
         </div>
