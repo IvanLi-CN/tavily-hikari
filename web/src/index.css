@@ -264,7 +264,6 @@ button {
   text-decoration: underline;
 }
 
-.footer-links,
 .footer-version {
   display: flex;
   align-items: center;
@@ -279,10 +278,9 @@ button {
   font-weight: 600;
 }
 
-.footer-gh svg {
-  width: 18px;
-  height: 18px;
-  fill: currentColor;
+.footer-gh img {
+  width: 20px;
+  height: 20px;
 }
 
 .guide-code[data-lang='json']::before,
