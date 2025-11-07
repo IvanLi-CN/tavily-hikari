@@ -596,6 +596,7 @@ button:disabled {
   font-size: 1.9rem;
   font-weight: 700;
   color: #111827;
+  font-family: 'JetBrains Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
 }
 
 .metric-subtitle {
@@ -966,4 +967,41 @@ tbody .log-details-row:hover {
   font-size: 1.35rem;
   font-weight: 700;
   color: #0f172a;
+  font-family: 'JetBrains Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+}
+
+/* Rolling number styles */
+.rolling-number {
+  display: inline-flex;
+  align-items: flex-end;
+  line-height: 1;
+}
+.rolling-number .rn-probe {
+  position: absolute;
+  visibility: hidden;
+  height: 1em;
+  line-height: 1em;
+}
+.rolling-number .rn-sep {
+  padding: 0 1px;
+}
+.rolling-number .rn-col {
+  position: relative;
+  overflow: hidden;
+  width: 0.62em; /* tighter monospace width */
+  height: 1em;
+}
+.rolling-number .rn-strip {
+  display: flex;
+  flex-direction: column;
+  transition: transform 420ms cubic-bezier(0.25, 0.8, 0.25, 1);
+  will-change: transform;
+}
+.rolling-number .rn-col.rn-down .rn-strip {
+  transition: transform 420ms cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+.rolling-number .rn-digit {
+  display: block;
+  height: 1em;
+  line-height: 1em;
 }

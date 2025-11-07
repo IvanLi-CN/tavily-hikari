@@ -10,6 +10,7 @@ import {
   type TokenMetrics,
 } from './api'
 import useUpdateAvailable from './hooks/useUpdateAvailable'
+import RollingNumber from './components/RollingNumber'
 
 type GuideLanguage = 'toml' | 'json' | 'bash'
 
@@ -431,14 +432,12 @@ function PublicHome(): JSX.Element {
         <div className="metrics-grid hero-metrics">
           <div className="metric-card">
             <h3>本月成功请求（UTC）</h3>
-            <div className="metric-value">
-              {loading ? '—' : formatNumber(metrics?.monthlySuccess ?? 0)}
-            </div>
+            <div className="metric-value"><RollingNumber value={loading ? null : metrics?.monthlySuccess ?? 0} /></div>
             <div className="metric-subtitle">Tavily 月额度按 UTC 月初自动重置</div>
           </div>
           <div className="metric-card">
             <h3>今日（服务器时区）</h3>
-            <div className="metric-value">{loading ? '—' : formatNumber(metrics?.dailySuccess ?? 0)}</div>
+            <div className="metric-value"><RollingNumber value={loading ? null : metrics?.dailySuccess ?? 0} /></div>
             <div className="metric-subtitle">从服务器午夜起累计的成功请求</div>
           </div>
           <div className="metric-card">
@@ -463,15 +462,15 @@ function PublicHome(): JSX.Element {
           <div className="access-stats">
             <div className="access-stat">
               <h4>今日成功</h4>
-              <p>{loading ? '—' : formatNumber((tokenMetrics?.dailySuccess ?? 0))}</p>
+              <p><RollingNumber value={loading ? null : tokenMetrics?.dailySuccess ?? 0} /></p>
             </div>
             <div className="access-stat">
               <h4>今日失败</h4>
-              <p>{loading ? '—' : formatNumber(tokenMetrics?.dailyFailure ?? 0)}</p>
+              <p><RollingNumber value={loading ? null : tokenMetrics?.dailyFailure ?? 0} /></p>
             </div>
             <div className="access-stat">
               <h4>本月成功</h4>
-              <p>{loading ? '—' : formatNumber(tokenMetrics?.monthlySuccess ?? 0)}</p>
+              <p><RollingNumber value={loading ? null : tokenMetrics?.monthlySuccess ?? 0} /></p>
             </div>
           </div>
           <div className="access-token-box">
