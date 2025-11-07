@@ -60,10 +60,23 @@ button {
   color: #111827;
 }
 
+.hero-title {
+  background: linear-gradient(120deg, #6366f1, #8b5cf6 48%, #ec4899);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
 .public-home-tagline {
   margin: 0;
   color: #4b5563;
   font-size: 1.05rem;
+}
+
+.public-home-description {
+  margin: 0;
+  font-size: 0.95rem;
+  color: #475569;
+  line-height: 1.6;
 }
 
 .public-home-actions {
@@ -89,18 +102,70 @@ button {
 
 .token-input-row {
   display: flex;
-  gap: 8px;
+  gap: 12px;
   align-items: center;
+  flex-wrap: wrap;
 }
 
 .token-input {
-  width: min(380px, 100vw - 160px);
-  padding: 10px 14px;
+  width: min(420px, 100vw - 200px);
+  padding: 10px 44px 10px 14px;
   border-radius: 12px;
   border: 1px solid rgba(15, 23, 42, 0.18);
   font-family: 'SF Mono', 'Fira Mono', Consolas, 'Courier New', monospace;
   font-size: 0.95rem;
   background: rgba(255, 255, 255, 0.92);
+}
+
+.token-input-shell {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 280px;
+}
+
+.token-visibility-button {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  transform: translateY(-50%);
+  border: none;
+  background: transparent;
+  padding: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.token-visibility-button img {
+  width: 22px;
+  height: 22px;
+}
+
+.button-secondary {
+  background: #111827;
+  color: #fff;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.25);
+}
+
+.button-secondary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.3);
+}
+
+.token-copy-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.token-copy-button img {
+  width: 16px;
+  height: 16px;
+}
+
+.token-copy-button.success {
+  background: #16a34a;
 }
 
 .token-input:focus {

@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useMemo, useState } from 'react'
+import { ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 import { fetchPublicMetrics, fetchProfile, type Profile, type PublicMetrics } from './api'
 import useUpdateAvailable from './hooks/useUpdateAvailable'
 
@@ -56,6 +56,7 @@ function PublicHome(): JSX.Element {
   const [profile, setProfile] = useState<Profile | null>(null)
   const [activeGuide, setActiveGuide] = useState<GuideKey>('codex')
   const updateBanner = useUpdateAvailable()
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
 
   useEffect(() => {
     const hash = window.location.hash.slice(1)
@@ -287,6 +288,17 @@ function PublicHome(): JSX.Element {
     ? `${REPO_URL}/tree/v${encodeURIComponent(updateBanner.currentVersion)}`
     : null
 
+  const handleCopyToken = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(token)
+      setCopyState('copied')
+      window.setTimeout(() => setCopyState('idle'), 2500)
+    } catch {
+      setCopyState('error')
+      window.setTimeout(() => setCopyState('idle'), 2500)
+    }
+  }, [token])
+
   return (
     <main className="app-shell public-home">
       {updateBanner.visible && (
@@ -308,34 +320,50 @@ function PublicHome(): JSX.Element {
         </section>
       )}
       <section className="surface public-home-hero">
-        <h1>Tavily Hikari Proxy</h1>
+        <h1 className="hero-title">Tavily Hikari Proxy</h1>
         <p className="public-home-tagline">Transparent request visibility for your Tavily integration.</p>
+        <p className="public-home-description">
+          Tavily Hikari 通过统一的 HTTP 网关与仪表板，集中记录 Tavily API 的调用、速率与访问令牌使用情况，帮助你安全地在多种 MCP 客户端间共享同一个代理服务。
+        </p>
         <div className="public-home-actions">
           <div className="token-input-wrapper">
             <label htmlFor="access-token" className="token-label">
               Access Token
             </label>
             <div className="token-input-row">
-              <input
-                id="access-token"
-                className="token-input"
-                type={tokenVisible ? 'text' : 'password'}
-                value={token}
-                onChange={(event) => {
-                  const value = event.target.value
-                  setToken(value)
-                  window.location.hash = encodeURIComponent(value)
-                }}
-                placeholder="th-xxxx-xxxxxxxxxxxx"
-                autoComplete="off"
-              />
+              <div className="token-input-shell">
+                <input
+                  id="access-token"
+                  className="token-input"
+                  type={tokenVisible ? 'text' : 'password'}
+                  value={token}
+                  onChange={(event) => {
+                    const value = event.target.value
+                    setToken(value)
+                    window.location.hash = encodeURIComponent(value)
+                  }}
+                  placeholder="th-xxxx-xxxxxxxxxxxx"
+                  autoComplete="off"
+                />
+                <button
+                  type="button"
+                  className="token-visibility-button"
+                  onClick={() => setTokenVisible((prev) => !prev)}
+                  aria-label={tokenVisible ? '隐藏 Access Token' : '显示 Access Token'}
+                >
+                  <img
+                    src={`${ICONIFY_ENDPOINT}/mdi/${tokenVisible ? 'eye-off-outline' : 'eye-outline'}.svg?color=%236b7280`}
+                    alt="toggle visibility"
+                  />
+                </button>
+              </div>
               <button
                 type="button"
-                className="button"
-                onClick={() => setTokenVisible((prev) => !prev)}
-                aria-label={tokenVisible ? 'Hide token' : 'Show token'}
+                className={`button button-secondary token-copy-button${copyState === 'copied' ? ' success' : ''}`}
+                onClick={handleCopyToken}
               >
-                {tokenVisible ? 'Hide' : 'Show'}
+                <img src={`${ICONIFY_ENDPOINT}/mdi/content-copy.svg?color=%23ffffff`} alt="复制" />
+                <span>{copyState === 'copied' ? '已复制' : copyState === 'error' ? '复制失败' : '复制令牌'}</span>
               </button>
             </div>
           </div>
