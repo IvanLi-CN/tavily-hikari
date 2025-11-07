@@ -922,31 +922,29 @@ tbody .log-details-row:hover {
 }
 
 .access-panel-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
+  display: grid;
+  grid-template-columns: minmax(360px, 1fr) minmax(220px, 320px);
+  gap: 20px;
+  align-items: stretch;
 }
 
 .access-token-box {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
 }
 
 .access-stats {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .access-stat {
   border: 1px solid rgba(15, 23, 42, 0.08);
   border-radius: 14px;
-  background: rgba(248, 250, 252, 0.95);
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+  background: rgba(248, 250, 252, 0.92);
+  padding: 14px 16px;
 }
 
 .access-stat h4 {
@@ -956,8 +954,8 @@ tbody .log-details-row:hover {
 }
 
 .access-stat p {
-  margin: 0;
-  font-size: 1.6rem;
+  margin: 8px 0 0;
+  font-size: 1.35rem;
   font-weight: 700;
   color: #0f172a;
 }
