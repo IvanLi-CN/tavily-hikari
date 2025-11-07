@@ -400,6 +400,18 @@ function PublicHome(): JSX.Element {
           )}
         </div>
       </section>
+      <footer className="surface public-home-footer">
+        <div className="footer-links">
+          <span>开源仓库：</span>
+          <a href="https://github.com/IvanLi-CN/tavily-hikari" target="_blank" rel="noreferrer">
+            github.com/IvanLi-CN/tavily-hikari
+          </a>
+        </div>
+        <div className="footer-version">
+          <span>当前版本：</span>
+          <code>{updateBanner.currentVersion ?? '—'}</code>
+        </div>
+      </footer>
     </main>
   )
 }

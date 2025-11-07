@@ -244,6 +244,34 @@ button {
   flex-wrap: wrap;
 }
 
+.public-home-footer {
+  margin-top: 8px;
+  padding: 18px 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 0.9rem;
+}
+
+.public-home-footer a {
+  color: #2563eb;
+  text-decoration: none;
+}
+
+.public-home-footer a:hover {
+  text-decoration: underline;
+}
+
+.footer-links,
+.footer-version {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #475569;
+}
+
 .guide-code[data-lang='json']::before,
 .guide-code[data-lang='toml']::before,
 .guide-code[data-lang='bash']::before {
