@@ -323,7 +323,7 @@ function PublicHome(): JSX.Element {
         <h1 className="hero-title">Tavily Hikari Proxy</h1>
         <p className="public-home-tagline">Transparent request visibility for your Tavily integration.</p>
         <p className="public-home-description">
-          我们提供可自托管的 Tavily 代理服务：统一的 HTTP 入口、请求审计、速率监控与访问令牌隔离，外加兼容多款 MCP 客户端的接入指南，帮助团队安全复用 Tavily 额度。
+          Tavily Hikari 将多组 Tavily API Key 聚合为一个统一入口，自动均衡每个密钥的用量，避免本地频繁切换账户；并提供请求审计、速率监控与跨客户端分享的访问令牌管理。
         </p>
         <div className="public-home-actions">
           <div className="token-input-wrapper">
