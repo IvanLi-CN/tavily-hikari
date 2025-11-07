@@ -34,7 +34,8 @@ const NOCODB_DOC_URL = 'https://nocodb.com/docs/product-docs/mcp'
 const MCP_SPEC_URL = 'https://modelcontextprotocol.io/introduction'
 const REPO_URL = 'https://github.com/IvanLi-CN/tavily-hikari'
 const ICONIFY_ENDPOINT = 'https://api.iconify.design'
-const STORAGE_TOKEN_KEY = 'tavily-hikari-token'
+const STORAGE_LAST_TOKEN = 'tavily-hikari-last-token'
+const STORAGE_TOKEN_MAP = 'tavily-hikari-token-map'
 
 const GUIDE_TABS: Array<{ id: GuideKey; label: string }> = [
   { id: 'codex', label: 'Codex CLI' },
@@ -69,28 +70,29 @@ function PublicHome(): JSX.Element {
 
   useEffect(() => {
     const hash = window.location.hash.slice(1)
-    const persisted = (() => {
-      try {
-        return localStorage.getItem(STORAGE_TOKEN_KEY)
-      } catch {
-        return null
+    const decodedHash = hash ? decodeURIComponent(hash) : null
+    const tokenStore = loadTokenMap()
+    const lastToken = loadLastToken()
+
+    let initialToken: string | null = null
+    if (decodedHash && isFullToken(decodedHash)) {
+      initialToken = decodedHash
+    } else if (decodedHash) {
+      const id = extractTokenId(decodedHash)
+      if (id && tokenStore[id]) {
+        initialToken = tokenStore[id]
       }
-    })()
-
-    let initialToken = DEFAULT_TOKEN
-    if (hash) {
-      initialToken = decodeURIComponent(hash)
-    } else if (persisted) {
-      initialToken = persisted
     }
 
-    setToken(initialToken)
-    window.location.hash = encodeURIComponent(normalizeTokenHash(initialToken))
-    try {
-      localStorage.setItem(STORAGE_TOKEN_KEY, initialToken)
-    } catch {
-      /* ignore */
+    if (!initialToken && lastToken) {
+      initialToken = lastToken
     }
+
+    if (!initialToken) {
+      initialToken = DEFAULT_TOKEN
+    }
+
+    persistToken(initialToken)
 
     const controller = new AbortController()
     setLoading(true)
@@ -340,9 +342,21 @@ function PublicHome(): JSX.Element {
 
   const persistToken = useCallback((next: string) => {
     setToken(next)
-    window.location.hash = encodeURIComponent(normalizeTokenHash(next))
+    const normalizedHash = normalizeTokenHash(next)
+    window.location.hash = encodeURIComponent(normalizedHash)
+
+    if (!isFullToken(next)) {
+      return
+    }
+
+    const tokenId = extractTokenId(next)
+    if (!tokenId) return
+
+    const map = loadTokenMap()
+    map[tokenId] = next
+    saveTokenMap(map)
     try {
-      localStorage.setItem(STORAGE_TOKEN_KEY, next)
+      localStorage.setItem(STORAGE_LAST_TOKEN, next)
     } catch {
       /* noop */
     }
@@ -523,4 +537,35 @@ function extractTokenId(value: string): string | null {
   if (fullTokenMatch) return fullTokenMatch[1]
   if (/^[a-zA-Z0-9]{4}$/.test(value)) return value
   return null
+}
+
+function isFullToken(value: string): boolean {
+  return /^th-[a-zA-Z0-9]{4}-[a-zA-Z0-9]+$/.test(value)
+}
+
+function loadTokenMap(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(STORAGE_TOKEN_MAP)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    return typeof parsed === 'object' && parsed ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function saveTokenMap(map: Record<string, string>): void {
+  try {
+    localStorage.setItem(STORAGE_TOKEN_MAP, JSON.stringify(map))
+  } catch {
+    /* ignore */
+  }
+}
+
+function loadLastToken(): string | null {
+  try {
+    return localStorage.getItem(STORAGE_LAST_TOKEN)
+  } catch {
+    return null
+  }
 }
