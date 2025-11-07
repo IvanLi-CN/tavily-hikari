@@ -67,7 +67,7 @@ export default function RollingNumber({ value, loading, className }: RollingNumb
         // render strip 0..9 twice to allow wrap when direction changes across boundary
         const digits = Array.from({ length: 20 }, (_, i) => i % 10)
         // compute translate target index depending on direction
-        const baseIndex = direction === 'down' ? target + 10 : target
+        const baseIndex = direction === 'up' ? target + 10 : target
         const translate = digitHeight * baseIndex
         return (
           <span key={idx} className={`rn-col rn-${direction}`} style={{ height: digitHeight || undefined }}>
@@ -90,4 +90,3 @@ export default function RollingNumber({ value, loading, className }: RollingNumb
     </span>
   )
 }
-
