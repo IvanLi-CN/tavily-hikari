@@ -917,3 +917,45 @@ tbody .log-details-row:hover {
     min-width: 540px;
   }
 }
+.access-panel {
+  margin-top: 16px;
+}
+
+.access-panel-grid {
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) minmax(220px, 320px);
+  gap: 20px;
+  align-items: flex-start;
+}
+
+.access-token-box {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.access-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 12px;
+}
+
+.access-stat {
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 14px;
+  background: rgba(248, 250, 252, 0.9);
+  padding: 14px;
+}
+
+.access-stat h4 {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #475569;
+}
+
+.access-stat p {
+  margin: 6px 0 0;
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: #0f172a;
+}
