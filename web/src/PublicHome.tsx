@@ -3,7 +3,7 @@ import { fetchPublicMetrics, fetchProfile, type Profile, type PublicMetrics } fr
 
 type GuideLanguage = 'toml' | 'json' | 'bash'
 
-type GuideKey = 'codex' | 'claude' | 'vscode' | 'claudeDesktop' | 'cursor' | 'windsurf'
+type GuideKey = 'codex' | 'claude' | 'vscode' | 'claudeDesktop' | 'cursor' | 'windsurf' | 'other'
 
 interface GuideReference {
   label: string
@@ -23,6 +23,7 @@ const CODEX_DOC_URL = 'https://github.com/openai/codex/blob/main/docs/config.md'
 const CLAUDE_DOC_URL = 'https://code.claude.com/docs/en/mcp'
 const VSCODE_DOC_URL = 'https://code.visualstudio.com/docs/copilot/customization/mcp-servers'
 const NOCODB_DOC_URL = 'https://nocodb.com/docs/product-docs/mcp'
+const MCP_SPEC_URL = 'https://modelcontextprotocol.io/introduction'
 
 const GUIDE_TABS: Array<{ id: GuideKey; label: string }> = [
   { id: 'codex', label: 'Codex CLI' },
@@ -31,6 +32,7 @@ const GUIDE_TABS: Array<{ id: GuideKey; label: string }> = [
   { id: 'claudeDesktop', label: 'Claude Desktop' },
   { id: 'cursor', label: 'Cursor' },
   { id: 'windsurf', label: 'Windsurf' },
+  { id: 'other', label: '其他客户端' },
 ]
 
 const numberFormatter = new Intl.NumberFormat('en-US', {
@@ -185,7 +187,7 @@ function PublicHome(): JSX.Element {
       claudeDesktop: {
         title: 'Claude Desktop',
         steps: [
-          <>打开 <code>⌘+,</code> → **Develop** → <code>Edit Config</code>，按照官方文档将 MCP JSON 写入本地 <code>claude_desktop_config.json</code>。</>,
+          <>打开 <code>⌘+,</code> → <strong>Develop</strong> → <code>Edit Config</code>，按照官方文档将 MCP JSON 写入本地 <code>claude_desktop_config.json</code>。</>,
           <>在 JSON 中保留我们提供的 endpoint，保存后重启 Claude Desktop 以载入新的工具列表。</>,
         ],
         sampleTitle: '示例：claude_desktop_config.json',
@@ -209,7 +211,7 @@ function PublicHome(): JSX.Element {
       cursor: {
         title: 'Cursor',
         steps: [
-          <>在 Cursor 设置（<code>⇧+⌘+J</code>）中打开 **MCP → Add Custom MCP**，按照官方指南编辑全局 <code>mcp.json</code>。</>,
+          <>在 Cursor 设置（<code>⇧+⌘+J</code>）中打开 <strong>MCP → Add Custom MCP</strong>，按照官方指南编辑全局 <code>mcp.json</code>。</>,
           <>粘贴下方配置并保存，回到 MCP 面板确认条目显示 “tools enabled”。</>,
         ],
         sampleTitle: '示例：~/.cursor/mcp.json',
@@ -233,8 +235,8 @@ function PublicHome(): JSX.Element {
       windsurf: {
         title: 'Windsurf',
         steps: [
-          <>在 Windsurf 中点击 MCP 侧边栏的锤子图标 → **Configure**，再选择 **View raw config** 打开 <code>mcp_config.json</code>。</>,
-          <>将下方片段写入 <code>mcpServers</code>，保存后在 Manage Plugins 页点击 **Refresh** 以加载新工具。</>,
+          <>在 Windsurf 中点击 MCP 侧边栏的锤子图标 → <strong>Configure</strong>，再选择 <strong>View raw config</strong> 打开 <code>mcp_config.json</code>。</>,
+          <>将下方片段写入 <code>mcpServers</code>，保存后在 Manage Plugins 页点击 <strong>Refresh</strong> 以加载新工具。</>,
         ],
         sampleTitle: '示例：~/.codeium/windsurf/mcp_config.json',
         snippetLanguage: 'json',
@@ -252,6 +254,24 @@ function PublicHome(): JSX.Element {
         reference: {
           label: 'NocoDB MCP docs',
           url: NOCODB_DOC_URL,
+        },
+      },
+      other: {
+        title: '其他 MCP 客户端',
+        steps: [
+          <>端点：<code>{baseUrl}/mcp</code>（Streamable HTTP）。</>,
+          <>认证：HTTP Header <code>Authorization: Bearer {prettyToken}</code>。</>,
+          <>适用于任意兼容客户端，直接指向该 URL 并附带上述头部即可。</>,
+        ],
+        sampleTitle: '示例：通用请求',
+        snippetLanguage: 'bash',
+        snippet: `curl -X POST \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${prettyToken}" \
+  ${baseUrl}/mcp`,
+        reference: {
+          label: 'Model Context Protocol spec',
+          url: MCP_SPEC_URL,
         },
       },
     }
