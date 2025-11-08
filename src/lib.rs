@@ -116,11 +116,10 @@ impl TavilyProxy {
             .filter(|k| !k.is_empty())
             .collect();
 
-        if sanitized.is_empty() {
-            return Err(ProxyError::EmptyKeySet);
+        let key_store = KeyStore::new(database_path).await?;
+        if !sanitized.is_empty() {
+            key_store.sync_keys(&sanitized).await?;
         }
-
-        let key_store = KeyStore::new(&sanitized, database_path).await?;
         let upstream = Url::parse(upstream).map_err(|source| ProxyError::InvalidEndpoint {
             endpoint: upstream.to_owned(),
             source,
@@ -453,7 +452,7 @@ struct KeyStore {
 }
 
 impl KeyStore {
-    async fn new(keys: &[String], database_path: &str) -> Result<Self, ProxyError> {
+    async fn new(database_path: &str) -> Result<Self, ProxyError> {
         let options = SqliteConnectOptions::new()
             .filename(database_path)
             .create_if_missing(true);
@@ -466,7 +465,6 @@ impl KeyStore {
 
         let store = Self { pool };
         store.initialize_schema().await?;
-        store.sync_keys(keys).await?;
         Ok(store)
     }
 
@@ -2330,8 +2328,6 @@ pub struct TokenSummary {
 
 #[derive(Debug, Error)]
 pub enum ProxyError {
-    #[error("no API keys provided")]
-    EmptyKeySet,
     #[error("invalid upstream endpoint '{endpoint}': {source}")]
     InvalidEndpoint {
         endpoint: String,
