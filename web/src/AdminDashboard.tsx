@@ -1035,7 +1035,7 @@ function AdminDashboard(): JSX.Element {
 
       <div className="app-footer">
         <span>Tavily Hikari Proxy Dashboard</span>
-        <span style={{ marginLeft: 12, opacity: 0.85 }}>
+        <span className="footer-meta">
           {/* GitHub repository link with Iconify icon */}
           <a
             href="https://github.com/IvanLi-CN/tavily-hikari"
@@ -1048,7 +1048,7 @@ function AdminDashboard(): JSX.Element {
             <span>GitHub</span>
           </a>
         </span>
-        <span style={{ marginLeft: 12, opacity: 0.85 }}>
+        <span className="footer-meta">
           {version ? (
             (() => {
               const raw = version.backend || ''

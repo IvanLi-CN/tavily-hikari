@@ -1112,6 +1112,12 @@ tbody .log-details-row:hover {
   gap: 12px;
 }
 
+.app-footer .footer-meta {
+  opacity: 0.85;
+  display: inline-flex;
+  align-items: center;
+}
+
 .app-footer .footer-link {
   color: inherit;
   text-decoration: none;
