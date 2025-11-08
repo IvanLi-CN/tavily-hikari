@@ -1,0 +1,17 @@
+services:
+  tavily-hikari:
+    image: ghcr.io/ivanli-cn/tavily-hikari:latest
+    restart: unless-stopped
+    environment:
+      PROXY_BIND: 0.0.0.0
+      PROXY_PORT: 8787
+      PROXY_DB_PATH: /srv/app/data/tavily_proxy.db
+      WEB_STATIC_DIR: /srv/app/web
+    ports:
+      - "8787:8787"
+    volumes:
+      - tavily-hikari-data:/srv/app/data
+
+volumes:
+  tavily-hikari-data:
+    driver: local

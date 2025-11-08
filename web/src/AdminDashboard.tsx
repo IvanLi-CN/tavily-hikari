@@ -1044,8 +1044,8 @@ function AdminDashboard(): JSX.Element {
             rel="noreferrer"
             aria-label="Open GitHub repository"
           >
-            <Icon icon="mdi:github" width={18} height={18} />
-            <span style={{ marginLeft: 6 }}>GitHub</span>
+            <Icon icon="mdi:github" width={18} height={18} className="footer-link-icon" />
+            <span>GitHub</span>
           </a>
         </span>
         <span style={{ marginLeft: 12, opacity: 0.85 }}>

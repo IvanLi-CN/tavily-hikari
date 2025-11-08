@@ -1117,10 +1117,17 @@ tbody .log-details-row:hover {
   text-decoration: none;
   display: inline-flex;
   align-items: center;
+  gap: 6px;
+  line-height: 1;
 }
 
 .app-footer .footer-link:hover {
   text-decoration: underline;
+}
+
+.app-footer .footer-link-icon {
+  display: block;
+  flex-shrink: 0;
 }
 
 @media (max-width: 768px) {
