@@ -18,7 +18,7 @@ use axum::{
     response::{Json, Redirect},
     routing::{any, delete, get, patch, post},
 };
-use chrono::{Datelike, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Duration as ChronoDuration, NaiveDate, TimeZone, Utc};
 use futures_util::Stream;
 use reqwest::header::{HeaderMap as ReqHeaderMap, HeaderValue as ReqHeaderValue};
 use serde::{Deserialize, Serialize};
@@ -26,7 +26,7 @@ type SummarySig = (i64, i64, i64, i64, i64, i64, Option<i64>);
 use std::time::Duration;
 use tavily_hikari::{
     ApiKeyMetrics, AuthToken, ProxyRequest, ProxyResponse, ProxySummary, RequestLogRecord,
-    TavilyProxy,
+    TavilyProxy, TokenLogRecord, TokenSummary,
 };
 use tower_http::services::{ServeDir, ServeFile};
 
@@ -125,6 +125,61 @@ impl ForwardAuthConfig {
         match (self.admin_value(), self.user_value(headers)) {
             (Some(expected), Some(actual)) => actual == expected,
             _ => false,
+        }
+    }
+}
+
+fn parse_iso_timestamp(value: &str) -> Option<i64> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|dt| dt.with_timezone(&Utc).timestamp())
+        .ok()
+}
+
+fn default_since(period: Option<&str>) -> i64 {
+    let now = Utc::now();
+    match period {
+        Some("day") => now
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc()
+            .timestamp(),
+        Some("week") => {
+            let weekday = now.weekday().num_days_from_monday() as i64;
+            (now - ChronoDuration::days(weekday))
+                .date_naive()
+                .and_hms_opt(0, 0, 0)
+                .unwrap()
+                .and_utc()
+                .timestamp()
+        }
+        _ => {
+            let first = Utc
+                .with_ymd_and_hms(now.year(), now.month(), 1, 0, 0, 0)
+                .single()
+                .expect("valid start of month");
+            first.timestamp()
+        }
+    }
+}
+
+fn default_until(period: Option<&str>, since: i64) -> i64 {
+    let base = DateTime::<Utc>::from_timestamp(since, 0).unwrap_or_else(Utc::now);
+    match period {
+        Some("day") => (base + ChronoDuration::days(1)).timestamp(),
+        Some("week") => (base + ChronoDuration::days(7)).timestamp(),
+        _ => {
+            let date = base.date_naive();
+            let (year, month) = if date.month() == 12 {
+                (date.year() + 1, 1)
+            } else {
+                (date.year(), date.month() + 1)
+            };
+            let naive = NaiveDate::from_ymd_opt(year, month, 1)
+                .unwrap_or(date)
+                .and_hms_opt(0, 0, 0)
+                .unwrap();
+            Utc.from_utc_datetime(&naive).timestamp()
         }
     }
 }
@@ -456,7 +511,7 @@ struct TokenQuery {
     token: String,
 }
 
-async fn get_token_metrics(
+async fn get_token_metrics_public(
     State(state): State<Arc<AppState>>,
     Query(q): Query<TokenQuery>,
 ) -> Result<Json<TokenMetricsView>, StatusCode> {
@@ -1134,7 +1189,7 @@ pub async fn serve(
         .route("/api/debug/forward-auth", get(get_forward_auth_debug))
         .route("/api/debug/admin", get(get_admin_debug))
         .route("/api/public/events", get(sse_public))
-        .route("/api/token/metrics", get(get_token_metrics))
+        .route("/api/token/metrics", get(get_token_metrics_public))
         .route("/api/events", get(sse_dashboard))
         .route("/api/version", get(get_versions))
         .route("/api/profile", get(get_profile))
@@ -1149,6 +1204,12 @@ pub async fn serve(
         // Key details
         .route("/api/keys/:id/metrics", get(get_key_metrics))
         .route("/api/keys/:id/logs", get(get_key_logs))
+        // Token details
+        .route("/api/tokens/:id", get(get_token_detail))
+        .route("/api/tokens/:id/metrics", get(get_token_metrics))
+        .route("/api/tokens/:id/logs", get(get_token_logs))
+        .route("/api/tokens/:id/logs/page", get(get_token_logs_page))
+        .route("/api/tokens/:id/events", get(sse_token))
         // Access token management (admin only)
         .route("/api/tokens", get(list_tokens))
         .route("/api/tokens", post(create_token))
@@ -1322,6 +1383,57 @@ struct AuthTokenSecretView {
     token: String,
 }
 
+// ---- Token Detail views ----
+#[derive(Debug, Serialize)]
+struct TokenSummaryView {
+    total_requests: i64,
+    success_count: i64,
+    error_count: i64,
+    quota_exhausted_count: i64,
+    last_activity: Option<i64>,
+}
+
+impl From<TokenSummary> for TokenSummaryView {
+    fn from(s: TokenSummary) -> Self {
+        Self {
+            total_requests: s.total_requests,
+            success_count: s.success_count,
+            error_count: s.error_count,
+            quota_exhausted_count: s.quota_exhausted_count,
+            last_activity: s.last_activity,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct TokenLogView {
+    id: i64,
+    method: String,
+    path: String,
+    query: Option<String>,
+    http_status: Option<i64>,
+    mcp_status: Option<i64>,
+    result_status: String,
+    error_message: Option<String>,
+    created_at: i64,
+}
+
+impl From<TokenLogRecord> for TokenLogView {
+    fn from(r: TokenLogRecord) -> Self {
+        Self {
+            id: r.id,
+            method: r.method,
+            path: r.path,
+            query: r.query,
+            http_status: r.http_status,
+            mcp_status: r.mcp_status,
+            result_status: r.result_status,
+            error_message: r.error_message,
+            created_at: r.created_at,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct CreateTokenRequest {
     note: Option<String>,
@@ -1406,6 +1518,193 @@ async fn get_key_logs(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
+// ---- Token detail endpoints ----
+
+#[derive(Debug, Deserialize)]
+struct TokenMetricsQuery {
+    period: Option<String>,
+    since: Option<String>,
+    until: Option<String>,
+}
+
+async fn get_token_metrics(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(q): Query<TokenMetricsQuery>,
+) -> Result<Json<TokenSummaryView>, StatusCode> {
+    let since = q
+        .since
+        .as_deref()
+        .and_then(parse_iso_timestamp)
+        .unwrap_or_else(|| default_since(q.period.as_deref()));
+    let until = q
+        .until
+        .as_deref()
+        .and_then(parse_iso_timestamp)
+        .unwrap_or_else(|| default_until(q.period.as_deref(), since));
+
+    state
+        .proxy
+        .token_summary_since(&id, since, Some(until))
+        .await
+        .map(|s| Json(s.into()))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+#[derive(Debug, Deserialize)]
+struct TokenLogsQuery {
+    limit: Option<usize>,
+    before: Option<i64>,
+}
+
+async fn get_token_logs(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(q): Query<TokenLogsQuery>,
+) -> Result<Json<Vec<TokenLogView>>, StatusCode> {
+    let limit = q.limit.unwrap_or(DEFAULT_LOG_LIMIT).clamp(1, 500);
+    state
+        .proxy
+        .token_recent_logs(&id, limit, q.before)
+        .await
+        .map(|logs| Json(logs.into_iter().map(TokenLogView::from).collect()))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+#[derive(Debug, Deserialize)]
+struct TokenLogsPageQuery {
+    page: Option<usize>,
+    per_page: Option<usize>,
+    since: Option<String>,
+    until: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct TokenLogsPageView {
+    items: Vec<TokenLogView>,
+    page: usize,
+    per_page: usize,
+    total: i64,
+}
+
+async fn get_token_logs_page(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(q): Query<TokenLogsPageQuery>,
+) -> Result<Json<TokenLogsPageView>, StatusCode> {
+    let page = q.page.unwrap_or(1).max(1);
+    let per_page = q.per_page.unwrap_or(20).clamp(1, 200);
+    let since = q
+        .since
+        .as_deref()
+        .and_then(parse_iso_timestamp)
+        .unwrap_or_else(|| default_since(Some("month")));
+    let until = q
+        .until
+        .as_deref()
+        .and_then(parse_iso_timestamp)
+        .unwrap_or_else(|| default_until(Some("month"), since));
+    if until <= since {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    state
+        .proxy
+        .token_logs_page(&id, page, per_page, since, Some(until))
+        .await
+        .map(|(items, total)| {
+            Json(TokenLogsPageView {
+                items: items.into_iter().map(TokenLogView::from).collect(),
+                page,
+                per_page,
+                total,
+            })
+        })
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+async fn get_token_detail(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<AuthTokenView>, StatusCode> {
+    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let tokens = state
+        .proxy
+        .list_access_tokens()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    match tokens.into_iter().find(|t| t.id == id) {
+        Some(t) => Ok(Json(t.into())),
+        None => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct TokenSnapshot {
+    summary: TokenSummaryView,
+    logs: Vec<TokenLogView>,
+}
+
+async fn sse_token(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Sse<impl futures_util::Stream<Item = Result<Event, axum::http::Error>>> {
+    let state = state.clone();
+    let stream = stream! {
+        let mut last_log_id: Option<i64> = None;
+        if let Some(event) = build_token_snapshot_event(&state, &id).await { yield Ok(event); }
+        if let Ok(logs) = state.proxy.token_recent_logs(&id, 1, None).await {
+            last_log_id = logs.first().map(|l| l.id);
+        }
+        loop {
+            match state.proxy.token_recent_logs(&id, 1, None).await {
+                Ok(logs) => {
+                    let latest = logs.first().map(|l| l.id);
+                    if latest != last_log_id {
+                        if let Some(event) = build_token_snapshot_event(&state, &id).await { yield Ok(event); }
+                        last_log_id = latest;
+                    } else {
+                        let keep = Event::default().event("ping").data("{}");
+                        yield Ok(keep);
+                    }
+                }
+                Err(_) => {
+                    let keep = Event::default().event("ping").data("{}");
+                    yield Ok(keep);
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    };
+    Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text(""))
+}
+
+async fn build_token_snapshot_event(state: &Arc<AppState>, id: &str) -> Option<Event> {
+    let now = Utc::now();
+    let month_start = Utc
+        .with_ymd_and_hms(now.year(), now.month(), 1, 0, 0, 0)
+        .single()?
+        .timestamp();
+    let summary = state
+        .proxy
+        .token_summary_since(id, month_start, None)
+        .await
+        .ok()?;
+    let logs = state
+        .proxy
+        .token_recent_logs(id, DEFAULT_LOG_LIMIT, None)
+        .await
+        .ok()?;
+    let payload = TokenSnapshot {
+        summary: summary.into(),
+        logs: logs.into_iter().map(TokenLogView::from).collect(),
+    };
+    let json = serde_json::to_string(&payload).ok()?;
+    Some(Event::default().event("snapshot").data(json))
+}
+
 async fn proxy_handler(
     State(state): State<Arc<AppState>>,
     req: Request<Body>,
@@ -1480,18 +1779,91 @@ async fn proxy_handler(
     };
 
     let proxy_request = ProxyRequest {
-        method,
-        path,
+        method: method.clone(),
+        path: path.clone(),
         query,
         headers,
         body: body_bytes.clone(),
         auth_token_id,
     };
 
+    let token_id = token
+        .strip_prefix("th-")
+        .and_then(|rest| rest.split('-').next())
+        .map(|s| s.to_string());
+
     match state.proxy.proxy_request(proxy_request).await {
-        Ok(resp) => Ok(build_response(resp)),
+        Ok(resp) => {
+            if let Some(tid) = token_id.as_deref() {
+                // 尝试从 Tavily JSON 回复中解析结构化状态码
+                let mut tavily_code: Option<i64> = None;
+                let mut result_status = "success";
+                #[allow(clippy::collapsible_if)]
+                {
+                    if let Ok(text) = std::str::from_utf8(&resp.body) {
+                        if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
+                            if let Some(sc) = value
+                                .get("result")
+                                .and_then(|v| v.get("structuredContent"))
+                                .and_then(|v| v.get("status"))
+                                .and_then(|v| v.as_i64())
+                            {
+                                tavily_code = Some(sc);
+                                result_status = if sc == 432 {
+                                    "quota_exhausted"
+                                } else if sc >= 400 {
+                                    "error"
+                                } else {
+                                    "success"
+                                };
+                            } else if value
+                                .get("result")
+                                .and_then(|v| v.get("structuredContent"))
+                                .and_then(|v| v.get("isError"))
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false)
+                            {
+                                result_status = "error";
+                            }
+                        }
+                    }
+                }
+
+                let http_code = resp.status.as_u16() as i64;
+                let _ = state
+                    .proxy
+                    .record_token_attempt(
+                        tid,
+                        &method,
+                        &path,
+                        parts.uri.query(),
+                        Some(http_code),
+                        tavily_code,
+                        result_status,
+                        None,
+                    )
+                    .await;
+            }
+            Ok(build_response(resp))
+        }
         Err(err) => {
             eprintln!("proxy error: {err}");
+            if let Some(tid) = token_id.as_deref() {
+                let err_str = err.to_string();
+                let _ = state
+                    .proxy
+                    .record_token_attempt(
+                        tid,
+                        &method,
+                        &path,
+                        parts.uri.query(),
+                        None,
+                        None,
+                        "error",
+                        Some(err_str.as_str()),
+                    )
+                    .await;
+            }
             Err(StatusCode::BAD_GATEWAY)
         }
     }

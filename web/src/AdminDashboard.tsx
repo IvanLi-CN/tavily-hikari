@@ -1,4 +1,5 @@
 import { Icon } from '@iconify/react'
+import { Link } from '@tanstack/react-router'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   fetchApiKeys,
@@ -753,7 +754,7 @@ function AdminDashboard(): JSX.Element {
                     <tr key={t.id}>
                       <td>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <code>{t.id}</code>
+                          <Link to="/tokens/$id" params={{ id: t.id }} title="Open token details" className="link-button"><code>{t.id}</code></Link>
                           <span
                             className="token-status-slot"
                             aria-hidden={t.enabled ? true : undefined}

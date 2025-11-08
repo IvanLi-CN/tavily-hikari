@@ -324,6 +324,71 @@ impl TavilyProxy {
         self.key_store.get_access_token_secret(id).await
     }
 
+    /// Record a token usage log. Intended for /mcp proxy handler.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_token_attempt(
+        &self,
+        token_id: &str,
+        method: &Method,
+        path: &str,
+        query: Option<&str>,
+        http_status: Option<i64>,
+        mcp_status: Option<i64>,
+        result_status: &str,
+        error_message: Option<&str>,
+    ) -> Result<(), ProxyError> {
+        self.key_store
+            .insert_token_log(
+                token_id,
+                method,
+                path,
+                query,
+                http_status,
+                mcp_status,
+                result_status,
+                error_message,
+            )
+            .await
+    }
+
+    /// Token summary since a timestamp
+    pub async fn token_summary_since(
+        &self,
+        token_id: &str,
+        since: i64,
+        until: Option<i64>,
+    ) -> Result<TokenSummary, ProxyError> {
+        self.key_store
+            .fetch_token_summary_since(token_id, since, until)
+            .await
+    }
+
+    /// Token recent logs with optional before-id pagination
+    pub async fn token_recent_logs(
+        &self,
+        token_id: &str,
+        limit: usize,
+        before_id: Option<i64>,
+    ) -> Result<Vec<TokenLogRecord>, ProxyError> {
+        self.key_store
+            .fetch_token_logs(token_id, limit, before_id)
+            .await
+    }
+
+    /// Token logs (page-based pagination)
+    pub async fn token_logs_page(
+        &self,
+        token_id: &str,
+        page: usize,
+        per_page: usize,
+        since: i64,
+        until: Option<i64>,
+    ) -> Result<(Vec<TokenLogRecord>, i64), ProxyError> {
+        self.key_store
+            .fetch_token_logs_page(token_id, page, per_page, since, until)
+            .await
+    }
+
     /// 根据 ID 获取真实 API key，仅供管理员调用。
     pub async fn get_api_key_secret(&self, key_id: &str) -> Result<Option<String>, ProxyError> {
         self.key_store.fetch_api_key_secret(key_id).await
@@ -468,6 +533,42 @@ impl KeyStore {
 
         self.upgrade_auth_tokens_schema().await?;
 
+        // Per-token usage logs for detail page (auth_token_logs)
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS auth_token_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                token_id TEXT NOT NULL,
+                method TEXT NOT NULL,
+                path TEXT NOT NULL,
+                query TEXT,
+                http_status INTEGER,
+                mcp_status INTEGER,
+                result_status TEXT NOT NULL,
+                error_message TEXT,
+                created_at INTEGER NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_token_logs_token_time ON auth_token_logs(token_id, created_at DESC, id DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Upgrade: add mcp_status column if missing
+        if !self
+            .table_column_exists("auth_token_logs", "mcp_status")
+            .await?
+        {
+            sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN mcp_status INTEGER")
+                .execute(&self.pool)
+                .await?;
+        }
+
         Ok(())
     }
 
@@ -509,6 +610,17 @@ impl KeyStore {
         let exists = sqlx::query_scalar::<_, i64>(
             "SELECT 1 FROM pragma_table_info('auth_tokens') WHERE name = ? LIMIT 1",
         )
+        .bind(column)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(exists.is_some())
+    }
+
+    async fn table_column_exists(&self, table: &str, column: &str) -> Result<bool, ProxyError> {
+        let exists = sqlx::query_scalar::<_, i64>(
+            "SELECT 1 FROM pragma_table_info(?) WHERE name = ? LIMIT 1",
+        )
+        .bind(table)
         .bind(column)
         .fetch_optional(&self.pool)
         .await?;
@@ -1304,6 +1416,320 @@ impl KeyStore {
         }))
     }
 
+    // ----- Token usage logs & metrics -----
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_token_log(
+        &self,
+        token_id: &str,
+        method: &Method,
+        path: &str,
+        query: Option<&str>,
+        http_status: Option<i64>,
+        mcp_status: Option<i64>,
+        result_status: &str,
+        error_message: Option<&str>,
+    ) -> Result<(), ProxyError> {
+        let created_at = Utc::now().timestamp();
+        sqlx::query(
+            r#"
+            INSERT INTO auth_token_logs (
+                token_id, method, path, query, http_status, mcp_status, result_status, error_message, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(token_id)
+        .bind(method.as_str())
+        .bind(path)
+        .bind(query)
+        .bind(http_status)
+        .bind(mcp_status)
+        .bind(result_status)
+        .bind(error_message)
+        .bind(created_at)
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            "UPDATE auth_tokens SET total_requests = total_requests + 1, last_used_at = ? WHERE id = ?",
+        )
+        .bind(created_at)
+        .bind(token_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn fetch_token_logs(
+        &self,
+        token_id: &str,
+        limit: usize,
+        before_id: Option<i64>,
+    ) -> Result<Vec<TokenLogRecord>, ProxyError> {
+        let limit = limit.clamp(1, 500) as i64;
+        let rows = if let Some(bid) = before_id {
+            sqlx::query_as::<_, (
+                i64,
+                String,
+                String,
+                Option<String>,
+                Option<i64>,
+                Option<i64>,
+                String,
+                Option<String>,
+                i64,
+            )>(
+                r#"
+                SELECT id, method, path, query, http_status, mcp_status, result_status, error_message, created_at
+                FROM auth_token_logs
+                WHERE token_id = ? AND id < ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                "#,
+            )
+            .bind(token_id)
+            .bind(bid)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query_as::<_, (
+                i64,
+                String,
+                String,
+                Option<String>,
+                Option<i64>,
+                Option<i64>,
+                String,
+                Option<String>,
+                i64,
+            )>(
+                r#"
+                SELECT id, method, path, query, http_status, mcp_status, result_status, error_message, created_at
+                FROM auth_token_logs
+                WHERE token_id = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                "#,
+            )
+            .bind(token_id)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+        };
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(
+                    id,
+                    method,
+                    path,
+                    query,
+                    http_status,
+                    mcp_status,
+                    result_status,
+                    error_message,
+                    created_at,
+                )| TokenLogRecord {
+                    id,
+                    method,
+                    path,
+                    query,
+                    http_status,
+                    mcp_status,
+                    result_status,
+                    error_message,
+                    created_at,
+                },
+            )
+            .collect())
+    }
+
+    pub async fn fetch_token_summary_since(
+        &self,
+        token_id: &str,
+        since: i64,
+        until: Option<i64>,
+    ) -> Result<TokenSummary, ProxyError> {
+        let row = if let Some(until) = until {
+            sqlx::query(
+                r#"
+            SELECT
+                COUNT(*) AS total_requests,
+                COALESCE(SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END), 0) AS success_count,
+                COALESCE(SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END), 0) AS error_count,
+                COALESCE(SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END), 0) AS quota_exhausted_count
+            FROM auth_token_logs
+            WHERE token_id = ? AND created_at >= ? AND created_at < ?
+            "#,
+            )
+            .bind(OUTCOME_SUCCESS)
+            .bind(OUTCOME_ERROR)
+            .bind(OUTCOME_QUOTA_EXHAUSTED)
+            .bind(token_id)
+            .bind(since)
+            .bind(until)
+            .fetch_one(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                r#"
+            SELECT
+                COUNT(*) AS total_requests,
+                COALESCE(SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END), 0) AS success_count,
+                COALESCE(SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END), 0) AS error_count,
+                COALESCE(SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END), 0) AS quota_exhausted_count
+            FROM auth_token_logs
+            WHERE token_id = ? AND created_at >= ?
+            "#,
+            )
+            .bind(OUTCOME_SUCCESS)
+            .bind(OUTCOME_ERROR)
+            .bind(OUTCOME_QUOTA_EXHAUSTED)
+            .bind(token_id)
+            .bind(since)
+            .fetch_one(&self.pool)
+            .await?
+        };
+
+        let last_activity_query = if let Some(until) = until {
+            sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(created_at) FROM auth_token_logs WHERE token_id = ? AND created_at >= ? AND created_at < ?")
+                .bind(token_id)
+                .bind(since)
+                .bind(until)
+        } else {
+            sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(created_at) FROM auth_token_logs WHERE token_id = ? AND created_at >= ?")
+                .bind(token_id)
+                .bind(since)
+        };
+        let last_activity = last_activity_query.fetch_one(&self.pool).await?;
+
+        Ok(TokenSummary {
+            total_requests: row.try_get("total_requests")?,
+            success_count: row.try_get("success_count")?,
+            error_count: row.try_get("error_count")?,
+            quota_exhausted_count: row.try_get("quota_exhausted_count")?,
+            last_activity,
+        })
+    }
+
+    pub async fn fetch_token_logs_page(
+        &self,
+        token_id: &str,
+        page: usize,
+        per_page: usize,
+        since: i64,
+        until: Option<i64>,
+    ) -> Result<(Vec<TokenLogRecord>, i64), ProxyError> {
+        let per_page = per_page.clamp(1, 200) as i64;
+        let page = page.max(1) as i64;
+        let offset = (page - 1) * per_page;
+
+        let total: i64 = if let Some(until) = until {
+            sqlx::query_scalar(
+                "SELECT COUNT(*) FROM auth_token_logs WHERE token_id = ? AND created_at >= ? AND created_at < ?",
+            )
+            .bind(token_id)
+            .bind(since)
+            .bind(until)
+            .fetch_one(&self.pool)
+            .await?
+        } else {
+            sqlx::query_scalar(
+                "SELECT COUNT(*) FROM auth_token_logs WHERE token_id = ? AND created_at >= ?",
+            )
+            .bind(token_id)
+            .bind(since)
+            .fetch_one(&self.pool)
+            .await?
+        };
+
+        let rows = if let Some(until) = until {
+            sqlx::query_as::<_, (
+                i64,
+                String,
+                String,
+                Option<String>,
+                Option<i64>,
+                Option<i64>,
+                String,
+                Option<String>,
+                i64,
+            )>(
+                r#"
+            SELECT id, method, path, query, http_status, mcp_status, result_status, error_message, created_at
+            FROM auth_token_logs
+            WHERE token_id = ? AND created_at >= ? AND created_at < ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT ? OFFSET ?
+            "#,
+            )
+            .bind(token_id)
+            .bind(since)
+            .bind(until)
+            .bind(per_page)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query_as::<_, (
+            i64,
+            String,
+            String,
+            Option<String>,
+            Option<i64>,
+            Option<i64>,
+            String,
+            Option<String>,
+            i64,
+        )>(
+            r#"
+            SELECT id, method, path, query, http_status, mcp_status, result_status, error_message, created_at
+            FROM auth_token_logs
+            WHERE token_id = ? AND created_at >= ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT ? OFFSET ?
+            "#,
+        )
+        .bind(token_id)
+        .bind(since)
+        .bind(per_page)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?
+        };
+
+        let items = rows
+            .into_iter()
+            .map(
+                |(
+                    id,
+                    method,
+                    path,
+                    query,
+                    http_status,
+                    mcp_status,
+                    result_status,
+                    error_message,
+                    created_at,
+                )| TokenLogRecord {
+                    id,
+                    method,
+                    path,
+                    query,
+                    http_status,
+                    mcp_status,
+                    result_status,
+                    error_message,
+                    created_at,
+                },
+            )
+            .collect();
+
+        Ok((items, total))
+    }
+
     async fn reset_monthly(&self) -> Result<(), ProxyError> {
         let now = Utc::now();
         let month_start = start_of_month(now).timestamp();
@@ -1876,6 +2302,30 @@ pub struct AuthToken {
 pub struct AuthTokenSecret {
     pub id: String,
     pub token: String, // th-<id>-<secret>
+}
+
+/// Per-token log for detail UI
+#[derive(Debug, Clone)]
+pub struct TokenLogRecord {
+    pub id: i64,
+    pub method: String,
+    pub path: String,
+    pub query: Option<String>,
+    pub http_status: Option<i64>,
+    pub mcp_status: Option<i64>,
+    pub result_status: String,
+    pub error_message: Option<String>,
+    pub created_at: i64,
+}
+
+/// Token summary for period view
+#[derive(Debug, Clone)]
+pub struct TokenSummary {
+    pub total_requests: i64,
+    pub success_count: i64,
+    pub error_count: i64,
+    pub quota_exhausted_count: i64,
+    pub last_activity: Option<i64>,
 }
 
 #[derive(Debug, Error)]
