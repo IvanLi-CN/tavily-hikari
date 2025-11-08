@@ -17,8 +17,7 @@ struct Cli {
         long,
         value_delimiter = ',',
         env = "TAVILY_API_KEYS",
-        hide_env_values = true,
-        required = true
+        hide_env_values = true
     )]
     keys: Vec<String>,
 

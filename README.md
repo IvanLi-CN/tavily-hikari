@@ -18,7 +18,7 @@ Tavily Hikari 是一个轻量级的反向代理：它会把来自客户端的请
 ```bash
 cd tavily-hikari
 
-# 1. 在 .env 中维护密钥，或导出 Tavily API 密钥（逗号分隔或重复传参皆可）
+# 1. （可选）在 .env 中维护密钥，或导出 Tavily API 密钥（逗号分隔或重复传参皆可）
 echo 'TAVILY_API_KEYS=key_a,key_b,key_c' >> .env
 # export TAVILY_API_KEYS="key_a,key_b,key_c"
 
@@ -31,14 +31,14 @@ cargo run -- --bind 127.0.0.1 --port 58087
 
 ## CLI 选项
 
-| Flag / Env                        | 说明                                                           |
-| --------------------------------- | -------------------------------------------------------------- |
-| `--keys` / `TAVILY_API_KEYS`      | Tavily API key，支持逗号分隔或多次传入，必填。                 |
-| `--upstream` / `TAVILY_UPSTREAM`  | 上游 Tavily MCP 端点，默认 `https://mcp.tavily.com/mcp`。      |
-| `--bind` / `PROXY_BIND`           | 监听地址，默认 `127.0.0.1`。                                   |
-| `--port` / `PROXY_PORT`           | 监听端口，默认 `8787`（开发期示例使用高位端口如 `58087`）。    |
-| `--db-path` / `PROXY_DB_PATH`     | SQLite 文件路径，默认 `tavily_proxy.db`。                      |
-| `--static-dir` / `WEB_STATIC_DIR` | Web 静态资源目录；若未显式指定且存在 `web/dist` 则会自动挂载。 |
+| Flag / Env                        | 说明                                                                                                     |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `--keys` / `TAVILY_API_KEYS`      | （可选）启动时同步到数据库的 Tavily API key，支持逗号分隔或多次传入；未提供时沿用数据库/管理界面的配置。 |
+| `--upstream` / `TAVILY_UPSTREAM`  | 上游 Tavily MCP 端点，默认 `https://mcp.tavily.com/mcp`。                                                |
+| `--bind` / `PROXY_BIND`           | 监听地址，默认 `127.0.0.1`。                                                                             |
+| `--port` / `PROXY_PORT`           | 监听端口，默认 `8787`（开发期示例使用高位端口如 `58087`）。                                              |
+| `--db-path` / `PROXY_DB_PATH`     | SQLite 文件路径，默认 `tavily_proxy.db`。                                                                |
+| `--static-dir` / `WEB_STATIC_DIR` | Web 静态资源目录；若未显式指定且存在 `web/dist` 则会自动挂载。                                           |
 
 ## Web API
 
@@ -54,7 +54,9 @@ cargo run -- --bind 127.0.0.1 --port 58087
 
 ### 关于 `TAVILY_API_KEYS` 同步语义
 
-`TAVILY_API_KEYS` 的职责是与数据库中的 `api_keys` 表保持同步：
+显式提供 `TAVILY_API_KEYS`（或 `--keys`）时，代理会把内容与数据库中的 `api_keys` 表保持同步；如果未提供，该步骤会被跳过，数据库里已有的密钥集合将保持不变，完全可以只依赖 Web 管理界面来新增/删除密钥。
+
+同步语义如下：
 
 - 在列表中的密钥：
   - 若数据库不存在则新增为 `active`；

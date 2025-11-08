@@ -33,7 +33,8 @@ Tavily 端点只看到代理自身，好像请求来自真实终端。
 高匿模式无需额外 CLI 参数，只要正常启动即可：
 
 ```bash
-cargo run -- --bind 0.0.0.0 --port 58087 --keys "$TAVILY_API_KEYS"
+cargo run -- --bind 0.0.0.0 --port 58087
+# 若需在启动时同步 Tavily API key，可追加 --keys "$TAVILY_API_KEYS"
 ```
 
 ## 验证建议
