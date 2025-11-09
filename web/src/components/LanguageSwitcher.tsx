@@ -80,7 +80,6 @@ function LanguageSwitcher(): JSX.Element {
                 <span className="language-flag" aria-hidden="true">
                   <Icon icon={meta.icon} width={18} height={18} />
                 </span>
-                <span className="language-short">{meta.short}</span>
                 <span className="language-full">{strings.common[option.labelKey]}</span>
               </button>
             </li>
