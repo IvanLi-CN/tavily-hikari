@@ -9,8 +9,10 @@ import {
   type Summary,
   type TokenMetrics,
 } from './api'
+import LanguageSwitcher from './components/LanguageSwitcher'
 import useUpdateAvailable from './hooks/useUpdateAvailable'
 import RollingNumber from './components/RollingNumber'
+import { useLanguage, useTranslate, type Language } from './i18n'
 
 type GuideLanguage = 'toml' | 'json' | 'bash'
 
@@ -40,14 +42,14 @@ const ICONIFY_ENDPOINT = 'https://api.iconify.design'
 const STORAGE_LAST_TOKEN = 'tavily-hikari-last-token'
 const STORAGE_TOKEN_MAP = 'tavily-hikari-token-map'
 
-const GUIDE_TABS: Array<{ id: GuideKey; label: string }> = [
-  { id: 'codex', label: 'Codex CLI' },
-  { id: 'claude', label: 'Claude Code CLI' },
-  { id: 'vscode', label: 'VS Code / Copilot' },
-  { id: 'claudeDesktop', label: 'Claude Desktop' },
-  { id: 'cursor', label: 'Cursor' },
-  { id: 'windsurf', label: 'Windsurf' },
-  { id: 'other', label: '其他客户端' },
+const GUIDE_KEY_ORDER: GuideKey[] = [
+  'codex',
+  'claude',
+  'vscode',
+  'claudeDesktop',
+  'cursor',
+  'windsurf',
+  'other',
 ]
 
 const numberFormatter = new Intl.NumberFormat('en-US', {
@@ -60,6 +62,9 @@ function formatNumber(value: number): string {
 
 function PublicHome(): JSX.Element {
   const DEFAULT_TOKEN = 'th-demo-123456789012'
+  const strings = useTranslate()
+  const publicStrings = strings.public
+  const { language } = useLanguage()
   const [token, setToken] = useState(DEFAULT_TOKEN)
   const [tokenVisible, setTokenVisible] = useState(false)
   const [metrics, setMetrics] = useState<PublicMetrics | null>(null)
@@ -112,7 +117,7 @@ function PublicHome(): JSX.Element {
         } else {
           const reason = metricsResult.reason as Error
           if (reason?.name !== 'AbortError') {
-            setError(reason instanceof Error ? reason.message : 'Unable to load metrics right now')
+            setError(reason instanceof Error ? reason.message : publicStrings.errors.metrics)
           }
         }
 
@@ -125,7 +130,7 @@ function PublicHome(): JSX.Element {
         } else {
           const reason = summaryResult.reason as Error
           if (reason?.name !== 'AbortError') {
-            setError((prev) => prev ?? (reason instanceof Error ? reason.message : 'Unable to load summary data'))
+            setError((prev) => prev ?? (reason instanceof Error ? reason.message : publicStrings.errors.summary))
           }
         }
         if (initialToken && isFullToken(initialToken)) {
@@ -203,189 +208,14 @@ function PublicHome(): JSX.Element {
   const guideDescription = useMemo<GuideContent>(() => {
     const baseUrl = window.location.origin
     const prettyToken = token || DEFAULT_TOKEN
-
-    const guides: Record<GuideKey, GuideContent> = {
-      codex: (() => {
-        const snippet = [
-          '<span class="hl-comment"># ~/.codex/config.toml</span>',
-          'experimental_use_rmcp_client = true',
-          '',
-          '[mcp_servers.tavily_hikari]',
-          `url = "<span class=\"hl-string\">${baseUrl}/mcp</span>"`,
-          'bearer_token_env_var = "TAVILY_HIKARI_TOKEN"',
-        ].join('\n')
-
-        return {
-          title: 'Codex CLI',
-          steps: [
-            <>在 <code>~/.codex/config.toml</code> 设定 <code>experimental_use_rmcp_client = true</code>。</>,
-            <>添加 <code>[mcp_servers.tavily_hikari]</code>，将 <code>url</code> 指向 <code>{baseUrl}/mcp</code> 并声明 <code>bearer_token_env_var = TAVILY_HIKARI_TOKEN</code>。</>,
-            <>运行 <code>export TAVILY_HIKARI_TOKEN="{prettyToken}"</code> 后，执行 <code>codex mcp list</code> 或 <code>codex mcp get tavily_hikari</code> 验证。</>,
-          ],
-          sampleTitle: '示例：~/.codex/config.toml',
-          snippetLanguage: 'toml',
-          snippet,
-          reference: {
-            label: 'OpenAI Codex docs',
-            url: CODEX_DOC_URL,
-          },
-        }
-      })(),
-      claude: (() => {
-        const snippet = [
-          '<span class="hl-comment"># claude mcp add-json</span>',
-          `claude mcp add-json tavily-hikari '{`,
-          `  <span class=\"hl-key\">"type"</span>: <span class=\"hl-string\">"http"</span>,`,
-          `  <span class=\"hl-key\">"url"</span>: <span class=\"hl-string\">"${baseUrl}/mcp"</span>,`,
-          '  <span class="hl-key">"headers"</span>: {',
-          `    <span class=\"hl-key\">"Authorization"</span>: <span class=\"hl-string\">"Bearer ${prettyToken}"</span>`,
-          '  }',
-          "}'",
-          '',
-          '# 验证',
-          'claude mcp get tavily-hikari',
-        ].join('\n')
-
-        return {
-          title: 'Claude Code',
-          steps: [
-            <>参考下方命令，使用 <code>claude mcp add-json</code> 注册 Tavily Hikari HTTP MCP。</>,
-            <>运行 <code>claude mcp get tavily-hikari</code> 查看状态或排查错误。</>,
-          ],
-          sampleTitle: '示例：claude mcp add-json',
-          snippetLanguage: 'bash',
-          snippet,
-          reference: {
-            label: 'Claude Code MCP docs',
-            url: CLAUDE_DOC_URL,
-          },
-        }
-      })(),
-      vscode: (() => {
-        const snippet = [
-          '{',
-          '  <span class="hl-key">"servers"</span>: {',
-          '    <span class="hl-key">"tavily-hikari"</span>: {',
-          '      <span class="hl-key">"type"</span>: <span class="hl-string">"http"</span>,',
-          `      <span class=\"hl-key\">"url"</span>: <span class=\"hl-string\">"${baseUrl}/mcp"</span>,`,
-          '      <span class="hl-key">"headers"</span>: {',
-          `        <span class=\"hl-key\">"Authorization"</span>: <span class=\"hl-string\">"Bearer ${prettyToken}"</span>`,
-          '      }',
-          '    }',
-          '  }',
-          '}',
-        ].join('\n')
-
-        return {
-          title: '其他 MCP 客户端',
-          steps: [
-            <>在 VS Code Copilot <code>mcp.json</code>（或 <code>.code-workspace</code>/<code>devcontainer.json</code> 的 <code>customizations.vscode.mcp</code>）添加服务器节点。</>,
-            <>设置 <code>type</code> 为 <code>"http"</code>、<code>url</code> 为 <code>{baseUrl}/mcp</code>，并在 <code>headers.Authorization</code> 写入 <code>Bearer {prettyToken}</code>。</>,
-            <>保存后重新打开 Copilot Chat，使配置与 <a href={VSCODE_DOC_URL} rel="noreferrer" target="_blank">官方指南</a> 保持一致。</>,
-          ],
-          sampleTitle: '示例：mcp.json',
-          snippetLanguage: 'json',
-          snippet,
-          reference: {
-            label: 'VS Code Copilot MCP 文档',
-            url: VSCODE_DOC_URL,
-          },
-        }
-      })(),
-      claudeDesktop: {
-        title: 'Claude Desktop',
-        steps: [
-          <>打开 <code>⌘+,</code> → <strong>Develop</strong> → <code>Edit Config</code>，按照官方文档将 MCP JSON 写入本地 <code>claude_desktop_config.json</code>。</>,
-          <>在 JSON 中保留我们提供的 endpoint，保存后重启 Claude Desktop 以载入新的工具列表。</>,
-        ],
-        sampleTitle: '示例：claude_desktop_config.json',
-        snippetLanguage: 'json',
-        snippet: `{
-  <span class="hl-key">"mcpServers"</span>: {
-    <span class="hl-key">"tavily-hikari"</span>: {
-      <span class="hl-key">"type"</span>: <span class="hl-string">"http"</span>,
-      <span class="hl-key">"url"</span>: <span class="hl-string">"${baseUrl}/mcp"</span>,
-      <span class="hl-key">"headers"</span>: {
-        <span class="hl-key">"Authorization"</span>: <span class="hl-string">"Bearer ${prettyToken}"</span>
-      }
-    }
-  }
-}`,
-        reference: {
-          label: 'NocoDB MCP docs',
-          url: NOCODB_DOC_URL,
-        },
-      },
-      cursor: {
-        title: 'Cursor',
-        steps: [
-          <>在 Cursor 设置（<code>⇧+⌘+J</code>）中打开 <strong>MCP → Add Custom MCP</strong>，按照官方指南编辑全局 <code>mcp.json</code>。</>,
-          <>粘贴下方配置并保存，回到 MCP 面板确认条目显示 “tools enabled”。</>,
-        ],
-        sampleTitle: '示例：~/.cursor/mcp.json',
-        snippetLanguage: 'json',
-        snippet: `{
-  <span class="hl-key">"mcpServers"</span>: {
-    <span class="hl-key">"tavily-hikari"</span>: {
-      <span class="hl-key">"type"</span>: <span class="hl-string">"http"</span>,
-      <span class="hl-key">"url"</span>: <span class="hl-string">"${baseUrl}/mcp"</span>,
-      <span class="hl-key">"headers"</span>: {
-        <span class="hl-key">"Authorization"</span>: <span class="hl-string">"Bearer ${prettyToken}"</span>
-      }
-    }
-  }
-}`,
-        reference: {
-          label: 'NocoDB MCP docs',
-          url: NOCODB_DOC_URL,
-        },
-      },
-      windsurf: {
-        title: 'Windsurf',
-        steps: [
-          <>在 Windsurf 中点击 MCP 侧边栏的锤子图标 → <strong>Configure</strong>，再选择 <strong>View raw config</strong> 打开 <code>mcp_config.json</code>。</>,
-          <>将下方片段写入 <code>mcpServers</code>，保存后在 Manage Plugins 页点击 <strong>Refresh</strong> 以加载新工具。</>,
-        ],
-        sampleTitle: '示例：~/.codeium/windsurf/mcp_config.json',
-        snippetLanguage: 'json',
-        snippet: `{
-  <span class="hl-key">"mcpServers"</span>: {
-    <span class="hl-key">"tavily-hikari"</span>: {
-      <span class="hl-key">"type"</span>: <span class="hl-string">"http"</span>,
-      <span class="hl-key">"url"</span>: <span class="hl-string">"${baseUrl}/mcp"</span>,
-      <span class="hl-key">"headers"</span>: {
-        <span class="hl-key">"Authorization"</span>: <span class="hl-string">"Bearer ${prettyToken}"</span>
-      }
-    }
-  }
-}`,
-        reference: {
-          label: 'NocoDB MCP docs',
-          url: NOCODB_DOC_URL,
-        },
-      },
-      other: {
-        title: '其他 MCP 客户端',
-        steps: [
-          <>端点：<code>{baseUrl}/mcp</code>（Streamable HTTP）。</>,
-          <>认证：HTTP Header <code>Authorization: Bearer {prettyToken}</code>。</>,
-          <>适用于任意兼容客户端，直接指向该 URL 并附带上述头部即可。</>,
-        ],
-        sampleTitle: '示例：通用请求',
-        snippetLanguage: 'bash',
-        snippet: `curl -X POST \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer ${prettyToken}" \
-  ${baseUrl}/mcp`,
-        reference: {
-          label: 'Model Context Protocol spec',
-          url: MCP_SPEC_URL,
-        },
-      },
-    }
-
+    const guides = buildGuideContent(language, baseUrl, prettyToken)
     return guides[activeGuide]
-  }, [activeGuide, token])
+  }, [activeGuide, token, language])
+
+  const guideTabs = useMemo(
+    () => GUIDE_KEY_ORDER.map((id) => ({ id, label: publicStrings.guide.tabs[id] ?? id })),
+    [publicStrings.guide.tabs],
+  )
 
   const versionTagUrl = updateBanner.currentVersion
     ? `${REPO_URL}/tree/v${encodeURIComponent(updateBanner.currentVersion)}`
@@ -429,77 +259,79 @@ function PublicHome(): JSX.Element {
       {updateBanner.visible && (
         <section className="surface update-banner" role="status" aria-live="polite">
           <div className="update-banner-text">
-            <strong>有新版本上线</strong>
+            <strong>{publicStrings.updateBanner.title}</strong>
             <span>
-              当前 {updateBanner.currentVersion ?? 'unknown'} → 可用 {updateBanner.availableVersion ?? 'latest'}
+              {publicStrings.updateBanner.description(
+                updateBanner.currentVersion ?? 'unknown',
+                updateBanner.availableVersion ?? 'latest',
+              )}
             </span>
           </div>
           <div className="update-banner-actions">
             <button type="button" className="button button-primary" onClick={updateBanner.reload}>
-              刷新以更新
+              {publicStrings.updateBanner.refresh}
             </button>
             <button type="button" className="button" onClick={updateBanner.dismiss}>
-              暂不提醒
+              {publicStrings.updateBanner.dismiss}
             </button>
           </div>
         </section>
       )}
       <section className="surface public-home-hero">
-        <h1 className="hero-title">Tavily Hikari Proxy</h1>
-        <p className="public-home-tagline">Transparent request visibility for your Tavily integration.</p>
-        <p className="public-home-description">
-          Tavily Hikari 将多组 Tavily API Key 聚合为一个统一入口，自动均衡每个密钥的用量，避免本地频繁切换账户；并提供请求审计、速率监控与跨客户端分享的访问令牌管理。
-        </p>
+        <div className="language-switcher-row">
+          <LanguageSwitcher />
+        </div>
+        <h1 className="hero-title">{publicStrings.heroTitle}</h1>
+        <p className="public-home-tagline">{publicStrings.heroTagline}</p>
+        <p className="public-home-description">{publicStrings.heroDescription}</p>
         {error && <div className="surface error-banner" role="status">{error}</div>}
         <div className="metrics-grid hero-metrics">
           <div className="metric-card">
-            <h3>本月成功请求（UTC）</h3>
+            <h3>{publicStrings.metrics.monthly.title}</h3>
             <div className="metric-value"><RollingNumber value={loading ? null : metrics?.monthlySuccess ?? 0} /></div>
-            <div className="metric-subtitle">Tavily 月额度按 UTC 月初自动重置</div>
+            <div className="metric-subtitle">{publicStrings.metrics.monthly.subtitle}</div>
           </div>
           <div className="metric-card">
-            <h3>今日（服务器时区）</h3>
+            <h3>{publicStrings.metrics.daily.title}</h3>
             <div className="metric-value"><RollingNumber value={loading ? null : metrics?.dailySuccess ?? 0} /></div>
-            <div className="metric-subtitle">从服务器午夜起累计的成功请求</div>
+            <div className="metric-subtitle">{publicStrings.metrics.daily.subtitle}</div>
           </div>
           <div className="metric-card">
-            <h3>号池可用数</h3>
+            <h3>{publicStrings.metrics.pool.title}</h3>
             <div className="metric-value">
               {loading ? '—' : availableKeys != null && totalKeys != null ? `${availableKeys}/${totalKeys}` : '—'}
             </div>
-            <div className="metric-subtitle">活跃 Tavily API Key / 总密钥（含本月耗尽）</div>
+            <div className="metric-subtitle">{publicStrings.metrics.pool.subtitle}</div>
           </div>
         </div>
         {isAdmin && (
-          <div className="public-home-actions">
-            <button type="button" className="button button-primary" onClick={() => { window.location.href = '/admin' }}>
-              Open Admin Dashboard
-            </button>
-          </div>
+          <button type="button" className="button button-primary" onClick={() => { window.location.href = '/admin' }}>
+            {publicStrings.adminButton}
+          </button>
         )}
       </section>
       <section className="surface panel access-panel">
         <div className="access-panel-grid">
           <header className="panel-header" style={{ marginBottom: 8 }}>
-            <h2>令牌使用统计</h2>
+            <h2>{publicStrings.accessPanel.title}</h2>
           </header>
           <div className="access-stats">
             <div className="access-stat">
-              <h4>今日成功</h4>
+              <h4>{publicStrings.accessPanel.stats.dailySuccess}</h4>
               <p><RollingNumber value={loading ? null : tokenMetrics?.dailySuccess ?? 0} /></p>
             </div>
             <div className="access-stat">
-              <h4>今日失败</h4>
+              <h4>{publicStrings.accessPanel.stats.dailyFailure}</h4>
               <p><RollingNumber value={loading ? null : tokenMetrics?.dailyFailure ?? 0} /></p>
             </div>
             <div className="access-stat">
-              <h4>本月成功</h4>
+              <h4>{publicStrings.accessPanel.stats.monthlySuccess}</h4>
               <p><RollingNumber value={loading ? null : tokenMetrics?.monthlySuccess ?? 0} /></p>
             </div>
           </div>
           <div className="access-token-box">
             <label htmlFor="access-token" className="token-label">
-              Access Token
+              {publicStrings.accessToken.label}
             </label>
             <div className="token-input-row">
               <div className="token-input-shell">
@@ -519,18 +351,18 @@ function PublicHome(): JSX.Element {
                       fetchTokenMetrics(next).then(setTokenMetrics).catch(() => setTokenMetrics(null))
                     }
                   }}
-                  placeholder="th-xxxx-xxxxxxxxxxxx"
+                  placeholder={publicStrings.accessToken.placeholder}
                   autoComplete="off"
                 />
                 <button
                   type="button"
                   className="token-visibility-button"
                   onClick={() => setTokenVisible((prev) => !prev)}
-                  aria-label={tokenVisible ? '隐藏 Access Token' : '显示 Access Token'}
+                  aria-label={tokenVisible ? publicStrings.accessToken.toggle.hide : publicStrings.accessToken.toggle.show}
                 >
                   <img
                     src={`${ICONIFY_ENDPOINT}/mdi/${tokenVisible ? 'eye-off-outline' : 'eye-outline'}.svg?color=%236b7280`}
-                    alt="toggle visibility"
+                    alt={publicStrings.accessToken.toggle.iconAlt}
                   />
                 </button>
               </div>
@@ -538,18 +370,25 @@ function PublicHome(): JSX.Element {
                 type="button"
                 className={`button button-secondary token-copy-button${copyState === 'copied' ? ' success' : ''}`}
                 onClick={handleCopyToken}
+                aria-label={publicStrings.copyToken.iconAlt}
               >
-                <img src={`${ICONIFY_ENDPOINT}/mdi/content-copy.svg?color=%23ffffff`} alt="复制" />
-                <span>{copyState === 'copied' ? '已复制' : copyState === 'error' ? '复制失败' : '复制令牌'}</span>
+                <img src={`${ICONIFY_ENDPOINT}/mdi/content-copy.svg?color=%23ffffff`} alt={publicStrings.copyToken.iconAlt} />
+                <span>
+                  {copyState === 'copied'
+                    ? publicStrings.copyToken.copied
+                    : copyState === 'error'
+                      ? publicStrings.copyToken.error
+                      : publicStrings.copyToken.copy}
+                </span>
               </button>
             </div>
           </div>
         </div>
       </section>
       <section className="surface panel public-home-guide">
-        <h2>如何在常见 MCP 客户端中接入 Tavily Hikari</h2>
+        <h2>{publicStrings.guide.title}</h2>
         <div className="guide-tabs">
-          {GUIDE_TABS.map((tab) => (
+          {guideTabs.map((tab) => (
             <button
               key={tab.id}
               type="button"
@@ -577,7 +416,7 @@ function PublicHome(): JSX.Element {
           )}
           {guideDescription.reference && (
             <p className="guide-reference">
-              数据来源：
+              {publicStrings.guide.dataSourceLabel}
               <a href={guideDescription.reference.url} target="_blank" rel="noreferrer">
                 {guideDescription.reference.label}
               </a>
@@ -591,7 +430,7 @@ function PublicHome(): JSX.Element {
           <span>GitHub</span>
         </a>
         <div className="footer-version">
-          <span>当前版本：</span>
+          <span>{publicStrings.footer.version}</span>
           {versionTagUrl ? (
             <a href={versionTagUrl} target="_blank" rel="noreferrer">
               <code>v{updateBanner.currentVersion}</code>
@@ -606,6 +445,221 @@ function PublicHome(): JSX.Element {
 }
 
 export default PublicHome
+function buildGuideContent(language: Language, baseUrl: string, prettyToken: string): Record<GuideKey, GuideContent> {
+  const isEnglish = language === 'en'
+  const codexSnippet = buildCodexSnippet(baseUrl)
+  const claudeSnippet = buildClaudeSnippet(baseUrl, prettyToken, language)
+  const genericJsonSnippet = buildGenericJsonSnippet(baseUrl, prettyToken)
+  const curlSnippet = buildCurlSnippet(baseUrl, prettyToken)
+
+  return {
+    codex: {
+      title: 'Codex CLI',
+      steps: isEnglish
+        ? [
+            <>Set <code>experimental_use_rmcp_client = true</code> inside <code>~/.codex/config.toml</code>.</>,
+            <>Add <code>[mcp_servers.tavily_hikari]</code>, point <code>url</code> to <code>{baseUrl}/mcp</code>, and set <code>bearer_token_env_var = TAVILY_HIKARI_TOKEN</code>.</>,
+            <>Run <code>export TAVILY_HIKARI_TOKEN="{prettyToken}"</code>, then verify with <code>codex mcp list</code> or <code>codex mcp get tavily_hikari</code>.</>,
+          ]
+        : [
+            <>在 <code>~/.codex/config.toml</code> 设定 <code>experimental_use_rmcp_client = true</code>。</>,
+            <>添加 <code>[mcp_servers.tavily_hikari]</code>，将 <code>url</code> 指向 <code>{baseUrl}/mcp</code> 并声明 <code>bearer_token_env_var = TAVILY_HIKARI_TOKEN</code>。</>,
+            <>运行 <code>export TAVILY_HIKARI_TOKEN="{prettyToken}"</code> 后，执行 <code>codex mcp list</code> 或 <code>codex mcp get tavily_hikari</code> 验证。</>,
+          ],
+      sampleTitle: isEnglish ? 'Example: ~/.codex/config.toml' : '示例：~/.codex/config.toml',
+      snippetLanguage: 'toml',
+      snippet: codexSnippet,
+      reference: {
+        label: 'OpenAI Codex docs',
+        url: CODEX_DOC_URL,
+      },
+    },
+    claude: {
+      title: 'Claude Code CLI',
+      steps: isEnglish
+        ? [
+            <>Use <code>claude mcp add-json</code> to register Tavily Hikari as an HTTP MCP endpoint.</>,
+            <>Run <code>claude mcp get tavily-hikari</code> to confirm the connection or troubleshoot errors.</>,
+          ]
+        : [
+            <>参考下方命令，使用 <code>claude mcp add-json</code> 注册 Tavily Hikari HTTP MCP。</>,
+            <>运行 <code>claude mcp get tavily-hikari</code> 查看状态或排查错误。</>,
+          ],
+      sampleTitle: isEnglish ? 'Example: claude mcp add-json' : '示例：claude mcp add-json',
+      snippetLanguage: 'bash',
+      snippet: claudeSnippet,
+      reference: {
+        label: 'Claude Code MCP docs',
+        url: CLAUDE_DOC_URL,
+      },
+    },
+    vscode: {
+      title: 'VS Code / Copilot',
+      steps: isEnglish
+        ? [
+            <>Add Tavily Hikari to VS Code Copilot <code>mcp.json</code> (or <code>.code-workspace</code>/<code>devcontainer.json</code> under <code>customizations.vscode.mcp</code>).</>,
+            <>Set <code>type</code> to <code>"http"</code>, <code>url</code> to <code>{baseUrl}/mcp</code>, and place <code>Bearer {prettyToken}</code> in <code>headers.Authorization</code>.</>,
+            <>Reload Copilot Chat to apply changes, keeping it aligned with the <a href={VSCODE_DOC_URL} rel="noreferrer" target="_blank">official guide</a>.</>,
+          ]
+        : [
+            <>在 VS Code Copilot <code>mcp.json</code>（或 <code>.code-workspace</code>/<code>devcontainer.json</code> 的 <code>customizations.vscode.mcp</code>）添加服务器节点。</>,
+            <>设置 <code>type</code> 为 <code>"http"</code>、<code>url</code> 为 <code>{baseUrl}/mcp</code>，并在 <code>headers.Authorization</code> 写入 <code>Bearer {prettyToken}</code>。</>,
+            <>保存后重新打开 Copilot Chat，使配置与 <a href={VSCODE_DOC_URL} rel="noreferrer" target="_blank">官方指南</a> 保持一致。</>,
+          ],
+      sampleTitle: isEnglish ? 'Example: mcp.json' : '示例：mcp.json',
+      snippetLanguage: 'json',
+      snippet: buildVscodeSnippet(baseUrl, prettyToken),
+      reference: {
+        label: 'VS Code Copilot MCP docs',
+        url: VSCODE_DOC_URL,
+      },
+    },
+    claudeDesktop: {
+      title: 'Claude Desktop',
+      steps: isEnglish
+        ? [
+            <>Open <code>⌘+,</code> → <strong>Develop</strong> → <code>Edit Config</code>, then update <code>claude_desktop_config.json</code> following the official docs.</>,
+            <>Keep the endpoint defined below, save the file, and restart Claude Desktop to load the new tool list.</>,
+          ]
+        : [
+            <>打开 <code>⌘+,</code> → <strong>Develop</strong> → <code>Edit Config</code>，按照官方文档将 MCP JSON 写入本地 <code>claude_desktop_config.json</code>。</>,
+            <>在 JSON 中保留我们提供的 endpoint，保存后重启 Claude Desktop 以载入新的工具列表。</>,
+          ],
+      sampleTitle: isEnglish ? 'Example: claude_desktop_config.json' : '示例：claude_desktop_config.json',
+      snippetLanguage: 'json',
+      snippet: genericJsonSnippet,
+      reference: {
+        label: 'NocoDB MCP docs',
+        url: NOCODB_DOC_URL,
+      },
+    },
+    cursor: {
+      title: 'Cursor',
+      steps: isEnglish
+        ? [
+            <>Open Cursor Settings (<code>⇧+⌘+J</code>) → <strong>MCP → Add Custom MCP</strong> and edit the global <code>mcp.json</code>.</>,
+            <>Paste the configuration below, save it, and confirm “tools enabled” inside the MCP panel.</>,
+          ]
+        : [
+            <>在 Cursor 设置（<code>⇧+⌘+J</code>）中打开 <strong>MCP → Add Custom MCP</strong>，按照官方指南编辑全局 <code>mcp.json</code>。</>,
+            <>粘贴下方配置并保存，回到 MCP 面板确认条目显示 “tools enabled”。</>,
+          ],
+      sampleTitle: isEnglish ? 'Example: ~/.cursor/mcp.json' : '示例：~/.cursor/mcp.json',
+      snippetLanguage: 'json',
+      snippet: genericJsonSnippet,
+      reference: {
+        label: 'NocoDB MCP docs',
+        url: NOCODB_DOC_URL,
+      },
+    },
+    windsurf: {
+      title: 'Windsurf',
+      steps: isEnglish
+        ? [
+            <>In Windsurf, click the hammer icon in the MCP sidebar → <strong>Configure</strong>, then choose <strong>View raw config</strong> to open <code>mcp_config.json</code>.</>,
+            <>Insert the snippet under <code>mcpServers</code>, save, and click <strong>Refresh</strong> on Manage Plugins to reload tools.</>,
+          ]
+        : [
+            <>在 Windsurf 中点击 MCP 侧边栏的锤子图标 → <strong>Configure</strong>，再选择 <strong>View raw config</strong> 打开 <code>mcp_config.json</code>。</>,
+            <>将下方片段写入 <code>mcpServers</code>，保存后在 Manage Plugins 页点击 <strong>Refresh</strong> 以加载新工具。</>,
+          ],
+      sampleTitle: isEnglish ? 'Example: ~/.codeium/windsurf/mcp_config.json' : '示例：~/.codeium/windsurf/mcp_config.json',
+      snippetLanguage: 'json',
+      snippet: genericJsonSnippet,
+      reference: {
+        label: 'NocoDB MCP docs',
+        url: NOCODB_DOC_URL,
+      },
+    },
+    other: {
+      title: isEnglish ? 'Other clients' : '其他 MCP 客户端',
+      steps: isEnglish
+        ? [
+            <>Endpoint: <code>{baseUrl}/mcp</code> (Streamable HTTP).</>,
+            <>Auth: HTTP header <code>Authorization: Bearer {prettyToken}</code>.</>,
+            <>Any MCP-compatible client can target this URL with the header attached.</>,
+          ]
+        : [
+            <>端点：<code>{baseUrl}/mcp</code>（Streamable HTTP）。</>,
+            <>认证：HTTP Header <code>Authorization: Bearer {prettyToken}</code>。</>,
+            <>适用于任意兼容客户端，直接指向该 URL 并附带上述头部即可。</>,
+          ],
+      sampleTitle: isEnglish ? 'Example: generic request' : '示例：通用请求',
+      snippetLanguage: 'bash',
+      snippet: curlSnippet,
+      reference: {
+        label: 'Model Context Protocol spec',
+        url: MCP_SPEC_URL,
+      },
+    },
+  }
+}
+
+function buildCodexSnippet(baseUrl: string): string {
+  return [
+    '<span class="hl-comment"># ~/.codex/config.toml</span>',
+    'experimental_use_rmcp_client = true',
+    '',
+    '[mcp_servers.tavily_hikari]',
+    `url = "<span class="hl-string">${baseUrl}/mcp</span>"`,
+    'bearer_token_env_var = "TAVILY_HIKARI_TOKEN"',
+  ].join('\n')
+}
+
+function buildClaudeSnippet(baseUrl: string, prettyToken: string, language: Language): string {
+  const verifyLabel = language === 'en' ? '# Verify' : '# 验证'
+  return [
+    '<span class="hl-comment"># claude mcp add-json</span>',
+    `claude mcp add-json tavily-hikari '{`,
+    `  <span class="hl-key">"type"</span>: <span class="hl-string">"http"</span>,`,
+    `  <span class="hl-key">"url"</span>: <span class="hl-string">"${baseUrl}/mcp"</span>,`,
+    '  <span class="hl-key">"headers"</span>: {',
+    `    <span class="hl-key">"Authorization"</span>: <span class="hl-string">"Bearer ${prettyToken}"</span>`,
+    '  }',
+    "}'",
+    '',
+    verifyLabel,
+    'claude mcp get tavily-hikari',
+  ].join('\n')
+}
+
+function buildVscodeSnippet(baseUrl: string, prettyToken: string): string {
+  return [
+    '{',
+    '  <span class="hl-key">"servers"</span>: {',
+    '    <span class="hl-key">"tavily-hikari"</span>: {',
+    '      <span class="hl-key">"type"</span>: <span class="hl-string">"http"</span>,',
+    `      <span class="hl-key">"url"</span>: <span class="hl-string">"${baseUrl}/mcp"</span>,`,
+    '      <span class="hl-key">"headers"</span>: {',
+    `        <span class="hl-key">"Authorization"</span>: <span class="hl-string">"Bearer ${prettyToken}"</span>`,
+    '      }',
+    '    }',
+    '  }',
+    '}',
+  ].join('\n')
+}
+
+function buildGenericJsonSnippet(baseUrl: string, prettyToken: string): string {
+  return `{
+  <span class="hl-key">"mcpServers"</span>: {
+    <span class="hl-key">"tavily-hikari"</span>: {
+      <span class="hl-key">"type"</span>: <span class="hl-string">"http"</span>,
+      <span class="hl-key">"url"</span>: <span class="hl-string">"${baseUrl}/mcp"</span>,
+      <span class="hl-key">"headers"</span>: {
+        <span class="hl-key">"Authorization"</span>: <span class="hl-string">"Bearer ${prettyToken}"</span>
+      }
+    }
+  }
+}`
+}
+
+function buildCurlSnippet(baseUrl: string, prettyToken: string): string {
+  return `curl -X POST \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer ${prettyToken}" \\
+  ${baseUrl}/mcp`
+}
+
 function normalizeTokenHash(value: string): string {
   const maybeId = extractTokenId(value)
   return maybeId ?? value

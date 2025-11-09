@@ -50,6 +50,13 @@ button {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  position: relative;
+}
+
+.public-home-hero .language-switcher-row {
+  position: absolute;
+  top: 16px;
+  right: 20px;
 }
 
 .public-home-hero h1 {
@@ -77,6 +84,74 @@ button {
   font-size: 0.95rem;
   color: #475569;
   line-height: 1.6;
+}
+
+.language-switcher {
+  display: inline-block;
+}
+
+.language-switcher-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.language-flag {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #ffffff;
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.08), 0 2px 6px rgba(15, 23, 42, 0.12);
+}
+
+.language-short {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.language-switcher-menu {
+  padding: 8px;
+  min-width: 160px;
+}
+
+.language-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  font-weight: 500;
+  padding: 6px 10px;
+  border-radius: 8px;
+  color: inherit;
+}
+
+.language-option.active {
+  background: rgba(37, 99, 235, 0.12);
+  color: #1d4ed8;
+}
+
+.language-option:hover {
+  background: rgba(15, 23, 42, 0.06);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .public-home-actions {
