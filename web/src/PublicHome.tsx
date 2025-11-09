@@ -282,7 +282,6 @@ function PublicHome(): JSX.Element {
           <LanguageSwitcher />
         </div>
         <h1 className="hero-title">{publicStrings.heroTitle}</h1>
-        <p className="public-home-tagline">{publicStrings.heroTagline}</p>
         <p className="public-home-description">{publicStrings.heroDescription}</p>
         {error && <div className="surface error-banner" role="status">{error}</div>}
         <div className="metrics-grid hero-metrics">
