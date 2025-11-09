@@ -2,6 +2,7 @@
 .env
 .env.*
 *.db
+*.db-journal
 node_modules
 .serena/
 web/node_modules
