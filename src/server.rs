@@ -234,10 +234,13 @@ async fn serve_index(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Response<Body>, StatusCode> {
-    if state.dev_open_admin || state.forward_auth.is_request_admin(&headers) {
+    // Only auto-redirect to admin when explicit dev convenience flag is enabled.
+    // Admin users should still be able to access the public page without forced redirection.
+    if state.dev_open_admin {
         return Ok(Redirect::temporary("/admin").into_response());
     }
 
+    let _ = headers; // keep parameter for potential future use
     load_spa_response(state.as_ref(), "index.html").await
 }
 
