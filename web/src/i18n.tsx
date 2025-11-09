@@ -90,6 +90,7 @@ interface AdminTranslationsShape {
     }
     actions: {
       copy: string
+      share: string
       disable: string
       enable: string
       edit: string
@@ -387,6 +388,7 @@ export const translations: Record<Language, TranslationShape> = {
         },
         actions: {
           copy: 'Copy full token',
+          share: 'Copy share link',
           disable: 'Disable token',
           enable: 'Enable token',
           edit: 'Edit note',
@@ -667,6 +669,7 @@ export const translations: Record<Language, TranslationShape> = {
         },
         actions: {
           copy: '复制完整令牌',
+          share: '复制分享链接',
           disable: '禁用令牌',
           enable: '启用令牌',
           edit: '修改备注',

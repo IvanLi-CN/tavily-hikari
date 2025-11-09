@@ -1,6 +1,7 @@
 import { Icon } from '@iconify/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import LanguageSwitcher from './components/LanguageSwitcher'
+import { useTranslate, type AdminTranslations } from './i18n'
 import {
   fetchApiKeys,
   fetchApiKeySecret,
@@ -90,26 +91,12 @@ function statusClass(status: string): string {
   return 'status-badge status-unknown'
 }
 
-function statusLabel(status: string): string {
-  switch (status.toLowerCase()) {
-    case 'active':
-      return 'Active'
-    case 'exhausted':
-      return 'Exhausted'
-    case 'success':
-      return 'Success'
-    case 'error':
-      return 'Error'
-    case 'quota_exhausted':
-      return 'Quota Exhausted'
-    case 'deleted':
-      return 'Deleted'
-    default:
-      return status
-  }
+function statusLabel(status: string, strings: AdminTranslations): string {
+  const normalized = status.toLowerCase()
+  return strings.statuses[normalized] ?? status
 }
 
-function formatErrorMessage(log: RequestLog): string {
+function formatErrorMessage(log: RequestLog, errorsStrings: AdminTranslations['logs']['errors']): string {
   const message = log.error_message?.trim()
   if (message) {
     return message
@@ -118,33 +105,35 @@ function formatErrorMessage(log: RequestLog): string {
   const status = log.result_status.toLowerCase()
   if (status === 'quota_exhausted') {
     if (log.http_status != null) {
-      return `Quota exhausted (HTTP ${log.http_status})`
+      return errorsStrings.quotaExhaustedHttp.replace('{http}', String(log.http_status))
     }
-    return 'Quota exhausted'
+    return errorsStrings.quotaExhausted
   }
 
   if (status === 'error') {
     if (log.http_status != null && log.mcp_status != null) {
-      return `Request failed (HTTP ${log.http_status}, MCP ${log.mcp_status})`
+      return errorsStrings.requestFailedHttpMcp
+        .replace('{http}', String(log.http_status))
+        .replace('{mcp}', String(log.mcp_status))
     }
     if (log.http_status != null) {
-      return `Request failed (HTTP ${log.http_status})`
+      return errorsStrings.requestFailedHttp.replace('{http}', String(log.http_status))
     }
     if (log.mcp_status != null) {
-      return `Request failed (MCP ${log.mcp_status})`
+      return errorsStrings.requestFailedMcp.replace('{mcp}', String(log.mcp_status))
     }
-    return 'Request failed'
+    return errorsStrings.requestFailedGeneric
   }
 
   if (status === 'success') {
-    return '—'
+    return errorsStrings.none
   }
 
   if (log.http_status != null) {
-    return `HTTP ${log.http_status}`
+    return errorsStrings.httpStatus.replace('{http}', String(log.http_status))
   }
 
-  return '—'
+  return errorsStrings.none
 }
 
 function AdminDashboard(): JSX.Element {
@@ -152,6 +141,15 @@ function AdminDashboard(): JSX.Element {
     const id = parseHashForKeyId()
     return id ? { name: 'key', id } : { name: 'home' }
   })
+  const translations = useTranslate()
+  const adminStrings = translations.admin
+  const headerStrings = adminStrings.header
+  const tokenStrings = adminStrings.tokens
+  const metricsStrings = adminStrings.metrics
+  const keyStrings = adminStrings.keys
+  const logStrings = adminStrings.logs
+  const footerStrings = adminStrings.footer
+  const errorStrings = adminStrings.errors
   const [summary, setSummary] = useState<Summary | null>(null)
   const [keys, setKeys] = useState<ApiKeyStats[]>([])
   const [tokens, setTokens] = useState<AuthToken[]>([])
@@ -244,7 +242,7 @@ function AdminDashboard(): JSX.Element {
         window.setTimeout(() => updateCopyState(stateKey, null), 2000)
       } catch (err) {
         console.error(err)
-        setError(err instanceof Error ? err.message : 'Failed to copy API key')
+        setError(err instanceof Error ? err.message : errorStrings.copyKey)
         updateCopyState(stateKey, null)
       }
     },
@@ -417,36 +415,39 @@ function AdminDashboard(): JSX.Element {
     return [
       {
         id: 'total',
-        label: 'Total Requests',
+        label: metricsStrings.labels.total,
         value: formatNumber(summary.total_requests),
         subtitle: '—',
       },
       {
         id: 'success',
-        label: 'Successful',
+        label: metricsStrings.labels.success,
         value: formatNumber(summary.success_count),
         subtitle: formatPercent(summary.success_count, total),
       },
       {
         id: 'errors',
-        label: 'Errors',
+        label: metricsStrings.labels.errors,
         value: formatNumber(summary.error_count),
         subtitle: formatPercent(summary.error_count, total),
       },
       {
         id: 'quota',
-        label: 'Quota Exhausted',
+        label: metricsStrings.labels.quota,
         value: formatNumber(summary.quota_exhausted_count),
         subtitle: formatPercent(summary.quota_exhausted_count, total),
       },
       {
         id: 'keys',
-        label: 'Active Keys',
+        label: metricsStrings.labels.keys,
         value: `${formatNumber(summary.active_keys)} / ${formatNumber(summary.active_keys + summary.exhausted_keys)}`,
-        subtitle: summary.exhausted_keys === 0 ? 'All keys available' : `${formatNumber(summary.exhausted_keys)} exhausted`,
+        subtitle:
+          summary.exhausted_keys === 0
+            ? metricsStrings.subtitles.keysAll
+            : metricsStrings.subtitles.keysExhausted.replace('{count}', formatNumber(summary.exhausted_keys)),
       },
     ]
-  }, [summary])
+  }, [summary, metricsStrings])
 
   const dedupedKeys = useMemo(() => {
     const map = new Map<string, ApiKeyStats>()
@@ -498,7 +499,7 @@ function AdminDashboard(): JSX.Element {
       controller.abort()
     } catch (err) {
       console.error(err)
-      setError(err instanceof Error ? err.message : 'Failed to add API key')
+      setError(err instanceof Error ? err.message : errorStrings.addKey)
     } finally {
       setSubmitting(false)
     }
@@ -517,7 +518,7 @@ function AdminDashboard(): JSX.Element {
       controller.abort()
     } catch (err) {
       console.error(err)
-      setError(err instanceof Error ? err.message : 'Failed to create token')
+      setError(err instanceof Error ? err.message : errorStrings.createToken)
     } finally {
       setSubmitting(false)
     }
@@ -532,7 +533,7 @@ function AdminDashboard(): JSX.Element {
       window.setTimeout(() => updateCopyState(stateKey, null), 2000)
     } catch (err) {
       console.error(err)
-      setError(err instanceof Error ? err.message : 'Failed to copy token')
+      setError(err instanceof Error ? err.message : errorStrings.copyToken)
       updateCopyState(stateKey, null)
     }
   }
@@ -547,7 +548,7 @@ function AdminDashboard(): JSX.Element {
       window.setTimeout(() => updateCopyState(stateKey, null), 2000)
     } catch (err) {
       console.error(err)
-      setError(err instanceof Error ? err.message : 'Failed to copy share link')
+      setError(err instanceof Error ? err.message : errorStrings.copyToken)
       updateCopyState(stateKey, null)
     }
   }
@@ -562,7 +563,7 @@ function AdminDashboard(): JSX.Element {
       controller.abort()
     } catch (err) {
       console.error(err)
-      setError(err instanceof Error ? err.message : 'Failed to update token status')
+      setError(err instanceof Error ? err.message : errorStrings.toggleToken)
     } finally {
       setTogglingId(null)
     }
@@ -588,7 +589,7 @@ function AdminDashboard(): JSX.Element {
       controller.abort()
     } catch (err) {
       console.error(err)
-      setError(err instanceof Error ? err.message : 'Failed to delete token')
+      setError(err instanceof Error ? err.message : errorStrings.deleteToken)
     } finally {
       setDeletingId(null)
     }
@@ -619,7 +620,7 @@ function AdminDashboard(): JSX.Element {
       controller.abort()
     } catch (err) {
       console.error(err)
-      setError(err instanceof Error ? err.message : 'Failed to update token note')
+      setError(err instanceof Error ? err.message : errorStrings.updateTokenNote)
     } finally {
       setSavingTokenNote(false)
     }
@@ -651,7 +652,7 @@ function AdminDashboard(): JSX.Element {
       controller.abort()
     } catch (err) {
       console.error(err)
-      setError(err instanceof Error ? err.message : 'Failed to delete API key')
+      setError(err instanceof Error ? err.message : errorStrings.deleteKey)
     } finally {
       setDeletingId(null)
     }
@@ -673,7 +674,7 @@ function AdminDashboard(): JSX.Element {
       controller.abort()
     } catch (err) {
       console.error(err)
-      setError(err instanceof Error ? err.message : 'Failed to update key status')
+      setError(err instanceof Error ? err.message : errorStrings.toggleKey)
     } finally {
       setTogglingId(null)
     }
@@ -708,8 +709,8 @@ function AdminDashboard(): JSX.Element {
     <main className="app-shell">
       <section className="surface app-header">
         <div className="title-group">
-          <h1>Tavily Hikari Overview</h1>
-          <p>Monitor API key allocation, quota health, and recent proxy activity.</p>
+          <h1>{headerStrings.title}</h1>
+          <p>{headerStrings.subtitle}</p>
         </div>
         <div className="header-right">
           <div className="admin-language-switcher">
@@ -724,7 +725,7 @@ function AdminDashboard(): JSX.Element {
           <div className="controls">
             {lastUpdated && (
               <span className="panel-description updated-time" style={{ marginRight: 8 }}>
-                Updated {timeOnlyFormatter.format(lastUpdated)}
+                {headerStrings.updatedPrefix} {timeOnlyFormatter.format(lastUpdated)}
               </span>
             )}
             <button
@@ -733,7 +734,7 @@ function AdminDashboard(): JSX.Element {
               onClick={handleManualRefresh}
               disabled={loading}
             >
-              {loading ? 'Refreshing…' : 'Refresh Now'}
+              {loading ? headerStrings.refreshing : headerStrings.refreshNow}
             </button>
           </div>
         </div>
@@ -742,37 +743,37 @@ function AdminDashboard(): JSX.Element {
       <section className="surface panel">
         <div className="panel-header">
           <div>
-            <h2>Access Tokens</h2>
-            <p className="panel-description">Auth for /mcp. Format th-xxxx-xxxxxxxxxxxx</p>
+            <h2>{tokenStrings.title}</h2>
+            <p className="panel-description">{tokenStrings.description}</p>
           </div>
           {isAdmin && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <input
                 type="text"
-                placeholder="Note (optional)"
+                placeholder={tokenStrings.notePlaceholder}
                 value={newTokenNote}
                 onChange={(e) => setNewTokenNote(e.target.value)}
                 style={{ padding: '8px 12px', borderRadius: 10, border: '1px solid rgba(15, 23, 42, 0.16)', minWidth: 240 }}
-                aria-label="Token note"
+                aria-label={tokenStrings.notePlaceholder}
               />
               <button type="button" className="button button-primary" onClick={() => void handleAddToken()} disabled={submitting}>
-                {submitting ? 'Creating…' : 'New Token'}
+                {submitting ? tokenStrings.creating : tokenStrings.newToken}
               </button>
             </div>
           )}
         </div>
         <div className="table-wrapper">
           {tokens.length === 0 ? (
-            <div className="empty-state">{loading ? 'Loading tokens…' : 'No tokens yet.'}</div>
+            <div className="empty-state">{loading ? tokenStrings.empty.loading : tokenStrings.empty.none}</div>
           ) : (
             <table>
               <thead>
                 <tr>
-                  <th>ID</th>
-                  <th>Note</th>
-                  <th>Usage</th>
-                  <th>Last Used</th>
-                  {isAdmin && <th>Actions</th>}
+                  <th>{tokenStrings.table.id}</th>
+                  <th>{tokenStrings.table.note}</th>
+                  <th>{tokenStrings.table.usage}</th>
+                  <th>{tokenStrings.table.lastUsed}</th>
+                  {isAdmin && <th>{tokenStrings.table.actions}</th>}
                 </tr>
               </thead>
               <tbody>
@@ -785,11 +786,11 @@ function AdminDashboard(): JSX.Element {
                     <tr key={t.id}>
                       <td>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span title="Token id" className="link-button"><code>{t.id}</code></span>
+                          <span title={tokenStrings.table.id} className="link-button"><code>{t.id}</code></span>
                           <span
                             className="token-status-slot"
                             aria-hidden={t.enabled ? true : undefined}
-                            title={t.enabled ? undefined : 'Disabled'}
+                            title={t.enabled ? undefined : tokenStrings.statusBadges.disabled}
                           >
                             {!t.enabled && (
                               <Icon
@@ -797,7 +798,7 @@ function AdminDashboard(): JSX.Element {
                                 icon="mdi:pause-circle-outline"
                                 width={14}
                                 height={14}
-                                aria-label="Disabled token"
+                                aria-label={tokenStrings.statusBadges.disabled}
                               />
                             )}
                           </span>
@@ -812,8 +813,8 @@ function AdminDashboard(): JSX.Element {
                             <button
                               type="button"
                               className={`icon-button${state === 'copied' ? ' icon-button-success' : ''}${state === 'loading' ? ' icon-button-loading' : ''}`}
-                              title="Copy full token"
-                              aria-label="Copy full token"
+                              title={tokenStrings.actions.copy}
+                              aria-label={tokenStrings.actions.copy}
                               onClick={() => void handleCopyToken(t.id, stateKey)}
                               disabled={state === 'loading'}
                             >
@@ -822,8 +823,8 @@ function AdminDashboard(): JSX.Element {
                             <button
                               type="button"
                               className={`icon-button${shareState === 'copied' ? ' icon-button-success' : ''}${shareState === 'loading' ? ' icon-button-loading' : ''}`}
-                              title="Copy share link"
-                              aria-label="Copy share link"
+                              title={tokenStrings.actions.share}
+                              aria-label={tokenStrings.actions.share}
                               onClick={() => void handleShareToken(t.id, shareStateKey)}
                               disabled={shareState === 'loading'}
                             >
@@ -832,8 +833,8 @@ function AdminDashboard(): JSX.Element {
                             <button
                               type="button"
                               className="icon-button"
-                              title={t.enabled ? 'Disable token' : 'Enable token'}
-                              aria-label={t.enabled ? 'Disable token' : 'Enable token'}
+                              title={t.enabled ? tokenStrings.actions.disable : tokenStrings.actions.enable}
+                              aria-label={t.enabled ? tokenStrings.actions.disable : tokenStrings.actions.enable}
                               onClick={() => void toggleToken(t.id, t.enabled)}
                               disabled={togglingId === t.id}
                             >
@@ -842,8 +843,8 @@ function AdminDashboard(): JSX.Element {
                             <button
                               type="button"
                               className="icon-button"
-                              title="Edit note"
-                              aria-label="Edit note"
+                              title={tokenStrings.actions.edit}
+                              aria-label={tokenStrings.actions.edit}
                               onClick={() => openTokenNoteEdit(t.id, t.note)}
                             >
                               <Icon icon="mdi:pencil-outline" width={18} height={18} />
@@ -851,8 +852,8 @@ function AdminDashboard(): JSX.Element {
                             <button
                               type="button"
                               className="icon-button icon-button-danger"
-                              title="Delete token"
-                              aria-label="Delete token"
+                              title={tokenStrings.actions.delete}
+                              aria-label={tokenStrings.actions.delete}
                               onClick={() => openTokenDeleteConfirm(t.id)}
                               disabled={deletingId === t.id}
                             >
@@ -874,7 +875,7 @@ function AdminDashboard(): JSX.Element {
       <section className="surface metrics-grid">
         {metrics.length === 0 && loading ? (
           <div className="empty-state" style={{ gridColumn: '1 / -1' }}>
-            Loading latest metrics…
+            {metricsStrings.loading}
           </div>
         ) : (
           metrics.map((metric) => (
@@ -890,15 +891,16 @@ function AdminDashboard(): JSX.Element {
       <section className="surface panel">
         <div className="panel-header">
           <div>
-            <h2>API Keys</h2>
-            <p className="panel-description">Status, usage, and recent success rates per Tavily API key.</p>
+            <h2>{keyStrings.title}</h2>
+            <p className="panel-description">{keyStrings.description}</p>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             {isAdmin && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <input
                   type="text"
-                  placeholder="New Tavily API Key"
+                  placeholder={keyStrings.placeholder}
+                  aria-label={keyStrings.placeholder}
                   value={newKey}
                   onChange={(e) => setNewKey(e.target.value)}
                   style={{
@@ -914,7 +916,7 @@ function AdminDashboard(): JSX.Element {
                   onClick={() => void handleAddKey()}
                   disabled={submitting || !newKey.trim()}
                 >
-                  {submitting ? 'Adding…' : 'Add Key'}
+                  {submitting ? keyStrings.adding : keyStrings.addButton}
                 </button>
               </div>
             )}
@@ -922,21 +924,21 @@ function AdminDashboard(): JSX.Element {
         </div>
         <div className="table-wrapper">
           {sortedKeys.length === 0 ? (
-            <div className="empty-state">{loading ? 'Loading key statistics…' : 'No key data recorded yet.'}</div>
+            <div className="empty-state">{loading ? keyStrings.empty.loading : keyStrings.empty.none}</div>
           ) : (
             <table>
               <thead>
                 <tr>
-                  <th>Key ID</th>
-                  <th>Status</th>
-                  <th>Total</th>
-                  <th>Success</th>
-                  <th>Errors</th>
-                  <th>Quota Exhausted</th>
-                  <th>Success Rate</th>
-                  <th>Last Used</th>
-                  <th>Status Changed</th>
-                  {isAdmin && <th>Actions</th>}
+                  <th>{keyStrings.table.keyId}</th>
+                  <th>{keyStrings.table.status}</th>
+                  <th>{keyStrings.table.total}</th>
+                  <th>{keyStrings.table.success}</th>
+                  <th>{keyStrings.table.errors}</th>
+                  <th>{keyStrings.table.quota}</th>
+                  <th>{keyStrings.table.successRate}</th>
+                  <th>{keyStrings.table.lastUsed}</th>
+                  <th>{keyStrings.table.statusChanged}</th>
+                  {isAdmin && <th>{keyStrings.table.actions}</th>}
                 </tr>
               </thead>
               <tbody>
@@ -948,15 +950,21 @@ function AdminDashboard(): JSX.Element {
                     <tr key={item.id}>
                       <td>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <button type="button" className="link-button" onClick={() => navigateKey(item.id)} title="Open details">
+                          <button
+                            type="button"
+                            className="link-button"
+                            onClick={() => navigateKey(item.id)}
+                            title={keyStrings.actions.details}
+                            aria-label={keyStrings.actions.details}
+                          >
                             <code>{item.id}</code>
                           </button>
                           {isAdmin && (
                             <button
                               type="button"
                               className={`icon-button${state === 'copied' ? ' icon-button-success' : ''}${state === 'loading' ? ' icon-button-loading' : ''}`}
-                              title="复制原始 API key"
-                              aria-label="复制原始 API key"
+                              title={keyStrings.actions.copy}
+                              aria-label={keyStrings.actions.copy}
                               onClick={() => void handleCopySecret(item.id, stateKey)}
                               disabled={state === 'loading'}
                             >
@@ -966,7 +974,7 @@ function AdminDashboard(): JSX.Element {
                         </div>
                       </td>
                       <td>
-                        <span className={statusClass(item.status)}>{statusLabel(item.status)}</span>
+                        <span className={statusClass(item.status)}>{statusLabel(item.status, adminStrings)}</span>
                       </td>
                       <td>{formatNumber(total)}</td>
                       <td>{formatNumber(item.success_count)}</td>
@@ -982,8 +990,8 @@ function AdminDashboard(): JSX.Element {
                               <button
                                 type="button"
                                 className="icon-button"
-                                title="Enable key"
-                                aria-label="Enable key"
+                                title={keyStrings.actions.enable}
+                                aria-label={keyStrings.actions.enable}
                                 onClick={() => void handleToggleDisable(item.id, false)}
                                 disabled={togglingId === item.id}
                               >
@@ -993,8 +1001,8 @@ function AdminDashboard(): JSX.Element {
                               <button
                                 type="button"
                                 className="icon-button"
-                                title="Disable key"
-                                aria-label="Disable key"
+                                title={keyStrings.actions.disable}
+                                aria-label={keyStrings.actions.disable}
                                 onClick={() => openDisableConfirm(item.id)}
                                 disabled={togglingId === item.id}
                               >
@@ -1004,8 +1012,8 @@ function AdminDashboard(): JSX.Element {
                             <button
                               type="button"
                               className="icon-button icon-button-danger"
-                              title="Remove key"
-                              aria-label="Remove key"
+                              title={keyStrings.actions.delete}
+                              aria-label={keyStrings.actions.delete}
                               onClick={() => openDeleteConfirm(item.id)}
                               disabled={deletingId === item.id}
                             >
@@ -1014,8 +1022,8 @@ function AdminDashboard(): JSX.Element {
                             <button
                               type="button"
                               className="icon-button"
-                              title="Details"
-                              aria-label="Details"
+                              title={keyStrings.actions.details}
+                              aria-label={keyStrings.actions.details}
                               onClick={() => navigateKey(item.id)}
                             >
                               <Icon icon="mdi:eye-outline" width={18} height={18} />
@@ -1035,23 +1043,23 @@ function AdminDashboard(): JSX.Element {
       <section className="surface panel">
         <div className="panel-header">
           <div>
-            <h2>Recent Requests</h2>
-            <p className="panel-description">Up to the latest 50 invocations handled by the proxy.</p>
+            <h2>{logStrings.title}</h2>
+            <p className="panel-description">{logStrings.description}</p>
           </div>
         </div>
         <div className="table-wrapper">
           {logs.length === 0 ? (
-            <div className="empty-state">{loading ? 'Collecting recent requests…' : 'No request logs captured yet.'}</div>
+            <div className="empty-state">{loading ? logStrings.empty.loading : logStrings.empty.none}</div>
           ) : (
             <table>
               <thead>
                 <tr>
-                  <th>Time</th>
-                  <th>Key</th>
-                  <th>HTTP Status</th>
-                  <th>MCP Status</th>
-                  <th>Result</th>
-                  <th>Error</th>
+                  <th>{logStrings.table.time}</th>
+                  <th>{logStrings.table.key}</th>
+                  <th>{logStrings.table.httpStatus}</th>
+                  <th>{logStrings.table.mcpStatus}</th>
+                  <th>{logStrings.table.result}</th>
+                  <th>{logStrings.table.error}</th>
                 </tr>
               </thead>
               <tbody>
@@ -1066,6 +1074,7 @@ function AdminDashboard(): JSX.Element {
                       copyState={state}
                       expanded={expandedLogs.has(log.id)}
                       onToggle={toggleLogExpansion}
+                      strings={adminStrings}
                     />
                   )
                 })}
@@ -1076,7 +1085,7 @@ function AdminDashboard(): JSX.Element {
       </section>
 
       <div className="app-footer">
-        <span>Tavily Hikari Proxy Dashboard</span>
+        <span>{footerStrings.title}</span>
         <span className="footer-meta">
           {/* GitHub repository link with Iconify icon */}
           <a
@@ -1084,10 +1093,10 @@ function AdminDashboard(): JSX.Element {
             className="footer-link"
             target="_blank"
             rel="noreferrer"
-            aria-label="Open GitHub repository"
+            aria-label={footerStrings.githubAria}
           >
             <Icon icon="mdi:github" width={18} height={18} className="footer-link-icon" />
-            <span>GitHub</span>
+            <span>{footerStrings.githubLabel}</span>
           </a>
         </span>
         <span className="footer-meta">
@@ -1099,7 +1108,7 @@ function AdminDashboard(): JSX.Element {
               const href = `https://github.com/IvanLi-CN/tavily-hikari/releases/tag/${tag}`
               return (
                 <>
-                  {'· '}
+                  {footerStrings.tagPrefix}
                   <a href={href} className="footer-link" target="_blank" rel="noreferrer">
                     {`v${raw}`}
                   </a>
@@ -1107,7 +1116,7 @@ function AdminDashboard(): JSX.Element {
               )
             })()
           ) : (
-            '· Loading version…'
+            footerStrings.loadingVersion
           )}
         </span>
       </div>
@@ -1115,12 +1124,14 @@ function AdminDashboard(): JSX.Element {
     {/* Disable Confirmation (daisyUI modal) */}
     <dialog id="confirm_disable_modal" ref={disableDialogRef} className="modal">
       <div className="modal-box">
-        <h3 className="font-bold text-lg" style={{ marginTop: 0 }}>Disable API Key</h3>
-        <p className="py-2">This will stop using the key until you enable it again. No data will be removed.</p>
+        <h3 className="font-bold text-lg" style={{ marginTop: 0 }}>{keyStrings.dialogs.disable.title}</h3>
+        <p className="py-2">{keyStrings.dialogs.disable.description}</p>
         <div className="modal-action">
           <form method="dialog" onSubmit={(e) => e.preventDefault()} style={{ display: 'flex', gap: 8 }}>
-            <button type="button" className="btn" onClick={cancelDisable}>Cancel</button>
-            <button type="button" className="btn" onClick={() => void confirmDisable()} disabled={!!togglingId}>Disable</button>
+            <button type="button" className="btn" onClick={cancelDisable}>{keyStrings.dialogs.disable.cancel}</button>
+            <button type="button" className="btn" onClick={() => void confirmDisable()} disabled={!!togglingId}>
+              {keyStrings.dialogs.disable.confirm}
+            </button>
           </form>
         </div>
       </div>
@@ -1129,12 +1140,14 @@ function AdminDashboard(): JSX.Element {
     {/* Delete Confirmation (daisyUI modal) */}
     <dialog id="confirm_delete_modal" ref={deleteDialogRef} className="modal">
       <div className="modal-box">
-        <h3 className="font-bold text-lg" style={{ marginTop: 0 }}>Remove API Key</h3>
-        <p className="py-2">This will mark the key as Deleted. You can restore it later by re-adding the same secret.</p>
+        <h3 className="font-bold text-lg" style={{ marginTop: 0 }}>{keyStrings.dialogs.delete.title}</h3>
+        <p className="py-2">{keyStrings.dialogs.delete.description}</p>
         <div className="modal-action">
           <form method="dialog" onSubmit={(e) => e.preventDefault()} style={{ display: 'flex', gap: 8 }}>
-            <button type="button" className="btn" onClick={cancelDelete}>Cancel</button>
-            <button type="button" className="btn btn-error" onClick={() => void confirmDelete()} disabled={!!deletingId}>Remove</button>
+            <button type="button" className="btn" onClick={cancelDelete}>{keyStrings.dialogs.delete.cancel}</button>
+            <button type="button" className="btn btn-error" onClick={() => void confirmDelete()} disabled={!!deletingId}>
+              {keyStrings.dialogs.delete.confirm}
+            </button>
           </form>
         </div>
       </div>
@@ -1142,12 +1155,14 @@ function AdminDashboard(): JSX.Element {
     {/* Token Delete Confirmation */}
     <dialog id="confirm_token_delete_modal" ref={tokenDeleteDialogRef} className="modal">
       <div className="modal-box">
-        <h3 className="font-bold text-lg" style={{ marginTop: 0 }}>Delete Token</h3>
-        <p className="py-2">This will permanently remove the access token. Clients using it will receive 401.</p>
+        <h3 className="font-bold text-lg" style={{ marginTop: 0 }}>{tokenStrings.dialogs.delete.title}</h3>
+        <p className="py-2">{tokenStrings.dialogs.delete.description}</p>
         <div className="modal-action">
           <form method="dialog" onSubmit={(e) => e.preventDefault()} style={{ display: 'flex', gap: 8 }}>
-            <button type="button" className="btn" onClick={cancelTokenDelete}>Cancel</button>
-            <button type="button" className="btn btn-error" onClick={() => void confirmTokenDelete()} disabled={!!deletingId}>Delete</button>
+            <button type="button" className="btn" onClick={cancelTokenDelete}>{tokenStrings.dialogs.delete.cancel}</button>
+            <button type="button" className="btn btn-error" onClick={() => void confirmTokenDelete()} disabled={!!deletingId}>
+              {tokenStrings.dialogs.delete.confirm}
+            </button>
           </form>
         </div>
       </div>
@@ -1156,12 +1171,12 @@ function AdminDashboard(): JSX.Element {
     {/* Token Edit Note (DaisyUI modal) */}
     <dialog id="edit_token_note_modal" ref={tokenNoteDialogRef} className="modal">
       <div className="modal-box">
-        <h3 className="font-bold text-lg" style={{ marginTop: 0 }}>Edit Token Note</h3>
+        <h3 className="font-bold text-lg" style={{ marginTop: 0 }}>{tokenStrings.dialogs.note.title}</h3>
         <div className="py-2" style={{ display: 'flex', gap: 8 }}>
           <input
             type="text"
             className="input"
-            placeholder="Note"
+            placeholder={tokenStrings.dialogs.note.placeholder}
             value={editingTokenNote}
             onChange={(e) => setEditingTokenNote(e.target.value)}
             style={{ flex: 1 }}
@@ -1169,8 +1184,10 @@ function AdminDashboard(): JSX.Element {
         </div>
         <div className="modal-action">
           <form method="dialog" onSubmit={(e) => e.preventDefault()} style={{ display: 'flex', gap: 8 }}>
-            <button type="button" className="btn" onClick={cancelTokenNote}>Cancel</button>
-            <button type="button" className="btn btn-primary" onClick={() => void saveTokenNote()} disabled={savingTokenNote}>Save</button>
+            <button type="button" className="btn" onClick={cancelTokenNote}>{tokenStrings.dialogs.note.cancel}</button>
+            <button type="button" className="btn btn-primary" onClick={() => void saveTokenNote()} disabled={savingTokenNote}>
+              {savingTokenNote ? tokenStrings.dialogs.note.saving : tokenStrings.dialogs.note.confirm}
+            </button>
           </form>
         </div>
       </div>
@@ -1187,11 +1204,12 @@ interface LogRowProps {
   onCopy: () => void
   expanded: boolean
   onToggle: (id: number) => void
+  strings: AdminTranslations
 }
 
-function LogRow({ log, copyState, onCopy, expanded, onToggle }: LogRowProps): JSX.Element {
+function LogRow({ log, copyState, onCopy, expanded, onToggle, strings }: LogRowProps): JSX.Element {
   const copyButtonClass = `icon-button${copyState === 'copied' ? ' icon-button-success' : ''}${copyState === 'loading' ? ' icon-button-loading' : ''}`
-  const requestButtonLabel = expanded ? 'Hide request details' : 'Show request details'
+  const requestButtonLabel = expanded ? strings.logs.toggles.hide : strings.logs.toggles.show
 
   return (
     <>
@@ -1203,8 +1221,8 @@ function LogRow({ log, copyState, onCopy, expanded, onToggle }: LogRowProps): JS
             <button
               type="button"
               className={copyButtonClass}
-              title="复制原始 API key"
-              aria-label="复制原始 API key"
+              title={strings.keys.actions.copy}
+              aria-label={strings.keys.actions.copy}
               onClick={onCopy}
               disabled={copyState === 'loading'}
             >
@@ -1224,16 +1242,16 @@ function LogRow({ log, copyState, onCopy, expanded, onToggle }: LogRowProps): JS
             aria-label={requestButtonLabel}
             title={requestButtonLabel}
           >
-            <span className={statusClass(log.result_status)}>{statusLabel(log.result_status)}</span>
+            <span className={statusClass(log.result_status)}>{statusLabel(log.result_status, strings)}</span>
             <Icon icon={expanded ? 'mdi:chevron-up' : 'mdi:chevron-down'} width={18} height={18} className="log-result-icon" />
           </button>
         </td>
-        <td>{formatErrorMessage(log)}</td>
+        <td>{formatErrorMessage(log, strings.logs.errors)}</td>
       </tr>
       {expanded && (
         <tr className="log-details-row">
           <td colSpan={6} id={`log-details-${log.id}`}>
-            <LogDetails log={log} />
+            <LogDetails log={log} strings={strings} />
           </td>
         </tr>
       )}
@@ -1241,46 +1259,50 @@ function LogRow({ log, copyState, onCopy, expanded, onToggle }: LogRowProps): JS
   )
 }
 
-function LogDetails({ log }: { log: RequestLog }): JSX.Element {
+function LogDetails({ log, strings }: { log: RequestLog; strings: AdminTranslations }): JSX.Element {
   const query = log.query ? `?${log.query}` : ''
   const requestLine = `${log.method} ${log.path}${query}`
   const forwarded = log.forwarded_headers.filter((value) => value.trim().length > 0)
   const dropped = log.dropped_headers.filter((value) => value.trim().length > 0)
+  const httpLabel = `${strings.logs.table.httpStatus}: ${log.http_status ?? strings.logs.errors.none}`
+  const mcpLabel = `${strings.logs.table.mcpStatus}: ${log.mcp_status ?? strings.logs.errors.none}`
+  const requestBody = log.request_body ?? strings.logDetails.noBody
+  const responseBody = log.response_body ?? strings.logDetails.noBody
 
   return (
     <div className="log-details-panel">
       <div className="log-details-summary">
         <div>
-          <span className="log-details-label">Request</span>
+          <span className="log-details-label">{strings.logDetails.request}</span>
           <span className="log-details-value">{requestLine}</span>
         </div>
         <div>
-          <span className="log-details-label">Response</span>
+          <span className="log-details-label">{strings.logDetails.response}</span>
           <span className="log-details-value">
-            {log.http_status != null ? `HTTP ${log.http_status}` : 'HTTP —'}
-            {log.mcp_status != null ? ` · MCP ${log.mcp_status}` : ''}
+            {httpLabel}
+            {` · ${mcpLabel}`}
           </span>
         </div>
         <div>
-          <span className="log-details-label">Outcome</span>
-          <span className="log-details-value">{statusLabel(log.result_status)}</span>
+          <span className="log-details-label">{strings.logDetails.outcome}</span>
+          <span className="log-details-value">{statusLabel(log.result_status, strings)}</span>
         </div>
       </div>
       <div className="log-details-body">
         <div className="log-details-section">
-          <header>Request Body</header>
-          <pre>{log.request_body ?? 'No body captured.'}</pre>
+          <header>{strings.logDetails.requestBody}</header>
+          <pre>{requestBody}</pre>
         </div>
         <div className="log-details-section">
-          <header>Response Body</header>
-          <pre>{log.response_body ?? 'No body captured.'}</pre>
+          <header>{strings.logDetails.responseBody}</header>
+          <pre>{responseBody}</pre>
         </div>
       </div>
       {(forwarded.length > 0 || dropped.length > 0) && (
         <div className="log-details-headers">
           {forwarded.length > 0 && (
             <div className="log-details-section">
-              <header>Forwarded Headers</header>
+              <header>{strings.logDetails.forwardedHeaders}</header>
               <ul>
                 {forwarded.map((header, index) => (
                   <li key={`forwarded-${index}-${header}`}>{header}</li>
@@ -1290,7 +1312,7 @@ function LogDetails({ log }: { log: RequestLog }): JSX.Element {
           )}
           {dropped.length > 0 && (
             <div className="log-details-section">
-              <header>Dropped Headers</header>
+              <header>{strings.logDetails.droppedHeaders}</header>
               <ul>
                 {dropped.map((header, index) => (
                   <li key={`dropped-${index}-${header}`}>{header}</li>
@@ -1305,6 +1327,10 @@ function LogDetails({ log }: { log: RequestLog }): JSX.Element {
 }
 
 function KeyDetails({ id, onBack }: { id: string; onBack: () => void }): JSX.Element {
+  const translations = useTranslate()
+  const adminStrings = translations.admin
+  const keyDetailsStrings = adminStrings.keyDetails
+  const logsTableStrings = adminStrings.logs.table
   const [period, setPeriod] = useState<'day' | 'week' | 'month'>('month')
   const [startDate, setStartDate] = useState<string>(() => new Date().toISOString().slice(0, 10))
   const [summary, setSummary] = useState<KeySummary | null>(null)
@@ -1341,7 +1367,7 @@ function KeyDetails({ id, onBack }: { id: string; onBack: () => void }): JSX.Ele
       setLogs(ls)
     } catch (err) {
       console.error(err)
-      setError(err instanceof Error ? err.message : 'Failed to load details')
+      setError(err instanceof Error ? err.message : adminStrings.errors.loadKeyDetails)
     } finally {
       setLoading(false)
     }
@@ -1354,23 +1380,32 @@ function KeyDetails({ id, onBack }: { id: string; onBack: () => void }): JSX.Ele
   const metricCards = useMemo(() => {
     if (!summary) return []
     const total = summary.total_requests
+    const lastActivitySubtitle = summary.last_activity
+      ? `${keyDetailsStrings.metrics.lastActivityPrefix} ${formatTimestamp(summary.last_activity)}`
+      : keyDetailsStrings.metrics.noActivity
     return [
-      { id: 'total', label: 'Total', value: formatNumber(summary.total_requests), subtitle: summary.last_activity ? `Last activity ${formatTimestamp(summary.last_activity)}` : 'No activity' },
-      { id: 'success', label: 'Successful', value: formatNumber(summary.success_count), subtitle: formatPercent(summary.success_count, total) },
-      { id: 'errors', label: 'Errors', value: formatNumber(summary.error_count), subtitle: formatPercent(summary.error_count, total) },
-      { id: 'quota', label: 'Quota Exhausted', value: formatNumber(summary.quota_exhausted_count), subtitle: formatPercent(summary.quota_exhausted_count, total) },
+      { id: 'total', label: keyDetailsStrings.metrics.total, value: formatNumber(summary.total_requests), subtitle: lastActivitySubtitle },
+      { id: 'success', label: keyDetailsStrings.metrics.success, value: formatNumber(summary.success_count), subtitle: formatPercent(summary.success_count, total) },
+      { id: 'errors', label: keyDetailsStrings.metrics.errors, value: formatNumber(summary.error_count), subtitle: formatPercent(summary.error_count, total) },
+      { id: 'quota', label: keyDetailsStrings.metrics.quota, value: formatNumber(summary.quota_exhausted_count), subtitle: formatPercent(summary.quota_exhausted_count, total) },
     ]
-  }, [summary])
+  }, [summary, keyDetailsStrings])
 
   return (
     <main className="app-shell">
       <section className="surface app-header">
         <div className="title-group">
-          <h1>Key Details</h1>
-          <p>Inspect usage and recent requests for key: <code>{id}</code></p>
+          <h1>{keyDetailsStrings.title}</h1>
+          <p>
+            {keyDetailsStrings.descriptionPrefix}{' '}
+            <code>{id}</code>
+          </p>
         </div>
         <div className="controls">
-          <button type="button" className="button" onClick={onBack}><Icon icon="mdi:arrow-left" width={18} height={18} />&nbsp;Back</button>
+          <button type="button" className="button" onClick={onBack}>
+            <Icon icon="mdi:arrow-left" width={18} height={18} />
+            &nbsp;{keyDetailsStrings.back}
+          </button>
         </div>
       </section>
 
@@ -1379,22 +1414,24 @@ function KeyDetails({ id, onBack }: { id: string; onBack: () => void }): JSX.Ele
       <section className="surface panel">
         <div className="panel-header">
           <div>
-            <h2>Usage</h2>
-            <p className="panel-description">Aggregated counts for selected period.</p>
+            <h2>{keyDetailsStrings.usageTitle}</h2>
+            <p className="panel-description">{keyDetailsStrings.usageDescription}</p>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <select value={period} onChange={(e) => setPeriod(e.target.value as any)} className="input" aria-label="Period">
-              <option value="day">Day</option>
-              <option value="week">Week</option>
-              <option value="month">Month</option>
+            <select value={period} onChange={(e) => setPeriod(e.target.value as any)} className="input" aria-label={keyDetailsStrings.usageTitle}>
+              <option value="day">{keyDetailsStrings.periodOptions.day}</option>
+              <option value="week">{keyDetailsStrings.periodOptions.week}</option>
+              <option value="month">{keyDetailsStrings.periodOptions.month}</option>
             </select>
             <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="input" />
-            <button type="button" className="button button-primary" onClick={() => void load()} disabled={loading}>Apply</button>
+            <button type="button" className="button button-primary" onClick={() => void load()} disabled={loading}>
+              {keyDetailsStrings.apply}
+            </button>
           </div>
         </div>
         <section className="metrics-grid">
           {(!summary || loading) ? (
-            <div className="empty-state" style={{ gridColumn: '1 / -1' }}>Loading…</div>
+            <div className="empty-state" style={{ gridColumn: '1 / -1' }}>{keyDetailsStrings.loading}</div>
           ) : (
             metricCards.map((m) => (
               <div key={m.id} className="metric-card">
@@ -1410,22 +1447,22 @@ function KeyDetails({ id, onBack }: { id: string; onBack: () => void }): JSX.Ele
       <section className="surface panel">
         <div className="panel-header">
           <div>
-            <h2>Recent Requests</h2>
-            <p className="panel-description">Up to the latest 50 for this key.</p>
+            <h2>{keyDetailsStrings.logsTitle}</h2>
+            <p className="panel-description">{keyDetailsStrings.logsDescription}</p>
           </div>
         </div>
         <div className="table-wrapper">
           {logs.length === 0 ? (
-            <div className="empty-state">{loading ? 'Loading…' : 'No request logs for this period.'}</div>
+            <div className="empty-state">{loading ? keyDetailsStrings.loading : keyDetailsStrings.logsEmpty}</div>
           ) : (
             <table>
               <thead>
                 <tr>
-                  <th>Time</th>
-                  <th>HTTP Status</th>
-                  <th>MCP Status</th>
-                  <th>Result</th>
-                  <th>Error</th>
+                  <th>{logsTableStrings.time}</th>
+                  <th>{logsTableStrings.httpStatus}</th>
+                  <th>{logsTableStrings.mcpStatus}</th>
+                  <th>{logsTableStrings.result}</th>
+                  <th>{logsTableStrings.error}</th>
                 </tr>
               </thead>
               <tbody>
@@ -1434,8 +1471,8 @@ function KeyDetails({ id, onBack }: { id: string; onBack: () => void }): JSX.Ele
                     <td>{formatTimestamp(log.created_at)}</td>
                     <td>{log.http_status ?? '—'}</td>
                     <td>{log.mcp_status ?? '—'}</td>
-                    <td><span className={statusClass(log.result_status)}>{statusLabel(log.result_status)}</span></td>
-                    <td>{formatErrorMessage(log)}</td>
+                    <td><span className={statusClass(log.result_status)}>{statusLabel(log.result_status, adminStrings)}</span></td>
+                    <td>{formatErrorMessage(log, adminStrings.logs.errors)}</td>
                   </tr>
                 ))}
               </tbody>
