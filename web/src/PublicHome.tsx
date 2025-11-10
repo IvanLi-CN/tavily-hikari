@@ -489,17 +489,18 @@ function MobileGuideDropdown({
   labels: { id: GuideKey, label: string }[]
 }): JSX.Element {
   const icon = (id: GuideKey) => {
+    // Prefer brand logos from simple-icons when available; fallback to MDI
     const map: Record<GuideKey, string> = {
-      codex: 'console',
-      claude: 'robot-outline',
-      vscode: 'microsoft-visual-studio-code',
-      claudeDesktop: 'laptop',
-      cursor: 'cursor-default-click-outline',
-      windsurf: 'waves',
-      other: 'dots-horizontal',
+      codex: 'simple-icons/openai',
+      claude: 'simple-icons/anthropic',
+      vscode: 'simple-icons/visualstudiocode',
+      claudeDesktop: 'simple-icons/anthropic',
+      cursor: 'simple-icons/cursor', // if missing, Iconify returns 404; UI will still show label
+      windsurf: 'simple-icons/codeium',
+      other: 'mdi/dots-horizontal',
     }
-    const name = map[id] ?? 'dots-horizontal'
-    return `${ICONIFY_ENDPOINT}/mdi/${name}.svg?color=%23475569`
+    const key = map[id] ?? 'mdi/dots-horizontal'
+    return `${ICONIFY_ENDPOINT}/${key}.svg?color=%23475569`
   }
 
   const current = labels.find((l) => l.id === active)
