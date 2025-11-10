@@ -59,6 +59,17 @@ button {
   right: 20px;
 }
 
+/* When screen is small, stack switcher above title to create vertical spacing */
+@media (max-width: 860px) {
+  .public-home-hero .language-switcher-row {
+    position: static;
+    display: flex;
+    width: 100%;
+    justify-content: flex-end; /* keep it on the right */
+    margin-bottom: 8px; /* vertical gap to the heading */
+  }
+}
+
 .public-home-hero h1 {
   margin: 0;
   font-size: 2.4rem;
@@ -177,14 +188,13 @@ button {
   margin-top: 24px;
   padding: 0;
 }
-
-/* Public Hero Stats: enforce 1 → 3 columns, never 2 */
+/* Public Hero Stats: ensure 1→3 columns (never 2) */
 .metrics-grid.hero-metrics {
   grid-template-columns: 1fr;
 }
 @media (min-width: 860px) {
   .metrics-grid.hero-metrics {
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
@@ -270,6 +280,37 @@ button {
   gap: 8px;
 }
 
+/* Public page, narrow screens: make token row wrap and align ends */
+@media (max-width: 560px) {
+  .public-home .access-token-box .token-label {
+    width: 100%;
+    text-align: left;
+  }
+  .public-home .access-token-box .token-input-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    justify-content: flex-start;
+    width: 100%;
+  }
+  .public-home .access-token-box .token-input-shell {
+    flex: 1 1 100%;
+    min-width: 0;
+    display: block;
+  }
+  .public-home .access-token-box .token-input {
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+  }
+  .public-home .access-token-box .token-copy-button {
+    margin-left: auto;
+    white-space: nowrap;
+    flex: 0 0 auto;
+  }
+}
+
 .token-copy-button img {
   width: 16px;
   height: 16px;
@@ -348,6 +389,14 @@ button {
   padding: 2px 6px;
   border-radius: 6px;
   font-family: 'SF Mono', 'Fira Mono', Consolas, 'Courier New', monospace;
+}
+
+/* Mobile dropdown for guide client selection */
+.guide-select { display: none; margin: 8px 0 0; }
+.guide-select select { width: 100%; }
+@media (max-width: 640px) {
+  .guide-tabs { display: none !important; }
+  .guide-select { display: block; }
 }
 
 .guide-sample {
@@ -1387,6 +1436,29 @@ tbody .log-details-row:hover {
 
   .kv-item {
     grid-template-columns: 96px 1fr;
+  }
+}
+
+/* Extra-compact layout for small phones */
+@media (max-width: 640px) {
+  .app-shell {
+    padding: 16px 12px 28px;
+  }
+  .public-home-hero {
+    padding: 28px 14px;
+  }
+  .panel {
+    padding: 16px 14px 22px;
+  }
+  .metrics-grid {
+    gap: 12px;
+    padding: 14px 14px 20px;
+  }
+  .access-token-box {
+    gap: 8px;
+  }
+  .access-stat {
+    padding: 12px 14px;
   }
 }
 .access-panel {

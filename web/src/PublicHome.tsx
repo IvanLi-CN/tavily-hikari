@@ -76,6 +76,7 @@ function PublicHome(): JSX.Element {
   const [activeGuide, setActiveGuide] = useState<GuideKey>('codex')
   const updateBanner = useUpdateAvailable()
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
+  const [isMobileGuide, setIsMobileGuide] = useState(false)
 
   useEffect(() => {
     const hash = window.location.hash.slice(1)
@@ -176,6 +177,15 @@ function PublicHome(): JSX.Element {
       es.close()
     }
   }, [token])
+
+  // Watch viewport for small-screen guide dropdown
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 640px)')
+    const apply = () => setIsMobileGuide(mq.matches)
+    apply()
+    mq.addEventListener('change', apply)
+    return () => mq.removeEventListener('change', apply)
+  }, [])
 
   // Fallback polling: if token metrics未就绪或 SSE 不返回 token 段，定期补一次拉取
   useEffect(() => {
@@ -398,6 +408,17 @@ function PublicHome(): JSX.Element {
       </section>
       <section className="surface panel public-home-guide">
         <h2>{publicStrings.guide.title}</h2>
+        {/* Mobile: DaisyUI dropdown menu with icons */}
+        {isMobileGuide && (
+          <div className="guide-select" aria-label="Client selector (mobile)">
+            <MobileGuideDropdown
+              active={activeGuide}
+              onChange={(id) => setActiveGuide(id)}
+              labels={guideTabs}
+            />
+          </div>
+        )}
+        {!isMobileGuide && (
         <div className="guide-tabs">
           {guideTabs.map((tab) => (
             <button
@@ -410,6 +431,7 @@ function PublicHome(): JSX.Element {
             </button>
           ))}
         </div>
+        )}
         <div className="guide-panel">
           <h3>{guideDescription.title}</h3>
           <ol>
@@ -456,6 +478,54 @@ function PublicHome(): JSX.Element {
 }
 
 export default PublicHome
+
+function MobileGuideDropdown({
+  active,
+  onChange,
+  labels,
+}: {
+  active: GuideKey
+  onChange: (id: GuideKey) => void
+  labels: { id: GuideKey, label: string }[]
+}): JSX.Element {
+  const icon = (id: GuideKey) => {
+    // Prefer brand logos from simple-icons when available; fallback to MDI
+    const map: Record<GuideKey, string> = {
+      codex: 'simple-icons/openai',
+      claude: 'simple-icons/anthropic',
+      vscode: 'simple-icons/visualstudiocode',
+      claudeDesktop: 'simple-icons/anthropic',
+      cursor: 'simple-icons/cursor', // if missing, Iconify returns 404; UI will still show label
+      windsurf: 'simple-icons/codeium',
+      other: 'mdi/dots-horizontal',
+    }
+    const key = map[id] ?? 'mdi/dots-horizontal'
+    return `${ICONIFY_ENDPOINT}/${key}.svg?color=%23475569`
+  }
+
+  const current = labels.find((l) => l.id === active)
+  return (
+    <div className="dropdown w-full">
+      <div tabIndex={0} role="button" className="btn btn-outline w-full justify-between btn-sm md:btn-md">
+        <span className="inline-flex items-center gap-2">
+          <img src={icon(active)} alt="client" width={18} height={18} />
+          {current?.label ?? active}
+        </span>
+        <img src={`${ICONIFY_ENDPOINT}/mdi/chevron-down.svg?color=%23647589`} alt="open" width={16} height={16} />
+      </div>
+      <ul tabIndex={0} className="menu dropdown-content bg-base-100 rounded-box z-[1] w-60 p-2 shadow mt-2">
+        {labels.map((tab) => (
+          <li key={tab.id}>
+            <button type="button" onClick={() => onChange(tab.id)} className="flex items-center gap-2">
+              <img src={icon(tab.id)} alt="" width={16} height={16} />
+              <span className="truncate">{tab.label}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
 function buildGuideContent(language: Language, baseUrl: string, prettyToken: string): Record<GuideKey, GuideContent> {
   const isEnglish = language === 'en'
   const codexSnippet = buildCodexSnippet(baseUrl)
