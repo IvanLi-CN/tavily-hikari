@@ -210,6 +210,12 @@ button {
   background: rgba(255, 255, 255, 0.92);
 }
 
+/* Mask characters without using password type to avoid password managers */
+.token-input.masked {
+  -webkit-text-security: disc;
+  text-security: disc;
+}
+
 .token-input-shell {
   position: relative;
   /* Keep copy button close to input: do not stretch */
@@ -703,6 +709,67 @@ button:disabled {
   font-family: 'JetBrains Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
 }
 
+/* Quick Stats 专用布局：小屏 1 列，大屏 3 列，避免出现 2 列布局 */
+.quick-stats-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+  padding: 20px 24px 28px;
+}
+/* 900px 左右希望一行放下 3 个：提前到 860px 起三列，并适当收紧间距与内边距 */
+@media (min-width: 860px) {
+  .quick-stats-grid {
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+  }
+  .quick-stats-card {
+    padding: 14px 16px;
+    min-height: 96px;
+  }
+  .quick-stats-card h3 {
+    font-size: 0.92rem;
+  }
+  .quick-stats-card .metric-value {
+    font-size: 1.7rem;
+  }
+}
+@media (min-width: 960px) {
+  .quick-stats-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+/* Quick Stats 卡片内部不换行，保证“成功/合计”始终一行显示 */
+.quick-stats-card {
+  min-width: 0; /* 允许内部文本省略 */
+}
+.quick-stats-card .metric-value {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Quick Stats 字体在不同断点下的自适应（仅影响 Quick Stats） */
+.quick-stats-card h3 {
+  font-size: 0.9rem;
+}
+.quick-stats-card .metric-value {
+  font-size: 1.6rem;
+}
+@media (min-width: 960px) {
+  .quick-stats-card h3 {
+    font-size: 0.95rem;
+  }
+  .quick-stats-card .metric-value {
+    font-size: 1.9rem;
+  }
+}
+@media (min-width: 1280px) {
+  .quick-stats-card .metric-value {
+    font-size: 2.1rem;
+  }
+}
+
 .metric-subtitle {
   font-size: 0.85rem;
   color: #64748b;
@@ -710,9 +777,22 @@ button:disabled {
 
 .token-stats {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  grid-auto-flow: row; /* 明确按行铺排，避免意外流入多列 */
+  grid-template-columns: 1fr !important; /* 小屏 1 列 */
   gap: 16px;
   padding: 0;
+}
+/* 中屏（≈700px 以上）2 列，禁止出现 3 列 */
+@media (min-width: 700px) {
+  .token-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+}
+/* 大屏 4 列（4 个指标整行） */
+@media (min-width: 1120px) {
+  .token-stats {
+    grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  }
 }
 .token-stat {
   background: rgba(255, 255, 255, 0.9);
@@ -725,6 +805,7 @@ button:disabled {
   justify-content: center;
   gap: 10px;
   min-height: 136px;
+  min-width: 0; /* 允许在网格列内收缩，防止撑开导致多列错位 */
 }
 .token-stat .stat-title {
   margin: 0;
@@ -796,6 +877,30 @@ button:disabled {
   font-size: 1rem;
   color: #1f2937;
   line-height: 1.2;
+}
+
+/* 小屏优化（< 752px）：将筛选控件放到标题下一行并左对齐，避免被推挤 */
+@media (max-width: 752px) {
+  .token-panel-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .token-period-controls {
+    margin-left: 0;
+    width: 100%;
+    justify-content: flex-start;
+  }
+  /* 确保标题与描述在小屏左对齐，不出现居中 */
+  .token-panel-header > div:first-child {
+    width: 100%;
+    text-align: left;
+  }
+  .token-panel-header h2,
+  .token-panel-header .panel-description {
+    text-align: left;
+    margin: 0;
+  }
 }
 .token-metrics-grid {
   padding: 0;
@@ -943,14 +1048,17 @@ table {
 }
 .token-detail-table th:nth-child(4),
 .token-detail-table td:nth-child(4) {
-  min-width: 12ch;
-  text-align: center;
+  text-align: right;
 }
 .token-detail-table td:nth-child(4) .status-badge {
   white-space: nowrap;
   display: inline-flex;
-  justify-content: center;
-  min-width: 110px;
+}
+
+/* 让“Result”列的按钮组整体靠右，箭头不会拥挤 */
+.token-detail-table td:nth-child(4) .log-result-button {
+  width: 100%;
+  justify-content: flex-end;
 }
 .token-detail-table th:nth-child(5),
 .token-detail-table td:nth-child(5) {
@@ -1001,6 +1109,8 @@ tbody tr:hover {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  justify-content: flex-end; /* 右对齐内容，让箭头靠右 */
+  width: 100%; /* 占满单元格，避免内容拥挤 */
   padding: 0;
   border: none;
   background: none;

@@ -61,11 +61,11 @@ function formatNumber(value: number): string {
 }
 
 function PublicHome(): JSX.Element {
-  const DEFAULT_TOKEN = 'th-demo-123456789012'
+  // No default token on public page. Start empty.
   const strings = useTranslate()
   const publicStrings = strings.public
   const { language } = useLanguage()
-  const [token, setToken] = useState(DEFAULT_TOKEN)
+  const [token, setToken] = useState('')
   const [tokenVisible, setTokenVisible] = useState(false)
   const [metrics, setMetrics] = useState<PublicMetrics | null>(null)
   const [tokenMetrics, setTokenMetrics] = useState<TokenMetrics | null>(null)
@@ -97,11 +97,10 @@ function PublicHome(): JSX.Element {
       initialToken = lastToken
     }
 
-    if (!initialToken) {
-      initialToken = DEFAULT_TOKEN
+    // Do not set any default token when none is provided
+    if (initialToken) {
+      persistToken(initialToken)
     }
-
-    persistToken(initialToken)
 
     const controller = new AbortController()
     setLoading(true)
@@ -207,7 +206,8 @@ function PublicHome(): JSX.Element {
 
   const guideDescription = useMemo<GuideContent>(() => {
     const baseUrl = window.location.origin
-    const prettyToken = token || DEFAULT_TOKEN
+    // Show placeholder in guides when no valid token is present to avoid confusion
+    const prettyToken = isFullToken(token) ? token : publicStrings.accessToken.placeholder
     const guides = buildGuideContent(language, baseUrl, prettyToken)
     return guides[activeGuide]
   }, [activeGuide, token, language])
@@ -338,8 +338,10 @@ function PublicHome(): JSX.Element {
               <div className="token-input-shell">
                 <input
                   id="access-token"
-                  className="token-input"
-                  type={tokenVisible ? 'text' : 'password'}
+                  name="not-a-login-field"
+                  className={`token-input${tokenVisible ? '' : ' masked'}`}
+                  // Always use text input to avoid triggering password managers
+                  type="text"
                   value={token}
                   onChange={(event) => {
                     const value = event.target.value
@@ -354,6 +356,14 @@ function PublicHome(): JSX.Element {
                   }}
                   placeholder={publicStrings.accessToken.placeholder}
                   autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                  aria-autocomplete="none"
+                  inputMode="text"
+                  data-1p-ignore="true"
+                  data-lpignore="true"
+                  data-form-type="other"
                 />
                 <button
                   type="button"
