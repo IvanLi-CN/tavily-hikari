@@ -395,11 +395,18 @@ button {
 .guide-select { display: none; margin: 8px 0 0; }
 .guide-select select {
   width: 100%;
-  padding: 10px 12px;
+  padding: 10px 36px 10px 12px; /* extra right space for arrow */
   border-radius: 10px;
   border: 1px solid rgba(15, 23, 42, 0.16);
   background: rgba(255, 255, 255, 0.95);
   font: inherit;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23647589' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 14px 14px;
 }
 @media (max-width: 640px) {
   .guide-tabs { display: none !important; }
