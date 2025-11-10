@@ -1419,6 +1419,29 @@ tbody .log-details-row:hover {
     grid-template-columns: 96px 1fr;
   }
 }
+
+/* Extra-compact layout for small phones */
+@media (max-width: 640px) {
+  .app-shell {
+    padding: 16px 12px 28px;
+  }
+  .public-home-hero {
+    padding: 28px 14px;
+  }
+  .panel {
+    padding: 16px 14px 22px;
+  }
+  .metrics-grid {
+    gap: 12px;
+    padding: 14px 14px 20px;
+  }
+  .access-token-box {
+    gap: 8px;
+  }
+  .access-stat {
+    padding: 12px 14px;
+  }
+}
 .access-panel {
   margin-top: 16px;
 }
