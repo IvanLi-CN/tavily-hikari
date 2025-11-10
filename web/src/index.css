@@ -178,6 +178,16 @@ button {
   padding: 0;
 }
 
+/* Public Hero Stats: enforce 1 → 3 columns, never 2 */
+.metrics-grid.hero-metrics {
+  grid-template-columns: 1fr;
+}
+@media (min-width: 860px) {
+  .metrics-grid.hero-metrics {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
 .token-input-wrapper {
   display: flex;
   flex-direction: column;
