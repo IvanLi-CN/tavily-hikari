@@ -193,6 +193,7 @@ function AdminDashboard(): JSX.Element {
   const [editingTokenNote, setEditingTokenNote] = useState('')
   const [savingTokenNote, setSavingTokenNote] = useState(false)
   const [sseConnected, setSseConnected] = useState(false)
+  const [live, setLive] = useState(true)
   const isAdmin = profile?.isAdmin ?? false
 
   const copyStateKey = useCallback((scope: 'keys' | 'logs' | 'tokens', identifier: string | number) => {
@@ -322,9 +323,9 @@ function AdminDashboard(): JSX.Element {
     return () => controller.abort()
   }, [loadData])
 
-  // Automatic fallback polling when SSE is not connected
+  // Automatic fallback polling when SSE is not connected and live updates enabled
   useEffect(() => {
-    if (sseConnected) {
+    if (sseConnected || !live) {
       if (pollingTimerRef.current != null) {
         window.clearInterval(pollingTimerRef.current)
         pollingTimerRef.current = null
@@ -334,6 +335,7 @@ function AdminDashboard(): JSX.Element {
 
     if (pollingTimerRef.current == null) {
       pollingTimerRef.current = window.setInterval(() => {
+        if (!live) return
         const controller = new AbortController()
         void loadData(controller.signal).finally(() => controller.abort())
       }, REFRESH_INTERVAL_MS) as unknown as number
@@ -345,9 +347,9 @@ function AdminDashboard(): JSX.Element {
         pollingTimerRef.current = null
       }
     }
-  }, [sseConnected, loadData])
+  }, [sseConnected, live, loadData])
 
-  // Establish SSE connection to receive live dashboard updates
+  // Establish SSE connection to receive live dashboard updates (bind to `live`)
   useEffect(() => {
     let es: EventSource | null = null
 
@@ -356,6 +358,7 @@ function AdminDashboard(): JSX.Element {
         try { es.close() } catch {}
         es = null
       }
+      if (!live) return
       es = new EventSource('/api/events')
       es.onopen = () => { setSseConnected(true) }
       es.onerror = () => {
@@ -391,7 +394,7 @@ function AdminDashboard(): JSX.Element {
       }
       setSseConnected(false)
     }
-  }, [])
+  }, [live])
 
   useEffect(() => {
     const onHash = () => {
@@ -760,6 +763,15 @@ function AdminDashboard(): JSX.Element {
             </div>
           )}
           <div className="controls">
+            <button
+              type="button"
+              className={`button refresh-toggle${live ? ' active' : ''}`}
+              onClick={() => setLive((v) => !v)}
+              aria-pressed={live}
+              title={live ? 'Pause live updates' : 'Resume live updates'}
+            >
+              {live ? 'Live On' : 'Live Off'}
+            </button>
             {lastUpdated && (
               <span className="panel-description updated-time" style={{ marginRight: 8 }}>
                 {headerStrings.updatedPrefix} {timeOnlyFormatter.format(lastUpdated)}
