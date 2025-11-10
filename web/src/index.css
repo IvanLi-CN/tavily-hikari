@@ -391,6 +391,21 @@ button {
   font-family: 'SF Mono', 'Fira Mono', Consolas, 'Courier New', monospace;
 }
 
+/* Mobile dropdown for guide client selection */
+.guide-select { display: none; margin: 8px 0 0; }
+.guide-select select {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(15, 23, 42, 0.16);
+  background: rgba(255, 255, 255, 0.95);
+  font: inherit;
+}
+@media (max-width: 640px) {
+  .guide-tabs { display: none !important; }
+  .guide-select { display: block; }
+}
+
 .guide-sample {
   display: flex;
   flex-direction: column;

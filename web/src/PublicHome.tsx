@@ -76,6 +76,7 @@ function PublicHome(): JSX.Element {
   const [activeGuide, setActiveGuide] = useState<GuideKey>('codex')
   const updateBanner = useUpdateAvailable()
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
+  const [isMobileGuide, setIsMobileGuide] = useState(false)
 
   useEffect(() => {
     const hash = window.location.hash.slice(1)
@@ -176,6 +177,15 @@ function PublicHome(): JSX.Element {
       es.close()
     }
   }, [token])
+
+  // Watch viewport for small-screen guide dropdown
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 640px)')
+    const apply = () => setIsMobileGuide(mq.matches)
+    apply()
+    mq.addEventListener('change', apply)
+    return () => mq.removeEventListener('change', apply)
+  }, [])
 
   // Fallback polling: if token metrics未就绪或 SSE 不返回 token 段，定期补一次拉取
   useEffect(() => {
@@ -398,6 +408,18 @@ function PublicHome(): JSX.Element {
       </section>
       <section className="surface panel public-home-guide">
         <h2>{publicStrings.guide.title}</h2>
+        {/* Mobile: dropdown to save space */}
+        <div className="guide-select" aria-label="Client selector (mobile)">
+          <select
+            value={activeGuide}
+            onChange={(e) => setActiveGuide(e.target.value as GuideKey)}
+          >
+            {guideTabs.map((tab) => (
+              <option key={tab.id} value={tab.id}>{tab.label}</option>
+            ))}
+          </select>
+        </div>
+        {!isMobileGuide && (
         <div className="guide-tabs">
           {guideTabs.map((tab) => (
             <button
@@ -410,6 +432,7 @@ function PublicHome(): JSX.Element {
             </button>
           ))}
         </div>
+        )}
         <div className="guide-panel">
           <h3>{guideDescription.title}</h3>
           <ol>
