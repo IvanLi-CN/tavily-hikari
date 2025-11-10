@@ -408,17 +408,16 @@ function PublicHome(): JSX.Element {
       </section>
       <section className="surface panel public-home-guide">
         <h2>{publicStrings.guide.title}</h2>
-        {/* Mobile: dropdown to save space */}
-        <div className="guide-select" aria-label="Client selector (mobile)">
-          <select
-            value={activeGuide}
-            onChange={(e) => setActiveGuide(e.target.value as GuideKey)}
-          >
-            {guideTabs.map((tab) => (
-              <option key={tab.id} value={tab.id}>{tab.label}</option>
-            ))}
-          </select>
-        </div>
+        {/* Mobile: DaisyUI dropdown menu with icons */}
+        {isMobileGuide && (
+          <div className="guide-select" aria-label="Client selector (mobile)">
+            <MobileGuideDropdown
+              active={activeGuide}
+              onChange={(id) => setActiveGuide(id)}
+              labels={guideTabs}
+            />
+          </div>
+        )}
         {!isMobileGuide && (
         <div className="guide-tabs">
           {guideTabs.map((tab) => (
@@ -479,6 +478,53 @@ function PublicHome(): JSX.Element {
 }
 
 export default PublicHome
+
+function MobileGuideDropdown({
+  active,
+  onChange,
+  labels,
+}: {
+  active: GuideKey
+  onChange: (id: GuideKey) => void
+  labels: { id: GuideKey, label: string }[]
+}): JSX.Element {
+  const icon = (id: GuideKey) => {
+    const map: Record<GuideKey, string> = {
+      codex: 'console',
+      claude: 'robot-outline',
+      vscode: 'microsoft-visual-studio-code',
+      claudeDesktop: 'laptop',
+      cursor: 'cursor-default-click-outline',
+      windsurf: 'waves',
+      other: 'dots-horizontal',
+    }
+    const name = map[id] ?? 'dots-horizontal'
+    return `${ICONIFY_ENDPOINT}/mdi/${name}.svg?color=%23475569`
+  }
+
+  const current = labels.find((l) => l.id === active)
+  return (
+    <div className="dropdown w-full">
+      <div tabIndex={0} role="button" className="btn btn-outline w-full justify-between btn-sm md:btn-md">
+        <span className="inline-flex items-center gap-2">
+          <img src={icon(active)} alt="client" width={18} height={18} />
+          {current?.label ?? active}
+        </span>
+        <img src={`${ICONIFY_ENDPOINT}/mdi/chevron-down.svg?color=%23647589`} alt="open" width={16} height={16} />
+      </div>
+      <ul tabIndex={0} className="menu dropdown-content bg-base-100 rounded-box z-[1] w-60 p-2 shadow mt-2">
+        {labels.map((tab) => (
+          <li key={tab.id}>
+            <button type="button" onClick={() => onChange(tab.id)} className="flex items-center gap-2">
+              <img src={icon(tab.id)} alt="" width={16} height={16} />
+              <span className="truncate">{tab.label}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
 function buildGuideContent(language: Language, baseUrl: string, prettyToken: string): Record<GuideKey, GuideContent> {
   const isEnglish = language === 'en'
   const codexSnippet = buildCodexSnippet(baseUrl)
