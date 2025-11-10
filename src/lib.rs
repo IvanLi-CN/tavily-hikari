@@ -484,16 +484,25 @@ impl TavilyProxy {
         let bytes = resp.bytes().await.map_err(ProxyError::Http)?;
         let json: Value = serde_json::from_slice(&bytes)
             .map_err(|e| ProxyError::Other(format!("invalid usage json: {}", e)))?;
-        let limit = json
+        // Prefer per-key usage; gracefully fall back to account-level if key-level fields missing
+        let key_limit = json
             .get("key")
             .and_then(|k| k.get("limit"))
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
-        let used = json
+            .and_then(|v| v.as_i64());
+        let key_usage = json
             .get("key")
             .and_then(|k| k.get("usage"))
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
+            .and_then(|v| v.as_i64());
+        let acc_limit = json
+            .get("account")
+            .and_then(|a| a.get("plan_limit"))
+            .and_then(|v| v.as_i64());
+        let acc_usage = json
+            .get("account")
+            .and_then(|a| a.get("plan_usage"))
+            .and_then(|v| v.as_i64());
+        let limit = key_limit.or(acc_limit).unwrap_or(0);
+        let used = key_usage.or(acc_usage).unwrap_or(0);
         let remaining = (limit - used).max(0);
         let now = Utc::now().timestamp();
         self.key_store
