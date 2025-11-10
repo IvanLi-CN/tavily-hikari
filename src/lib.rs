@@ -446,6 +446,90 @@ impl TavilyProxy {
     }
 }
 
+impl TavilyProxy {
+    /// List keys whose quota hasn't been synced within `older_than_secs` seconds (or never).
+    pub async fn list_keys_pending_quota_sync(
+        &self,
+        older_than_secs: i64,
+    ) -> Result<Vec<String>, ProxyError> {
+        self.key_store
+            .list_keys_pending_quota_sync(older_than_secs)
+            .await
+    }
+
+    /// Sync usage/quota for specific key via Tavily Usage API base (e.g., https://api.tavily.com).
+    pub async fn sync_key_quota(
+        &self,
+        key_id: &str,
+        usage_base: &str,
+    ) -> Result<(i64, i64), ProxyError> {
+        let Some(secret) = self.key_store.fetch_api_key_secret(key_id).await? else {
+            return Err(ProxyError::Database(sqlx::Error::RowNotFound));
+        };
+        let base = Url::parse(usage_base).map_err(|e| ProxyError::InvalidEndpoint {
+            endpoint: usage_base.to_string(),
+            source: e,
+        })?;
+        let mut url = base.clone();
+        url.set_path("/usage");
+
+        let resp = self
+            .client
+            .get(url)
+            .header("Authorization", format!("Bearer {}", secret))
+            .send()
+            .await
+            .map_err(ProxyError::Http)?;
+        let resp = resp.error_for_status().map_err(ProxyError::Http)?;
+        let bytes = resp.bytes().await.map_err(ProxyError::Http)?;
+        let json: Value = serde_json::from_slice(&bytes)
+            .map_err(|e| ProxyError::Other(format!("invalid usage json: {}", e)))?;
+        let limit = json
+            .get("key")
+            .and_then(|k| k.get("limit"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let used = json
+            .get("key")
+            .and_then(|k| k.get("usage"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let remaining = (limit - used).max(0);
+        let now = Utc::now().timestamp();
+        self.key_store
+            .update_quota_for_key(key_id, limit, remaining, now)
+            .await?;
+        Ok((limit, remaining))
+    }
+
+    /// Job logging helpers
+    pub async fn scheduled_job_start(
+        &self,
+        job_type: &str,
+        key_id: Option<&str>,
+        attempt: i64,
+    ) -> Result<i64, ProxyError> {
+        self.key_store
+            .scheduled_job_start(job_type, key_id, attempt)
+            .await
+    }
+
+    pub async fn scheduled_job_finish(
+        &self,
+        job_id: i64,
+        status: &str,
+        message: Option<&str>,
+    ) -> Result<(), ProxyError> {
+        self.key_store
+            .scheduled_job_finish(job_id, status, message)
+            .await
+    }
+
+    pub async fn list_recent_jobs(&self, limit: usize) -> Result<Vec<JobLog>, ProxyError> {
+        self.key_store.list_recent_jobs(limit).await
+    }
+}
+
 #[derive(Debug)]
 struct KeyStore {
     pool: SqlitePool,
@@ -476,7 +560,11 @@ impl KeyStore {
                 api_key TEXT NOT NULL UNIQUE,
                 status TEXT NOT NULL DEFAULT 'active',
                 status_changed_at INTEGER,
-                last_used_at INTEGER NOT NULL DEFAULT 0
+                last_used_at INTEGER NOT NULL DEFAULT 0,
+                quota_limit INTEGER,
+                quota_remaining INTEGER,
+                quota_synced_at INTEGER,
+                deleted_at INTEGER
             )
             "#,
         )
@@ -530,6 +618,25 @@ impl KeyStore {
         .await?;
 
         self.upgrade_auth_tokens_schema().await?;
+
+        // Scheduled jobs table for background tasks (e.g., quota/usage sync)
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS scheduled_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_type TEXT NOT NULL,
+                key_id TEXT,
+                status TEXT NOT NULL,
+                attempt INTEGER NOT NULL DEFAULT 1,
+                message TEXT,
+                started_at INTEGER NOT NULL,
+                finished_at INTEGER,
+                FOREIGN KEY (key_id) REFERENCES api_keys(id)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
 
         // Per-token usage logs for detail page (auth_token_logs)
         sqlx::query(
@@ -649,6 +756,23 @@ impl KeyStore {
         // Add deleted_at for soft delete marker (timestamp)
         if !self.api_keys_column_exists("deleted_at").await? {
             sqlx::query("ALTER TABLE api_keys ADD COLUMN deleted_at INTEGER")
+                .execute(&self.pool)
+                .await?;
+        }
+
+        // Quota tracking columns for Tavily usage
+        if !self.api_keys_column_exists("quota_limit").await? {
+            sqlx::query("ALTER TABLE api_keys ADD COLUMN quota_limit INTEGER")
+                .execute(&self.pool)
+                .await?;
+        }
+        if !self.api_keys_column_exists("quota_remaining").await? {
+            sqlx::query("ALTER TABLE api_keys ADD COLUMN quota_remaining INTEGER")
+                .execute(&self.pool)
+                .await?;
+        }
+        if !self.api_keys_column_exists("quota_synced_at").await? {
+            sqlx::query("ALTER TABLE api_keys ADD COLUMN quota_synced_at INTEGER")
                 .execute(&self.pool)
                 .await?;
         }
@@ -1031,6 +1155,8 @@ impl KeyStore {
             active_keys,
             exhausted_keys,
             last_activity,
+            total_quota_limit: 0,
+            total_quota_remaining: 0,
         })
     }
 
@@ -1948,6 +2074,9 @@ impl KeyStore {
                 ak.status_changed_at,
                 ak.last_used_at,
                 ak.deleted_at,
+                ak.quota_limit,
+                ak.quota_remaining,
+                ak.quota_synced_at,
                 COALESCE(stats.total_requests, 0) AS total_requests,
                 COALESCE(stats.success_count, 0) AS success_count,
                 COALESCE(stats.error_count, 0) AS error_count,
@@ -1982,6 +2111,9 @@ impl KeyStore {
                 let status_changed_at: Option<i64> = row.try_get("status_changed_at")?;
                 let last_used_at: i64 = row.try_get("last_used_at")?;
                 let deleted_at: Option<i64> = row.try_get("deleted_at")?;
+                let quota_limit: Option<i64> = row.try_get("quota_limit")?;
+                let quota_remaining: Option<i64> = row.try_get("quota_remaining")?;
+                let quota_synced_at: Option<i64> = row.try_get("quota_synced_at")?;
                 let total_requests: i64 = row.try_get("total_requests")?;
                 let success_count: i64 = row.try_get("success_count")?;
                 let error_count: i64 = row.try_get("error_count")?;
@@ -1993,6 +2125,9 @@ impl KeyStore {
                     status_changed_at: status_changed_at.and_then(normalize_timestamp),
                     last_used_at: normalize_timestamp(last_used_at),
                     deleted_at: deleted_at.and_then(normalize_timestamp),
+                    quota_limit,
+                    quota_remaining,
+                    quota_synced_at: quota_synced_at.and_then(normalize_timestamp),
                     total_requests,
                     success_count,
                     error_count,
@@ -2074,6 +2209,117 @@ impl KeyStore {
         Ok(secret)
     }
 
+    async fn update_quota_for_key(
+        &self,
+        key_id: &str,
+        limit: i64,
+        remaining: i64,
+        synced_at: i64,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"UPDATE api_keys
+               SET quota_limit = ?, quota_remaining = ?, quota_synced_at = ?
+             WHERE id = ?"#,
+        )
+        .bind(limit)
+        .bind(remaining)
+        .bind(synced_at)
+        .bind(key_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn list_keys_pending_quota_sync(
+        &self,
+        older_than_secs: i64,
+    ) -> Result<Vec<String>, ProxyError> {
+        let now = Utc::now().timestamp();
+        let threshold = now - older_than_secs;
+        let rows = sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT id
+            FROM api_keys
+            WHERE deleted_at IS NULL AND (
+                quota_synced_at IS NULL OR quota_synced_at = 0 OR quota_synced_at < ?
+            )
+            ORDER BY CASE WHEN quota_synced_at IS NULL OR quota_synced_at = 0 THEN 0 ELSE 1 END, quota_synced_at ASC
+            "#,
+        )
+        .bind(threshold)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    async fn scheduled_job_start(
+        &self,
+        job_type: &str,
+        key_id: Option<&str>,
+        attempt: i64,
+    ) -> Result<i64, ProxyError> {
+        let started_at = Utc::now().timestamp();
+        let res = sqlx::query(
+            r#"INSERT INTO scheduled_jobs (job_type, key_id, status, attempt, started_at)
+               VALUES (?, ?, 'running', ?, ?)"#,
+        )
+        .bind(job_type)
+        .bind(key_id)
+        .bind(attempt)
+        .bind(started_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.last_insert_rowid())
+    }
+
+    async fn scheduled_job_finish(
+        &self,
+        job_id: i64,
+        status: &str,
+        message: Option<&str>,
+    ) -> Result<(), ProxyError> {
+        let finished_at = Utc::now().timestamp();
+        sqlx::query(
+            r#"UPDATE scheduled_jobs SET status = ?, message = ?, finished_at = ? WHERE id = ?"#,
+        )
+        .bind(status)
+        .bind(message)
+        .bind(finished_at)
+        .bind(job_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn list_recent_jobs(&self, limit: usize) -> Result<Vec<JobLog>, ProxyError> {
+        let limit = limit.clamp(1, 500) as i64;
+        let rows = sqlx::query(
+            r#"SELECT id, job_type, key_id, status, attempt, message, started_at, finished_at
+                FROM scheduled_jobs
+                ORDER BY started_at DESC, id DESC
+                LIMIT ?"#,
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        let items = rows
+            .into_iter()
+            .map(|row| -> Result<JobLog, sqlx::Error> {
+                Ok(JobLog {
+                    id: row.try_get("id")?,
+                    job_type: row.try_get("job_type")?,
+                    key_id: row.try_get::<Option<String>, _>("key_id")?,
+                    status: row.try_get("status")?,
+                    attempt: row.try_get("attempt")?,
+                    message: row.try_get::<Option<String>, _>("message")?,
+                    started_at: row.try_get("started_at")?,
+                    finished_at: row.try_get::<Option<i64>, _>("finished_at")?,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(items)
+    }
+
     async fn fetch_summary(&self) -> Result<ProxySummary, ProxyError> {
         let totals_row = sqlx::query(
             r#"
@@ -2110,6 +2356,18 @@ impl KeyStore {
                 .fetch_one(&self.pool)
                 .await?;
 
+        // Aggregate quotas for overview
+        let quotas_row = sqlx::query(
+            r#"
+            SELECT COALESCE(SUM(quota_limit), 0) AS total_quota_limit,
+                   COALESCE(SUM(quota_remaining), 0) AS total_quota_remaining
+            FROM api_keys
+            WHERE deleted_at IS NULL
+            "#,
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
         Ok(ProxySummary {
             total_requests: totals_row.try_get("total_requests")?,
             success_count: totals_row.try_get("success_count")?,
@@ -2118,6 +2376,8 @@ impl KeyStore {
             active_keys: key_counts_row.try_get("active_keys")?,
             exhausted_keys: key_counts_row.try_get("exhausted_keys")?,
             last_activity,
+            total_quota_limit: quotas_row.try_get("total_quota_limit")?,
+            total_quota_remaining: quotas_row.try_get("total_quota_remaining")?,
         })
     }
 
@@ -2230,6 +2490,9 @@ pub struct ApiKeyMetrics {
     pub status_changed_at: Option<i64>,
     pub last_used_at: Option<i64>,
     pub deleted_at: Option<i64>,
+    pub quota_limit: Option<i64>,
+    pub quota_remaining: Option<i64>,
+    pub quota_synced_at: Option<i64>,
     pub total_requests: i64,
     pub success_count: i64,
     pub error_count: i64,
@@ -2265,6 +2528,8 @@ pub struct ProxySummary {
     pub active_keys: i64,
     pub exhausted_keys: i64,
     pub last_activity: Option<i64>,
+    pub total_quota_limit: i64,
+    pub total_quota_remaining: i64,
 }
 
 /// Successful request counters for public metrics.
@@ -2272,6 +2537,19 @@ pub struct ProxySummary {
 pub struct SuccessBreakdown {
     pub monthly_success: i64,
     pub daily_success: i64,
+}
+
+/// Background job log record for scheduled tasks
+#[derive(Debug, Clone)]
+pub struct JobLog {
+    pub id: i64,
+    pub job_type: String,
+    pub key_id: Option<String>,
+    pub status: String,
+    pub attempt: i64,
+    pub message: Option<String>,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
 }
 
 fn random_string(alphabet: &[u8], len: usize) -> String {
@@ -2340,6 +2618,8 @@ pub enum ProxyError {
     Database(#[from] sqlx::Error),
     #[error("http error: {0}")]
     Http(reqwest::Error),
+    #[error("other error: {0}")]
+    Other(String),
 }
 
 fn start_of_month(now: chrono::DateTime<Utc>) -> chrono::DateTime<Utc> {

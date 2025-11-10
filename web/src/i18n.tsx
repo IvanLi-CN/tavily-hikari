@@ -115,18 +115,19 @@ interface AdminTranslationsShape {
       }
     }
   }
-  metrics: {
-    labels: {
-      total: string
-      success: string
-      errors: string
-      quota: string
-      keys: string
-    }
-    subtitles: {
-      keysAll: string
-      keysExhausted: string
-    }
+    metrics: {
+      labels: {
+        total: string
+        success: string
+        errors: string
+        quota: string
+        keys: string
+        remaining: string
+      }
+      subtitles: {
+        keysAll: string
+        keysExhausted: string
+      }
     loading: string
   }
   keys: {
@@ -143,6 +144,9 @@ interface AdminTranslationsShape {
       errors: string
       quota: string
       successRate: string
+      remainingPct: string
+      quotaLeft: string
+      syncedAt: string
       lastUsed: string
       statusChanged: string
       actions: string
@@ -420,6 +424,7 @@ export const translations: Record<Language, TranslationShape> = {
           errors: 'Errors',
           quota: 'Quota Exhausted',
           keys: 'Active Keys',
+          remaining: 'Remaining',
         },
         subtitles: {
           keysAll: 'All keys available',
@@ -433,18 +438,21 @@ export const translations: Record<Language, TranslationShape> = {
         placeholder: 'New Tavily API Key',
         addButton: 'Add Key',
         adding: 'Adding…',
-        table: {
-          keyId: 'Key ID',
-          status: 'Status',
-          total: 'Total',
-          success: 'Success',
-          errors: 'Errors',
-          quota: 'Quota Exhausted',
-          successRate: 'Success Rate',
-          lastUsed: 'Last Used',
-          statusChanged: 'Status Changed',
-          actions: 'Actions',
-        },
+      table: {
+        keyId: 'Key ID',
+        status: 'Status',
+        total: 'Total',
+        success: 'Success',
+        errors: 'Errors',
+        quota: 'Quota Exhausted',
+        successRate: 'Success Rate',
+        remainingPct: 'Remaining %',
+        quotaLeft: 'Remaining',
+        syncedAt: 'Synced',
+        lastUsed: 'Last Used',
+        statusChanged: 'Status Changed',
+        actions: 'Actions',
+      },
         empty: {
           loading: 'Loading key statistics…',
           none: 'No key data recorded yet.',
@@ -701,6 +709,7 @@ export const translations: Record<Language, TranslationShape> = {
           errors: '错误',
           quota: '额度耗尽',
           keys: '活跃密钥',
+          remaining: '剩余可用',
         },
         subtitles: {
           keysAll: '全部可用',
@@ -722,6 +731,9 @@ export const translations: Record<Language, TranslationShape> = {
           errors: '错误',
           quota: '额度耗尽',
           successRate: '成功率',
+          remainingPct: '剩余比例',
+          quotaLeft: '剩余',
+          syncedAt: '同步时间',
           lastUsed: '最近使用',
           statusChanged: '状态更新',
           actions: '操作',

@@ -775,6 +775,12 @@ button:disabled {
   gap: 16px;
   padding: 20px 24px 28px;
 }
+/* 中等屏幕增加 2 列级别（避免 1 -> 3 的跳变） */
+@media (min-width: 700px) {
+  .quick-stats-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
 /* 900px 左右希望一行放下 3 个：提前到 860px 起三列，并适当收紧间距与内边距 */
 @media (min-width: 860px) {
   .quick-stats-grid {

@@ -39,6 +39,7 @@ struct AppState {
     static_dir: Option<PathBuf>,
     forward_auth: ForwardAuthConfig,
     dev_open_admin: bool,
+    usage_base: String,
 }
 
 #[derive(Clone, Debug)]
@@ -208,6 +209,83 @@ async fn debug_is_admin(
 
 async fn health_check() -> &'static str {
     "ok"
+}
+
+async fn mock_usage() -> (StatusCode, Json<serde_json::Value>) {
+    let payload = serde_json::json!({
+        "key": { "usage": 150, "limit": 1000 },
+        "account": {
+            "current_plan": "Bootstrap",
+            "plan_usage": 500,
+            "plan_limit": 15000,
+            "paygo_usage": 25,
+            "paygo_limit": 100
+        }
+    });
+    (StatusCode::OK, Json(payload))
+}
+
+fn random_delay_secs() -> u64 {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    rng.gen_range(0..=300)
+}
+
+fn twenty_four_hours_secs() -> i64 {
+    24 * 60 * 60
+}
+
+fn spawn_quota_sync_scheduler(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        loop {
+            // Initial cycle runs immediately on startup
+            let keys = match state
+                .proxy
+                .list_keys_pending_quota_sync(twenty_four_hours_secs())
+                .await
+            {
+                Ok(list) => list,
+                Err(err) => {
+                    eprintln!("quota-sync: list pending error: {err}");
+                    vec![]
+                }
+            };
+
+            for key_id in keys {
+                let delay = random_delay_secs();
+                tokio::time::sleep(Duration::from_secs(delay)).await;
+                let job_id = match state
+                    .proxy
+                    .scheduled_job_start("quota_sync", Some(&key_id), 1)
+                    .await
+                {
+                    Ok(id) => id,
+                    Err(err) => {
+                        eprintln!("quota-sync: start job error: {err}");
+                        continue;
+                    }
+                };
+                match state.proxy.sync_key_quota(&key_id, &state.usage_base).await {
+                    Ok((limit, remaining)) => {
+                        let msg = format!("limit={limit} remaining={remaining}");
+                        let _ = state
+                            .proxy
+                            .scheduled_job_finish(job_id, "success", Some(&msg))
+                            .await;
+                    }
+                    Err(err) => {
+                        let _ = state
+                            .proxy
+                            .scheduled_job_finish(job_id, "error", Some(&err.to_string()))
+                            .await;
+                    }
+                }
+            }
+
+            // Sleep one hour before next cycle
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+        }
+    });
 }
 
 // kept for potential future direct serving; currently ServeDir handles '/'
@@ -710,6 +788,97 @@ async fn compute_signatures(
     Ok((sig, latest_id))
 }
 
+// ---- Jobs listing ----
+
+#[derive(Deserialize)]
+struct JobsQuery {
+    limit: Option<usize>,
+}
+
+async fn list_jobs(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(q): Query<JobsQuery>,
+) -> Result<Json<Vec<JobLogView>>, StatusCode> {
+    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let limit = q.limit.unwrap_or(100).clamp(1, 500);
+    state
+        .proxy
+        .list_recent_jobs(limit)
+        .await
+        .map(|items| {
+            Json(
+                items
+                    .into_iter()
+                    .map(|j| JobLogView {
+                        id: j.id,
+                        job_type: j.job_type,
+                        key_id: j.key_id,
+                        status: j.status,
+                        attempt: j.attempt,
+                        message: j.message,
+                        started_at: j.started_at,
+                        finished_at: j.finished_at,
+                    })
+                    .collect(),
+            )
+        })
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+// ---- Key detail & manual quota sync ----
+
+async fn get_api_key_detail(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiKeyView>, StatusCode> {
+    let items = state
+        .proxy
+        .list_api_key_metrics()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if let Some(found) = items.into_iter().find(|k| k.id == id) {
+        Ok(Json(ApiKeyView::from(found)))
+    } else {
+        Err(StatusCode::NOT_FOUND)
+    }
+}
+
+async fn post_sync_key_usage(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Result<StatusCode, StatusCode> {
+    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let job_id = state
+        .proxy
+        .scheduled_job_start("quota_sync/manual", Some(&id), 1)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    match state.proxy.sync_key_quota(&id, &state.usage_base).await {
+        Ok((limit, remaining)) => {
+            let msg = format!("limit={limit} remaining={remaining}");
+            let _ = state
+                .proxy
+                .scheduled_job_finish(job_id, "success", Some(&msg))
+                .await;
+            Ok(StatusCode::NO_CONTENT)
+        }
+        Err(err) => {
+            let _ = state
+                .proxy
+                .scheduled_job_finish(job_id, "error", Some(&err.to_string()))
+                .await;
+            Err(StatusCode::BAD_GATEWAY)
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct VersionView {
@@ -1166,12 +1335,14 @@ pub async fn serve(
     static_dir: Option<PathBuf>,
     forward_auth: ForwardAuthConfig,
     dev_open_admin: bool,
+    usage_base: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let state = Arc::new(AppState {
         proxy,
         static_dir: static_dir.clone(),
         forward_auth,
         dev_open_admin,
+        usage_base: usage_base.clone(),
     });
 
     if let Some(h) = state.forward_auth.user_header() {
@@ -1190,6 +1361,8 @@ pub async fn serve(
 
     let mut router = Router::new()
         .route("/health", get(health_check))
+        // Dev-only mock usage endpoint; safe default when usage_base points to this server
+        .route("/usage", get(mock_usage))
         .route("/api/debug/headers", get(debug_headers))
         .route("/api/debug/is-admin", get(debug_is_admin))
         .route("/api/debug/forward-auth", get(get_forward_auth_debug))
@@ -1203,9 +1376,12 @@ pub async fn serve(
         .route("/api/public/metrics", get(get_public_metrics))
         .route("/api/keys", get(list_keys))
         .route("/api/keys", post(create_api_key))
+        .route("/api/keys/:id", get(get_api_key_detail))
+        .route("/api/keys/:id/sync-usage", post(post_sync_key_usage))
         .route("/api/keys/:id/secret", get(get_api_key_secret))
         .route("/api/keys/:id", delete(delete_api_key))
         .route("/api/keys/:id/status", patch(update_api_key_status))
+        .route("/api/jobs", get(list_jobs))
         .route("/api/logs", get(list_logs))
         // Key details
         .route("/api/keys/:id/metrics", get(get_key_metrics))
@@ -1293,6 +1469,9 @@ pub async fn serve(
     let bound_addr = listener.local_addr()?;
     println!("Tavily proxy listening on http://{bound_addr}");
 
+    // Spawn quota/usage sync scheduler (background)
+    spawn_quota_sync_scheduler(state.clone());
+
     axum::serve(
         listener,
         router
@@ -1358,6 +1537,9 @@ struct ApiKeyView {
     status_changed_at: Option<i64>,
     last_used_at: Option<i64>,
     deleted_at: Option<i64>,
+    quota_limit: Option<i64>,
+    quota_remaining: Option<i64>,
+    quota_synced_at: Option<i64>,
     total_requests: i64,
     success_count: i64,
     error_count: i64,
@@ -1388,6 +1570,19 @@ struct RequestLogView {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JobLogView {
+    id: i64,
+    job_type: String,
+    key_id: Option<String>,
+    status: String,
+    attempt: i64,
+    message: Option<String>,
+    started_at: i64,
+    finished_at: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
 struct SummaryView {
     total_requests: i64,
     success_count: i64,
@@ -1396,6 +1591,8 @@ struct SummaryView {
     active_keys: i64,
     exhausted_keys: i64,
     last_activity: Option<i64>,
+    total_quota_limit: i64,
+    total_quota_remaining: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -1970,6 +2167,9 @@ impl From<ApiKeyMetrics> for ApiKeyView {
             status_changed_at: metrics.status_changed_at,
             last_used_at: metrics.last_used_at,
             deleted_at: metrics.deleted_at,
+            quota_limit: metrics.quota_limit,
+            quota_remaining: metrics.quota_remaining,
+            quota_synced_at: metrics.quota_synced_at,
             total_requests: metrics.total_requests,
             success_count: metrics.success_count,
             error_count: metrics.error_count,
@@ -2017,6 +2217,8 @@ impl From<ProxySummary> for SummaryView {
             active_keys: summary.active_keys,
             exhausted_keys: summary.exhausted_keys,
             last_activity: summary.last_activity,
+            total_quota_limit: summary.total_quota_limit,
+            total_quota_remaining: summary.total_quota_remaining,
         }
     }
 }

@@ -27,6 +27,9 @@ import {
   fetchKeyMetrics,
   fetchKeyLogs,
   type KeySummary,
+  fetchApiKeyDetail,
+  syncApiKeyUsage,
+  fetchJobs,
 } from './api'
 
 function parseHashForKeyId(): string | null {
@@ -163,6 +166,7 @@ function AdminDashboard(): JSX.Element {
   const [keys, setKeys] = useState<ApiKeyStats[]>([])
   const [tokens, setTokens] = useState<AuthToken[]>([])
   const [logs, setLogs] = useState<RequestLog[]>([])
+  const [jobs, setJobs] = useState<import('./api').JobLogView[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const pollingTimerRef = useRef<number | null>(null)
@@ -261,13 +265,14 @@ function AdminDashboard(): JSX.Element {
   const loadData = useCallback(
     async (signal?: AbortSignal) => {
       try {
-        const [summaryData, keyData, logData, ver, profileData, tokenData] = await Promise.all([
+        const [summaryData, keyData, logData, ver, profileData, tokenData, jobsData] = await Promise.all([
           fetchSummary(signal),
           fetchApiKeys(signal),
           fetchRequestLogs(50, signal),
           fetchVersion(signal).catch(() => null),
           fetchProfile(signal).catch(() => null),
           fetchTokens(signal).catch(() => []),
+          fetchJobs(50, signal).catch(() => []),
         ])
 
         if (signal?.aborted) {
@@ -279,6 +284,7 @@ function AdminDashboard(): JSX.Element {
         setKeys(keyData)
         setLogs(logData)
         setTokens(tokenData)
+        setJobs(jobsData)
         setExpandedLogs((previous) => {
           if (previous.size === 0) {
             return new Set()
@@ -455,6 +461,15 @@ function AdminDashboard(): JSX.Element {
         label: metricsStrings.labels.quota,
         value: formatNumber(summary.quota_exhausted_count),
         subtitle: formatPercent(summary.quota_exhausted_count, total),
+      },
+      {
+        id: 'remaining',
+        label: metricsStrings.labels.remaining,
+        value: `${formatNumber(summary.total_quota_remaining)} / ${formatNumber(summary.total_quota_limit)}`,
+        subtitle:
+          summary.total_quota_limit > 0
+            ? formatPercent(summary.total_quota_remaining, summary.total_quota_limit)
+            : '—',
       },
       {
         id: 'keys',
@@ -910,14 +925,14 @@ function AdminDashboard(): JSX.Element {
       </section>
       {error && <div className="surface error-banner">{error}</div>}
 
-      <section className="surface metrics-grid">
+      <section className="surface quick-stats-grid">
         {metrics.length === 0 && loading ? (
           <div className="empty-state" style={{ gridColumn: '1 / -1' }}>
             {metricsStrings.loading}
           </div>
         ) : (
           metrics.map((metric) => (
-            <div key={metric.id} className="metric-card">
+            <div key={metric.id} className="metric-card quick-stats-card">
               <h3>{metric.label}</h3>
               <div className="metric-value">{metric.value}</div>
               <div className="metric-subtitle">{metric.subtitle}</div>
@@ -974,6 +989,9 @@ function AdminDashboard(): JSX.Element {
                   <th>{keyStrings.table.errors}</th>
                   <th>{keyStrings.table.quota}</th>
                   <th>{keyStrings.table.successRate}</th>
+                  <th>{keyStrings.table.quotaLeft}</th>
+                  <th>{keyStrings.table.remainingPct}</th>
+                  <th>{keyStrings.table.syncedAt}</th>
                   <th>{keyStrings.table.lastUsed}</th>
                   <th>{keyStrings.table.statusChanged}</th>
                   {isAdmin && <th>{keyStrings.table.actions}</th>}
@@ -1019,6 +1037,17 @@ function AdminDashboard(): JSX.Element {
                       <td>{formatNumber(item.error_count)}</td>
                       <td>{formatNumber(item.quota_exhausted_count)}</td>
                       <td>{formatPercent(item.success_count, total)}</td>
+                      <td>
+                        {item.quota_remaining != null && item.quota_limit != null
+                          ? `${formatNumber(item.quota_remaining)} / ${formatNumber(item.quota_limit)}`
+                          : '—'}
+                      </td>
+                      <td>
+                        {item.quota_remaining != null && item.quota_limit != null && item.quota_limit > 0
+                          ? formatPercent(item.quota_remaining, item.quota_limit)
+                          : '—'}
+                      </td>
+                      <td>{formatTimestamp(item.quota_synced_at)}</td>
                       <td>{formatTimestamp(item.last_used_at)}</td>
                       <td>{formatTimestamp(item.status_changed_at)}</td>
                       {isAdmin && (
@@ -1114,6 +1143,56 @@ function AdminDashboard(): JSX.Element {
                       onToggle={toggleLogExpansion}
                       strings={adminStrings}
                     />
+                  )
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </section>
+
+      <section className="surface panel">
+        <div className="panel-header">
+          <div>
+            <h2>Scheduled Jobs</h2>
+            <p className="panel-description">Recent background job executions</p>
+          </div>
+        </div>
+        <div className="table-wrapper">
+          {jobs.length === 0 ? (
+            <div className="empty-state">{loading ? 'Loading…' : 'No jobs yet.'}</div>
+          ) : (
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Type</th>
+                  <th>Key</th>
+                  <th>Status</th>
+                  <th>Attempt</th>
+                  <th>Started</th>
+                  <th>Finished</th>
+                  <th>Message</th>
+                </tr>
+              </thead>
+              <tbody>
+                {jobs.map((j) => {
+                  const job: any = j as any
+                  const jt = job.job_type ?? job.jobType ?? ''
+                  const keyId = job.key_id ?? job.keyId ?? '—'
+                  const started: number | null = job.started_at ?? job.startedAt ?? null
+                  const finished: number | null = job.finished_at ?? job.finishedAt ?? null
+                  return (
+                    <tr key={j.id}>
+                      <td>{j.id}</td>
+                      <td>{jt}</td>
+                      <td>{keyId ?? '—'}</td>
+                      <td><span className={statusClass(j.status)}>{j.status}</span></td>
+                      <td>{j.attempt}</td>
+                      <td>{started ? formatTimestamp(started) : '—'}</td>
+                      <td>{finished ? formatTimestamp(finished) : '—'}</td>
+                      <td>{j.message ?? '—'}</td>
+                    </tr>
                   )
                 })}
               </tbody>
@@ -1369,6 +1448,7 @@ function KeyDetails({ id, onBack }: { id: string; onBack: () => void }): JSX.Ele
   const adminStrings = translations.admin
   const keyDetailsStrings = adminStrings.keyDetails
   const logsTableStrings = adminStrings.logs.table
+  const [detail, setDetail] = useState<ApiKeyStats | null>(null)
   const [period, setPeriod] = useState<'day' | 'week' | 'month'>('month')
   const [startDate, setStartDate] = useState<string>(() => new Date().toISOString().slice(0, 10))
   const [summary, setSummary] = useState<KeySummary | null>(null)
@@ -1397,12 +1477,14 @@ function KeyDetails({ id, onBack }: { id: string; onBack: () => void }): JSX.Ele
       setLoading(true)
       setError(null)
       const since = computeSince()
-      const [s, ls] = await Promise.all([
+      const [s, ls, d] = await Promise.all([
         fetchKeyMetrics(id, period, since),
         fetchKeyLogs(id, 50, since),
+        fetchApiKeyDetail(id).catch(() => null),
       ])
       setSummary(s)
       setLogs(ls)
+      setDetail(d)
     } catch (err) {
       console.error(err)
       setError(err instanceof Error ? err.message : adminStrings.errors.loadKeyDetails)
@@ -1440,11 +1522,47 @@ function KeyDetails({ id, onBack }: { id: string; onBack: () => void }): JSX.Ele
           </p>
         </div>
         <div className="controls">
+          <button type="button" className="button" onClick={() => void (async () => { try { await syncApiKeyUsage(id); await load(); } catch (e) { console.error(e) } })()}>
+            <Icon icon="mdi:refresh" width={18} height={18} />
+            &nbsp;Sync Usage
+          </button>
           <button type="button" className="button" onClick={onBack}>
             <Icon icon="mdi:arrow-left" width={18} height={18} />
             &nbsp;{keyDetailsStrings.back}
           </button>
         </div>
+      </section>
+
+      <section className="surface panel">
+        <div className="panel-header">
+          <div>
+            <h2>Quota</h2>
+            <p className="panel-description">Tavily Usage for this key</p>
+          </div>
+        </div>
+        <section className="metrics-grid">
+          {(!detail || loading) ? (
+            <div className="empty-state" style={{ gridColumn: '1 / -1' }}>{keyDetailsStrings.loading}</div>
+          ) : (
+            (() => {
+              const limit = detail?.quota_limit ?? null
+              const remaining = detail?.quota_remaining ?? null
+              const used = (limit != null && remaining != null) ? Math.max(limit - remaining, 0) : null
+              const percent = (limit && remaining != null && limit > 0) ? formatPercent(remaining, limit) : '—'
+              return [
+                { id: 'used', label: 'Used', value: used != null ? formatNumber(used) : '—', subtitle: limit != null ? `of ${formatNumber(limit)}` : '—' },
+                { id: 'remaining', label: 'Remaining', value: remaining != null ? formatNumber(remaining) : '—', subtitle: percent },
+                { id: 'synced', label: 'Synced', value: detail?.quota_synced_at ? formatTimestamp(detail.quota_synced_at) : '—', subtitle: '' },
+              ].map((m) => (
+                <div key={m.id} className="metric-card">
+                  <h3>{m.label}</h3>
+                  <div className="metric-value">{m.value}</div>
+                  <div className="metric-subtitle">{m.subtitle}</div>
+                </div>
+              ))
+            })()
+          )}
+        </section>
       </section>
 
       {error && <div className="surface error-banner">{error}</div>}

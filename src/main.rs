@@ -60,6 +60,14 @@ struct Cli {
     /// 开发模式：放开管理接口权限（仅本地验证使用）
     #[arg(long, env = "DEV_OPEN_ADMIN", default_value_t = false)]
     dev_open_admin: bool,
+
+    /// Tavily Usage API base (for quota/usage sync)
+    #[arg(
+        long,
+        env = "TAVILY_USAGE_BASE",
+        default_value = "https://api.tavily.com"
+    )]
+    usage_base: String,
 }
 
 #[tokio::main]
@@ -107,7 +115,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    server::serve(addr, proxy, static_dir, forward_auth, cli.dev_open_admin).await?;
+    server::serve(
+        addr,
+        proxy,
+        static_dir,
+        forward_auth,
+        cli.dev_open_admin,
+        cli.usage_base,
+    )
+    .await?;
 
     Ok(())
 }

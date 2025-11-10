@@ -6,6 +6,8 @@ export interface Summary {
   active_keys: number
   exhausted_keys: number
   last_activity: number | null
+  total_quota_limit: number
+  total_quota_remaining: number
 }
 
 export interface PublicMetrics {
@@ -25,6 +27,9 @@ export interface ApiKeyStats {
   status_changed_at: number | null
   last_used_at: number | null
   deleted_at: number | null
+  quota_limit: number | null
+  quota_remaining: number | null
+  quota_synced_at: number | null
   total_requests: number
   success_count: number
   error_count: number
@@ -101,6 +106,11 @@ export function fetchApiKeys(signal?: AbortSignal): Promise<ApiKeyStats[]> {
   return requestJson('/api/keys', { signal })
 }
 
+export function fetchApiKeyDetail(id: string, signal?: AbortSignal): Promise<ApiKeyStats> {
+  const encoded = encodeURIComponent(id)
+  return requestJson(`/api/keys/${encoded}`, { signal })
+}
+
 export function fetchRequestLogs(limit = 50, signal?: AbortSignal): Promise<RequestLog[]> {
   const params = new URLSearchParams({ limit: limit.toString() })
   return requestJson(`/api/logs?${params.toString()}`, { signal })
@@ -109,6 +119,28 @@ export function fetchRequestLogs(limit = 50, signal?: AbortSignal): Promise<Requ
 export function fetchApiKeySecret(id: string, signal?: AbortSignal): Promise<ApiKeySecret> {
   const encoded = encodeURIComponent(id)
   return requestJson(`/api/keys/${encoded}/secret`, { signal })
+}
+
+export async function syncApiKeyUsage(id: string): Promise<void> {
+  const encoded = encodeURIComponent(id)
+  const res = await fetch(`/api/keys/${encoded}/sync-usage`, { method: 'POST' })
+  if (!res.ok) throw new Error(`Failed to sync key usage: ${res.status}`)
+}
+
+export interface JobLogView {
+  id: number
+  job_type: string
+  key_id: string | null
+  status: string
+  attempt: number
+  message: string | null
+  started_at: number
+  finished_at: number | null
+}
+
+export function fetchJobs(limit = 100, signal?: AbortSignal): Promise<JobLogView[]> {
+  const params = new URLSearchParams({ limit: String(limit) })
+  return requestJson(`/api/jobs?${params.toString()}`, { signal })
 }
 
 export interface Profile {
