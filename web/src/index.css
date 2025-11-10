@@ -204,18 +204,14 @@ button {
 }
 
 .token-input-row {
-  display: flex;
-  flex-wrap: wrap;
+  display: inline-flex;
   gap: 8px;
   align-items: center;
-  justify-content: center;
-  width: 100%;
+  flex: 0 0 auto;
 }
 
 .token-input {
-  width: 100%;
-  max-width: 600px;
-  min-width: 0;
+  width: 360px;
   padding: 10px 44px 10px 14px;
   border-radius: 12px;
   border: 1px solid rgba(15, 23, 42, 0.18);
@@ -232,9 +228,9 @@ button {
 
 .token-input-shell {
   position: relative;
-  flex: 1 1 320px;
-  min-width: 0;
-  display: block;
+  /* Keep copy button close to input: do not stretch */
+  flex: 0 0 auto;
+  display: inline-block;
 }
 
 
@@ -272,8 +268,37 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  flex: 0 0 auto;
-  white-space: nowrap;
+}
+
+/* Public page, narrow screens: make token row wrap and align ends */
+@media (max-width: 560px) {
+  .public-home .access-token-box .token-label {
+    width: 100%;
+    text-align: left;
+  }
+  .public-home .access-token-box .token-input-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    justify-content: flex-start;
+    width: 100%;
+  }
+  .public-home .access-token-box .token-input-shell {
+    flex: 1 1 100%;
+    min-width: 0;
+    display: block;
+  }
+  .public-home .access-token-box .token-input {
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+  }
+  .public-home .access-token-box .token-copy-button {
+    margin-left: auto;
+    white-space: nowrap;
+    flex: 0 0 auto;
+  }
 }
 
 .token-copy-button img {
