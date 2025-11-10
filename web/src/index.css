@@ -204,14 +204,18 @@ button {
 }
 
 .token-input-row {
-  display: inline-flex;
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
-  flex: 0 0 auto;
+  justify-content: center;
+  width: 100%;
 }
 
 .token-input {
-  width: 360px;
+  width: 100%;
+  max-width: 600px;
+  min-width: 0;
   padding: 10px 44px 10px 14px;
   border-radius: 12px;
   border: 1px solid rgba(15, 23, 42, 0.18);
@@ -228,9 +232,9 @@ button {
 
 .token-input-shell {
   position: relative;
-  /* Keep copy button close to input: do not stretch */
-  flex: 0 0 auto;
-  display: inline-block;
+  flex: 1 1 320px;
+  min-width: 0;
+  display: block;
 }
 
 
@@ -268,6 +272,8 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .token-copy-button img {
