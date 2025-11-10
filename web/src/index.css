@@ -59,6 +59,17 @@ button {
   right: 20px;
 }
 
+/* When screen is small, stack switcher above title to create vertical spacing */
+@media (max-width: 860px) {
+  .public-home-hero .language-switcher-row {
+    position: static;
+    display: flex;
+    width: 100%;
+    justify-content: flex-end; /* keep it on the right */
+    margin-bottom: 8px; /* vertical gap to the heading */
+  }
+}
+
 .public-home-hero h1 {
   margin: 0;
   font-size: 2.4rem;
