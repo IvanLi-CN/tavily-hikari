@@ -211,19 +211,7 @@ async fn health_check() -> &'static str {
     "ok"
 }
 
-async fn mock_usage() -> (StatusCode, Json<serde_json::Value>) {
-    let payload = serde_json::json!({
-        "key": { "usage": 150, "limit": 1000 },
-        "account": {
-            "current_plan": "Bootstrap",
-            "plan_usage": 500,
-            "plan_limit": 15000,
-            "paygo_usage": 25,
-            "paygo_limit": 100
-        }
-    });
-    (StatusCode::OK, Json(payload))
-}
+// (removed) mock_usage: local mock endpoint was removed to avoid accidental reliance
 
 fn random_delay_secs() -> u64 {
     use rand::Rng;
@@ -1361,8 +1349,6 @@ pub async fn serve(
 
     let mut router = Router::new()
         .route("/health", get(health_check))
-        // Dev-only mock usage endpoint; safe default when usage_base points to this server
-        .route("/usage", get(mock_usage))
         .route("/api/debug/headers", get(debug_headers))
         .route("/api/debug/is-admin", get(debug_is_admin))
         .route("/api/debug/forward-auth", get(get_forward_auth_debug))
