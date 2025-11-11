@@ -193,8 +193,21 @@ button {
   grid-template-columns: 1fr;
 }
 @media (min-width: 860px) {
-  .metrics-grid.hero-metrics {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+.metrics-grid.hero-metrics {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+}
+
+.icon-spin {
+  animation: icon-spin 1s linear infinite;
+}
+
+@keyframes icon-spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
   }
 }
 
@@ -663,6 +676,17 @@ button:disabled {
 .button-primary:hover {
   transform: translateY(-1px);
   box-shadow: 0 14px 28px rgba(99, 102, 241, 0.32);
+}
+
+.button-success {
+  background: rgba(34, 197, 94, 0.18);
+  color: #166534;
+  box-shadow: 0 10px 20px rgba(34, 197, 94, 0.25);
+}
+
+.button-success:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 14px 26px rgba(34, 197, 94, 0.32);
 }
 
 .icon-button {

@@ -222,6 +222,9 @@ interface AdminTranslationsShape {
     title: string
     descriptionPrefix: string
     back: string
+    syncAction: string
+    syncing: string
+    syncSuccess: string
     usageTitle: string
     usageDescription: string
     periodOptions: {
@@ -533,6 +536,9 @@ export const translations: Record<Language, TranslationShape> = {
         title: 'Key Details',
         descriptionPrefix: 'Inspect usage and recent requests for key:',
         back: 'Back',
+        syncAction: 'Sync Usage',
+        syncing: 'Syncing…',
+        syncSuccess: 'Synced',
         usageTitle: 'Usage',
         usageDescription: 'Aggregated counts for selected period.',
         periodOptions: {
@@ -819,6 +825,9 @@ export const translations: Record<Language, TranslationShape> = {
         title: '密钥详情',
         descriptionPrefix: '查看该密钥的用量与近期请求：',
         back: '返回',
+        syncAction: '同步额度',
+        syncing: '同步中…',
+        syncSuccess: '已同步',
         usageTitle: '用量',
         usageDescription: '按选择的时间范围聚合总数。',
         periodOptions: {

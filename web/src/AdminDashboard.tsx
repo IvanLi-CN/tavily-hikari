@@ -1455,6 +1455,9 @@ function KeyDetails({ id, onBack }: { id: string; onBack: () => void }): JSX.Ele
   const [logs, setLogs] = useState<RequestLog[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [syncState, setSyncState] = useState<'idle' | 'syncing' | 'success'>('idle')
+  const syncInFlightRef = useRef(false)
+  const syncFeedbackTimerRef = useRef<number | null>(null)
 
   const computeSince = useCallback((): number => {
     const base = new Date(startDate + 'T00:00:00Z')
@@ -1497,14 +1500,34 @@ function KeyDetails({ id, onBack }: { id: string; onBack: () => void }): JSX.Ele
     void load()
   }, [load])
 
+  useEffect(() => () => {
+    if (syncFeedbackTimerRef.current != null) {
+      window.clearTimeout(syncFeedbackTimerRef.current)
+    }
+  }, [])
+
   const syncUsage = useCallback(async () => {
+    if (syncInFlightRef.current) return
+    syncInFlightRef.current = true
     try {
+      setSyncState('syncing')
       setError(null)
       await syncApiKeyUsage(id)
       await load()
+      setSyncState('success')
+      if (syncFeedbackTimerRef.current != null) {
+        window.clearTimeout(syncFeedbackTimerRef.current)
+      }
+      syncFeedbackTimerRef.current = window.setTimeout(() => {
+        setSyncState('idle')
+        syncFeedbackTimerRef.current = null
+      }, 2500)
     } catch (err) {
       console.error(err)
       setError(err instanceof Error ? err.message : adminStrings.errors.syncUsage)
+      setSyncState('idle')
+    } finally {
+      syncInFlightRef.current = false
     }
   }, [adminStrings.errors.syncUsage, id, load])
 
@@ -1533,9 +1556,25 @@ function KeyDetails({ id, onBack }: { id: string; onBack: () => void }): JSX.Ele
           </p>
         </div>
         <div className="controls">
-          <button type="button" className="button" onClick={() => void syncUsage()}>
-            <Icon icon="mdi:refresh" width={18} height={18} />
-            &nbsp;Sync Usage
+          <button
+            type="button"
+            className={`button${syncState === 'success' ? ' button-success' : ''}`}
+            onClick={() => void syncUsage()}
+            disabled={syncState === 'syncing'}
+            aria-busy={syncState === 'syncing'}
+          >
+            <Icon
+              icon={syncState === 'syncing' ? 'mdi:loading' : syncState === 'success' ? 'mdi:check-bold' : 'mdi:refresh'}
+              width={18}
+              height={18}
+              className={syncState === 'syncing' ? 'icon-spin' : undefined}
+            />
+            &nbsp;
+            {syncState === 'syncing'
+              ? keyDetailsStrings.syncing
+              : syncState === 'success'
+                ? keyDetailsStrings.syncSuccess
+                : keyDetailsStrings.syncAction}
           </button>
           <button type="button" className="button" onClick={onBack}>
             <Icon icon="mdi:arrow-left" width={18} height={18} />
