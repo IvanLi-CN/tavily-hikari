@@ -700,6 +700,18 @@ button:disabled {
   box-shadow: 0 14px 26px rgba(34, 197, 94, 0.32);
 }
 
+/* Ensure secondary variant overrides base .button styles (defined above) */
+.button.button-secondary {
+  background: #111827;
+  color: #fff;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.25);
+}
+
+.button.button-secondary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.3);
+}
+
 .icon-button {
   border: none;
   border-radius: 999px;
