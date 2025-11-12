@@ -636,6 +636,12 @@ impl KeyStore {
 
         self.upgrade_auth_tokens_schema().await?;
 
+        // After ensuring schemas, run light-weight, idempotent data migrations
+        // to reconcile derived counters with their canonical log tables.
+        // This keeps old databases consistent when upgrading from versions
+        // that previously over-counted token validation as usage.
+        self.migrate_data_consistency().await?;
+
         // Scheduled jobs table for background tasks (e.g., quota/usage sync)
         sqlx::query(
             r#"
@@ -690,6 +696,42 @@ impl KeyStore {
                 .execute(&self.pool)
                 .await?;
         }
+
+        Ok(())
+    }
+
+    /// Reconcile derived fields to ensure cross-table consistency.
+    /// This migration is idempotent and safe to run on every startup.
+    async fn migrate_data_consistency(&self) -> Result<(), ProxyError> {
+        // 1) Access tokens: recompute total_requests and last_used_at from auth_token_logs
+        //    Older versions incremented total_requests during validation, which
+        //    inflated counters. The canonical source of truth is auth_token_logs.
+        sqlx::query(
+            r#"
+            UPDATE auth_tokens
+            SET total_requests = COALESCE((
+                    SELECT COUNT(*) FROM auth_token_logs l WHERE l.token_id = auth_tokens.id
+                ), 0),
+                last_used_at = (
+                    SELECT MAX(created_at) FROM auth_token_logs l WHERE l.token_id = auth_tokens.id
+                )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // 2) API keys: refresh last_used_at from request_logs to avoid stale values
+        //    (This is a best-effort consistency update; it's safe and general.)
+        sqlx::query(
+            r#"
+            UPDATE api_keys
+            SET last_used_at = COALESCE((
+                SELECT MAX(created_at) FROM request_logs r WHERE r.api_key_id = api_keys.id
+            ), last_used_at)
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
 
         Ok(())
     }
@@ -1427,33 +1469,19 @@ impl KeyStore {
             return Ok(false);
         }
 
-        let now = Utc::now().timestamp();
-        let mut tx = self.pool.begin().await?;
+        // Validation should be a pure check. Do NOT mutate usage counters here,
+        // otherwise the token's total_requests will be double-counted (once here,
+        // and once when we actually record the attempt). Only return whether the
+        // token exists and is enabled.
         let row = sqlx::query_as::<_, (i64, i64)>(
             "SELECT COUNT(1) as cnt, enabled FROM auth_tokens WHERE id = ? AND secret = ? LIMIT 1",
         )
         .bind(id)
         .bind(secret)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&self.pool)
         .await?;
 
-        match row {
-            Some((cnt, enabled)) if cnt > 0 && enabled == 1 => {
-                sqlx::query(
-                    "UPDATE auth_tokens SET total_requests = total_requests + 1, last_used_at = ? WHERE id = ?",
-                )
-                .bind(now)
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
-                tx.commit().await?;
-                Ok(true)
-            }
-            _ => {
-                tx.rollback().await.ok();
-                Ok(false)
-            }
-        }
+        Ok(matches!(row, Some((cnt, enabled)) if cnt > 0 && enabled == 1))
     }
 
     async fn create_access_token(&self, note: Option<&str>) -> Result<AuthTokenSecret, ProxyError> {
