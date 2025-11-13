@@ -752,8 +752,13 @@ async fn get_public_logs(
                 .into_iter()
                 .map(PublicTokenLogView::from)
                 .map(|mut v| {
+                    // Redact sensitive patterns across error_message, path and query
                     if let Some(err) = v.error_message.as_ref() {
                         v.error_message = Some(redact_sensitive(err));
+                    }
+                    v.path = redact_sensitive(&v.path);
+                    if let Some(q) = v.query.as_ref() {
+                        v.query = Some(redact_sensitive(q));
                     }
                     v
                 })
