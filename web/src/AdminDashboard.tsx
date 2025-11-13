@@ -61,6 +61,16 @@ const dateTimeFormatter = new Intl.DateTimeFormat(undefined, {
   timeStyle: 'medium',
 })
 
+// Date/time without year for compact "Last Used" rendering
+const dateTimeNoYearFormatter = new Intl.DateTimeFormat(undefined, {
+  month: 'short',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hour12: false,
+})
+
 // Time-only formatter for compact "Updated HH:MM:SS"
 const timeOnlyFormatter = new Intl.DateTimeFormat(undefined, {
   hour: '2-digit',
@@ -83,6 +93,11 @@ function formatTimestamp(value: number | null): string {
     return '—'
   }
   return dateTimeFormatter.format(new Date(value * 1000))
+}
+
+function formatTimestampNoYear(value: number | null): string {
+  if (!value) return '—'
+  return dateTimeNoYearFormatter.format(new Date(value * 1000))
 }
 
 function statusClass(status: string): string {
@@ -987,7 +1002,6 @@ function AdminDashboard(): JSX.Element {
                   <th>{keyStrings.table.total}</th>
                   <th>{keyStrings.table.success}</th>
                   <th>{keyStrings.table.errors}</th>
-                  <th>{keyStrings.table.successRate}</th>
                   <th>{keyStrings.table.quotaLeft}</th>
                   <th>{keyStrings.table.lastUsed}</th>
                   <th>{keyStrings.table.statusChanged}</th>
@@ -1032,14 +1046,12 @@ function AdminDashboard(): JSX.Element {
                       <td>{formatNumber(total)}</td>
                       <td>{formatNumber(item.success_count)}</td>
                       <td>{formatNumber(item.error_count)}</td>
-                      <td>{formatPercent(item.success_count, total)}</td>
                       <td>
                         {item.quota_remaining != null && item.quota_limit != null
                           ? `${formatNumber(item.quota_remaining)} / ${formatNumber(item.quota_limit)}`
                           : '—'}
                       </td>
-                      
-                      <td>{formatTimestamp(item.last_used_at)}</td>
+                      <td>{formatTimestampNoYear(item.last_used_at)}</td>
                       <td>{formatTimestamp(item.status_changed_at)}</td>
                       {isAdmin && (
                         <td>
