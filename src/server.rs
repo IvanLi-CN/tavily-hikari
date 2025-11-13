@@ -1382,22 +1382,44 @@ async fn list_logs(
 }
 
 // ----- Access token management handlers -----
+
+#[derive(Debug, Deserialize)]
+struct ListTokensQuery {
+    page: Option<i64>,
+    per_page: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ListTokensResponse {
+    items: Vec<AuthTokenView>,
+    total: i64,
+    page: i64,
+    per_page: i64,
+}
+
 async fn list_tokens(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<Vec<AuthTokenView>>, StatusCode> {
+    Query(q): Query<ListTokensQuery>,
+) -> Result<Json<ListTokensResponse>, StatusCode> {
     if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
         return Err(StatusCode::FORBIDDEN);
     }
-    state
-        .proxy
-        .list_access_tokens()
-        .await
-        .map(|items| Json(items.into_iter().map(AuthTokenView::from).collect()))
-        .map_err(|err| {
+    let page = q.page.unwrap_or(1).max(1);
+    let per_page = q.per_page.unwrap_or(10).clamp(1, 200);
+    match state.proxy.list_access_tokens_paged(page, per_page).await {
+        Ok((items, total)) => Ok(Json(ListTokensResponse {
+            items: items.into_iter().map(AuthTokenView::from).collect(),
+            total,
+            page,
+            per_page,
+        })),
+        Err(err) => {
             eprintln!("list tokens error: {err}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
 }
 
 #[axum::debug_handler]
@@ -1540,6 +1562,47 @@ async fn rotate_token_secret(
         })
 }
 
+#[derive(Debug, Deserialize)]
+struct BatchCreateTokenRequest {
+    group: String,
+    count: usize,
+    note: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct BatchCreateTokenResponse {
+    tokens: Vec<String>,
+}
+
+#[axum::debug_handler]
+async fn create_tokens_batch(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<BatchCreateTokenRequest>,
+) -> Result<Json<BatchCreateTokenResponse>, StatusCode> {
+    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let group = payload.group.trim();
+    if group.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let count = payload.count.clamp(1, 1000);
+    state
+        .proxy
+        .create_access_tokens_batch(group, count, payload.note.as_deref())
+        .await
+        .map(|secrets| {
+            Json(BatchCreateTokenResponse {
+                tokens: secrets.into_iter().map(|s| s.token).collect(),
+            })
+        })
+        .map_err(|err| {
+            eprintln!("batch create tokens error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
 pub async fn serve(
     addr: SocketAddr,
     proxy: TavilyProxy,
@@ -1605,6 +1668,7 @@ pub async fn serve(
         // Access token management (admin only)
         .route("/api/tokens", get(list_tokens))
         .route("/api/tokens", post(create_token))
+        .route("/api/tokens/batch", post(create_tokens_batch))
         .route("/api/tokens/:id", delete(delete_token))
         .route("/api/tokens/:id/status", patch(update_token_status))
         .route("/api/tokens/:id/note", patch(update_token_note))
@@ -1819,6 +1883,7 @@ struct AuthTokenView {
     id: String,
     enabled: bool,
     note: Option<String>,
+    group: Option<String>,
     total_requests: i64,
     created_at: i64,
     last_used_at: Option<i64>,
@@ -1830,6 +1895,7 @@ impl From<AuthToken> for AuthTokenView {
             id: t.id,
             enabled: t.enabled,
             note: t.note,
+            group: t.group_name,
             total_requests: t.total_requests,
             created_at: t.created_at,
             last_used_at: t.last_used_at,

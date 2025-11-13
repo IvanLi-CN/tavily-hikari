@@ -88,6 +88,7 @@ export interface AuthToken {
   id: string // 4-char code
   enabled: boolean
   note: string | null
+  group: string | null
   total_requests: number
   created_at: number
   last_used_at: number | null
@@ -272,8 +273,16 @@ export function fetchKeyLogs(id: string, limit = 50, since?: number, signal?: Ab
 }
 
 // Tokens API
-export function fetchTokens(signal?: AbortSignal): Promise<AuthToken[]> {
-  return requestJson('/api/tokens', { signal })
+export interface Paginated<T> {
+  items: T[]
+  total: number
+  page: number
+  perPage: number
+}
+
+export function fetchTokens(page = 1, perPage = 10, signal?: AbortSignal): Promise<Paginated<AuthToken>> {
+  const params = new URLSearchParams({ page: String(page), per_page: String(perPage) })
+  return requestJson(`/api/tokens?${params.toString()}`, { signal })
 }
 
 export async function createToken(note?: string): Promise<AuthTokenSecret> {
@@ -318,4 +327,16 @@ export function fetchTokenSecret(id: string, signal?: AbortSignal): Promise<Auth
 export async function rotateTokenSecret(id: string): Promise<AuthTokenSecret> {
   const encoded = encodeURIComponent(id)
   return await requestJson(`/api/tokens/${encoded}/secret/rotate`, { method: 'POST' })
+}
+
+export interface BatchCreateTokensResponse {
+  tokens: string[]
+}
+
+export async function createTokensBatch(group: string, count: number, note?: string): Promise<BatchCreateTokensResponse> {
+  return await requestJson('/api/tokens/batch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ group, count, note }),
+  })
 }

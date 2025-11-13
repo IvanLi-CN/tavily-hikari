@@ -291,9 +291,32 @@ impl TavilyProxy {
         self.key_store.create_access_token(note).await
     }
 
+    /// Admin: batch create access tokens with required group name.
+    pub async fn create_access_tokens_batch(
+        &self,
+        group: &str,
+        count: usize,
+        note: Option<&str>,
+    ) -> Result<Vec<AuthTokenSecret>, ProxyError> {
+        self.key_store
+            .create_access_tokens_batch(group, count, note)
+            .await
+    }
+
     /// Admin: list tokens for management.
     pub async fn list_access_tokens(&self) -> Result<Vec<AuthToken>, ProxyError> {
         self.key_store.list_access_tokens().await
+    }
+
+    /// Admin: list tokens paginated.
+    pub async fn list_access_tokens_paged(
+        &self,
+        page: i64,
+        per_page: i64,
+    ) -> Result<(Vec<AuthToken>, i64), ProxyError> {
+        self.key_store
+            .list_access_tokens_paged(page, per_page)
+            .await
     }
 
     /// Admin: delete a token by id code.
@@ -634,6 +657,7 @@ impl KeyStore {
                 secret TEXT NOT NULL,          -- 12-char secret
                 enabled INTEGER NOT NULL DEFAULT 1,
                 note TEXT,
+                group_name TEXT,
                 total_requests INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL,
                 last_used_at INTEGER
@@ -775,6 +799,11 @@ impl KeyStore {
         }
         if !self.auth_tokens_column_exists("last_used_at").await? {
             sqlx::query("ALTER TABLE auth_tokens ADD COLUMN last_used_at INTEGER")
+                .execute(&self.pool)
+                .await?;
+        }
+        if !self.auth_tokens_column_exists("group_name").await? {
+            sqlx::query("ALTER TABLE auth_tokens ADD COLUMN group_name TEXT")
                 .execute(&self.pool)
                 .await?;
         }
@@ -1508,8 +1537,8 @@ impl KeyStore {
             // Increase secret length to strengthen token entropy while keeping id short.
             let secret = random_string(ALPHABET, 24);
             let res = sqlx::query(
-                r#"INSERT INTO auth_tokens (id, secret, enabled, note, total_requests, created_at, last_used_at)
-                   VALUES (?, ?, 1, ?, 0, ?, NULL)"#,
+                r#"INSERT INTO auth_tokens (id, secret, enabled, note, group_name, total_requests, created_at, last_used_at)
+                   VALUES (?, ?, 1, ?, NULL, 0, ?, NULL)"#,
             )
             .bind(&id)
             .bind(&secret)
@@ -1535,13 +1564,72 @@ impl KeyStore {
         }
     }
 
+    /// Batch-create access tokens with required group name. Optional note applied to each row.
+    async fn create_access_tokens_batch(
+        &self,
+        group: &str,
+        count: usize,
+        note: Option<&str>,
+    ) -> Result<Vec<AuthTokenSecret>, ProxyError> {
+        let now = Utc::now().timestamp();
+        const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        let mut tx = self.pool.begin().await?;
+        let mut out: Vec<AuthTokenSecret> = Vec::with_capacity(count);
+        for _ in 0..count {
+            loop {
+                let id = random_string(ALPHABET, 4);
+                let secret = random_string(ALPHABET, 24);
+                let res = sqlx::query(
+                    r#"INSERT INTO auth_tokens (id, secret, enabled, note, group_name, total_requests, created_at, last_used_at)
+                       VALUES (?, ?, 1, ?, ?, 0, ?, NULL)"#,
+                )
+                .bind(&id)
+                .bind(&secret)
+                .bind(note.unwrap_or(""))
+                .bind(group)
+                .bind(now)
+                .execute(&mut *tx)
+                .await;
+
+                match res {
+                    Ok(_) => {
+                        let token = Self::compose_full_token(&id, &secret);
+                        out.push(AuthTokenSecret { id, token });
+                        break;
+                    }
+                    Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
+                        continue;
+                    }
+                    Err(e) => {
+                        tx.rollback().await.ok();
+                        return Err(ProxyError::Database(e));
+                    }
+                }
+            }
+        }
+        tx.commit().await?;
+        Ok(out)
+    }
     // Generate random string of given length from provided alphabet
     // Alphabet is a byte slice of ASCII alphanumerics
     // Using ThreadRng for simplicity
 
     async fn list_access_tokens(&self) -> Result<Vec<AuthToken>, ProxyError> {
-        let rows = sqlx::query_as::<_, (String, i64, Option<String>, i64, i64, Option<i64>)>(
-            r#"SELECT id, enabled, note, total_requests, created_at, last_used_at FROM auth_tokens ORDER BY id ASC"#,
+        let rows = sqlx::query_as::<
+            _,
+            (
+                String,
+                i64,
+                Option<String>,
+                Option<String>,
+                i64,
+                i64,
+                Option<i64>,
+            ),
+        >(
+            r#"SELECT id, enabled, note, group_name, total_requests, created_at, last_used_at
+               FROM auth_tokens
+               ORDER BY created_at DESC, id DESC"#,
         )
         .fetch_all(&self.pool)
         .await?;
@@ -1549,16 +1637,70 @@ impl KeyStore {
         Ok(rows
             .into_iter()
             .map(
-                |(id, enabled, note, total, created_at, last_used)| AuthToken {
+                |(id, enabled, note, group_name, total, created_at, last_used)| AuthToken {
                     id,
                     enabled: enabled == 1,
                     note,
+                    group_name,
                     total_requests: total,
                     created_at,
                     last_used_at: last_used,
                 },
             )
             .collect())
+    }
+
+    /// Paginated list of access tokens ordered by created_at desc. Returns (items, total)
+    async fn list_access_tokens_paged(
+        &self,
+        page: i64,
+        per_page: i64,
+    ) -> Result<(Vec<AuthToken>, i64), ProxyError> {
+        let page = page.max(1);
+        let per_page = per_page.clamp(1, 200);
+        let offset = (page - 1) * per_page;
+
+        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM auth_tokens")
+            .fetch_one(&self.pool)
+            .await?;
+
+        let rows = sqlx::query_as::<
+            _,
+            (
+                String,
+                i64,
+                Option<String>,
+                Option<String>,
+                i64,
+                i64,
+                Option<i64>,
+            ),
+        >(
+            r#"SELECT id, enabled, note, group_name, total_requests, created_at, last_used_at
+               FROM auth_tokens
+               ORDER BY created_at DESC, id DESC
+               LIMIT ? OFFSET ?"#,
+        )
+        .bind(per_page)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let items = rows
+            .into_iter()
+            .map(
+                |(id, enabled, note, group_name, total, created_at, last_used)| AuthToken {
+                    id,
+                    enabled: enabled == 1,
+                    note,
+                    group_name,
+                    total_requests: total,
+                    created_at,
+                    last_used_at: last_used,
+                },
+            )
+            .collect();
+        Ok((items, total))
     }
 
     async fn delete_access_token(&self, id: &str) -> Result<(), ProxyError> {
@@ -2658,6 +2800,7 @@ pub struct AuthToken {
     pub id: String, // 4-char id code
     pub enabled: bool,
     pub note: Option<String>,
+    pub group_name: Option<String>,
     pub total_requests: i64,
     pub created_at: i64,
     pub last_used_at: Option<i64>,
