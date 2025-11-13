@@ -97,6 +97,12 @@ interface AdminTranslationsShape {
     notePlaceholder: string
     newToken: string
     creating: string
+    batchCreate: string
+    pagination: {
+      prev: string
+      next: string
+      page: string
+    }
     table: {
       id: string
       note: string
@@ -133,6 +139,15 @@ interface AdminTranslationsShape {
         confirm: string
         saving: string
       }
+    }
+    batchDialog: {
+      title: string
+      groupPlaceholder: string
+      confirm: string
+      creating: string
+      cancel: string
+      done: string
+      createdN: string
     }
   }
     metrics: {
@@ -423,6 +438,12 @@ export const translations: Record<Language, TranslationShape> = {
         notePlaceholder: 'Note (optional)',
         newToken: 'New Token',
         creating: 'Creating…',
+        batchCreate: 'Batch Create',
+        pagination: {
+          prev: 'Prev',
+          next: 'Next',
+          page: 'Page {page} of {total}',
+        },
         table: {
           id: 'ID',
           note: 'Note',
@@ -459,6 +480,15 @@ export const translations: Record<Language, TranslationShape> = {
             confirm: 'Save',
             saving: 'Saving…',
           },
+        },
+        batchDialog: {
+          title: 'Batch Create Tokens',
+          groupPlaceholder: 'Group (required)',
+          confirm: 'Create',
+          creating: 'Creating…',
+          cancel: 'Cancel',
+          done: 'Done',
+          createdN: 'Created {n} tokens',
         },
       },
       metrics: {
@@ -732,6 +762,12 @@ export const translations: Record<Language, TranslationShape> = {
         notePlaceholder: '备注（可选）',
         newToken: '新建令牌',
         creating: '创建中…',
+        batchCreate: '批量创建',
+        pagination: {
+          prev: '上一页',
+          next: '下一页',
+          page: '第 {page}/{total} 页',
+        },
         table: {
           id: 'ID',
           note: '备注',
@@ -768,6 +804,15 @@ export const translations: Record<Language, TranslationShape> = {
             confirm: '保存',
             saving: '保存中…',
           },
+        },
+        batchDialog: {
+          title: '批量创建令牌',
+          groupPlaceholder: '分组名（必填）',
+          confirm: '创建',
+          creating: '创建中…',
+          cancel: '取消',
+          done: '完成',
+          createdN: '已创建 {n} 个令牌',
         },
       },
       metrics: {

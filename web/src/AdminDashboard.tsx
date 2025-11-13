@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import LanguageSwitcher from './components/LanguageSwitcher'
 import TokenDetail from './pages/TokenDetail'
 import { useTranslate, type AdminTranslations } from './i18n'
-import {
+  import {
   fetchApiKeys,
   fetchApiKeySecret,
   addApiKey,
@@ -24,6 +24,8 @@ import {
   deleteToken,
   setTokenEnabled,
   updateTokenNote,
+  createTokensBatch,
+  type Paginated,
   fetchKeyMetrics,
   fetchKeyLogs,
   type KeySummary,
@@ -180,6 +182,9 @@ function AdminDashboard(): JSX.Element {
   const [summary, setSummary] = useState<Summary | null>(null)
   const [keys, setKeys] = useState<ApiKeyStats[]>([])
   const [tokens, setTokens] = useState<AuthToken[]>([])
+  const [tokensPage, setTokensPage] = useState(1)
+  const tokensPerPage = 10
+  const [tokensTotal, setTokensTotal] = useState(0)
   const [logs, setLogs] = useState<RequestLog[]>([])
   const [jobs, setJobs] = useState<import('./api').JobLogView[]>([])
   const [loading, setLoading] = useState(true)
@@ -208,6 +213,12 @@ function AdminDashboard(): JSX.Element {
   const [editingTokenNote, setEditingTokenNote] = useState('')
   const [savingTokenNote, setSavingTokenNote] = useState(false)
   const [sseConnected, setSseConnected] = useState(false)
+  // Batch dialog state
+  const batchDialogRef = useRef<HTMLDialogElement | null>(null)
+  const [batchGroup, setBatchGroup] = useState('')
+  const [batchCount, setBatchCount] = useState(10)
+  const [batchCreating, setBatchCreating] = useState(false)
+  const [batchShareText, setBatchShareText] = useState<string | null>(null)
   const isAdmin = profile?.isAdmin ?? false
 
   const copyStateKey = useCallback((scope: 'keys' | 'logs' | 'tokens', identifier: string | number) => {
@@ -286,7 +297,7 @@ function AdminDashboard(): JSX.Element {
           fetchRequestLogs(50, signal),
           fetchVersion(signal).catch(() => null),
           fetchProfile(signal).catch(() => null),
-          fetchTokens(signal).catch(() => []),
+          fetchTokens(tokensPage, tokensPerPage, signal).catch(() => ({ items: [], total: 0, page: tokensPage, perPage: tokensPerPage } as Paginated<AuthToken>)),
           fetchJobs(50, signal).catch(() => []),
         ])
 
@@ -298,7 +309,8 @@ function AdminDashboard(): JSX.Element {
         setSummary(summaryData)
         setKeys(keyData)
         setLogs(logData)
-        setTokens(tokenData)
+        setTokens(tokenData.items)
+        setTokensTotal(tokenData.total)
         setJobs(jobsData)
         setExpandedLogs((previous) => {
           if (previous.size === 0) {
@@ -326,8 +338,8 @@ function AdminDashboard(): JSX.Element {
           setLoading(false)
         }
       }
-    },
-    [],
+  },
+    [tokensPage],
   )
 
   useEffect(() => {
@@ -573,6 +585,46 @@ function AdminDashboard(): JSX.Element {
     }
   }
 
+  const totalPages = useMemo(() => Math.max(1, Math.ceil(tokensTotal / tokensPerPage)), [tokensTotal])
+
+  const goPrevPage = () => {
+    setTokensPage((p) => Math.max(1, p - 1))
+  }
+  const goNextPage = () => {
+    setTokensPage((p) => Math.min(totalPages, p + 1))
+  }
+
+  const openBatchDialog = () => {
+    setBatchGroup('')
+    setBatchCount(10)
+    setBatchShareText(null)
+    window.requestAnimationFrame(() => batchDialogRef.current?.showModal())
+  }
+  const submitBatchCreate = async () => {
+    const group = batchGroup.trim()
+    if (!group) return
+    setBatchCreating(true)
+    try {
+      const res = await createTokensBatch(group, Math.max(1, Math.min(1000, batchCount)), newTokenNote.trim() || undefined)
+      const links = res.tokens.map((t) => `${window.location.origin}/#${encodeURIComponent(t)}`).join('\n')
+      setBatchShareText(links)
+      // refresh list to first page
+      setTokensPage(1)
+      const controller = new AbortController()
+      setLoading(true)
+      await loadData(controller.signal)
+      controller.abort()
+    } catch (err) {
+      console.error(err)
+      setError(err instanceof Error ? err.message : errorStrings.createToken)
+    } finally {
+      setBatchCreating(false)
+    }
+  }
+  const closeBatchDialog = () => {
+    batchDialogRef.current?.close()
+  }
+
   const handleCopyToken = async (id: string, stateKey: string) => {
     updateCopyState(stateKey, 'loading')
     try {
@@ -756,6 +808,7 @@ function AdminDashboard(): JSX.Element {
     return <TokenDetail id={route.id} onBack={navigateHome} />
   }
 
+  const tokenList = Array.isArray(tokens) ? tokens : []
   return (
     <>
     <main className="app-shell">
@@ -811,11 +864,14 @@ function AdminDashboard(): JSX.Element {
               <button type="button" className="button button-primary" onClick={() => void handleAddToken()} disabled={submitting}>
                 {submitting ? tokenStrings.creating : tokenStrings.newToken}
               </button>
+              <button type="button" className="button" onClick={openBatchDialog} disabled={submitting}>
+                {tokenStrings.batchCreate}
+              </button>
             </div>
           )}
         </div>
         <div className="table-wrapper">
-          {tokens.length === 0 ? (
+          {tokenList.length === 0 ? (
             <div className="empty-state">{loading ? tokenStrings.empty.loading : tokenStrings.empty.none}</div>
           ) : (
             <table>
@@ -829,7 +885,7 @@ function AdminDashboard(): JSX.Element {
                 </tr>
               </thead>
               <tbody>
-                {tokens.map((t) => {
+                {tokenList.map((t) => {
                   const stateKey = copyStateKey('tokens', t.id)
                   const state = copyState.get(stateKey)
                   const shareStateKey = copyStateKey('tokens', `${t.id}:share`)
@@ -937,6 +993,23 @@ function AdminDashboard(): JSX.Element {
             </table>
           )}
         </div>
+        {tokensTotal > tokensPerPage && (
+          <div className="table-pagination">
+            <span className="panel-description">
+              {tokenStrings.pagination.page
+                .replace('{page}', String(tokensPage))
+                .replace('{total}', String(totalPages))}
+            </span>
+            <div style={{ display: 'inline-flex', gap: 8 }}>
+              <button className="button" onClick={goPrevPage} disabled={tokensPage <= 1}>
+                {tokenStrings.pagination.prev}
+              </button>
+              <button className="button" onClick={goNextPage} disabled={tokensPage >= totalPages}>
+                {tokenStrings.pagination.next}
+              </button>
+            </div>
+          </div>
+        )}
       </section>
       {error && <div className="surface error-banner">{error}</div>}
 
@@ -1241,6 +1314,53 @@ function AdminDashboard(): JSX.Element {
         </span>
       </div>
     </main>
+    {/* Batch Create Tokens (DaisyUI modal) */}
+    <dialog id="batch_create_tokens_modal" ref={batchDialogRef} className="modal">
+      <div className="modal-box">
+        <h3 className="font-bold text-lg" style={{ marginTop: 0 }}>{tokenStrings.batchDialog.title}</h3>
+        {batchShareText == null ? (
+          <>
+            <div className="py-2" style={{ display: 'flex', gap: 8 }}>
+              <input
+                type="text"
+                className="input"
+                placeholder={tokenStrings.batchDialog.groupPlaceholder}
+                value={batchGroup}
+                onChange={(e) => setBatchGroup(e.target.value)}
+                style={{ flex: 1 }}
+              />
+              <input
+                type="number"
+                className="input"
+                min={1}
+                max={1000}
+                value={batchCount}
+                onChange={(e) => setBatchCount(Number(e.target.value) || 1)}
+                style={{ width: 120 }}
+              />
+            </div>
+            <div className="modal-action">
+              <form method="dialog" onSubmit={(e) => e.preventDefault()} style={{ display: 'flex', gap: 8 }}>
+                <button type="button" className="btn" onClick={closeBatchDialog}>{tokenStrings.batchDialog.cancel}</button>
+                <button type="button" className="btn btn-primary" onClick={() => void submitBatchCreate()} disabled={batchCreating}>
+                  {batchCreating ? tokenStrings.batchDialog.creating : tokenStrings.batchDialog.confirm}
+                </button>
+              </form>
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="py-2">{tokenStrings.batchDialog.createdN.replace('{n}', String(batchShareText.split('\n').length))}</p>
+            <textarea className="textarea" readOnly rows={Math.min(12, Math.max(4, batchShareText.split('\n').length))} style={{ width: '100%' }} value={batchShareText} />
+            <div className="modal-action">
+              <form method="dialog" onSubmit={(e) => e.preventDefault()} style={{ display: 'flex', gap: 8 }}>
+                <button type="button" className="btn" onClick={closeBatchDialog}>{tokenStrings.batchDialog.done}</button>
+              </form>
+            </div>
+          </>
+        )}
+      </div>
+    </dialog>
     {/* Disable Confirmation (daisyUI modal) */}
     <dialog id="confirm_disable_modal" ref={disableDialogRef} className="modal">
       <div className="modal-box">
