@@ -989,7 +989,6 @@ function AdminDashboard(): JSX.Element {
                   <th>{keyStrings.table.errors}</th>
                   <th>{keyStrings.table.successRate}</th>
                   <th>{keyStrings.table.quotaLeft}</th>
-                  <th>{keyStrings.table.remainingPct}</th>
                   <th>{keyStrings.table.lastUsed}</th>
                   <th>{keyStrings.table.statusChanged}</th>
                   {isAdmin && <th>{keyStrings.table.actions}</th>}
@@ -1039,11 +1038,7 @@ function AdminDashboard(): JSX.Element {
                           ? `${formatNumber(item.quota_remaining)} / ${formatNumber(item.quota_limit)}`
                           : '—'}
                       </td>
-                      <td>
-                        {item.quota_remaining != null && item.quota_limit != null && item.quota_limit > 0
-                          ? formatPercent(item.quota_remaining, item.quota_limit)
-                          : '—'}
-                      </td>
+                      
                       <td>{formatTimestamp(item.last_used_at)}</td>
                       <td>{formatTimestamp(item.status_changed_at)}</td>
                       {isAdmin && (
