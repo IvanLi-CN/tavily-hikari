@@ -1467,7 +1467,12 @@ impl KeyStore {
         }
         let id = parts[0];
         let secret = parts[1];
-        if id.len() != 4 || secret.len() != 12 {
+        // Keep short, human-friendly id; strengthen total entropy by lengthening secret.
+        // Backward-compatible: accept legacy 12-char secrets and new longer secrets.
+        const LEGACY_SECRET_LEN: usize = 12;
+        const NEW_SECRET_LEN: usize = 24; // chosen to significantly raise entropy
+        let secret_len_ok = secret.len() == LEGACY_SECRET_LEN || secret.len() == NEW_SECRET_LEN;
+        if id.len() != 4 || !secret_len_ok {
             return Ok(false);
         }
 
@@ -1491,7 +1496,8 @@ impl KeyStore {
         const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
         loop {
             let id = random_string(ALPHABET, 4);
-            let secret = random_string(ALPHABET, 12);
+            // Increase secret length to strengthen token entropy while keeping id short.
+            let secret = random_string(ALPHABET, 24);
             let res = sqlx::query(
                 r#"INSERT INTO auth_tokens (id, secret, enabled, note, total_requests, created_at, last_used_at)
                    VALUES (?, ?, 1, ?, 0, ?, NULL)"#,
