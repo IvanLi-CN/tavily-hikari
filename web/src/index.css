@@ -1182,6 +1182,37 @@ table {
   color: #475569;
 }
 
+/* Admin Recent Requests table: keep only the Error column truncatable */
+.admin-logs-table {
+  table-layout: auto;
+  width: 100%;
+}
+.admin-logs-table th,
+.admin-logs-table td {
+  white-space: nowrap; /* 其他列一律不换行 */
+}
+/* Fix the Error column (6th) to a reasonable width and ellipsize overflow */
+.admin-logs-table th:last-child,
+.admin-logs-table td:last-child {
+  width: 36ch;
+  max-width: 36ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap; /* 不允许换行，超出显示省略号 */
+  color: #475569;
+}
+/* 确保“结果”列徽章不换行并右对齐（兼容 4/5 列位置） */
+.admin-logs-table td:nth-child(5) .status-badge,
+.admin-logs-table td:nth-child(4) .status-badge {
+  white-space: nowrap;
+  display: inline-flex;
+}
+.admin-logs-table td:nth-child(5) .log-result-button,
+.admin-logs-table td:nth-child(4) .log-result-button {
+  width: 100%;
+  justify-content: flex-end;
+}
+
 .table-pagination {
   padding: 16px 24px 20px;
   display: flex;

@@ -1118,7 +1118,7 @@ function AdminDashboard(): JSX.Element {
           {logs.length === 0 ? (
             <div className="empty-state">{loading ? logStrings.empty.loading : logStrings.empty.none}</div>
           ) : (
-            <table>
+            <table className="admin-logs-table">
               <thead>
                 <tr>
                   <th>{logStrings.table.time}</th>
@@ -1661,7 +1661,7 @@ function KeyDetails({ id, onBack }: { id: string; onBack: () => void }): JSX.Ele
           {logs.length === 0 ? (
             <div className="empty-state">{loading ? keyDetailsStrings.loading : keyDetailsStrings.logsEmpty}</div>
           ) : (
-            <table>
+            <table className="admin-logs-table">
               <thead>
                 <tr>
                   <th>{logsTableStrings.time}</th>
