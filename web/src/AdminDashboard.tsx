@@ -1330,7 +1330,7 @@ function AdminDashboard(): JSX.Element {
         style={
           batchShareText
             ? {
-                maxWidth: 'none',
+                maxWidth: 'min(100vw - 3rem, 96ch)',
                 width: `${batchShareTextareaWidthCh + 4}ch`,
               }
             : undefined
@@ -1379,10 +1379,12 @@ function AdminDashboard(): JSX.Element {
               rows={batchShareRows}
               style={{
                 width: '100%',
+                maxHeight: 'min(50vh, 24rem)',
                 fontFamily:
                   'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
                 whiteSpace: 'pre',
-                overflow: 'hidden',
+                overflowX: 'auto',
+                overflowY: 'auto',
                 resize: 'none',
               }}
               value={batchShareText ?? ''}
