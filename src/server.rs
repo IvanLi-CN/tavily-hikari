@@ -27,8 +27,8 @@ use serde_json::json;
 type SummarySig = (i64, i64, i64, i64, i64, i64, Option<i64>);
 use std::time::Duration;
 use tavily_hikari::{
-    ApiKeyMetrics, AuthToken, ProxyError, ProxyRequest, ProxyResponse, ProxySummary,
-    RequestLogRecord, TavilyProxy, TokenLogRecord, TokenSummary,
+    ApiKeyMetrics, AuthToken, ProxyError, ProxyRequest, ProxyResponse, ProxySummary, QuotaWindow,
+    RequestLogRecord, TavilyProxy, TokenLogRecord, TokenQuotaVerdict, TokenSummary,
 };
 use tokio::signal;
 #[cfg(unix)]
@@ -2487,6 +2487,37 @@ async fn proxy_handler(
         .and_then(|rest| rest.split('-').next())
         .map(|s| s.to_string());
 
+    if !state.dev_open_admin
+        && let Some(tid) = token_id.as_deref()
+    {
+        match state.proxy.check_token_quota(tid).await {
+            Ok(verdict) => {
+                if !verdict.allowed {
+                    let message = build_quota_error_message(&verdict);
+                    let _ = state
+                        .proxy
+                        .record_token_attempt(
+                            tid,
+                            &method,
+                            &path,
+                            parts.uri.query(),
+                            Some(StatusCode::TOO_MANY_REQUESTS.as_u16() as i64),
+                            None,
+                            "quota_exceeded",
+                            Some(&message),
+                        )
+                        .await;
+                    let response = quota_exceeded_response(&verdict)?;
+                    return Ok(response);
+                }
+            }
+            Err(err) => {
+                eprintln!("quota check failed: {err}");
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    }
+
     match state.proxy.proxy_request(proxy_request).await {
         Ok(resp) => {
             if let Some(tid) = token_id.as_deref() {
@@ -2604,6 +2635,45 @@ fn build_response(resp: ProxyResponse) -> Response<Body> {
 fn value_from_len(len: usize) -> axum::http::HeaderValue {
     axum::http::HeaderValue::from_str(len.to_string().as_str())
         .unwrap_or_else(|_| axum::http::HeaderValue::from_static("0"))
+}
+
+fn quota_exceeded_response(verdict: &TokenQuotaVerdict) -> Result<Response<Body>, StatusCode> {
+    let payload = json!({
+        "error": "quota_exceeded",
+        "window": verdict.window_name(),
+        "hourly": {
+            "limit": verdict.hourly_limit,
+            "used": verdict.hourly_used,
+        },
+        "daily": {
+            "limit": verdict.daily_limit,
+            "used": verdict.daily_used,
+        },
+        "monthly": {
+            "limit": verdict.monthly_limit,
+            "used": verdict.monthly_used,
+        },
+    });
+
+    Response::builder()
+        .status(StatusCode::TOO_MANY_REQUESTS)
+        .header(CONTENT_TYPE, "application/json; charset=utf-8")
+        .body(Body::from(payload.to_string()))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+fn build_quota_error_message(verdict: &TokenQuotaVerdict) -> String {
+    let (limit, used) = quota_window_stats(verdict);
+    let window = verdict.window_name().unwrap_or("unknown");
+    format!("token quota exceeded on {window} window (limit {limit}, used {used})")
+}
+
+fn quota_window_stats(verdict: &TokenQuotaVerdict) -> (i64, i64) {
+    match verdict.exceeded_window.unwrap_or(QuotaWindow::Hour) {
+        QuotaWindow::Hour => (verdict.hourly_limit, verdict.hourly_used),
+        QuotaWindow::Day => (verdict.daily_limit, verdict.daily_used),
+        QuotaWindow::Month => (verdict.monthly_limit, verdict.monthly_used),
+    }
 }
 
 impl From<ApiKeyMetrics> for ApiKeyView {

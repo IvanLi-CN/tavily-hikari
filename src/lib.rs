@@ -12,6 +12,7 @@ use serde_json::Value;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 use thiserror::Error;
+use tokio::sync::Mutex;
 use url::form_urlencoded;
 
 /// Tavily MCP upstream默认端点。
@@ -76,11 +77,34 @@ const ALLOWED_HEADERS: &[&str] = &[
 
 const ALLOWED_PREFIXES: &[&str] = &["x-mcp-", "x-tavily-", "tavily-"];
 
+const TOKEN_HOURLY_LIMIT: i64 = 100;
+const TOKEN_DAILY_LIMIT: i64 = 500;
+const TOKEN_MONTHLY_LIMIT: i64 = 3000;
+
+const GRANULARITY_MINUTE: &str = "minute";
+const GRANULARITY_HOUR: &str = "hour";
+const BUCKET_RETENTION_SECS: i64 = 2 * 24 * 3600; // 48h，足够覆盖 24h 窗口
+const CLEANUP_INTERVAL_SECS: i64 = 600;
+
 #[derive(Debug, Clone)]
 struct SanitizedHeaders {
     headers: HeaderMap,
     forwarded: Vec<String>,
     dropped: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct TokenQuota {
+    store: Arc<KeyStore>,
+    cleanup: Arc<Mutex<CleanupState>>,
+    hourly_limit: i64,
+    daily_limit: i64,
+    monthly_limit: i64,
+}
+
+#[derive(Default, Debug)]
+struct CleanupState {
+    last_pruned: i64,
 }
 
 /// 负责均衡 Tavily API key 并透传请求的代理。
@@ -90,6 +114,7 @@ pub struct TavilyProxy {
     upstream: Url,
     key_store: Arc<KeyStore>,
     upstream_origin: String,
+    token_quota: TokenQuota,
 }
 
 impl TavilyProxy {
@@ -125,12 +150,15 @@ impl TavilyProxy {
             source,
         })?;
         let upstream_origin = origin_from_url(&upstream);
+        let key_store = Arc::new(key_store);
+        let token_quota = TokenQuota::new(key_store.clone());
 
         Ok(Self {
             client: Client::new(),
             upstream,
-            key_store: Arc::new(key_store),
+            key_store,
             upstream_origin,
+            token_quota,
         })
     }
 
@@ -406,6 +434,11 @@ impl TavilyProxy {
             .await
     }
 
+    /// Check and update quota usage for a token. Returns the latest counts and verdict.
+    pub async fn check_token_quota(&self, token_id: &str) -> Result<TokenQuotaVerdict, ProxyError> {
+        self.token_quota.check(token_id).await
+    }
+
     /// Token logs (page-based pagination)
     pub async fn token_logs_page(
         &self,
@@ -475,6 +508,84 @@ impl TavilyProxy {
 
     fn sanitize_headers(&self, headers: &HeaderMap) -> SanitizedHeaders {
         sanitize_headers_inner(headers, &self.upstream, &self.upstream_origin)
+    }
+}
+
+impl TokenQuota {
+    fn new(store: Arc<KeyStore>) -> Self {
+        Self {
+            store,
+            cleanup: Arc::new(Mutex::new(CleanupState::default())),
+            hourly_limit: TOKEN_HOURLY_LIMIT,
+            daily_limit: TOKEN_DAILY_LIMIT,
+            monthly_limit: TOKEN_MONTHLY_LIMIT,
+        }
+    }
+
+    async fn check(&self, token_id: &str) -> Result<TokenQuotaVerdict, ProxyError> {
+        let now = Utc::now();
+        let now_ts = now.timestamp();
+        let minute_bucket = now_ts - (now_ts % 60);
+        let hour_bucket = now_ts - (now_ts % 3600);
+        self.store
+            .increment_usage_bucket(token_id, minute_bucket, GRANULARITY_MINUTE)
+            .await?;
+        self.store
+            .increment_usage_bucket(token_id, hour_bucket, GRANULARITY_HOUR)
+            .await?;
+
+        let hour_window_start = minute_bucket - 59 * 60;
+        let day_window_start = hour_bucket - 23 * 3600;
+
+        let hourly_used = self
+            .store
+            .sum_usage_buckets(token_id, GRANULARITY_MINUTE, hour_window_start)
+            .await?;
+        let daily_used = self
+            .store
+            .sum_usage_buckets(token_id, GRANULARITY_HOUR, day_window_start)
+            .await?;
+
+        let month_start = start_of_month(now).timestamp();
+        let monthly_used = self
+            .store
+            .increment_monthly_quota(token_id, month_start)
+            .await?;
+
+        self.maybe_cleanup(now_ts).await?;
+
+        Ok(TokenQuotaVerdict::new(
+            hourly_used,
+            self.hourly_limit,
+            daily_used,
+            self.daily_limit,
+            monthly_used,
+            self.monthly_limit,
+        ))
+    }
+
+    async fn maybe_cleanup(&self, now_ts: i64) -> Result<(), ProxyError> {
+        let should_prune = {
+            let mut guard = self.cleanup.lock().await;
+            if now_ts - guard.last_pruned < CLEANUP_INTERVAL_SECS {
+                false
+            } else {
+                guard.last_pruned = now_ts;
+                true
+            }
+        };
+
+        if should_prune {
+            let threshold = now_ts - BUCKET_RETENTION_SECS;
+            self.store
+                .delete_old_usage_buckets(GRANULARITY_MINUTE, threshold)
+                .await?;
+            self.store
+                .delete_old_usage_buckets(GRANULARITY_HOUR, threshold)
+                .await?;
+        }
+
+        Ok(())
     }
 }
 
@@ -713,6 +824,40 @@ impl KeyStore {
         // that previously over-counted token validation as usage.
         self.migrate_data_consistency().await?;
 
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS token_usage_buckets (
+                token_id TEXT NOT NULL,
+                bucket_start INTEGER NOT NULL,
+                granularity TEXT NOT NULL,
+                count INTEGER NOT NULL,
+                PRIMARY KEY (token_id, bucket_start, granularity),
+                FOREIGN KEY (token_id) REFERENCES auth_tokens(id)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_token_usage_lookup ON token_usage_buckets(token_id, granularity, bucket_start)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS auth_token_quota (
+                token_id TEXT PRIMARY KEY,
+                month_start INTEGER NOT NULL,
+                month_count INTEGER NOT NULL,
+                FOREIGN KEY (token_id) REFERENCES auth_tokens(id)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
         // Scheduled jobs table for background tasks (e.g., quota/usage sync)
         sqlx::query(
             r#"
@@ -769,6 +914,115 @@ impl KeyStore {
         .await?;
 
         Ok(())
+    }
+
+    async fn increment_usage_bucket(
+        &self,
+        token_id: &str,
+        bucket_start: i64,
+        granularity: &str,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            INSERT INTO token_usage_buckets (token_id, bucket_start, granularity, count)
+            VALUES (?, ?, ?, 1)
+            ON CONFLICT(token_id, bucket_start, granularity)
+            DO UPDATE SET count = count + 1
+            "#,
+        )
+        .bind(token_id)
+        .bind(bucket_start)
+        .bind(granularity)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn sum_usage_buckets(
+        &self,
+        token_id: &str,
+        granularity: &str,
+        bucket_start_at_least: i64,
+    ) -> Result<i64, ProxyError> {
+        let sum = sqlx::query_scalar::<_, Option<i64>>(
+            r#"
+            SELECT SUM(count)
+            FROM token_usage_buckets
+            WHERE token_id = ? AND granularity = ? AND bucket_start >= ?
+            "#,
+        )
+        .bind(token_id)
+        .bind(granularity)
+        .bind(bucket_start_at_least)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(sum.unwrap_or(0))
+    }
+
+    async fn delete_old_usage_buckets(
+        &self,
+        granularity: &str,
+        threshold: i64,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            DELETE FROM token_usage_buckets
+            WHERE granularity = ? AND bucket_start < ?
+            "#,
+        )
+        .bind(granularity)
+        .bind(threshold)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn increment_monthly_quota(
+        &self,
+        token_id: &str,
+        current_month_start: i64,
+    ) -> Result<i64, ProxyError> {
+        let mut tx = self.pool.begin().await?;
+        let existing = sqlx::query_as::<_, (i64, i64)>(
+            "SELECT month_start, month_count FROM auth_token_quota WHERE token_id = ?",
+        )
+        .bind(token_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        let (month_start, new_count) = match existing {
+            None => (current_month_start, 1),
+            Some((stored_start, stored_count)) => {
+                if stored_start < current_month_start {
+                    (current_month_start, 1)
+                } else {
+                    (stored_start, stored_count + 1)
+                }
+            }
+        };
+
+        if existing.is_some() {
+            sqlx::query(
+                "UPDATE auth_token_quota SET month_start = ?, month_count = ? WHERE token_id = ?",
+            )
+            .bind(month_start)
+            .bind(new_count)
+            .bind(token_id)
+            .execute(&mut *tx)
+            .await?;
+        } else {
+            sqlx::query(
+                "INSERT INTO auth_token_quota (token_id, month_start, month_count) VALUES (?, ?, ?)",
+            )
+            .bind(token_id)
+            .bind(month_start)
+            .bind(new_count)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+        Ok(new_count)
     }
 
     async fn upgrade_auth_tokens_schema(&self) -> Result<(), ProxyError> {
@@ -2720,6 +2974,76 @@ pub struct ProxyResponse {
     pub body: Bytes,
 }
 
+/// Token quota verdict used by the HTTP layer to decide whether to forward.
+#[derive(Debug, Clone)]
+pub struct TokenQuotaVerdict {
+    pub allowed: bool,
+    pub exceeded_window: Option<QuotaWindow>,
+    pub hourly_used: i64,
+    pub hourly_limit: i64,
+    pub daily_used: i64,
+    pub daily_limit: i64,
+    pub monthly_used: i64,
+    pub monthly_limit: i64,
+}
+
+impl TokenQuotaVerdict {
+    fn new(
+        hourly_used: i64,
+        hourly_limit: i64,
+        daily_used: i64,
+        daily_limit: i64,
+        monthly_used: i64,
+        monthly_limit: i64,
+    ) -> Self {
+        let mut exceeded_window = None;
+        let mut allowed = true;
+        if hourly_used > hourly_limit {
+            exceeded_window = Some(QuotaWindow::Hour);
+            allowed = false;
+        }
+        if daily_used > daily_limit {
+            exceeded_window = Some(QuotaWindow::Day);
+            allowed = false;
+        }
+        if monthly_used > monthly_limit {
+            exceeded_window = Some(QuotaWindow::Month);
+            allowed = false;
+        }
+        Self {
+            allowed,
+            exceeded_window,
+            hourly_used,
+            hourly_limit,
+            daily_used,
+            daily_limit,
+            monthly_used,
+            monthly_limit,
+        }
+    }
+
+    pub fn window_name(&self) -> Option<&'static str> {
+        self.exceeded_window.map(|w| w.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuotaWindow {
+    Hour,
+    Day,
+    Month,
+}
+
+impl QuotaWindow {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            QuotaWindow::Hour => "hour",
+            QuotaWindow::Day => "day",
+            QuotaWindow::Month => "month",
+        }
+    }
+}
+
 /// 每个 API key 的聚合统计信息。
 #[derive(Debug, Clone)]
 pub struct ApiKeyMetrics {
@@ -3256,6 +3580,7 @@ fn extract_sse_json_messages(text: &str) -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn sanitize_headers_removes_blocked_and_keeps_allowed() {
@@ -3304,5 +3629,37 @@ mod tests {
         );
         assert!(sanitized.forwarded.contains(&"origin".to_string()));
         assert!(sanitized.forwarded.contains(&"referer".to_string()));
+    }
+
+    fn temp_db_path(prefix: &str) -> PathBuf {
+        let file = format!("{}-{}.db", prefix, nanoid!(8));
+        std::env::temp_dir().join(file)
+    }
+
+    #[tokio::test]
+    async fn quota_blocks_after_hourly_limit() {
+        let db_path = temp_db_path("quota-test");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        let token = proxy.create_access_token(None).await.expect("token");
+
+        for _ in 0..TOKEN_HOURLY_LIMIT {
+            let verdict = proxy
+                .check_token_quota(&token.id)
+                .await
+                .expect("quota check ok");
+            assert!(verdict.allowed, "should be allowed within limit");
+        }
+
+        let verdict = proxy
+            .check_token_quota(&token.id)
+            .await
+            .expect("quota check ok");
+        assert!(!verdict.allowed, "expected hourly limit to block");
+        assert_eq!(verdict.exceeded_window, Some(QuotaWindow::Hour));
+
+        let _ = std::fs::remove_file(db_path);
     }
 }
