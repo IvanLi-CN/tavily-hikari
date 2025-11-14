@@ -331,6 +331,22 @@ function readStoredLanguage(): Language | null {
   return null
 }
 
+function detectBrowserLanguage(): Language | null {
+  if (typeof navigator === 'undefined') return null
+  const preferred = Array.isArray(navigator.languages) ? navigator.languages : []
+  const fallbacks = typeof navigator.language === 'string' ? [navigator.language] : []
+  const candidates = [...preferred, ...fallbacks]
+
+  for (const locale of candidates) {
+    const normalized = locale?.toLowerCase()
+    if (!normalized) continue
+    if (normalized.startsWith('zh')) return 'zh'
+    if (normalized.startsWith('en')) return 'en'
+  }
+
+  return null
+}
+
 function persistLanguage(language: Language): void {
   if (typeof window === 'undefined') return
   window.localStorage.setItem(LANGUAGE_STORAGE_KEY, language)
@@ -1016,7 +1032,9 @@ export type Translations = TranslationShape
 export type AdminTranslations = TranslationShape['admin']
 
 export function LanguageProvider({ children }: { children: ReactNode }): JSX.Element {
-  const [language, setLanguageState] = useState<Language>(() => readStoredLanguage() ?? DEFAULT_LANGUAGE)
+  const [language, setLanguageState] = useState<Language>(
+    () => readStoredLanguage() ?? detectBrowserLanguage() ?? DEFAULT_LANGUAGE,
+  )
 
   const setLanguage = (next: Language) => {
     setLanguageState(next)
