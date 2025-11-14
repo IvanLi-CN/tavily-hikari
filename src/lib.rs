@@ -1,4 +1,4 @@
-use std::{cmp::min, sync::Arc};
+use std::{cmp::min, collections::HashMap, sync::Arc};
 
 use bytes::Bytes;
 use chrono::{Datelike, TimeZone, Utc};
@@ -77,9 +77,9 @@ const ALLOWED_HEADERS: &[&str] = &[
 
 const ALLOWED_PREFIXES: &[&str] = &["x-mcp-", "x-tavily-", "tavily-"];
 
-const TOKEN_HOURLY_LIMIT: i64 = 100;
-const TOKEN_DAILY_LIMIT: i64 = 500;
-const TOKEN_MONTHLY_LIMIT: i64 = 3000;
+pub const TOKEN_HOURLY_LIMIT: i64 = 100;
+pub const TOKEN_DAILY_LIMIT: i64 = 500;
+pub const TOKEN_MONTHLY_LIMIT: i64 = 3000;
 
 const GRANULARITY_MINUTE: &str = "minute";
 const GRANULARITY_HOUR: &str = "hour";
@@ -333,7 +333,9 @@ impl TavilyProxy {
 
     /// Admin: list tokens for management.
     pub async fn list_access_tokens(&self) -> Result<Vec<AuthToken>, ProxyError> {
-        self.key_store.list_access_tokens().await
+        let mut tokens = self.key_store.list_access_tokens().await?;
+        self.populate_token_quota(&mut tokens).await?;
+        Ok(tokens)
     }
 
     /// Admin: list tokens paginated.
@@ -342,9 +344,26 @@ impl TavilyProxy {
         page: i64,
         per_page: i64,
     ) -> Result<(Vec<AuthToken>, i64), ProxyError> {
-        self.key_store
+        let (mut tokens, total) = self
+            .key_store
             .list_access_tokens_paged(page, per_page)
-            .await
+            .await?;
+        self.populate_token_quota(&mut tokens).await?;
+        Ok((tokens, total))
+    }
+
+    async fn populate_token_quota(&self, tokens: &mut [AuthToken]) -> Result<(), ProxyError> {
+        if tokens.is_empty() {
+            return Ok(());
+        }
+        let ids: Vec<String> = tokens.iter().map(|t| t.id.clone()).collect();
+        let verdicts = self.token_quota.snapshot_many(&ids).await?;
+        for token in tokens.iter_mut() {
+            if let Some(verdict) = verdicts.get(&token.id) {
+                token.quota = Some(verdict.clone());
+            }
+        }
+        Ok(())
     }
 
     /// Admin: delete a token by id code.
@@ -562,6 +581,52 @@ impl TokenQuota {
             monthly_used,
             self.monthly_limit,
         ))
+    }
+
+    async fn snapshot_many(
+        &self,
+        token_ids: &[String],
+    ) -> Result<HashMap<String, TokenQuotaVerdict>, ProxyError> {
+        if token_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let now = Utc::now();
+        let now_ts = now.timestamp();
+        let minute_bucket = now_ts - (now_ts % 60);
+        let hour_bucket = now_ts - (now_ts % 3600);
+        let hour_window_start = minute_bucket - 59 * 60;
+        let day_window_start = hour_bucket - 23 * 3600;
+        let hourly_totals = self
+            .store
+            .sum_usage_buckets_bulk(token_ids, GRANULARITY_MINUTE, hour_window_start)
+            .await?;
+        let daily_totals = self
+            .store
+            .sum_usage_buckets_bulk(token_ids, GRANULARITY_HOUR, day_window_start)
+            .await?;
+        let month_start = start_of_month(now).timestamp();
+        let monthly_totals = self
+            .store
+            .fetch_monthly_counts(token_ids, month_start)
+            .await?;
+        let mut verdicts = HashMap::new();
+        for token_id in token_ids {
+            let hourly_used = hourly_totals.get(token_id).copied().unwrap_or(0);
+            let daily_used = daily_totals.get(token_id).copied().unwrap_or(0);
+            let monthly_used = monthly_totals.get(token_id).copied().unwrap_or(0);
+            verdicts.insert(
+                token_id.clone(),
+                TokenQuotaVerdict::new(
+                    hourly_used,
+                    self.hourly_limit,
+                    daily_used,
+                    self.daily_limit,
+                    monthly_used,
+                    self.monthly_limit,
+                ),
+            );
+        }
+        Ok(verdicts)
     }
 
     async fn maybe_cleanup(&self, now_ts: i64) -> Result<(), ProxyError> {
@@ -957,6 +1022,89 @@ impl KeyStore {
         .fetch_one(&self.pool)
         .await?;
         Ok(sum.unwrap_or(0))
+    }
+
+    async fn sum_usage_buckets_bulk(
+        &self,
+        token_ids: &[String],
+        granularity: &str,
+        bucket_start_at_least: i64,
+    ) -> Result<HashMap<String, i64>, ProxyError> {
+        if token_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut builder = QueryBuilder::new(
+            "SELECT token_id, SUM(count) as total FROM token_usage_buckets WHERE granularity = ",
+        );
+        builder.push_bind(granularity);
+        builder.push(" AND bucket_start >= ");
+        builder.push_bind(bucket_start_at_least);
+        builder.push(" AND token_id IN (");
+        {
+            let mut separated = builder.separated(", ");
+            for token_id in token_ids {
+                separated.push_bind(token_id);
+            }
+        }
+        builder.push(") GROUP BY token_id");
+        let rows = builder
+            .build_query_as::<(String, i64)>()
+            .fetch_all(&self.pool)
+            .await?;
+        let mut map = HashMap::new();
+        for (token_id, total) in rows {
+            map.insert(token_id, total);
+        }
+        Ok(map)
+    }
+
+    async fn fetch_monthly_counts(
+        &self,
+        token_ids: &[String],
+        current_month_start: i64,
+    ) -> Result<HashMap<String, i64>, ProxyError> {
+        if token_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut builder = QueryBuilder::new(
+            "SELECT token_id, month_start, month_count FROM auth_token_quota WHERE token_id IN (",
+        );
+        {
+            let mut separated = builder.separated(", ");
+            for token_id in token_ids {
+                separated.push_bind(token_id);
+            }
+        }
+        builder.push(")");
+
+        let rows = builder
+            .build_query_as::<(String, i64, i64)>()
+            .fetch_all(&self.pool)
+            .await?;
+
+        let mut map = HashMap::new();
+        let mut stale_ids = Vec::new();
+        for (token_id, stored_start, stored_count) in rows {
+            if stored_start < current_month_start {
+                map.insert(token_id.clone(), 0);
+                stale_ids.push(token_id);
+            } else {
+                map.insert(token_id, stored_count);
+            }
+        }
+
+        for token_id in stale_ids {
+            sqlx::query(
+                "UPDATE auth_token_quota SET month_start = ?, month_count = 0 WHERE token_id = ?",
+            )
+            .bind(current_month_start)
+            .bind(&token_id)
+            .execute(&self.pool)
+            .await?;
+        }
+
+        Ok(map)
     }
 
     async fn delete_old_usage_buckets(
@@ -1903,6 +2051,7 @@ impl KeyStore {
                     total_requests: total,
                     created_at,
                     last_used_at: last_used,
+                    quota: None,
                 },
             )
             .collect())
@@ -1955,6 +2104,7 @@ impl KeyStore {
                     total_requests: total,
                     created_at,
                     last_used_at: last_used,
+                    quota: None,
                 },
             )
             .collect();
@@ -3025,6 +3175,10 @@ impl TokenQuotaVerdict {
     pub fn window_name(&self) -> Option<&'static str> {
         self.exceeded_window.map(|w| w.as_str())
     }
+
+    pub fn state_key(&self) -> &'static str {
+        self.window_name().unwrap_or("normal")
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3135,6 +3289,7 @@ pub struct AuthToken {
     pub total_requests: i64,
     pub created_at: i64,
     pub last_used_at: Option<i64>,
+    pub quota: Option<TokenQuotaVerdict>,
 }
 
 /// Full token for copy (never store prefix-only here)

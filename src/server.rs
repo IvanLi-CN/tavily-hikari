@@ -28,7 +28,8 @@ type SummarySig = (i64, i64, i64, i64, i64, i64, Option<i64>);
 use std::time::Duration;
 use tavily_hikari::{
     ApiKeyMetrics, AuthToken, ProxyError, ProxyRequest, ProxyResponse, ProxySummary, QuotaWindow,
-    RequestLogRecord, TavilyProxy, TokenLogRecord, TokenQuotaVerdict, TokenSummary,
+    RequestLogRecord, TOKEN_DAILY_LIMIT, TOKEN_HOURLY_LIMIT, TOKEN_MONTHLY_LIMIT, TavilyProxy,
+    TokenLogRecord, TokenQuotaVerdict, TokenSummary,
 };
 use tokio::signal;
 #[cfg(unix)]
@@ -2010,10 +2011,46 @@ struct AuthTokenView {
     total_requests: i64,
     created_at: i64,
     last_used_at: Option<i64>,
+    quota_state: String,
+    quota_hourly_used: i64,
+    quota_hourly_limit: i64,
+    quota_daily_used: i64,
+    quota_daily_limit: i64,
+    quota_monthly_used: i64,
+    quota_monthly_limit: i64,
 }
 
 impl From<AuthToken> for AuthTokenView {
     fn from(t: AuthToken) -> Self {
+        let (
+            quota_state,
+            quota_hourly_used,
+            quota_hourly_limit,
+            quota_daily_used,
+            quota_daily_limit,
+            quota_monthly_used,
+            quota_monthly_limit,
+        ) = if let Some(quota) = t.quota {
+            (
+                quota.state_key().to_string(),
+                quota.hourly_used,
+                quota.hourly_limit,
+                quota.daily_used,
+                quota.daily_limit,
+                quota.monthly_used,
+                quota.monthly_limit,
+            )
+        } else {
+            (
+                "normal".to_string(),
+                0,
+                TOKEN_HOURLY_LIMIT,
+                0,
+                TOKEN_DAILY_LIMIT,
+                0,
+                TOKEN_MONTHLY_LIMIT,
+            )
+        };
         Self {
             id: t.id,
             enabled: t.enabled,
@@ -2022,6 +2059,13 @@ impl From<AuthToken> for AuthTokenView {
             total_requests: t.total_requests,
             created_at: t.created_at,
             last_used_at: t.last_used_at,
+            quota_state,
+            quota_hourly_used,
+            quota_hourly_limit,
+            quota_daily_used,
+            quota_daily_limit,
+            quota_monthly_used,
+            quota_monthly_limit,
         }
     }
 }

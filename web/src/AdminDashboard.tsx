@@ -225,6 +225,12 @@ function AdminDashboard(): JSX.Element {
   const adminStrings = translations.admin
   const headerStrings = adminStrings.header
   const tokenStrings = adminStrings.tokens
+  const quotaLabels = tokenStrings.quotaStates ?? {
+    normal: 'Normal',
+    hour: '1 hour limit',
+    day: '24 hour limit',
+    month: 'Monthly limit',
+  }
   const metricsStrings = adminStrings.metrics
   const keyStrings = adminStrings.keys
   const logStrings = adminStrings.logs
@@ -1062,6 +1068,7 @@ function AdminDashboard(): JSX.Element {
                   <th>{tokenStrings.table.id}</th>
                   <th>{tokenStrings.table.note}</th>
                   <th>{tokenStrings.table.usage}</th>
+                  <th>{tokenStrings.table.quota}</th>
                   <th>{tokenStrings.table.lastUsed}</th>
                   {isAdmin && <th>{tokenStrings.table.actions}</th>}
                 </tr>
@@ -1072,6 +1079,9 @@ function AdminDashboard(): JSX.Element {
                   const state = copyState.get(stateKey)
                   const shareStateKey = copyStateKey('tokens', `${t.id}:share`)
                   const shareState = copyState.get(shareStateKey)
+                  const quotaStateKey = t.quota_state ?? 'normal'
+                  const quotaLabel = quotaLabels[quotaStateKey] ?? quotaLabels.normal
+                  const quotaTitle = `${t.quota_hourly_used}/${t.quota_hourly_limit} · ${t.quota_daily_used}/${t.quota_daily_limit} · ${t.quota_monthly_used}/${t.quota_monthly_limit}`
                   return (
                     <tr key={t.id}>
                       <td>
@@ -1103,6 +1113,14 @@ function AdminDashboard(): JSX.Element {
                       </td>
                       <td>{t.note || '—'}</td>
                       <td>{formatNumber(t.total_requests)}</td>
+                      <td>
+                        <span
+                          className={`token-quota-pill token-quota-pill-${quotaStateKey}`}
+                          title={quotaTitle}
+                        >
+                          {quotaLabel}
+                        </span>
+                      </td>
                       <td>{formatTimestamp(t.last_used_at)}</td>
                       {isAdmin && (
                         <td>
