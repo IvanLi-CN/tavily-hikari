@@ -148,6 +148,7 @@ interface AdminTranslationsShape {
       cancel: string
       done: string
       createdN: string
+      copyAll: string
     }
   }
     metrics: {
@@ -489,6 +490,7 @@ export const translations: Record<Language, TranslationShape> = {
           cancel: 'Cancel',
           done: 'Done',
           createdN: 'Created {n} tokens',
+          copyAll: 'Copy all links',
         },
       },
       metrics: {
@@ -813,6 +815,7 @@ export const translations: Record<Language, TranslationShape> = {
           cancel: '取消',
           done: '完成',
           createdN: '已创建 {n} 个令牌',
+          copyAll: '复制全部链接',
         },
       },
       metrics: {

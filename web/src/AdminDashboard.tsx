@@ -219,6 +219,15 @@ function AdminDashboard(): JSX.Element {
   const [batchCount, setBatchCount] = useState(10)
   const [batchCreating, setBatchCreating] = useState(false)
   const [batchShareText, setBatchShareText] = useState<string | null>(null)
+  const batchShareLines = batchShareText?.split('\n') ?? []
+  const batchShareRows = Math.max(4, batchShareLines.length || 0)
+  const batchShareMaxLineLength = batchShareLines.reduce(
+    (max, line) => (line.length > max ? line.length : max),
+    0,
+  )
+  const batchShareTextareaWidthCh = batchShareMaxLineLength > 0
+    ? Math.min(120, batchShareMaxLineLength + 8)
+    : 40
   const isAdmin = profile?.isAdmin ?? false
 
   const copyStateKey = useCallback((scope: 'keys' | 'logs' | 'tokens', identifier: string | number) => {
@@ -1316,7 +1325,17 @@ function AdminDashboard(): JSX.Element {
     </main>
     {/* Batch Create Tokens (DaisyUI modal) */}
     <dialog id="batch_create_tokens_modal" ref={batchDialogRef} className="modal">
-      <div className="modal-box">
+      <div
+        className="modal-box"
+        style={
+          batchShareText
+            ? {
+                maxWidth: 'none',
+                width: `${batchShareTextareaWidthCh + 4}ch`,
+              }
+            : undefined
+        }
+      >
         <h3 className="font-bold text-lg" style={{ marginTop: 0 }}>{tokenStrings.batchDialog.title}</h3>
         {batchShareText == null ? (
           <>
@@ -1350,11 +1369,39 @@ function AdminDashboard(): JSX.Element {
           </>
         ) : (
           <>
-            <p className="py-2">{tokenStrings.batchDialog.createdN.replace('{n}', String(batchShareText.split('\n').length))}</p>
-            <textarea className="textarea" readOnly rows={Math.min(12, Math.max(4, batchShareText.split('\n').length))} style={{ width: '100%' }} value={batchShareText} />
+            <p className="py-2">
+              {tokenStrings.batchDialog.createdN.replace('{n}', String(batchShareLines.length))}
+            </p>
+            <textarea
+              className="textarea"
+              readOnly
+              wrap="off"
+              rows={batchShareRows}
+              style={{
+                width: '100%',
+                fontFamily:
+                  'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+                whiteSpace: 'pre',
+                overflow: 'hidden',
+                resize: 'none',
+              }}
+              value={batchShareText ?? ''}
+            />
             <div className="modal-action">
               <form method="dialog" onSubmit={(e) => e.preventDefault()} style={{ display: 'flex', gap: 8 }}>
-                <button type="button" className="btn" onClick={closeBatchDialog}>{tokenStrings.batchDialog.done}</button>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => {
+                    if (!batchShareText) return
+                    void copyToClipboard(batchShareText)
+                  }}
+                >
+                  {tokenStrings.batchDialog.copyAll}
+                </button>
+                <button type="button" className="btn" onClick={closeBatchDialog}>
+                  {tokenStrings.batchDialog.done}
+                </button>
               </form>
             </div>
           </>
