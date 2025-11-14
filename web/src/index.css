@@ -1010,6 +1010,87 @@ button:disabled {
   line-height: 1.2;
 }
 
+.token-groups-container {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.token-groups-label {
+  flex: 0 0 auto;
+  font-size: 0.85rem;
+  color: #64748b;
+  padding-top: 4px;
+  white-space: nowrap;
+}
+
+.token-groups-row {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: flex-start; /* 展开为多行时，保持展开按钮与第一行对齐，不随高度居中漂移 */
+  gap: 8px;
+  min-width: 0;
+}
+
+.token-groups-list {
+  flex: 1 1 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+  overflow-x: hidden; /* 保持单行但不出现横向滚动条 */
+}
+
+.token-groups-list-expanded {
+  flex-wrap: wrap;
+  overflow-x: visible;
+}
+
+.token-group-chip {
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.6);
+  background: rgba(248, 250, 252, 0.9);
+  padding: 4px 10px;
+  font-size: 0.85rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.token-group-chip-active {
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  border-color: transparent;
+  color: #ffffff;
+  box-shadow: 0 4px 12px rgba(79, 70, 229, 0.25);
+}
+
+.token-group-toggle {
+  width: 28px;
+  height: 28px;
+  padding: 4px;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.token-group-toggle-active {
+  background: rgba(79, 70, 229, 0.08);
+}
+
+.token-group-name {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.token-group-count {
+  font-weight: 600;
+  font-size: 0.8rem;
+  opacity: 0.85;
+}
+
 /* 小屏优化（< 752px）：将筛选控件放到标题下一行并左对齐，避免被推挤 */
 @media (max-width: 752px) {
   .token-panel-header {
@@ -1031,6 +1112,16 @@ button:disabled {
   .token-panel-header .panel-description {
     text-align: left;
     margin: 0;
+  }
+  .token-groups-container {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .token-groups-label {
+    padding-top: 0;
+  }
+  .token-groups-row {
+    width: 100%;
   }
 }
 .token-metrics-grid {

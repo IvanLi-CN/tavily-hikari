@@ -280,8 +280,24 @@ export interface Paginated<T> {
   perPage: number
 }
 
-export function fetchTokens(page = 1, perPage = 10, signal?: AbortSignal): Promise<Paginated<AuthToken>> {
+export interface TokenGroup {
+  name: string
+  tokenCount: number
+  latestCreatedAt: number
+}
+
+export function fetchTokens(
+  page = 1,
+  perPage = 10,
+  options?: { group?: string | null; ungrouped?: boolean },
+  signal?: AbortSignal,
+): Promise<Paginated<AuthToken>> {
   const params = new URLSearchParams({ page: String(page), per_page: String(perPage) })
+  if (options?.ungrouped) {
+    params.set('no_group', 'true')
+  } else if (options?.group && options.group.trim().length > 0) {
+    params.set('group', options.group.trim())
+  }
   return requestJson(`/api/tokens?${params.toString()}`, { signal })
 }
 
@@ -339,4 +355,8 @@ export async function createTokensBatch(group: string, count: number, note?: str
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ group, count, note }),
   })
+}
+
+export function fetchTokenGroups(signal?: AbortSignal): Promise<TokenGroup[]> {
+  return requestJson('/api/tokens/groups', { signal })
 }
