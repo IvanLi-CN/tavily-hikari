@@ -83,6 +83,55 @@ const timeOnlyFormatter = new Intl.DateTimeFormat(undefined, {
   hour12: false,
 })
 
+const tooltipTimeFormatter = new Intl.DateTimeFormat(undefined, {
+  year: 'numeric',
+  month: 'short',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hour12: false,
+  fractionalSecondDigits: 3,
+})
+
+const relativeTimeFormatter = new Intl.RelativeTimeFormat(undefined, {
+  numeric: 'auto',
+})
+
+function formatClockTime(value: number | null): string {
+  if (!value) return '—'
+  return timeOnlyFormatter.format(new Date(value * 1000))
+}
+
+function formatTimestampWithMs(value: number | null): string {
+  if (!value) return '—'
+  return tooltipTimeFormatter.format(new Date(value * 1000))
+}
+
+function formatRelativeTime(value: number | null): string {
+  if (!value) return '—'
+  const nowSeconds = Date.now() / 1000
+  const diffSeconds = value - nowSeconds
+  const divisions: Array<{ amount: number; unit: Intl.RelativeTimeFormatUnit }> = [
+    { amount: 60, unit: 'second' },
+    { amount: 60, unit: 'minute' },
+    { amount: 24, unit: 'hour' },
+    { amount: 7, unit: 'day' },
+    { amount: 4.34524, unit: 'week' },
+    { amount: 12, unit: 'month' },
+    { amount: Number.POSITIVE_INFINITY, unit: 'year' },
+  ]
+
+  let duration = diffSeconds
+  for (const division of divisions) {
+    if (Math.abs(duration) < division.amount) {
+      return relativeTimeFormatter.format(Math.round(duration), division.unit)
+    }
+    duration /= division.amount
+  }
+  return relativeTimeFormatter.format(Math.round(duration), 'year')
+}
+
 function formatNumber(value: number): string {
   return numberFormatter.format(value)
 }
@@ -1332,6 +1381,7 @@ function AdminDashboard(): JSX.Element {
                 <tr>
                   <th>{logStrings.table.time}</th>
                   <th>{logStrings.table.key}</th>
+                  <th>{logStrings.table.token}</th>
                   <th>{logStrings.table.httpStatus}</th>
                   <th>{logStrings.table.mcpStatus}</th>
                   <th>{logStrings.table.result}</th>
@@ -1339,21 +1389,15 @@ function AdminDashboard(): JSX.Element {
                 </tr>
               </thead>
               <tbody>
-                {logs.map((log) => {
-                  const stateKey = copyStateKey('logs', log.id)
-                  const state = copyState.get(stateKey)
-                  return (
-                    <LogRow
-                      key={log.id}
-                      log={log}
-                      onCopy={() => void handleCopySecret(log.key_id, stateKey)}
-                      copyState={state}
-                      expanded={expandedLogs.has(log.id)}
-                      onToggle={toggleLogExpansion}
-                      strings={adminStrings}
-                    />
-                  )
-                })}
+                {logs.map((log) => (
+                  <LogRow
+                    key={log.id}
+                    log={log}
+                    expanded={expandedLogs.has(log.id)}
+                    onToggle={toggleLogExpansion}
+                    strings={adminStrings}
+                  />
+                ))}
               </tbody>
             </table>
           )}
@@ -1603,46 +1647,60 @@ function AdminDashboard(): JSX.Element {
   )
 }
 
-type CopyStateValue = 'loading' | 'copied' | undefined
-
 interface LogRowProps {
   log: RequestLog
-  copyState: CopyStateValue
-  onCopy: () => void
   expanded: boolean
   onToggle: (id: number) => void
   strings: AdminTranslations
 }
 
-function LogRow({ log, copyState, onCopy, expanded, onToggle, strings }: LogRowProps): JSX.Element {
-  const copyButtonClass = `icon-button${copyState === 'copied' ? ' icon-button-success' : ''}${copyState === 'loading' ? ' icon-button-loading' : ''}`
+function LogRow({ log, expanded, onToggle, strings }: LogRowProps): JSX.Element {
   const requestButtonLabel = expanded ? strings.logs.toggles.hide : strings.logs.toggles.show
+  const tokenId = log.auth_token_id ?? null
+  const timeLabel = formatClockTime(log.created_at)
+  const timeDetail =
+    log.created_at != null
+      ? `${formatTimestampWithMs(log.created_at)} · ${formatRelativeTime(log.created_at)}`
+      : strings.logs.errors.none
 
   return (
     <>
       <tr>
-        <td>{formatTimestamp(log.created_at)}</td>
         <td>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <a
-              href={`#/keys/${encodeURIComponent(log.key_id)}`}
-              className="link-button"
-              title={strings.keys.actions.details}
-              aria-label={strings.keys.actions.details}
-            >
-              <code>{log.key_id}</code>
-            </a>
+          <div className="log-time-cell">
             <button
               type="button"
-              className={copyButtonClass}
-              title={strings.keys.actions.copy}
-              aria-label={strings.keys.actions.copy}
-              onClick={onCopy}
-              disabled={copyState === 'loading'}
+              className="log-time-trigger"
+              aria-label={timeDetail}
             >
-              <Icon icon={copyState === 'copied' ? 'mdi:check' : 'mdi:content-copy'} width={18} height={18} />
+              <span className="log-time-main">{timeLabel}</span>
             </button>
+            <div className="log-time-bubble">{timeDetail}</div>
           </div>
+        </td>
+        <td>
+          <a
+            href={`#/keys/${encodeURIComponent(log.key_id)}`}
+            className="log-key-pill"
+            title={strings.keys.actions.details}
+            aria-label={strings.keys.actions.details}
+          >
+            <code>{log.key_id}</code>
+          </a>
+        </td>
+        <td>
+          {tokenId ? (
+            <a
+              href={`#/tokens/${encodeURIComponent(tokenId)}`}
+              className="link-button log-token-link"
+              title={strings.tokens.table.id}
+              aria-label={strings.tokens.table.id}
+            >
+              <code>{tokenId}</code>
+            </a>
+          ) : (
+            '—'
+          )}
         </td>
         <td>{log.http_status ?? '—'}</td>
         <td>{log.mcp_status ?? '—'}</td>
@@ -1664,7 +1722,7 @@ function LogRow({ log, copyState, onCopy, expanded, onToggle, strings }: LogRowP
       </tr>
       {expanded && (
         <tr className="log-details-row">
-          <td colSpan={6} id={`log-details-${log.id}`}>
+          <td colSpan={7} id={`log-details-${log.id}`}>
             <LogDetails log={log} strings={strings} />
           </td>
         </tr>

@@ -1312,15 +1312,87 @@ table {
   color: #475569;
 }
 /* 确保“结果”列徽章不换行并右对齐（兼容 4/5 列位置） */
+.admin-logs-table td:nth-child(6) .status-badge,
 .admin-logs-table td:nth-child(5) .status-badge,
 .admin-logs-table td:nth-child(4) .status-badge {
   white-space: nowrap;
   display: inline-flex;
 }
+.admin-logs-table td:nth-child(6) .log-result-button,
 .admin-logs-table td:nth-child(5) .log-result-button,
 .admin-logs-table td:nth-child(4) .log-result-button {
   width: 100%;
   justify-content: flex-end;
+}
+
+.admin-logs-table .log-key-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 12px;
+  border-radius: 999px;
+  background: #e0f2fe;
+  color: #0f172a;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-size: 0.95rem;
+}
+
+.admin-logs-table .log-key-pill code {
+  color: inherit;
+}
+
+.log-time-cell {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  font-variant-numeric: tabular-nums;
+  overflow: visible;
+}
+
+.log-time-trigger {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.log-time-trigger:focus-visible {
+  outline: 2px solid #6366f1;
+  outline-offset: 2px;
+}
+
+.log-time-main {
+  font-size: 0.95rem;
+  color: #0f172a;
+}
+
+.log-time-bubble {
+  position: absolute;
+  left: calc(100% + 10px);
+  top: 50%;
+  transform: translateY(-50%) scale(0.95);
+  background: #0f172a;
+  color: #fff;
+  padding: 4px 12px;
+  border-radius: 999px;
+  white-space: nowrap;
+  font-size: 0.85rem;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  z-index: 5;
+}
+
+.log-time-cell:hover .log-time-bubble,
+.log-time-cell:focus-within .log-time-bubble {
+  opacity: 1;
+  transform: translateY(-50%) scale(1);
+}
+
+.log-token-link code {
+  color: #0f172a;
 }
 
 .table-pagination {

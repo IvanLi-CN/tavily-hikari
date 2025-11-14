@@ -1952,6 +1952,7 @@ struct ApiKeySecretView {
 struct RequestLogView {
     id: i64,
     key_id: String,
+    auth_token_id: Option<String>,
     method: String,
     path: String,
     query: Option<String>,
@@ -2637,6 +2638,7 @@ impl From<RequestLogRecord> for RequestLogView {
         Self {
             id: record.id,
             key_id: record.key_id,
+            auth_token_id: record.auth_token_id,
             method: record.method,
             path: record.path,
             query: record.query,

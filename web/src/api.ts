@@ -65,6 +65,7 @@ export interface ApiKeyStats {
 export interface RequestLog {
   id: number
   key_id: string
+  auth_token_id: string | null
   method: string
   path: string
   query: string | null

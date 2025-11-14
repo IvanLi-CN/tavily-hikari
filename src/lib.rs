@@ -1270,6 +1270,7 @@ impl KeyStore {
             sqlx::query_as::<_, (
                 i64,
                 String,
+                Option<String>,
                 String,
                 String,
                 Option<String>,
@@ -1284,7 +1285,7 @@ impl KeyStore {
                 String,
             )>(
                 r#"
-                SELECT id, api_key_id, method, path, query, status_code, tavily_status_code, error_message,
+                SELECT id, api_key_id, auth_token_id, method, path, query, status_code, tavily_status_code, error_message,
                        result_status, request_body, response_body, created_at, forwarded_headers, dropped_headers
                 FROM request_logs
                 WHERE api_key_id = ? AND created_at >= ?
@@ -1301,6 +1302,7 @@ impl KeyStore {
             sqlx::query_as::<_, (
                 i64,
                 String,
+                Option<String>,
                 String,
                 String,
                 Option<String>,
@@ -1315,7 +1317,7 @@ impl KeyStore {
                 String,
             )>(
                 r#"
-                SELECT id, api_key_id, method, path, query, status_code, tavily_status_code, error_message,
+                SELECT id, api_key_id, auth_token_id, method, path, query, status_code, tavily_status_code, error_message,
                        result_status, request_body, response_body, created_at, forwarded_headers, dropped_headers
                 FROM request_logs
                 WHERE api_key_id = ?
@@ -1335,6 +1337,7 @@ impl KeyStore {
                 |(
                     id,
                     key_id,
+                    auth_token_id,
                     method,
                     path,
                     query,
@@ -1350,6 +1353,7 @@ impl KeyStore {
                 )| RequestLogRecord {
                     id,
                     key_id,
+                    auth_token_id,
                     method,
                     path,
                     query,
@@ -2379,6 +2383,7 @@ impl KeyStore {
             SELECT
                 id,
                 api_key_id,
+                auth_token_id,
                 method,
                 path,
                 query,
@@ -2412,6 +2417,7 @@ impl KeyStore {
                 Ok(RequestLogRecord {
                     id: row.try_get("id")?,
                     key_id: row.try_get("api_key_id")?,
+                    auth_token_id: row.try_get("auth_token_id")?,
                     method: row.try_get("method")?,
                     path: row.try_get("path")?,
                     query: row.try_get("query")?,
@@ -2736,6 +2742,7 @@ pub struct ApiKeyMetrics {
 pub struct RequestLogRecord {
     pub id: i64,
     pub key_id: String,
+    pub auth_token_id: Option<String>,
     pub method: String,
     pub path: String,
     pub query: Option<String>,

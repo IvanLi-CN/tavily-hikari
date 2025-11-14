@@ -230,6 +230,7 @@ interface AdminTranslationsShape {
     table: {
       time: string
       key: string
+      token: string
       httpStatus: string
       mcpStatus: string
       result: string
@@ -577,8 +578,9 @@ export const translations: Record<Language, TranslationShape> = {
           none: 'No request logs captured yet.',
         },
         table: {
-          time: 'Time',
           key: 'Key',
+          token: 'Token',
+          time: 'Time',
           httpStatus: 'HTTP Status',
           mcpStatus: 'MCP Status',
           result: 'Result',
@@ -909,8 +911,9 @@ export const translations: Record<Language, TranslationShape> = {
           none: '尚未捕获请求日志。',
         },
         table: {
-          time: '时间',
           key: 'Key',
+          token: 'Token',
+          time: '时间',
           httpStatus: 'HTTP 状态码',
           mcpStatus: 'MCP 状态码',
           result: '结果',
