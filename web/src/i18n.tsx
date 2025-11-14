@@ -148,6 +148,14 @@ interface AdminTranslationsShape {
       cancel: string
       done: string
       createdN: string
+      copyAll: string
+    }
+    groups: {
+      label: string
+      all: string
+      ungrouped: string
+      moreShow: string
+      moreHide: string
     }
   }
     metrics: {
@@ -489,6 +497,14 @@ export const translations: Record<Language, TranslationShape> = {
           cancel: 'Cancel',
           done: 'Done',
           createdN: 'Created {n} tokens',
+          copyAll: 'Copy all links',
+        },
+        groups: {
+          label: 'Groups',
+          all: 'All',
+          ungrouped: 'Ungrouped',
+          moreShow: 'Show all groups',
+          moreHide: 'Collapse groups',
         },
       },
       metrics: {
@@ -813,6 +829,14 @@ export const translations: Record<Language, TranslationShape> = {
           cancel: '取消',
           done: '完成',
           createdN: '已创建 {n} 个令牌',
+          copyAll: '复制全部链接',
+        },
+        groups: {
+          label: '分组',
+          all: '全部',
+          ungrouped: '未分组',
+          moreShow: '展开全部分组',
+          moreHide: '收起分组',
         },
       },
       metrics: {

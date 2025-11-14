@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import LanguageSwitcher from './components/LanguageSwitcher'
 import TokenDetail from './pages/TokenDetail'
 import { useTranslate, type AdminTranslations } from './i18n'
-  import {
+import {
   fetchApiKeys,
   fetchApiKeySecret,
   addApiKey,
@@ -32,6 +32,8 @@ import { useTranslate, type AdminTranslations } from './i18n'
   fetchApiKeyDetail,
   syncApiKeyUsage,
   fetchJobs,
+  fetchTokenGroups,
+  type TokenGroup,
 } from './api'
 
 function parseHashForKeyId(): string | null {
@@ -185,6 +187,11 @@ function AdminDashboard(): JSX.Element {
   const [tokensPage, setTokensPage] = useState(1)
   const tokensPerPage = 10
   const [tokensTotal, setTokensTotal] = useState(0)
+  const [tokenGroups, setTokenGroups] = useState<TokenGroup[]>([])
+  const [selectedTokenGroupName, setSelectedTokenGroupName] = useState<string | null>(null)
+  const [selectedTokenUngrouped, setSelectedTokenUngrouped] = useState(false)
+  const [tokenGroupsExpanded, setTokenGroupsExpanded] = useState(false)
+  const [tokenGroupsCollapsedOverflowing, setTokenGroupsCollapsedOverflowing] = useState(false)
   const [logs, setLogs] = useState<RequestLog[]>([])
   const [jobs, setJobs] = useState<import('./api').JobLogView[]>([])
   const [loading, setLoading] = useState(true)
@@ -195,6 +202,7 @@ function AdminDashboard(): JSX.Element {
   const [profile, setProfile] = useState<Profile | null>(null)
   const secretCacheRef = useRef<Map<string, string>>(new Map())
   const tokenSecretCacheRef = useRef<Map<string, string>>(new Map())
+  const tokenGroupsListRef = useRef<HTMLDivElement | null>(null)
   const [copyState, setCopyState] = useState<Map<string, 'loading' | 'copied'>>(() => new Map())
   const [expandedLogs, setExpandedLogs] = useState<Set<number>>(() => new Set())
   const [newKey, setNewKey] = useState('')
@@ -291,13 +299,27 @@ function AdminDashboard(): JSX.Element {
   const loadData = useCallback(
     async (signal?: AbortSignal) => {
       try {
-        const [summaryData, keyData, logData, ver, profileData, tokenData, jobsData] = await Promise.all([
+        const [summaryData, keyData, logData, ver, profileData, tokenData, tokenGroupsData, jobsData] = await Promise.all([
           fetchSummary(signal),
           fetchApiKeys(signal),
           fetchRequestLogs(50, signal),
           fetchVersion(signal).catch(() => null),
           fetchProfile(signal).catch(() => null),
-          fetchTokens(tokensPage, tokensPerPage, signal).catch(() => ({ items: [], total: 0, page: tokensPage, perPage: tokensPerPage } as Paginated<AuthToken>)),
+          fetchTokens(
+            tokensPage,
+            tokensPerPage,
+            { group: selectedTokenGroupName, ungrouped: selectedTokenUngrouped },
+            signal,
+          ).catch(
+            () =>
+              ({
+                items: [],
+                total: 0,
+                page: tokensPage,
+                perPage: tokensPerPage,
+              }) as Paginated<AuthToken>,
+          ),
+          fetchTokenGroups(signal).catch(() => [] as TokenGroup[]),
           fetchJobs(50, signal).catch(() => []),
         ])
 
@@ -311,6 +333,7 @@ function AdminDashboard(): JSX.Element {
         setLogs(logData)
         setTokens(tokenData.items)
         setTokensTotal(tokenData.total)
+        setTokenGroups(tokenGroupsData)
         setJobs(jobsData)
         setExpandedLogs((previous) => {
           if (previous.size === 0) {
@@ -339,7 +362,7 @@ function AdminDashboard(): JSX.Element {
         }
       }
   },
-    [tokensPage],
+    [tokensPage, selectedTokenGroupName, selectedTokenUngrouped],
   )
 
   useEffect(() => {
@@ -373,6 +396,26 @@ function AdminDashboard(): JSX.Element {
       }
     }
   }, [sseConnected, loadData])
+
+  // Detect whether the collapsed token groups row overflows horizontally.
+  // If everything fits in a single line, we hide the "more" toggle button.
+  useEffect(() => {
+    if (!Array.isArray(tokenGroups) || tokenGroups.length === 0 || tokenGroupsExpanded) {
+      setTokenGroupsCollapsedOverflowing(false)
+      return
+    }
+    const el = tokenGroupsListRef.current
+    if (!el) return
+
+    const measure = () => {
+      const overflowing = el.scrollWidth > el.clientWidth
+      setTokenGroupsCollapsedOverflowing(overflowing)
+    }
+
+    measure()
+    window.addEventListener('resize', measure)
+    return () => window.removeEventListener('resize', measure)
+  }, [tokenGroups, tokenGroupsExpanded, selectedTokenGroupName, selectedTokenUngrouped])
 
   // Establish SSE connection to receive live dashboard updates
   useEffect(() => {
@@ -594,6 +637,28 @@ function AdminDashboard(): JSX.Element {
     setTokensPage((p) => Math.min(totalPages, p + 1))
   }
 
+  const handleSelectTokenGroupAll = () => {
+    setSelectedTokenGroupName(null)
+    setSelectedTokenUngrouped(false)
+    setTokensPage(1)
+  }
+
+  const handleSelectTokenGroupUngrouped = () => {
+    setSelectedTokenGroupName(null)
+    setSelectedTokenUngrouped(true)
+    setTokensPage(1)
+  }
+
+  const handleSelectTokenGroupNamed = (group: string) => {
+    setSelectedTokenGroupName(group)
+    setSelectedTokenUngrouped(false)
+    setTokensPage(1)
+  }
+
+  const toggleTokenGroupsExpanded = () => {
+    setTokenGroupsExpanded((previous) => !previous)
+  }
+
   const openBatchDialog = () => {
     setBatchGroup('')
     setBatchCount(10)
@@ -809,6 +874,10 @@ function AdminDashboard(): JSX.Element {
   }
 
   const tokenList = Array.isArray(tokens) ? tokens : []
+  const tokenGroupList = Array.isArray(tokenGroups) ? tokenGroups : []
+  const ungroupedGroup = tokenGroupList.find((group) => !group.name || group.name.trim().length === 0)
+  const namedTokenGroups = tokenGroupList.filter((group) => group.name && group.name.trim().length > 0)
+  const hasTokenGroups = tokenGroupList.length > 0
   return (
     <>
     <main className="app-shell">
@@ -870,6 +939,70 @@ function AdminDashboard(): JSX.Element {
             </div>
           )}
         </div>
+        {hasTokenGroups && (
+          <div className="token-groups-container">
+            <div className="token-groups-label">
+              <span>{tokenStrings.groups.label}</span>
+            </div>
+            <div className="token-groups-row">
+              <div
+                ref={tokenGroupsListRef}
+                className={`token-groups-list${tokenGroupsExpanded ? ' token-groups-list-expanded' : ''}`}
+              >
+                <button
+                  type="button"
+                  className={`token-group-chip${
+                    !selectedTokenUngrouped && selectedTokenGroupName == null ? ' token-group-chip-active' : ''
+                  }`}
+                  onClick={handleSelectTokenGroupAll}
+                >
+                  <span className="token-group-name">{tokenStrings.groups.all}</span>
+                </button>
+                {ungroupedGroup && (
+                  <button
+                    type="button"
+                    className={`token-group-chip${selectedTokenUngrouped ? ' token-group-chip-active' : ''}`}
+                    onClick={handleSelectTokenGroupUngrouped}
+                  >
+                    <span className="token-group-name">{tokenStrings.groups.ungrouped}</span>
+                    {tokenGroupsExpanded && (
+                      <span className="token-group-count">
+                        {ungroupedGroup.tokenCount}
+                      </span>
+                    )}
+                  </button>
+                )}
+                {namedTokenGroups.map((group) => (
+                  <button
+                    key={group.name}
+                    type="button"
+                    className={`token-group-chip${
+                      !selectedTokenUngrouped && selectedTokenGroupName === group.name ? ' token-group-chip-active' : ''
+                    }`}
+                    onClick={() => handleSelectTokenGroupNamed(group.name)}
+                  >
+                    <span className="token-group-name">{group.name}</span>
+                    {tokenGroupsExpanded && (
+                      <span className="token-group-count">
+                        {group.tokenCount}
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
+              {(tokenGroupsCollapsedOverflowing || tokenGroupsExpanded) && (
+                <button
+                  type="button"
+                  className={`token-group-chip token-group-toggle${tokenGroupsExpanded ? ' token-group-toggle-active' : ''}`}
+                  onClick={toggleTokenGroupsExpanded}
+                  aria-label={tokenGroupsExpanded ? tokenStrings.groups.moreHide : tokenStrings.groups.moreShow}
+                >
+                  <Icon icon={tokenGroupsExpanded ? 'mdi:chevron-up' : 'mdi:chevron-down'} width={18} height={18} />
+                </button>
+              )}
+            </div>
+          </div>
+        )}
         <div className="table-wrapper">
           {tokenList.length === 0 ? (
             <div className="empty-state">{loading ? tokenStrings.empty.loading : tokenStrings.empty.none}</div>
@@ -1350,11 +1483,45 @@ function AdminDashboard(): JSX.Element {
           </>
         ) : (
           <>
-            <p className="py-2">{tokenStrings.batchDialog.createdN.replace('{n}', String(batchShareText.split('\n').length))}</p>
-            <textarea className="textarea" readOnly rows={Math.min(12, Math.max(4, batchShareText.split('\n').length))} style={{ width: '100%' }} value={batchShareText} />
+            <div className="batch-dialog-body">
+              <p className="py-2">
+                {tokenStrings.batchDialog.createdN.replace(
+                  '{n}',
+                  String((batchShareText ?? '').split('\n').filter((line) => line.length > 0).length),
+                )}
+              </p>
+              <textarea
+                className="textarea"
+                readOnly
+                wrap="off"
+                rows={6}
+                style={{
+                  width: '100%',
+                  fontFamily:
+                    'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+                  whiteSpace: 'pre',
+                  overflowX: 'auto',
+                  overflowY: 'auto',
+                  resize: 'none',
+                }}
+                value={batchShareText ?? ''}
+              />
+            </div>
             <div className="modal-action">
               <form method="dialog" onSubmit={(e) => e.preventDefault()} style={{ display: 'flex', gap: 8 }}>
-                <button type="button" className="btn" onClick={closeBatchDialog}>{tokenStrings.batchDialog.done}</button>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => {
+                    if (!batchShareText) return
+                    void copyToClipboard(batchShareText)
+                  }}
+                >
+                  {tokenStrings.batchDialog.copyAll}
+                </button>
+                <button type="button" className="btn" onClick={closeBatchDialog}>
+                  {tokenStrings.batchDialog.done}
+                </button>
               </form>
             </div>
           </>

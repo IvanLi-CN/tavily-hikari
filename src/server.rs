@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fs,
     io::Read,
     net::SocketAddr,
@@ -1387,6 +1388,8 @@ async fn list_logs(
 struct ListTokensQuery {
     page: Option<i64>,
     per_page: Option<i64>,
+    group: Option<String>,
+    no_group: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1396,6 +1399,14 @@ struct ListTokensResponse {
     total: i64,
     page: i64,
     per_page: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TokenGroupView {
+    name: String,
+    token_count: i64,
+    latest_created_at: i64,
 }
 
 async fn list_tokens(
@@ -1408,15 +1419,125 @@ async fn list_tokens(
     }
     let page = q.page.unwrap_or(1).max(1);
     let per_page = q.per_page.unwrap_or(10).clamp(1, 200);
-    match state.proxy.list_access_tokens_paged(page, per_page).await {
-        Ok((items, total)) => Ok(Json(ListTokensResponse {
-            items: items.into_iter().map(AuthTokenView::from).collect(),
-            total,
-            page,
-            per_page,
-        })),
+    let group = q
+        .group
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    let no_group = q.no_group.unwrap_or(false);
+
+    if no_group {
+        match state.proxy.list_access_tokens().await {
+            Ok(items) => {
+                let filtered: Vec<AuthToken> = items
+                    .into_iter()
+                    .filter(|t| {
+                        t.group_name
+                            .as_deref()
+                            .map(str::trim)
+                            .map(|g| g.is_empty())
+                            .unwrap_or(true)
+                    })
+                    .collect();
+                let total = filtered.len() as i64;
+                let start = ((page - 1) * per_page).max(0) as usize;
+                let end = start.saturating_add(per_page as usize).min(total as usize);
+                let slice = if start >= total as usize {
+                    Vec::new()
+                } else {
+                    filtered[start..end].to_vec()
+                };
+                Ok(Json(ListTokensResponse {
+                    items: slice.into_iter().map(AuthTokenView::from).collect(),
+                    total,
+                    page,
+                    per_page,
+                }))
+            }
+            Err(err) => {
+                eprintln!("list tokens (no_group filter) error: {err}");
+                Err(StatusCode::INTERNAL_SERVER_ERROR)
+            }
+        }
+    } else if let Some(group) = group {
+        match state.proxy.list_access_tokens().await {
+            Ok(items) => {
+                let filtered: Vec<AuthToken> = items
+                    .into_iter()
+                    .filter(|t| t.group_name.as_deref() == Some(group.as_str()))
+                    .collect();
+                let total = filtered.len() as i64;
+                let start = ((page - 1) * per_page).max(0) as usize;
+                let end = start.saturating_add(per_page as usize).min(total as usize);
+                let slice = if start >= total as usize {
+                    Vec::new()
+                } else {
+                    filtered[start..end].to_vec()
+                };
+                Ok(Json(ListTokensResponse {
+                    items: slice.into_iter().map(AuthTokenView::from).collect(),
+                    total,
+                    page,
+                    per_page,
+                }))
+            }
+            Err(err) => {
+                eprintln!("list tokens (group filter) error: {err}");
+                Err(StatusCode::INTERNAL_SERVER_ERROR)
+            }
+        }
+    } else {
+        match state.proxy.list_access_tokens_paged(page, per_page).await {
+            Ok((items, total)) => Ok(Json(ListTokensResponse {
+                items: items.into_iter().map(AuthTokenView::from).collect(),
+                total,
+                page,
+                per_page,
+            })),
+            Err(err) => {
+                eprintln!("list tokens error: {err}");
+                Err(StatusCode::INTERNAL_SERVER_ERROR)
+            }
+        }
+    }
+}
+
+#[axum::debug_handler]
+async fn list_token_groups(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<TokenGroupView>>, StatusCode> {
+    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    match state.proxy.list_access_tokens().await {
+        Ok(tokens) => {
+            let mut groups: HashMap<String, TokenGroupView> = HashMap::new();
+            for t in tokens {
+                let raw = t.group_name.as_deref().map(str::trim).unwrap_or("");
+                let key = raw.to_owned();
+                let entry = groups.entry(key.clone()).or_insert(TokenGroupView {
+                    name: key.clone(),
+                    token_count: 0,
+                    latest_created_at: t.created_at,
+                });
+                entry.token_count += 1;
+                if t.created_at > entry.latest_created_at {
+                    entry.latest_created_at = t.created_at;
+                }
+            }
+            let mut out: Vec<TokenGroupView> = groups.into_values().collect();
+            out.sort_by(|a, b| {
+                b.latest_created_at
+                    .cmp(&a.latest_created_at)
+                    .then_with(|| a.name.cmp(&b.name))
+            });
+            Ok(Json(out))
+        }
         Err(err) => {
-            eprintln!("list tokens error: {err}");
+            eprintln!("list token groups error: {err}");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
@@ -1668,6 +1789,7 @@ pub async fn serve(
         // Access token management (admin only)
         .route("/api/tokens", get(list_tokens))
         .route("/api/tokens", post(create_token))
+        .route("/api/tokens/groups", get(list_token_groups))
         .route("/api/tokens/batch", post(create_tokens_batch))
         .route("/api/tokens/:id", delete(delete_token))
         .route("/api/tokens/:id/status", patch(update_token_status))
