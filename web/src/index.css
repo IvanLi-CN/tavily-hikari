@@ -954,18 +954,6 @@ button:disabled {
   word-break: break-word;
 }
 
-.token-quota-stats {
-  margin-top: 16px;
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 16px;
-}
-@media (min-width: 780px) {
-  .token-quota-stats {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}
-
 .quota-stat-card {
   border-radius: 16px;
   border: 1px solid rgba(15, 23, 42, 0.08);
