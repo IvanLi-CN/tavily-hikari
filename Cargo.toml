@@ -26,3 +26,4 @@ html-escape = "0.2"
 rand = { version = "0.8", features = ["std", "std_rng"] }
 async-stream = "0.3"
 futures-util = "0.3"
+rust-mcp-schema = "0.7.5"
