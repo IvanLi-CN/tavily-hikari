@@ -11,6 +11,16 @@ interface TokenDetailInfo {
   total_requests: number
   created_at: number
   last_used_at: number | null
+  quota_state: 'normal' | 'hour' | 'day' | 'month'
+  quota_hourly_used: number
+  quota_hourly_limit: number
+  quota_daily_used: number
+  quota_daily_limit: number
+  quota_monthly_used: number
+  quota_monthly_limit: number
+  quota_hourly_reset_at: number
+  quota_daily_reset_at: number
+  quota_monthly_reset_at: number
 }
 
 interface TokenSummary {
@@ -80,6 +90,37 @@ function formatDate(value: Date): string {
   const m = (value.getMonth() + 1).toString().padStart(2, '0')
   const d = value.getDate().toString().padStart(2, '0')
   return `${y}-${m}-${d}`
+}
+
+function formatResetTime(ts?: number | null): string {
+  if (!ts) return '—'
+  try {
+    return dateTimeFormatter.format(new Date(ts * 1000))
+  } catch {
+    return '—'
+  }
+}
+
+interface QuotaStatCardProps {
+  label: string
+  used: number
+  limit: number
+  resetAt?: number | null
+  description: string
+}
+
+function QuotaStatCard({ label, used, limit, resetAt, description }: QuotaStatCardProps): JSX.Element {
+  return (
+    <div className="quota-stat-card">
+      <div className="quota-stat-label">{label}</div>
+      <div className="quota-stat-value">
+        {formatNumber(used)}
+        <span>/ {formatNumber(limit)}</span>
+      </div>
+      <div className="quota-stat-description">{description}</div>
+      <div className="quota-stat-reset">下一次完全恢复：{formatResetTime(resetAt)}</div>
+    </div>
+  )
 }
 
 function startOfDay(ts = Date.now()): Date {
@@ -465,33 +506,36 @@ export default function TokenDetail({ id, onBack }: { id: string; onBack?: () =>
         <div className="panel-header">
           <div>
             <h2>Quick Stats</h2>
-            <p className="panel-description">24 hours, this month, and all-time. Shown as success/total.</p>
+            <p className="panel-description">滚动 1 小时 / 24 小时 / 当月额度使用情况。</p>
           </div>
         </div>
         <section className="quick-stats-grid">
-          {(!quickStats.day && !quickStats.month && !quickStats.total) ? (
-            <div className="empty-state" style={{ gridColumn: '1 / -1' }}>Loading…</div>
-          ) : (
+          {info ? (
             <>
-              <div className="metric-card quick-stats-card">
-                <h3>24 Hours</h3>
-                <div className="metric-value">
-                  {quickStats.day ? `${formatNumber(quickStats.day.success_count)} / ${formatNumber(quickStats.day.total_requests)}` : '—'}
-                </div>
-              </div>
-              <div className="metric-card quick-stats-card">
-                <h3>This Month</h3>
-                <div className="metric-value">
-                  {quickStats.month ? `${formatNumber(quickStats.month.success_count)} / ${formatNumber(quickStats.month.total_requests)}` : '—'}
-                </div>
-              </div>
-              <div className="metric-card quick-stats-card">
-                <h3>All Time</h3>
-                <div className="metric-value">
-                  {quickStats.total ? `${formatNumber(quickStats.total.success_count)} / ${formatNumber(quickStats.total.total_requests)}` : '—'}
-                </div>
-              </div>
+              <QuotaStatCard
+                label="1 Hour"
+                used={info.quota_hourly_used}
+                limit={info.quota_hourly_limit}
+                resetAt={info.quota_hourly_reset_at}
+                description="滚动 1 小时窗口"
+              />
+              <QuotaStatCard
+                label="24 Hours"
+                used={info.quota_daily_used}
+                limit={info.quota_daily_limit}
+                resetAt={info.quota_daily_reset_at}
+                description="滚动 24 小时窗口"
+              />
+              <QuotaStatCard
+                label="This Month"
+                used={info.quota_monthly_used}
+                limit={info.quota_monthly_limit}
+                resetAt={info.quota_monthly_reset_at}
+                description="自然月额度（服务器时区）"
+              />
             </>
+          ) : (
+            <div className="empty-state" style={{ gridColumn: '1 / -1' }}>Loading…</div>
           )}
         </section>
       </section>

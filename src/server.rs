@@ -27,8 +27,9 @@ use serde_json::json;
 type SummarySig = (i64, i64, i64, i64, i64, i64, Option<i64>);
 use std::time::Duration;
 use tavily_hikari::{
-    ApiKeyMetrics, AuthToken, ProxyError, ProxyRequest, ProxyResponse, ProxySummary,
-    RequestLogRecord, TavilyProxy, TokenLogRecord, TokenSummary,
+    ApiKeyMetrics, AuthToken, ProxyError, ProxyRequest, ProxyResponse, ProxySummary, QuotaWindow,
+    RequestLogRecord, TOKEN_DAILY_LIMIT, TOKEN_HOURLY_LIMIT, TOKEN_MONTHLY_LIMIT, TavilyProxy,
+    TokenLogRecord, TokenQuotaVerdict, TokenSummary,
 };
 use tokio::signal;
 #[cfg(unix)]
@@ -2010,10 +2011,65 @@ struct AuthTokenView {
     total_requests: i64,
     created_at: i64,
     last_used_at: Option<i64>,
+    quota_state: String,
+    quota_hourly_used: i64,
+    quota_hourly_limit: i64,
+    quota_daily_used: i64,
+    quota_daily_limit: i64,
+    quota_monthly_used: i64,
+    quota_monthly_limit: i64,
+    quota_hourly_reset_at: i64,
+    quota_daily_reset_at: i64,
+    quota_monthly_reset_at: i64,
 }
 
 impl From<AuthToken> for AuthTokenView {
     fn from(t: AuthToken) -> Self {
+        let now = Utc::now();
+        let hourly_reset_at = (now + ChronoDuration::hours(1)).timestamp();
+        let daily_reset_at = (now + ChronoDuration::hours(24)).timestamp();
+        let (next_year, next_month) = if now.month() == 12 {
+            (now.year() + 1, 1)
+        } else {
+            (now.year(), now.month() + 1)
+        };
+        let month_reset_at = if let Some(dt) = Utc
+            .with_ymd_and_hms(next_year, next_month, 1, 0, 0, 0)
+            .single()
+        {
+            dt.timestamp()
+        } else {
+            Utc::now().timestamp()
+        };
+        let (
+            quota_state,
+            quota_hourly_used,
+            quota_hourly_limit,
+            quota_daily_used,
+            quota_daily_limit,
+            quota_monthly_used,
+            quota_monthly_limit,
+        ) = if let Some(quota) = t.quota {
+            (
+                quota.state_key().to_string(),
+                quota.hourly_used,
+                quota.hourly_limit,
+                quota.daily_used,
+                quota.daily_limit,
+                quota.monthly_used,
+                quota.monthly_limit,
+            )
+        } else {
+            (
+                "normal".to_string(),
+                0,
+                TOKEN_HOURLY_LIMIT,
+                0,
+                TOKEN_DAILY_LIMIT,
+                0,
+                TOKEN_MONTHLY_LIMIT,
+            )
+        };
         Self {
             id: t.id,
             enabled: t.enabled,
@@ -2022,6 +2078,16 @@ impl From<AuthToken> for AuthTokenView {
             total_requests: t.total_requests,
             created_at: t.created_at,
             last_used_at: t.last_used_at,
+            quota_state,
+            quota_hourly_used,
+            quota_hourly_limit,
+            quota_daily_used,
+            quota_daily_limit,
+            quota_monthly_used,
+            quota_monthly_limit,
+            quota_hourly_reset_at: hourly_reset_at,
+            quota_daily_reset_at: daily_reset_at,
+            quota_monthly_reset_at: month_reset_at,
         }
     }
 }
@@ -2487,6 +2553,37 @@ async fn proxy_handler(
         .and_then(|rest| rest.split('-').next())
         .map(|s| s.to_string());
 
+    if !state.dev_open_admin
+        && let Some(tid) = token_id.as_deref()
+    {
+        match state.proxy.check_token_quota(tid).await {
+            Ok(verdict) => {
+                if !verdict.allowed {
+                    let message = build_quota_error_message(&verdict);
+                    let _ = state
+                        .proxy
+                        .record_token_attempt(
+                            tid,
+                            &method,
+                            &path,
+                            parts.uri.query(),
+                            Some(StatusCode::TOO_MANY_REQUESTS.as_u16() as i64),
+                            None,
+                            "quota_exceeded",
+                            Some(&message),
+                        )
+                        .await;
+                    let response = quota_exceeded_response(&verdict)?;
+                    return Ok(response);
+                }
+            }
+            Err(err) => {
+                eprintln!("quota check failed: {err}");
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    }
+
     match state.proxy.proxy_request(proxy_request).await {
         Ok(resp) => {
             if let Some(tid) = token_id.as_deref() {
@@ -2604,6 +2701,45 @@ fn build_response(resp: ProxyResponse) -> Response<Body> {
 fn value_from_len(len: usize) -> axum::http::HeaderValue {
     axum::http::HeaderValue::from_str(len.to_string().as_str())
         .unwrap_or_else(|_| axum::http::HeaderValue::from_static("0"))
+}
+
+fn quota_exceeded_response(verdict: &TokenQuotaVerdict) -> Result<Response<Body>, StatusCode> {
+    let payload = json!({
+        "error": "quota_exceeded",
+        "window": verdict.window_name(),
+        "hourly": {
+            "limit": verdict.hourly_limit,
+            "used": verdict.hourly_used,
+        },
+        "daily": {
+            "limit": verdict.daily_limit,
+            "used": verdict.daily_used,
+        },
+        "monthly": {
+            "limit": verdict.monthly_limit,
+            "used": verdict.monthly_used,
+        },
+    });
+
+    Response::builder()
+        .status(StatusCode::TOO_MANY_REQUESTS)
+        .header(CONTENT_TYPE, "application/json; charset=utf-8")
+        .body(Body::from(payload.to_string()))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+fn build_quota_error_message(verdict: &TokenQuotaVerdict) -> String {
+    let (limit, used) = quota_window_stats(verdict);
+    let window = verdict.window_name().unwrap_or("unknown");
+    format!("token quota exceeded on {window} window (limit {limit}, used {used})")
+}
+
+fn quota_window_stats(verdict: &TokenQuotaVerdict) -> (i64, i64) {
+    match verdict.exceeded_window.unwrap_or(QuotaWindow::Hour) {
+        QuotaWindow::Hour => (verdict.hourly_limit, verdict.hourly_used),
+        QuotaWindow::Day => (verdict.daily_limit, verdict.daily_used),
+        QuotaWindow::Month => (verdict.monthly_limit, verdict.monthly_used),
+    }
 }
 
 impl From<ApiKeyMetrics> for ApiKeyView {

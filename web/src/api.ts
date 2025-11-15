@@ -93,6 +93,16 @@ export interface AuthToken {
   total_requests: number
   created_at: number
   last_used_at: number | null
+  quota_state: 'normal' | 'hour' | 'day' | 'month'
+  quota_hourly_used: number
+  quota_hourly_limit: number
+  quota_daily_used: number
+  quota_daily_limit: number
+  quota_monthly_used: number
+  quota_monthly_limit: number
+  quota_hourly_reset_at: number
+  quota_daily_reset_at: number
+  quota_monthly_reset_at: number
 }
 
 export interface AuthTokenSecret {
