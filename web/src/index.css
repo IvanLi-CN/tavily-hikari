@@ -192,6 +192,33 @@ button {
 .metrics-grid.hero-metrics {
   grid-template-columns: 1fr;
 }
+
+.sse-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  background: rgba(15, 23, 42, 0.08);
+  color: #1f2937;
+}
+.sse-chip-ok {
+  background: rgba(34, 197, 94, 0.15);
+  color: #15803d;
+}
+.sse-chip-warn {
+  background: rgba(234, 179, 8, 0.15);
+  color: #92400e;
+}
+.sse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  display: inline-block;
+}
 @media (min-width: 860px) {
 .metrics-grid.hero-metrics {
   grid-template-columns: repeat(3, minmax(0, 1fr));

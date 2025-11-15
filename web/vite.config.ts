@@ -1,9 +1,22 @@
-import { defineConfig } from 'vite'
+import { defineConfig, type ProxyOptions } from 'vite'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import react from '@vitejs/plugin-react'
 
 const rootDir = fileURLToPath(new URL('.', import.meta.url))
+const forwardAuthValue = process.env.VITE_FORWARD_EMAIL ?? 'admin@example.com'
+
+function withForwardAuth(): Partial<ProxyOptions> {
+  return {
+    target: 'http://127.0.0.1:58087',
+    changeOrigin: true,
+    configure: (proxy) => {
+      proxy.on('proxyReq', (proxyReq) => {
+        proxyReq.setHeader('Remote-Email', forwardAuthValue)
+      })
+    },
+  }
+}
 
 // https://vitejs.dev/config/
 export default defineConfig({
@@ -14,18 +27,12 @@ export default defineConfig({
     port: 55173, // high port to avoid conflicts
     strictPort: true,
     proxy: {
-      '/api': {
-        target: 'http://127.0.0.1:58087',
-        changeOrigin: true,
-      },
+      '/api': withForwardAuth(),
       '/mcp': {
         target: 'http://127.0.0.1:58087',
         changeOrigin: true,
       },
-      '/health': {
-        target: 'http://127.0.0.1:58087',
-        changeOrigin: true,
-      },
+      '/health': withForwardAuth(),
     },
   },
   build: {

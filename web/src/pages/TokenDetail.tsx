@@ -253,6 +253,17 @@ export default function TokenDetail({ id, onBack }: { id: string; onBack?: () =>
   const rotatedDialogRef = useRef<HTMLDialogElement | null>(null)
   const [rotating, setRotating] = useState(false)
   const [rotatedToken, setRotatedToken] = useState<string | null>(null)
+  const [sseConnected, setSseConnected] = useState(false)
+
+  useEffect(() => {
+    setInfo(null)
+    setSummary(null)
+    setQuickStats({ day: null, month: null, total: null })
+    setLogs([])
+    setPage(1)
+    setTotal(0)
+    setWarning(null)
+  }, [id])
 
   const { sinceIso, untilIso } = useMemo(() => {
     const start = computeStartDate(period, debouncedSinceInput)
@@ -390,33 +401,50 @@ export default function TokenDetail({ id, onBack }: { id: string; onBack?: () =>
 
   // SSE for live updates (refresh first page upon snapshot)
   useEffect(() => {
+    const refreshDetail = async () => {
+      try {
+        const detail = await getJson(`/api/tokens/${encodeURIComponent(id)}`)
+        setInfo(detail)
+      } catch {
+        // ignore
+      }
+    }
+    const refreshLogs = async () => {
+      if (page !== 1) return
+      try {
+        const data = await getJson(`/api/tokens/${encodeURIComponent(id)}/logs/page?page=1&per_page=${perPage}&since=${encodeURIComponent(sinceIso)}&until=${encodeURIComponent(untilIso)}`)
+        setLogs(data.items)
+        setTotal(data.total)
+        setPerPage(data.per_page ?? data.perPage ?? perPage)
+        setPage(1)
+        setExpandedLogs(new Set())
+      } catch {
+        // ignore
+      }
+    }
     try { sseRef.current?.close() } catch {}
     const es = new EventSource(`/api/tokens/${encodeURIComponent(id)}/events`)
     sseRef.current = es
     es.addEventListener('snapshot', (ev: MessageEvent) => {
       try {
         const data = JSON.parse(ev.data) as { summary: TokenSummary, logs: TokenLog[] }
-        if (period === 'month' && !sinceInput) {
+        const defaultMonthInput = defaultInputValue('month')
+        const isMonthView = period === 'month' && (debouncedSinceInput === '' || debouncedSinceInput === defaultMonthInput)
+        if (isMonthView) {
           setSummary(data.summary)
         }
-        if (page === 1) {
-          getJson(`/api/tokens/${encodeURIComponent(id)}/logs/page?page=1&per_page=${perPage}&since=${encodeURIComponent(sinceIso)}&until=${encodeURIComponent(untilIso)}`)
-            .then((p) => {
-              setLogs(p.items)
-              setTotal(p.total)
-              setPerPage(p.per_page ?? p.perPage ?? perPage)
-              setPage(1)
-              setExpandedLogs(new Set())
-            })
-            .catch(() => {})
-        }
-        // Refresh quick stats opportunistically
+        void refreshDetail()
+        void refreshLogs()
         void loadQuickStats()
-      } catch {}
+        setSseConnected(true)
+      } catch {
+        // ignore bad payloads
+      }
     })
-    es.onerror = () => { /* ignore, fallback to polling via initial load */ }
-    return () => { try { es.close() } catch {} }
-  }, [id, page, perPage, period, sinceInput, sinceIso, untilIso])
+    es.onopen = () => setSseConnected(true)
+    es.onerror = () => { setSseConnected(false) }
+    return () => { try { es.close() } catch {} setSseConnected(false) }
+  }, [id, page, perPage, period, sinceIso, untilIso, debouncedSinceInput])
 
   useEffect(() => {
     ;(window as typeof window & { __TOKEN_PERIOD__?: Period }).__TOKEN_PERIOD__ = period
@@ -460,6 +488,9 @@ export default function TokenDetail({ id, onBack }: { id: string; onBack?: () =>
           <div className="subtitle">Token <code>{id}</code></div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
+          <span className={`sse-chip ${sseConnected ? 'sse-chip-ok' : 'sse-chip-warn'}`} title="Live updates via SSE">
+            <span className="sse-dot" aria-hidden="true" /> {sseConnected ? 'Live' : 'Offline'}
+          </span>
           <button type="button" className="btn" onClick={() => (onBack ? onBack() : window.history.back())}>
             <Icon icon="mdi:arrow-left" width={18} height={18} />
             &nbsp;Back
