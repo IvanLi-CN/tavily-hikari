@@ -954,6 +954,46 @@ button:disabled {
   word-break: break-word;
 }
 
+.quota-stat-card {
+  border-radius: 16px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: #fefeff;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.quota-stat-label {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #475569;
+}
+
+.quota-stat-value {
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: #0f172a;
+  line-height: 1.2;
+}
+
+.quota-stat-value span {
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: #475569;
+  margin-left: 4px;
+}
+
+.quota-stat-description {
+  font-size: 0.85rem;
+  color: #64748b;
+}
+
+.quota-stat-reset {
+  font-size: 0.78rem;
+  color: #475569;
+}
+
 .token-panel-header {
   align-items: flex-start;
   gap: 18px;
@@ -1607,6 +1647,37 @@ tbody .log-details-row:hover {
 
 .token-status-icon {
   color: #b91c1c;
+}
+
+.token-quota-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  background: rgba(15, 118, 110, 0.12);
+  color: #0f766e;
+  min-width: 80px;
+  text-align: center;
+}
+
+.token-quota-pill-hour {
+  background: rgba(247, 144, 9, 0.18);
+  color: #b45309;
+}
+
+.token-quota-pill-day {
+  background: rgba(248, 113, 113, 0.15);
+  color: #b91c1c;
+}
+
+.token-quota-pill-month {
+  background: rgba(139, 92, 246, 0.18);
+  color: #5b21b6;
 }
 
 .error-banner {

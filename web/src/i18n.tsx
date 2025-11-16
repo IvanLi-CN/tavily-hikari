@@ -107,6 +107,7 @@ interface AdminTranslationsShape {
       id: string
       note: string
       usage: string
+      quota: string
       lastUsed: string
       actions: string
     }
@@ -125,6 +126,7 @@ interface AdminTranslationsShape {
     statusBadges: {
       disabled: string
     }
+    quotaStates: Record<'normal' | 'hour' | 'day' | 'month', string>
     dialogs: {
       delete: {
         title: string
@@ -473,6 +475,7 @@ export const translations: Record<Language, TranslationShape> = {
           id: 'ID',
           note: 'Note',
           usage: 'Usage',
+          quota: 'Rate Limit',
           lastUsed: 'Last Used',
           actions: 'Actions',
         },
@@ -490,6 +493,12 @@ export const translations: Record<Language, TranslationShape> = {
         },
         statusBadges: {
           disabled: 'Disabled token',
+        },
+        quotaStates: {
+          normal: 'Normal',
+          hour: '1 hour limit',
+          day: '24 hour limit',
+          month: 'Monthly limit',
         },
         dialogs: {
           delete: {
@@ -806,6 +815,7 @@ export const translations: Record<Language, TranslationShape> = {
           id: 'ID',
           note: '备注',
           usage: '用量',
+          quota: '限额状态',
           lastUsed: '最近使用',
           actions: '操作',
         },
@@ -823,6 +833,12 @@ export const translations: Record<Language, TranslationShape> = {
         },
         statusBadges: {
           disabled: '已禁用的令牌',
+        },
+        quotaStates: {
+          normal: '正常',
+          hour: '一小时受限',
+          day: '24 小时受限',
+          month: '本月受限',
         },
         dialogs: {
           delete: {

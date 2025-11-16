@@ -1596,6 +1596,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rust-mcp-schema"
+version = "0.7.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba217e6fcb043bba9e194209bff92c35294093187504d1443832ca2051816753"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "rustix"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2156,6 +2166,7 @@ dependencies = [
  "nanoid",
  "rand",
  "reqwest",
+ "rust-mcp-schema",
  "serde",
  "serde_json",
  "sha2",
