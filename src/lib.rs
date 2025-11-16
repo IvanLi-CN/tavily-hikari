@@ -85,6 +85,7 @@ const GRANULARITY_MINUTE: &str = "minute";
 const GRANULARITY_HOUR: &str = "hour";
 const BUCKET_RETENTION_SECS: i64 = 2 * 24 * 3600; // 48h，足够覆盖 24h 窗口
 const CLEANUP_INTERVAL_SECS: i64 = 600;
+const SECS_PER_MINUTE: i64 = 60;
 const SECS_PER_HOUR: i64 = 3600;
 const SECS_PER_DAY: i64 = 24 * SECS_PER_HOUR;
 
@@ -519,6 +520,19 @@ impl TavilyProxy {
     ) -> Result<Vec<TokenHourlyBucket>, ProxyError> {
         self.key_store
             .fetch_token_hourly_breakdown(token_id, hours)
+            .await
+    }
+
+    /// Generic usage series for arbitrary window and granularity.
+    pub async fn token_usage_series(
+        &self,
+        token_id: &str,
+        since: i64,
+        until: i64,
+        bucket_secs: i64,
+    ) -> Result<Vec<TokenUsageBucket>, ProxyError> {
+        self.key_store
+            .fetch_token_usage_series(token_id, since, until, bucket_secs)
             .await
     }
 
@@ -2629,6 +2643,86 @@ impl KeyStore {
             .collect())
     }
 
+    pub async fn fetch_token_usage_series(
+        &self,
+        token_id: &str,
+        since: i64,
+        until: i64,
+        bucket_secs: i64,
+    ) -> Result<Vec<TokenUsageBucket>, ProxyError> {
+        if until <= since {
+            return Err(ProxyError::Other("invalid usage window".into()));
+        }
+        if bucket_secs <= 0 {
+            return Err(ProxyError::Other("bucket_secs must be positive".into()));
+        }
+        let bucket_secs = bucket_secs.clamp(SECS_PER_MINUTE, 31 * SECS_PER_DAY);
+        let span = until - since;
+        let mut bucket_count = span / bucket_secs;
+        if span % bucket_secs != 0 {
+            bucket_count += 1;
+        }
+        if bucket_count > 1000 {
+            return Err(ProxyError::Other(
+                "requested usage series is too large".into(),
+            ));
+        }
+        let rows = sqlx::query_as::<_, (i64, i64, i64, i64)>(
+            r#"
+            SELECT
+                (created_at / ?) * ? AS bucket_start,
+                SUM(CASE WHEN result_status = 'success' THEN 1 ELSE 0 END) AS success_count,
+                SUM(
+                    CASE
+                        WHEN result_status != 'success'
+                             AND (
+                                result_status = 'quota_exhausted'
+                                OR (http_status BETWEEN 400 AND 499)
+                                OR (mcp_status BETWEEN 400 AND 499)
+                            ) THEN 1
+                        ELSE 0
+                    END
+                ) AS system_failure_count,
+                SUM(
+                    CASE
+                        WHEN result_status != 'success'
+                             AND NOT (
+                                result_status = 'quota_exhausted'
+                                OR (http_status BETWEEN 400 AND 499)
+                                OR (mcp_status BETWEEN 400 AND 499)
+                            ) THEN 1
+                        ELSE 0
+                    END
+                ) AS external_failure_count
+            FROM auth_token_logs
+            WHERE token_id = ? AND created_at >= ? AND created_at < ?
+            GROUP BY bucket_start
+            ORDER BY bucket_start ASC
+            "#,
+        )
+        .bind(bucket_secs)
+        .bind(bucket_secs)
+        .bind(token_id)
+        .bind(since)
+        .bind(until)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(bucket_start, success_count, system_failure_count, external_failure_count)| {
+                    TokenUsageBucket {
+                        bucket_start,
+                        success_count,
+                        system_failure_count,
+                        external_failure_count,
+                    }
+                },
+            )
+            .collect())
+    }
+
     async fn reset_monthly(&self) -> Result<(), ProxyError> {
         let now = Utc::now();
         let month_start = start_of_month(now).timestamp();
@@ -3463,6 +3557,14 @@ pub struct TokenSummary {
     pub error_count: i64,
     pub quota_exhausted_count: i64,
     pub last_activity: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TokenUsageBucket {
+    pub bucket_start: i64,
+    pub success_count: i64,
+    pub system_failure_count: i64,
+    pub external_failure_count: i64,
 }
 
 /// Hourly aggregated counts for charting.

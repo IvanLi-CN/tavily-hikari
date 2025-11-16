@@ -1,8 +1,8 @@
-import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Icon } from '@iconify/react'
 import { Chart as ChartJS, BarElement, CategoryScale, Legend, LinearScale, Tooltip, type ChartOptions } from 'chart.js'
 import { Bar } from 'react-chartjs-2'
-import { fetchTokenHourlyBuckets, rotateTokenSecret, type TokenHourlyBucket } from '../api'
+import { fetchTokenUsageSeries, rotateTokenSecret, type TokenUsageBucket } from '../api'
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip, Legend)
 
@@ -47,7 +47,7 @@ interface TokenLog {
   created_at: number
 }
 
-interface HourlyBar {
+interface UsageBar {
   bucket: number
   success: number
   system: number
@@ -55,8 +55,8 @@ interface HourlyBar {
 }
 
 const numberFormatter = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 })
-const dateTimeFormatter = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'medium' })
-const weekdayFormatter = new Intl.DateTimeFormat('zh-CN', { weekday: 'short' })
+const dateTimeFormatter = new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'medium' })
+const weekdayFormatter = new Intl.DateTimeFormat('en-US', { weekday: 'short' })
 
 function formatNumber(n: number) { return numberFormatter.format(n) }
 function formatTime(ts: number | null) { return ts ? dateTimeFormatter.format(new Date(ts * 1000)) : '—' }
@@ -73,7 +73,7 @@ function formatLogTime(ts: number | null, period: Period) {
     case 'week':
       return `${weekdayFormatter.format(date)} ${time}`
     case 'month':
-      return `${date.getDate().toString().padStart(2, '0')}日 ${time}`
+      return `${date.toLocaleDateString('en-US', { month: 'short', day: '2-digit' })} ${time}`
     default:
       return dateTimeFormatter.format(date)
   }
@@ -113,7 +113,7 @@ interface QuotaStatCardProps {
 
 function QuotaStatCard({ label, used, limit, resetAt, description }: QuotaStatCardProps): JSX.Element {
   const shouldShowReset = used > 0 && typeof resetAt === 'number' && resetAt * 1000 > Date.now()
-  let resetLabel = '尚未使用'
+  let resetLabel = 'Not used yet'
   if (shouldShowReset) {
     try {
       resetLabel = dateTimeFormatter.format(new Date(resetAt! * 1000))
@@ -130,7 +130,7 @@ function QuotaStatCard({ label, used, limit, resetAt, description }: QuotaStatCa
       </div>
       <div className="quota-stat-description">{description}</div>
       <div className="quota-stat-reset">
-        {shouldShowReset ? `下一次完全恢复：${resetLabel}` : resetLabel}
+        {shouldShowReset ? `Next reset: ${resetLabel}` : resetLabel}
       </div>
     </div>
   )
@@ -239,25 +239,42 @@ function sanitizeInput(period: Period, raw: string): string {
   return formatPeriodInput(period, start)
 }
 
-function buildHourlyBarsRaw(buckets: TokenHourlyBucket[]): HourlyBar[] {
-  const now = Date.now()
-  const currentBucket = Math.floor(now / 3600_000) * 3600
-  const map = new Map<number, TokenHourlyBucket>()
-  for (const b of buckets) {
-    map.set(b.bucket_start, b)
+function alignToBucket(timestampSec: number, bucketSeconds: number): number {
+  return timestampSec - (timestampSec % bucketSeconds)
+}
+
+function buildUsageBars(
+  buckets: TokenUsageBucket[],
+  startSec: number,
+  bucketSeconds: number,
+  bucketCount: number,
+): UsageBar[] {
+  const map = new Map<number, TokenUsageBucket>()
+  for (const bucket of buckets) {
+    map.set(bucket.bucket_start, bucket)
   }
-  const out: HourlyBar[] = []
-  for (let i = 24; i >= 0; i -= 1) {
-    const bucket = currentBucket - i * 3600
-    const found = map.get(bucket)
-    out.push({
-      bucket,
+  const bars: UsageBar[] = []
+  for (let i = 0; i < bucketCount; i += 1) {
+    const bucketStart = startSec + i * bucketSeconds
+    const found = map.get(bucketStart)
+    bars.push({
+      bucket: bucketStart,
       success: found?.success_count ?? 0,
       system: found?.system_failure_count ?? 0,
       external: found?.external_failure_count ?? 0,
     })
   }
-  return out
+  return bars
+}
+
+function hourLabel(bucket: number): string {
+  const date = new Date(bucket * 1000)
+  return `${date.getHours().toString().padStart(2, '0')}:00`
+}
+
+function dayLabel(bucket: number): string {
+  const date = new Date(bucket * 1000)
+  return date.toLocaleDateString('en-US', { month: 'short', day: '2-digit' })
 }
 
 export default function TokenDetail({ id, onBack }: { id: string; onBack?: () => void }): JSX.Element {
@@ -276,8 +293,10 @@ export default function TokenDetail({ id, onBack }: { id: string; onBack?: () =>
   const [perPage, setPerPage] = useState(20)
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
-  const [hourlyBuckets, setHourlyBuckets] = useState<TokenHourlyBucket[]>([])
-  const [hourlyLoading, setHourlyLoading] = useState(false)
+  const [quickUsage, setQuickUsage] = useState<UsageBar[]>([])
+  const [quickUsageLoading, setQuickUsageLoading] = useState(true)
+  const [snapshotUsage, setSnapshotUsage] = useState<UsageBar[]>([])
+  const [snapshotUsageLoading, setSnapshotUsageLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [warning, setWarning] = useState<string | null>(null)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -290,6 +309,8 @@ export default function TokenDetail({ id, onBack }: { id: string; onBack?: () =>
   const [rotating, setRotating] = useState(false)
   const [rotatedToken, setRotatedToken] = useState<string | null>(null)
   const [sseConnected, setSseConnected] = useState(false)
+  const quickUsageAbortRef = useRef<AbortController | null>(null)
+  const snapshotUsageAbortRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
     setInfo(null)
@@ -299,7 +320,10 @@ export default function TokenDetail({ id, onBack }: { id: string; onBack?: () =>
     setPage(1)
     setTotal(0)
     setWarning(null)
-    setHourlyBuckets([])
+    setQuickUsage([])
+    setSnapshotUsage([])
+    setQuickUsageLoading(true)
+    setSnapshotUsageLoading(true)
   }, [id])
 
   const { sinceIso, untilIso } = useMemo(() => {
@@ -308,15 +332,13 @@ export default function TokenDetail({ id, onBack }: { id: string; onBack?: () =>
     return { sinceIso: toIso(start), untilIso: toIso(end) }
   }, [period, debouncedSinceInput])
 
-  const hourlyBars = useMemo(() => buildHourlyBarsRaw(hourlyBuckets), [hourlyBuckets])
-
   const periodSelectId = `token-period-select-${id}`
   const sinceInputId = `token-since-input-${id}`
 
   const applyStartInput = (raw: string, nextPeriod: Period = period, opts?: { suppressWarning?: boolean }) => {
     const sanitized = sanitizeInput(nextPeriod, raw || defaultInputValue(nextPeriod))
     const shouldWarn = !opts?.suppressWarning && raw.trim() !== '' && sanitized !== raw
-    setWarning(shouldWarn ? 'Start 已自动校正到当前可用范围内' : null)
+    setWarning(shouldWarn ? 'Start value was adjusted to the valid range' : null)
     setSinceInput((prev) => (prev === sanitized ? prev : sanitized))
   }
 
@@ -406,17 +428,76 @@ export default function TokenDetail({ id, onBack }: { id: string; onBack?: () =>
     }
   }
 
-  async function loadHourlyBuckets() {
-    setHourlyLoading(true)
-    try {
-      const data = await fetchTokenHourlyBuckets(id, 25)
-      setHourlyBuckets(data)
-    } catch {
-      // ignore errors to avoid blocking page
-    } finally {
-      setHourlyLoading(false)
-    }
-  }
+  const refreshQuickUsage = useCallback(() => {
+    quickUsageAbortRef.current?.abort()
+    const controller = new AbortController()
+    quickUsageAbortRef.current = controller
+    setQuickUsageLoading(true)
+    const bucketSeconds = 3600
+    const nowSec = Math.floor(Date.now() / 1000)
+    const currentBucket = alignToBucket(nowSec, bucketSeconds)
+    const bucketCount = 25
+    const startSec = currentBucket - (bucketCount - 1) * bucketSeconds
+    const untilSec = currentBucket + bucketSeconds
+    fetchTokenUsageSeries(
+      id,
+      { since: toIso(new Date(startSec * 1000)), until: toIso(new Date(untilSec * 1000)), bucketSecs: bucketSeconds },
+      controller.signal,
+    )
+      .then((rows) => {
+        if (!controller.signal.aborted) {
+          setQuickUsage(buildUsageBars(rows, startSec, bucketSeconds, bucketCount))
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setQuickUsage([])
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setQuickUsageLoading(false)
+      })
+  }, [id])
+
+  const refreshSnapshotUsage = useCallback(() => {
+    snapshotUsageAbortRef.current?.abort()
+    const controller = new AbortController()
+    snapshotUsageAbortRef.current = controller
+    setSnapshotUsageLoading(true)
+    const bucketSeconds = period === 'day' ? 3600 : 86400
+    const startMs = Date.parse(sinceIso)
+    const endMs = Date.parse(untilIso)
+    const safeStart = Number.isNaN(startMs) ? Date.now() : startMs
+    const safeEnd = Number.isNaN(endMs) ? safeStart + bucketSeconds * 1000 : endMs
+    const startSec = alignToBucket(Math.floor(safeStart / 1000), bucketSeconds)
+    const endSec = Math.max(startSec + bucketSeconds, Math.floor(safeEnd / 1000))
+    const bucketCount = Math.max(1, Math.ceil((endSec - startSec) / bucketSeconds))
+    const untilAligned = startSec + bucketCount * bucketSeconds
+    fetchTokenUsageSeries(
+      id,
+      { since: toIso(new Date(startSec * 1000)), until: toIso(new Date(untilAligned * 1000)), bucketSecs: bucketSeconds },
+      controller.signal,
+    )
+      .then((rows) => {
+        if (!controller.signal.aborted) {
+          setSnapshotUsage(buildUsageBars(rows, startSec, bucketSeconds, bucketCount))
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setSnapshotUsage([])
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setSnapshotUsageLoading(false)
+      })
+  }, [id, period, sinceIso, untilIso])
+
+  useEffect(() => {
+    refreshQuickUsage()
+    return () => { quickUsageAbortRef.current?.abort() }
+  }, [refreshQuickUsage])
+
+  useEffect(() => {
+    refreshSnapshotUsage()
+    return () => { snapshotUsageAbortRef.current?.abort() }
+  }, [refreshSnapshotUsage])
 
   // initial load (details + metrics + first page logs)
   useEffect(() => {
@@ -439,7 +520,8 @@ export default function TokenDetail({ id, onBack }: { id: string; onBack?: () =>
         setExpandedLogs(new Set())
         setError(null)
         void loadQuickStats()
-        void loadHourlyBuckets()
+        refreshQuickUsage()
+        refreshSnapshotUsage()
       } catch (e) {
         if (cancelled) return
         setError(e instanceof Error ? e.message : 'Failed to load token details')
@@ -488,7 +570,8 @@ export default function TokenDetail({ id, onBack }: { id: string; onBack?: () =>
         void refreshDetail()
         void refreshLogs()
         void loadQuickStats()
-        void loadHourlyBuckets()
+        refreshQuickUsage()
+        refreshSnapshotUsage()
         setSseConnected(true)
       } catch {
         // ignore bad payloads
@@ -497,7 +580,7 @@ export default function TokenDetail({ id, onBack }: { id: string; onBack?: () =>
     es.onopen = () => setSseConnected(true)
     es.onerror = () => { setSseConnected(false) }
     return () => { try { es.close() } catch {} setSseConnected(false) }
-  }, [id, page, perPage, period, sinceIso, untilIso, debouncedSinceInput])
+  }, [id, page, perPage, period, sinceIso, untilIso, debouncedSinceInput, refreshQuickUsage, refreshSnapshotUsage])
 
   useEffect(() => {
     ;(window as typeof window & { __TOKEN_PERIOD__?: Period }).__TOKEN_PERIOD__ = period
@@ -590,7 +673,7 @@ export default function TokenDetail({ id, onBack }: { id: string; onBack?: () =>
         <div className="panel-header">
           <div>
             <h2>Quick Stats</h2>
-            <p className="panel-description">滚动 1 小时 / 24 小时 / 当月额度使用情况。</p>
+            <p className="panel-description">Rolling usage windows (1 hour / 24 hours / calendar month).</p>
           </div>
         </div>
         <section className="quick-stats-grid">
@@ -601,37 +684,34 @@ export default function TokenDetail({ id, onBack }: { id: string; onBack?: () =>
                 used={info.quota_hourly_used}
                 limit={info.quota_hourly_limit}
                 resetAt={info.quota_hourly_reset_at}
-                description="滚动 1 小时窗口"
+                description="Rolling 1-hour window"
               />
               <QuotaStatCard
                 label="24 Hours"
                 used={info.quota_daily_used}
                 limit={info.quota_daily_limit}
                 resetAt={info.quota_daily_reset_at}
-                description="滚动 24 小时窗口"
+                description="Rolling 24-hour window"
               />
               <QuotaStatCard
                 label="This Month"
                 used={info.quota_monthly_used}
                 limit={info.quota_monthly_limit}
                 resetAt={info.quota_monthly_reset_at}
-                description="自然月额度（服务器时区）"
+                description="Calendar month (server time)"
               />
             </>
           ) : (
             <div className="empty-state" style={{ gridColumn: '1 / -1' }}>Loading…</div>
           )}
         </section>
-      </section>
-
-      <section className="surface panel">
-        <div className="panel-header">
-          <div>
-            <h2>近 25 小时请求量</h2>
-            <p className="panel-description">堆叠柱状图：绿色成功，红色失败。</p>
+        <div style={{ marginTop: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
+            <h3 style={{ margin: 0 }}>Rolling 25 Hours</h3>
+            <span className="panel-description" style={{ margin: 0 }}>Success vs. system limited vs. other errors</span>
           </div>
+          <UsageChart data={quickUsage} loading={quickUsageLoading} labelFormatter={hourLabel} height={200} />
         </div>
-        <HourlyChart data={hourlyBars} loading={hourlyLoading} />
       </section>
 
       <section className="surface panel">
@@ -701,6 +781,15 @@ export default function TokenDetail({ id, onBack }: { id: string; onBack?: () =>
           <MetricCard label="Errors" value={formatNumber(summary?.error_count ?? 0)} />
           <MetricCard label="Quota Exhausted" value={formatNumber(summary?.quota_exhausted_count ?? 0)} />
         </div>
+        <div style={{ marginTop: 16 }}>
+          <h3 style={{ marginBottom: 8 }}>Usage Breakdown</h3>
+          <UsageChart
+            data={snapshotUsage}
+            loading={snapshotUsageLoading}
+            labelFormatter={period === 'day' ? hourLabel : dayLabel}
+            height={220}
+          />
+        </div>
       </section>
 
       <section className="surface panel">
@@ -764,13 +853,13 @@ export default function TokenDetail({ id, onBack }: { id: string; onBack?: () =>
           </table>
         </div>
         <div className="table-pagination">
-          <span>每页</span>
+          <span>Per page</span>
           <select className="input" value={perPage} onChange={(e) => { setPerPage(Number(e.target.value)); void goToPage(1) }}>
             {[10, 20, 50, 100].map((v) => <option key={v} value={v}>{v}</option>)}
           </select>
-          <button type="button" className="button" onClick={() => void goToPage(page - 1)} disabled={page <= 1 || loadingMore}>上一页</button>
-          <span>第 {page} / {totalPages} 页</span>
-          <button type="button" className="button" onClick={() => void goToPage(page + 1)} disabled={page >= totalPages || loadingMore}>下一页</button>
+          <button type="button" className="button" onClick={() => void goToPage(page - 1)} disabled={page <= 1 || loadingMore}>Previous</button>
+          <span>Page {page} / {totalPages}</span>
+          <button type="button" className="button" onClick={() => void goToPage(page + 1)} disabled={page >= totalPages || loadingMore}>Next</button>
         </div>
       </section>
     
@@ -892,30 +981,58 @@ function TokenLogDetails({ log, period }: { log: TokenLog; period: Period }) {
   )
 }
 
-function HourlyChart({ data, loading }: { data: HourlyBar[]; loading: boolean }) {
-  const labels = data.map((d) => {
-    const date = new Date(d.bucket * 1000)
-    return `${date.getHours().toString().padStart(2, '0')}:00`
-  })
+function UsageChart({
+  data,
+  loading,
+  labelFormatter,
+  height = 180,
+}: {
+  data: UsageBar[]
+  loading: boolean
+  labelFormatter: (bucket: number) => string
+  height?: number
+}) {
+  const labels = data.map((d) => labelFormatter(d.bucket))
+  const totals = data.reduce(
+    (acc, cur) => {
+      acc.success += cur.success
+      acc.system += cur.system
+      acc.external += cur.external
+      return acc
+    },
+    { success: 0, system: 0, external: 0 },
+  )
   const chartData = {
     labels,
     datasets: [
-      { label: '成功', data: data.map((d) => d.success), backgroundColor: '#16a34a', stack: 'requests' },
-      { label: '系统失败', data: data.map((d) => d.system), backgroundColor: '#f97316', stack: 'requests' },
-      { label: '其他失败', data: data.map((d) => d.external), backgroundColor: '#ef4444', stack: 'requests' },
+      { label: 'Success', data: data.map((d) => d.success), backgroundColor: '#16a34a', stack: 'requests' },
+      { label: 'System limited', data: data.map((d) => d.system), backgroundColor: '#f97316', stack: 'requests' },
+      { label: 'Other failures', data: data.map((d) => d.external), backgroundColor: '#ef4444', stack: 'requests' },
     ],
   }
   const options: ChartOptions<'bar'> = {
     responsive: true,
+    maintainAspectRatio: false,
     plugins: { legend: { position: 'bottom' }, tooltip: { mode: 'index', intersect: false } },
     scales: {
-      x: { stacked: true, title: { display: true, text: '小时（服务器时间）' } },
-      y: { stacked: true, beginAtZero: true, title: { display: true, text: '请求数' } },
+      x: { stacked: true },
+      y: { stacked: true, beginAtZero: true, title: { display: true, text: 'Requests' } },
     },
-  }
+  } as ChartOptions<'bar'>
   return (
     <div className="hourly-chart" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      {loading ? <div className="empty-state">Loading…</div> : <Bar options={options} data={chartData} />}
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+        <span className="status-badge status-active" aria-hidden="true" /> Success {formatNumber(totals.success)}
+        <span className="status-badge status-warning" aria-hidden="true" /> System failures {formatNumber(totals.system)}
+        <span className="status-badge status-error" aria-hidden="true" /> Other failures {formatNumber(totals.external)}
+      </div>
+      {loading ? (
+        <div className="empty-state">Loading…</div>
+      ) : (
+        <div style={{ height: 180 }}>
+          <Bar options={options} data={chartData} />
+        </div>
+      )}
     </div>
   )
 }

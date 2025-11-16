@@ -28,6 +28,13 @@ export interface TokenHourlyBucket {
   external_failure_count: number
 }
 
+export interface TokenUsageBucket {
+  bucket_start: number
+  success_count: number
+  system_failure_count: number
+  external_failure_count: number
+}
+
 // Public token logs (per access token)
 export interface PublicTokenLog {
   id: number
@@ -383,4 +390,17 @@ export function fetchTokenHourlyBuckets(id: string, hours = 25, signal?: AbortSi
   const encoded = encodeURIComponent(id)
   const params = new URLSearchParams({ hours: String(hours) })
   return requestJson(`/api/tokens/${encoded}/metrics/hourly?${params.toString()}`, { signal })
+}
+
+export function fetchTokenUsageSeries(
+  id: string,
+  params: { since: string; until: string; bucketSecs?: number },
+  signal?: AbortSignal,
+): Promise<TokenUsageBucket[]> {
+  const encoded = encodeURIComponent(id)
+  const search = new URLSearchParams({ since: params.since, until: params.until })
+  if (params.bucketSecs != null) {
+    search.set('bucket_secs', String(params.bucketSecs))
+  }
+  return requestJson(`/api/tokens/${encoded}/metrics/usage-series?${search.toString()}`, { signal })
 }
