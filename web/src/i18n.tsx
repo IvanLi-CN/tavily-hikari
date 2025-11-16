@@ -32,6 +32,9 @@ interface PublicTranslations {
       dailySuccess: string
       dailyFailure: string
       monthlySuccess: string
+      hourlyLimit: string
+      dailyLimit: string
+      monthlyLimit: string
     }
   }
   accessToken: {
@@ -393,6 +396,9 @@ export const translations: Record<Language, TranslationShape> = {
           dailySuccess: 'Daily Success',
           dailyFailure: 'Daily Failure',
           monthlySuccess: 'Monthly Success',
+          hourlyLimit: 'Hourly Limit',
+          dailyLimit: 'Daily Limit',
+          monthlyLimit: 'Monthly Limit',
         },
       },
       accessToken: {
@@ -733,6 +739,9 @@ export const translations: Record<Language, TranslationShape> = {
           dailySuccess: '今日成功',
           dailyFailure: '今日失败',
           monthlySuccess: '本月成功',
+          hourlyLimit: '1 小时限额',
+          dailyLimit: '24 小时限额',
+          monthlyLimit: '月度限额',
         },
       },
       accessToken: {

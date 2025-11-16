@@ -44,6 +44,10 @@ const REPO_URL = 'https://github.com/IvanLi-CN/tavily-hikari'
 const ICONIFY_ENDPOINT = 'https://api.iconify.design'
 const STORAGE_LAST_TOKEN = 'tavily-hikari-last-token'
 const STORAGE_TOKEN_MAP = 'tavily-hikari-token-map'
+// Keep in sync with backend constants in src/lib.rs
+const TOKEN_HOURLY_LIMIT = 100
+const TOKEN_DAILY_LIMIT = 500
+const TOKEN_MONTHLY_LIMIT = 3000
 
 const GUIDE_KEY_ORDER: GuideKey[] = [
   'codex',
@@ -84,6 +88,7 @@ function PublicHome(): JSX.Element {
   const updateBanner = useUpdateAvailable()
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
   const [isMobileGuide, setIsMobileGuide] = useState(false)
+  const [recentTokenUsage, setRecentTokenUsage] = useState<TokenMetrics | null>(null)
 
   useEffect(() => {
     const hash = window.location.hash.slice(1)
@@ -116,8 +121,9 @@ function PublicHome(): JSX.Element {
       fetchPublicMetrics(controller.signal),
       fetchProfile(controller.signal),
       fetchSummary(controller.signal),
+      initialToken && isFullToken(initialToken) ? fetchTokenMetrics(initialToken, controller.signal) : Promise.resolve(null),
     ])
-      .then(([metricsResult, profileResult, summaryResult]) => {
+      .then(([metricsResult, profileResult, summaryResult, tokenMetricsResult]) => {
         if (metricsResult.status === 'fulfilled') {
           setMetrics(metricsResult.value)
           setError(null)
@@ -142,9 +148,10 @@ function PublicHome(): JSX.Element {
         }
         if (initialToken && isFullToken(initialToken)) {
           setInvalidToken(false)
-          fetchTokenMetrics(initialToken, controller.signal)
-            .then((tm) => setTokenMetrics(tm))
-            .catch(() => setTokenMetrics(null))
+          if (tokenMetricsResult && tokenMetricsResult.status === 'fulfilled') {
+            setTokenMetrics(tokenMetricsResult.value)
+            setRecentTokenUsage(tokenMetricsResult.value)
+          }
           setPublicLogsLoading(true)
           fetchPublicLogs(initialToken, 20, controller.signal)
             .then((ls) => {
@@ -215,6 +222,7 @@ function PublicHome(): JSX.Element {
         const tm = await fetchTokenMetrics(token)
         if (!active) return
         setTokenMetrics(tm)
+        setRecentTokenUsage(tm)
       } catch {
         // ignore
       }
@@ -286,7 +294,15 @@ function PublicHome(): JSX.Element {
       /* noop */
     }
     // Fetch token-scoped metrics and recent logs
-    void fetchTokenMetrics(next).then(setTokenMetrics).catch(() => setTokenMetrics(null))
+    void fetchTokenMetrics(next)
+      .then((tm) => {
+        setTokenMetrics(tm)
+        setRecentTokenUsage(tm)
+      })
+      .catch(() => {
+        setTokenMetrics(null)
+        setRecentTokenUsage(null)
+      })
     setPublicLogsLoading(true)
     void fetchPublicLogs(next, 20)
       .then((ls) => { setPublicLogs(ls); setInvalidToken(false) })
@@ -377,6 +393,119 @@ function PublicHome(): JSX.Element {
           </div>
         )}
       </section>
+      <section className="surface panel access-panel">
+        <div className="access-panel-grid">
+          <header className="panel-header" style={{ marginBottom: 8 }}>
+            <h2>{publicStrings.accessPanel.title}</h2>
+          </header>
+          <div className="access-stats">
+            {/* Group 1: usage counts */}
+            <div className="access-stat">
+              <h4>{publicStrings.accessPanel.stats.dailySuccess}</h4>
+              <p><RollingNumber value={loading ? null : tokenMetrics?.dailySuccess ?? 0} /></p>
+            </div>
+            <div className="access-stat">
+              <h4>{publicStrings.accessPanel.stats.dailyFailure}</h4>
+              <p><RollingNumber value={loading ? null : tokenMetrics?.dailyFailure ?? 0} /></p>
+            </div>
+            <div className="access-stat">
+              <h4>{publicStrings.accessPanel.stats.monthlySuccess}</h4>
+              <p><RollingNumber value={loading ? null : tokenMetrics?.monthlySuccess ?? 0} /></p>
+            </div>
+          </div>
+          <div className="access-stats">
+            {/* Group 2: rolling quota limits, styled similar to admin quick stats */}
+            <div className="access-stat quota-stat-card">
+              <div className="quota-stat-label">{publicStrings.accessPanel.stats.hourlyLimit}</div>
+              <div className="quota-stat-value">
+                {formatNumber(recentTokenUsage?.dailySuccess ?? 0)}
+                <span>/ {formatNumber(TOKEN_HOURLY_LIMIT)}</span>
+              </div>
+              <div className="quota-stat-description">Rolling 1-hour window</div>
+            </div>
+            <div className="access-stat quota-stat-card">
+              <div className="quota-stat-label">{publicStrings.accessPanel.stats.dailyLimit}</div>
+              <div className="quota-stat-value">
+                {formatNumber(recentTokenUsage?.dailySuccess ?? 0)}
+                <span>/ {formatNumber(TOKEN_DAILY_LIMIT)}</span>
+              </div>
+              <div className="quota-stat-description">Rolling 24-hour window</div>
+            </div>
+            <div className="access-stat quota-stat-card">
+              <div className="quota-stat-label">{publicStrings.accessPanel.stats.monthlyLimit}</div>
+              <div className="quota-stat-value">
+                {formatNumber(recentTokenUsage?.monthlySuccess ?? 0)}
+                <span>/ {formatNumber(TOKEN_MONTHLY_LIMIT)}</span>
+              </div>
+              <div className="quota-stat-description">Calendar month</div>
+            </div>
+          </div>
+          <div className="access-token-box">
+            <label htmlFor="access-token" className="token-label">
+              {publicStrings.accessToken.label}
+            </label>
+            <div className="token-input-row">
+              <div className="token-input-shell">
+                <input
+                  id="access-token"
+                  name="not-a-login-field"
+                  className={`token-input${tokenVisible ? '' : ' masked'}`}
+                  // Always use text input to avoid triggering password managers
+                  type="text"
+                  value={token}
+                  onChange={(event) => {
+                    const value = event.target.value
+                    setToken(value)
+                  }}
+                  onBlur={(event) => {
+                    const next = event.target.value
+                    persistToken(next)
+                    if (isFullToken(next)) {
+                      fetchTokenMetrics(next).then(setTokenMetrics).catch(() => setTokenMetrics(null))
+                    }
+                  }}
+                  placeholder={publicStrings.accessToken.placeholder}
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                  aria-autocomplete="none"
+                  inputMode="text"
+                  data-1p-ignore="true"
+                  data-lpignore="true"
+                  data-form-type="other"
+                />
+                <button
+                  type="button"
+                  className="token-visibility-button"
+                  onClick={() => setTokenVisible((prev) => !prev)}
+                  aria-label={tokenVisible ? publicStrings.accessToken.toggle.hide : publicStrings.accessToken.toggle.show}
+                >
+                  <img
+                    src={`${ICONIFY_ENDPOINT}/mdi/${tokenVisible ? 'eye-off-outline' : 'eye-outline'}.svg?color=%236b7280`}
+                    alt={publicStrings.accessToken.toggle.iconAlt}
+                  />
+                </button>
+              </div>
+              <button
+                type="button"
+                className={`button button-secondary token-copy-button${copyState === 'copied' ? ' success' : ''}`}
+                onClick={handleCopyToken}
+                aria-label={publicStrings.copyToken.iconAlt}
+              >
+                <img src={`${ICONIFY_ENDPOINT}/mdi/content-copy.svg?color=%23ffffff`} alt={publicStrings.copyToken.iconAlt} />
+                <span>
+                  {copyState === 'copied'
+                    ? publicStrings.copyToken.copied
+                    : copyState === 'error'
+                      ? publicStrings.copyToken.error
+                      : publicStrings.copyToken.copy}
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
       <section className="surface panel">
         <div className="panel-header">
           <div>
@@ -464,91 +593,6 @@ function PublicHome(): JSX.Element {
               </tbody>
             </table>
           )}
-        </div>
-      </section>
-      <section className="surface panel access-panel">
-        <div className="access-panel-grid">
-          <header className="panel-header" style={{ marginBottom: 8 }}>
-            <h2>{publicStrings.accessPanel.title}</h2>
-          </header>
-          <div className="access-stats">
-            <div className="access-stat">
-              <h4>{publicStrings.accessPanel.stats.dailySuccess}</h4>
-              <p><RollingNumber value={loading ? null : tokenMetrics?.dailySuccess ?? 0} /></p>
-            </div>
-            <div className="access-stat">
-              <h4>{publicStrings.accessPanel.stats.dailyFailure}</h4>
-              <p><RollingNumber value={loading ? null : tokenMetrics?.dailyFailure ?? 0} /></p>
-            </div>
-            <div className="access-stat">
-              <h4>{publicStrings.accessPanel.stats.monthlySuccess}</h4>
-              <p><RollingNumber value={loading ? null : tokenMetrics?.monthlySuccess ?? 0} /></p>
-            </div>
-          </div>
-          <div className="access-token-box">
-            <label htmlFor="access-token" className="token-label">
-              {publicStrings.accessToken.label}
-            </label>
-            <div className="token-input-row">
-              <div className="token-input-shell">
-                <input
-                  id="access-token"
-                  name="not-a-login-field"
-                  className={`token-input${tokenVisible ? '' : ' masked'}`}
-                  // Always use text input to avoid triggering password managers
-                  type="text"
-                  value={token}
-                  onChange={(event) => {
-                    const value = event.target.value
-                    setToken(value)
-                  }}
-                  onBlur={(event) => {
-                    const next = event.target.value
-                    persistToken(next)
-                    if (isFullToken(next)) {
-                      fetchTokenMetrics(next).then(setTokenMetrics).catch(() => setTokenMetrics(null))
-                    }
-                  }}
-                  placeholder={publicStrings.accessToken.placeholder}
-                  autoComplete="off"
-                  autoCorrect="off"
-                  autoCapitalize="off"
-                  spellCheck={false}
-                  aria-autocomplete="none"
-                  inputMode="text"
-                  data-1p-ignore="true"
-                  data-lpignore="true"
-                  data-form-type="other"
-                />
-                <button
-                  type="button"
-                  className="token-visibility-button"
-                  onClick={() => setTokenVisible((prev) => !prev)}
-                  aria-label={tokenVisible ? publicStrings.accessToken.toggle.hide : publicStrings.accessToken.toggle.show}
-                >
-                  <img
-                    src={`${ICONIFY_ENDPOINT}/mdi/${tokenVisible ? 'eye-off-outline' : 'eye-outline'}.svg?color=%236b7280`}
-                    alt={publicStrings.accessToken.toggle.iconAlt}
-                  />
-                </button>
-              </div>
-              <button
-                type="button"
-                className={`button button-secondary token-copy-button${copyState === 'copied' ? ' success' : ''}`}
-                onClick={handleCopyToken}
-                aria-label={publicStrings.copyToken.iconAlt}
-              >
-                <img src={`${ICONIFY_ENDPOINT}/mdi/content-copy.svg?color=%23ffffff`} alt={publicStrings.copyToken.iconAlt} />
-                <span>
-                  {copyState === 'copied'
-                    ? publicStrings.copyToken.copied
-                    : copyState === 'error'
-                      ? publicStrings.copyToken.error
-                      : publicStrings.copyToken.copy}
-                </span>
-              </button>
-            </div>
-          </div>
         </div>
       </section>
       <section className="surface panel public-home-guide">

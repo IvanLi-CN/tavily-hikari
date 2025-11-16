@@ -698,7 +698,7 @@ export default function TokenDetail({ id, onBack }: { id: string; onBack?: () =>
                 used={info.quota_monthly_used}
                 limit={info.quota_monthly_limit}
                 resetAt={info.quota_monthly_reset_at}
-                description="Calendar month (server time)"
+                description="Calendar month"
               />
             </>
           ) : (
