@@ -29,7 +29,7 @@ use std::time::Duration;
 use tavily_hikari::{
     ApiKeyMetrics, AuthToken, ProxyError, ProxyRequest, ProxyResponse, ProxySummary, QuotaWindow,
     RequestLogRecord, TOKEN_DAILY_LIMIT, TOKEN_HOURLY_LIMIT, TOKEN_MONTHLY_LIMIT, TavilyProxy,
-    TokenLogRecord, TokenQuotaVerdict, TokenSummary,
+    TokenHourlyBucket, TokenLogRecord, TokenQuotaVerdict, TokenSummary,
 };
 use tokio::signal;
 #[cfg(unix)]
@@ -1784,6 +1784,10 @@ pub async fn serve(
         // Token details
         .route("/api/tokens/:id", get(get_token_detail))
         .route("/api/tokens/:id/metrics", get(get_token_metrics))
+        .route(
+            "/api/tokens/:id/metrics/hourly",
+            get(get_token_hourly_breakdown),
+        )
         .route("/api/tokens/:id/logs", get(get_token_logs))
         .route("/api/tokens/:id/logs/page", get(get_token_logs_page))
         .route("/api/tokens/:id/events", get(sse_token))
@@ -2259,6 +2263,11 @@ struct TokenLogsQuery {
     before: Option<i64>,
 }
 
+#[derive(Debug, Deserialize)]
+struct TokenHourlyQuery {
+    hours: Option<i64>,
+}
+
 async fn get_token_logs(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -2303,6 +2312,13 @@ struct TokenLogsPageView {
     page: usize,
     per_page: usize,
     total: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct TokenHourlyBucketView {
+    bucket_start: i64,
+    success_count: i64,
+    error_count: i64,
 }
 
 async fn get_token_logs_page(
@@ -2350,6 +2366,41 @@ async fn get_token_logs_page(
                 per_page,
                 total,
             })
+        })
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+async fn get_token_hourly_breakdown(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Query(q): Query<TokenHourlyQuery>,
+) -> Result<Json<Vec<TokenHourlyBucketView>>, StatusCode> {
+    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let hours = q.hours.unwrap_or(25);
+    state
+        .proxy
+        .token_hourly_breakdown(&id, hours)
+        .await
+        .map(|buckets| {
+            Json(
+                buckets
+                    .into_iter()
+                    .map(
+                        |TokenHourlyBucket {
+                             bucket_start,
+                             success_count,
+                             error_count,
+                         }| TokenHourlyBucketView {
+                            bucket_start,
+                            success_count,
+                            error_count,
+                        },
+                    )
+                    .collect(),
+            )
         })
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }

@@ -1,6 +1,6 @@
 import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { Icon } from '@iconify/react'
-import { rotateTokenSecret } from '../api'
+import { fetchTokenHourlyBuckets, rotateTokenSecret, type TokenHourlyBucket } from '../api'
 
 type Period = 'day' | 'week' | 'month'
 
@@ -41,6 +41,12 @@ interface TokenLog {
   result_status: string
   error_message: string | null
   created_at: number
+}
+
+interface HourlyBar {
+  bucket: number
+  success: number
+  error: number
 }
 
 const numberFormatter = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 })
@@ -228,6 +234,26 @@ function sanitizeInput(period: Period, raw: string): string {
   return formatPeriodInput(period, start)
 }
 
+function buildHourlyBarsRaw(buckets: TokenHourlyBucket[]): HourlyBar[] {
+  const now = Date.now()
+  const currentBucket = Math.floor(now / 3600_000) * 3600
+  const map = new Map<number, TokenHourlyBucket>()
+  for (const b of buckets) {
+    map.set(b.bucket_start, b)
+  }
+  const out: HourlyBar[] = []
+  for (let i = 24; i >= 0; i -= 1) {
+    const bucket = currentBucket - i * 3600
+    const found = map.get(bucket)
+    out.push({
+      bucket,
+      success: found?.success_count ?? 0,
+      error: found?.error_count ?? 0,
+    })
+  }
+  return out
+}
+
 export default function TokenDetail({ id, onBack }: { id: string; onBack?: () => void }): JSX.Element {
   const [info, setInfo] = useState<TokenDetailInfo | null>(null)
   const [summary, setSummary] = useState<TokenSummary | null>(null)
@@ -244,6 +270,8 @@ export default function TokenDetail({ id, onBack }: { id: string; onBack?: () =>
   const [perPage, setPerPage] = useState(20)
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
+  const [hourlyBuckets, setHourlyBuckets] = useState<TokenHourlyBucket[]>([])
+  const [hourlyLoading, setHourlyLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [warning, setWarning] = useState<string | null>(null)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -265,6 +293,7 @@ export default function TokenDetail({ id, onBack }: { id: string; onBack?: () =>
     setPage(1)
     setTotal(0)
     setWarning(null)
+    setHourlyBuckets([])
   }, [id])
 
   const { sinceIso, untilIso } = useMemo(() => {
@@ -272,6 +301,8 @@ export default function TokenDetail({ id, onBack }: { id: string; onBack?: () =>
     const end = computeEndDate(period, start)
     return { sinceIso: toIso(start), untilIso: toIso(end) }
   }, [period, debouncedSinceInput])
+
+  const hourlyBars = useMemo(() => buildHourlyBarsRaw(hourlyBuckets), [hourlyBuckets])
 
   const periodSelectId = `token-period-select-${id}`
   const sinceInputId = `token-since-input-${id}`
@@ -369,6 +400,18 @@ export default function TokenDetail({ id, onBack }: { id: string; onBack?: () =>
     }
   }
 
+  async function loadHourlyBuckets() {
+    setHourlyLoading(true)
+    try {
+      const data = await fetchTokenHourlyBuckets(id, 25)
+      setHourlyBuckets(data)
+    } catch {
+      // ignore errors to avoid blocking page
+    } finally {
+      setHourlyLoading(false)
+    }
+  }
+
   // initial load (details + metrics + first page logs)
   useEffect(() => {
     let cancelled = false
@@ -390,6 +433,7 @@ export default function TokenDetail({ id, onBack }: { id: string; onBack?: () =>
         setExpandedLogs(new Set())
         setError(null)
         void loadQuickStats()
+        void loadHourlyBuckets()
       } catch (e) {
         if (cancelled) return
         setError(e instanceof Error ? e.message : 'Failed to load token details')
@@ -438,6 +482,7 @@ export default function TokenDetail({ id, onBack }: { id: string; onBack?: () =>
         void refreshDetail()
         void refreshLogs()
         void loadQuickStats()
+        void loadHourlyBuckets()
         setSseConnected(true)
       } catch {
         // ignore bad payloads
@@ -571,6 +616,16 @@ export default function TokenDetail({ id, onBack }: { id: string; onBack?: () =>
             <div className="empty-state" style={{ gridColumn: '1 / -1' }}>Loading…</div>
           )}
         </section>
+      </section>
+
+      <section className="surface panel">
+        <div className="panel-header">
+          <div>
+            <h2>近 25 小时请求量</h2>
+            <p className="panel-description">堆叠柱状图：绿色成功，红色失败。</p>
+          </div>
+        </div>
+        <HourlyChart data={hourlyBars} loading={hourlyLoading} />
       </section>
 
       <section className="surface panel">
@@ -827,6 +882,54 @@ function TokenLogDetails({ log, period }: { log: TokenLog; period: Period }) {
           <pre>{errorText}</pre>
         </div>
       </div>
+    </div>
+  )
+}
+
+function HourlyChart({ data, loading }: { data: HourlyBar[]; loading: boolean }) {
+  const max = Math.max(...data.map((d) => d.success + d.error), 1)
+  const barHeight = 140
+  return (
+    <div className="hourly-chart" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+        <span className="status-badge status-active" aria-hidden="true" />
+        <span>成功</span>
+        <span className="status-badge status-error" aria-hidden="true" />
+        <span>失败 / 其他</span>
+      </div>
+      {loading ? (
+        <div className="empty-state">Loading…</div>
+      ) : (
+        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 6, minHeight: barHeight + 32 }}>
+          {data.map((bar) => {
+            const successH = max === 0 ? 0 : (bar.success / max) * barHeight
+            const errorH = max === 0 ? 0 : (bar.error / max) * barHeight
+            const date = new Date(bar.bucket * 1000)
+            const label = `${date.getHours().toString().padStart(2, '0')}:00`
+            return (
+              <div key={bar.bucket} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
+                <div
+                  aria-label={`${label} 成功 ${bar.success}, 失败 ${bar.error}`}
+                  title={`${label} 成功 ${bar.success} · 失败 ${bar.error}`}
+                  style={{
+                    width: 16,
+                    height: barHeight,
+                    display: 'flex',
+                    flexDirection: 'column-reverse',
+                    borderRadius: 4,
+                    background: bar.success + bar.error === 0 ? '#f3f4f6' : '#e5e7eb',
+                    overflow: 'hidden',
+                  }}
+                >
+                  <div style={{ height: successH, background: '#16a34a' }} />
+                  <div style={{ height: errorH, background: '#ef4444' }} />
+                </div>
+                <div style={{ fontSize: 11, color: '#6b7280' }}>{label}</div>
+              </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }

@@ -511,6 +511,17 @@ impl TavilyProxy {
             .await
     }
 
+    /// Hourly breakdown for recent N hours (success + non-success aggregated as error).
+    pub async fn token_hourly_breakdown(
+        &self,
+        token_id: &str,
+        hours: i64,
+    ) -> Result<Vec<TokenHourlyBucket>, ProxyError> {
+        self.key_store
+            .fetch_token_hourly_breakdown(token_id, hours)
+            .await
+    }
+
     /// 根据 ID 获取真实 API key，仅供管理员调用。
     pub async fn get_api_key_secret(&self, key_id: &str) -> Result<Option<String>, ProxyError> {
         self.key_store.fetch_api_key_secret(key_id).await
@@ -2557,6 +2568,43 @@ impl KeyStore {
         Ok((items, total))
     }
 
+    pub async fn fetch_token_hourly_breakdown(
+        &self,
+        token_id: &str,
+        hours: i64,
+    ) -> Result<Vec<TokenHourlyBucket>, ProxyError> {
+        let hours = hours.clamp(1, 168); // up to 7 days
+        let now = Utc::now().timestamp();
+        let window_start = now - hours * SECS_PER_HOUR;
+        let rows = sqlx::query_as::<_, (i64, i64, i64)>(
+            r#"
+            SELECT
+                (created_at / 3600) * 3600 AS bucket_start,
+                SUM(CASE WHEN result_status = 'success' THEN 1 ELSE 0 END) AS success_count,
+                SUM(CASE WHEN result_status = 'success' THEN 0 ELSE 1 END) AS error_count
+            FROM auth_token_logs
+            WHERE token_id = ? AND created_at >= ?
+            GROUP BY bucket_start
+            ORDER BY bucket_start ASC
+            "#,
+        )
+        .bind(token_id)
+        .bind(window_start)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(bucket_start, success_count, error_count)| TokenHourlyBucket {
+                    bucket_start,
+                    success_count,
+                    error_count,
+                },
+            )
+            .collect())
+    }
+
     async fn reset_monthly(&self) -> Result<(), ProxyError> {
         let now = Utc::now();
         let month_start = start_of_month(now).timestamp();
@@ -3391,6 +3439,14 @@ pub struct TokenSummary {
     pub error_count: i64,
     pub quota_exhausted_count: i64,
     pub last_activity: Option<i64>,
+}
+
+/// Hourly aggregated counts for charting.
+#[derive(Debug, Clone)]
+pub struct TokenHourlyBucket {
+    pub bucket_start: i64,
+    pub success_count: i64,
+    pub error_count: i64,
 }
 
 #[derive(Debug, Error)]
