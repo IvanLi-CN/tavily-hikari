@@ -321,8 +321,8 @@ export default function TokenDetail({ id, onBack }: { id: string; onBack?: () =>
     setTotal(0)
     setWarning(null)
     setQuickUsage([])
-    setSnapshotUsage([])
     setQuickUsageLoading(true)
+    setSnapshotUsage([])
     setSnapshotUsageLoading(true)
   }, [id])
 
@@ -531,7 +531,7 @@ export default function TokenDetail({ id, onBack }: { id: string; onBack?: () =>
     }
     void run()
     return () => { cancelled = true }
-  }, [id, period, sinceIso, untilIso, perPage])
+  }, [id, period, sinceIso, untilIso, perPage, refreshQuickUsage, refreshSnapshotUsage])
 
   // SSE for live updates (refresh first page upon snapshot)
   useEffect(() => {
@@ -706,10 +706,6 @@ export default function TokenDetail({ id, onBack }: { id: string; onBack?: () =>
           )}
         </section>
         <div style={{ marginTop: 16 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
-            <h3 style={{ margin: 0 }}>Rolling 25 Hours</h3>
-            <span className="panel-description" style={{ margin: 0 }}>Success vs. system limited vs. other errors</span>
-          </div>
           <UsageChart data={quickUsage} loading={quickUsageLoading} labelFormatter={hourLabel} height={200} />
         </div>
       </section>
@@ -782,7 +778,6 @@ export default function TokenDetail({ id, onBack }: { id: string; onBack?: () =>
           <MetricCard label="Quota Exhausted" value={formatNumber(summary?.quota_exhausted_count ?? 0)} />
         </div>
         <div style={{ marginTop: 16 }}>
-          <h3 style={{ marginBottom: 8 }}>Usage Breakdown</h3>
           <UsageChart
             data={snapshotUsage}
             loading={snapshotUsageLoading}
@@ -1020,16 +1015,11 @@ function UsageChart({
     },
   } as ChartOptions<'bar'>
   return (
-    <div className="hourly-chart" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-        <span className="status-badge status-active" aria-hidden="true" /> Success {formatNumber(totals.success)}
-        <span className="status-badge status-warning" aria-hidden="true" /> System failures {formatNumber(totals.system)}
-        <span className="status-badge status-error" aria-hidden="true" /> Other failures {formatNumber(totals.external)}
-      </div>
+    <div className="hourly-chart" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       {loading ? (
         <div className="empty-state">Loading…</div>
       ) : (
-        <div style={{ height: 180 }}>
+        <div style={{ height }}>
           <Bar options={options} data={chartData} />
         </div>
       )}
