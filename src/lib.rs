@@ -2576,12 +2576,33 @@ impl KeyStore {
         let hours = hours.clamp(1, 168); // up to 7 days
         let now = Utc::now().timestamp();
         let window_start = now - hours * SECS_PER_HOUR;
-        let rows = sqlx::query_as::<_, (i64, i64, i64)>(
+        let rows = sqlx::query_as::<_, (i64, i64, i64, i64)>(
             r#"
             SELECT
                 (created_at / 3600) * 3600 AS bucket_start,
                 SUM(CASE WHEN result_status = 'success' THEN 1 ELSE 0 END) AS success_count,
-                SUM(CASE WHEN result_status = 'success' THEN 0 ELSE 1 END) AS error_count
+                SUM(
+                    CASE
+                        WHEN result_status != 'success'
+                             AND (
+                                result_status = 'quota_exhausted'
+                                OR (http_status BETWEEN 400 AND 499)
+                                OR (mcp_status BETWEEN 400 AND 499)
+                            ) THEN 1
+                        ELSE 0
+                    END
+                ) AS system_failure_count,
+                SUM(
+                    CASE
+                        WHEN result_status != 'success'
+                             AND NOT (
+                                result_status = 'quota_exhausted'
+                                OR (http_status BETWEEN 400 AND 499)
+                                OR (mcp_status BETWEEN 400 AND 499)
+                            ) THEN 1
+                        ELSE 0
+                    END
+                ) AS external_failure_count
             FROM auth_token_logs
             WHERE token_id = ? AND created_at >= ?
             GROUP BY bucket_start
@@ -2596,10 +2617,13 @@ impl KeyStore {
         Ok(rows
             .into_iter()
             .map(
-                |(bucket_start, success_count, error_count)| TokenHourlyBucket {
-                    bucket_start,
-                    success_count,
-                    error_count,
+                |(bucket_start, success_count, system_failure_count, external_failure_count)| {
+                    TokenHourlyBucket {
+                        bucket_start,
+                        success_count,
+                        system_failure_count,
+                        external_failure_count,
+                    }
                 },
             )
             .collect())
@@ -3446,7 +3470,8 @@ pub struct TokenSummary {
 pub struct TokenHourlyBucket {
     pub bucket_start: i64,
     pub success_count: i64,
-    pub error_count: i64,
+    pub system_failure_count: i64,
+    pub external_failure_count: i64,
 }
 
 #[derive(Debug, Error)]

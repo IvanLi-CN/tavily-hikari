@@ -2318,7 +2318,8 @@ struct TokenLogsPageView {
 struct TokenHourlyBucketView {
     bucket_start: i64,
     success_count: i64,
-    error_count: i64,
+    system_failure_count: i64,
+    external_failure_count: i64,
 }
 
 async fn get_token_logs_page(
@@ -2392,11 +2393,13 @@ async fn get_token_hourly_breakdown(
                         |TokenHourlyBucket {
                              bucket_start,
                              success_count,
-                             error_count,
+                             system_failure_count,
+                             external_failure_count,
                          }| TokenHourlyBucketView {
                             bucket_start,
                             success_count,
-                            error_count,
+                            system_failure_count,
+                            external_failure_count,
                         },
                     )
                     .collect(),
