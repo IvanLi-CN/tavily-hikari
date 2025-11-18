@@ -249,6 +249,7 @@ function AdminDashboard(): JSX.Element {
   const [tokenGroupsCollapsedOverflowing, setTokenGroupsCollapsedOverflowing] = useState(false)
   const [logs, setLogs] = useState<RequestLog[]>([])
   const [jobs, setJobs] = useState<import('./api').JobLogView[]>([])
+  const [jobFilter, setJobFilter] = useState<'all' | 'quota' | 'logs'>('all')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const pollingTimerRef = useRef<number | null>(null)
@@ -1428,6 +1429,31 @@ function AdminDashboard(): JSX.Element {
             <h2>Scheduled Jobs</h2>
             <p className="panel-description">Recent background job executions</p>
           </div>
+          <div className="panel-actions">
+            <div className="segmented-control">
+              <button
+                type="button"
+                className={jobFilter === 'all' ? 'active' : ''}
+                onClick={() => setJobFilter('all')}
+              >
+                All
+              </button>
+              <button
+                type="button"
+                className={jobFilter === 'quota' ? 'active' : ''}
+                onClick={() => setJobFilter('quota')}
+              >
+                Sync Quota
+              </button>
+              <button
+                type="button"
+                className={jobFilter === 'logs' ? 'active' : ''}
+                onClick={() => setJobFilter('logs')}
+              >
+                Clean Access Logs
+              </button>
+            </div>
+          </div>
         </div>
         <div className="table-wrapper">
           {jobs.length === 0 ? (
@@ -1447,7 +1473,18 @@ function AdminDashboard(): JSX.Element {
                 </tr>
               </thead>
               <tbody>
-                {jobs.map((j) => {
+                {jobs
+                  .filter((j) => {
+                    const jt = (j as any).job_type ?? (j as any).jobType ?? ''
+                    if (jobFilter === 'quota') {
+                      return jt === 'quota_sync' || jt === 'quota_sync/manual'
+                    }
+                    if (jobFilter === 'logs') {
+                      return jt === 'auth_token_logs_gc'
+                    }
+                    return true
+                  })
+                  .map((j) => {
                   const job: any = j as any
                   const jt = job.job_type ?? job.jobType ?? ''
                   const keyId = job.key_id ?? job.keyId ?? '—'
