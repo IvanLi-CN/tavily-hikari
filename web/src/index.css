@@ -548,8 +548,9 @@ button {
   box-shadow: 0 4px 14px rgba(15, 23, 42, 0.35);
 }
 
-.segmented-control button:hover {
-  background: rgba(15, 23, 42, 0.08);
+.segmented-control button:hover:not(.active) {
+  background: rgba(15, 23, 42, 0.12);
+  color: #111827;
 }
 
 .update-banner-actions {

@@ -355,7 +355,7 @@ function AdminDashboard(): JSX.Element {
   const loadData = useCallback(
     async (signal?: AbortSignal) => {
       try {
-        const [summaryData, keyData, logData, ver, profileData, tokenData, tokenGroupsData, jobsData] = await Promise.all([
+        const [summaryData, keyData, logData, ver, profileData, tokenData, tokenGroupsData] = await Promise.all([
           fetchSummary(signal),
           fetchApiKeys(signal),
           fetchRequestLogs(50, signal),
@@ -376,7 +376,6 @@ function AdminDashboard(): JSX.Element {
               }) as Paginated<AuthToken>,
           ),
           fetchTokenGroups(signal).catch(() => [] as TokenGroup[]),
-          fetchJobs(50, jobFilter, signal).catch(() => []),
         ])
 
         if (signal?.aborted) {
@@ -390,7 +389,6 @@ function AdminDashboard(): JSX.Element {
         setTokens(tokenData.items)
         setTokensTotal(tokenData.total)
         setTokenGroups(tokenGroupsData)
-        setJobs(jobsData)
         setExpandedLogs((previous) => {
           if (previous.size === 0) {
             return new Set()
@@ -418,7 +416,7 @@ function AdminDashboard(): JSX.Element {
         }
       }
   },
-    [tokensPage, selectedTokenGroupName, selectedTokenUngrouped, jobFilter],
+    [tokensPage, selectedTokenGroupName, selectedTokenUngrouped],
   )
 
   useEffect(() => {
@@ -427,6 +425,23 @@ function AdminDashboard(): JSX.Element {
     void loadData(controller.signal)
     return () => controller.abort()
   }, [loadData])
+
+  // Jobs list: refetch when filter changes
+  useEffect(() => {
+    const controller = new AbortController()
+    fetchJobs(50, jobFilter, controller.signal)
+      .then((jobsData) => {
+        if (!controller.signal.aborted) {
+          setJobs(jobsData)
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setJobs([])
+        }
+      })
+    return () => controller.abort()
+  }, [jobFilter])
 
   // Automatic fallback polling when SSE is not connected
   useEffect(() => {
