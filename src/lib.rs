@@ -608,8 +608,11 @@ impl TokenQuota {
     async fn check(&self, token_id: &str) -> Result<TokenQuotaVerdict, ProxyError> {
         let now = Utc::now();
         let now_ts = now.timestamp();
-        let minute_bucket = now_ts - (now_ts % 60);
-        let hour_bucket = now_ts - (now_ts % 3600);
+        let minute_bucket = now_ts - (now_ts % SECS_PER_MINUTE);
+        let hour_bucket = now_ts - (now_ts % SECS_PER_HOUR);
+        // Increment usage buckets and monthly quota as an approximate, cheap counter.
+        // This path is allowed to drift slightly from the detailed logs in exchange
+        // for lower per-request overhead.
         self.store
             .increment_usage_bucket(token_id, minute_bucket, GRANULARITY_MINUTE)
             .await?;
@@ -617,8 +620,8 @@ impl TokenQuota {
             .increment_usage_bucket(token_id, hour_bucket, GRANULARITY_HOUR)
             .await?;
 
-        let hour_window_start = minute_bucket - 59 * 60;
-        let day_window_start = hour_bucket - 23 * 3600;
+        let hour_window_start = minute_bucket - 59 * SECS_PER_MINUTE;
+        let day_window_start = hour_bucket - 23 * SECS_PER_HOUR;
 
         let hourly_used = self
             .store
