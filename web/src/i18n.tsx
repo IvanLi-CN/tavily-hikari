@@ -231,6 +231,7 @@ interface AdminTranslationsShape {
     filters: {
       all: string
       quota: string
+      usage: string
       logs: string
     }
     empty: {
@@ -665,6 +666,7 @@ export const translations: Record<Language, TranslationShape> = {
         filters: {
           all: 'All',
           quota: 'Sync quota',
+          usage: 'Usage rollups',
           logs: 'Clean access logs',
         },
         empty: {
@@ -686,9 +688,9 @@ export const translations: Record<Language, TranslationShape> = {
         },
         types: {
           quota_sync: 'Sync quota',
-          'quota_sync/manual': 'Manual quota sync',
-          token_usage_rollup: 'Aggregate token usage',
-          auth_token_logs_gc: 'Clean access logs',
+          'quota_sync/manual': 'Manual sync',
+          token_usage_rollup: 'Usage rollups',
+          auth_token_logs_gc: 'Clean logs',
         },
       },
       statuses: {
@@ -1040,7 +1042,8 @@ export const translations: Record<Language, TranslationShape> = {
         filters: {
           all: '全部',
           quota: '同步额度',
-          logs: '清理访问记录',
+          usage: '用量聚合',
+          logs: '清理日志',
         },
         empty: {
           loading: '正在加载任务…',
@@ -1060,10 +1063,10 @@ export const translations: Record<Language, TranslationShape> = {
           hide: '收起任务详情',
         },
         types: {
-          quota_sync: '同步 Tavily 额度',
-          'quota_sync/manual': '手动同步 Tavily 额度',
-          token_usage_rollup: '聚合访问令牌用量',
-          auth_token_logs_gc: '清理访问日志',
+          quota_sync: '同步额度',
+          'quota_sync/manual': '手动同步',
+          token_usage_rollup: '用量聚合',
+          auth_token_logs_gc: '清理日志',
         },
       },
       statuses: {

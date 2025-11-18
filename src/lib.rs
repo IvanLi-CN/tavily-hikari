@@ -3422,6 +3422,7 @@ impl KeyStore {
 
         let where_clause = match group {
             "quota" => "WHERE job_type = 'quota_sync' OR job_type = 'quota_sync/manual'",
+            "usage" => "WHERE job_type = 'token_usage_rollup'",
             "logs" => "WHERE job_type = 'auth_token_logs_gc'",
             _ => "",
         };

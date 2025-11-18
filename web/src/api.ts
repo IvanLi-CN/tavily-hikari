@@ -224,7 +224,7 @@ export interface JobLogView {
   finished_at: number | null
 }
 
-export type JobGroup = 'all' | 'quota' | 'logs'
+export type JobGroup = 'all' | 'quota' | 'usage' | 'logs'
 
 export function fetchJobs(
   page = 1,

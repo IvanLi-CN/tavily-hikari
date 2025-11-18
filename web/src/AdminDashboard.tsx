@@ -250,7 +250,7 @@ function AdminDashboard(): JSX.Element {
   const [tokenGroupsCollapsedOverflowing, setTokenGroupsCollapsedOverflowing] = useState(false)
   const [logs, setLogs] = useState<RequestLog[]>([])
   const [jobs, setJobs] = useState<import('./api').JobLogView[]>([])
-  const [jobFilter, setJobFilter] = useState<'all' | 'quota' | 'logs'>('all')
+  const [jobFilter, setJobFilter] = useState<'all' | 'quota' | 'usage' | 'logs'>('all')
   const [jobsPage, setJobsPage] = useState(1)
   const jobsPerPage = 10
   const [jobsTotal, setJobsTotal] = useState(0)
@@ -1484,6 +1484,13 @@ function AdminDashboard(): JSX.Element {
                 onClick={() => setJobFilter('quota')}
               >
                 {jobsStrings.filters.quota}
+              </button>
+              <button
+                type="button"
+                className={jobFilter === 'usage' ? 'active' : ''}
+                onClick={() => setJobFilter('usage')}
+              >
+                {jobsStrings.filters.usage}
               </button>
               <button
                 type="button"
