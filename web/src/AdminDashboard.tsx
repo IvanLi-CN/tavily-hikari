@@ -1431,7 +1431,7 @@ function AdminDashboard(): JSX.Element {
             <p className="panel-description">{logStrings.description}</p>
           </div>
         </div>
-        <div className="table-wrapper">
+        <div className="table-wrapper jobs-table-wrapper">
           {logs.length === 0 ? (
             <div className="empty-state">{loading ? logStrings.empty.loading : logStrings.empty.none}</div>
           ) : (
@@ -1495,13 +1495,13 @@ function AdminDashboard(): JSX.Element {
             </div>
           </div>
         </div>
-        <div className="table-wrapper">
+        <div className="table-wrapper jobs-table-wrapper">
           {jobs.length === 0 ? (
             <div className="empty-state">
               {loading ? jobsStrings.empty.loading : jobsStrings.empty.none}
             </div>
           ) : (
-            <table>
+            <table className="jobs-table">
               <thead>
                 <tr>
                   <th>{jobsStrings.table.id}</th>
@@ -1510,7 +1510,6 @@ function AdminDashboard(): JSX.Element {
                   <th>{jobsStrings.table.status}</th>
                   <th>{jobsStrings.table.attempt}</th>
                   <th>{jobsStrings.table.started}</th>
-                  <th>{jobsStrings.table.finished}</th>
                   <th>{jobsStrings.table.message}</th>
                 </tr>
               </thead>
@@ -1518,18 +1517,14 @@ function AdminDashboard(): JSX.Element {
                 {jobs.map((j) => {
                   const job: any = j as any
                   const jt = job.job_type ?? job.jobType ?? ''
+                  const jobTypeLabel = jobsStrings.types?.[jt] ?? jt
                   const keyId = job.key_id ?? job.keyId ?? '—'
                   const started: number | null = job.started_at ?? job.startedAt ?? null
                   const finished: number | null = job.finished_at ?? job.finishedAt ?? null
                   const startedTimeLabel = formatTimestamp(started)
-                  const finishedTimeLabel = formatClockTime(finished)
                   const startedDetail =
                     started != null
                       ? `${formatTimestampWithMs(started)} · ${formatRelativeTime(started)}`
-                      : jobsStrings.empty.none
-                  const finishedDetail =
-                    finished != null
-                      ? `${formatTimestampWithMs(finished)} · ${formatRelativeTime(finished)}`
                       : jobsStrings.empty.none
                   const isExpanded = expandedJobs.has(j.id)
                   const jobMessage: string | null = j.message ?? null
@@ -1554,44 +1549,13 @@ function AdminDashboard(): JSX.Element {
                   rows.push(
                     <tr key={j.id}>
                         <td>{j.id}</td>
-                        <td>{jt}</td>
+                        <td>{jobTypeLabel}</td>
                         <td>{keyId ?? '—'}</td>
                         <td>
                           <span className={statusClass(j.status)}>{j.status}</span>
                         </td>
                         <td>{j.attempt}</td>
-                        <td>
-                          {started ? (
-                            <div className="log-time-cell">
-                              <button
-                                type="button"
-                                className="log-time-trigger"
-                                aria-label={startedDetail}
-                              >
-                                <span className="log-time-main">{startedTimeLabel}</span>
-                              </button>
-                              <div className="log-time-bubble">{startedDetail}</div>
-                            </div>
-                          ) : (
-                            '—'
-                          )}
-                        </td>
-                        <td>
-                          {finished ? (
-                            <div className="log-time-cell">
-                              <button
-                                type="button"
-                                className="log-time-trigger"
-                                aria-label={finishedDetail}
-                              >
-                                <span className="log-time-main">{finishedTimeLabel}</span>
-                              </button>
-                              <div className="log-time-bubble">{finishedDetail}</div>
-                            </div>
-                          ) : (
-                            '—'
-                          )}
-                        </td>
+                        <td>{started ? startedTimeLabel : '—'}</td>
                         <td>
                           {jobMessage ? (
                             <button
@@ -1622,7 +1586,7 @@ function AdminDashboard(): JSX.Element {
                   if (isExpanded) {
                     rows.push(
                       <tr key={`${j.id}-details`} className="log-details-row">
-                        <td colSpan={8} id={`job-details-${j.id}`}>
+                        <td colSpan={7} id={`job-details-${j.id}`}>
                           <div className="log-details-panel">
                             <div className="log-details-summary">
                               <div>
@@ -1651,12 +1615,14 @@ function AdminDashboard(): JSX.Element {
                                   {startedSummary ?? jobsStrings.empty.none}
                                 </div>
                               </div>
-                              <div>
-                                <div className="log-details-label">{jobsStrings.table.finished}</div>
-                                <div className="log-details-value">
-                                  {finishedSummary ?? jobsStrings.empty.none}
+                              {finishedSummary && (
+                                <div>
+                                  <div className="log-details-label">Finished</div>
+                                  <div className="log-details-value">
+                                    {finishedSummary}
+                                  </div>
                                 </div>
-                              </div>
+                              )}
                               {duration && (
                                 <div>
                                   <div className="log-details-label">DURATION</div>

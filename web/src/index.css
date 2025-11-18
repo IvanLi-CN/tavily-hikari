@@ -1586,9 +1586,9 @@ tbody tr:hover {
   min-width: 0;
 }
 
-.jobs-table th:nth-child(8),
+.jobs-table th:nth-child(7),
 .jobs-table td.jobs-message-cell {
-  width: 28%;
+  width: 24%;
 }
 
 .jobs-message-cell {
@@ -1620,14 +1620,21 @@ tbody tr:hover {
   color: #111827;
 }
 
-/* Jobs table: time cells should not cause horizontal overflow */
-.jobs-table .log-time-cell {
-  flex-wrap: wrap;
-  max-width: 100%;
+/* Jobs table: prevent start time from wrapping and overflowing */
+.jobs-table th:nth-child(6),
+.jobs-table td:nth-child(6) {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  width: 22ch;
 }
 
-.jobs-table .log-time-main {
-  white-space: normal;
+/* Jobs table: keep type column inside its cell */
+.jobs-table th:nth-child(2),
+.jobs-table td:nth-child(2) {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .jobs-table .log-time-bubble {

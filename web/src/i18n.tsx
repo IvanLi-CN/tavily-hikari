@@ -244,13 +244,13 @@ interface AdminTranslationsShape {
       status: string
       attempt: string
       started: string
-      finished: string
       message: string
     }
     toggles: {
       show: string
       hide: string
     }
+    types?: Record<string, string>
   }
   logs: {
     title: string
@@ -678,12 +678,17 @@ export const translations: Record<Language, TranslationShape> = {
           status: 'Status',
           attempt: 'Attempt',
           started: 'Started',
-          finished: 'Finished',
           message: 'Message',
         },
         toggles: {
           show: 'Show job details',
           hide: 'Hide job details',
+        },
+        types: {
+          quota_sync: 'Sync quota',
+          'quota_sync/manual': 'Manual quota sync',
+          token_usage_rollup: 'Aggregate token usage',
+          auth_token_logs_gc: 'Clean access logs',
         },
       },
       statuses: {
@@ -1048,12 +1053,17 @@ export const translations: Record<Language, TranslationShape> = {
           status: '状态',
           attempt: '重试次数',
           started: '开始时间',
-          finished: '结束时间',
           message: '消息',
         },
         toggles: {
           show: '展开任务详情',
           hide: '收起任务详情',
+        },
+        types: {
+          quota_sync: '同步 Tavily 额度',
+          'quota_sync/manual': '手动同步 Tavily 额度',
+          token_usage_rollup: '聚合访问令牌用量',
+          auth_token_logs_gc: '清理访问日志',
         },
       },
       statuses: {
