@@ -1497,6 +1497,16 @@ function AdminDashboard(): JSX.Element {
                   const keyId = job.key_id ?? job.keyId ?? '—'
                   const started: number | null = job.started_at ?? job.startedAt ?? null
                   const finished: number | null = job.finished_at ?? job.finishedAt ?? null
+                  const startedTimeLabel = formatClockTime(started)
+                  const finishedTimeLabel = formatClockTime(finished)
+                  const startedDetail =
+                    started != null
+                      ? `${formatTimestampWithMs(started)} · ${formatRelativeTime(started)}`
+                      : jobsStrings.empty.none
+                  const finishedDetail =
+                    finished != null
+                      ? `${formatTimestampWithMs(finished)} · ${formatRelativeTime(finished)}`
+                      : jobsStrings.empty.none
                   return (
                     <tr key={j.id}>
                       <td>{j.id}</td>
@@ -1504,8 +1514,38 @@ function AdminDashboard(): JSX.Element {
                       <td>{keyId ?? '—'}</td>
                       <td><span className={statusClass(j.status)}>{j.status}</span></td>
                       <td>{j.attempt}</td>
-                      <td>{started ? formatTimestamp(started) : '—'}</td>
-                      <td>{finished ? formatTimestamp(finished) : '—'}</td>
+                      <td>
+                        {started ? (
+                          <div className="log-time-cell">
+                            <button
+                              type="button"
+                              className="log-time-trigger"
+                              aria-label={startedDetail}
+                            >
+                              <span className="log-time-main">{startedTimeLabel}</span>
+                            </button>
+                            <div className="log-time-bubble">{startedDetail}</div>
+                          </div>
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+                      <td>
+                        {finished ? (
+                          <div className="log-time-cell">
+                            <button
+                              type="button"
+                              className="log-time-trigger"
+                              aria-label={finishedDetail}
+                            >
+                              <span className="log-time-main">{finishedTimeLabel}</span>
+                            </button>
+                            <div className="log-time-bubble">{finishedDetail}</div>
+                          </div>
+                        ) : (
+                          '—'
+                        )}
+                      </td>
                       <td>{j.message ?? '—'}</td>
                     </tr>
                   )
