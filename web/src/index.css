@@ -522,6 +522,37 @@ button {
   font-size: 0.85rem;
 }
 
+/* Admin: segmented tags for job filters */
+.segmented-control {
+  display: inline-flex;
+  gap: 8px;
+  padding: 4px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.04);
+}
+
+.segmented-control button {
+  border: none;
+  background: transparent;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  color: #4b5563;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.segmented-control button.active {
+  background: #111827;
+  color: #f9fafb;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.35);
+}
+
+.segmented-control button:hover:not(.active) {
+  background: rgba(15, 23, 42, 0.12);
+  color: #111827;
+}
+
 .update-banner-actions {
   display: flex;
   gap: 8px;
@@ -1312,6 +1343,10 @@ button:disabled {
   background: rgba(255, 255, 255, 0.9);
 }
 
+.jobs-table-wrapper {
+  overflow-x: hidden;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -1528,6 +1563,129 @@ tbody tr:hover {
 
 .log-result-icon {
   color: #475569;
+}
+
+/* Jobs table: compact message cell with ellipsis + expand toggle */
+.jobs-message-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+.jobs-table {
+  width: 100%;
+  table-layout: fixed;
+  min-width: 0;
+}
+
+.jobs-table th:nth-child(7),
+.jobs-table td.jobs-message-cell {
+  width: 24%;
+}
+
+.jobs-message-cell {
+  max-width: 0;
+}
+
+.jobs-message-button:focus-visible {
+  outline: 2px solid rgba(99, 102, 241, 0.6);
+  outline-offset: 2px;
+  border-radius: 999px;
+}
+
+.jobs-message-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: left;
+}
+
+.jobs-message-icon {
+  flex-shrink: 0;
+  color: #94a3b8;
+}
+
+.jobs-message-button-active .jobs-message-text {
+  font-weight: 500;
+  color: #111827;
+}
+
+/* Jobs table: prevent start time from wrapping and overflowing */
+.jobs-table th:nth-child(6),
+.jobs-table td:nth-child(6) {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  width: 22ch;
+}
+
+/* Jobs table: keep type column inside its cell */
+.jobs-table th:nth-child(2),
+.jobs-table td:nth-child(2) {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.jobs-table .log-time-bubble {
+  left: 50%;
+  transform: translate(-50%, -50%) scale(0.95);
+  max-width: 260px;
+  white-space: normal;
+}
+
+/* Job type detail pill with hover bubble showing raw code */
+.job-type-pill {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.job-type-trigger {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.job-type-main {
+  font-size: 0.92rem;
+}
+
+.job-type-bubble {
+  position: absolute;
+  left: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%) scale(0.95);
+  background: #0f172a;
+  color: #fff;
+  padding: 3px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
+  font-size: 0.8rem;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  z-index: 5;
+}
+
+.job-type-pill:hover .job-type-bubble,
+.job-type-pill:focus-within .job-type-bubble {
+  opacity: 1;
+  transform: translateY(-50%) scale(1);
 }
 
 .log-details-row td {

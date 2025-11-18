@@ -234,6 +234,7 @@ function AdminDashboard(): JSX.Element {
   const metricsStrings = adminStrings.metrics
   const keyStrings = adminStrings.keys
   const logStrings = adminStrings.logs
+  const jobsStrings = adminStrings.jobs
   const footerStrings = adminStrings.footer
   const errorStrings = adminStrings.errors
   const [summary, setSummary] = useState<Summary | null>(null)
@@ -249,6 +250,10 @@ function AdminDashboard(): JSX.Element {
   const [tokenGroupsCollapsedOverflowing, setTokenGroupsCollapsedOverflowing] = useState(false)
   const [logs, setLogs] = useState<RequestLog[]>([])
   const [jobs, setJobs] = useState<import('./api').JobLogView[]>([])
+  const [jobFilter, setJobFilter] = useState<'all' | 'quota' | 'usage' | 'logs'>('all')
+  const [jobsPage, setJobsPage] = useState(1)
+  const jobsPerPage = 10
+  const [jobsTotal, setJobsTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const pollingTimerRef = useRef<number | null>(null)
@@ -276,6 +281,7 @@ function AdminDashboard(): JSX.Element {
   const [editingTokenNote, setEditingTokenNote] = useState('')
   const [savingTokenNote, setSavingTokenNote] = useState(false)
   const [sseConnected, setSseConnected] = useState(false)
+  const [expandedJobs, setExpandedJobs] = useState<Set<number>>(() => new Set())
   // Batch dialog state
   const batchDialogRef = useRef<HTMLDialogElement | null>(null)
   const [batchGroup, setBatchGroup] = useState('')
@@ -354,7 +360,7 @@ function AdminDashboard(): JSX.Element {
   const loadData = useCallback(
     async (signal?: AbortSignal) => {
       try {
-        const [summaryData, keyData, logData, ver, profileData, tokenData, tokenGroupsData, jobsData] = await Promise.all([
+        const [summaryData, keyData, logData, ver, profileData, tokenData, tokenGroupsData] = await Promise.all([
           fetchSummary(signal),
           fetchApiKeys(signal),
           fetchRequestLogs(50, signal),
@@ -375,7 +381,6 @@ function AdminDashboard(): JSX.Element {
               }) as Paginated<AuthToken>,
           ),
           fetchTokenGroups(signal).catch(() => [] as TokenGroup[]),
-          fetchJobs(50, signal).catch(() => []),
         ])
 
         if (signal?.aborted) {
@@ -389,7 +394,6 @@ function AdminDashboard(): JSX.Element {
         setTokens(tokenData.items)
         setTokensTotal(tokenData.total)
         setTokenGroups(tokenGroupsData)
-        setJobs(jobsData)
         setExpandedLogs((previous) => {
           if (previous.size === 0) {
             return new Set()
@@ -426,6 +430,34 @@ function AdminDashboard(): JSX.Element {
     void loadData(controller.signal)
     return () => controller.abort()
   }, [loadData])
+
+  // Jobs list: refetch when filter or page changes
+  useEffect(() => {
+    const controller = new AbortController()
+    fetchJobs(jobsPage, jobsPerPage, jobFilter, controller.signal)
+      .then((result) => {
+        if (!controller.signal.aborted) {
+          setJobs(result.items)
+          setJobsTotal(result.total)
+          setExpandedJobs((previous) => {
+            if (previous.size === 0) return new Set()
+            const visibleIds = new Set(result.items.map((item) => item.id))
+            const next = new Set<number>()
+            for (const id of previous) {
+              if (visibleIds.has(id)) next.add(id)
+            }
+            return next
+          })
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setJobs([])
+          setJobsTotal(0)
+        }
+      })
+    return () => controller.abort()
+  }, [jobFilter, jobsPage])
 
   // Automatic fallback polling when SSE is not connected
   useEffect(() => {
@@ -630,20 +662,29 @@ function AdminDashboard(): JSX.Element {
 
   const displayName = profile?.displayName ?? null
 
-  const toggleLogExpansion = useCallback(
-    (id: number) => {
-      setExpandedLogs((previous) => {
-        const next = new Set(previous)
-        if (next.has(id)) {
-          next.delete(id)
-        } else {
-          next.add(id)
-        }
-        return next
-      })
-    },
-    [],
-  )
+  const toggleLogExpansion = useCallback((id: number) => {
+    setExpandedLogs((previous) => {
+      const next = new Set(previous)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
+      return next
+    })
+  }, [])
+
+  const toggleJobExpansion = useCallback((id: number) => {
+    setExpandedJobs((previous) => {
+      const next = new Set(previous)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
+      return next
+    })
+  }, [])
 
   const handleAddKey = async () => {
     const value = newKey.trim()
@@ -1058,11 +1099,11 @@ function AdminDashboard(): JSX.Element {
             </div>
           </div>
         )}
-        <div className="table-wrapper">
+        <div className="table-wrapper jobs-table-wrapper">
           {tokenList.length === 0 ? (
             <div className="empty-state">{loading ? tokenStrings.empty.loading : tokenStrings.empty.none}</div>
           ) : (
-            <table>
+            <table className="jobs-table">
               <thead>
                 <tr>
                   <th>{tokenStrings.table.id}</th>
@@ -1123,7 +1164,7 @@ function AdminDashboard(): JSX.Element {
                       </td>
                       <td>{formatTimestamp(t.last_used_at)}</td>
                       {isAdmin && (
-                        <td>
+                        <td className="jobs-message-cell">
                           <div style={{ display: 'flex', gap: 8 }}>
                             <button
                               type="button"
@@ -1263,7 +1304,7 @@ function AdminDashboard(): JSX.Element {
             )}
           </div>
         </div>
-        <div className="table-wrapper">
+        <div className="table-wrapper jobs-table-wrapper">
           {sortedKeys.length === 0 ? (
             <div className="empty-state">{loading ? keyStrings.empty.loading : keyStrings.empty.none}</div>
           ) : (
@@ -1390,7 +1431,7 @@ function AdminDashboard(): JSX.Element {
             <p className="panel-description">{logStrings.description}</p>
           </div>
         </div>
-        <div className="table-wrapper">
+        <div className="table-wrapper jobs-table-wrapper">
           {logs.length === 0 ? (
             <div className="empty-state">{loading ? logStrings.empty.loading : logStrings.empty.none}</div>
           ) : (
@@ -1425,51 +1466,235 @@ function AdminDashboard(): JSX.Element {
       <section className="surface panel">
         <div className="panel-header">
           <div>
-            <h2>Scheduled Jobs</h2>
-            <p className="panel-description">Recent background job executions</p>
+            <h2>{jobsStrings.title}</h2>
+            <p className="panel-description">{jobsStrings.description}</p>
+          </div>
+          <div className="panel-actions">
+            <div className="segmented-control">
+              <button
+                type="button"
+                className={jobFilter === 'all' ? 'active' : ''}
+                onClick={() => setJobFilter('all')}
+              >
+                {jobsStrings.filters.all}
+              </button>
+              <button
+                type="button"
+                className={jobFilter === 'quota' ? 'active' : ''}
+                onClick={() => setJobFilter('quota')}
+              >
+                {jobsStrings.filters.quota}
+              </button>
+              <button
+                type="button"
+                className={jobFilter === 'usage' ? 'active' : ''}
+                onClick={() => setJobFilter('usage')}
+              >
+                {jobsStrings.filters.usage}
+              </button>
+              <button
+                type="button"
+                className={jobFilter === 'logs' ? 'active' : ''}
+                onClick={() => setJobFilter('logs')}
+              >
+                {jobsStrings.filters.logs}
+              </button>
+            </div>
           </div>
         </div>
-        <div className="table-wrapper">
+        <div className="table-wrapper jobs-table-wrapper">
           {jobs.length === 0 ? (
-            <div className="empty-state">{loading ? 'Loading…' : 'No jobs yet.'}</div>
+            <div className="empty-state">
+              {loading ? jobsStrings.empty.loading : jobsStrings.empty.none}
+            </div>
           ) : (
-            <table>
+            <table className="jobs-table">
               <thead>
                 <tr>
-                  <th>ID</th>
-                  <th>Type</th>
-                  <th>Key</th>
-                  <th>Status</th>
-                  <th>Attempt</th>
-                  <th>Started</th>
-                  <th>Finished</th>
-                  <th>Message</th>
+                  <th>{jobsStrings.table.id}</th>
+                  <th>{jobsStrings.table.type}</th>
+                  <th>{jobsStrings.table.key}</th>
+                  <th>{jobsStrings.table.status}</th>
+                  <th>{jobsStrings.table.attempt}</th>
+                  <th>{jobsStrings.table.started}</th>
+                  <th>{jobsStrings.table.message}</th>
                 </tr>
               </thead>
               <tbody>
                 {jobs.map((j) => {
                   const job: any = j as any
                   const jt = job.job_type ?? job.jobType ?? ''
+                  const jobTypeLabel = jobsStrings.types?.[jt] ?? jt
                   const keyId = job.key_id ?? job.keyId ?? '—'
                   const started: number | null = job.started_at ?? job.startedAt ?? null
                   const finished: number | null = job.finished_at ?? job.finishedAt ?? null
-                  return (
+                  const startedTimeLabel = formatTimestamp(started)
+                  const startedDetail =
+                    started != null
+                      ? `${formatTimestampWithMs(started)} · ${formatRelativeTime(started)}`
+                      : jobsStrings.empty.none
+                  const isExpanded = expandedJobs.has(j.id)
+                  const jobMessage: string | null = j.message ?? null
+                  const messageLabel = isExpanded
+                    ? jobsStrings.toggles?.hide ?? jobsStrings.table.message
+                    : jobsStrings.toggles?.show ?? jobsStrings.table.message
+                  const duration =
+                    started != null && finished != null
+                      ? (() => {
+                          const seconds = Math.max(0, finished - started)
+                          if (seconds < 60) return `${seconds}s`
+                          const minutes = Math.round(seconds / 60)
+                          return `${minutes}m`
+                        })()
+                      : null
+                  const startedSummary =
+                    started != null ? `${formatTimestampWithMs(started)} · ${formatRelativeTime(started)}` : null
+                  const finishedSummary =
+                    finished != null ? `${formatTimestampWithMs(finished)} · ${formatRelativeTime(finished)}` : null
+                  const rows: JSX.Element[] = []
+
+                  rows.push(
                     <tr key={j.id}>
-                      <td>{j.id}</td>
-                      <td>{jt}</td>
-                      <td>{keyId ?? '—'}</td>
-                      <td><span className={statusClass(j.status)}>{j.status}</span></td>
-                      <td>{j.attempt}</td>
-                      <td>{started ? formatTimestamp(started) : '—'}</td>
-                      <td>{finished ? formatTimestamp(finished) : '—'}</td>
-                      <td>{j.message ?? '—'}</td>
-                    </tr>
+                        <td>{j.id}</td>
+                        <td>{jobTypeLabel}</td>
+                        <td>{keyId ?? '—'}</td>
+                        <td>
+                          <span className={statusClass(j.status)}>{j.status}</span>
+                        </td>
+                        <td>{j.attempt}</td>
+                        <td>{started ? startedTimeLabel : '—'}</td>
+                        <td>
+                          {jobMessage ? (
+                            <button
+                              type="button"
+                              className={`jobs-message-button${isExpanded ? ' jobs-message-button-active' : ''}`}
+                              onClick={() => toggleJobExpansion(j.id)}
+                              aria-expanded={isExpanded}
+                              aria-controls={`job-details-${j.id}`}
+                              aria-label={messageLabel}
+                              title={jobMessage}
+                            >
+                              <span className="jobs-message-text">{jobMessage}</span>
+                              <Icon
+                                icon={isExpanded ? 'mdi:chevron-up' : 'mdi:chevron-down'}
+                                width={16}
+                                height={16}
+                                className="jobs-message-icon"
+                                aria-hidden="true"
+                              />
+                            </button>
+                          ) : (
+                            '—'
+                          )}
+                        </td>
+                      </tr>,
                   )
+
+                  if (isExpanded) {
+                    rows.push(
+                      <tr key={`${j.id}-details`} className="log-details-row">
+                        <td colSpan={7} id={`job-details-${j.id}`}>
+                          <div className="log-details-panel">
+                            <div className="log-details-summary">
+                              <div>
+                                <div className="log-details-label">{jobsStrings.table.id}</div>
+                                <div className="log-details-value">{j.id}</div>
+                              </div>
+                              <div>
+                                <div className="log-details-label">{jobsStrings.table.type}</div>
+                                <div className="log-details-value">
+                                  {jt ? (
+                                    <span className="job-type-pill">
+                                      <button
+                                        type="button"
+                                        className="job-type-trigger"
+                                        aria-label={jt}
+                                      >
+                                        <span className="job-type-main">{jobTypeLabel}</span>
+                                      </button>
+                                      <div className="job-type-bubble">{jt}</div>
+                                    </span>
+                                  ) : (
+                                    '—'
+                                  )}
+                                </div>
+                              </div>
+                              <div>
+                                <div className="log-details-label">{jobsStrings.table.key}</div>
+                                <div className="log-details-value">{keyId ?? '—'}</div>
+                              </div>
+                              <div>
+                                <div className="log-details-label">{jobsStrings.table.status}</div>
+                                <div className="log-details-value">{j.status}</div>
+                              </div>
+                              <div>
+                                <div className="log-details-label">{jobsStrings.table.attempt}</div>
+                                <div className="log-details-value">{j.attempt}</div>
+                              </div>
+                              <div>
+                                <div className="log-details-label">{jobsStrings.table.started}</div>
+                                <div className="log-details-value">
+                                  {startedSummary ?? jobsStrings.empty.none}
+                                </div>
+                              </div>
+                              {finishedSummary && (
+                                <div>
+                                  <div className="log-details-label">Finished</div>
+                                  <div className="log-details-value">
+                                    {finishedSummary}
+                                  </div>
+                                </div>
+                              )}
+                              {duration && (
+                                <div>
+                                  <div className="log-details-label">DURATION</div>
+                                  <div className="log-details-value">{duration}</div>
+                                </div>
+                              )}
+                            </div>
+                            {jobMessage && (
+                              <div className="log-details-body">
+                                <section className="log-details-section">
+                                  <header>{jobsStrings.table.message}</header>
+                                  <pre>{jobMessage}</pre>
+                                </section>
+                              </div>
+                            )}
+                          </div>
+                        </td>
+                      </tr>,
+                    )
+                  }
+
+                  return rows
                 })}
               </tbody>
             </table>
           )}
         </div>
+        {jobsTotal > jobsPerPage && (
+          <div className="table-pagination">
+            <span className="panel-description">
+              {jobsStrings.description} ({jobsPage} / {Math.max(1, Math.ceil(jobsTotal / jobsPerPage))})
+            </span>
+            <div style={{ display: 'inline-flex', gap: 8 }}>
+              <button
+                className="button"
+                onClick={() => setJobsPage((p) => Math.max(1, p - 1))}
+                disabled={jobsPage <= 1}
+              >
+                {tokenStrings.pagination.prev}
+              </button>
+              <button
+                className="button"
+                onClick={() => setJobsPage((p) => p + 1)}
+                disabled={jobsPage >= Math.ceil(jobsTotal / jobsPerPage)}
+              >
+                {tokenStrings.pagination.next}
+              </button>
+            </div>
+          </div>
+        )}
       </section>
 
       <div className="app-footer">

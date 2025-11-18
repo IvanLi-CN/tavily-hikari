@@ -88,6 +88,15 @@ const CLEANUP_INTERVAL_SECS: i64 = 600;
 const SECS_PER_MINUTE: i64 = 60;
 const SECS_PER_HOUR: i64 = 3600;
 const SECS_PER_DAY: i64 = 24 * SECS_PER_HOUR;
+const TOKEN_USAGE_STATS_BUCKET_SECS: i64 = SECS_PER_HOUR;
+
+// Time-based retention for per-token access logs (auth_token_logs).
+// This is purely time-driven and must not depend on access token enable/disable/delete status,
+// to preserve auditability.
+const AUTH_TOKEN_LOG_RETENTION_SECS: i64 = 90 * SECS_PER_DAY;
+
+const META_KEY_DATA_CONSISTENCY_DONE: &str = "data_consistency_v1_done";
+const META_KEY_TOKEN_USAGE_ROLLUP_TS: &str = "token_usage_rollup_last_ts";
 
 #[derive(Debug, Clone)]
 struct SanitizedHeaders {
@@ -608,8 +617,11 @@ impl TokenQuota {
     async fn check(&self, token_id: &str) -> Result<TokenQuotaVerdict, ProxyError> {
         let now = Utc::now();
         let now_ts = now.timestamp();
-        let minute_bucket = now_ts - (now_ts % 60);
-        let hour_bucket = now_ts - (now_ts % 3600);
+        let minute_bucket = now_ts - (now_ts % SECS_PER_MINUTE);
+        let hour_bucket = now_ts - (now_ts % SECS_PER_HOUR);
+        // Increment usage buckets and monthly quota as an approximate, cheap counter.
+        // This path is allowed to drift slightly from the detailed logs in exchange
+        // for lower per-request overhead.
         self.store
             .increment_usage_bucket(token_id, minute_bucket, GRANULARITY_MINUTE)
             .await?;
@@ -617,8 +629,8 @@ impl TokenQuota {
             .increment_usage_bucket(token_id, hour_bucket, GRANULARITY_HOUR)
             .await?;
 
-        let hour_window_start = minute_bucket - 59 * 60;
-        let day_window_start = hour_bucket - 23 * 3600;
+        let hour_window_start = minute_bucket - 59 * SECS_PER_MINUTE;
+        let day_window_start = hour_bucket - 23 * SECS_PER_HOUR;
 
         let hourly_used = self
             .store
@@ -791,6 +803,21 @@ impl TavilyProxy {
         Ok((limit, remaining))
     }
 
+    /// Aggregate per-token usage logs into token_usage_stats for UI metrics.
+    /// Used by background schedulers to keep usage charts up to date.
+    pub async fn rollup_token_usage_stats(&self) -> Result<(i64, Option<i64>), ProxyError> {
+        self.key_store.rollup_token_usage_stats().await
+    }
+
+    /// Time-based garbage collection for per-token access logs.
+    /// This uses a fixed retention window and never looks at token status,
+    /// to avoid impacting auditability.
+    pub async fn gc_auth_token_logs(&self) -> Result<i64, ProxyError> {
+        let now_ts = Utc::now().timestamp();
+        let threshold = now_ts - AUTH_TOKEN_LOG_RETENTION_SECS;
+        self.key_store.delete_old_auth_token_logs(threshold).await
+    }
+
     /// Job logging helpers
     pub async fn scheduled_job_start(
         &self,
@@ -816,6 +843,17 @@ impl TavilyProxy {
 
     pub async fn list_recent_jobs(&self, limit: usize) -> Result<Vec<JobLog>, ProxyError> {
         self.key_store.list_recent_jobs(limit).await
+    }
+
+    pub async fn list_recent_jobs_paginated(
+        &self,
+        group: &str,
+        page: usize,
+        per_page: usize,
+    ) -> Result<(Vec<JobLog>, i64), ProxyError> {
+        self.key_store
+            .list_recent_jobs_paginated(group, page, per_page)
+            .await
     }
 }
 
@@ -891,6 +929,13 @@ impl KeyStore {
 
         self.upgrade_request_logs_schema().await?;
 
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_request_logs_auth_token_time
+               ON request_logs(auth_token_id, created_at DESC, id DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
         // Access tokens for /mcp authentication
         sqlx::query(
             r#"
@@ -949,12 +994,6 @@ impl KeyStore {
                 .await?;
         }
 
-        // After ensuring schemas, run light-weight, idempotent data migrations
-        // to reconcile derived counters with their canonical log tables.
-        // This keeps old databases consistent when upgrading from versions
-        // that previously over-counted token validation as usage.
-        self.migrate_data_consistency().await?;
-
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS token_usage_buckets (
@@ -989,6 +1028,31 @@ impl KeyStore {
         .execute(&self.pool)
         .await?;
 
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS token_usage_stats (
+                token_id TEXT NOT NULL,
+                bucket_start INTEGER NOT NULL,
+                bucket_secs INTEGER NOT NULL,
+                success_count INTEGER NOT NULL,
+                system_failure_count INTEGER NOT NULL,
+                external_failure_count INTEGER NOT NULL,
+                quota_exhausted_count INTEGER NOT NULL,
+                PRIMARY KEY (token_id, bucket_start, bucket_secs),
+                FOREIGN KEY (token_id) REFERENCES auth_tokens(id)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_token_usage_stats_token_time
+               ON token_usage_stats(token_id, bucket_start DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
         // Scheduled jobs table for background tasks (e.g., quota/usage sync)
         sqlx::query(
             r#"
@@ -1007,6 +1071,32 @@ impl KeyStore {
         )
         .execute(&self.pool)
         .await?;
+
+        // Meta table for lightweight global key/value settings (e.g., migrations, rollup state)
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // After ensuring schemas, run the data consistency migration at most once.
+        // Older versions incremented auth_tokens.total_requests during validation; this
+        // migration reconciles those counters using auth_token_logs, then marks itself
+        // as completed in the meta table so that future startups do not depend on
+        // potentially truncated logs.
+        if self
+            .get_meta_i64(META_KEY_DATA_CONSISTENCY_DONE)
+            .await?
+            .is_none()
+        {
+            self.migrate_data_consistency().await?;
+            self.set_meta_i64(META_KEY_DATA_CONSISTENCY_DONE, 1).await?;
+        }
 
         Ok(())
     }
@@ -1224,6 +1314,114 @@ impl KeyStore {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Delete per-token usage logs older than the given threshold.
+    /// This is strictly time-based and deliberately independent of token status,
+    /// so that audit trails are not coupled to enable/disable/delete operations.
+    async fn delete_old_auth_token_logs(&self, threshold: i64) -> Result<i64, ProxyError> {
+        let result = sqlx::query(
+            r#"
+            DELETE FROM auth_token_logs
+            WHERE created_at < ?
+            "#,
+        )
+        .bind(threshold)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() as i64)
+    }
+
+    /// Aggregate per-token usage logs into hourly buckets in token_usage_stats.
+    /// Returns (rows_affected, new_last_rollup_ts). When there are no new logs,
+    /// rows_affected is 0 and new_last_rollup_ts is None.
+    async fn rollup_token_usage_stats(&self) -> Result<(i64, Option<i64>), ProxyError> {
+        let last_ts = self
+            .get_meta_i64(META_KEY_TOKEN_USAGE_ROLLUP_TS)
+            .await?
+            .unwrap_or(0);
+
+        // Use an inclusive lower bound so that logs with the same created_at
+        // as the previous max_ts are reprocessed rather than skipped.
+        let max_created: Option<i64> =
+            sqlx::query_scalar("SELECT MAX(created_at) FROM auth_token_logs WHERE created_at >= ?")
+                .bind(last_ts)
+                .fetch_one(&self.pool)
+                .await?;
+
+        let Some(max_ts) = max_created else {
+            return Ok((0, None));
+        };
+
+        let bucket_secs = TOKEN_USAGE_STATS_BUCKET_SECS;
+
+        let result = sqlx::query(
+            r#"
+            INSERT INTO token_usage_stats (
+                token_id,
+                bucket_start,
+                bucket_secs,
+                success_count,
+                system_failure_count,
+                external_failure_count,
+                quota_exhausted_count
+            )
+            SELECT
+                token_id,
+                (created_at / ?) * ? AS bucket_start,
+                ? AS bucket_secs,
+                SUM(CASE WHEN result_status = 'success' THEN 1 ELSE 0 END) AS success_count,
+                SUM(
+                    CASE
+                        WHEN result_status != 'success'
+                             AND result_status != 'quota_exhausted'
+                             AND (
+                                (http_status BETWEEN 400 AND 599)
+                                OR (mcp_status BETWEEN 400 AND 599)
+                            ) THEN 1
+                        ELSE 0
+                    END
+                ) AS system_failure_count,
+                SUM(
+                    CASE
+                        WHEN result_status != 'success'
+                             AND result_status != 'quota_exhausted'
+                             AND NOT (
+                                (http_status BETWEEN 400 AND 599)
+                                OR (mcp_status BETWEEN 400 AND 599)
+                            ) THEN 1
+                        ELSE 0
+                    END
+                ) AS external_failure_count,
+                SUM(CASE WHEN result_status = 'quota_exhausted' THEN 1 ELSE 0 END) AS quota_exhausted_count
+            FROM auth_token_logs
+            WHERE created_at >= ? AND created_at <= ?
+            GROUP BY token_id, bucket_start
+            ON CONFLICT(token_id, bucket_start, bucket_secs) DO UPDATE SET
+                success_count = token_usage_stats.success_count + excluded.success_count,
+                system_failure_count =
+                    token_usage_stats.system_failure_count + excluded.system_failure_count,
+                external_failure_count =
+                    token_usage_stats.external_failure_count + excluded.external_failure_count,
+                quota_exhausted_count =
+                    token_usage_stats.quota_exhausted_count + excluded.quota_exhausted_count
+            "#,
+        )
+        .bind(bucket_secs)
+        .bind(bucket_secs)
+        .bind(bucket_secs)
+        .bind(last_ts)
+        .bind(max_ts)
+        .execute(&self.pool)
+        .await?;
+
+        let affected = result.rows_affected() as i64;
+
+        self.set_meta_i64(META_KEY_TOKEN_USAGE_ROLLUP_TS, max_ts)
+            .await?;
+
+        Ok((affected, Some(max_ts)))
     }
 
     async fn increment_monthly_quota(
@@ -2404,64 +2602,65 @@ impl KeyStore {
         since: i64,
         until: Option<i64>,
     ) -> Result<TokenSummary, ProxyError> {
-        let row = if let Some(until) = until {
-            sqlx::query(
-                r#"
-            SELECT
-                COUNT(*) AS total_requests,
-                COALESCE(SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END), 0) AS success_count,
-                COALESCE(SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END), 0) AS error_count,
-                COALESCE(SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END), 0) AS quota_exhausted_count
-            FROM auth_token_logs
-            WHERE token_id = ? AND created_at >= ? AND created_at < ?
-            "#,
-            )
-            .bind(OUTCOME_SUCCESS)
-            .bind(OUTCOME_ERROR)
-            .bind(OUTCOME_QUOTA_EXHAUSTED)
-            .bind(token_id)
-            .bind(since)
-            .bind(until)
-            .fetch_one(&self.pool)
-            .await?
-        } else {
-            sqlx::query(
-                r#"
-            SELECT
-                COUNT(*) AS total_requests,
-                COALESCE(SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END), 0) AS success_count,
-                COALESCE(SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END), 0) AS error_count,
-                COALESCE(SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END), 0) AS quota_exhausted_count
-            FROM auth_token_logs
-            WHERE token_id = ? AND created_at >= ?
-            "#,
-            )
-            .bind(OUTCOME_SUCCESS)
-            .bind(OUTCOME_ERROR)
-            .bind(OUTCOME_QUOTA_EXHAUSTED)
-            .bind(token_id)
-            .bind(since)
-            .fetch_one(&self.pool)
-            .await?
-        };
+        let now_ts = Utc::now().timestamp();
+        let end_exclusive = until.unwrap_or(now_ts);
+        if end_exclusive <= since {
+            return Ok(TokenSummary {
+                total_requests: 0,
+                success_count: 0,
+                error_count: 0,
+                quota_exhausted_count: 0,
+                last_activity: None,
+            });
+        }
 
-        let last_activity_query = if let Some(until) = until {
-            sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(created_at) FROM auth_token_logs WHERE token_id = ? AND created_at >= ? AND created_at < ?")
-                .bind(token_id)
-                .bind(since)
-                .bind(until)
-        } else {
-            sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(created_at) FROM auth_token_logs WHERE token_id = ? AND created_at >= ?")
-                .bind(token_id)
-                .bind(since)
-        };
-        let last_activity = last_activity_query.fetch_one(&self.pool).await?;
+        let rows = sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
+            r#"
+            SELECT
+                bucket_start,
+                success_count,
+                system_failure_count,
+                external_failure_count,
+                quota_exhausted_count
+            FROM token_usage_stats
+            WHERE token_id = ? AND bucket_secs = ? AND bucket_start >= ? AND bucket_start < ?
+            ORDER BY bucket_start ASC
+            "#,
+        )
+        .bind(token_id)
+        .bind(TOKEN_USAGE_STATS_BUCKET_SECS)
+        .bind(since)
+        .bind(end_exclusive)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut total_requests = 0;
+        let mut success_count = 0;
+        let mut system_failure_count = 0;
+        let mut external_failure_count = 0;
+        let mut quota_exhausted_count = 0;
+        let mut last_activity: Option<i64> = None;
+
+        for (bucket_start, success, system_failure, external_failure, quota_exhausted) in rows {
+            success_count += success;
+            system_failure_count += system_failure;
+            external_failure_count += external_failure;
+            quota_exhausted_count += quota_exhausted;
+            total_requests += success + system_failure + external_failure + quota_exhausted;
+            let bucket_end = bucket_start + TOKEN_USAGE_STATS_BUCKET_SECS;
+            last_activity = Some(match last_activity {
+                Some(prev) if prev > bucket_end => prev,
+                _ => bucket_end,
+            });
+        }
+
+        let error_count = system_failure_count + external_failure_count;
 
         Ok(TokenSummary {
-            total_requests: row.try_get("total_requests")?,
-            success_count: row.try_get("success_count")?,
-            error_count: row.try_get("error_count")?,
-            quota_exhausted_count: row.try_get("quota_exhausted_count")?,
+            total_requests,
+            success_count,
+            error_count,
+            quota_exhausted_count,
             last_activity,
         })
     }
@@ -2588,42 +2787,23 @@ impl KeyStore {
         hours: i64,
     ) -> Result<Vec<TokenHourlyBucket>, ProxyError> {
         let hours = hours.clamp(1, 168); // up to 7 days
-        let now = Utc::now().timestamp();
-        let window_start = now - hours * SECS_PER_HOUR;
+        let now_ts = Utc::now().timestamp();
+        let current_bucket = now_ts - (now_ts % SECS_PER_HOUR);
+        let window_start = current_bucket - (hours - 1) * SECS_PER_HOUR;
         let rows = sqlx::query_as::<_, (i64, i64, i64, i64)>(
             r#"
             SELECT
-                (created_at / 3600) * 3600 AS bucket_start,
-                SUM(CASE WHEN result_status = 'success' THEN 1 ELSE 0 END) AS success_count,
-                SUM(
-                    CASE
-                        WHEN result_status != 'success'
-                             AND (
-                                result_status = 'quota_exhausted'
-                                OR (http_status BETWEEN 400 AND 499)
-                                OR (mcp_status BETWEEN 400 AND 499)
-                            ) THEN 1
-                        ELSE 0
-                    END
-                ) AS system_failure_count,
-                SUM(
-                    CASE
-                        WHEN result_status != 'success'
-                             AND NOT (
-                                result_status = 'quota_exhausted'
-                                OR (http_status BETWEEN 400 AND 499)
-                                OR (mcp_status BETWEEN 400 AND 499)
-                            ) THEN 1
-                        ELSE 0
-                    END
-                ) AS external_failure_count
-            FROM auth_token_logs
-            WHERE token_id = ? AND created_at >= ?
-            GROUP BY bucket_start
+                bucket_start,
+                success_count,
+                system_failure_count,
+                external_failure_count
+            FROM token_usage_stats
+            WHERE token_id = ? AND bucket_secs = ? AND bucket_start >= ?
             ORDER BY bucket_start ASC
             "#,
         )
         .bind(token_id)
+        .bind(TOKEN_USAGE_STATS_BUCKET_SECS)
         .bind(window_start)
         .fetch_all(&self.pool)
         .await?;
@@ -2656,7 +2836,15 @@ impl KeyStore {
         if bucket_secs <= 0 {
             return Err(ProxyError::Other("bucket_secs must be positive".into()));
         }
-        let bucket_secs = bucket_secs.clamp(SECS_PER_MINUTE, 31 * SECS_PER_DAY);
+        let bucket_secs = match bucket_secs {
+            s if s == SECS_PER_HOUR => SECS_PER_HOUR,
+            s if s == SECS_PER_DAY => SECS_PER_DAY,
+            _ => {
+                return Err(ProxyError::Other(
+                    "bucket_secs must be either 3600 (hour) or 86400 (day)".into(),
+                ));
+            }
+        };
         let span = until - since;
         let mut bucket_count = span / bucket_secs;
         if span % bucket_secs != 0 {
@@ -2667,60 +2855,93 @@ impl KeyStore {
                 "requested usage series is too large".into(),
             ));
         }
-        let rows = sqlx::query_as::<_, (i64, i64, i64, i64)>(
-            r#"
-            SELECT
-                (created_at / ?) * ? AS bucket_start,
-                SUM(CASE WHEN result_status = 'success' THEN 1 ELSE 0 END) AS success_count,
-                SUM(
-                    CASE
-                        WHEN result_status != 'success'
-                             AND (
-                                result_status = 'quota_exhausted'
-                                OR (http_status BETWEEN 400 AND 499)
-                                OR (mcp_status BETWEEN 400 AND 499)
-                            ) THEN 1
-                        ELSE 0
-                    END
-                ) AS system_failure_count,
-                SUM(
-                    CASE
-                        WHEN result_status != 'success'
-                             AND NOT (
-                                result_status = 'quota_exhausted'
-                                OR (http_status BETWEEN 400 AND 499)
-                                OR (mcp_status BETWEEN 400 AND 499)
-                            ) THEN 1
-                        ELSE 0
-                    END
-                ) AS external_failure_count
-            FROM auth_token_logs
-            WHERE token_id = ? AND created_at >= ? AND created_at < ?
-            GROUP BY bucket_start
-            ORDER BY bucket_start ASC
-            "#,
-        )
-        .bind(bucket_secs)
-        .bind(bucket_secs)
-        .bind(token_id)
-        .bind(since)
-        .bind(until)
-        .fetch_all(&self.pool)
-        .await?;
+        if bucket_secs == SECS_PER_HOUR {
+            let rows = sqlx::query_as::<_, (i64, i64, i64, i64)>(
+                r#"
+                SELECT
+                    bucket_start,
+                    success_count,
+                    system_failure_count,
+                    external_failure_count
+                FROM token_usage_stats
+                WHERE token_id = ? AND bucket_secs = ? AND bucket_start >= ? AND bucket_start < ?
+                ORDER BY bucket_start ASC
+                "#,
+            )
+            .bind(token_id)
+            .bind(TOKEN_USAGE_STATS_BUCKET_SECS)
+            .bind(since)
+            .bind(until)
+            .fetch_all(&self.pool)
+            .await?;
 
-        Ok(rows
-            .into_iter()
-            .map(
-                |(bucket_start, success_count, system_failure_count, external_failure_count)| {
-                    TokenUsageBucket {
+            Ok(rows
+                .into_iter()
+                .map(
+                    |(
                         bucket_start,
                         success_count,
                         system_failure_count,
                         external_failure_count,
-                    }
-                },
+                    )| {
+                        TokenUsageBucket {
+                            bucket_start,
+                            success_count,
+                            system_failure_count,
+                            external_failure_count,
+                        }
+                    },
+                )
+                .collect())
+        } else {
+            // Aggregate hourly stats into daily buckets.
+            let rows = sqlx::query_as::<_, (i64, i64, i64, i64)>(
+                r#"
+                SELECT
+                    bucket_start,
+                    success_count,
+                    system_failure_count,
+                    external_failure_count
+                FROM token_usage_stats
+                WHERE token_id = ? AND bucket_secs = ? AND bucket_start >= ? AND bucket_start < ?
+                ORDER BY bucket_start ASC
+                "#,
             )
-            .collect())
+            .bind(token_id)
+            .bind(TOKEN_USAGE_STATS_BUCKET_SECS)
+            .bind(since)
+            .bind(until)
+            .fetch_all(&self.pool)
+            .await?;
+
+            let mut by_day: HashMap<i64, (i64, i64, i64)> = HashMap::new();
+            for (bucket_start, success, system_failure, external_failure) in rows {
+                let day_start = bucket_start - (bucket_start % SECS_PER_DAY);
+                let entry = by_day.entry(day_start).or_insert((0, 0, 0));
+                entry.0 += success;
+                entry.1 += system_failure;
+                entry.2 += external_failure;
+            }
+
+            let mut buckets: Vec<TokenUsageBucket> = by_day
+                .into_iter()
+                .map(
+                    |(
+                        bucket_start,
+                        (success_count, system_failure_count, external_failure_count),
+                    )| {
+                        TokenUsageBucket {
+                            bucket_start,
+                            success_count,
+                            system_failure_count,
+                            external_failure_count,
+                        }
+                    },
+                )
+                .collect();
+            buckets.sort_by_key(|b| b.bucket_start);
+            Ok(buckets)
+        }
     }
 
     async fn reset_monthly(&self) -> Result<(), ProxyError> {
@@ -3189,6 +3410,96 @@ impl KeyStore {
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(items)
+    }
+
+    async fn list_recent_jobs_paginated(
+        &self,
+        group: &str,
+        page: usize,
+        per_page: usize,
+    ) -> Result<(Vec<JobLog>, i64), ProxyError> {
+        let page = page.max(1);
+        let per_page = per_page.clamp(1, 100) as i64;
+        let offset = ((page - 1) as i64).saturating_mul(per_page);
+
+        let where_clause = match group {
+            "quota" => "WHERE job_type = 'quota_sync' OR job_type = 'quota_sync/manual'",
+            "usage" => "WHERE job_type = 'token_usage_rollup'",
+            "logs" => "WHERE job_type = 'auth_token_logs_gc'",
+            _ => "",
+        };
+
+        let count_query = format!("SELECT COUNT(*) FROM scheduled_jobs {}", where_clause);
+        let total: i64 = sqlx::query_scalar(&count_query)
+            .fetch_one(&self.pool)
+            .await?;
+
+        let select_query = format!(
+            r#"
+            SELECT id, job_type, key_id, status, attempt, message, started_at, finished_at
+            FROM scheduled_jobs
+            {}
+            ORDER BY started_at DESC, id DESC
+            LIMIT ? OFFSET ?
+            "#,
+            where_clause
+        );
+
+        let rows = sqlx::query(&select_query)
+            .bind(per_page)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await?;
+
+        let items = rows
+            .into_iter()
+            .map(|row| -> Result<JobLog, sqlx::Error> {
+                Ok(JobLog {
+                    id: row.try_get("id")?,
+                    job_type: row.try_get("job_type")?,
+                    key_id: row.try_get::<Option<String>, _>("key_id")?,
+                    status: row.try_get("status")?,
+                    attempt: row.try_get("attempt")?,
+                    message: row.try_get::<Option<String>, _>("message")?,
+                    started_at: row.try_get("started_at")?,
+                    finished_at: row.try_get::<Option<i64>, _>("finished_at")?,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok((items, total))
+    }
+
+    async fn get_meta_i64(&self, key: &str) -> Result<Option<i64>, ProxyError> {
+        let value = sqlx::query_scalar::<_, String>("SELECT value FROM meta WHERE key = ? LIMIT 1")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await?;
+
+        if let Some(v) = value {
+            match v.parse::<i64>() {
+                Ok(parsed) => Ok(Some(parsed)),
+                Err(_) => Ok(None),
+            }
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn set_meta_i64(&self, key: &str, value: i64) -> Result<(), ProxyError> {
+        let v = value.to_string();
+        sqlx::query(
+            r#"
+            INSERT INTO meta (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            "#,
+        )
+        .bind(key)
+        .bind(v)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     async fn fetch_summary(&self) -> Result<ProxySummary, ProxyError> {

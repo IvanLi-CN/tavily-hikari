@@ -225,6 +225,34 @@ interface AdminTranslationsShape {
       }
     }
   }
+  jobs: {
+    title: string
+    description: string
+    filters: {
+      all: string
+      quota: string
+      usage: string
+      logs: string
+    }
+    empty: {
+      loading: string
+      none: string
+    }
+    table: {
+      id: string
+      type: string
+      key: string
+      status: string
+      attempt: string
+      started: string
+      message: string
+    }
+    toggles: {
+      show: string
+      hide: string
+    }
+    types?: Record<string, string>
+  }
   logs: {
     title: string
     description: string
@@ -632,6 +660,39 @@ export const translations: Record<Language, TranslationShape> = {
           none: '—',
         },
       },
+      jobs: {
+        title: 'Scheduled Jobs',
+        description: 'Recent background job executions.',
+        filters: {
+          all: 'All',
+          quota: 'Sync quota',
+          usage: 'Usage rollups',
+          logs: 'Clean access logs',
+        },
+        empty: {
+          loading: 'Loading jobs…',
+          none: 'No jobs yet.',
+        },
+        table: {
+          id: 'ID',
+          type: 'Type',
+          key: 'Key',
+          status: 'Status',
+          attempt: 'Attempt',
+          started: 'Started',
+          message: 'Message',
+        },
+        toggles: {
+          show: 'Show job details',
+          hide: 'Hide job details',
+        },
+        types: {
+          quota_sync: 'Sync quota',
+          'quota_sync/manual': 'Manual sync',
+          token_usage_rollup: 'Usage rollups',
+          auth_token_logs_gc: 'Clean logs',
+        },
+      },
       statuses: {
         active: 'Active',
         exhausted: 'Exhausted',
@@ -973,6 +1034,39 @@ export const translations: Record<Language, TranslationShape> = {
           requestFailedGeneric: '请求失败',
           httpStatus: 'HTTP {http}',
           none: '—',
+        },
+      },
+      jobs: {
+        title: '计划任务',
+        description: '后台计划任务与清理任务的最新执行记录。',
+        filters: {
+          all: '全部',
+          quota: '同步额度',
+          usage: '用量聚合',
+          logs: '清理日志',
+        },
+        empty: {
+          loading: '正在加载任务…',
+          none: '暂无任务记录。',
+        },
+        table: {
+          id: 'ID',
+          type: '类型',
+          key: 'Key',
+          status: '状态',
+          attempt: '重试次数',
+          started: '开始时间',
+          message: '消息',
+        },
+        toggles: {
+          show: '展开任务详情',
+          hide: '收起任务详情',
+        },
+        types: {
+          quota_sync: '同步额度',
+          'quota_sync/manual': '手动同步',
+          token_usage_rollup: '用量聚合',
+          auth_token_logs_gc: '清理日志',
         },
       },
       statuses: {
