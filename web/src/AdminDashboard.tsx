@@ -234,6 +234,7 @@ function AdminDashboard(): JSX.Element {
   const metricsStrings = adminStrings.metrics
   const keyStrings = adminStrings.keys
   const logStrings = adminStrings.logs
+  const jobsStrings = adminStrings.jobs
   const footerStrings = adminStrings.footer
   const errorStrings = adminStrings.errors
   const [summary, setSummary] = useState<Summary | null>(null)
@@ -1441,8 +1442,8 @@ function AdminDashboard(): JSX.Element {
       <section className="surface panel">
         <div className="panel-header">
           <div>
-            <h2>Scheduled Jobs</h2>
-            <p className="panel-description">Recent background job executions</p>
+            <h2>{jobsStrings.title}</h2>
+            <p className="panel-description">{jobsStrings.description}</p>
           </div>
           <div className="panel-actions">
             <div className="segmented-control">
@@ -1451,40 +1452,42 @@ function AdminDashboard(): JSX.Element {
                 className={jobFilter === 'all' ? 'active' : ''}
                 onClick={() => setJobFilter('all')}
               >
-                全部
+                {jobsStrings.filters.all}
               </button>
               <button
                 type="button"
                 className={jobFilter === 'quota' ? 'active' : ''}
                 onClick={() => setJobFilter('quota')}
               >
-                同步额度
+                {jobsStrings.filters.quota}
               </button>
               <button
                 type="button"
                 className={jobFilter === 'logs' ? 'active' : ''}
                 onClick={() => setJobFilter('logs')}
               >
-                清理访问记录
+                {jobsStrings.filters.logs}
               </button>
             </div>
           </div>
         </div>
         <div className="table-wrapper">
           {jobs.length === 0 ? (
-            <div className="empty-state">{loading ? 'Loading…' : 'No jobs yet.'}</div>
+            <div className="empty-state">
+              {loading ? jobsStrings.empty.loading : jobsStrings.empty.none}
+            </div>
           ) : (
             <table>
               <thead>
                 <tr>
-                  <th>ID</th>
-                  <th>Type</th>
-                  <th>Key</th>
-                  <th>Status</th>
-                  <th>Attempt</th>
-                  <th>Started</th>
-                  <th>Finished</th>
-                  <th>Message</th>
+                  <th>{jobsStrings.table.id}</th>
+                  <th>{jobsStrings.table.type}</th>
+                  <th>{jobsStrings.table.key}</th>
+                  <th>{jobsStrings.table.status}</th>
+                  <th>{jobsStrings.table.attempt}</th>
+                  <th>{jobsStrings.table.started}</th>
+                  <th>{jobsStrings.table.finished}</th>
+                  <th>{jobsStrings.table.message}</th>
                 </tr>
               </thead>
               <tbody>

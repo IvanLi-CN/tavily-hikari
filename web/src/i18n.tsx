@@ -225,6 +225,29 @@ interface AdminTranslationsShape {
       }
     }
   }
+  jobs: {
+    title: string
+    description: string
+    filters: {
+      all: string
+      quota: string
+      logs: string
+    }
+    empty: {
+      loading: string
+      none: string
+    }
+    table: {
+      id: string
+      type: string
+      key: string
+      status: string
+      attempt: string
+      started: string
+      finished: string
+      message: string
+    }
+  }
   logs: {
     title: string
     description: string
@@ -632,6 +655,29 @@ export const translations: Record<Language, TranslationShape> = {
           none: '—',
         },
       },
+      jobs: {
+        title: 'Scheduled Jobs',
+        description: 'Recent background job executions.',
+        filters: {
+          all: 'All',
+          quota: 'Sync quota',
+          logs: 'Clean access logs',
+        },
+        empty: {
+          loading: 'Loading jobs…',
+          none: 'No jobs yet.',
+        },
+        table: {
+          id: 'ID',
+          type: 'Type',
+          key: 'Key',
+          status: 'Status',
+          attempt: 'Attempt',
+          started: 'Started',
+          finished: 'Finished',
+          message: 'Message',
+        },
+      },
       statuses: {
         active: 'Active',
         exhausted: 'Exhausted',
@@ -973,6 +1019,29 @@ export const translations: Record<Language, TranslationShape> = {
           requestFailedGeneric: '请求失败',
           httpStatus: 'HTTP {http}',
           none: '—',
+        },
+      },
+      jobs: {
+        title: '计划任务',
+        description: '后台计划任务与清理任务的最新执行记录。',
+        filters: {
+          all: '全部',
+          quota: '同步额度',
+          logs: '清理访问记录',
+        },
+        empty: {
+          loading: '正在加载任务…',
+          none: '暂无任务记录。',
+        },
+        table: {
+          id: 'ID',
+          type: '类型',
+          key: 'Key',
+          status: '状态',
+          attempt: '重试次数',
+          started: '开始时间',
+          finished: '结束时间',
+          message: '消息',
         },
       },
       statuses: {
