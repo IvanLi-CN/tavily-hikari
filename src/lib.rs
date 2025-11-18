@@ -1342,8 +1342,10 @@ impl KeyStore {
             .await?
             .unwrap_or(0);
 
+        // Use an inclusive lower bound so that logs with the same created_at
+        // as the previous max_ts are reprocessed rather than skipped.
         let max_created: Option<i64> =
-            sqlx::query_scalar("SELECT MAX(created_at) FROM auth_token_logs WHERE created_at > ?")
+            sqlx::query_scalar("SELECT MAX(created_at) FROM auth_token_logs WHERE created_at >= ?")
                 .bind(last_ts)
                 .fetch_one(&self.pool)
                 .await?;
@@ -1373,10 +1375,10 @@ impl KeyStore {
                 SUM(
                     CASE
                         WHEN result_status != 'success'
+                             AND result_status != 'quota_exhausted'
                              AND (
-                                result_status = 'quota_exhausted'
-                                OR (http_status BETWEEN 400 AND 499)
-                                OR (mcp_status BETWEEN 400 AND 499)
+                                (http_status BETWEEN 400 AND 599)
+                                OR (mcp_status BETWEEN 400 AND 599)
                             ) THEN 1
                         ELSE 0
                     END
@@ -1384,17 +1386,17 @@ impl KeyStore {
                 SUM(
                     CASE
                         WHEN result_status != 'success'
+                             AND result_status != 'quota_exhausted'
                              AND NOT (
-                                result_status = 'quota_exhausted'
-                                OR (http_status BETWEEN 400 AND 499)
-                                OR (mcp_status BETWEEN 400 AND 499)
+                                (http_status BETWEEN 400 AND 599)
+                                OR (mcp_status BETWEEN 400 AND 599)
                             ) THEN 1
                         ELSE 0
                     END
                 ) AS external_failure_count,
                 SUM(CASE WHEN result_status = 'quota_exhausted' THEN 1 ELSE 0 END) AS quota_exhausted_count
             FROM auth_token_logs
-            WHERE created_at > ? AND created_at <= ?
+            WHERE created_at >= ? AND created_at <= ?
             GROUP BY token_id, bucket_start
             ON CONFLICT(token_id, bucket_start, bucket_secs) DO UPDATE SET
                 success_count = token_usage_stats.success_count + excluded.success_count,
