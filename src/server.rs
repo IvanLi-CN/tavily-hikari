@@ -670,6 +670,12 @@ struct TokenMetricsView {
     monthly_success: i64,
     daily_success: i64,
     daily_failure: i64,
+    quota_hourly_used: i64,
+    quota_hourly_limit: i64,
+    quota_daily_used: i64,
+    quota_daily_limit: i64,
+    quota_monthly_used: i64,
+    quota_monthly_limit: i64,
 }
 
 #[derive(Deserialize)]
@@ -697,17 +703,55 @@ async fn get_token_metrics_public(
         .strip_prefix("th-")
         .and_then(|rest| rest.split_once('-').map(|(id, _)| id))
         .ok_or(StatusCode::BAD_REQUEST)?;
-
     let (monthly_success, daily_success, daily_failure) = state
         .proxy
         .token_success_breakdown(token_id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
+    // Use the same quota snapshot logic as the admin views so numbers stay consistent.
+    let quota_verdict = state
+        .proxy
+        .token_quota_snapshot(token_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let (
+        quota_hourly_used,
+        quota_hourly_limit,
+        quota_daily_used,
+        quota_daily_limit,
+        quota_monthly_used,
+        quota_monthly_limit,
+    ) = if let Some(q) = quota_verdict {
+        (
+            q.hourly_used,
+            q.hourly_limit,
+            q.daily_used,
+            q.daily_limit,
+            q.monthly_used,
+            q.monthly_limit,
+        )
+    } else {
+        (
+            0,
+            TOKEN_HOURLY_LIMIT,
+            0,
+            TOKEN_DAILY_LIMIT,
+            0,
+            TOKEN_MONTHLY_LIMIT,
+        )
+    };
+
     Ok(Json(TokenMetricsView {
         monthly_success,
         daily_success,
         daily_failure,
+        quota_hourly_used,
+        quota_hourly_limit,
+        quota_daily_used,
+        quota_daily_limit,
+        quota_monthly_used,
+        quota_monthly_limit,
     }))
 }
 
@@ -930,19 +974,79 @@ async fn sse_public(
     let token_param = q.token.clone();
 
     let stream = stream! {
-        type PublicSig = (i64, i64, Option<(i64, i64, i64)>);
+        type TokenSig = (i64, i64, i64, i64, i64, i64, i64, i64, i64);
+        type PublicSig = (i64, i64, Option<TokenSig>);
         async fn compute(state: &Arc<AppState>, token_param: &Option<String>) -> Option<(PublicMetricsPayload, PublicSig)> {
             let m = state.proxy.success_breakdown().await.ok()?;
             let public = PublicMetricsView { monthly_success: m.monthly_success, daily_success: m.daily_success };
-            let token_sig: Option<(i64,i64,i64)> = if let Some(token) = token_param.as_ref() {
+            let token_sig: Option<TokenSig> = if let Some(token) = token_param.as_ref() {
                 let valid = state.proxy.validate_access_token(token).await.ok()?;
                 if !valid { None } else {
                     let id = token.strip_prefix("th-").and_then(|r| r.split_once('-').map(|(id, _)| id))?;
                     let (ms, ds, df) = state.proxy.token_success_breakdown(id).await.ok()?;
-                    Some((ms, ds, df))
+                    let quota_verdict = state.proxy.token_quota_snapshot(id).await.ok()?;
+                    let (
+                        quota_hourly_used,
+                        quota_hourly_limit,
+                        quota_daily_used,
+                        quota_daily_limit,
+                        quota_monthly_used,
+                        quota_monthly_limit,
+                    ) = if let Some(q) = quota_verdict {
+                        (
+                            q.hourly_used,
+                            q.hourly_limit,
+                            q.daily_used,
+                            q.daily_limit,
+                            q.monthly_used,
+                            q.monthly_limit,
+                        )
+                    } else {
+                        (
+                            0,
+                            TOKEN_HOURLY_LIMIT,
+                            0,
+                            TOKEN_DAILY_LIMIT,
+                            0,
+                            TOKEN_MONTHLY_LIMIT,
+                        )
+                    };
+                    Some((
+                        ms,
+                        ds,
+                        df,
+                        quota_hourly_used,
+                        quota_hourly_limit,
+                        quota_daily_used,
+                        quota_daily_limit,
+                        quota_monthly_used,
+                        quota_monthly_limit,
+                    ))
                 }
             } else { None };
-            let token = token_sig.map(|(ms,ds,df)| TokenMetricsView { monthly_success: ms, daily_success: ds, daily_failure: df });
+            let token = token_sig.map(
+                |(
+                    ms,
+                    ds,
+                    df,
+                    quota_hourly_used,
+                    quota_hourly_limit,
+                    quota_daily_used,
+                    quota_daily_limit,
+                    quota_monthly_used,
+                    quota_monthly_limit,
+                )| TokenMetricsView {
+                    monthly_success: ms,
+                    daily_success: ds,
+                    daily_failure: df,
+                    quota_hourly_used,
+                    quota_hourly_limit,
+                    quota_daily_used,
+                    quota_daily_limit,
+                    quota_monthly_used,
+                    quota_monthly_limit,
+                },
+            );
             let sig: PublicSig = (public.monthly_success, public.daily_success, token_sig);
             let payload = PublicMetricsPayload { public, token };
             Some((payload, sig))
