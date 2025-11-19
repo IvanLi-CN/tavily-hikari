@@ -83,6 +83,9 @@ pub const TOKEN_MONTHLY_LIMIT: i64 = 3000;
 // Soft affinity window for mapping access tokens to API keys (in seconds).
 // Within this window, a token will try to reuse the same API key if it is still active.
 const TOKEN_AFFINITY_TTL_SECS: i64 = 15 * 60;
+// Hard cap on the number of token→key affinity entries kept in memory to prevent
+// unbounded growth under churny traffic (many distinct tokens).
+const TOKEN_AFFINITY_MAX_ENTRIES: usize = 10_000;
 
 const GRANULARITY_MINUTE: &str = "minute";
 const GRANULARITY_HOUR: &str = "hour";
@@ -133,6 +136,11 @@ impl TokenAffinityState {
 
     /// 记录或更新 token 的亲和 key，并从 now_ts 起应用 TTL。
     fn record_mapping(&mut self, token_id: &str, key_id: &str, now_ts: i64) {
+        // 先在写入前进行一次轻量清理，防止在高基数 token 场景下无限增长。
+        if self.mappings.len() >= TOKEN_AFFINITY_MAX_ENTRIES {
+            self.prune(now_ts);
+        }
+
         let expires_at = now_ts + self.ttl_secs;
         self.mappings.insert(
             token_id.to_owned(),
@@ -146,6 +154,33 @@ impl TokenAffinityState {
     /// 显式删除 token 的亲和关系。
     fn drop_mapping(&mut self, token_id: &str) {
         self.mappings.remove(token_id);
+    }
+
+    /// 清理过期条目，并在必要时进一步驱逐部分条目以控制总体大小。
+    fn prune(&mut self, now_ts: i64) {
+        // 先移除所有已经过期的亲和关系。
+        self.mappings.retain(|_, v| v.expires_at > now_ts);
+
+        if self.mappings.len() <= TOKEN_AFFINITY_MAX_ENTRIES {
+            return;
+        }
+
+        // 如果仍然超过上限，则按过期时间从最近到最远排序，优先淘汰“最接近过期”的条目。
+        // 目标是把大小收缩到上限的一半，避免每次触顶都全量排序。
+        let mut entries: Vec<(String, i64)> = self
+            .mappings
+            .iter()
+            .map(|(k, v)| (k.clone(), v.expires_at))
+            .collect();
+
+        entries.sort_by_key(|(_, expires_at)| *expires_at);
+
+        let target_len = TOKEN_AFFINITY_MAX_ENTRIES / 2;
+        let to_remove = self.mappings.len().saturating_sub(target_len.max(1));
+
+        for (key, _) in entries.into_iter().take(to_remove) {
+            self.mappings.remove(&key);
+        }
     }
 }
 
@@ -205,6 +240,27 @@ mod affinity_tests {
 
         let cand = state.get_candidate("token-a", now + 10);
         assert!(cand.is_none());
+    }
+
+    #[test]
+    fn prune_keeps_map_bounded() {
+        let mut state = TokenAffinityState::new(60);
+        let now = 1_000;
+
+        // 填充超过上限的条目，验证内部会触发收缩。
+        let over = TOKEN_AFFINITY_MAX_ENTRIES + 100;
+        for i in 0..over {
+            let token_id = format!("token-{i}");
+            let key_id = format!("key-{i}");
+            state.record_mapping(&token_id, &key_id, now);
+        }
+
+        assert!(
+            state.mappings.len() <= TOKEN_AFFINITY_MAX_ENTRIES,
+            "mappings.len()={} should be <= {}",
+            state.mappings.len(),
+            TOKEN_AFFINITY_MAX_ENTRIES
+        );
     }
 }
 
