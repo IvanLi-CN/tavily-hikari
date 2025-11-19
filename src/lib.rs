@@ -80,6 +80,9 @@ const ALLOWED_PREFIXES: &[&str] = &["x-mcp-", "x-tavily-", "tavily-"];
 pub const TOKEN_HOURLY_LIMIT: i64 = 100;
 pub const TOKEN_DAILY_LIMIT: i64 = 500;
 pub const TOKEN_MONTHLY_LIMIT: i64 = 3000;
+// Soft affinity window for mapping access tokens to API keys (in seconds).
+// Within this window, a token will try to reuse the same API key if it is still active.
+const TOKEN_AFFINITY_TTL_SECS: i64 = 15 * 60;
 
 const GRANULARITY_MINUTE: &str = "minute";
 const GRANULARITY_HOUR: &str = "hour";
@@ -94,6 +97,12 @@ struct SanitizedHeaders {
     headers: HeaderMap,
     forwarded: Vec<String>,
     dropped: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct TokenAffinity {
+    key_id: String,
+    expires_at: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -118,6 +127,8 @@ pub struct TavilyProxy {
     key_store: Arc<KeyStore>,
     upstream_origin: String,
     token_quota: TokenQuota,
+    affinity: Arc<Mutex<HashMap<String, TokenAffinity>>>,
+    affinity_ttl_secs: i64,
 }
 
 impl TavilyProxy {
@@ -162,12 +173,87 @@ impl TavilyProxy {
             key_store,
             upstream_origin,
             token_quota,
+            affinity: Arc::new(Mutex::new(HashMap::new())),
+            affinity_ttl_secs: TOKEN_AFFINITY_TTL_SECS,
         })
+    }
+
+    async fn acquire_key_for(
+        &self,
+        auth_token_id: Option<&str>,
+    ) -> Result<ApiKeyLease, ProxyError> {
+        let now = Utc::now().timestamp();
+
+        if let Some(token_id) = auth_token_id {
+            // Fast path: try to reuse an existing, non-expired affinity key.
+            if let Some(lease) = self.try_acquire_affinity_key(token_id, now).await? {
+                return Ok(lease);
+            }
+
+            // No valid affinity key; fall back to global LRU scheduler.
+            let lease = self.key_store.acquire_key().await?;
+
+            {
+                // Record new affinity mapping with soft TTL.
+                let mut map = self.affinity.lock().await;
+                map.insert(
+                    token_id.to_owned(),
+                    TokenAffinity {
+                        key_id: lease.id.clone(),
+                        expires_at: now + self.affinity_ttl_secs,
+                    },
+                );
+            }
+
+            Ok(lease)
+        } else {
+            // No token id (e.g. certain internal or dev flows) → plain global scheduling.
+            self.key_store.acquire_key().await
+        }
+    }
+
+    async fn try_acquire_affinity_key(
+        &self,
+        token_id: &str,
+        now: i64,
+    ) -> Result<Option<ApiKeyLease>, ProxyError> {
+        // Read affinity mapping without holding the lock over async work.
+        let key_id_opt = {
+            let mut map = self.affinity.lock().await;
+            if let Some(entry) = map.get(token_id) {
+                if entry.expires_at > now {
+                    Some(entry.key_id.clone())
+                } else {
+                    // Expired mapping – clean up eagerly.
+                    map.remove(token_id);
+                    None
+                }
+            } else {
+                None
+            }
+        };
+
+        let Some(key_id) = key_id_opt else {
+            return Ok(None);
+        };
+
+        // Only respect affinity when the mapped key is still active and not deleted.
+        match self.key_store.try_acquire_specific_key(&key_id).await? {
+            Some(lease) => Ok(Some(lease)),
+            None => {
+                // Underlying key is no longer usable; drop the mapping.
+                let mut map = self.affinity.lock().await;
+                map.remove(token_id);
+                Ok(None)
+            }
+        }
     }
 
     /// 将请求透传到 Tavily upstream 并记录日志。
     pub async fn proxy_request(&self, request: ProxyRequest) -> Result<ProxyResponse, ProxyError> {
-        let lease = self.key_store.acquire_key().await?;
+        let lease = self
+            .acquire_key_for(request.auth_token_id.as_deref())
+            .await?;
 
         let mut url = self.upstream.clone();
         url.set_path(request.path.as_str());
@@ -1974,6 +2060,37 @@ impl KeyStore {
         }
 
         Err(ProxyError::NoAvailableKeys)
+    }
+
+    async fn try_acquire_specific_key(
+        &self,
+        key_id: &str,
+    ) -> Result<Option<ApiKeyLease>, ProxyError> {
+        self.reset_monthly().await?;
+
+        let now = Utc::now().timestamp();
+
+        if let Some((id, api_key)) = sqlx::query_as::<_, (String, String)>(
+            r#"
+            SELECT id, api_key
+            FROM api_keys
+            WHERE id = ? AND status = ? AND deleted_at IS NULL
+            LIMIT 1
+            "#,
+        )
+        .bind(key_id)
+        .bind(STATUS_ACTIVE)
+        .fetch_optional(&self.pool)
+        .await?
+        {
+            self.touch_key(&api_key, now).await?;
+            return Ok(Some(ApiKeyLease {
+                id,
+                secret: api_key,
+            }));
+        }
+
+        Ok(None)
     }
 
     // ----- Access token helpers -----

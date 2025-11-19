@@ -9,7 +9,7 @@ Tavily Hikari 是一个面向 MCP (Model Context Protocol) 的 Tavily 代理层�
 
 ## 功能亮点
 
-- **多密钥轮询**：SQLite 记录最近使用时间，代理端始终挑选“最久未使用”的 Key，均衡配额并防止单 Key 被打爆。
+- **多密钥轮询 + 亲和**：SQLite 记录每个 Key 的最近使用时间，并为访问令牌（access token）维护一个短期“亲和”关系——在一段时间窗口内，同一 token 会优先命中同一把 Tavily API key；亲和关系失效或 Key 状态变化（耗尽/禁用）时，再通过全局“最久未使用”策略在健康 Key 间重新分配，以尽量均衡磨损。
 - **短 ID 与密钥密级隔离**：每个 Tavily Key 会生成 4 位 nanoid，对外只暴露短 ID；真实 Key 仅管理员 API/Web 控制台可读取。
 - **健康巡检**：一旦收到 Tavily 432（额度耗尽）会把 Key 标记为 `exhausted`，并在下一个 UTC 月初或管理员恢复后重新上阵。
 - **高匿透传**：仅透传 `/mcp` 与静态资源，自动清洗 `X-Forwarded-*` 等敏感头并重写 `Origin/Referer`，细节见 [`docs/high-anonymity-proxy.md`](docs/high-anonymity-proxy.md)。
