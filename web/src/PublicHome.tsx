@@ -187,11 +187,19 @@ function PublicHome(): JSX.Element {
           setMetrics({ monthlySuccess: data.public.monthlySuccess, dailySuccess: data.public.dailySuccess })
         }
         if (data?.token) {
-          setTokenMetrics({
+          const next: TokenMetrics = {
             monthlySuccess: data.token.monthlySuccess,
             dailySuccess: data.token.dailySuccess,
             dailyFailure: data.token.dailyFailure,
-          })
+            quotaHourlyUsed: data.token.quotaHourlyUsed ?? 0,
+            quotaHourlyLimit: data.token.quotaHourlyLimit ?? TOKEN_HOURLY_LIMIT,
+            quotaDailyUsed: data.token.quotaDailyUsed ?? 0,
+            quotaDailyLimit: data.token.quotaDailyLimit ?? TOKEN_DAILY_LIMIT,
+            quotaMonthlyUsed: data.token.quotaMonthlyUsed ?? 0,
+            quotaMonthlyLimit: data.token.quotaMonthlyLimit ?? TOKEN_MONTHLY_LIMIT,
+          }
+          setTokenMetrics(next)
+          setRecentTokenUsage(next)
         }
       } catch {
         // ignore parse errors
@@ -418,24 +426,24 @@ function PublicHome(): JSX.Element {
             <div className="access-stat quota-stat-card">
               <div className="quota-stat-label">{publicStrings.accessPanel.stats.hourlyLimit}</div>
               <div className="quota-stat-value">
-                {formatNumber(recentTokenUsage?.dailySuccess ?? 0)}
-                <span>/ {formatNumber(TOKEN_HOURLY_LIMIT)}</span>
+                {formatNumber(recentTokenUsage?.quotaHourlyUsed ?? 0)}
+                <span>/ {formatNumber(recentTokenUsage?.quotaHourlyLimit ?? TOKEN_HOURLY_LIMIT)}</span>
               </div>
               <div className="quota-stat-description">Rolling 1-hour window</div>
             </div>
             <div className="access-stat quota-stat-card">
               <div className="quota-stat-label">{publicStrings.accessPanel.stats.dailyLimit}</div>
               <div className="quota-stat-value">
-                {formatNumber(recentTokenUsage?.dailySuccess ?? 0)}
-                <span>/ {formatNumber(TOKEN_DAILY_LIMIT)}</span>
+                {formatNumber(recentTokenUsage?.quotaDailyUsed ?? 0)}
+                <span>/ {formatNumber(recentTokenUsage?.quotaDailyLimit ?? TOKEN_DAILY_LIMIT)}</span>
               </div>
               <div className="quota-stat-description">Rolling 24-hour window</div>
             </div>
             <div className="access-stat quota-stat-card">
               <div className="quota-stat-label">{publicStrings.accessPanel.stats.monthlyLimit}</div>
               <div className="quota-stat-value">
-                {formatNumber(recentTokenUsage?.monthlySuccess ?? 0)}
-                <span>/ {formatNumber(TOKEN_MONTHLY_LIMIT)}</span>
+                {formatNumber(recentTokenUsage?.quotaMonthlyUsed ?? 0)}
+                <span>/ {formatNumber(recentTokenUsage?.quotaMonthlyLimit ?? TOKEN_MONTHLY_LIMIT)}</span>
               </div>
               <div className="quota-stat-description">Calendar month</div>
             </div>
@@ -461,7 +469,15 @@ function PublicHome(): JSX.Element {
                     const next = event.target.value
                     persistToken(next)
                     if (isFullToken(next)) {
-                      fetchTokenMetrics(next).then(setTokenMetrics).catch(() => setTokenMetrics(null))
+                      fetchTokenMetrics(next)
+                        .then((tm) => {
+                          setTokenMetrics(tm)
+                          setRecentTokenUsage(tm)
+                        })
+                        .catch(() => {
+                          setTokenMetrics(null)
+                          setRecentTokenUsage(null)
+                        })
                     }
                   }}
                   placeholder={publicStrings.accessToken.placeholder}

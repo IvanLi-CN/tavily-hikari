@@ -727,6 +727,16 @@ impl TavilyProxy {
         self.token_quota.check(token_id).await
     }
 
+    /// Read-only snapshot of current token quota usage (hour / day / month).
+    pub async fn token_quota_snapshot(
+        &self,
+        token_id: &str,
+    ) -> Result<Option<TokenQuotaVerdict>, ProxyError> {
+        let ids = vec![token_id.to_string()];
+        let verdicts = self.token_quota.snapshot_many(&ids).await?;
+        Ok(verdicts.get(token_id).cloned())
+    }
+
     /// Token logs (page-based pagination)
     pub async fn token_logs_page(
         &self,

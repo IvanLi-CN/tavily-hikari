@@ -19,6 +19,12 @@ export interface TokenMetrics {
   monthlySuccess: number
   dailySuccess: number
   dailyFailure: number
+  quotaHourlyUsed: number
+  quotaHourlyLimit: number
+  quotaDailyUsed: number
+  quotaDailyLimit: number
+  quotaMonthlyUsed: number
+  quotaMonthlyLimit: number
 }
 
 export interface TokenHourlyBucket {
