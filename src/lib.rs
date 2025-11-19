@@ -103,6 +103,7 @@ const AUTH_TOKEN_LOG_RETENTION_SECS: i64 = 90 * SECS_PER_DAY;
 
 const META_KEY_DATA_CONSISTENCY_DONE: &str = "data_consistency_v1_done";
 const META_KEY_TOKEN_USAGE_ROLLUP_TS: &str = "token_usage_rollup_last_ts";
+const META_KEY_HEAL_ORPHAN_TOKENS_V1: &str = "heal_orphan_auth_tokens_from_logs_v1";
 
 #[derive(Debug, Clone)]
 struct SanitizedHeaders {
@@ -1154,7 +1155,8 @@ impl KeyStore {
                 group_name TEXT,
                 total_requests INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL,
-                last_used_at INTEGER
+                last_used_at INTEGER,
+                deleted_at INTEGER
             )
             "#,
         )
@@ -1305,6 +1307,18 @@ impl KeyStore {
             self.set_meta_i64(META_KEY_DATA_CONSISTENCY_DONE, 1).await?;
         }
 
+        // One-time healer: backfill soft-deleted auth_tokens rows for any token_id
+        // that only exists in auth_token_logs. This ensures that downstream usage
+        // rollups into token_usage_stats (which reference auth_tokens via FOREIGN KEY)
+        // will not fail with constraint errors for legacy data.
+        if self
+            .get_meta_i64(META_KEY_HEAL_ORPHAN_TOKENS_V1)
+            .await?
+            .is_none()
+        {
+            self.heal_orphan_auth_tokens_from_logs().await?;
+        }
+
         Ok(())
     }
 
@@ -1340,6 +1354,64 @@ impl KeyStore {
         )
         .execute(&self.pool)
         .await?;
+
+        Ok(())
+    }
+
+    /// Ensure that every token_id referenced in auth_token_logs has a corresponding
+    /// auth_tokens row. Missing rows are backfilled as disabled, soft-deleted tokens
+    /// so that downstream usage aggregation into token_usage_stats (with FOREIGN KEYs)
+    /// does not fail for legacy data.
+    async fn heal_orphan_auth_tokens_from_logs(&self) -> Result<(), ProxyError> {
+        // Skip if auth_token_logs table does not exist (very old databases).
+        let has_logs_table = sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'auth_token_logs' LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        if has_logs_table.is_none() {
+            self.set_meta_i64(META_KEY_HEAL_ORPHAN_TOKENS_V1, 0).await?;
+            return Ok(());
+        }
+
+        let now = Utc::now().timestamp();
+
+        sqlx::query(
+            r#"
+            INSERT INTO auth_tokens (
+                id,
+                secret,
+                enabled,
+                note,
+                group_name,
+                total_requests,
+                created_at,
+                last_used_at,
+                deleted_at
+            )
+            SELECT
+                l.token_id,
+                'restored-from-logs',
+                0,
+                '[auto-restored from logs]',
+                NULL,
+                COUNT(*) AS total_requests,
+                MIN(l.created_at) AS created_at,
+                MAX(l.created_at) AS last_used_at,
+                ?
+            FROM auth_token_logs l
+            LEFT JOIN auth_tokens t ON t.id = l.token_id
+            WHERE t.id IS NULL
+            GROUP BY l.token_id
+            "#,
+        )
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+
+        // Record completion so this healer is only ever run once per database.
+        self.set_meta_i64(META_KEY_HEAL_ORPHAN_TOKENS_V1, now)
+            .await?;
 
         Ok(())
     }
@@ -1693,6 +1765,11 @@ impl KeyStore {
         }
         if !self.auth_tokens_column_exists("group_name").await? {
             sqlx::query("ALTER TABLE auth_tokens ADD COLUMN group_name TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
+        if !self.auth_tokens_column_exists("deleted_at").await? {
+            sqlx::query("ALTER TABLE auth_tokens ADD COLUMN deleted_at INTEGER")
                 .execute(&self.pool)
                 .await?;
         }
@@ -2443,7 +2520,7 @@ impl KeyStore {
         // and once when we actually record the attempt). Only return whether the
         // token exists and is enabled.
         let row = sqlx::query_as::<_, (i64, i64)>(
-            "SELECT COUNT(1) as cnt, enabled FROM auth_tokens WHERE id = ? AND secret = ? LIMIT 1",
+            "SELECT COUNT(1) as cnt, enabled FROM auth_tokens WHERE id = ? AND secret = ? AND deleted_at IS NULL LIMIT 1",
         )
         .bind(id)
         .bind(secret)
@@ -2454,20 +2531,19 @@ impl KeyStore {
     }
 
     async fn create_access_token(&self, note: Option<&str>) -> Result<AuthTokenSecret, ProxyError> {
-        let now = Utc::now().timestamp();
         const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
         loop {
             let id = random_string(ALPHABET, 4);
             // Increase secret length to strengthen token entropy while keeping id short.
             let secret = random_string(ALPHABET, 24);
             let res = sqlx::query(
-                r#"INSERT INTO auth_tokens (id, secret, enabled, note, group_name, total_requests, created_at, last_used_at)
-                   VALUES (?, ?, 1, ?, NULL, 0, ?, NULL)"#,
+                r#"INSERT INTO auth_tokens (id, secret, enabled, note, group_name, total_requests, created_at, last_used_at, deleted_at)
+                   VALUES (?, ?, 1, ?, NULL, 0, ?, NULL, NULL)"#,
             )
             .bind(&id)
             .bind(&secret)
             .bind(note.unwrap_or(""))
-            .bind(now)
+            .bind(Utc::now().timestamp())
             .execute(&self.pool)
             .await;
 
@@ -2495,7 +2571,6 @@ impl KeyStore {
         count: usize,
         note: Option<&str>,
     ) -> Result<Vec<AuthTokenSecret>, ProxyError> {
-        let now = Utc::now().timestamp();
         const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
         let mut tx = self.pool.begin().await?;
         let mut out: Vec<AuthTokenSecret> = Vec::with_capacity(count);
@@ -2504,14 +2579,14 @@ impl KeyStore {
                 let id = random_string(ALPHABET, 4);
                 let secret = random_string(ALPHABET, 24);
                 let res = sqlx::query(
-                    r#"INSERT INTO auth_tokens (id, secret, enabled, note, group_name, total_requests, created_at, last_used_at)
-                       VALUES (?, ?, 1, ?, ?, 0, ?, NULL)"#,
+                    r#"INSERT INTO auth_tokens (id, secret, enabled, note, group_name, total_requests, created_at, last_used_at, deleted_at)
+                       VALUES (?, ?, 1, ?, ?, 0, ?, NULL, NULL)"#,
                 )
                 .bind(&id)
                 .bind(&secret)
                 .bind(note.unwrap_or(""))
                 .bind(group)
-                .bind(now)
+                .bind(Utc::now().timestamp())
                 .execute(&mut *tx)
                 .await;
 
@@ -2553,6 +2628,7 @@ impl KeyStore {
         >(
             r#"SELECT id, enabled, note, group_name, total_requests, created_at, last_used_at
                FROM auth_tokens
+               WHERE deleted_at IS NULL
                ORDER BY created_at DESC, id DESC"#,
         )
         .fetch_all(&self.pool)
@@ -2588,9 +2664,10 @@ impl KeyStore {
         let per_page = per_page.clamp(1, 200);
         let offset = (page - 1) * per_page;
 
-        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM auth_tokens")
-            .fetch_one(&self.pool)
-            .await?;
+        let total: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM auth_tokens WHERE deleted_at IS NULL")
+                .fetch_one(&self.pool)
+                .await?;
 
         let rows = sqlx::query_as::<
             _,
@@ -2606,6 +2683,7 @@ impl KeyStore {
         >(
             r#"SELECT id, enabled, note, group_name, total_requests, created_at, last_used_at
                FROM auth_tokens
+               WHERE deleted_at IS NULL
                ORDER BY created_at DESC, id DESC
                LIMIT ? OFFSET ?"#,
         )
@@ -2636,7 +2714,9 @@ impl KeyStore {
     }
 
     async fn delete_access_token(&self, id: &str) -> Result<(), ProxyError> {
-        sqlx::query("DELETE FROM auth_tokens WHERE id = ?")
+        let now = Utc::now().timestamp();
+        sqlx::query("UPDATE auth_tokens SET enabled = 0, deleted_at = ? WHERE id = ?")
+            .bind(now)
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -2644,7 +2724,7 @@ impl KeyStore {
     }
 
     async fn set_access_token_enabled(&self, id: &str, enabled: bool) -> Result<(), ProxyError> {
-        sqlx::query("UPDATE auth_tokens SET enabled = ? WHERE id = ?")
+        sqlx::query("UPDATE auth_tokens SET enabled = ? WHERE id = ? AND deleted_at IS NULL")
             .bind(if enabled { 1 } else { 0 })
             .bind(id)
             .execute(&self.pool)
@@ -2653,7 +2733,7 @@ impl KeyStore {
     }
 
     async fn update_access_token_note(&self, id: &str, note: &str) -> Result<(), ProxyError> {
-        sqlx::query("UPDATE auth_tokens SET note = ? WHERE id = ?")
+        sqlx::query("UPDATE auth_tokens SET note = ? WHERE id = ? AND deleted_at IS NULL")
             .bind(note)
             .bind(id)
             .execute(&self.pool)
@@ -2665,11 +2745,12 @@ impl KeyStore {
         &self,
         id: &str,
     ) -> Result<Option<AuthTokenSecret>, ProxyError> {
-        let row =
-            sqlx::query_as::<_, (String,)>("SELECT secret FROM auth_tokens WHERE id = ? LIMIT 1")
-                .bind(id)
-                .fetch_optional(&self.pool)
-                .await?;
+        let row = sqlx::query_as::<_, (String,)>(
+            "SELECT secret FROM auth_tokens WHERE id = ? AND deleted_at IS NULL LIMIT 1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
         Ok(row.map(|(secret,)| AuthTokenSecret {
             id: id.to_string(),
             token: Self::compose_full_token(id, &secret),
@@ -2679,11 +2760,12 @@ impl KeyStore {
     /// Update the secret for an existing token id and return the new full token string.
     async fn rotate_access_token_secret(&self, id: &str) -> Result<AuthTokenSecret, ProxyError> {
         // Ensure token exists first to provide a clearer error on missing id
-        let exists =
-            sqlx::query_scalar::<_, Option<i64>>("SELECT 1 FROM auth_tokens WHERE id = ? LIMIT 1")
-                .bind(id)
-                .fetch_optional(&self.pool)
-                .await?;
+        let exists = sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT 1 FROM auth_tokens WHERE id = ? AND deleted_at IS NULL LIMIT 1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
         if exists.is_none() {
             return Err(ProxyError::Database(sqlx::Error::RowNotFound));
         }
@@ -2692,7 +2774,7 @@ impl KeyStore {
         const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
         let new_secret = random_string(ALPHABET, 24);
 
-        sqlx::query("UPDATE auth_tokens SET secret = ? WHERE id = ?")
+        sqlx::query("UPDATE auth_tokens SET secret = ? WHERE id = ? AND deleted_at IS NULL")
             .bind(&new_secret)
             .bind(id)
             .execute(&self.pool)
@@ -2738,7 +2820,7 @@ impl KeyStore {
         .await?;
 
         sqlx::query(
-            "UPDATE auth_tokens SET total_requests = total_requests + 1, last_used_at = ? WHERE id = ?",
+            "UPDATE auth_tokens SET total_requests = total_requests + 1, last_used_at = ? WHERE id = ? AND deleted_at IS NULL",
         )
         .bind(created_at)
         .bind(token_id)
@@ -4627,6 +4709,132 @@ mod tests {
             .expect("quota check ok");
         assert!(!verdict.allowed, "expected hourly limit to block");
         assert_eq!(verdict.exceeded_window, Some(QuotaWindow::Hour));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn delete_access_token_soft_deletes_and_hides_from_list() {
+        let db_path = temp_db_path("token-delete");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        let token = proxy
+            .create_access_token(Some("soft-delete-test"))
+            .await
+            .expect("create token");
+
+        // Sanity check: token is visible before delete.
+        let tokens_before = proxy
+            .list_access_tokens()
+            .await
+            .expect("list tokens before delete");
+        assert!(
+            tokens_before.iter().any(|t| t.id == token.id),
+            "token should appear in list before delete"
+        );
+
+        // Inspect raw row to confirm it's enabled and not deleted.
+        let store = proxy.key_store.clone();
+        let (enabled_before, deleted_at_before): (i64, Option<i64>) =
+            sqlx::query_as("SELECT enabled, deleted_at FROM auth_tokens WHERE id = ?")
+                .bind(&token.id)
+                .fetch_one(&store.pool)
+                .await
+                .expect("token row exists before delete");
+        assert_eq!(enabled_before, 1);
+        assert!(
+            deleted_at_before.is_none(),
+            "deleted_at should be NULL before delete"
+        );
+
+        // Perform delete via public API (soft delete).
+        proxy
+            .delete_access_token(&token.id)
+            .await
+            .expect("delete token");
+
+        // Row still exists but marked disabled and soft-deleted.
+        let (enabled_after, deleted_at_after): (i64, Option<i64>) =
+            sqlx::query_as("SELECT enabled, deleted_at FROM auth_tokens WHERE id = ?")
+                .bind(&token.id)
+                .fetch_one(&store.pool)
+                .await
+                .expect("token row exists after delete");
+        assert_eq!(enabled_after, 0, "token should be disabled after delete");
+        assert!(
+            deleted_at_after.is_some(),
+            "deleted_at should be set after delete"
+        );
+
+        // Token is no longer returned from management listing.
+        let tokens_after = proxy
+            .list_access_tokens()
+            .await
+            .expect("list tokens after delete");
+        assert!(
+            tokens_after.iter().all(|t| t.id != token.id),
+            "soft-deleted token should not appear in list"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn heal_orphan_auth_tokens_from_logs_creates_soft_deleted_token() {
+        let db_path = temp_db_path("heal-orphan");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        // Initialize schema.
+        let store = KeyStore::new(&db_str).await.expect("keystore created");
+
+        // Insert an auth_token_logs entry for a token id that does not exist in auth_tokens.
+        let orphan_token_id = "ZZZZ";
+        sqlx::query(
+            r#"
+            INSERT INTO auth_token_logs (
+                token_id, method, path, query, http_status, mcp_status, result_status, error_message, created_at
+            ) VALUES (?, 'GET', '/mcp', NULL, 200, NULL, 'success', NULL, 1234567890)
+            "#,
+        )
+        .bind(orphan_token_id)
+        .execute(&store.pool)
+        .await
+        .expect("insert orphan log");
+
+        // Clear healer meta key so that we can invoke the healer path again for this test.
+        sqlx::query("DELETE FROM meta WHERE key = ?")
+            .bind(META_KEY_HEAL_ORPHAN_TOKENS_V1)
+            .execute(&store.pool)
+            .await
+            .expect("delete meta gate");
+
+        // Run healer directly.
+        store
+            .heal_orphan_auth_tokens_from_logs()
+            .await
+            .expect("heal orphan tokens");
+
+        // Verify that a soft-deleted auth_tokens row was created for the orphan id.
+        let (enabled, total_requests, deleted_at): (i64, i64, Option<i64>) = sqlx::query_as(
+            "SELECT enabled, total_requests, deleted_at FROM auth_tokens WHERE id = ?",
+        )
+        .bind(orphan_token_id)
+        .fetch_one(&store.pool)
+        .await
+        .expect("restored token row");
+
+        assert_eq!(enabled, 0, "restored token should be disabled");
+        assert_eq!(
+            total_requests, 1,
+            "restored token should count orphan log entries"
+        );
+        assert!(
+            deleted_at.is_some(),
+            "restored token should be marked soft-deleted"
+        );
 
         let _ = std::fs::remove_file(db_path);
     }
