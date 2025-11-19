@@ -187,11 +187,6 @@ export function fetchApiKeyDetail(id: string, signal?: AbortSignal): Promise<Api
   return requestJson(`/api/keys/${encoded}`, { signal })
 }
 
-export function fetchRequestLogs(limit = 50, signal?: AbortSignal): Promise<RequestLog[]> {
-  const params = new URLSearchParams({ limit: limit.toString() })
-  return requestJson(`/api/logs?${params.toString()}`, { signal })
-}
-
 export function fetchApiKeySecret(id: string, signal?: AbortSignal): Promise<ApiKeySecret> {
   const encoded = encodeURIComponent(id)
   return requestJson(`/api/keys/${encoded}/secret`, { signal })
@@ -225,22 +220,6 @@ export interface JobLogView {
 }
 
 export type JobGroup = 'all' | 'quota' | 'usage' | 'logs'
-
-export function fetchJobs(
-  page = 1,
-  perPage = 10,
-  group: JobGroup = 'all',
-  signal?: AbortSignal,
-): Promise<Paginated<JobLogView>> {
-  const params = new URLSearchParams({
-    page: String(page),
-    per_page: String(perPage),
-  })
-  if (group !== 'all') {
-    params.set('group', group)
-  }
-  return requestJson(`/api/jobs?${params.toString()}`, { signal })
-}
 
 export interface Profile {
   displayName: string | null
@@ -316,6 +295,40 @@ export interface Paginated<T> {
   total: number
   page: number
   perPage: number
+}
+
+export type LogResultFilter = 'success' | 'error' | 'quota_exhausted'
+
+export function fetchRequestLogs(
+  page = 1,
+  perPage = 20,
+  result?: LogResultFilter,
+  signal?: AbortSignal,
+): Promise<Paginated<RequestLog>> {
+  const params = new URLSearchParams({
+    page: String(page),
+    per_page: String(perPage),
+  })
+  if (result != null) {
+    params.set('result', result)
+  }
+  return requestJson(`/api/logs?${params.toString()}`, { signal })
+}
+
+export function fetchJobs(
+  page = 1,
+  perPage = 10,
+  group: JobGroup = 'all',
+  signal?: AbortSignal,
+): Promise<Paginated<JobLogView>> {
+  const params = new URLSearchParams({
+    page: String(page),
+    per_page: String(perPage),
+  })
+  if (group !== 'all') {
+    params.set('group', group)
+  }
+  return requestJson(`/api/jobs?${params.toString()}`, { signal })
 }
 
 export interface TokenGroup {

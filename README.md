@@ -104,7 +104,7 @@ If `--keys`/`TAVILY_API_KEYS` is supplied, the database sync logic adds or reviv
 | `GET`    | `/health`              | Liveness probe.                                        | none        |
 | `GET`    | `/api/summary`         | High-level success/failure stats and last activity.    | none        |
 | `GET`    | `/api/keys`            | Lists short IDs, status, and counters.                 | none        |
-| `GET`    | `/api/logs?limit=50`   | Recent proxy logs (default 50).                        | none        |
+| `GET`    | `/api/logs?page=1`     | Recent proxy logs (paginated, default 20 per page).    | none        |
 | `POST`   | `/api/keys`            | Admin: add/restore a key. Body `{ "api_key": "..." }`. | ForwardAuth |
 | `DELETE` | `/api/keys/:id`        | Admin: soft-delete key by short ID.                    | ForwardAuth |
 | `GET`    | `/api/keys/:id/secret` | Admin: reveal the real Tavily key.                     | ForwardAuth |

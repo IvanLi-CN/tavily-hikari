@@ -49,6 +49,8 @@ function parseHashForTokenId(): string | null {
 }
 
 const REFRESH_INTERVAL_MS = 30_000
+const LOGS_PER_PAGE = 20
+const LOGS_MAX_PAGES = 10
 
 const numberFormatter = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 0,
@@ -249,6 +251,9 @@ function AdminDashboard(): JSX.Element {
   const [tokenGroupsExpanded, setTokenGroupsExpanded] = useState(false)
   const [tokenGroupsCollapsedOverflowing, setTokenGroupsCollapsedOverflowing] = useState(false)
   const [logs, setLogs] = useState<RequestLog[]>([])
+  const [logsTotal, setLogsTotal] = useState(0)
+  const [logsPage, setLogsPage] = useState(1)
+  const [logResultFilter, setLogResultFilter] = useState<'all' | 'success' | 'error' | 'quota_exhausted'>('all')
   const [jobs, setJobs] = useState<import('./api').JobLogView[]>([])
   const [jobFilter, setJobFilter] = useState<'all' | 'quota' | 'usage' | 'logs'>('all')
   const [jobsPage, setJobsPage] = useState(1)
@@ -360,10 +365,9 @@ function AdminDashboard(): JSX.Element {
   const loadData = useCallback(
     async (signal?: AbortSignal) => {
       try {
-        const [summaryData, keyData, logData, ver, profileData, tokenData, tokenGroupsData] = await Promise.all([
+        const [summaryData, keyData, ver, profileData, tokenData, tokenGroupsData] = await Promise.all([
           fetchSummary(signal),
           fetchApiKeys(signal),
-          fetchRequestLogs(50, signal),
           fetchVersion(signal).catch(() => null),
           fetchProfile(signal).catch(() => null),
           fetchTokens(
@@ -390,23 +394,9 @@ function AdminDashboard(): JSX.Element {
         setProfile(profileData ?? null)
         setSummary(summaryData)
         setKeys(keyData)
-        setLogs(logData)
         setTokens(tokenData.items)
         setTokensTotal(tokenData.total)
         setTokenGroups(tokenGroupsData)
-        setExpandedLogs((previous) => {
-          if (previous.size === 0) {
-            return new Set()
-          }
-          const validIds = new Set(logData.map((item) => item.id))
-          const next = new Set<number>()
-          for (const id of previous) {
-            if (validIds.has(id)) {
-              next.add(id)
-            }
-          }
-          return next
-        })
         setVersion(ver ?? null)
         setLastUpdated(new Date())
         setError(null)
@@ -430,6 +420,37 @@ function AdminDashboard(): JSX.Element {
     void loadData(controller.signal)
     return () => controller.abort()
   }, [loadData])
+
+  // Logs list: backend pagination & result filter
+  useEffect(() => {
+    const controller = new AbortController()
+    const resultParam =
+      logResultFilter === 'all' ? undefined : (logResultFilter as 'success' | 'error' | 'quota_exhausted')
+
+    fetchRequestLogs(logsPage, LOGS_PER_PAGE, resultParam, controller.signal)
+      .then((result) => {
+        if (controller.signal.aborted) return
+        setLogs(result.items)
+        setLogsTotal(result.total)
+        setExpandedLogs((previous) => {
+          if (previous.size === 0) return new Set()
+          const visibleIds = new Set(result.items.map((item) => item.id))
+          const next = new Set<number>()
+          for (const id of previous) {
+            if (visibleIds.has(id)) next.add(id)
+          }
+          return next
+        })
+      })
+      .catch((err) => {
+        if (controller.signal.aborted) return
+        console.error(err)
+        setLogs([])
+        setLogsTotal(0)
+      })
+
+    return () => controller.abort()
+  }, [logsPage, logResultFilter])
 
   // Jobs list: refetch when filter or page changes
   useEffect(() => {
@@ -524,14 +545,6 @@ function AdminDashboard(): JSX.Element {
           const data = JSON.parse(ev.data) as { summary: Summary; keys: ApiKeyStats[]; logs: RequestLog[] }
           setSummary(data.summary)
           setKeys(data.keys)
-          setLogs(data.logs)
-          setExpandedLogs((previous) => {
-            // keep expansion only for visible ids
-            const valid = new Set(data.logs.map((l) => l.id))
-            const next = new Set<number>()
-            for (const id of previous) if (valid.has(id)) next.add(id)
-            return next
-          })
           setLastUpdated(new Date())
           setError(null)
           setLoading(false)
@@ -660,6 +673,15 @@ function AdminDashboard(): JSX.Element {
     })
   }, [dedupedKeys])
 
+  const logsTotalPagesRaw = useMemo(
+    () => Math.max(1, Math.ceil(logsTotal / LOGS_PER_PAGE)),
+    [logsTotal],
+  )
+
+  const logsTotalPages = Math.min(logsTotalPagesRaw, LOGS_MAX_PAGES)
+
+  const safeLogsPage = Math.min(logsPage, logsTotalPages)
+
   const displayName = profile?.displayName ?? null
 
   const toggleLogExpansion = useCallback((id: number) => {
@@ -731,6 +753,16 @@ function AdminDashboard(): JSX.Element {
   }
   const goNextPage = () => {
     setTokensPage((p) => Math.min(totalPages, p + 1))
+  }
+
+  const hasLogsPagination = logsTotal > LOGS_PER_PAGE
+
+  const goPrevLogsPage = () => {
+    setLogsPage((p) => Math.max(1, p - 1))
+  }
+
+  const goNextLogsPage = () => {
+    setLogsPage((p) => Math.min(logsTotalPages, p + 1))
   }
 
   const handleSelectTokenGroupAll = () => {
@@ -1430,6 +1462,50 @@ function AdminDashboard(): JSX.Element {
             <h2>{logStrings.title}</h2>
             <p className="panel-description">{logStrings.description}</p>
           </div>
+          <div className="panel-actions">
+            <div className="segmented-control">
+              <button
+                type="button"
+                className={logResultFilter === 'all' ? 'active' : ''}
+                onClick={() => {
+                  setLogResultFilter('all')
+                  setLogsPage(1)
+                }}
+              >
+                {logStrings.filters.all}
+              </button>
+              <button
+                type="button"
+                className={logResultFilter === 'success' ? 'active' : ''}
+                onClick={() => {
+                  setLogResultFilter('success')
+                  setLogsPage(1)
+                }}
+              >
+                {logStrings.filters.success}
+              </button>
+              <button
+                type="button"
+                className={logResultFilter === 'error' ? 'active' : ''}
+                onClick={() => {
+                  setLogResultFilter('error')
+                  setLogsPage(1)
+                }}
+              >
+                {logStrings.filters.error}
+              </button>
+              <button
+                type="button"
+                className={logResultFilter === 'quota_exhausted' ? 'active' : ''}
+                onClick={() => {
+                  setLogResultFilter('quota_exhausted')
+                  setLogsPage(1)
+                }}
+              >
+                {logStrings.filters.quota}
+              </button>
+            </div>
+          </div>
         </div>
         <div className="table-wrapper jobs-table-wrapper">
           {logs.length === 0 ? (
@@ -1461,6 +1537,25 @@ function AdminDashboard(): JSX.Element {
             </table>
           )}
         </div>
+        {hasLogsPagination && (
+          <div className="table-pagination">
+            <span className="panel-description">
+              {logStrings.description} ({safeLogsPage} / {logsTotalPages})
+            </span>
+            <div style={{ display: 'inline-flex', gap: 8 }}>
+              <button className="button" onClick={goPrevLogsPage} disabled={safeLogsPage <= 1}>
+                {tokenStrings.pagination.prev}
+              </button>
+              <button
+                className="button"
+                onClick={goNextLogsPage}
+                disabled={safeLogsPage >= logsTotalPages}
+              >
+                {tokenStrings.pagination.next}
+              </button>
+            </div>
+          </div>
+        )}
       </section>
 
       <section className="surface panel">
@@ -1977,8 +2072,8 @@ function LogRow({ log, expanded, onToggle, strings }: LogRowProps): JSX.Element 
 function LogDetails({ log, strings }: { log: RequestLog; strings: AdminTranslations }): JSX.Element {
   const query = log.query ? `?${log.query}` : ''
   const requestLine = `${log.method} ${log.path}${query}`
-  const forwarded = log.forwarded_headers.filter((value) => value.trim().length > 0)
-  const dropped = log.dropped_headers.filter((value) => value.trim().length > 0)
+  const forwarded = (log.forwarded_headers ?? []).filter((value) => value.trim().length > 0)
+  const dropped = (log.dropped_headers ?? []).filter((value) => value.trim().length > 0)
   const httpLabel = `${strings.logs.table.httpStatus}: ${log.http_status ?? strings.logs.errors.none}`
   const mcpLabel = `${strings.logs.table.mcpStatus}: ${log.mcp_status ?? strings.logs.errors.none}`
   const requestBody = log.request_body ?? strings.logDetails.noBody

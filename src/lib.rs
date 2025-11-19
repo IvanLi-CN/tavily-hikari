@@ -504,6 +504,18 @@ impl TavilyProxy {
         self.key_store.fetch_recent_logs(limit).await
     }
 
+    /// Admin: recent request logs with simple pagination and optional result_status filter.
+    pub async fn recent_request_logs_page(
+        &self,
+        result_status: Option<&str>,
+        page: i64,
+        per_page: i64,
+    ) -> Result<(Vec<RequestLogRecord>, i64), ProxyError> {
+        self.key_store
+            .fetch_recent_logs_page(result_status, page, per_page)
+            .await
+    }
+
     /// 获取指定 key 在起始时间以来的汇总。
     pub async fn key_summary_since(
         &self,
@@ -3609,6 +3621,132 @@ impl KeyStore {
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(records)
+    }
+
+    async fn fetch_recent_logs_page(
+        &self,
+        result_status: Option<&str>,
+        page: i64,
+        per_page: i64,
+    ) -> Result<(Vec<RequestLogRecord>, i64), ProxyError> {
+        let page = page.max(1);
+        let per_page = per_page.clamp(1, 200);
+        let offset = (page - 1) * per_page;
+
+        let (rows, total) = if let Some(status) = result_status {
+            let total: i64 = sqlx::query_scalar(
+                r#"
+                SELECT COUNT(*) AS count
+                FROM request_logs
+                WHERE result_status = ?
+                "#,
+            )
+            .bind(status)
+            .fetch_one(&self.pool)
+            .await?;
+
+            let rows = sqlx::query(
+                r#"
+                SELECT
+                    id,
+                    api_key_id,
+                    auth_token_id,
+                    method,
+                    path,
+                    query,
+                    status_code,
+                    tavily_status_code,
+                    error_message,
+                    result_status,
+                    request_body,
+                    response_body,
+                    forwarded_headers,
+                    dropped_headers,
+                    created_at
+                FROM request_logs
+                WHERE result_status = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT ? OFFSET ?
+                "#,
+            )
+            .bind(status)
+            .bind(per_page)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await?;
+
+            (rows, total)
+        } else {
+            let total: i64 = sqlx::query_scalar(
+                r#"
+                SELECT COUNT(*) AS count
+                FROM request_logs
+                "#,
+            )
+            .fetch_one(&self.pool)
+            .await?;
+
+            let rows = sqlx::query(
+                r#"
+                SELECT
+                    id,
+                    api_key_id,
+                    auth_token_id,
+                    method,
+                    path,
+                    query,
+                    status_code,
+                    tavily_status_code,
+                    error_message,
+                    result_status,
+                    request_body,
+                    response_body,
+                    forwarded_headers,
+                    dropped_headers,
+                    created_at
+                FROM request_logs
+                ORDER BY created_at DESC, id DESC
+                LIMIT ? OFFSET ?
+                "#,
+            )
+            .bind(per_page)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await?;
+
+            (rows, total)
+        };
+
+        let records = rows
+            .into_iter()
+            .map(|row| -> Result<RequestLogRecord, sqlx::Error> {
+                let forwarded =
+                    parse_header_list(row.try_get::<Option<String>, _>("forwarded_headers")?);
+                let dropped =
+                    parse_header_list(row.try_get::<Option<String>, _>("dropped_headers")?);
+                let request_body: Option<Vec<u8>> = row.try_get("request_body")?;
+                let response_body: Option<Vec<u8>> = row.try_get("response_body")?;
+                Ok(RequestLogRecord {
+                    id: row.try_get("id")?,
+                    key_id: row.try_get("api_key_id")?,
+                    auth_token_id: row.try_get("auth_token_id")?,
+                    method: row.try_get("method")?,
+                    path: row.try_get("path")?,
+                    query: row.try_get("query")?,
+                    status_code: row.try_get("status_code")?,
+                    tavily_status_code: row.try_get("tavily_status_code")?,
+                    error_message: row.try_get("error_message")?,
+                    result_status: row.try_get("result_status")?,
+                    created_at: row.try_get("created_at")?,
+                    request_body: request_body.unwrap_or_default(),
+                    response_body: response_body.unwrap_or_default(),
+                    forwarded_headers: forwarded,
+                    dropped_headers: dropped,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok((records, total))
     }
 
     async fn fetch_api_key_secret(&self, key_id: &str) -> Result<Option<String>, ProxyError> {

@@ -1460,21 +1460,50 @@ async fn get_api_key_secret(
     }
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PaginatedLogsView {
+    items: Vec<RequestLogView>,
+    total: i64,
+    page: i64,
+    per_page: i64,
+}
+
 async fn list_logs(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Query(params): Query<LogsQuery>,
-) -> Result<Json<Vec<RequestLogView>>, StatusCode> {
+) -> Result<Json<PaginatedLogsView>, StatusCode> {
     if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
         return Err(StatusCode::FORBIDDEN);
     }
-    let limit = params.limit.unwrap_or(DEFAULT_LOG_LIMIT).clamp(1, 500);
+
+    let page = params.page.unwrap_or(1).max(1);
+    let per_page = params.per_page.unwrap_or(20).clamp(1, 200);
+
+    // Optional result_status filter: normalize to known values.
+    let result_status: Option<&str> = match params.result.as_deref().map(str::trim) {
+        Some(v) if v.eq_ignore_ascii_case("success") => Some("success"),
+        Some(v) if v.eq_ignore_ascii_case("error") => Some("error"),
+        Some(v) if v.eq_ignore_ascii_case("quota_exhausted") || v.eq_ignore_ascii_case("quota") => {
+            Some("quota_exhausted")
+        }
+        _ => None,
+    };
 
     state
         .proxy
-        .recent_request_logs(limit)
+        .recent_request_logs_page(result_status, page, per_page)
         .await
-        .map(|logs| Json(logs.into_iter().map(RequestLogView::from).collect()))
+        .map(|(logs, total)| {
+            let view_items = logs.into_iter().map(RequestLogView::from).collect();
+            Json(PaginatedLogsView {
+                items: view_items,
+                total,
+                page,
+                per_page,
+            })
+        })
         .map_err(|err| {
             eprintln!("list logs error: {err}");
             StatusCode::INTERNAL_SERVER_ERROR
@@ -2034,7 +2063,7 @@ async fn shutdown_signal() {
 }
 
 const BODY_LIMIT: usize = 16 * 1024 * 1024; // 16 MiB 默认限制
-const DEFAULT_LOG_LIMIT: usize = 50;
+const DEFAULT_LOG_LIMIT: usize = 200;
 
 #[derive(Debug, Serialize)]
 struct ApiKeyView {
@@ -2247,7 +2276,9 @@ struct CreateTokenRequest {
 
 #[derive(Debug, Deserialize)]
 struct LogsQuery {
-    limit: Option<usize>,
+    page: Option<i64>,
+    per_page: Option<i64>,
+    result: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

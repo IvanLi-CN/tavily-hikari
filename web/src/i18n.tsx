@@ -256,6 +256,12 @@ interface AdminTranslationsShape {
   logs: {
     title: string
     description: string
+    filters: {
+      all: string
+      success: string
+      error: string
+      quota: string
+    }
     empty: {
       loading: string
       none: string
@@ -631,7 +637,13 @@ export const translations: Record<Language, TranslationShape> = {
       },
       logs: {
         title: 'Recent Requests',
-        description: 'Up to the latest 50 invocations handled by the proxy.',
+        description: 'Up to the latest 200 invocations handled by the proxy (20 per page, up to 10 pages).',
+        filters: {
+          all: 'All',
+          success: 'Success',
+          error: 'Errors',
+          quota: 'Quota exhausted',
+        },
         empty: {
           loading: 'Collecting recent requests…',
           none: 'No request logs captured yet.',
@@ -737,7 +749,7 @@ export const translations: Record<Language, TranslationShape> = {
           noActivity: 'No activity',
         },
         logsTitle: 'Recent Requests',
-        logsDescription: 'Up to the latest 50 for this key.',
+        logsDescription: 'Up to the latest 200 for this key.',
         logsEmpty: 'No request logs for this period.',
       },
       errors: {
@@ -1007,7 +1019,13 @@ export const translations: Record<Language, TranslationShape> = {
       },
       logs: {
         title: '近期请求',
-        description: '展示代理最近处理的最多 50 条调用记录。',
+        description: '展示代理最近处理的最多 200 条调用记录，每页 20 条，最多 10 页。',
+        filters: {
+          all: '全部',
+          success: '成功',
+          error: '错误',
+          quota: '额度耗尽',
+        },
         empty: {
           loading: '正在收集最新请求…',
           none: '尚未捕获请求日志。',
@@ -1113,7 +1131,7 @@ export const translations: Record<Language, TranslationShape> = {
           noActivity: '暂无活跃记录',
         },
         logsTitle: '近期请求',
-        logsDescription: '最多展示该密钥的 50 条请求。',
+        logsDescription: '最多展示该密钥的 200 条请求。',
         logsEmpty: '该时间段内没有请求。',
       },
       errors: {

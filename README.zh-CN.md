@@ -109,7 +109,7 @@ curl -X POST http://127.0.0.1:8787/api/keys \
 | `GET`    | `/health`              | 健康检查，返回 200 代表代理可用。                                | 无          |
 | `GET`    | `/api/summary`         | 汇总成功/失败次数、活跃 Key 数、最近活跃时间。                   | 无          |
 | `GET`    | `/api/keys`            | 列出 4 位短 ID、状态、请求统计。                                 | 无          |
-| `GET`    | `/api/logs?limit=50`   | 最近请求日志（默认 50 条），包含状态码与错误。                   | 无          |
+| `GET`    | `/api/logs?page=1`     | 最近请求日志（分页返回，默认每页 20 条），包含状态码与错误。     | 无          |
 | `POST`   | `/api/keys`            | 管理员接口，新增或“反删除”一个 Key。Body: `{ "api_key": "..." }` | ForwardAuth |
 | `DELETE` | `/api/keys/:id`        | 管理员接口，软删除指定短 ID。                                    | ForwardAuth |
 | `GET`    | `/api/keys/:id/secret` | 管理员接口，返回真实 Tavily Key。                                | ForwardAuth |
