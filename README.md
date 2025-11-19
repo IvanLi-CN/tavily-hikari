@@ -12,7 +12,7 @@ Tavily Hikari is a Rust + Axum proxy for Tavily's MCP endpoint. It multiplexes m
 
 ## Why Tavily Hikari
 
-- **Key pool with fairness** – SQLite keeps last-used timestamps so the scheduler always picks the least recently used active key.
+- **Key pool with fairness** – SQLite keeps last-used timestamps and assigns each access token a short‑lived “home” key; new or expired affinities are resolved via least‑recently‑used selection across active keys to keep wear balanced.
 - **Short IDs and secret isolation** – every Tavily key receives a 4-char nanoid. The real token is only retrievable via admin APIs/UI.
 - **Health-aware routing** – status code 432 automatically marks keys as `exhausted` until the next UTC month or manual recovery.
 - **High-anonymity forwarding** – only `/mcp` traffic is tunneled upstream; sensitive headers are stripped or rewritten. See [`docs/high-anonymity-proxy.md`](docs/high-anonymity-proxy.md).
@@ -112,7 +112,7 @@ If `--keys`/`TAVILY_API_KEYS` is supplied, the database sync logic adds or reviv
 ## Key Lifecycle & Observability
 
 - `exhausted` status is triggered automatically when upstream returns 432; scheduler skips those keys until UTC month rollover or manual recovery.
-- Least-recently-used scheduling keeps load balanced across healthy keys; if all are disabled, the proxy falls back to the oldest disabled entries.
+- Each access token maintains a soft affinity to a single API key for a short time window. Within that window, the proxy prefers the same key when it remains active; when affinity expires or the key becomes exhausted/disabled, the next key is chosen by a global least‑recently‑used scheduler to keep load balanced across healthy keys. If all are disabled, the proxy falls back to the oldest disabled entries.
 - `request_logs` captures request metadata, upstream payloads, and dropped/forwarded header sets for postmortem analysis.
 - High-anonymity behavior (header allowlist, origin rewrite, etc.) is detailed in [`docs/high-anonymity-proxy.md`](docs/high-anonymity-proxy.md).
 
