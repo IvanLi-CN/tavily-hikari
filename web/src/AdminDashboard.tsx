@@ -56,75 +56,6 @@ const REFRESH_INTERVAL_MS = 30_000
 const LOGS_PER_PAGE = 20
 const LOGS_MAX_PAGES = 10
 
-const DEFAULT_LEADERBOARD_SAMPLE: TokenUsageLeaderboardItem[] = [
-  {
-    id: 'demoA',
-    enabled: true,
-    note: 'Demo alpha',
-    group: 'alpha',
-    total_requests: 8200,
-    last_used_at: Math.floor(Date.now() / 1000) - 7200,
-    quota_state: 'normal',
-    quota_hourly_used: 42,
-    quota_hourly_limit: 100,
-    quota_daily_used: 210,
-    quota_daily_limit: 500,
-    today_total: 210,
-    today_errors: 14,
-    today_other: 6,
-    month_total: 3200,
-    month_errors: 120,
-    month_other: 70,
-    all_total: 8200,
-    all_errors: 320,
-    all_other: 180,
-  },
-  {
-    id: 'demoB',
-    enabled: true,
-    note: 'Demo beta',
-    group: 'beta',
-    total_requests: 6400,
-    last_used_at: Math.floor(Date.now() / 1000) - 18_000,
-    quota_state: 'normal',
-    quota_hourly_used: 35,
-    quota_hourly_limit: 100,
-    quota_daily_used: 160,
-    quota_daily_limit: 500,
-    today_total: 160,
-    today_errors: 8,
-    today_other: 5,
-    month_total: 2500,
-    month_errors: 75,
-    month_other: 55,
-    all_total: 6400,
-    all_errors: 250,
-    all_other: 140,
-  },
-  {
-    id: 'demoC',
-    enabled: false,
-    note: 'Paused token',
-    group: 'gamma',
-    total_requests: 4300,
-    last_used_at: Math.floor(Date.now() / 1000) - 36_000,
-    quota_state: 'day',
-    quota_hourly_used: 18,
-    quota_hourly_limit: 80,
-    quota_daily_used: 420,
-    quota_daily_limit: 500,
-    today_total: 420,
-    today_errors: 30,
-    today_other: 12,
-    month_total: 1800,
-    month_errors: 95,
-    month_other: 60,
-    all_total: 4300,
-    all_errors: 210,
-    all_other: 120,
-  },
-]
-
 function leaderboardPrimaryValue(
   item: TokenUsageLeaderboardItem,
   period: 'day' | 'month' | 'all',
@@ -591,12 +522,7 @@ function AdminDashboard(): JSX.Element {
       } catch (err) {
         if (signal?.aborted) return
         console.error(err)
-        const fallback = sortLeaderboard(
-          DEFAULT_LEADERBOARD_SAMPLE,
-          tokenLeaderboardPeriod,
-          tokenLeaderboardFocus,
-        )
-        setTokenLeaderboard(fallback)
+        setTokenLeaderboard([])
         setTokenLeaderboardError(err instanceof Error ? err.message : tokenLeaderboardStrings.error)
       } finally {
         if (!(signal?.aborted ?? false)) {
