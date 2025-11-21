@@ -125,6 +125,7 @@ interface AdminTranslationsShape {
       enable: string
       edit: string
       delete: string
+      viewLeaderboard: string
     }
     statusBadges: {
       disabled: string
@@ -162,6 +163,38 @@ interface AdminTranslationsShape {
       moreShow: string
       moreHide: string
     }
+  }
+  tokenLeaderboard: {
+    title: string
+    description: string
+    error: string
+    period: {
+      day: string
+      month: string
+      all: string
+    }
+    focus: {
+      usage: string
+      errors: string
+      other: string
+    }
+    table: {
+      token: string
+      group: string
+      hourly: string
+      daily: string
+      today: string
+      month: string
+      all: string
+      lastUsed: string
+      errors: string
+      other: string
+    }
+    empty: {
+      loading: string
+      none: string
+    }
+    back: string
   }
     metrics: {
       labels: {
@@ -530,6 +563,7 @@ export const translations: Record<Language, TranslationShape> = {
           enable: 'Enable token',
           edit: 'Edit note',
           delete: 'Delete token',
+          viewLeaderboard: 'View usage leaderboard',
         },
         statusBadges: {
           disabled: 'Disabled token',
@@ -572,6 +606,38 @@ export const translations: Record<Language, TranslationShape> = {
           moreShow: 'Show all groups',
           moreHide: 'Collapse groups',
         },
+      },
+      tokenLeaderboard: {
+        title: 'Token Usage Leaderboard',
+        description: 'Top 50 tokens sorted by the selected window and metric.',
+        error: 'Unable to load token leaderboard',
+        period: {
+          day: 'Today',
+          month: 'This Month',
+          all: 'All Time',
+        },
+        focus: {
+          usage: 'Usage',
+          errors: 'Errors',
+          other: 'Other',
+        },
+        table: {
+          token: 'Token',
+          group: 'Group',
+          hourly: '1h',
+          daily: '24h',
+          today: 'Today',
+          month: 'This month',
+          all: 'All time',
+          lastUsed: 'Last used',
+          errors: 'Errors',
+          other: 'Other',
+        },
+        empty: {
+          loading: 'Loading leaderboard…',
+          none: 'No token activity recorded yet.',
+        },
+        back: 'Back to dashboard',
       },
       metrics: {
         labels: {
@@ -912,6 +978,7 @@ export const translations: Record<Language, TranslationShape> = {
           enable: '启用令牌',
           edit: '修改备注',
           delete: '删除令牌',
+          viewLeaderboard: '查看使用排行',
         },
         statusBadges: {
           disabled: '已禁用的令牌',
@@ -954,6 +1021,38 @@ export const translations: Record<Language, TranslationShape> = {
           moreShow: '展开全部分组',
           moreHide: '收起分组',
         },
+      },
+      tokenLeaderboard: {
+        title: '令牌用量排行榜',
+        description: '按所选时间窗口与指标排序的前 50 个令牌。',
+        error: '无法加载令牌排行榜',
+        period: {
+          day: '今日',
+          month: '本月',
+          all: '全部',
+        },
+        focus: {
+          usage: '用量',
+          errors: '错误',
+          other: '其他',
+        },
+        table: {
+          token: '令牌',
+          group: '分组',
+          hourly: '1 小时',
+          daily: '24 小时',
+          today: '今日',
+          month: '本月',
+          all: '全部',
+          lastUsed: '最近使用',
+          errors: '错误',
+          other: '其他',
+        },
+        empty: {
+          loading: '正在加载排行榜…',
+          none: '目前还没有令牌活动记录。',
+        },
+        back: '返回总览',
       },
       metrics: {
         labels: {

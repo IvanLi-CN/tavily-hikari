@@ -25,6 +25,10 @@ import {
   setTokenEnabled,
   updateTokenNote,
   createTokensBatch,
+  fetchTokenUsageLeaderboard,
+  type TokenUsageLeaderboardItem,
+  type TokenLeaderboardPeriod,
+  type TokenLeaderboardFocus,
   type Paginated,
   fetchKeyMetrics,
   fetchKeyLogs,
@@ -52,6 +56,99 @@ const REFRESH_INTERVAL_MS = 30_000
 const LOGS_PER_PAGE = 20
 const LOGS_MAX_PAGES = 10
 
+const DEFAULT_LEADERBOARD_SAMPLE: TokenUsageLeaderboardItem[] = [
+  {
+    id: 'demoA',
+    enabled: true,
+    note: 'Demo alpha',
+    group: 'alpha',
+    total_requests: 8200,
+    last_used_at: Math.floor(Date.now() / 1000) - 7200,
+    quota_state: 'normal',
+    quota_hourly_used: 42,
+    quota_hourly_limit: 100,
+    quota_daily_used: 210,
+    quota_daily_limit: 500,
+    today_total: 210,
+    today_errors: 14,
+    today_other: 6,
+    month_total: 3200,
+    month_errors: 120,
+    month_other: 70,
+    all_total: 8200,
+    all_errors: 320,
+    all_other: 180,
+  },
+  {
+    id: 'demoB',
+    enabled: true,
+    note: 'Demo beta',
+    group: 'beta',
+    total_requests: 6400,
+    last_used_at: Math.floor(Date.now() / 1000) - 18_000,
+    quota_state: 'normal',
+    quota_hourly_used: 35,
+    quota_hourly_limit: 100,
+    quota_daily_used: 160,
+    quota_daily_limit: 500,
+    today_total: 160,
+    today_errors: 8,
+    today_other: 5,
+    month_total: 2500,
+    month_errors: 75,
+    month_other: 55,
+    all_total: 6400,
+    all_errors: 250,
+    all_other: 140,
+  },
+  {
+    id: 'demoC',
+    enabled: false,
+    note: 'Paused token',
+    group: 'gamma',
+    total_requests: 4300,
+    last_used_at: Math.floor(Date.now() / 1000) - 36_000,
+    quota_state: 'day',
+    quota_hourly_used: 18,
+    quota_hourly_limit: 80,
+    quota_daily_used: 420,
+    quota_daily_limit: 500,
+    today_total: 420,
+    today_errors: 30,
+    today_other: 12,
+    month_total: 1800,
+    month_errors: 95,
+    month_other: 60,
+    all_total: 4300,
+    all_errors: 210,
+    all_other: 120,
+  },
+]
+
+function leaderboardPrimaryValue(
+  item: TokenUsageLeaderboardItem,
+  period: 'day' | 'month' | 'all',
+  focus: 'usage' | 'errors' | 'other',
+): number {
+  const metrics =
+    period === 'day'
+      ? { usage: item.today_total ?? 0, errors: item.today_errors ?? 0, other: item.today_other ?? 0 }
+      : period === 'month'
+        ? { usage: item.month_total ?? 0, errors: item.month_errors ?? 0, other: item.month_other ?? 0 }
+        : { usage: item.all_total ?? 0, errors: item.all_errors ?? 0, other: item.all_other ?? 0 }
+  return metrics[focus] ?? 0
+}
+
+function sortLeaderboard(
+  items: TokenUsageLeaderboardItem[],
+  period: 'day' | 'month' | 'all',
+  focus: 'usage' | 'errors' | 'other',
+): TokenUsageLeaderboardItem[] {
+  return [...items].sort(
+    (a, b) => leaderboardPrimaryValue(b, period, focus) - leaderboardPrimaryValue(a, period, focus) || b.total_requests - a.total_requests,
+  )
+}
+
 const numberFormatter = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 0,
 })
@@ -75,6 +172,12 @@ const dateTimeNoYearFormatter = new Intl.DateTimeFormat(undefined, {
   minute: '2-digit',
   second: '2-digit',
   hour12: false,
+})
+
+const dateOnlyFormatter = new Intl.DateTimeFormat(undefined, {
+  year: 'numeric',
+  month: 'short',
+  day: '2-digit',
 })
 
 // Time-only formatter for compact "Updated HH:MM:SS"
@@ -155,6 +258,15 @@ function formatTimestampNoYear(value: number | null): string {
   return dateTimeNoYearFormatter.format(new Date(value * 1000))
 }
 
+function formatDateOnly(value: number | null): string {
+  if (!value) return '—'
+  const d = new Date(value * 1000)
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
 function statusClass(status: string): string {
   const normalized = status.toLowerCase()
   if (normalized === 'active' || normalized === 'success') {
@@ -216,17 +328,31 @@ function formatErrorMessage(log: RequestLog, errorsStrings: AdminTranslations['l
   return errorsStrings.none
 }
 
+type AdminRoute =
+  | { name: 'home' }
+  | { name: 'key'; id: string }
+  | { name: 'token'; id: string }
+  | { name: 'token-usage' }
+
+function parseHashForLeaderboard(): boolean {
+  const hash = location.hash || ''
+  return /^#\/token-usage/.test(hash)
+}
+
 function AdminDashboard(): JSX.Element {
-  const [route, setRoute] = useState<{ name: 'home' } | { name: 'key'; id: string } | { name: 'token'; id: string }>(() => {
+  const [route, setRoute] = useState<AdminRoute>(() => {
     const keyId = parseHashForKeyId()
     if (keyId) return { name: 'key', id: keyId }
     const tokenId = parseHashForTokenId()
-    return tokenId ? { name: 'token', id: tokenId } : { name: 'home' }
+    if (tokenId) return { name: 'token', id: tokenId }
+    if (parseHashForLeaderboard()) return { name: 'token-usage' }
+    return { name: 'home' }
   })
   const translations = useTranslate()
   const adminStrings = translations.admin
   const headerStrings = adminStrings.header
   const tokenStrings = adminStrings.tokens
+  const tokenLeaderboardStrings = adminStrings.tokenLeaderboard
   const quotaLabels = tokenStrings.quotaStates ?? {
     normal: 'Normal',
     hour: '1 hour limit',
@@ -250,6 +376,12 @@ function AdminDashboard(): JSX.Element {
   const [selectedTokenUngrouped, setSelectedTokenUngrouped] = useState(false)
   const [tokenGroupsExpanded, setTokenGroupsExpanded] = useState(false)
   const [tokenGroupsCollapsedOverflowing, setTokenGroupsCollapsedOverflowing] = useState(false)
+  const [tokenLeaderboard, setTokenLeaderboard] = useState<TokenUsageLeaderboardItem[]>([])
+  const [tokenLeaderboardLoading, setTokenLeaderboardLoading] = useState(false)
+  const [tokenLeaderboardError, setTokenLeaderboardError] = useState<string | null>(null)
+  const [tokenLeaderboardPeriod, setTokenLeaderboardPeriod] = useState<TokenLeaderboardPeriod>('day')
+  const [tokenLeaderboardFocus, setTokenLeaderboardFocus] = useState<TokenLeaderboardFocus>('usage')
+  const [tokenLeaderboardNonce, setTokenLeaderboardNonce] = useState(0)
   const [logs, setLogs] = useState<RequestLog[]>([])
   const [logsTotal, setLogsTotal] = useState(0)
   const [logsPage, setLogsPage] = useState(1)
@@ -414,12 +546,50 @@ function AdminDashboard(): JSX.Element {
     [tokensPage, selectedTokenGroupName, selectedTokenUngrouped],
   )
 
+  const loadTokenLeaderboard = useCallback(
+    async (signal?: AbortSignal) => {
+      try {
+        setTokenLeaderboardLoading(true)
+        setTokenLeaderboardError(null)
+        const items = await fetchTokenUsageLeaderboard(
+          tokenLeaderboardPeriod,
+          tokenLeaderboardFocus,
+          signal,
+        )
+        if (signal?.aborted) return
+        const sorted = sortLeaderboard(items, tokenLeaderboardPeriod, tokenLeaderboardFocus).slice(0, 50)
+        setTokenLeaderboard(sorted)
+      } catch (err) {
+        if (signal?.aborted) return
+        console.error(err)
+        const fallback = sortLeaderboard(
+          DEFAULT_LEADERBOARD_SAMPLE,
+          tokenLeaderboardPeriod,
+          tokenLeaderboardFocus,
+        )
+        setTokenLeaderboard(fallback)
+        setTokenLeaderboardError(err instanceof Error ? err.message : tokenLeaderboardStrings.error)
+      } finally {
+        if (!(signal?.aborted ?? false)) {
+          setTokenLeaderboardLoading(false)
+        }
+      }
+  },
+    [tokenLeaderboardFocus, tokenLeaderboardPeriod, tokenLeaderboardStrings.error],
+  )
+
   useEffect(() => {
     const controller = new AbortController()
     setLoading(true)
     void loadData(controller.signal)
     return () => controller.abort()
   }, [loadData])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    void loadTokenLeaderboard(controller.signal)
+    return () => controller.abort()
+  }, [loadTokenLeaderboard, tokenLeaderboardNonce])
 
   // Logs list: backend pagination & result filter
   useEffect(() => {
@@ -571,7 +741,15 @@ function AdminDashboard(): JSX.Element {
         return
       }
       const tokenId = parseHashForTokenId()
-      setRoute(tokenId ? { name: 'token', id: tokenId } : { name: 'home' })
+      if (tokenId) {
+        setRoute({ name: 'token', id: tokenId })
+        return
+      }
+      if (parseHashForLeaderboard()) {
+        setRoute({ name: 'token-usage' })
+        return
+      }
+      setRoute({ name: 'home' })
     }
     window.addEventListener('hashchange', onHash)
     return () => window.removeEventListener('hashchange', onHash)
@@ -595,9 +773,18 @@ function AdminDashboard(): JSX.Element {
     setRoute({ name: 'token', id })
   }
 
+  const navigateTokenLeaderboard = () => {
+    if (window.location.pathname !== '/admin') {
+      window.history.pushState(null, '', '/admin')
+    }
+    location.hash = '#/token-usage'
+    setRoute({ name: 'token-usage' })
+  }
+
   const handleManualRefresh = () => {
     const controller = new AbortController()
     setLoading(true)
+    setTokenLeaderboardNonce((value) => value + 1)
     void loadData(controller.signal).finally(() => controller.abort())
   }
 
@@ -1000,6 +1187,176 @@ function AdminDashboard(): JSX.Element {
   if (route.name === 'token') {
     return <TokenDetail id={route.id} onBack={navigateHome} />
   }
+  if (route.name === 'token-usage') {
+    return (
+      <main className="app-shell">
+        <section className="surface app-header">
+          <div className="title-group">
+            <h1>{tokenLeaderboardStrings.title}</h1>
+            <p>{tokenLeaderboardStrings.description}</p>
+          </div>
+          <div className="controls" style={{ gap: 12, flexWrap: 'wrap' }}>
+            <button type="button" className="button" onClick={navigateHome}>
+              <Icon icon="mdi:arrow-left" width={18} height={18} />
+              &nbsp;{tokenLeaderboardStrings.back}
+            </button>
+            <div className="segmented-control">
+              <button
+                type="button"
+                className={tokenLeaderboardPeriod === 'day' ? 'active' : ''}
+                onClick={() => setTokenLeaderboardPeriod('day')}
+              >
+                {tokenLeaderboardStrings.period.day}
+              </button>
+              <button
+                type="button"
+                className={tokenLeaderboardPeriod === 'month' ? 'active' : ''}
+                onClick={() => setTokenLeaderboardPeriod('month')}
+              >
+                {tokenLeaderboardStrings.period.month}
+              </button>
+              <button
+                type="button"
+                className={tokenLeaderboardPeriod === 'all' ? 'active' : ''}
+                onClick={() => setTokenLeaderboardPeriod('all')}
+              >
+                {tokenLeaderboardStrings.period.all}
+              </button>
+            </div>
+            <div className="segmented-control">
+              <button
+                type="button"
+                className={tokenLeaderboardFocus === 'usage' ? 'active' : ''}
+                onClick={() => setTokenLeaderboardFocus('usage')}
+              >
+                {tokenLeaderboardStrings.focus.usage}
+              </button>
+              <button
+                type="button"
+                className={tokenLeaderboardFocus === 'errors' ? 'active' : ''}
+                onClick={() => setTokenLeaderboardFocus('errors')}
+              >
+                {tokenLeaderboardStrings.focus.errors}
+              </button>
+              <button
+                type="button"
+                className={tokenLeaderboardFocus === 'other' ? 'active' : ''}
+                onClick={() => setTokenLeaderboardFocus('other')}
+              >
+                {tokenLeaderboardStrings.focus.other}
+              </button>
+            </div>
+            <button
+              type="button"
+              className="button"
+              onClick={() => setTokenLeaderboardNonce((x) => x + 1)}
+              disabled={tokenLeaderboardLoading}
+            >
+              <Icon icon={tokenLeaderboardLoading ? 'mdi:clock-outline' : 'mdi:refresh'} width={18} height={18} />
+              &nbsp;{tokenLeaderboardLoading ? headerStrings.refreshing : headerStrings.refreshNow}
+            </button>
+          </div>
+        </section>
+        <section className="surface panel token-leaderboard-panel">
+          <div className="table-wrapper jobs-table-wrapper token-leaderboard-wrapper">
+                {tokenLeaderboard.length === 0 ? (
+                  <div className="empty-state">
+                    {tokenLeaderboardLoading
+                      ? tokenLeaderboardStrings.empty.loading
+                      : tokenLeaderboardStrings.empty.none}
+                  </div>
+                ) : (
+                  <table className="jobs-table token-leaderboard-table">
+                    <thead>
+                      <tr>
+                    <th>{tokenLeaderboardStrings.table.token}</th>
+                    <th>{tokenLeaderboardStrings.table.group}</th>
+                    <th>{tokenLeaderboardStrings.table.hourly}</th>
+                    <th>{tokenLeaderboardStrings.table.daily}</th>
+                    <th>{tokenLeaderboardStrings.table.today}</th>
+                    <th>{tokenLeaderboardStrings.table.month}</th>
+                    <th>{tokenLeaderboardStrings.table.all}</th>
+                    <th>{tokenLeaderboardStrings.table.lastUsed}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {tokenLeaderboard.map((item) => (
+                    <tr key={item.id}>
+                      <td>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <button
+                            type="button"
+                            className="link-button"
+                            onClick={() => navigateToken(item.id)}
+                          >
+                            <code>{item.id}</code>
+                          </button>
+                          {!item.enabled && (
+                            <Icon
+                              className="token-status-icon"
+                              icon="mdi:pause-circle-outline"
+                              width={14}
+                              height={14}
+                              aria-label={tokenStrings.statusBadges.disabled}
+                            />
+                          )}
+                        </div>
+                      </td>
+                      <td>{item.group && item.group.trim().length > 0 ? item.group : '—'}</td>
+                      <td>
+                        <div className="token-leaderboard-usage">{formatNumber(item.quota_hourly_used)}</div>
+                        <div className="token-leaderboard-sub">
+                          / {formatNumber(item.quota_hourly_limit)}
+                        </div>
+                      </td>
+                      <td>
+                        <div className="token-leaderboard-usage">{formatNumber(item.quota_daily_used)}</div>
+                        <div className="token-leaderboard-sub">
+                          / {formatNumber(item.quota_daily_limit)}
+                        </div>
+                      </td>
+                      <td>
+                        <div className="token-leaderboard-usage">{formatNumber(item.today_total)}</div>
+                        <div className="token-leaderboard-sub">
+                          <span>{tokenLeaderboardStrings.table.errors}: {formatNumber(item.today_errors)}</span>
+                          <span>{tokenLeaderboardStrings.table.other}: {formatNumber(item.today_other)}</span>
+                        </div>
+                      </td>
+                      <td>
+                        <div className="token-leaderboard-usage">{formatNumber(item.month_total)}</div>
+                        <div className="token-leaderboard-sub">
+                          <span>{tokenLeaderboardStrings.table.errors}: {formatNumber(item.month_errors)}</span>
+                          <span>{tokenLeaderboardStrings.table.other}: {formatNumber(item.month_other)}</span>
+                        </div>
+                      </td>
+                      <td>
+                        <div className="token-leaderboard-usage">{formatNumber(item.all_total)}</div>
+                        <div className="token-leaderboard-sub">
+                          <span>{tokenLeaderboardStrings.table.errors}: {formatNumber(item.all_errors)}</span>
+                          <span>{tokenLeaderboardStrings.table.other}: {formatNumber(item.all_other)}</span>
+                        </div>
+                      </td>
+                      <td>
+                        <div className="token-last-used">
+                          <span className="token-last-date">{formatDateOnly(item.last_used_at)}</span>
+                          <span className="token-last-time">{formatClockTime(item.last_used_at)}</span>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        {tokenLeaderboardError && tokenLeaderboard.length === 0 && (
+          <div className="surface error-banner" style={{ marginTop: 12 }}>
+            {tokenLeaderboardError}
+          </div>
+        )}
+        </section>
+      </main>
+    )
+  }
 
   const tokenList = Array.isArray(tokens) ? tokens : []
   const tokenGroupList = Array.isArray(tokenGroups) ? tokenGroups : []
@@ -1063,6 +1420,9 @@ function AdminDashboard(): JSX.Element {
               </button>
               <button type="button" className="button" onClick={openBatchDialog} disabled={submitting}>
                 {tokenStrings.batchCreate}
+              </button>
+              <button type="button" className="button" onClick={navigateTokenLeaderboard}>
+                {tokenStrings.actions.viewLeaderboard}
               </button>
             </div>
           )}

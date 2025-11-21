@@ -430,3 +430,38 @@ export function fetchTokenUsageSeries(
   }
   return requestJson(`/api/tokens/${encoded}/metrics/usage-series?${search.toString()}`, { signal })
 }
+
+export type TokenLeaderboardPeriod = 'day' | 'month' | 'all'
+export type TokenLeaderboardFocus = 'usage' | 'errors' | 'other'
+
+export interface TokenUsageLeaderboardItem {
+  id: string
+  enabled: boolean
+  note: string | null
+  group: string | null
+  total_requests: number
+  last_used_at: number | null
+  quota_state: string
+  quota_hourly_used: number
+  quota_hourly_limit: number
+  quota_daily_used: number
+  quota_daily_limit: number
+  today_total: number
+  today_errors: number
+  today_other: number
+  month_total: number
+  month_errors: number
+  month_other: number
+  all_total: number
+  all_errors: number
+  all_other: number
+}
+
+export function fetchTokenUsageLeaderboard(
+  period: TokenLeaderboardPeriod,
+  focus: TokenLeaderboardFocus = 'usage',
+  signal?: AbortSignal,
+): Promise<TokenUsageLeaderboardItem[]> {
+  const params = new URLSearchParams({ period, focus })
+  return requestJson(`/api/tokens/leaderboard?${params.toString()}`, { signal })
+}
