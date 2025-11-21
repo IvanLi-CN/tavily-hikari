@@ -1136,16 +1136,17 @@ function AdminDashboard(): JSX.Element {
     setPendingDisableId(null)
   }
 
+  const tokenLeaderboardView = useMemo(() => {
+    if (!tokenLeaderboard || tokenLeaderboard.length === 0) return []
+    return sortLeaderboard(tokenLeaderboard, tokenLeaderboardPeriod, tokenLeaderboardFocus).slice(0, 50)
+  }, [tokenLeaderboard, tokenLeaderboardPeriod, tokenLeaderboardFocus])
+
   if (route.name === 'key') {
     return <KeyDetails id={route.id} onBack={navigateHome} />
   }
   if (route.name === 'token') {
     return <TokenDetail id={route.id} onBack={navigateHome} />
   }
-  const tokenLeaderboardView = useMemo(() => {
-    if (!tokenLeaderboard || tokenLeaderboard.length === 0) return []
-    return sortLeaderboard(tokenLeaderboard, tokenLeaderboardPeriod, tokenLeaderboardFocus).slice(0, 50)
-  }, [tokenLeaderboard, tokenLeaderboardPeriod, tokenLeaderboardFocus])
 
   if (route.name === 'token-usage') {
     const primaryMetric: MetricKey = tokenLeaderboardFocus
