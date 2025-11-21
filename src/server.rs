@@ -187,6 +187,19 @@ fn default_until(period: Option<&str>, since: i64) -> i64 {
     }
 }
 
+fn start_of_day_dt(now: chrono::DateTime<Utc>) -> chrono::DateTime<Utc> {
+    now.date_naive()
+        .and_hms_opt(0, 0, 0)
+        .expect("valid start of day")
+        .and_utc()
+}
+
+fn start_of_month_dt(now: chrono::DateTime<Utc>) -> chrono::DateTime<Utc> {
+    Utc.with_ymd_and_hms(now.year(), now.month(), 1, 0, 0, 0)
+        .single()
+        .expect("valid start of month")
+}
+
 #[derive(Debug, Serialize)]
 struct IsAdminDebug {
     is_admin: bool,
@@ -2023,6 +2036,7 @@ pub async fn serve(
             "/api/tokens/:id/metrics/hourly",
             get(get_token_hourly_breakdown),
         )
+        .route("/api/tokens/leaderboard", get(get_token_leaderboard))
         .route("/api/tokens/:id/logs", get(get_token_logs))
         .route("/api/tokens/:id/logs/page", get(get_token_logs_page))
         .route("/api/tokens/:id/events", get(sse_token))
@@ -2569,6 +2583,36 @@ struct TokenUsageBucketView {
     external_failure_count: i64,
 }
 
+#[derive(Debug, Deserialize)]
+struct TokenLeaderboardQuery {
+    period: Option<String>,
+    focus: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct TokenLeaderboardItemView {
+    id: String,
+    enabled: bool,
+    note: Option<String>,
+    group: Option<String>,
+    total_requests: i64,
+    last_used_at: Option<i64>,
+    quota_state: String,
+    quota_hourly_used: i64,
+    quota_hourly_limit: i64,
+    quota_daily_used: i64,
+    quota_daily_limit: i64,
+    today_total: i64,
+    today_errors: i64,
+    today_other: i64,
+    month_total: i64,
+    month_errors: i64,
+    month_other: i64,
+    all_total: i64,
+    all_errors: i64,
+    all_other: i64,
+}
+
 async fn get_token_logs_page(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -2717,6 +2761,134 @@ async fn get_token_usage_series(
             ProxyError::Other(_) => StatusCode::BAD_REQUEST,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         })
+}
+
+async fn get_token_leaderboard(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(q): Query<TokenLeaderboardQuery>,
+) -> Result<Json<Vec<TokenLeaderboardItemView>>, StatusCode> {
+    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let now = Utc::now();
+    let day_since = start_of_day_dt(now).timestamp();
+    let month_since = start_of_month_dt(now).timestamp();
+
+    let period = match q.period.as_deref() {
+        Some("day") | None => "day",
+        Some("month") => "month",
+        Some("all") => "all",
+        _ => return Err(StatusCode::BAD_REQUEST),
+    };
+
+    let focus = match q.focus.as_deref() {
+        Some("usage") | None => "usage",
+        Some("errors") => "errors",
+        Some("other") => "other",
+        _ => return Err(StatusCode::BAD_REQUEST),
+    };
+
+    let tokens = state
+        .proxy
+        .list_access_tokens()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut items: Vec<TokenLeaderboardItemView> = Vec::with_capacity(tokens.len());
+
+    for token in tokens {
+        // summaries
+        let today = state
+            .proxy
+            .token_summary_since(&token.id, day_since, None)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let month = state
+            .proxy
+            .token_summary_since(&token.id, month_since, None)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let all = state
+            .proxy
+            .token_summary_since(&token.id, 0, None)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        let other_today = (today.total_requests - today.success_count - today.error_count).max(0);
+        let other_month = (month.total_requests - month.success_count - month.error_count).max(0);
+        let other_all = (all.total_requests - all.success_count - all.error_count).max(0);
+
+        // quota snapshot
+        let quota_verdict = match token.quota {
+            Some(ref v) => Some(v.clone()),
+            None => state
+                .proxy
+                .token_quota_snapshot(&token.id)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+                .clone(),
+        };
+        let (hour_used, hour_limit, day_used, day_limit) = quota_verdict
+            .as_ref()
+            .map(|q| (q.hourly_used, q.hourly_limit, q.daily_used, q.daily_limit))
+            .unwrap_or((0, TOKEN_HOURLY_LIMIT, 0, TOKEN_DAILY_LIMIT));
+        let quota_state = quota_verdict
+            .as_ref()
+            .and_then(|q| q.exceeded_window)
+            .map(|w| w.as_str().to_string())
+            .unwrap_or_else(|| "normal".to_string());
+
+        let item = TokenLeaderboardItemView {
+            id: token.id.clone(),
+            enabled: token.enabled,
+            note: token.note.clone(),
+            group: token.group_name.clone(),
+            total_requests: all.total_requests,
+            last_used_at: all.last_activity,
+            quota_state,
+            quota_hourly_used: hour_used,
+            quota_hourly_limit: hour_limit,
+            quota_daily_used: day_used,
+            quota_daily_limit: day_limit,
+            today_total: today.total_requests,
+            today_errors: today.error_count,
+            today_other: other_today,
+            month_total: month.total_requests,
+            month_errors: month.error_count,
+            month_other: other_month,
+            all_total: all.total_requests,
+            all_errors: all.error_count,
+            all_other: other_all,
+        };
+        items.push(item);
+    }
+
+    let metric = |it: &TokenLeaderboardItemView, p: &str, f: &str| -> i64 {
+        match (p, f) {
+            ("day", "usage") => it.today_total,
+            ("day", "errors") => it.today_errors,
+            ("day", "other") => it.today_other,
+            ("month", "usage") => it.month_total,
+            ("month", "errors") => it.month_errors,
+            ("month", "other") => it.month_other,
+            ("all", "usage") => it.all_total,
+            ("all", "errors") => it.all_errors,
+            ("all", "other") => it.all_other,
+            _ => 0,
+        }
+    };
+
+    items.sort_by(|a, b| {
+        metric(b, period, focus)
+            .cmp(&metric(a, period, focus))
+            .then_with(|| b.total_requests.cmp(&a.total_requests))
+    });
+
+    items.truncate(50);
+
+    Ok(Json(items))
 }
 
 async fn get_token_detail(
