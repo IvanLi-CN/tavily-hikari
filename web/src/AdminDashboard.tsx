@@ -1352,7 +1352,7 @@ function AdminDashboard(): JSX.Element {
             )}
             <button
               type="button"
-              className="button button-primary"
+              className="button button-primary btn btn-primary"
               onClick={handleManualRefresh}
               disabled={loading}
             >
@@ -1384,19 +1384,34 @@ function AdminDashboard(): JSX.Element {
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <input
                 type="text"
+                className="input"
                 placeholder={tokenStrings.notePlaceholder}
                 value={newTokenNote}
                 onChange={(e) => setNewTokenNote(e.target.value)}
-                style={{ padding: '8px 12px', borderRadius: 10, border: '1px solid rgba(15, 23, 42, 0.16)', minWidth: 240 }}
+                style={{ minWidth: 240 }}
                 aria-label={tokenStrings.notePlaceholder}
               />
-              <button type="button" className="button button-primary" onClick={() => void handleAddToken()} disabled={submitting}>
+              <button
+                type="button"
+                className="button button-primary btn btn-primary"
+                onClick={() => void handleAddToken()}
+                disabled={submitting}
+              >
                 {submitting ? tokenStrings.creating : tokenStrings.newToken}
               </button>
-              <button type="button" className="button" onClick={openBatchDialog} disabled={submitting}>
+              <button
+                type="button"
+                className="button btn"
+                onClick={openBatchDialog}
+                disabled={submitting}
+              >
                 {tokenStrings.batchCreate}
               </button>
-              <button type="button" className="button" onClick={navigateTokenLeaderboard}>
+              <button
+                type="button"
+                className="button btn"
+                onClick={navigateTokenLeaderboard}
+              >
                 {tokenStrings.actions.viewLeaderboard}
               </button>
             </div>
@@ -1609,10 +1624,10 @@ function AdminDashboard(): JSX.Element {
                 .replace('{total}', String(totalPages))}
             </span>
             <div style={{ display: 'inline-flex', gap: 8 }}>
-              <button className="button" onClick={goPrevPage} disabled={tokensPage <= 1}>
+              <button className="button btn" onClick={goPrevPage} disabled={tokensPage <= 1}>
                 {tokenStrings.pagination.prev}
               </button>
-              <button className="button" onClick={goNextPage} disabled={tokensPage >= totalPages}>
+              <button className="button btn" onClick={goNextPage} disabled={tokensPage >= totalPages}>
                 {tokenStrings.pagination.next}
               </button>
             </div>
@@ -1648,20 +1663,16 @@ function AdminDashboard(): JSX.Element {
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <input
                   type="text"
+                  className="input"
                   placeholder={keyStrings.placeholder}
                   aria-label={keyStrings.placeholder}
                   value={newKey}
                   onChange={(e) => setNewKey(e.target.value)}
-                  style={{
-                    padding: '8px 12px',
-                    borderRadius: 10,
-                    border: '1px solid rgba(15, 23, 42, 0.16)',
-                    minWidth: 240,
-                  }}
+                  style={{ minWidth: 240 }}
                 />
                 <button
                   type="button"
-                  className="button button-primary"
+                  className="button button-primary btn btn-primary"
                   onClick={() => void handleAddKey()}
                   disabled={submitting || !newKey.trim()}
                 >
@@ -1878,11 +1889,11 @@ function AdminDashboard(): JSX.Element {
               {logStrings.description} ({safeLogsPage} / {logsTotalPages})
             </span>
             <div style={{ display: 'inline-flex', gap: 8 }}>
-              <button className="button" onClick={goPrevLogsPage} disabled={safeLogsPage <= 1}>
+              <button className="button btn" onClick={goPrevLogsPage} disabled={safeLogsPage <= 1}>
                 {tokenStrings.pagination.prev}
               </button>
               <button
-                className="button"
+                className="button btn"
                 onClick={goNextLogsPage}
                 disabled={safeLogsPage >= logsTotalPages}
               >
@@ -2109,14 +2120,14 @@ function AdminDashboard(): JSX.Element {
             </span>
             <div style={{ display: 'inline-flex', gap: 8 }}>
               <button
-                className="button"
+                className="button btn"
                 onClick={() => setJobsPage((p) => Math.max(1, p - 1))}
                 disabled={jobsPage <= 1}
               >
                 {tokenStrings.pagination.prev}
               </button>
               <button
-                className="button"
+                className="button btn"
                 onClick={() => setJobsPage((p) => p + 1)}
                 disabled={jobsPage >= Math.ceil(jobsTotal / jobsPerPage)}
               >
