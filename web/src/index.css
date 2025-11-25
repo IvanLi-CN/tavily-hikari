@@ -322,17 +322,6 @@ button {
   height: 22px;
 }
 
-.button-secondary {
-  background: #111827;
-  color: #fff;
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.25);
-}
-
-.button-secondary:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.3);
-}
-
 .token-copy-button {
   display: inline-flex;
   align-items: center;
@@ -373,10 +362,6 @@ button {
 .token-copy-button img {
   width: 16px;
   height: 16px;
-}
-
-.token-copy-button.success {
-  background: #16a34a;
 }
 
 .token-input:focus {
@@ -722,141 +707,12 @@ button {
   min-height: 36px;
 }
 
-.button,
-.refresh-toggle {
-  display: inline-flex !important;
-  align-items: center;
-  border: none;
-  border-radius: 999px;
-  padding: 10px 18px;
-  cursor: pointer;
-  font-weight: 600;
-  text-decoration: none;
-  -webkit-appearance: none;
-  appearance: none;
-  transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease, border-color 0.12s ease;
-  background: rgba(255, 255, 255, 0.92);
-  border: 1px solid rgba(15, 23, 42, 0.1);
-  color: #1f2937;
-}
-
 button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
   box-shadow: none;
   transform: none;
 }
-
-.button:not(.button-primary):not(.button-success):not(:disabled):hover,
-.refresh-toggle:not(:disabled):hover {
-  background: rgba(255, 255, 255, 1);
-  border-color: rgba(99, 102, 241, 0.45);
-  box-shadow: 0 6px 18px rgba(99, 102, 241, 0.18);
-  transform: translateY(-1px);
-}
-
-.button-primary {
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
-  color: #fff;
-  box-shadow: 0 10px 22px rgba(99, 102, 241, 0.28);
-}
-
-.button-primary:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 14px 28px rgba(99, 102, 241, 0.32);
-}
-
-.button-success {
-  background: rgba(34, 197, 94, 0.18);
-  color: #166534;
-  box-shadow: 0 10px 20px rgba(34, 197, 94, 0.25);
-}
-
-.button-success:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 14px 26px rgba(34, 197, 94, 0.32);
-}
-
-/* Ensure secondary variant overrides base .button styles (defined above) */
-.button.button-secondary {
-  background: #111827;
-  color: #fff;
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.25);
-}
-
-.button.button-secondary:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.3);
-}
-
-.icon-button {
-  border: none;
-  border-radius: 999px;
-  width: 32px;
-  height: 32px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  background: rgba(99, 102, 241, 0.16);
-  color: #4c51bf;
-  cursor: pointer;
-  transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease, color 0.12s ease;
-  box-shadow: 0 6px 14px rgba(99, 102, 241, 0.16);
-}
-
-.icon-button:hover {
-  transform: translateY(-1px);
-  background: rgba(79, 70, 229, 0.22);
-  color: #3730a3;
-}
-
-.icon-button-success {
-  background: rgba(34, 197, 94, 0.24);
-  color: #15803d;
-  box-shadow: 0 6px 14px rgba(34, 197, 94, 0.24);
-}
-
-.icon-button-success:hover {
-  background: rgba(22, 163, 74, 0.28);
-  color: #0f5132;
-}
-
-/* Destructive action (e.g., Remove/Delete) */
-.icon-button-danger {
-  background: rgba(239, 68, 68, 0.22);
-  color: #b91c1c;
-  box-shadow: 0 6px 14px rgba(239, 68, 68, 0.24);
-}
-
-.icon-button-danger:hover {
-  background: rgba(220, 38, 38, 0.28);
-  color: #7f1d1d;
-}
-
-.icon-button-loading {
-  background: rgba(99, 102, 241, 0.12);
-  color: #6366f1;
-  box-shadow: none;
-}
-
-.icon-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.65;
-  transform: none;
-  box-shadow: none;
-}
-
-.refresh-toggle {
-  background: rgba(99, 102, 241, 0.1) !important;
-  color: #4c51bf !important;
-}
-
-.refresh-toggle.active {
-  background: rgba(22, 163, 74, 0.16) !important;
-  color: #15803d !important;
-}
-
 .metrics-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));

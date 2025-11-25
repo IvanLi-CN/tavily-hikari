@@ -852,9 +852,23 @@ export default function TokenDetail({ id, onBack }: { id: string; onBack?: () =>
           <select className="input" value={perPage} onChange={(e) => { setPerPage(Number(e.target.value)); void goToPage(1) }}>
             {[10, 20, 50, 100].map((v) => <option key={v} value={v}>{v}</option>)}
           </select>
-          <button type="button" className="button" onClick={() => void goToPage(page - 1)} disabled={page <= 1 || loadingMore}>Previous</button>
+          <button
+            type="button"
+            className="btn btn-outline"
+            onClick={() => void goToPage(page - 1)}
+            disabled={page <= 1 || loadingMore}
+          >
+            Previous
+          </button>
           <span>Page {page} / {totalPages}</span>
-          <button type="button" className="button" onClick={() => void goToPage(page + 1)} disabled={page >= totalPages || loadingMore}>Next</button>
+          <button
+            type="button"
+            className="btn btn-outline"
+            onClick={() => void goToPage(page + 1)}
+            disabled={page >= totalPages || loadingMore}
+          >
+            Next
+          </button>
         </div>
       </section>
     

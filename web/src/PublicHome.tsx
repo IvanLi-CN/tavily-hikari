@@ -358,10 +358,10 @@ function PublicHome(): JSX.Element {
             </span>
           </div>
           <div className="update-banner-actions">
-            <button type="button" className="button button-primary" onClick={updateBanner.reload}>
+            <button type="button" className="btn btn-primary" onClick={updateBanner.reload}>
               {publicStrings.updateBanner.refresh}
             </button>
-            <button type="button" className="button" onClick={updateBanner.dismiss}>
+            <button type="button" className="btn btn-ghost" onClick={updateBanner.dismiss}>
               {publicStrings.updateBanner.dismiss}
             </button>
           </div>
@@ -395,7 +395,11 @@ function PublicHome(): JSX.Element {
         </div>
         {isAdmin && (
           <div className="public-home-actions">
-            <button type="button" className="button button-primary" onClick={() => { window.location.href = '/admin' }}>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => { window.location.href = '/admin' }}
+            >
               {publicStrings.adminButton}
             </button>
           </div>
@@ -505,7 +509,9 @@ function PublicHome(): JSX.Element {
               </div>
               <button
                 type="button"
-                className={`button button-secondary token-copy-button${copyState === 'copied' ? ' success' : ''}`}
+                className={`btn token-copy-button${
+                  copyState === 'copied' ? ' btn-success' : ' btn-secondary'
+                }`}
                 onClick={handleCopyToken}
                 aria-label={publicStrings.copyToken.iconAlt}
               >
