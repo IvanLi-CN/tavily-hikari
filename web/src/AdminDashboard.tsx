@@ -1604,13 +1604,18 @@ function AdminDashboard(): JSX.Element {
                             </button>
                             <button
                               type="button"
-                              className="btn btn-circle btn-error btn-sm"
+                              className="btn btn-circle btn-ghost btn-sm"
                               title={tokenStrings.actions.delete}
                               aria-label={tokenStrings.actions.delete}
                               onClick={() => openTokenDeleteConfirm(t.id)}
                               disabled={deletingId === t.id}
                             >
-                              <Icon icon={deletingId === t.id ? 'mdi:progress-helper' : 'mdi:trash-outline'} width={18} height={18} />
+                              <Icon
+                                icon={deletingId === t.id ? 'mdi:progress-helper' : 'mdi:trash-outline'}
+                                width={18}
+                                height={18}
+                                color="#ef4444"
+                              />
                             </button>
                           </div>
                         </td>
@@ -1783,13 +1788,18 @@ function AdminDashboard(): JSX.Element {
                             )}
                             <button
                               type="button"
-                              className="btn btn-circle btn-error btn-sm"
+                              className="btn btn-circle btn-ghost btn-sm"
                               title={keyStrings.actions.delete}
                               aria-label={keyStrings.actions.delete}
                               onClick={() => openDeleteConfirm(item.id)}
                               disabled={deletingId === item.id}
                             >
-                              <Icon icon={deletingId === item.id ? 'mdi:progress-helper' : 'mdi:trash-outline'} width={18} height={18} />
+                              <Icon
+                                icon={deletingId === item.id ? 'mdi:progress-helper' : 'mdi:trash-outline'}
+                                width={18}
+                                height={18}
+                                color="#ef4444"
+                              />
                             </button>
                             <button
                               type="button"
