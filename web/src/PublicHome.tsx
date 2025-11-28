@@ -656,9 +656,14 @@ function PublicHome(): JSX.Element {
           {guideDescription.sampleTitle && guideDescription.snippet && (
             <div className="guide-sample">
               <p className="guide-sample-title">{guideDescription.sampleTitle}</p>
-              <pre className="guide-code" data-lang={guideDescription.snippetLanguage}>
-                <code dangerouslySetInnerHTML={{ __html: guideDescription.snippet }} />
-              </pre>
+              <div className="mockup-code relative guide-code-shell">
+                <span className="guide-lang-badge badge badge-outline badge-sm">
+                  {(guideDescription.snippetLanguage ?? 'code').toUpperCase()}
+                </span>
+                <pre>
+                  <code dangerouslySetInnerHTML={{ __html: guideDescription.snippet }} />
+                </pre>
+              </div>
             </div>
           )}
           {guideDescription.reference && (

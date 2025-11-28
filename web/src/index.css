@@ -466,17 +466,7 @@ button {
   color: #1f2937;
 }
 
-.guide-code {
-  margin: 0;
-  padding: 14px 16px;
-  border-radius: 14px;
-  background: rgba(15, 23, 42, 0.92);
-  color: #f8fafc;
-  overflow-x: auto;
-  font-family: 'JetBrains Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
-  font-size: 0.85rem;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
-}
+/* guide code inherits daisyUI mockup-code defaults; keep only syntax colors below */
 
 .guide-reference {
   margin: 0;
@@ -594,34 +584,42 @@ button {
   height: 20px;
 }
 
-.guide-code[data-lang='json']::before,
-.guide-code[data-lang='toml']::before,
-.guide-code[data-lang='bash']::before {
-  content: attr(data-lang);
-  display: inline-block;
-  margin-bottom: 6px;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: rgba(148, 163, 184, 0.2);
-  color: rgba(226, 232, 240, 0.85);
-  font-size: 0.7rem;
+/* guide code: keep mockup-code look-and-feel, but align multi-line text without prefixes */
+.guide-lang-badge {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  pointer-events: none;
   text-transform: uppercase;
 }
 
-.guide-code code {
-  display: block;
-  white-space: pre;
+.guide-code-shell {
+  position: relative;
 }
 
-.guide-code .hl-key {
+.guide-code-shell pre {
+  padding-left: 1.25rem; /* match daisyUI mockup-code vertical padding */
+}
+
+.guide-code-shell pre::before {
+  content: none; /* disable built-in prefix gutter so all lines align */
+  margin-right: 0;
+}
+
+.mockup-code code {
+  white-space: pre;
+  word-break: normal;
+}
+
+.mockup-code .hl-key {
   color: #a5b4fc;
 }
 
-.guide-code .hl-string {
+.mockup-code .hl-string {
   color: #fbcfe8;
 }
 
-.guide-code .hl-comment {
+.mockup-code .hl-comment {
   color: #9ca3af;
   font-style: italic;
 }
