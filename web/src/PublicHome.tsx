@@ -539,8 +539,10 @@ function PublicHome(): JSX.Element {
         <div className="table-wrapper">
           {(!isFullToken(token) || invalidToken) ? (
             <div className="empty-state alert">
-              <div>{publicStrings.logs.empty.noToken}</div>
-              <div style={{ marginTop: 4, opacity: 0.9 }}>{publicStrings.logs.empty.hint}</div>
+              <p style={{ margin: 0 }}>
+                {publicStrings.logs.empty.noToken}{' '}
+                <span style={{ opacity: 0.9 }}>{publicStrings.logs.empty.hint}</span>
+              </p>
             </div>
           ) : publicLogsLoading ? (
             <div className="empty-state alert">{publicStrings.logs.empty.loading}</div>
