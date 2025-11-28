@@ -28,8 +28,9 @@ type SummarySig = (i64, i64, i64, i64, i64, i64, Option<i64>);
 use std::time::Duration;
 use tavily_hikari::{
     ApiKeyMetrics, AuthToken, ProxyError, ProxyRequest, ProxyResponse, ProxySummary, QuotaWindow,
-    RequestLogRecord, TOKEN_DAILY_LIMIT, TOKEN_HOURLY_LIMIT, TOKEN_MONTHLY_LIMIT, TavilyProxy,
-    TokenHourlyBucket, TokenLogRecord, TokenQuotaVerdict, TokenSummary, TokenUsageBucket,
+    RequestLogRecord, TavilyProxy, TokenHourlyBucket, TokenLogRecord, TokenQuotaVerdict,
+    TokenSummary, TokenUsageBucket, effective_token_daily_limit, effective_token_hourly_limit,
+    effective_token_monthly_limit,
 };
 use tokio::signal;
 #[cfg(unix)]
@@ -747,11 +748,11 @@ async fn get_token_metrics_public(
     } else {
         (
             0,
-            TOKEN_HOURLY_LIMIT,
+            effective_token_hourly_limit(),
             0,
-            TOKEN_DAILY_LIMIT,
+            effective_token_daily_limit(),
             0,
-            TOKEN_MONTHLY_LIMIT,
+            effective_token_monthly_limit(),
         )
     };
 
@@ -1017,11 +1018,11 @@ async fn sse_public(
                     } else {
                         (
                             0,
-                            TOKEN_HOURLY_LIMIT,
+                            effective_token_hourly_limit(),
                             0,
-                            TOKEN_DAILY_LIMIT,
+                            effective_token_daily_limit(),
                             0,
-                            TOKEN_MONTHLY_LIMIT,
+                            effective_token_monthly_limit(),
                         )
                     };
                     Some((
@@ -2302,11 +2303,11 @@ impl From<AuthToken> for AuthTokenView {
             (
                 "normal".to_string(),
                 0,
-                TOKEN_HOURLY_LIMIT,
+                effective_token_hourly_limit(),
                 0,
-                TOKEN_DAILY_LIMIT,
+                effective_token_daily_limit(),
                 0,
-                TOKEN_MONTHLY_LIMIT,
+                effective_token_monthly_limit(),
             )
         };
         Self {
@@ -2833,7 +2834,12 @@ async fn get_token_leaderboard(
         let (hour_used, hour_limit, day_used, day_limit) = quota_verdict
             .as_ref()
             .map(|q| (q.hourly_used, q.hourly_limit, q.daily_used, q.daily_limit))
-            .unwrap_or((0, TOKEN_HOURLY_LIMIT, 0, TOKEN_DAILY_LIMIT));
+            .unwrap_or((
+                0,
+                effective_token_hourly_limit(),
+                0,
+                effective_token_daily_limit(),
+            ));
         let quota_state = quota_verdict
             .as_ref()
             .and_then(|q| q.exceeded_window)

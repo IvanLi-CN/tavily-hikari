@@ -77,9 +77,10 @@ const ALLOWED_HEADERS: &[&str] = &[
 
 const ALLOWED_PREFIXES: &[&str] = &["x-mcp-", "x-tavily-", "tavily-"];
 
+// Default per-token quota limits. These are used when no environment override is provided.
 pub const TOKEN_HOURLY_LIMIT: i64 = 100;
 pub const TOKEN_DAILY_LIMIT: i64 = 500;
-pub const TOKEN_MONTHLY_LIMIT: i64 = 3000;
+pub const TOKEN_MONTHLY_LIMIT: i64 = 5000;
 // Soft affinity window for mapping access tokens to API keys (in seconds).
 // Within this window, a token will try to reuse the same API key if it is still active.
 const TOKEN_AFFINITY_TTL_SECS: i64 = 15 * 60;
@@ -104,6 +105,43 @@ const AUTH_TOKEN_LOG_RETENTION_SECS: i64 = 90 * SECS_PER_DAY;
 const META_KEY_DATA_CONSISTENCY_DONE: &str = "data_consistency_v1_done";
 const META_KEY_TOKEN_USAGE_ROLLUP_TS: &str = "token_usage_rollup_last_ts";
 const META_KEY_HEAL_ORPHAN_TOKENS_V1: &str = "heal_orphan_auth_tokens_from_logs_v1";
+
+fn token_limit_from_env(var: &str, default: i64) -> i64 {
+    match std::env::var(var) {
+        Ok(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return default;
+            }
+            match trimmed.parse::<i64>() {
+                Ok(v) if v > 0 => v,
+                _ => default,
+            }
+        }
+        Err(_) => default,
+    }
+}
+
+/// Effective hourly quota limit per access token, including environment overrides.
+///
+/// Environment variable: `TOKEN_HOURLY_LIMIT` (must be a positive integer).
+pub fn effective_token_hourly_limit() -> i64 {
+    token_limit_from_env("TOKEN_HOURLY_LIMIT", TOKEN_HOURLY_LIMIT)
+}
+
+/// Effective daily quota limit per access token, including environment overrides.
+///
+/// Environment variable: `TOKEN_DAILY_LIMIT` (must be a positive integer).
+pub fn effective_token_daily_limit() -> i64 {
+    token_limit_from_env("TOKEN_DAILY_LIMIT", TOKEN_DAILY_LIMIT)
+}
+
+/// Effective monthly quota limit per access token, including environment overrides.
+///
+/// Environment variable: `TOKEN_MONTHLY_LIMIT` (must be a positive integer).
+pub fn effective_token_monthly_limit() -> i64 {
+    token_limit_from_env("TOKEN_MONTHLY_LIMIT", TOKEN_MONTHLY_LIMIT)
+}
 
 #[derive(Debug, Clone)]
 struct SanitizedHeaders {
@@ -838,9 +876,9 @@ impl TokenQuota {
         Self {
             store,
             cleanup: Arc::new(Mutex::new(CleanupState::default())),
-            hourly_limit: TOKEN_HOURLY_LIMIT,
-            daily_limit: TOKEN_DAILY_LIMIT,
-            monthly_limit: TOKEN_MONTHLY_LIMIT,
+            hourly_limit: effective_token_hourly_limit(),
+            daily_limit: effective_token_daily_limit(),
+            monthly_limit: effective_token_monthly_limit(),
         }
     }
 
@@ -4843,7 +4881,9 @@ mod tests {
             .expect("proxy created");
         let token = proxy.create_access_token(None).await.expect("token");
 
-        for _ in 0..TOKEN_HOURLY_LIMIT {
+        let hourly_limit = effective_token_hourly_limit();
+
+        for _ in 0..hourly_limit {
             let verdict = proxy
                 .check_token_quota(&token.id)
                 .await

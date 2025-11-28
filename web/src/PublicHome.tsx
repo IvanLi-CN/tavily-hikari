@@ -48,7 +48,7 @@ const STORAGE_TOKEN_MAP = 'tavily-hikari-token-map'
 // Keep in sync with backend constants in src/lib.rs
 const TOKEN_HOURLY_LIMIT = 100
 const TOKEN_DAILY_LIMIT = 500
-const TOKEN_MONTHLY_LIMIT = 3000
+const TOKEN_MONTHLY_LIMIT = 5000
 
 const GUIDE_KEY_ORDER: GuideKey[] = [
   'codex',
