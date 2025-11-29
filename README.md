@@ -99,15 +99,36 @@ If `--keys`/`TAVILY_API_KEYS` is supplied, the database sync logic adds or reviv
 
 ## HTTP API Cheat Sheet
 
-| Method   | Path                   | Description                                            | Auth        |
-| -------- | ---------------------- | ------------------------------------------------------ | ----------- |
-| `GET`    | `/health`              | Liveness probe.                                        | none        |
-| `GET`    | `/api/summary`         | High-level success/failure stats and last activity.    | none        |
-| `GET`    | `/api/keys`            | Lists short IDs, status, and counters.                 | none        |
-| `GET`    | `/api/logs?page=1`     | Recent proxy logs (paginated, default 20 per page).    | none        |
-| `POST`   | `/api/keys`            | Admin: add/restore a key. Body `{ "api_key": "..." }`. | ForwardAuth |
-| `DELETE` | `/api/keys/:id`        | Admin: soft-delete key by short ID.                    | ForwardAuth |
-| `GET`    | `/api/keys/:id/secret` | Admin: reveal the real Tavily key.                     | ForwardAuth |
+| Method   | Path                   | Description                                                       | Auth         |
+| -------- | ---------------------- | ----------------------------------------------------------------- | ------------ |
+| `GET`    | `/health`              | Liveness probe.                                                   | none         |
+| `GET`    | `/api/summary`         | High-level success/failure stats and last activity.               | none         |
+| `GET`    | `/api/keys`            | Lists short IDs, status, and counters.                            | none         |
+| `GET`    | `/api/logs?page=1`     | Recent proxy logs (paginated, default 20 per page).               | none         |
+| `POST`   | `/api/tavily/search`   | Tavily `/search` proxy via Hikari key pool (Cherry Studio, etc.). | Hikari token |
+| `POST`   | `/api/keys`            | Admin: add/restore a key. Body `{ "api_key": "..." }`.            | ForwardAuth  |
+| `DELETE` | `/api/keys/:id`        | Admin: soft-delete key by short ID.                               | ForwardAuth  |
+| `GET`    | `/api/keys/:id/secret` | Admin: reveal the real Tavily key.                                | ForwardAuth  |
+
+### Cherry Studio integration
+
+Tavily Hikari also exposes a Tavily HTTP façade so Cherry Studio and other HTTP clients can talk to Tavily through Hikari’s key pool and per-token quotas instead of calling Tavily directly.
+
+- Base URL: `https://<your Hikari host>/api/tavily`
+- API key: Hikari access token `th-<id>-<secret>` created from the user dashboard
+
+Cherry Studio setup:
+
+1. Create an access token (`th-…`) from the Tavily Hikari **user dashboard** and copy it.
+2. In Cherry Studio, open **Settings → Web Search**.
+3. Choose the provider **Tavily (API key)**.
+4. Set **API URL** to `https://<your Hikari host>/api/tavily` (for local dev it is usually `http://127.0.0.1:58087/api/tavily`).
+5. Set **API key** to the Hikari access token from step 1, **not** your Tavily official API key.
+6. Optionally tune result count, answer/date options, etc.; Cherry Studio will pass these fields through to Tavily while Hikari rotates Tavily keys and enforces token quotas.
+
+> Do not put your Tavily API key directly into Cherry Studio. Always route traffic through Hikari by using its access token.
+
+For the full HTTP proxy design and acceptance criteria, see [`docs/tavily-http-api-proxy.md`](docs/tavily-http-api-proxy.md).
 
 ## Key Lifecycle & Observability
 

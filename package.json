@@ -2,10 +2,14 @@
   "name": "tavily-hikari-hooks",
   "private": true,
   "version": "0.0.0",
+  "scripts": {
+    "test:tavily-http": "node tests/e2e/tavily_http_node.cjs"
+  },
   "devDependencies": {
     "@commitlint/cli": "^20.1.0",
     "@commitlint/config-conventional": "^20.0.0",
     "@modelcontextprotocol/inspector": "^0.17.2",
+    "@tavily/core": "^0.5.13",
     "commitlint-plugin-function-rules": "^4.1.0",
     "dprint": "^0.47.5"
   }

@@ -529,6 +529,159 @@ impl TavilyProxy {
         }
     }
 
+    /// Generic helper to proxy a Tavily HTTP JSON endpoint (e.g. `/search`, `/extract`).
+    /// It injects the Tavily key into the `api_key` field, performs header sanitization,
+    /// records request logs with sensitive fields redacted, and updates key quota state.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn proxy_http_json_endpoint(
+        &self,
+        usage_base: &str,
+        upstream_path: &str,
+        auth_token_id: Option<&str>,
+        method: &Method,
+        display_path: &str,
+        options: Value,
+        original_headers: &HeaderMap,
+    ) -> Result<(ProxyResponse, AttemptAnalysis), ProxyError> {
+        let lease = self.acquire_key_for(auth_token_id).await?;
+
+        let base = Url::parse(usage_base).map_err(|source| ProxyError::InvalidEndpoint {
+            endpoint: usage_base.to_owned(),
+            source,
+        })?;
+        let origin = origin_from_url(&base);
+
+        let mut url = base.clone();
+        url.set_path(upstream_path);
+
+        let sanitized_headers = sanitize_headers_inner(original_headers, &base, &origin);
+
+        // Build upstream request body by injecting Tavily key into api_key field.
+        let mut upstream_options = options;
+        if let Value::Object(ref mut map) = upstream_options {
+            // Remove any existing api_key field (case-insensitive) before inserting the Tavily key.
+            let keys_to_remove: Vec<String> = map
+                .keys()
+                .filter(|k| k.eq_ignore_ascii_case("api_key"))
+                .cloned()
+                .collect();
+            for key in keys_to_remove {
+                map.remove(&key);
+            }
+            map.insert("api_key".to_string(), Value::String(lease.secret.clone()));
+        } else {
+            // Unexpected payload shape; wrap it so we still send a valid JSON object upstream.
+            let mut map = serde_json::Map::new();
+            map.insert("api_key".to_string(), Value::String(lease.secret.clone()));
+            map.insert("payload".to_string(), upstream_options);
+            upstream_options = Value::Object(map);
+        }
+
+        let request_body =
+            serde_json::to_vec(&upstream_options).map_err(|e| ProxyError::Other(e.to_string()))?;
+        let redacted_request_body = redact_api_key_bytes(&request_body);
+
+        let mut builder = self.client.request(method.clone(), url.clone());
+        for (name, value) in sanitized_headers.headers.iter() {
+            // Host/Content-Length are recomputed by reqwest.
+            if name == HOST || name == CONTENT_LENGTH {
+                continue;
+            }
+            builder = builder.header(name, value);
+        }
+
+        let response = builder.body(request_body.clone()).send().await;
+
+        match response {
+            Ok(response) => {
+                let status = response.status();
+                let headers = response.headers().clone();
+                let body_bytes = response.bytes().await.map_err(ProxyError::Http)?;
+
+                let analysis = analyze_http_attempt(status, &body_bytes);
+                let redacted_response_body = redact_api_key_bytes(&body_bytes);
+
+                self.key_store
+                    .log_attempt(AttemptLog {
+                        key_id: &lease.id,
+                        auth_token_id,
+                        method,
+                        path: display_path,
+                        query: None,
+                        status: Some(status),
+                        tavily_status_code: analysis.tavily_status_code,
+                        error: None,
+                        request_body: &redacted_request_body,
+                        response_body: &redacted_response_body,
+                        outcome: analysis.status,
+                        forwarded_headers: &sanitized_headers.forwarded,
+                        dropped_headers: &sanitized_headers.dropped,
+                    })
+                    .await?;
+
+                if status.as_u16() == 432 || analysis.mark_exhausted {
+                    self.key_store.mark_quota_exhausted(&lease.secret).await?;
+                } else {
+                    self.key_store.restore_active_status(&lease.secret).await?;
+                }
+
+                Ok((
+                    ProxyResponse {
+                        status,
+                        headers,
+                        body: body_bytes,
+                    },
+                    analysis,
+                ))
+            }
+            Err(err) => {
+                log_error(&lease.secret, method, display_path, None, &err);
+                let redacted_empty: Vec<u8> = Vec::new();
+                self.key_store
+                    .log_attempt(AttemptLog {
+                        key_id: &lease.id,
+                        auth_token_id,
+                        method,
+                        path: display_path,
+                        query: None,
+                        status: None,
+                        tavily_status_code: None,
+                        error: Some(&err.to_string()),
+                        request_body: &redacted_request_body,
+                        response_body: &redacted_empty,
+                        outcome: OUTCOME_ERROR,
+                        forwarded_headers: &sanitized_headers.forwarded,
+                        dropped_headers: &sanitized_headers.dropped,
+                    })
+                    .await?;
+                Err(ProxyError::Http(err))
+            }
+        }
+    }
+
+    /// Proxy a Tavily HTTP `/search` call via the usage base URL, performing key rotation
+    /// and recording request logs with sensitive fields redacted.
+    pub async fn proxy_http_search(
+        &self,
+        usage_base: &str,
+        auth_token_id: Option<&str>,
+        method: &Method,
+        display_path: &str,
+        options: Value,
+        original_headers: &HeaderMap,
+    ) -> Result<(ProxyResponse, AttemptAnalysis), ProxyError> {
+        self.proxy_http_json_endpoint(
+            usage_base,
+            "/search",
+            auth_token_id,
+            method,
+            display_path,
+            options,
+            original_headers,
+        )
+        .await
+    }
+
     /// 获取全部 API key 的统计信息，按状态与最近使用时间排序。
     pub async fn list_api_key_metrics(&self) -> Result<Vec<ApiKeyMetrics>, ProxyError> {
         self.key_store.fetch_api_key_metrics().await
@@ -4475,10 +4628,10 @@ fn log_error(key: &str, method: &Method, path: &str, query: Option<&str>, err: &
 }
 
 #[derive(Debug, Clone, Copy)]
-struct AttemptAnalysis {
-    status: &'static str,
-    mark_exhausted: bool,
-    tavily_status_code: Option<i64>,
+pub struct AttemptAnalysis {
+    pub status: &'static str,
+    pub mark_exhausted: bool,
+    pub tavily_status_code: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4554,6 +4707,40 @@ fn analyze_attempt(status: StatusCode, body: &[u8]) -> AttemptAnalysis {
         status: OUTCOME_UNKNOWN,
         mark_exhausted: false,
         tavily_status_code: detected_code,
+    }
+}
+
+/// Analyze a single Tavily HTTP JSON response (e.g. `/search`) using HTTP status and
+/// optional structured `status` field from the body.
+pub fn analyze_http_attempt(status: StatusCode, body: &[u8]) -> AttemptAnalysis {
+    let http_code = status.as_u16() as i64;
+
+    let structured = serde_json::from_slice::<Value>(body)
+        .ok()
+        .and_then(|v| extract_status_code(&v));
+
+    let effective = structured.unwrap_or(http_code);
+    let mut outcome = classify_status_code(effective);
+
+    // If HTTP status itself is an error, never treat the outcome as success.
+    if !status.is_success() && matches!(outcome, MessageOutcome::Success) {
+        outcome = if effective == 432 {
+            MessageOutcome::QuotaExhausted
+        } else {
+            MessageOutcome::Error
+        };
+    }
+
+    let (status_str, mark_exhausted) = match outcome {
+        MessageOutcome::Success => (OUTCOME_SUCCESS, false),
+        MessageOutcome::Error => (OUTCOME_ERROR, false),
+        MessageOutcome::QuotaExhausted => (OUTCOME_QUOTA_EXHAUSTED, true),
+    };
+
+    AttemptAnalysis {
+        status: status_str,
+        mark_exhausted,
+        tavily_status_code: Some(effective),
     }
 }
 
@@ -4813,10 +5000,49 @@ fn extract_sse_json_messages(text: &str) -> Vec<Value> {
     messages
 }
 
+/// Recursively replace any `api_key` field values in JSON with a fixed placeholder.
+fn redact_api_key_fields(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            for (k, v) in map.iter_mut() {
+                if k.eq_ignore_ascii_case("api_key") {
+                    *v = Value::String("***redacted***".to_string());
+                } else {
+                    redact_api_key_fields(v);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                redact_api_key_fields(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Best-effort redaction helper for request/response bodies written to persistent logs.
+/// If the payload is valid JSON, any `api_key` fields are replaced; on parse failure,
+/// an empty payload is returned to avoid leaking secrets in ambiguous formats.
+fn redact_api_key_bytes(bytes: &[u8]) -> Vec<u8> {
+    if bytes.is_empty() {
+        return Vec::new();
+    }
+    match serde_json::from_slice::<Value>(bytes) {
+        Ok(mut value) => {
+            redact_api_key_fields(&mut value);
+            serde_json::to_vec(&value).unwrap_or_else(|_| Vec::new())
+        }
+        Err(_) => Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{Json, Router, routing::post};
     use std::path::PathBuf;
+    use tokio::net::TcpListener;
 
     #[test]
     fn sanitize_headers_removes_blocked_and_keeps_allowed() {
@@ -4870,6 +5096,117 @@ mod tests {
     fn temp_db_path(prefix: &str) -> PathBuf {
         let file = format!("{}-{}.db", prefix, nanoid!(8));
         std::env::temp_dir().join(file)
+    }
+
+    #[test]
+    fn analyze_http_attempt_treats_2xx_as_success() {
+        let body = br#"{"query":"test","results":[]}"#;
+        let analysis = analyze_http_attempt(StatusCode::OK, body);
+        assert_eq!(analysis.status, OUTCOME_SUCCESS);
+        assert!(!analysis.mark_exhausted);
+        assert_eq!(analysis.tavily_status_code, Some(200));
+    }
+
+    #[test]
+    fn analyze_http_attempt_uses_structured_status_and_marks_quota_exhausted() {
+        let body = br#"{"status":432,"error":"quota_exhausted"}"#;
+        let analysis = analyze_http_attempt(StatusCode::OK, body);
+        assert_eq!(analysis.status, OUTCOME_QUOTA_EXHAUSTED);
+        assert!(analysis.mark_exhausted);
+        assert_eq!(analysis.tavily_status_code, Some(432));
+    }
+
+    #[test]
+    fn analyze_http_attempt_treats_http_errors_as_error() {
+        let body = br#"{"error":"upstream failed"}"#;
+        let analysis = analyze_http_attempt(StatusCode::INTERNAL_SERVER_ERROR, body);
+        assert_eq!(analysis.status, OUTCOME_ERROR);
+        assert!(!analysis.mark_exhausted);
+        assert_eq!(analysis.tavily_status_code, Some(500));
+    }
+
+    #[test]
+    fn redact_api_key_bytes_removes_api_key_value() {
+        let input = br#"{"api_key":"th-ABCD-secret","nested":{"api_key":"tvly-secret"}}"#;
+        let redacted = redact_api_key_bytes(input);
+        let text = String::from_utf8_lossy(&redacted);
+        assert!(
+            !text.contains("th-ABCD-secret") && !text.contains("tvly-secret"),
+            "redacted payload should not contain original secrets"
+        );
+        assert!(
+            text.contains("\"api_key\":\"***redacted***\""),
+            "api_key fields should be replaced with placeholder"
+        );
+    }
+
+    #[tokio::test]
+    async fn proxy_http_search_marks_key_exhausted_on_quota_status() {
+        let db_path = temp_db_path("http-search-quota");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let expected_api_key = "tvly-http-quota-key";
+        let proxy = TavilyProxy::with_endpoint(
+            vec![expected_api_key.to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        // Mock Tavily HTTP /search that always returns structured status 432.
+        let app = Router::new().route(
+            "/search",
+            post(|| async {
+                (
+                    StatusCode::OK,
+                    Json(serde_json::json!({
+                        "status": 432,
+                        "error": "quota_exhausted",
+                    })),
+                )
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+
+        let usage_base = format!("http://{}", addr);
+
+        let headers = HeaderMap::new();
+        let options = serde_json::json!({ "query": "test" });
+
+        let (_resp, analysis) = proxy
+            .proxy_http_search(
+                &usage_base,
+                Some("tok1"),
+                &Method::POST,
+                "/api/tavily/search",
+                options,
+                &headers,
+            )
+            .await
+            .expect("proxy search succeeded");
+
+        assert_eq!(analysis.status, OUTCOME_QUOTA_EXHAUSTED);
+        assert!(analysis.mark_exhausted);
+        assert_eq!(analysis.tavily_status_code, Some(432));
+
+        // Verify that the key is marked exhausted in the database.
+        let store = proxy.key_store.clone();
+        let (status,): (String,) = sqlx::query_as("SELECT status FROM api_keys WHERE api_key = ?")
+            .bind(expected_api_key)
+            .fetch_one(&store.pool)
+            .await
+            .expect("key row exists");
+        assert_eq!(status, STATUS_EXHAUSTED);
+
+        let _ = std::fs::remove_file(db_path);
     }
 
     #[tokio::test]

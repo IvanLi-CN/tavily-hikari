@@ -99,6 +99,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Router::new()
         .route("/mcp", post(handle_mcp).get(handle_mcp))
         .route("/mcp/*path", post(handle_mcp).get(handle_mcp))
+        .route("/search", post(handle_http_search))
+        .route("/extract", post(handle_http_extract))
+        .route("/crawl", post(handle_http_crawl))
+        .route("/map", post(handle_http_map))
         .route("/admin/keys", post(add_key).get(list_keys))
         .route("/admin/keys/:secret", patch(update_key).delete(delete_key))
         .route(
@@ -215,6 +219,254 @@ async fn clear_forced_response(State(state): State<Arc<AppState>>) -> (StatusCod
 async fn read_state(State(state): State<Arc<AppState>>) -> Json<Value> {
     let guard = state.inner.read().await;
     Json(json!({ "keys": guard.keys, "forced": guard.forced }))
+}
+
+#[derive(Clone, Copy)]
+enum HttpEndpoint {
+    Search,
+    Extract,
+    Crawl,
+    Map,
+}
+
+async fn handle_http_json(
+    state: &AppState,
+    endpoint: HttpEndpoint,
+    body: Value,
+) -> (StatusCode, Json<Value>) {
+    let key = body
+        .get("api_key")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let key = match key {
+        Some(k) => k,
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "missing api_key" })),
+            );
+        }
+    };
+
+    let forced = {
+        let mut guard = state.inner.write().await;
+        let forced = guard.forced.clone();
+        if guard.forced.as_ref().is_some_and(|force| force.once) {
+            guard.forced = None;
+        }
+        forced
+    };
+
+    if let Some(force) = forced {
+        if let Some(delay) = force.delay_ms {
+            tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+        }
+        if let Some(status) = force.http_status {
+            let body = force
+                .body
+                .unwrap_or_else(|| json!({ "error": format!("forced status {status}") }));
+            return (
+                StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                Json(body),
+            );
+        }
+        if let Some(custom) = force.body {
+            return (StatusCode::OK, Json(custom));
+        }
+        let structured_status = force.structured_status.unwrap_or(200);
+        return match endpoint {
+            HttpEndpoint::Search => (
+                StatusCode::OK,
+                Json(json!({
+                    "query": body.get("query").and_then(|v| v.as_str()).unwrap_or(""),
+                    "results": [],
+                    "answer": null,
+                    "images": [],
+                    "response_time": 0.01,
+                    "status": structured_status,
+                    "request_id": "forced-search"
+                })),
+            ),
+            HttpEndpoint::Extract => (
+                StatusCode::OK,
+                Json(json!({
+                    "results": [],
+                    "failed_results": [],
+                    "response_time": 0.01,
+                    "status": structured_status,
+                    "request_id": "forced-extract"
+                })),
+            ),
+            HttpEndpoint::Crawl => (
+                StatusCode::OK,
+                Json(json!({
+                    "base_url": body.get("url").and_then(|v| v.as_str()).unwrap_or(""),
+                    "results": [],
+                    "response_time": 0.01,
+                    "status": structured_status,
+                    "request_id": "forced-crawl"
+                })),
+            ),
+            HttpEndpoint::Map => (
+                StatusCode::OK,
+                Json(json!({
+                    "base_url": body.get("url").and_then(|v| v.as_str()).unwrap_or(""),
+                    "results": [],
+                    "response_time": 0.01,
+                    "status": structured_status,
+                    "request_id": "forced-map"
+                })),
+            ),
+        };
+    }
+
+    let mut guard = state.inner.write().await;
+    let entry = match guard.keys.get_mut(&key) {
+        Some(entry) => entry,
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "invalid key" })),
+            );
+        }
+    };
+
+    if entry.remaining <= 0 {
+        return quota_response("quota_exhausted", 432);
+    }
+
+    entry.remaining -= 1;
+
+    let structured_status = 200;
+    match endpoint {
+        HttpEndpoint::Search => {
+            let query = body.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            let results = vec![json!({
+                "url": "https://example.com/search",
+                "title": "Example Search Result",
+                "content": "Example content",
+                "raw_content": "Example raw content",
+                "score": 0.99,
+                "published_date": null,
+                "favicon": null
+            })];
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "query": query,
+                    "results": results,
+                    "answer": null,
+                    "images": [],
+                    "response_time": 0.01,
+                    "status": structured_status,
+                    "request_id": "mock-search-req",
+                    "remaining_requests": entry.remaining
+                })),
+            )
+        }
+        HttpEndpoint::Extract => {
+            let urls = body
+                .get("urls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_else(|| vec![Value::String("https://example.com".into())]);
+            let results: Vec<Value> = urls
+                .into_iter()
+                .map(|u| {
+                    let url_str = u.as_str().unwrap_or("https://example.com").to_string();
+                    json!({
+                        "url": url_str,
+                        "raw_content": "mock extracted content",
+                        "images": [],
+                        "favicon": null
+                    })
+                })
+                .collect();
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "results": results,
+                    "failed_results": [],
+                    "response_time": 0.02,
+                    "status": structured_status,
+                    "request_id": "mock-extract-req",
+                    "remaining_requests": entry.remaining
+                })),
+            )
+        }
+        HttpEndpoint::Crawl => {
+            let url = body
+                .get("url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("https://example.com");
+            let results = vec![json!({
+                "url": url,
+                "raw_content": "mock crawled content",
+                "images": [],
+                "favicon": null
+            })];
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "base_url": url,
+                    "results": results,
+                    "response_time": 0.03,
+                    "status": structured_status,
+                    "request_id": "mock-crawl-req",
+                    "remaining_requests": entry.remaining
+                })),
+            )
+        }
+        HttpEndpoint::Map => {
+            let url = body
+                .get("url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("https://example.com");
+            let results = vec![json!({
+                "url": url,
+                "links": [],
+            })];
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "base_url": url,
+                    "results": results,
+                    "response_time": 0.01,
+                    "status": structured_status,
+                    "request_id": "mock-map-req",
+                    "remaining_requests": entry.remaining
+                })),
+            )
+        }
+    }
+}
+
+async fn handle_http_search(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<Value>,
+) -> (StatusCode, Json<Value>) {
+    handle_http_json(&state, HttpEndpoint::Search, body).await
+}
+
+async fn handle_http_extract(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<Value>,
+) -> (StatusCode, Json<Value>) {
+    handle_http_json(&state, HttpEndpoint::Extract, body).await
+}
+
+async fn handle_http_crawl(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<Value>,
+) -> (StatusCode, Json<Value>) {
+    handle_http_json(&state, HttpEndpoint::Crawl, body).await
+}
+
+async fn handle_http_map(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<Value>,
+) -> (StatusCode, Json<Value>) {
+    handle_http_json(&state, HttpEndpoint::Map, body).await
 }
 
 async fn handle_mcp(
