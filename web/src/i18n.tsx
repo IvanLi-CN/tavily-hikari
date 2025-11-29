@@ -986,7 +986,7 @@ export const translations: Record<Language, TranslationShape> = {
           cursor: 'Cursor',
           windsurf: 'Windsurf',
           cherryStudio: 'Cherry Studio',
-          other: '其他客户端',
+          other: '其他',
         },
       },
       footer: {
