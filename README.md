@@ -119,11 +119,11 @@ Tavily Hikari also exposes a Tavily HTTP façade so Cherry Studio and other HTTP
 
 Cherry Studio setup:
 
-1. Create an access token (`th-…`) from the Tavily Hikari **user dashboard** and copy it.
+1. Create an access token (for example `th-xxxx-xxxxxxxxxxxx`) from the Tavily Hikari **user dashboard** and copy it.
 2. In Cherry Studio, open **Settings → Web Search**.
 3. Choose the provider **Tavily (API key)**.
 4. Set **API URL** to `https://<your Hikari host>/api/tavily` (for local dev it is usually `http://127.0.0.1:58087/api/tavily`).
-5. Set **API key** to the Hikari access token from step 1, **not** your Tavily official API key.
+5. Set **API key** to the Hikari access token from step 1 (the full `th-xxxx-xxxxxxxxxxxx` value), **not** your Tavily official API key.
 6. Optionally tune result count, answer/date options, etc.; Cherry Studio will pass these fields through to Tavily while Hikari rotates Tavily keys and enforces token quotas.
 
 > Do not put your Tavily API key directly into Cherry Studio. Always route traffic through Hikari by using its access token.

@@ -126,11 +126,11 @@ Tavily Hikari 通过 `/api/tavily/search` 为 Tavily HTTP API 提供代理与密
 
 以 Cherry Studio 为例，可按以下步骤配置：
 
-1. 在 Tavily Hikari **用户总览页**中创建访问令牌（`th-…`），复制该 token。
+1. 在 Tavily Hikari **用户总览页**中创建访问令牌（例如 `th-xxxx-xxxxxxxxxxxx`），复制该 token。
 2. 打开 Cherry Studio → 设置 → **网络搜索（Web Search）**。
 3. 将搜索服务商设置为 **Tavily (API key)**。
 4. 将 **API 地址 / API URL** 设置为 `https://<你的 Hikari 域名>/api/tavily`，本地开发时通常为 `http://127.0.0.1:58087/api/tavily`。
-5. 将 **API 密钥 / API key** 填写为步骤 1 中复制的 Hikari 访问令牌（`th-…`），而不是 Tavily 官方 API key。
+5. 将 **API 密钥 / API key** 填写为步骤 1 中复制的 Hikari 访问令牌（完整的 `th-xxxx-xxxxxxxxxxxx`），而不是 Tavily 官方 API key。
 6. 可按需在 Cherry 中调整结果数、是否附带答案/日期等选项，这些字段会被原样透传至 Tavily，Hikari 负责轮询 Tavily key 并按访问令牌配额进行限流与计费。
 
 > 安全提醒：不要在 Cherry Studio 中直接填写 Tavily 官方 API key，推荐始终通过 Hikari 颁发的访问令牌间接访问 Tavily。
