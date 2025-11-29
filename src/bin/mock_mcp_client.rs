@@ -24,7 +24,7 @@ struct Cli {
     /// MCP endpoint (usually the proxy /mcp URL)
     #[arg(long, default_value = "http://127.0.0.1:58087/mcp")]
     endpoint: String,
-    /// Access token in format th-xxxx-xxxxxxxxxxxx
+    /// Access token in format th-<id>-<secret>
     #[arg(long)]
     token: String,
     /// Number of requests to send

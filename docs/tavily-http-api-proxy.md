@@ -377,10 +377,12 @@ const result = await client.search("hello from Hikari proxy", {
    - 在右上方 provider 卡片中，显示「搜索服务商：Tavily (API 密钥)」（英文界面可为 `Tavily (API key)`）。
 2. API 密钥输入框：
    - 标题：`API 密钥`；
-   - 输入框内部 placeholder 建议使用 Hikari 令牌示例：`th-xxxx-xxxxxxxxxxxx`；
-   - 使用红色边框模拟「未填写密钥」的错误状态；
-   - 右侧可以放置「显示/隐藏」「检测」两个占位按钮（图标可用色块表示），但保持位置接近真实界面；
-   - 在输入框下方用一行小字明确说明：应填写 Hikari 颁发的访问令牌（`th-<id>-<secret>`），而不是 Tavily 官方 API key。
+
+- 输入框内部 placeholder 建议使用 Hikari 令牌示例：`th-<id>-<secret>`（例如 `th-abcd-1234567890ab`）；
+- 使用红色边框模拟「未填写密钥」的错误状态；
+- 右侧可以放置「显示/隐藏」「检测」两个占位按钮（图标可用色块表示），但保持位置接近真实界面；
+- 在输入框下方用一行小字明确说明：应填写 Hikari 颁发的访问令牌（`th-<id>-<secret>`），而不是 Tavily 官方 API key。
+
 3. API 地址输入框：
    - 标题：`API 地址`；
    - 输入框中显示 Hikari HTTP façade 的地址：`https://<你的 Hikari 域名>/api/tavily`；

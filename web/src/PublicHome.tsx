@@ -881,14 +881,14 @@ function buildGuideContent(language: Language, baseUrl: string, prettyToken: str
       title: isEnglish ? 'Cherry Studio' : 'Cherry Studio 桌面客户端',
       steps: isEnglish
         ? [
-            <>1. Copy your Tavily Hikari access token (for example <code>th-xxxx-xxxxxxxxxxxx</code>) for this client.</>,
+            <>1. Copy your Tavily Hikari access token (for example <code>th-abcd-1234567890ab</code>, format <code>th-{'<'}id{'>'}-{'<'}secret{'>'}</code>) for this client.</>,
             <>2. In Cherry Studio, open <strong>Settings → Web Search</strong>.</>,
             <>3. Choose the search provider <strong>Tavily (API key)</strong>.</>,
             <>
               4. Set <strong>API URL</strong> to <code>{baseUrl}/api/tavily</code>.
             </>,
             <>
-              5. Set <strong>API key</strong> to the Hikari access token from step 1 (the full <code>th-xxxx-xxxxxxxxxxxx</code> value),{' '}
+              5. Set <strong>API key</strong> to the Hikari access token from step 1 (the full <code>th-{'<'}id{'>'}-{'<'}secret{'>'}</code> value),{' '}
               <strong>not</strong> your Tavily official API key.
             </>,
             <>
@@ -897,14 +897,14 @@ function buildGuideContent(language: Language, baseUrl: string, prettyToken: str
             </>,
           ]
         : [
-            <>1）准备好当前客户端要使用的 Tavily Hikari 访问令牌（例如 <code>th-xxxx-xxxxxxxxxxxx</code>）。</>,
+            <>1）准备好当前客户端要使用的 Tavily Hikari 访问令牌（例如 <code>th-abcd-1234567890ab</code>，格式 <code>th-{'<'}id{'>'}-{'<'}secret{'>'}</code>）。</>,
             <>2）在 Cherry Studio 中打开 <strong>设置 → 网络搜索（Web Search）</strong>。</>,
             <>3）将搜索服务商设置为 <strong>Tavily (API key)</strong>。</>,
             <>
               4）将 <strong>API 地址 / API URL</strong> 设置为 <code>{baseUrl}/api/tavily</code>。
             </>,
             <>
-              5）将 <strong>API 密钥 / API key</strong> 填写为步骤 1 中复制的 Hikari 访问令牌（完整的 <code>th-xxxx-xxxxxxxxxxxx</code>），而不是
+              5）将 <strong>API 密钥 / API key</strong> 填写为步骤 1 中复制的 Hikari 访问令牌（完整格式 <code>th-{'<'}id{'>'}-{'<'}secret{'>'}</code>），而不是
               Tavily 官方 API key。
             </>,
             <>6）可按需在 Cherry 中调整返回条数、是否附带答案/日期等选项。</>,
