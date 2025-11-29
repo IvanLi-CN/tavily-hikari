@@ -1,6 +1,7 @@
 import React, { ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 import { Icon } from '@iconify/react'
 import { StatusBadge, type StatusTone } from './components/StatusBadge'
+import CherryStudioMock from './components/CherryStudioMock'
 import {
   fetchPublicMetrics,
   fetchProfile,
@@ -20,7 +21,7 @@ import { useLanguage, useTranslate, type Language } from './i18n'
 
 type GuideLanguage = 'toml' | 'json' | 'bash'
 
-type GuideKey = 'codex' | 'claude' | 'vscode' | 'claudeDesktop' | 'cursor' | 'windsurf' | 'other'
+type GuideKey = 'codex' | 'claude' | 'vscode' | 'claudeDesktop' | 'cursor' | 'windsurf' | 'cherryStudio' | 'other'
 
 interface GuideReference {
   label: string
@@ -57,6 +58,7 @@ const GUIDE_KEY_ORDER: GuideKey[] = [
   'claudeDesktop',
   'cursor',
   'windsurf',
+   'cherryStudio',
   'other',
 ]
 
@@ -677,6 +679,7 @@ function PublicHome(): JSX.Element {
             </p>
           )}
         </div>
+        {activeGuide === 'cherryStudio' && <CherryStudioMock />}
       </section>
       <footer className="surface public-home-footer">
         <a className="footer-gh" href={REPO_URL} target="_blank" rel="noreferrer">
@@ -718,6 +721,7 @@ function MobileGuideDropdown({
       claudeDesktop: 'simple-icons/anthropic',
       cursor: 'simple-icons/cursor', // if missing, Iconify returns 404; UI will still show label
       windsurf: 'simple-icons/codeium',
+      cherryStudio: 'mdi/cherry',
       other: 'mdi/dots-horizontal',
     }
     const key = map[id] ?? 'mdi/dots-horizontal'
@@ -872,6 +876,44 @@ function buildGuideContent(language: Language, baseUrl: string, prettyToken: str
         label: 'NocoDB MCP docs',
         url: NOCODB_DOC_URL,
       },
+    },
+    cherryStudio: {
+      title: isEnglish ? 'Cherry Studio' : 'Cherry Studio 桌面客户端',
+      steps: isEnglish
+        ? [
+            <>1. From the Tavily Hikari user dashboard, create an access token (<code>th-…</code>) and copy it.</>,
+            <>2. In Cherry Studio, open <strong>Settings → Web Search</strong>.</>,
+            <>3. Choose the search provider <strong>Tavily (API key)</strong>.</>,
+            <>
+              4. Set <strong>API URL</strong> to <code>{baseUrl}/api/tavily</code>. In local dev this is usually{' '}
+              <code>http://127.0.0.1:58087/api/tavily</code>.
+            </>,
+            <>
+              5. Set <strong>API key</strong> to the Hikari access token from step 1 (the <code>th-…</code> value),{' '}
+              <strong>not</strong> your Tavily official API key.
+            </>,
+            <>
+              6. Optionally tweak result count, answer/date options, etc. Cherry Studio will send these fields through to
+              Tavily, while Hikari rotates Tavily keys and enforces per-token quotas.
+            </>,
+          ]
+        : [
+            <>1）在 Tavily Hikari 用户总览页中创建访问令牌（<code>th-…</code>），并复制该令牌。</>,
+            <>2）在 Cherry Studio 中打开 <strong>设置 → 网络搜索（Web Search）</strong>。</>,
+            <>3）将搜索服务商设置为 <strong>Tavily (API key)</strong>。</>,
+            <>
+              4）将 <strong>API 地址 / API URL</strong> 设置为 <code>{baseUrl}/api/tavily</code>，本地开发时通常为{' '}
+              <code>http://127.0.0.1:58087/api/tavily</code>。
+            </>,
+            <>
+              5）将 <strong>API 密钥 / API key</strong> 填写为步骤 1 中复制的 Hikari 访问令牌（<code>th-…</code>），而不是
+              Tavily 官方 API key。
+            </>,
+            <>
+              6）可按需在 Cherry 中调整返回条数、是否附带答案/日期等选项，这些字段会被原样透传至 Tavily，Hikari 负责轮询 Tavily
+              key 并按访问令牌限额计费与限流。
+            </>,
+          ],
     },
     other: {
       title: isEnglish ? 'Other clients' : '其他 MCP 客户端',

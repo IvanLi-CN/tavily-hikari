@@ -104,17 +104,38 @@ curl -X POST http://127.0.0.1:8787/api/keys \
 
 ## HTTP API 速览
 
-| Method   | Path                   | 说明                                                             | 认证        |
-| -------- | ---------------------- | ---------------------------------------------------------------- | ----------- |
-| `GET`    | `/health`              | 健康检查，返回 200 代表代理可用。                                | 无          |
-| `GET`    | `/api/summary`         | 汇总成功/失败次数、活跃 Key 数、最近活跃时间。                   | 无          |
-| `GET`    | `/api/keys`            | 列出 4 位短 ID、状态、请求统计。                                 | 无          |
-| `GET`    | `/api/logs?page=1`     | 最近请求日志（分页返回，默认每页 20 条），包含状态码与错误。     | 无          |
-| `POST`   | `/api/keys`            | 管理员接口，新增或“反删除”一个 Key。Body: `{ "api_key": "..." }` | ForwardAuth |
-| `DELETE` | `/api/keys/:id`        | 管理员接口，软删除指定短 ID。                                    | ForwardAuth |
-| `GET`    | `/api/keys/:id/secret` | 管理员接口，返回真实 Tavily Key。                                | ForwardAuth |
+| Method   | Path                   | 说明                                                               | 认证         |
+| -------- | ---------------------- | ------------------------------------------------------------------ | ------------ |
+| `GET`    | `/health`              | 健康检查，返回 200 代表代理可用。                                  | 无           |
+| `GET`    | `/api/summary`         | 汇总成功/失败次数、活跃 Key 数、最近活跃时间。                     | 无           |
+| `GET`    | `/api/keys`            | 列出 4 位短 ID、状态、请求统计。                                   | 无           |
+| `GET`    | `/api/logs?page=1`     | 最近请求日志（分页返回，默认每页 20 条），包含状态码与错误。       | 无           |
+| `POST`   | `/api/tavily/search`   | Tavily `/search` 的代理入口，供 Cherry Studio 等 HTTP 客户端使用。 | Hikari Token |
+| `POST`   | `/api/keys`            | 管理员接口，新增或“反删除”一个 Key。Body: `{ "api_key": "..." }`   | ForwardAuth  |
+| `DELETE` | `/api/keys/:id`        | 管理员接口，软删除指定短 ID。                                      | ForwardAuth  |
+| `GET`    | `/api/keys/:id/secret` | 管理员接口，返回真实 Tavily Key。                                  | ForwardAuth  |
 
 管理员身份由外层 ForwardAuth 注入的请求头判断；控制台仅在管理员会话下显示“复制原始 Key”按钮。
+
+### Cherry Studio 接入示例
+
+Tavily Hikari 通过 `/api/tavily/search` 为 Tavily HTTP API 提供代理与密钥池能力，Cherry Studio 这类直接调用 Tavily HTTP 的客户端只需要改动 Base URL 与 API 密钥来源即可迁移到 Hikari。
+
+- Base URL：`https://<你的 Hikari 域名>/api/tavily`
+- API 密钥：在 Tavily Hikari 控制台为当前用户生成的访问令牌 `th-<id>-<secret>`
+
+以 Cherry Studio 为例，可按以下步骤配置：
+
+1. 在 Tavily Hikari **用户总览页**中创建访问令牌（`th-…`），复制该 token。
+2. 打开 Cherry Studio → 设置 → **网络搜索（Web Search）**。
+3. 将搜索服务商设置为 **Tavily (API key)**。
+4. 将 **API 地址 / API URL** 设置为 `https://<你的 Hikari 域名>/api/tavily`，本地开发时通常为 `http://127.0.0.1:58087/api/tavily`。
+5. 将 **API 密钥 / API key** 填写为步骤 1 中复制的 Hikari 访问令牌（`th-…`），而不是 Tavily 官方 API key。
+6. 可按需在 Cherry 中调整结果数、是否附带答案/日期等选项，这些字段会被原样透传至 Tavily，Hikari 负责轮询 Tavily key 并按访问令牌配额进行限流与计费。
+
+> 安全提醒：不要在 Cherry Studio 中直接填写 Tavily 官方 API key，推荐始终通过 Hikari 颁发的访问令牌间接访问 Tavily。
+
+更完整的 HTTP 代理设计、字段说明与验收标准见 [`docs/tavily-http-api-proxy.md`](docs/tavily-http-api-proxy.md)。
 
 ## 密钥生命周期 & 审计
 

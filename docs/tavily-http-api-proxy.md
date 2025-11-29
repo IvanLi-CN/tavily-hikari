@@ -336,10 +336,10 @@ const result = await client.search("hello from Hikari proxy", {
 
 - `apiBaseURL` 应设置为 `https://<host>/api/tavily`（SDK 内部会在此基础上拼接 `/search`）；
 - `apiKey` 使用的是 Hikari 访问令牌，而不是 Tavily 官方 key；
-- 请求体保持 Tavily `/search` 的字段习惯（`search_depth`、`include_raw_content` 等），Hikari 会自动：
-  - 从请求中剥离 `api_key`（访问令牌）；
-  - 为上游 Tavily 注入池内选中的 Tavily key；
-  - 在日志中对所有 `api_key` 字段进行脱敏。
+  - 请求体保持 Tavily `/search` 的字段习惯（`search_depth`、`include_raw_content` 等），Hikari 会自动：
+    - 从请求中剥离 `api_key`（访问令牌）；
+    - 为上游 Tavily 注入池内选中的 Tavily key；
+    - 在日志中对所有 `api_key` 字段进行脱敏。
 
 本仓库提供了一个基于 `@tavily/core` 的端到端烟囱测试脚本：
 
@@ -356,3 +356,58 @@ const result = await client.search("hello from Hikari proxy", {
     ```
 
 这样可以在不访问 Tavily 生产环境的前提下，验证通过官方 SDK → Hikari `/api/tavily/search` → Mock Tavily HTTP 的完整调用链路。
+
+### 8.2 Cherry Studio 设置示意界面（前端 HTML Mock）
+
+为帮助终端用户快速理解 Cherry Studio 中的配置路径，前端需要在「用户总览页」的 Cherry Studio 指南区域，使用纯 HTML/CSS（React + Tailwind + DaisyUI）构建一个简化版的设置页示意界面。
+
+该示意界面的设计要求：
+
+- 只作为视觉引导，不具备真实交互能力；所有输入框、按钮、开关、滑条均应标记为静态/禁用（例如 `disabled` 或 `pointer-events-none`），不会触发任何 API 调用。
+- 布局结构尽量贴近 Cherry Studio 的真实设置页，保持**相对位置关系**正确：
+  - 左侧为竖直导航栏，包含若干菜单项，其中「网络搜索」处于高亮选中状态；
+  - 右侧顶部为「网络搜索」信息卡片，展示「网络搜索」「搜索服务商」以及右侧的 provider 下拉按钮；
+  - 右侧中部为 Tavily 配置大卡片，包含 logo + 标题行、API 密钥区块、API 地址区块；
+  - Tavily 配置卡片下方为「常规设置」区域（搜索包含日期、搜索结果个数滑条等），可以用简化控件表示。
+- **无关内容**（例如侧边栏图标、部分菜单项、复杂图标按钮等）可以统一用灰色色块/占位条代替，不需要还原具体图标或文案。
+
+关键信息必须在示意界面中清晰凸显：
+
+1. 搜索服务商：
+   - 在右上方 provider 卡片中，显示「搜索服务商：Tavily (API 密钥)」（英文界面可为 `Tavily (API key)`）。
+2. API 密钥输入框：
+   - 标题：`API 密钥`；
+   - 输入框内部 placeholder 建议使用 Hikari 令牌示例：`th-xxxx-xxxxxxxxxxxx`；
+   - 使用红色边框模拟「未填写密钥」的错误状态；
+   - 右侧可以放置「显示/隐藏」「检测」两个占位按钮（图标可用色块表示），但保持位置接近真实界面；
+   - 在输入框下方用一行小字明确说明：应填写 Hikari 颁发的访问令牌（`th-<id>-<secret>`），而不是 Tavily 官方 API key。
+3. API 地址输入框：
+   - 标题：`API 地址`；
+   - 输入框中显示 Hikari HTTP façade 的地址：`https://<你的 Hikari 域名>/api/tavily`；
+   - 本地开发示意可在邻近位置补充小字：例如 `http://127.0.0.1:58087/api/tavily`；
+   - 输入框为只读/禁用，用于提示配置值而非真正编辑。
+4. 常规设置区域：
+   - 至少包含「搜索包含日期」+ 一个开启状态的开关控件（红色/高亮）；
+   - 「搜索结果个数」+ 一条滑条和若干数字刻度（1 / 5 / 20 / 50 / 100），仅作视觉引导。
+
+实现细节建议：
+
+- 将该示意界面实现为独立的 React 组件（例如 `CherryStudioMock`），仅在 Public 用户首页的 Cherry Studio 指南 tab 下展示。
+- 使用现有的 Tailwind + DaisyUI 工具类构建布局和样式；整体风格与用户总览页其它卡片保持一致（圆角、浅灰背景、轻微阴影等）。
+- 所有文字文案（标题、字段名、说明）应通过 `web/src/i18n.tsx` 的 i18n 管线管理，保证中英双语切换时示意界面同步更新。
+
+示意界面对应的 UI 参考截图应保存到仓库的 `docs/assets` 目录，例如：
+
+- 文件：`docs/assets/screenshot-5OeEJG55.png`
+
+本设计文档中直接引用该截图如下：
+
+![Cherry Studio Web Search 设置界面示意](assets/screenshot-5OeEJG55.png)
+
+在其他文档中需要引用时，可使用相同的相对路径：
+
+```md
+![Cherry Studio Web Search 设置界面示意](assets/screenshot-5OeEJG55.png)
+```
+
+这样既能在文档中展示接入路径，又避免直接复制 Cherry Studio 的完整 UI 实现。

@@ -84,6 +84,44 @@ interface PublicTranslations {
       hide: string
     }
   }
+  cherryMock: {
+    title: string
+    windowTitle: string
+    sidebar: {
+      modelService: string
+      defaultModel: string
+      generalSettings: string
+      displaySettings: string
+      dataSettings: string
+      mcp: string
+      notes: string
+      webSearch: string
+      memory: string
+      apiServer: string
+      docProcessing: string
+      quickPhrases: string
+      shortcuts: string
+    }
+    providerCard: {
+      title: string
+      subtitle: string
+      providerValue: string
+    }
+    tavilyCard: {
+      title: string
+      apiKeyLabel: string
+      apiKeyPlaceholder: string
+      apiKeyHint: string
+      testButtonLabel: string
+      apiUrlLabel: string
+      apiUrlHint: string
+    }
+    generalCard: {
+      title: string
+      includeDateLabel: string
+      resultsCountLabel: string
+    }
+  }
 }
 
 interface AdminTranslationsShape {
@@ -493,6 +531,7 @@ export const translations: Record<Language, TranslationShape> = {
           claudeDesktop: 'Claude Desktop',
           cursor: 'Cursor',
           windsurf: 'Windsurf',
+          cherryStudio: 'Cherry Studio',
           other: 'Other clients',
         },
       },
@@ -521,6 +560,44 @@ export const translations: Record<Language, TranslationShape> = {
         toggles: {
           show: 'Show details',
           hide: 'Hide details',
+        },
+      },
+      cherryMock: {
+        title: 'Cherry Studio settings preview',
+        windowTitle: 'Settings',
+        sidebar: {
+          modelService: 'Model services',
+          defaultModel: 'Default model',
+          generalSettings: 'General',
+          displaySettings: 'Display',
+          dataSettings: 'Data',
+          mcp: 'MCP',
+          notes: 'Notes',
+          webSearch: 'Web Search',
+          memory: 'Global memory',
+          apiServer: 'API server',
+          docProcessing: 'Document processing',
+          quickPhrases: 'Quick phrases',
+          shortcuts: 'Shortcuts',
+        },
+        providerCard: {
+          title: 'Web Search',
+          subtitle: 'Search provider',
+          providerValue: 'Tavily (API key)',
+        },
+        tavilyCard: {
+          title: 'Tavily',
+          apiKeyLabel: 'API key',
+          apiKeyPlaceholder: 'th-xxxx-xxxxxxxxxxxx',
+          apiKeyHint: 'Use your Tavily Hikari access token (th-…) as the API key here.',
+          testButtonLabel: 'Test',
+          apiUrlLabel: 'API URL',
+          apiUrlHint: 'Use this as the API URL in Cherry Studio.',
+        },
+        generalCard: {
+          title: 'General settings',
+          includeDateLabel: 'Include date in search',
+          resultsCountLabel: 'Number of results',
         },
       },
     },
@@ -908,6 +985,7 @@ export const translations: Record<Language, TranslationShape> = {
           claudeDesktop: 'Claude Desktop',
           cursor: 'Cursor',
           windsurf: 'Windsurf',
+          cherryStudio: 'Cherry Studio',
           other: '其他客户端',
         },
       },
@@ -936,6 +1014,44 @@ export const translations: Record<Language, TranslationShape> = {
         toggles: {
           show: '展开详情',
           hide: '收起详情',
+        },
+      },
+      cherryMock: {
+        title: 'Cherry Studio 设置示意',
+        windowTitle: '设置',
+        sidebar: {
+          modelService: '模型服务',
+          defaultModel: '默认模型',
+          generalSettings: '常规设置',
+          displaySettings: '显示设置',
+          dataSettings: '数据设置',
+          mcp: 'MCP',
+          notes: '笔记',
+          webSearch: '网络搜索',
+          memory: '全局记忆',
+          apiServer: 'API 服务器',
+          docProcessing: '文档处理',
+          quickPhrases: '快捷短语',
+          shortcuts: '快捷键',
+        },
+        providerCard: {
+          title: '网络搜索',
+          subtitle: '搜索服务商',
+          providerValue: 'Tavily (API 密钥)',
+        },
+        tavilyCard: {
+          title: 'Tavily',
+          apiKeyLabel: 'API 密钥',
+          apiKeyPlaceholder: 'th-xxxx-xxxxxxxxxxxx',
+          apiKeyHint: '请将 Tavily Hikari 的访问令牌 (th-…)，填入上方 API 密钥。',
+          testButtonLabel: '检测',
+          apiUrlLabel: 'API 地址',
+          apiUrlHint: '在 Cherry Studio 中将此地址填入 “API 地址 / API URL”。',
+        },
+        generalCard: {
+          title: '常规设置',
+          includeDateLabel: '搜索包含日期',
+          resultsCountLabel: '搜索结果个数',
         },
       },
     },
