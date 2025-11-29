@@ -136,19 +136,17 @@ function CherryStudioMock(): JSX.Element {
                   <div className="h-5 w-5 rounded border border-base-300 bg-base-200" aria-hidden="true" />
                 </div>
 
-                {/* API key block */}
+                {/* API key block (static mock, not a real input) */}
                 <div className="space-y-1.5">
                   <label className="block text-xs font-medium text-base-content/80">
                     {t.tavilyCard.apiKeyLabel}
                   </label>
                   <div className="flex items-stretch gap-1.5">
                     <input
-                      type="text"
-                      className="input input-xs md:input-sm input-bordered flex-1 text-xs"
-                      value={t.tavilyCard.apiKeyPlaceholder}
-                      readOnly
-                      onClick={(e) => e.currentTarget.select()}
-                      onFocus={(e) => e.currentTarget.select()}
+                      type="password"
+                      className="input input-xs md:input-sm input-error flex-1 text-xs"
+                      placeholder={t.tavilyCard.apiKeyPlaceholder}
+                      {...disabledProps}
                     />
                     <div
                       className="flex h-8 w-8 items-center justify-center rounded-md bg-base-200 text-[0.65rem] text-base-content/40"

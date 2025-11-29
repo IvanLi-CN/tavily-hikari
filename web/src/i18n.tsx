@@ -508,7 +508,7 @@ export const translations: Record<Language, TranslationShape> = {
       },
       accessToken: {
         label: 'Access Token',
-        placeholder: 'th-<id>-<secret>',
+        placeholder: 'th-xxxx-xxxxxxxxxxxx',
         toggle: {
           show: 'Show access token',
           hide: 'Hide access token',
@@ -588,8 +588,8 @@ export const translations: Record<Language, TranslationShape> = {
         tavilyCard: {
           title: 'Tavily',
           apiKeyLabel: 'API key',
-          apiKeyPlaceholder: 'th-<id>-<secret>',
-          apiKeyHint: 'Use your Tavily Hikari access token (format th-<id>-<secret>) as the API key here.',
+          apiKeyPlaceholder: 'th-xxxx-xxxxxxxxxxxx',
+          apiKeyHint: 'Use your Tavily Hikari access token (for example th-xxxx-xxxxxxxxxxxx) as the API key here.',
           testButtonLabel: 'Test',
           apiUrlLabel: 'API URL',
           apiUrlHint: 'Use this as the API URL in Cherry Studio.',
@@ -611,7 +611,7 @@ export const translations: Record<Language, TranslationShape> = {
       },
       tokens: {
         title: 'Access Tokens',
-        description: 'Auth for /mcp. Format th-<id>-<secret>',
+        description: 'Auth for /mcp. Format th-xxxx-xxxxxxxxxxxx',
         notePlaceholder: 'Note (optional)',
         newToken: 'New Token',
         creating: 'Creating…',
@@ -962,7 +962,7 @@ export const translations: Record<Language, TranslationShape> = {
       },
       accessToken: {
         label: 'Access Token',
-        placeholder: 'th-<id>-<secret>',
+        placeholder: 'th-xxxx-xxxxxxxxxxxx',
         toggle: {
           show: '显示 Access Token',
           hide: '隐藏 Access Token',
@@ -1042,8 +1042,8 @@ export const translations: Record<Language, TranslationShape> = {
         tavilyCard: {
           title: 'Tavily',
           apiKeyLabel: 'API 密钥',
-          apiKeyPlaceholder: 'th-<id>-<secret>',
-          apiKeyHint: '请将 Tavily Hikari 的访问令牌（格式 th-<id>-<secret>，例如 th-abcd-1234567890ab），填入上方 API 密钥。',
+          apiKeyPlaceholder: 'th-xxxx-xxxxxxxxxxxx',
+          apiKeyHint: '请将 Tavily Hikari 的访问令牌（例如 th-xxxx-xxxxxxxxxxxx），填入上方 API 密钥。',
           testButtonLabel: '检测',
           apiUrlLabel: 'API 地址',
           apiUrlHint: '在 Cherry Studio 中将此地址填入 “API 地址 / API URL”。',
@@ -1065,7 +1065,7 @@ export const translations: Record<Language, TranslationShape> = {
       },
       tokens: {
         title: '访问令牌',
-        description: '用于 /mcp 的认证，格式 th-<id>-<secret>',
+        description: '用于 /mcp 的认证，格式 th-xxxx-xxxxxxxxxxxx',
         notePlaceholder: '备注（可选）',
         newToken: '新建令牌',
         creating: '创建中…',
