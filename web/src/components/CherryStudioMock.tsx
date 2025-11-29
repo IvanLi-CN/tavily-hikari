@@ -144,7 +144,7 @@ function CherryStudioMock(): JSX.Element {
                   <div className="flex items-stretch gap-1.5">
                     <input
                       type="text"
-                      className="input input-xs md:input-sm input-error flex-1 text-xs"
+                      className="input input-xs md:input-sm input-bordered flex-1 text-xs"
                       value={t.tavilyCard.apiKeyPlaceholder}
                       readOnly
                       onClick={(e) => e.currentTarget.select()}
