@@ -24,6 +24,7 @@ use futures_util::Stream;
 use reqwest::header::{HeaderMap as ReqHeaderMap, HeaderValue as ReqHeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use url::form_urlencoded;
 type SummarySig = (i64, i64, i64, i64, i64, i64, Option<i64>);
 use std::time::Duration;
 use tavily_hikari::{
@@ -2993,6 +2994,43 @@ async fn build_token_snapshot_event(state: &Arc<AppState>, id: &str) -> Option<E
     Some(Event::default().event("snapshot").data(json))
 }
 
+fn extract_token_from_query(raw_query: Option<&str>) -> (Option<String>, Option<String>) {
+    let Some(raw) = raw_query else {
+        return (None, None);
+    };
+
+    if raw.is_empty() {
+        return (None, None);
+    }
+
+    let mut token: Option<String> = None;
+    let mut serializer = form_urlencoded::Serializer::new(String::new());
+
+    for (key, value) in form_urlencoded::parse(raw.as_bytes()) {
+        if key.eq_ignore_ascii_case("tavilyApiKey") {
+            // Capture the first non-empty token value and strip it from the forwarded query.
+            if token.is_none() {
+                let trimmed = value.trim();
+                if !trimmed.is_empty() {
+                    token = Some(trimmed.to_string());
+                }
+            }
+            continue;
+        }
+
+        serializer.append_pair(&key, &value);
+    }
+
+    let serialized = serializer.finish();
+    let query = if serialized.is_empty() {
+        None
+    } else {
+        Some(serialized)
+    };
+
+    (query, token)
+}
+
 async fn proxy_handler(
     State(state): State<Arc<AppState>>,
     req: Request<Body>,
@@ -3000,7 +3038,7 @@ async fn proxy_handler(
     let (parts, body) = req.into_parts();
     let method = parts.method.clone();
     let path = parts.uri.path().to_owned();
-    let query = parts.uri.query().map(|q| q.to_owned());
+    let (query, query_token) = extract_token_from_query(parts.uri.query());
 
     if method == Method::GET && accepts_event_stream(&parts.headers) {
         let response = Response::builder()
@@ -3017,20 +3055,25 @@ async fn proxy_handler(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.trim().to_string());
 
-    let token = match auth_bearer
+    let header_token = auth_bearer
         .as_deref()
         .and_then(|raw| raw.strip_prefix("Bearer "))
         .map(str::trim)
-    {
-        Some(t) if !t.is_empty() => t.to_string(),
-        _ if state.dev_open_admin => "th-dev-override".to_string(),
-        _ => {
-            return Response::builder()
-                .status(StatusCode::UNAUTHORIZED)
-                .header(CONTENT_TYPE, "application/json; charset=utf-8")
-                .body(Body::from("{\"error\":\"missing token\"}"))
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
-        }
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_string());
+
+    let token = if let Some(t) = header_token {
+        t
+    } else if let Some(t) = query_token {
+        t
+    } else if state.dev_open_admin {
+        "th-dev-override".to_string()
+    } else {
+        return Response::builder()
+            .status(StatusCode::UNAUTHORIZED)
+            .header(CONTENT_TYPE, "application/json; charset=utf-8")
+            .body(Body::from("{\"error\":\"missing token\"}"))
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
     };
 
     let valid = if state.dev_open_admin {
@@ -3335,5 +3378,197 @@ impl From<ProxySummary> for SummaryView {
             total_quota_limit: summary.total_quota_limit,
             total_quota_remaining: summary.total_quota_remaining,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::Router;
+    use axum::extract::Query;
+    use axum::routing::any;
+    use nanoid::nanoid;
+    use reqwest::Client;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use tokio::net::TcpListener;
+
+    fn temp_db_path(prefix: &str) -> PathBuf {
+        let file = format!("{}-{}.db", prefix, nanoid!(8));
+        std::env::temp_dir().join(file)
+    }
+
+    async fn spawn_mock_upstream(expected_api_key: String) -> SocketAddr {
+        let app = Router::new().route(
+            "/mcp",
+            any({
+                move |Query(params): Query<HashMap<String, String>>| {
+                    let expected_api_key = expected_api_key.clone();
+                    async move {
+                        let received = params.get("tavilyApiKey").cloned();
+                        if received.as_deref() != Some(expected_api_key.as_str()) {
+                            return (
+                                StatusCode::UNAUTHORIZED,
+                                Body::from("missing or incorrect tavilyApiKey"),
+                            );
+                        }
+                        (StatusCode::OK, Body::from("{\"ok\":true}"))
+                    }
+                }
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+        addr
+    }
+
+    async fn spawn_proxy_server(proxy: TavilyProxy) -> SocketAddr {
+        let state = Arc::new(AppState {
+            proxy,
+            static_dir: None,
+            forward_auth: ForwardAuthConfig::new(None, None, None, None),
+            dev_open_admin: false,
+            usage_base: "https://api.tavily.com".to_string(),
+        });
+
+        let app = Router::new()
+            .route("/mcp", any(proxy_handler))
+            .route("/mcp/*path", any(proxy_handler))
+            .with_state(state);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn mcp_accepts_token_from_query_param() {
+        let db_path = temp_db_path("e2e-query-token");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let expected_api_key = "tvly-e2e-upstream-key";
+        let upstream_addr = spawn_mock_upstream(expected_api_key.to_string()).await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy =
+            TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
+
+        let access_token = proxy
+            .create_access_token(Some("e2e-query-param"))
+            .await
+            .expect("create access token");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone()).await;
+
+        let client = Client::new();
+        let url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, access_token.token
+        );
+        let resp = client
+            .post(url)
+            .body("{}")
+            .send()
+            .await
+            .expect("request to proxy succeeds");
+
+        assert!(
+            resp.status().is_success(),
+            "expected success from /mcp using query param token, got {}",
+            resp.status()
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_rejects_invalid_token_in_query_param() {
+        let db_path = temp_db_path("e2e-query-token-invalid");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let expected_api_key = "tvly-e2e-upstream-key-invalid";
+        let upstream_addr = spawn_mock_upstream(expected_api_key.to_string()).await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy =
+            TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone()).await;
+
+        let client = Client::new();
+        let url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, "th-invalid-unknown"
+        );
+        let resp = client
+            .post(url)
+            .body("{}")
+            .send()
+            .await
+            .expect("request to proxy succeeds");
+
+        assert_eq!(
+            resp.status(),
+            reqwest::StatusCode::UNAUTHORIZED,
+            "expected 401 for invalid query param token"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn extract_token_from_query_none_or_empty() {
+        let (q, t) = extract_token_from_query(None);
+        assert_eq!(q, None);
+        assert_eq!(t, None);
+
+        let (q, t) = extract_token_from_query(Some(""));
+        assert_eq!(q, None);
+        assert_eq!(t, None);
+    }
+
+    #[test]
+    fn extract_token_from_query_single_param_case_insensitive() {
+        let (q, t) = extract_token_from_query(Some("TavilyApiKey=th-abc-xyz"));
+        assert_eq!(q, None, "no other params → query should be None");
+        assert_eq!(t.as_deref(), Some("th-abc-xyz"));
+    }
+
+    #[test]
+    fn extract_token_from_query_strips_param_and_preserves_others() {
+        let (q, t) = extract_token_from_query(Some("foo=1&tavilyApiKey=th-abc-xyz&bar=2"));
+        assert_eq!(t.as_deref(), Some("th-abc-xyz"));
+        // Order should be preserved for non-auth params.
+        assert_eq!(q.as_deref(), Some("foo=1&bar=2"));
+    }
+
+    #[test]
+    fn extract_token_from_query_uses_first_non_empty_token() {
+        let (q, t) =
+            extract_token_from_query(Some("tavilyApiKey=&tavilyApiKey=th-abc-xyz&foo=bar"));
+        assert_eq!(t.as_deref(), Some("th-abc-xyz"));
+        assert_eq!(q.as_deref(), Some("foo=bar"));
+    }
+
+    #[test]
+    fn extract_token_from_query_ignores_additional_token_params() {
+        let (q, t) = extract_token_from_query(Some("tavilyApiKey=th-1&tavilyApiKey=th-2&foo=bar"));
+        assert_eq!(t.as_deref(), Some("th-1"));
+        assert_eq!(q.as_deref(), Some("foo=bar"));
     }
 }
