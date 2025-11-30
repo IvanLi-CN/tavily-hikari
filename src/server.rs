@@ -4238,15 +4238,24 @@ fn mcp_request_counts_toward_business_quota(path: &str, body: &[u8]) -> bool {
         return true;
     }
 
-    // For MCP, only `tools/call` should be counted为“有业务成本”的调用。
-    // 其他 MCP 方法（例如 tools/list、resources/list、prompts/list 等）
-    // 仅做能力发现或元数据交互，不应占用业务配额。
+    // Non-business whitelist: only the following methods are treated as "no business cost".
+    // Everything else is considered business-costful and will consume business quota.
     match serde_json::from_slice::<Value>(body) {
-        Ok(Value::Object(map)) => matches!(
-            map.get("method").and_then(|v| v.as_str()),
-            Some("tools/call")
-        ),
-        // 对于无法解析的请求，保守起见仍按“有业务成本”计入配额，避免被恶意绕过。
+        Ok(Value::Object(map)) => {
+            let method = map.get("method").and_then(|v| v.as_str()).unwrap_or("");
+            let is_non_business = matches!(
+                method,
+                "tools/list"
+                    | "resources/list"
+                    | "resources/templates/list"
+                    | "resources/read"
+                    | "prompts/list"
+                    | "prompts/get"
+            ) || method.starts_with("notifications/");
+            // Return semantics: true = count towards business quota; false = only hourly-any limiter.
+            !is_non_business
+        }
+        // 对于无法解析或缺少 method 的请求，保守起见视为“有业务成本”。
         _ => true,
     }
 }

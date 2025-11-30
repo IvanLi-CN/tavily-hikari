@@ -117,17 +117,15 @@
   | Prompt 列表    | `prompts/list`                   | 列出预设 prompt                | `method == "prompts/list"`                                   |
   | Prompt 获取    | `prompts/get`                    | 获取单个 prompt                | `method == "prompts/get"`                                    |
   | 通知 / 订阅    | `notifications/*` 系列           | 用于资源/工具变更通知          | `method` 以 `notifications/` 前缀开头                        |
-  | 其它元数据调用 | 规范中新增的非 `tools/call` 方法 | 例如握手、能力协商等元数据请求 | 通用规则：**只要 `method != "tools/call"` 则视为非工具调用** |
+  | 其它元数据调用 | 规范中新增的非 `tools/call` 方法 | 例如握手、能力协商等元数据请求 | 默认**按业务调用处理**，只有在确认“无业务成本”后才加入白名单 |
 
-实现上，`src/server.rs` 中的 `mcp_request_counts_toward_business_quota` 逻辑等价于：
+实现上，`src/server.rs` 中的 `mcp_request_counts_toward_business_quota` 逻辑采用“**非业务调用白名单**”：
 
-- 若 `path` 不以 `/mcp` 开头 → 一律视为有业务成本（例如 `/api/tavily/*`）；
+- 若 `path` 不以 `/mcp` 开头 → 一律视为有业务成本（例如 `/api/tavily/*`，始终计入业务配额）；
 - 若 `path` 以 `/mcp` 开头：
-  - 解析 JSON body；
-  - **仅当 `method == "tools/call"` 时记入业务配额**；
-  - 其它 method（包括无法解析或未知新 method）会遵循：
-    - 任意请求限频：仍计入 `TOKEN_HOURLY_REQUEST_LIMIT`；
-    - 业务配额：不再调用 `check_token_quota()`，不消耗 `TOKEN_*_LIMIT`。
+  - 解析 JSON body，读取 `method` 字段；
+  - 仅当 `method` 落在上表所列的方法集合中时，视为“非业务调用”（不计入业务配额，仅计入每小时任意请求限频）；
+  - 对于缺少 `method`、解析失败或任何未在白名单中的新 method，一律视为“业务调用”，正常走 `check_token_quota()` 并消耗 `TOKEN_*_LIMIT`。
 
 这样可以保证：
 
