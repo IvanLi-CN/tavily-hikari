@@ -37,8 +37,9 @@
    - **轻量聚合计数表**，只保存最近一段时间的“桶”。
    - 主键：`(token_id, bucket_start, granularity)`；
    - 字段：
-     - `granularity = 'minute'`：按分钟聚合，主要用于最近 1 小时窗口；
-     - `granularity = 'hour'`：按小时聚合，主要用于最近 24 小时窗口；
+     - `granularity = 'minute'`：按分钟聚合，主要用于最近 1 小时窗口的**业务配额**；
+     - `granularity = 'hour'`：按小时聚合，主要用于最近 24 小时窗口的**业务配额**；
+     - `granularity = 'request_minute'`：按分钟聚合，统计“任意请求”次数，用于**每小时原始请求限频**（见下文）；
      - `count`：该桶内的请求次数。
    - 保留策略：
      - 通过 `delete_old_usage_buckets` 定期删除早于
@@ -59,32 +60,80 @@
 
 ## 配额计算路径（按请求）
 
-当客户端携带 `th-xxxx-...` 调用 `/mcp` 时，后端大致流程如下：
+当客户端携带 `th-xxxx-...` 调用 `/mcp` 或 `/api/tavily/*` 时，后端大致流程如下：
 
 1. 在 `src/server.rs` 中解析出 `token_id`；
-2. 调用 `proxy.check_token_quota(token_id)`：
-   - 内部逻辑（`TokenQuota::check`）：
+2. 先调用 `proxy.check_token_hourly_requests(token_id)` 做**每小时任意请求限频**：
+   - 内部逻辑（`TokenRequestLimit::check`）：
+     - 计算当前分钟桶：`minute_bucket = now_ts - (now_ts % 60)`；
+     - 对该 token 执行：
+       - `increment_usage_bucket(..., 'request_minute')`；
+       - `sum_usage_buckets(..., 'request_minute', hour_window_start)` → 最近 1 小时“任意请求”用量；
+     - 组合成 `TokenHourlyRequestVerdict`，并与
+       `TOKEN_HOURLY_REQUEST_LIMIT` / `TOKEN_HOURLY_REQUEST_LIMIT` 环境变量
+       覆盖后的值比较（默认 **500 次 / 小时 / token**）。
+   - 若 verdict 不允许（`!allowed`），立即返回 `429 Too Many Requests`，并记录一次
+     `quota_exhausted` 的尝试日志（错误信息为“hourly request limit reached for this token”），**不会再进入业务配额检查与上游调用**。
+
+3. 对于**有业务成本**的调用，再进入 `proxy.check_token_quota(token_id)` 的配额判断：
+   - 内部逻辑（`TokenQuota::check`）仅对“业务调用”生效（见下一节 MCP 非工具调用白名单），对应括号中的注释：
      - 计算当前的分钟与小时桶：
        - `minute_bucket = now_ts - (now_ts % 60)`；
        - `hour_bucket = now_ts - (now_ts % 3600)`。
      - 针对该 token：
-       - `increment_usage_bucket(..., 'minute')`；
-       - `increment_usage_bucket(..., 'hour')`；
-       - `increment_monthly_quota(..., month_start)`。
+       - `increment_usage_bucket(..., 'minute')`； ← 业务配额：小时窗口
+       - `increment_usage_bucket(..., 'hour')`； ← 业务配额：日窗口
+       - `increment_monthly_quota(..., month_start)`； ← 业务配额：月窗口
      - 再通过：
-       - `sum_usage_buckets(... 'minute', hour_window_start)` → 最近 1 小时用量；
-       - `sum_usage_buckets(... 'hour', day_window_start)` → 最近 24 小时用量；
-       - `increment_monthly_quota` 的返回值 → 本月用量；
+       - `sum_usage_buckets(..., 'minute', hour_window_start)` → 最近 1 小时**业务用量**；
+       - `sum_usage_buckets(..., 'hour', day_window_start)` → 最近 24 小时**业务用量**；
+       - `increment_monthly_quota` 的返回值 → 本月**业务用量**；
        - 组合成 `TokenQuotaVerdict`。
    - 若 verdict 不允许（`!allowed`），立即返回 429，并记录一次
-     `quota_exhausted` 的尝试日志。
+     `quota_exhausted` 的尝试日志（错误信息为 “token quota exceeded on ... window ..."）。
 
-3. 若配额允许，则继续调用 Tavily 上游；返回响应后，调用
+4. 若两层限额都允许，则继续调用 Tavily 上游；返回响应后，调用
    `record_token_attempt` 写入：
    - 一条 `auth_token_logs` 明细；
    - 更新 `auth_tokens.total_requests` 与 `last_used_at`。
    - 注意：此处**不会再更新** `token_usage_buckets` 或 `auth_token_quota`，
      聚合计数完全由 `check_token_quota()` 驱动。
+
+### MCP 非工具调用白名单（不计入业务配额）
+
+在 MCP 模式下，Hikari 现在对“业务配额”（`TOKEN_HOURLY_LIMIT` /
+`TOKEN_DAILY_LIMIT` / `TOKEN_MONTHLY_LIMIT`）只计入真正触发 Tavily 工具的调用：
+
+- **计入业务配额：**
+  - `method = "tools/call"`：工具调用（例如 Tavily Search / Extract / Crawl / Map 等）。
+- **不计入业务配额（仍计入“任意请求”限频）：**
+
+  | 类别           | MCP method                       | 说明                           | 匹配方式                                                     |
+  | -------------- | -------------------------------- | ------------------------------ | ------------------------------------------------------------ |
+  | 工具发现       | `tools/list`                     | 列出可用工具列表，仅做能力发现 | JSON body 中 `method == "tools/list"`                        |
+  | 资源列表       | `resources/list`                 | 列出资源清单                   | `method == "resources/list"`                                 |
+  | 资源模板列表   | `resources/templates/list`       | 列出资源模板                   | `method == "resources/templates/list"`                       |
+  | 资源读取       | `resources/read`                 | 读取 MCP 资源内容              | `method == "resources/read"`                                 |
+  | Prompt 列表    | `prompts/list`                   | 列出预设 prompt                | `method == "prompts/list"`                                   |
+  | Prompt 获取    | `prompts/get`                    | 获取单个 prompt                | `method == "prompts/get"`                                    |
+  | 通知 / 订阅    | `notifications/*` 系列           | 用于资源/工具变更通知          | `method` 以 `notifications/` 前缀开头                        |
+  | 其它元数据调用 | 规范中新增的非 `tools/call` 方法 | 例如握手、能力协商等元数据请求 | 通用规则：**只要 `method != "tools/call"` 则视为非工具调用** |
+
+实现上，`src/server.rs` 中的 `mcp_request_counts_toward_business_quota` 逻辑等价于：
+
+- 若 `path` 不以 `/mcp` 开头 → 一律视为有业务成本（例如 `/api/tavily/*`）；
+- 若 `path` 以 `/mcp` 开头：
+  - 解析 JSON body；
+  - **仅当 `method == "tools/call"` 时记入业务配额**；
+  - 其它 method（包括无法解析或未知新 method）会遵循：
+    - 任意请求限频：仍计入 `TOKEN_HOURLY_REQUEST_LIMIT`；
+    - 业务配额：不再调用 `check_token_quota()`，不消耗 `TOKEN_*_LIMIT`。
+
+这样可以保证：
+
+- MCP 协议层的握手 / 工具发现 / 资源列举等“无上游业务成本”的调用，不再消耗业务配额；
+- 真正触发 Tavily 搜索 / 抓取 / 提取等操作的 `tools/call` 调用，仍然严格受小时 / 日 / 月配额限制；
+- 同时，所有经鉴权的请求都会受到统一的“每小时任意请求次数”保护，避免恶意刷流量。
 
 ### 近似计数与误差来源
 

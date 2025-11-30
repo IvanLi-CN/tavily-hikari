@@ -220,6 +220,7 @@ interface AdminTranslationsShape {
       token: string
       group: string
       hourly: string
+      hourlyAny: string
       daily: string
       today: string
       month: string
@@ -701,7 +702,8 @@ export const translations: Record<Language, TranslationShape> = {
         table: {
           token: 'Token',
           group: 'Group',
-          hourly: '1h',
+          hourly: '1h (business)',
+          hourlyAny: '1h (any)',
           daily: '24h',
           today: 'Today',
           month: 'This month',
@@ -1155,7 +1157,8 @@ export const translations: Record<Language, TranslationShape> = {
         table: {
           token: '令牌',
           group: '分组',
-          hourly: '1 小时',
+          hourly: '1 小时（业务）',
+          hourlyAny: '1 小时（任意）',
           daily: '24 小时',
           today: '今日',
           month: '本月',

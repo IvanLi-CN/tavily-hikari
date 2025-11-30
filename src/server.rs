@@ -29,8 +29,9 @@ type SummarySig = (i64, i64, i64, i64, i64, i64, Option<i64>);
 use std::time::Duration;
 use tavily_hikari::{
     ApiKeyMetrics, AuthToken, ProxyError, ProxyRequest, ProxyResponse, ProxySummary, QuotaWindow,
-    RequestLogRecord, TavilyProxy, TokenHourlyBucket, TokenLogRecord, TokenQuotaVerdict,
-    TokenSummary, TokenUsageBucket, effective_token_daily_limit, effective_token_hourly_limit,
+    RequestLogRecord, TavilyProxy, TokenHourlyBucket, TokenHourlyRequestVerdict, TokenLogRecord,
+    TokenQuotaVerdict, TokenSummary, TokenUsageBucket, effective_token_daily_limit,
+    effective_token_hourly_limit, effective_token_hourly_request_limit,
     effective_token_monthly_limit,
 };
 use tokio::signal;
@@ -752,7 +753,63 @@ async fn tavily_http_search(
 
     let token_id_for_logs = auth_token_id.clone();
 
-    // Per-token quota check.
+    // Per-token hourly *any request* limit.
+    if let Some(ref tid) = auth_token_id
+        && !state.dev_open_admin
+    {
+        match state.proxy.check_token_hourly_requests(tid).await {
+            Ok(verdict) => {
+                if !verdict.allowed {
+                    let message = build_request_limit_error_message(&verdict);
+                    let _ = state
+                        .proxy
+                        .record_token_attempt(
+                            tid,
+                            &method,
+                            &path,
+                            None,
+                            Some(StatusCode::TOO_MANY_REQUESTS.as_u16() as i64),
+                            None,
+                            "quota_exhausted",
+                            Some(&message),
+                        )
+                        .await;
+                    let payload = json!({
+                        "error": "quota_exhausted",
+                        "message": "hourly request limit reached for this token",
+                    });
+                    let resp = Response::builder()
+                        .status(StatusCode::TOO_MANY_REQUESTS)
+                        .header(CONTENT_TYPE, "application/json; charset=utf-8")
+                        .body(Body::from(payload.to_string()))
+                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                    return Ok(resp);
+                }
+            }
+            Err(err) => {
+                eprintln!("hourly request limit check failed for /api/tavily/search: {err}");
+                if let Some(tid) = auth_token_id.as_deref() {
+                    let msg = err.to_string();
+                    let _ = state
+                        .proxy
+                        .record_token_attempt(
+                            tid,
+                            &method,
+                            &path,
+                            None,
+                            Some(StatusCode::INTERNAL_SERVER_ERROR.as_u16() as i64),
+                            None,
+                            "error",
+                            Some(msg.as_str()),
+                        )
+                        .await;
+                }
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    }
+
+    // Per-token business quota check (hour / day / month).
     if let Some(ref tid) = auth_token_id {
         match state.proxy.check_token_quota(tid).await {
             Ok(verdict) => {
@@ -972,7 +1029,63 @@ async fn tavily_http_extract(
 
     let token_id_for_logs = auth_token_id.clone();
 
-    // Per-token quota check.
+    // Per-token hourly *any request* limit.
+    if let Some(ref tid) = auth_token_id
+        && !state.dev_open_admin
+    {
+        match state.proxy.check_token_hourly_requests(tid).await {
+            Ok(verdict) => {
+                if !verdict.allowed {
+                    let message = build_request_limit_error_message(&verdict);
+                    let _ = state
+                        .proxy
+                        .record_token_attempt(
+                            tid,
+                            &method,
+                            &path,
+                            None,
+                            Some(StatusCode::TOO_MANY_REQUESTS.as_u16() as i64),
+                            None,
+                            "quota_exhausted",
+                            Some(&message),
+                        )
+                        .await;
+                    let payload = json!({
+                        "error": "quota_exhausted",
+                        "message": "hourly request limit reached for this token",
+                    });
+                    let resp = Response::builder()
+                        .status(StatusCode::TOO_MANY_REQUESTS)
+                        .header(CONTENT_TYPE, "application/json; charset=utf-8")
+                        .body(Body::from(payload.to_string()))
+                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                    return Ok(resp);
+                }
+            }
+            Err(err) => {
+                eprintln!("hourly request limit check failed for /api/tavily/extract: {err}");
+                if let Some(tid) = auth_token_id.as_deref() {
+                    let msg = err.to_string();
+                    let _ = state
+                        .proxy
+                        .record_token_attempt(
+                            tid,
+                            &method,
+                            &path,
+                            None,
+                            Some(StatusCode::INTERNAL_SERVER_ERROR.as_u16() as i64),
+                            None,
+                            "error",
+                            Some(msg.as_str()),
+                        )
+                        .await;
+                }
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    }
+
+    // Per-token business quota check.
     if let Some(ref tid) = auth_token_id {
         match state.proxy.check_token_quota(tid).await {
             Ok(verdict) => {
@@ -1193,7 +1306,63 @@ async fn tavily_http_crawl(
 
     let token_id_for_logs = auth_token_id.clone();
 
-    // Per-token quota check.
+    // Per-token hourly *any request* limit.
+    if let Some(ref tid) = auth_token_id
+        && !state.dev_open_admin
+    {
+        match state.proxy.check_token_hourly_requests(tid).await {
+            Ok(verdict) => {
+                if !verdict.allowed {
+                    let message = build_request_limit_error_message(&verdict);
+                    let _ = state
+                        .proxy
+                        .record_token_attempt(
+                            tid,
+                            &method,
+                            &path,
+                            None,
+                            Some(StatusCode::TOO_MANY_REQUESTS.as_u16() as i64),
+                            None,
+                            "quota_exhausted",
+                            Some(&message),
+                        )
+                        .await;
+                    let payload = json!({
+                        "error": "quota_exhausted",
+                        "message": "hourly request limit reached for this token",
+                    });
+                    let resp = Response::builder()
+                        .status(StatusCode::TOO_MANY_REQUESTS)
+                        .header(CONTENT_TYPE, "application/json; charset=utf-8")
+                        .body(Body::from(payload.to_string()))
+                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                    return Ok(resp);
+                }
+            }
+            Err(err) => {
+                eprintln!("hourly request limit check failed for /api/tavily/crawl: {err}");
+                if let Some(tid) = auth_token_id.as_deref() {
+                    let msg = err.to_string();
+                    let _ = state
+                        .proxy
+                        .record_token_attempt(
+                            tid,
+                            &method,
+                            &path,
+                            None,
+                            Some(StatusCode::INTERNAL_SERVER_ERROR.as_u16() as i64),
+                            None,
+                            "error",
+                            Some(msg.as_str()),
+                        )
+                        .await;
+                }
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    }
+
+    // Per-token business quota check.
     if let Some(ref tid) = auth_token_id {
         match state.proxy.check_token_quota(tid).await {
             Ok(verdict) => {
@@ -1586,6 +1755,7 @@ struct TokenMetricsView {
     monthly_success: i64,
     daily_success: i64,
     daily_failure: i64,
+    // Business quota (tools/call) windows
     quota_hourly_used: i64,
     quota_hourly_limit: i64,
     quota_daily_used: i64,
@@ -3612,10 +3782,14 @@ struct TokenLeaderboardItemView {
     total_requests: i64,
     last_used_at: Option<i64>,
     quota_state: String,
+    // Business quota windows (tools/call)
     quota_hourly_used: i64,
     quota_hourly_limit: i64,
     quota_daily_used: i64,
     quota_daily_limit: i64,
+    // Hourly raw request limiter (any authenticated request)
+    hourly_any_used: i64,
+    hourly_any_limit: i64,
     today_total: i64,
     today_errors: i64,
     today_other: i64,
@@ -3810,6 +3984,13 @@ async fn get_token_leaderboard(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
+    let token_ids: Vec<String> = tokens.iter().map(|t| t.id.clone()).collect();
+    let hourly_any_map = state
+        .proxy
+        .token_hourly_any_snapshot(&token_ids)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
     let mut items: Vec<TokenLeaderboardItemView> = Vec::with_capacity(tokens.len());
 
     for token in tokens {
@@ -3859,6 +4040,11 @@ async fn get_token_leaderboard(
             .map(|w| w.as_str().to_string())
             .unwrap_or_else(|| "normal".to_string());
 
+        let (hourly_any_used, hourly_any_limit) = hourly_any_map
+            .get(&token.id)
+            .map(|v| (v.hourly_used, v.hourly_limit))
+            .unwrap_or((0, effective_token_hourly_request_limit()));
+
         let item = TokenLeaderboardItemView {
             id: token.id.clone(),
             enabled: token.enabled,
@@ -3871,6 +4057,8 @@ async fn get_token_leaderboard(
             quota_hourly_limit: hour_limit,
             quota_daily_used: day_used,
             quota_daily_limit: day_limit,
+            hourly_any_used,
+            hourly_any_limit,
             today_total: today.total_requests,
             today_errors: today.error_count,
             today_other: other_today,
@@ -4043,6 +4231,26 @@ fn extract_token_from_query(raw_query: Option<&str>) -> (Option<String>, Option<
     (query, token)
 }
 
+fn mcp_request_counts_toward_business_quota(path: &str, body: &[u8]) -> bool {
+    // Only apply special handling for /mcp traffic. Other endpoints (such as
+    // /api/tavily/*) are always treated as business-costful.
+    if !path.starts_with("/mcp") {
+        return true;
+    }
+
+    // For MCP, only `tools/call` should be counted为“有业务成本”的调用。
+    // 其他 MCP 方法（例如 tools/list、resources/list、prompts/list 等）
+    // 仅做能力发现或元数据交互，不应占用业务配额。
+    match serde_json::from_slice::<Value>(body) {
+        Ok(Value::Object(map)) => matches!(
+            map.get("method").and_then(|v| v.as_str()),
+            Some("tools/call")
+        ),
+        // 对于无法解析的请求，保守起见仍按“有业务成本”计入配额，避免被恶意绕过。
+        _ => true,
+    }
+}
+
 async fn proxy_handler(
     State(state): State<Arc<AppState>>,
     req: Request<Body>,
@@ -4137,31 +4345,64 @@ async fn proxy_handler(
 
     let mut _quota_verdict: Option<TokenQuotaVerdict> = None;
     if let Some(tid) = token_id.as_deref() {
-        match state.proxy.check_token_quota(tid).await {
-            Ok(verdict) => {
-                if !state.dev_open_admin && !verdict.allowed {
-                    let message = build_quota_error_message(&verdict);
-                    let _ = state
-                        .proxy
-                        .record_token_attempt(
-                            tid,
-                            &method,
-                            &path,
-                            parts.uri.query(),
-                            Some(StatusCode::TOO_MANY_REQUESTS.as_u16() as i64),
-                            None,
-                            "quota_exhausted",
-                            Some(&message),
-                        )
-                        .await;
-                    let response = quota_exceeded_response(&verdict)?;
-                    return Ok(response);
+        // 1) 全量“任意请求”小时限频：所有通过鉴权的请求都会计入。
+        if !state.dev_open_admin {
+            match state.proxy.check_token_hourly_requests(tid).await {
+                Ok(verdict) => {
+                    if !verdict.allowed {
+                        let message = build_request_limit_error_message(&verdict);
+                        let _ = state
+                            .proxy
+                            .record_token_attempt(
+                                tid,
+                                &method,
+                                &path,
+                                parts.uri.query(),
+                                Some(StatusCode::TOO_MANY_REQUESTS.as_u16() as i64),
+                                None,
+                                "quota_exhausted",
+                                Some(&message),
+                            )
+                            .await;
+                        let response = request_limit_exceeded_response(&verdict)?;
+                        return Ok(response);
+                    }
                 }
-                _quota_verdict = Some(verdict);
+                Err(err) => {
+                    eprintln!("hourly request limit check failed: {err}");
+                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                }
             }
-            Err(err) => {
-                eprintln!("quota check failed: {err}");
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+
+        // 2) 业务配额（小时 / 日 / 月）只对 MCP 工具调用生效。
+        if mcp_request_counts_toward_business_quota(&path, &body_bytes) {
+            match state.proxy.check_token_quota(tid).await {
+                Ok(verdict) => {
+                    if !state.dev_open_admin && !verdict.allowed {
+                        let message = build_quota_error_message(&verdict);
+                        let _ = state
+                            .proxy
+                            .record_token_attempt(
+                                tid,
+                                &method,
+                                &path,
+                                parts.uri.query(),
+                                Some(StatusCode::TOO_MANY_REQUESTS.as_u16() as i64),
+                                None,
+                                "quota_exhausted",
+                                Some(&message),
+                            )
+                            .await;
+                        let response = quota_exceeded_response(&verdict)?;
+                        return Ok(response);
+                    }
+                    _quota_verdict = Some(verdict);
+                }
+                Err(err) => {
+                    eprintln!("quota check failed: {err}");
+                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                }
             }
         }
     }
@@ -4289,6 +4530,25 @@ fn value_from_len(len: usize) -> axum::http::HeaderValue {
         .unwrap_or_else(|_| axum::http::HeaderValue::from_static("0"))
 }
 
+fn request_limit_exceeded_response(
+    verdict: &TokenHourlyRequestVerdict,
+) -> Result<Response<Body>, StatusCode> {
+    let payload = json!({
+        "error": "quota_exhausted",
+        "window": "hour",
+        "hourlyAny": {
+            "limit": verdict.hourly_limit,
+            "used": verdict.hourly_used,
+        },
+    });
+
+    Response::builder()
+        .status(StatusCode::TOO_MANY_REQUESTS)
+        .header(CONTENT_TYPE, "application/json; charset=utf-8")
+        .body(Body::from(payload.to_string()))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
 fn quota_exceeded_response(verdict: &TokenQuotaVerdict) -> Result<Response<Body>, StatusCode> {
     let payload = json!({
         "error": "quota_exceeded",
@@ -4312,6 +4572,13 @@ fn quota_exceeded_response(verdict: &TokenQuotaVerdict) -> Result<Response<Body>
         .header(CONTENT_TYPE, "application/json; charset=utf-8")
         .body(Body::from(payload.to_string()))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+fn build_request_limit_error_message(verdict: &TokenHourlyRequestVerdict) -> String {
+    format!(
+        "token hourly request limit exceeded (limit {}, used {})",
+        verdict.hourly_limit, verdict.hourly_used
+    )
 }
 
 fn build_quota_error_message(verdict: &TokenQuotaVerdict) -> String {
@@ -4630,11 +4897,18 @@ mod tests {
         let db_path = temp_db_path("http-search-401-missing");
         let db_str = db_path.to_string_lossy().to_string();
 
-        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
-            .await
-            .expect("proxy created");
+        let expected_api_key = "tvly-http-search-any-limit-key";
+        let proxy = TavilyProxy::with_endpoint(
+            vec![expected_api_key.to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
 
-        let usage_base = "http://127.0.0.1:58088".to_string();
+        let upstream_addr =
+            spawn_http_search_mock_asserting_api_key(expected_api_key.to_string()).await;
+        let usage_base = format!("http://{}", upstream_addr);
         let proxy_addr = spawn_proxy_server(proxy, usage_base).await;
 
         let client = Client::new();
@@ -5158,6 +5432,68 @@ mod tests {
             resp.status()
         );
 
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_non_tool_calls_are_ignored_by_business_quota() {
+        let db_path = temp_db_path("mcp-non-tool-ignored");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        // Tighten business hourly quota to 1 so that the token is quickly exhausted
+        // for TokenQuota, while the per-hour raw request limiter still uses default.
+        unsafe {
+            std::env::set_var("TOKEN_HOURLY_LIMIT", "1");
+        }
+
+        let expected_api_key = "tvly-mcp-non-tool-key";
+        let upstream_addr = spawn_mock_upstream(expected_api_key.to_string()).await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy =
+            TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
+
+        let access_token = proxy
+            .create_access_token(Some("mcp-non-tool"))
+            .await
+            .expect("create access token");
+
+        // Pre-exhaust business quota for this token.
+        let hourly_limit = effective_token_hourly_limit();
+        for _ in 0..=hourly_limit {
+            let _ = proxy
+                .check_token_quota(&access_token.id)
+                .await
+                .expect("quota check ok");
+        }
+
+        let proxy_addr =
+            spawn_proxy_server(proxy.clone(), "https://api.tavily.com".to_string()).await;
+
+        let client = Client::new();
+        let url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, access_token.token
+        );
+        // MCP 非工具调用：tools/list 应当被业务配额忽略，但仍经过“任意请求”限频。
+        let resp = client
+            .post(url)
+            .json(&serde_json::json!({ "method": "tools/list" }))
+            .send()
+            .await
+            .expect("request to proxy succeeds");
+
+        assert!(
+            resp.status().is_success(),
+            "non-tool MCP call (tools/list) should not be blocked by business quota, got {}",
+            resp.status()
+        );
+
+        unsafe {
+            std::env::remove_var("TOKEN_HOURLY_LIMIT");
+        }
         let _ = std::fs::remove_file(db_path);
     }
 

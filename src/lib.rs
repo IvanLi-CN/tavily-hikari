@@ -81,6 +81,10 @@ const ALLOWED_PREFIXES: &[&str] = &["x-mcp-", "x-tavily-", "tavily-"];
 pub const TOKEN_HOURLY_LIMIT: i64 = 100;
 pub const TOKEN_DAILY_LIMIT: i64 = 500;
 pub const TOKEN_MONTHLY_LIMIT: i64 = 5000;
+// Default per-token raw request limit (any request type) per hour.
+// This is enforced separately from the business quota above, and counts every
+// successful token-authenticated request regardless of MCP method.
+pub const TOKEN_HOURLY_REQUEST_LIMIT: i64 = 500;
 // Soft affinity window for mapping access tokens to API keys (in seconds).
 // Within this window, a token will try to reuse the same API key if it is still active.
 const TOKEN_AFFINITY_TTL_SECS: i64 = 15 * 60;
@@ -90,6 +94,8 @@ const TOKEN_AFFINITY_MAX_ENTRIES: usize = 10_000;
 
 const GRANULARITY_MINUTE: &str = "minute";
 const GRANULARITY_HOUR: &str = "hour";
+// Per-token raw request counter (any request type), aggregated per minute.
+const GRANULARITY_REQUEST_MINUTE: &str = "request_minute";
 const BUCKET_RETENTION_SECS: i64 = 2 * 24 * 3600; // 48h，足够覆盖 24h 窗口
 const CLEANUP_INTERVAL_SECS: i64 = 600;
 const SECS_PER_MINUTE: i64 = 60;
@@ -141,6 +147,13 @@ pub fn effective_token_daily_limit() -> i64 {
 /// Environment variable: `TOKEN_MONTHLY_LIMIT` (must be a positive integer).
 pub fn effective_token_monthly_limit() -> i64 {
     token_limit_from_env("TOKEN_MONTHLY_LIMIT", TOKEN_MONTHLY_LIMIT)
+}
+
+/// Effective hourly raw request limit per access token, including environment overrides.
+///
+/// Environment variable: `TOKEN_HOURLY_REQUEST_LIMIT` (must be a positive integer).
+pub fn effective_token_hourly_request_limit() -> i64 {
+    token_limit_from_env("TOKEN_HOURLY_REQUEST_LIMIT", TOKEN_HOURLY_REQUEST_LIMIT)
 }
 
 #[derive(Debug, Clone)]
@@ -312,6 +325,11 @@ mod affinity_tests {
     }
 }
 
+#[derive(Default, Debug)]
+struct CleanupState {
+    last_pruned: i64,
+}
+
 #[derive(Clone, Debug)]
 struct TokenQuota {
     store: Arc<KeyStore>,
@@ -321,9 +339,13 @@ struct TokenQuota {
     monthly_limit: i64,
 }
 
-#[derive(Default, Debug)]
-struct CleanupState {
-    last_pruned: i64,
+/// Lightweight per-token hourly request limiter that counts *all* authenticated
+/// requests, regardless of MCP method or HTTP endpoint.
+#[derive(Clone, Debug)]
+struct TokenRequestLimit {
+    store: Arc<KeyStore>,
+    cleanup: Arc<Mutex<CleanupState>>,
+    hourly_limit: i64,
 }
 
 /// 负责均衡 Tavily API key 并透传请求的代理。
@@ -334,6 +356,7 @@ pub struct TavilyProxy {
     key_store: Arc<KeyStore>,
     upstream_origin: String,
     token_quota: TokenQuota,
+    token_request_limit: TokenRequestLimit,
     affinity: Arc<Mutex<TokenAffinityState>>,
 }
 
@@ -372,6 +395,7 @@ impl TavilyProxy {
         let upstream_origin = origin_from_url(&upstream);
         let key_store = Arc::new(key_store);
         let token_quota = TokenQuota::new(key_store.clone());
+        let token_request_limit = TokenRequestLimit::new(key_store.clone());
 
         Ok(Self {
             client: Client::new(),
@@ -379,6 +403,7 @@ impl TavilyProxy {
             key_store,
             upstream_origin,
             token_quota,
+            token_request_limit,
             affinity: Arc::new(Mutex::new(TokenAffinityState::new(TOKEN_AFFINITY_TTL_SECS))),
         })
     }
@@ -918,6 +943,25 @@ impl TavilyProxy {
         self.token_quota.check(token_id).await
     }
 
+    /// Check and update the hourly *raw request* usage for a token.
+    /// This limiter counts every authenticated request (regardless of MCP method)
+    /// within the last rolling hour and enforces `TOKEN_HOURLY_REQUEST_LIMIT`.
+    pub async fn check_token_hourly_requests(
+        &self,
+        token_id: &str,
+    ) -> Result<TokenHourlyRequestVerdict, ProxyError> {
+        self.token_request_limit.check(token_id).await
+    }
+
+    /// Read-only snapshot of hourly raw request usage for a set of tokens.
+    /// Used by dashboards / leaderboards; does not increment counters.
+    pub async fn token_hourly_any_snapshot(
+        &self,
+        token_ids: &[String],
+    ) -> Result<HashMap<String, TokenHourlyRequestVerdict>, ProxyError> {
+        self.token_request_limit.snapshot_many(token_ids).await
+    }
+
     /// Read-only snapshot of current token quota usage (hour / day / month).
     pub async fn token_quota_snapshot(
         &self,
@@ -1040,9 +1084,9 @@ impl TokenQuota {
         let now_ts = now.timestamp();
         let minute_bucket = now_ts - (now_ts % SECS_PER_MINUTE);
         let hour_bucket = now_ts - (now_ts % SECS_PER_HOUR);
-        // Increment usage buckets and monthly quota as an approximate, cheap counter.
-        // This path is allowed to drift slightly from the detailed logs in exchange
-        // for lower per-request overhead.
+        // Increment usage buckets and monthly quota as an approximate, cheap counter
+        // for *business* quota decisions. This path is allowed to drift slightly
+        // from the detailed logs in exchange for lower per-request overhead.
         self.store
             .increment_usage_bucket(token_id, minute_bucket, GRANULARITY_MINUTE)
             .await?;
@@ -1144,6 +1188,89 @@ impl TokenQuota {
                 .await?;
             self.store
                 .delete_old_usage_buckets(GRANULARITY_HOUR, threshold)
+                .await?;
+        }
+
+        Ok(())
+    }
+}
+
+impl TokenRequestLimit {
+    fn new(store: Arc<KeyStore>) -> Self {
+        Self {
+            store,
+            cleanup: Arc::new(Mutex::new(CleanupState::default())),
+            hourly_limit: effective_token_hourly_request_limit(),
+        }
+    }
+
+    async fn check(&self, token_id: &str) -> Result<TokenHourlyRequestVerdict, ProxyError> {
+        let now_ts = Utc::now().timestamp();
+        let minute_bucket = now_ts - (now_ts % SECS_PER_MINUTE);
+
+        // Increment per-minute raw request bucket for this token.
+        self.store
+            .increment_usage_bucket(token_id, minute_bucket, GRANULARITY_REQUEST_MINUTE)
+            .await?;
+
+        let hour_window_start = minute_bucket - 59 * SECS_PER_MINUTE;
+        let hourly_used = self
+            .store
+            .sum_usage_buckets(token_id, GRANULARITY_REQUEST_MINUTE, hour_window_start)
+            .await?;
+
+        self.maybe_cleanup(now_ts).await?;
+
+        Ok(TokenHourlyRequestVerdict::new(
+            hourly_used,
+            self.hourly_limit,
+        ))
+    }
+
+    /// Read-only snapshot of hourly raw request usage for a set of tokens.
+    /// This does NOT increment counters and is intended for dashboards / leaderboards.
+    async fn snapshot_many(
+        &self,
+        token_ids: &[String],
+    ) -> Result<HashMap<String, TokenHourlyRequestVerdict>, ProxyError> {
+        if token_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let now_ts = Utc::now().timestamp();
+        let minute_bucket = now_ts - (now_ts % SECS_PER_MINUTE);
+        let hour_window_start = minute_bucket - 59 * SECS_PER_MINUTE;
+
+        let hourly_totals = self
+            .store
+            .sum_usage_buckets_bulk(token_ids, GRANULARITY_REQUEST_MINUTE, hour_window_start)
+            .await?;
+
+        let mut map = HashMap::new();
+        for token_id in token_ids {
+            let used = hourly_totals.get(token_id).copied().unwrap_or(0);
+            map.insert(
+                token_id.clone(),
+                TokenHourlyRequestVerdict::new(used, self.hourly_limit),
+            );
+        }
+        Ok(map)
+    }
+
+    async fn maybe_cleanup(&self, now_ts: i64) -> Result<(), ProxyError> {
+        let should_prune = {
+            let mut guard = self.cleanup.lock().await;
+            if now_ts - guard.last_pruned < CLEANUP_INTERVAL_SECS {
+                false
+            } else {
+                guard.last_pruned = now_ts;
+                true
+            }
+        };
+
+        if should_prune {
+            let threshold = now_ts - BUCKET_RETENTION_SECS;
+            self.store
+                .delete_old_usage_buckets(GRANULARITY_REQUEST_MINUTE, threshold)
                 .await?;
         }
 
@@ -4384,6 +4511,26 @@ impl TokenQuotaVerdict {
     }
 }
 
+/// Lightweight verdict for the per-token hourly raw request limiter.
+#[derive(Debug, Clone)]
+pub struct TokenHourlyRequestVerdict {
+    pub allowed: bool,
+    pub hourly_used: i64,
+    pub hourly_limit: i64,
+}
+
+impl TokenHourlyRequestVerdict {
+    fn new(hourly_used_raw: i64, hourly_limit: i64) -> Self {
+        let allowed = hourly_used_raw <= hourly_limit;
+        let hourly_used = std::cmp::min(hourly_used_raw, hourly_limit);
+        Self {
+            allowed,
+            hourly_used,
+            hourly_limit,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QuotaWindow {
     Hour,
@@ -5234,6 +5381,51 @@ mod tests {
             .expect("quota check ok");
         assert!(!verdict.allowed, "expected hourly limit to block");
         assert_eq!(verdict.exceeded_window, Some(QuotaWindow::Hour));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn hourly_any_request_limit_blocks_after_threshold() {
+        let db_path = temp_db_path("any-limit-test");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        // Force hourly raw request limit to a small number for this test.
+        unsafe {
+            std::env::set_var("TOKEN_HOURLY_REQUEST_LIMIT", "2");
+        }
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        let token = proxy
+            .create_access_token(Some("any-limit"))
+            .await
+            .expect("create token");
+
+        let hourly_limit = effective_token_hourly_request_limit();
+
+        for _ in 0..hourly_limit {
+            let verdict = proxy
+                .check_token_hourly_requests(&token.id)
+                .await
+                .expect("hourly-any check ok");
+            assert!(verdict.allowed, "should be allowed within hourly-any limit");
+        }
+
+        let verdict = proxy
+            .check_token_hourly_requests(&token.id)
+            .await
+            .expect("hourly-any check ok");
+        assert!(
+            !verdict.allowed,
+            "expected hourly-any limit to block additional requests"
+        );
+        assert_eq!(verdict.hourly_limit, hourly_limit);
+
+        unsafe {
+            std::env::remove_var("TOKEN_HOURLY_REQUEST_LIMIT");
+        }
 
         let _ = std::fs::remove_file(db_path);
     }

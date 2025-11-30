@@ -1257,13 +1257,14 @@ function AdminDashboard(): JSX.Element {
               {tokenLeaderboardLoading ? tokenLeaderboardStrings.empty.loading : tokenLeaderboardStrings.empty.none}
             </div>
           ) : (
-              <table className="jobs-table token-leaderboard-table">
-                <thead>
-                  <tr>
-                    <th>{tokenLeaderboardStrings.table.token}</th>
-                    <th>{tokenLeaderboardStrings.table.group}</th>
-                    <th>{tokenLeaderboardStrings.table.hourly}</th>
-                    <th>{tokenLeaderboardStrings.table.daily}</th>
+            <table className="jobs-table token-leaderboard-table">
+              <thead>
+                <tr>
+                  <th>{tokenLeaderboardStrings.table.token}</th>
+                  <th>{tokenLeaderboardStrings.table.group}</th>
+                  <th>{tokenLeaderboardStrings.table.hourly}</th>
+                  <th>{tokenLeaderboardStrings.table.hourlyAny}</th>
+                  <th>{tokenLeaderboardStrings.table.daily}</th>
                     <th>{tokenLeaderboardStrings.table.today}</th>
                     <th>{tokenLeaderboardStrings.table.month}</th>
                     <th>{tokenLeaderboardStrings.table.all}</th>
@@ -1290,14 +1291,18 @@ function AdminDashboard(): JSX.Element {
                         </div>
                       </td>
                       <td>{item.group && item.group.trim().length > 0 ? item.group : '—'}</td>
-                      <td>
-                        <div className="token-leaderboard-usage">{formatNumber(item.quota_hourly_used)}</div>
-                        <div className="token-leaderboard-sub">/ {formatNumber(item.quota_hourly_limit)}</div>
-                      </td>
-                      <td>
-                        <div className="token-leaderboard-usage">{formatNumber(item.quota_daily_used)}</div>
-                        <div className="token-leaderboard-sub">/ {formatNumber(item.quota_daily_limit)}</div>
-                      </td>
+                  <td>
+                    <div className="token-leaderboard-usage">{formatNumber(item.quota_hourly_used)}</div>
+                    <div className="token-leaderboard-sub">/ {formatNumber(item.quota_hourly_limit)}</div>
+                  </td>
+                  <td>
+                    <div className="token-leaderboard-usage">{formatNumber(item.hourly_any_used)}</div>
+                    <div className="token-leaderboard-sub">/ {formatNumber(item.hourly_any_limit)}</div>
+                  </td>
+                  <td>
+                    <div className="token-leaderboard-usage">{formatNumber(item.quota_daily_used)}</div>
+                    <div className="token-leaderboard-sub">/ {formatNumber(item.quota_daily_limit)}</div>
+                  </td>
                       {renderPeriodCell(item, 'day', primaryMetric)}
                       {renderPeriodCell(item, 'month', primaryMetric)}
                       {renderPeriodCell(item, 'all', primaryMetric)}

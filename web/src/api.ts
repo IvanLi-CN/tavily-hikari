@@ -448,10 +448,14 @@ export interface TokenUsageLeaderboardItem {
   total_requests: number
   last_used_at: number | null
   quota_state: string
+  // Business quota (tools/call) windows
   quota_hourly_used: number
   quota_hourly_limit: number
   quota_daily_used: number
   quota_daily_limit: number
+  // Hourly raw request limiter (any authenticated request)
+  hourly_any_used: number
+  hourly_any_limit: number
   today_total: number
   today_errors: number
   today_other: number
