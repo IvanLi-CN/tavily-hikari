@@ -150,6 +150,8 @@ function CherryStudioMock({ apiKeyExample }: CherryStudioMockProps): JSX.Element
                       className="input input-xs md:input-sm input-bordered flex-1 text-xs"
                       value={apiKeyExample}
                       readOnly
+                      onClick={(e) => e.currentTarget.select()}
+                      onFocus={(e) => e.currentTarget.select()}
                     />
                     <div
                       className="flex h-8 w-8 items-center justify-center rounded-md bg-base-200 text-[0.65rem] text-base-content/40"
