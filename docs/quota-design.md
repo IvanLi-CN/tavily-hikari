@@ -1,4 +1,4 @@
-# Tavily Hikari 配额与用量设计（草案）
+# Tavily Hikari 配额与用量设计
 
 本文记录 Access Token（`/mcp` 访问令牌）相关的用量统计与配额（quota）
 实现方式，以及各张表的职责分工。目标是：
@@ -208,9 +208,49 @@
      > 数据源”，而不是所有用量指标的唯一真相源。只要聚合表设计得当，即使截断
      > 历史 `auth_token_logs`，配额和界面上的用量展示都能保持语义合理。
 
+## 业务成本口径用量
+
+为解决 Token Leaderboard / Token Detail 中 `today_total`、`month_total`、`all_total`
+用量虚高的问题，需要让 UI 的“今日/本月/总量”统计与业务配额口径一致。
+
+### 现状问题
+
+- 业务配额（小时/日/月）已经通过 `mcp_request_counts_toward_business_quota` 对
+  `/mcp` 的非业务方法（`tools/list`、`resources/*`、`prompts/*`、`notifications/*`）
+  做了白名单剔除；
+- 但 `token_usage_stats` 的 rollup 过去聚合 `auth_token_logs` 全量记录，
+  仍包含上述无成本调用，导致 UI 的今日/本月/总量虚高；
+- 两套口径不一致，会出现“配额不涨但 UI 用量涨”的偏差。
+
+### 实现要点
+
+1. **在明细日志中落库 billable 标记**
+   - 为 `auth_token_logs` 新增列 `counts_business_quota INTEGER NOT NULL DEFAULT 1`，
+     表示该条日志是否计入业务成本用量。
+2. **写日志时传入真实口径**
+   - `record_token_attempt` / `insert_token_log` 增加参数 `counts_business_quota: bool`。
+   - `/mcp` 路径：复用 `mcp_request_counts_toward_business_quota(path, body)` 的判定结果；
+   - `/api/tavily/*` 路径：一律视为有业务成本（`counts_business_quota=true`）；
+   - 被“每小时任意请求限频（hourly-any）”提前挡掉、未进入业务配额链路的请求：
+     记为 `counts_business_quota=false`，以保持与配额计数语义一致。
+3. **rollup 仅聚合 billable**
+   - `rollup_token_usage_stats` 的 SQL 增加 `WHERE counts_business_quota = 1`，
+     使 `token_summary_since` 以及所有 UI totals 自动变为业务成本口径。
+
+### 历史数据处理
+
+- 新增列默认值为 `1`，旧数据继续计入 UI 用量；
+- 新增日志按真实口径写入，虚高会随时间逐步收敛。
+
+### 结果语义
+
+- `auth_tokens.total_requests` 仍保留“原始总请求次数（raw）”语义，用于管理视图与对账；
+- UI 的 `today_total/month_total/all_total` 变为“业务成本用量（billable）”语义，
+  与配额一致，可用于观察真实消耗。
+
 ## 对当前线上数据的结论
 
-基于你提供的线上数据库快照（截止 2025-11-17 07:01:27）：
+基于线上数据库快照：
 
 - `auth_tokens.total_requests` 与 `auth_token_logs` 全量计数严格一致；
 - 最近 24 小时内，所有活跃 token 的：
@@ -253,7 +293,6 @@
    - 推荐：通过 `scheduled_jobs` 增加周期性 rollup 任务：
      - 周期性扫描 `auth_token_logs` 中 “自上次 rollup 以来的新行”，按小时聚合并 upsert 到 `token_usage_stats`；
      - 写入结束后更新 `last_rollup_ts`。
-   - 替代方案：在 `insert_token_log` 中顺带更新 `token_usage_stats`，以更实时为代价增加每次请求的写放大。
 
 4. **切换读路径，脱离 `auth_token_logs`**
    - `fetch_token_summary_since`：从 `token_usage_stats`（或必要时 `request_logs`）聚合，替代按 token 直接扫 `auth_token_logs`。
