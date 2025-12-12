@@ -897,6 +897,7 @@ impl TavilyProxy {
         query: Option<&str>,
         http_status: Option<i64>,
         mcp_status: Option<i64>,
+        counts_business_quota: bool,
         result_status: &str,
         error_message: Option<&str>,
     ) -> Result<(), ProxyError> {
@@ -908,6 +909,7 @@ impl TavilyProxy {
                 query,
                 http_status,
                 mcp_status,
+                counts_business_quota,
                 result_status,
                 error_message,
             )
@@ -1520,6 +1522,7 @@ impl KeyStore {
                 mcp_status INTEGER,
                 result_status TEXT NOT NULL,
                 error_message TEXT,
+                counts_business_quota INTEGER NOT NULL DEFAULT 1,
                 created_at INTEGER NOT NULL
             )
             "#,
@@ -1541,6 +1544,18 @@ impl KeyStore {
             sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN mcp_status INTEGER")
                 .execute(&self.pool)
                 .await?;
+        }
+
+        // Upgrade: add counts_business_quota column if missing
+        if !self
+            .table_column_exists("auth_token_logs", "counts_business_quota")
+            .await?
+        {
+            sqlx::query(
+                "ALTER TABLE auth_token_logs ADD COLUMN counts_business_quota INTEGER NOT NULL DEFAULT 1",
+            )
+            .execute(&self.pool)
+            .await?;
         }
 
         sqlx::query(
@@ -3136,15 +3151,17 @@ impl KeyStore {
         query: Option<&str>,
         http_status: Option<i64>,
         mcp_status: Option<i64>,
+        counts_business_quota: bool,
         result_status: &str,
         error_message: Option<&str>,
     ) -> Result<(), ProxyError> {
         let created_at = Utc::now().timestamp();
+        let counts_business_quota = if counts_business_quota { 1i64 } else { 0i64 };
         sqlx::query(
             r#"
             INSERT INTO auth_token_logs (
-                token_id, method, path, query, http_status, mcp_status, result_status, error_message, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                token_id, method, path, query, http_status, mcp_status, result_status, error_message, counts_business_quota, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(token_id)
@@ -3155,6 +3172,7 @@ impl KeyStore {
         .bind(mcp_status)
         .bind(result_status)
         .bind(error_message)
+        .bind(counts_business_quota)
         .bind(created_at)
         .execute(&self.pool)
         .await?;

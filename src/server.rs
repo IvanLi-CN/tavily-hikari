@@ -770,6 +770,7 @@ async fn tavily_http_search(
                             None,
                             Some(StatusCode::TOO_MANY_REQUESTS.as_u16() as i64),
                             None,
+                            false,
                             "quota_exhausted",
                             Some(&message),
                         )
@@ -799,6 +800,7 @@ async fn tavily_http_search(
                             None,
                             Some(StatusCode::INTERNAL_SERVER_ERROR.as_u16() as i64),
                             None,
+                            true,
                             "error",
                             Some(msg.as_str()),
                         )
@@ -823,6 +825,7 @@ async fn tavily_http_search(
                             None,
                             Some(StatusCode::TOO_MANY_REQUESTS.as_u16() as i64),
                             None,
+                            true,
                             "quota_exhausted",
                             Some("daily / hourly limit reached for this token"),
                         )
@@ -852,6 +855,7 @@ async fn tavily_http_search(
                             None,
                             Some(StatusCode::INTERNAL_SERVER_ERROR.as_u16() as i64),
                             None,
+                            true,
                             "error",
                             Some(msg.as_str()),
                         )
@@ -892,6 +896,7 @@ async fn tavily_http_search(
                         None,
                         Some(http_code),
                         analysis.tavily_status_code,
+                        true,
                         analysis.status,
                         None,
                     )
@@ -912,6 +917,7 @@ async fn tavily_http_search(
                         None,
                         None,
                         None,
+                        true,
                         "error",
                         Some(msg.as_str()),
                     )
@@ -1046,6 +1052,7 @@ async fn tavily_http_extract(
                             None,
                             Some(StatusCode::TOO_MANY_REQUESTS.as_u16() as i64),
                             None,
+                            false,
                             "quota_exhausted",
                             Some(&message),
                         )
@@ -1075,6 +1082,7 @@ async fn tavily_http_extract(
                             None,
                             Some(StatusCode::INTERNAL_SERVER_ERROR.as_u16() as i64),
                             None,
+                            true,
                             "error",
                             Some(msg.as_str()),
                         )
@@ -1099,6 +1107,7 @@ async fn tavily_http_extract(
                             None,
                             Some(StatusCode::TOO_MANY_REQUESTS.as_u16() as i64),
                             None,
+                            true,
                             "quota_exhausted",
                             Some("daily / hourly limit reached for this token"),
                         )
@@ -1128,6 +1137,7 @@ async fn tavily_http_extract(
                             None,
                             Some(StatusCode::INTERNAL_SERVER_ERROR.as_u16() as i64),
                             None,
+                            true,
                             "error",
                             Some(msg.as_str()),
                         )
@@ -1169,6 +1179,7 @@ async fn tavily_http_extract(
                         None,
                         Some(http_code),
                         analysis.tavily_status_code,
+                        true,
                         analysis.status,
                         None,
                     )
@@ -1189,6 +1200,7 @@ async fn tavily_http_extract(
                         None,
                         None,
                         None,
+                        true,
                         "error",
                         Some(msg.as_str()),
                     )
@@ -1323,6 +1335,7 @@ async fn tavily_http_crawl(
                             None,
                             Some(StatusCode::TOO_MANY_REQUESTS.as_u16() as i64),
                             None,
+                            false,
                             "quota_exhausted",
                             Some(&message),
                         )
@@ -1352,6 +1365,7 @@ async fn tavily_http_crawl(
                             None,
                             Some(StatusCode::INTERNAL_SERVER_ERROR.as_u16() as i64),
                             None,
+                            true,
                             "error",
                             Some(msg.as_str()),
                         )
@@ -1376,6 +1390,7 @@ async fn tavily_http_crawl(
                             None,
                             Some(StatusCode::TOO_MANY_REQUESTS.as_u16() as i64),
                             None,
+                            true,
                             "quota_exhausted",
                             Some("daily / hourly limit reached for this token"),
                         )
@@ -1405,6 +1420,7 @@ async fn tavily_http_crawl(
                             None,
                             Some(StatusCode::INTERNAL_SERVER_ERROR.as_u16() as i64),
                             None,
+                            true,
                             "error",
                             Some(msg.as_str()),
                         )
@@ -1446,6 +1462,7 @@ async fn tavily_http_crawl(
                         None,
                         Some(http_code),
                         analysis.tavily_status_code,
+                        true,
                         analysis.status,
                         None,
                     )
@@ -1466,6 +1483,7 @@ async fn tavily_http_crawl(
                         None,
                         None,
                         None,
+                        true,
                         "error",
                         Some(msg.as_str()),
                     )
@@ -1597,6 +1615,7 @@ async fn tavily_http_map(
                             None,
                             Some(StatusCode::TOO_MANY_REQUESTS.as_u16() as i64),
                             None,
+                            true,
                             "quota_exhausted",
                             Some("daily / hourly limit reached for this token"),
                         )
@@ -1626,6 +1645,7 @@ async fn tavily_http_map(
                             None,
                             Some(StatusCode::INTERNAL_SERVER_ERROR.as_u16() as i64),
                             None,
+                            true,
                             "error",
                             Some(msg.as_str()),
                         )
@@ -1667,6 +1687,7 @@ async fn tavily_http_map(
                         None,
                         Some(http_code),
                         analysis.tavily_status_code,
+                        true,
                         analysis.status,
                         None,
                     )
@@ -1687,6 +1708,7 @@ async fn tavily_http_map(
                         None,
                         None,
                         None,
+                        true,
                         "error",
                         Some(msg.as_str()),
                     )
@@ -4329,6 +4351,8 @@ async fn proxy_handler(
         .await
         .map_err(|_| StatusCode::BAD_REQUEST)?;
 
+    let billable_flag = mcp_request_counts_toward_business_quota(&path, &body_bytes);
+
     let auth_token_id = if state.dev_open_admin {
         Some("dev".to_string())
     } else {
@@ -4369,6 +4393,7 @@ async fn proxy_handler(
                                 parts.uri.query(),
                                 Some(StatusCode::TOO_MANY_REQUESTS.as_u16() as i64),
                                 None,
+                                false,
                                 "quota_exhausted",
                                 Some(&message),
                             )
@@ -4385,7 +4410,7 @@ async fn proxy_handler(
         }
 
         // 2) 业务配额（小时 / 日 / 月）只对 MCP 工具调用生效。
-        if mcp_request_counts_toward_business_quota(&path, &body_bytes) {
+        if billable_flag {
             match state.proxy.check_token_quota(tid).await {
                 Ok(verdict) => {
                     if !state.dev_open_admin && !verdict.allowed {
@@ -4399,6 +4424,7 @@ async fn proxy_handler(
                                 parts.uri.query(),
                                 Some(StatusCode::TOO_MANY_REQUESTS.as_u16() as i64),
                                 None,
+                                true,
                                 "quota_exhausted",
                                 Some(&message),
                             )
@@ -4467,6 +4493,7 @@ async fn proxy_handler(
                         parts.uri.query(),
                         Some(http_code),
                         tavily_code,
+                        billable_flag,
                         result_status,
                         None,
                     )
@@ -4487,6 +4514,7 @@ async fn proxy_handler(
                         parts.uri.query(),
                         None,
                         None,
+                        billable_flag,
                         "error",
                         Some(err_str.as_str()),
                     )
@@ -5199,6 +5227,7 @@ mod tests {
                 None,
                 Some(StatusCode::TOO_MANY_REQUESTS.as_u16() as i64),
                 None,
+                true,
                 "quota_exhausted",
                 Some("test quota exhaustion"),
             )
@@ -5499,6 +5528,36 @@ mod tests {
             "non-tool MCP call (tools/list) should not be blocked by business quota, got {}",
             resp.status()
         );
+
+        // Verify that the most recent auth_token_logs entry is not billable.
+        let options = SqliteConnectOptions::new()
+            .filename(&db_str)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(5)
+            .connect_with(options)
+            .await
+            .expect("connect to sqlite");
+
+        let row = sqlx::query(
+            r#"
+            SELECT counts_business_quota
+            FROM auth_token_logs
+            WHERE token_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(&access_token.id)
+        .fetch_one(&pool)
+        .await
+        .expect("token log row exists");
+
+        let counts_business_quota: i64 = row.try_get("counts_business_quota").unwrap();
+        assert_eq!(counts_business_quota, 0);
 
         unsafe {
             std::env::remove_var("TOKEN_HOURLY_LIMIT");
