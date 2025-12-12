@@ -5089,6 +5089,141 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tavily_http_search_hourly_any_limit_429_is_non_billable_and_excluded_from_rollup() {
+        let db_path = temp_db_path("http-search-hourly-any-nonbillable");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        // Preserve any existing env value to avoid cross-test leakage.
+        let previous_limit = std::env::var("TOKEN_HOURLY_REQUEST_LIMIT").ok();
+        unsafe {
+            std::env::set_var("TOKEN_HOURLY_REQUEST_LIMIT", "1");
+        }
+
+        let expected_api_key = "tvly-http-search-hourly-any-key";
+        let proxy = TavilyProxy::with_endpoint(
+            vec![expected_api_key.to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let access_token = proxy
+            .create_access_token(Some("hourly-any-e2e"))
+            .await
+            .expect("create token");
+
+        let upstream_addr =
+            spawn_http_search_mock_asserting_api_key(expected_api_key.to_string()).await;
+        let usage_base = format!("http://{}", upstream_addr);
+        let proxy_addr = spawn_proxy_server(proxy.clone(), usage_base).await;
+
+        let client = Client::new();
+        let url = format!("http://{}/api/tavily/search", proxy_addr);
+
+        // 1st request should pass and hit mock upstream.
+        let first = client
+            .post(url.clone())
+            .json(&serde_json::json!({
+                "api_key": access_token.token,
+                "query": "hourly-any smoke"
+            }))
+            .send()
+            .await
+            .expect("first request succeeds");
+        assert!(
+            first.status().is_success(),
+            "first request should be allowed, got {}",
+            first.status()
+        );
+
+        // 2nd request should be blocked by hourly-any limiter before upstream.
+        let second = client
+            .post(url)
+            .json(&serde_json::json!({
+                "api_key": access_token.token,
+                "query": "hourly-any blocked"
+            }))
+            .send()
+            .await
+            .expect("second request succeeds");
+        assert_eq!(
+            second.status(),
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            "expected hourly-any 429 on second request"
+        );
+
+        // Inspect latest auth_token_logs row for hourly-any 429.
+        let options = SqliteConnectOptions::new()
+            .filename(&db_str)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(5)
+            .connect_with(options)
+            .await
+            .expect("connect to sqlite");
+
+        let row = sqlx::query(
+            r#"
+            SELECT http_status, counts_business_quota
+            FROM auth_token_logs
+            WHERE token_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(&access_token.id)
+        .fetch_one(&pool)
+        .await
+        .expect("token log row exists");
+
+        let http_status: Option<i64> = row.try_get("http_status").unwrap();
+        let counts_business_quota: i64 = row.try_get("counts_business_quota").unwrap();
+        assert_eq!(
+            http_status,
+            Some(StatusCode::TOO_MANY_REQUESTS.as_u16() as i64),
+            "latest log should be hourly-any 429"
+        );
+        assert_eq!(
+            counts_business_quota, 0,
+            "hourly-any limiter blocks should be non-billable"
+        );
+
+        // Roll up and verify billable totals only include the first request.
+        let _ = proxy
+            .rollup_token_usage_stats()
+            .await
+            .expect("rollup token usage stats");
+        let summary = proxy
+            .token_summary_since(&access_token.id, 0, None)
+            .await
+            .expect("summary since");
+
+        assert_eq!(
+            summary.total_requests, 1,
+            "billable totals should count only successful first request"
+        );
+        assert_eq!(summary.success_count, 1);
+        assert_eq!(
+            summary.quota_exhausted_count, 0,
+            "hourly-any 429 should not be included in billable totals"
+        );
+
+        unsafe {
+            if let Some(prev) = previous_limit {
+                std::env::set_var("TOKEN_HOURLY_REQUEST_LIMIT", prev);
+            } else {
+                std::env::remove_var("TOKEN_HOURLY_REQUEST_LIMIT");
+            }
+        }
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn tavily_http_search_replaces_body_api_key_with_tavily_key() {
         let db_path = temp_db_path("http-search-replace-key");
         let db_str = db_path.to_string_lossy().to_string();
@@ -5562,6 +5697,65 @@ mod tests {
         unsafe {
             std::env::remove_var("TOKEN_HOURLY_LIMIT");
         }
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_tools_list_does_not_increment_billable_totals_after_rollup() {
+        let db_path = temp_db_path("mcp-nonbillable-rollup");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let expected_api_key = "tvly-mcp-nonbillable-key";
+        let upstream_addr = spawn_mock_upstream(expected_api_key.to_string()).await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy =
+            TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
+
+        let access_token = proxy
+            .create_access_token(Some("mcp-nonbillable-rollup"))
+            .await
+            .expect("create access token");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), upstream.clone()).await;
+
+        let client = Client::new();
+        let url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, access_token.token
+        );
+        let resp = client
+            .post(url)
+            .json(&serde_json::json!({ "method": "tools/list" }))
+            .send()
+            .await
+            .expect("request to proxy succeeds");
+
+        assert!(
+            resp.status().is_success(),
+            "expected success from /mcp tools/list, got {}",
+            resp.status()
+        );
+
+        let _ = proxy
+            .rollup_token_usage_stats()
+            .await
+            .expect("rollup token usage stats");
+
+        let summary = proxy
+            .token_summary_since(&access_token.id, 0, None)
+            .await
+            .expect("summary since");
+
+        assert_eq!(
+            summary.total_requests, 0,
+            "non-billable MCP tools/list should not affect billable totals"
+        );
+        assert_eq!(summary.success_count, 0);
+        assert_eq!(summary.quota_exhausted_count, 0);
+
         let _ = std::fs::remove_file(db_path);
     }
 
