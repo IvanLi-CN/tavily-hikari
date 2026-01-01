@@ -1,6 +1,6 @@
 import { Icon } from '@iconify/react'
 import { StatusBadge, type StatusTone } from './components/StatusBadge'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import LanguageSwitcher from './components/LanguageSwitcher'
 import TokenDetail from './pages/TokenDetail'
 import { useTranslate, type AdminTranslations } from './i18n'
@@ -372,6 +372,8 @@ function AdminDashboard(): JSX.Element {
   const [newKeysText, setNewKeysText] = useState('')
   const [keysBatchExpanded, setKeysBatchExpanded] = useState(false)
   const keysBatchAnchorRef = useRef<HTMLDivElement | null>(null)
+  const keysBatchTextareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const keysBatchFooterRef = useRef<HTMLDivElement | null>(null)
   const keysBatchReportDialogRef = useRef<HTMLDialogElement | null>(null)
   const [keysBatchReport, setKeysBatchReport] = useState<AddKeysBatchReportState | null>(null)
   const [newTokenNote, setNewTokenNote] = useState('')
@@ -867,6 +869,46 @@ function AdminDashboard(): JSX.Element {
     if (!keysBatchReport || keysBatchReport.kind !== 'success') return []
     return keysBatchReport.response.results.filter((item) => item.status === 'failed')
   }, [keysBatchReport])
+
+  const updateKeysBatchTextareaHeight = useCallback(() => {
+    if (!keysBatchExpanded) return
+    const textarea = keysBatchTextareaRef.current
+    if (!textarea) return
+
+    // Reset first so scrollHeight reflects full content.
+    textarea.style.height = 'auto'
+
+    const textareaRect = textarea.getBoundingClientRect()
+    const footer = keysBatchFooterRef.current
+    const footerHeight = footer ? footer.getBoundingClientRect().height : 0
+
+    const viewportBottom = window.innerHeight - 16
+    const documentBottom = document.documentElement.scrollHeight - window.scrollY - 16
+    const availableBottom = Math.min(viewportBottom, documentBottom)
+
+    const maxTextareaHeight = Math.max(120, availableBottom - textareaRect.top - footerHeight - 24)
+    const desiredHeight = Math.min(textarea.scrollHeight, maxTextareaHeight)
+
+    textarea.style.height = `${Math.max(120, desiredHeight)}px`
+    textarea.style.overflowY = textarea.scrollHeight > maxTextareaHeight ? 'auto' : 'hidden'
+  }, [keysBatchExpanded])
+
+  useLayoutEffect(() => {
+    if (!keysBatchExpanded) return
+    updateKeysBatchTextareaHeight()
+  }, [keysBatchExpanded, newKeysText, updateKeysBatchTextareaHeight])
+
+  useEffect(() => {
+    if (!keysBatchExpanded) return
+    const onResize = () => updateKeysBatchTextareaHeight()
+    const onScroll = () => updateKeysBatchTextareaHeight()
+    window.addEventListener('resize', onResize)
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => {
+      window.removeEventListener('resize', onResize)
+      window.removeEventListener('scroll', onScroll)
+    }
+  }, [keysBatchExpanded, updateKeysBatchTextareaHeight])
 
   const logsTotalPagesRaw = useMemo(
     () => Math.max(1, Math.ceil(logsTotal / LOGS_PER_PAGE)),
@@ -1781,6 +1823,7 @@ function AdminDashboard(): JSX.Element {
                   >
                     <div className="card-body" style={{ padding: 16 }}>
                       <textarea
+                        ref={keysBatchTextareaRef}
                         className="textarea textarea-bordered w-full"
                         rows={4}
                         placeholder={keyStrings.batch.placeholder}
@@ -1791,9 +1834,10 @@ function AdminDashboard(): JSX.Element {
                           fontFamily:
                             'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
                           whiteSpace: 'pre',
+                          overflowY: 'hidden',
                         }}
                       />
-                      <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                      <div ref={keysBatchFooterRef} className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                         <div className="text-xs opacity-70">{keyStrings.batch.hint}</div>
                         <button
                           type="button"
