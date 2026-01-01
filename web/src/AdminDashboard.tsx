@@ -1514,7 +1514,7 @@ function AdminDashboard(): JSX.Element {
             <div className="card-body" style={{ padding: 16 }}>
               <textarea
                 ref={keysBatchTextareaRef}
-                className="textarea textarea-bordered w-full"
+                className="textarea textarea-bordered textarea-sm w-full"
                 rows={4}
                 placeholder={keyStrings.batch.placeholder}
                 aria-label={keyStrings.batch.placeholder}
@@ -1523,6 +1523,7 @@ function AdminDashboard(): JSX.Element {
                 style={{
                   fontFamily:
                     'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+                  lineHeight: 1.4,
                   whiteSpace: 'pre',
                   overflowY: 'hidden',
                 }}
