@@ -374,6 +374,7 @@ function AdminDashboard(): JSX.Element {
   const keysBatchAnchorRef = useRef<HTMLDivElement | null>(null)
   const keysBatchTextareaRef = useRef<HTMLTextAreaElement | null>(null)
   const keysBatchFooterRef = useRef<HTMLDivElement | null>(null)
+  const keysBatchOverlayRef = useRef<HTMLDivElement | null>(null)
   const keysBatchReportDialogRef = useRef<HTMLDialogElement | null>(null)
   const [keysBatchReport, setKeysBatchReport] = useState<AddKeysBatchReportState | null>(null)
   const [newTokenNote, setNewTokenNote] = useState('')
@@ -870,10 +871,25 @@ function AdminDashboard(): JSX.Element {
     return keysBatchReport.response.results.filter((item) => item.status === 'failed')
   }, [keysBatchReport])
 
-  const updateKeysBatchTextareaHeight = useCallback(() => {
+  const updateKeysBatchOverlayLayout = useCallback(() => {
     if (!keysBatchExpanded) return
+    const anchor = keysBatchAnchorRef.current
+    const overlay = keysBatchOverlayRef.current
     const textarea = keysBatchTextareaRef.current
-    if (!textarea) return
+    if (!anchor || !overlay || !textarea) return
+
+    const anchorRect = anchor.getBoundingClientRect()
+    const viewportWidth = window.innerWidth
+    const overlayWidth = Math.max(0, Math.min(720, viewportWidth - 32))
+    const leftMin = 16
+    const leftMax = Math.max(leftMin, viewportWidth - leftMin - overlayWidth)
+    const preferredLeft = anchorRect.right - overlayWidth
+    const left = Math.min(leftMax, Math.max(leftMin, preferredLeft))
+    const top = anchorRect.bottom + 8
+
+    overlay.style.left = `${Math.round(left)}px`
+    overlay.style.top = `${Math.round(top)}px`
+    overlay.style.width = `${Math.round(overlayWidth)}px`
 
     // Reset first so scrollHeight reflects full content.
     textarea.style.height = 'auto'
@@ -895,20 +911,20 @@ function AdminDashboard(): JSX.Element {
 
   useLayoutEffect(() => {
     if (!keysBatchExpanded) return
-    updateKeysBatchTextareaHeight()
-  }, [keysBatchExpanded, newKeysText, updateKeysBatchTextareaHeight])
+    updateKeysBatchOverlayLayout()
+  }, [keysBatchExpanded, newKeysText, updateKeysBatchOverlayLayout])
 
   useEffect(() => {
     if (!keysBatchExpanded) return
-    const onResize = () => updateKeysBatchTextareaHeight()
-    const onScroll = () => updateKeysBatchTextareaHeight()
+    const onResize = () => updateKeysBatchOverlayLayout()
+    const onScroll = () => updateKeysBatchOverlayLayout()
     window.addEventListener('resize', onResize)
     window.addEventListener('scroll', onScroll, { passive: true })
     return () => {
       window.removeEventListener('resize', onResize)
       window.removeEventListener('scroll', onScroll)
     }
-  }, [keysBatchExpanded, updateKeysBatchTextareaHeight])
+  }, [keysBatchExpanded, updateKeysBatchOverlayLayout])
 
   const logsTotalPagesRaw = useMemo(
     () => Math.max(1, Math.ceil(logsTotal / LOGS_PER_PAGE)),
@@ -1776,12 +1792,12 @@ function AdminDashboard(): JSX.Element {
       </section>
 
       <section className="surface panel" style={keysBatchExpanded ? { position: 'relative', zIndex: 40 } : undefined}>
-        <div className="panel-header">
-          <div>
+        <div className="panel-header" style={{ flexWrap: 'wrap', gap: 12, alignItems: 'flex-start' }}>
+          <div style={{ flex: '1 1 320px', minWidth: 240 }}>
             <h2>{keyStrings.title}</h2>
             <p className="panel-description">{keyStrings.description}</p>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flex: '1 1 320px', justifyContent: 'flex-end' }}>
             {isAdmin && (
               <div
                 ref={keysBatchAnchorRef}
@@ -1789,7 +1805,16 @@ function AdminDashboard(): JSX.Element {
                 onFocusCapture={() => setKeysBatchExpanded(true)}
                 style={{ position: 'relative' }}
               >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    flexWrap: 'wrap',
+                    justifyContent: 'flex-end',
+                    maxWidth: 'min(520px, 100%)',
+                  }}
+                >
                   <input
                     type="text"
                     className="input input-bordered"
@@ -1797,13 +1822,14 @@ function AdminDashboard(): JSX.Element {
                     aria-label={keyStrings.placeholder}
                     value={keysBatchFirstLine}
                     onChange={(e) => setNewKeysText(e.target.value)}
-                    style={{ minWidth: 240 }}
+                    style={{ flex: '1 1 240px', minWidth: 160, maxWidth: '100%' }}
                   />
                   <button
                     type="button"
                     className="btn btn-primary"
                     onClick={() => void handleAddKey()}
                     disabled={submitting || keysBatchParsed.length === 0}
+                    style={{ flexShrink: 0 }}
                   >
                     {submitting ? keyStrings.adding : keyStrings.addButton}
                   </button>
@@ -1811,14 +1837,14 @@ function AdminDashboard(): JSX.Element {
 
                 {keysBatchExpanded && (
                   <div
+                    ref={keysBatchOverlayRef}
                     className="card bg-base-100 shadow-xl border border-base-300"
                     style={{
-                      position: 'absolute',
-                      top: 'calc(100% + 8px)',
-                      right: 0,
+                      position: 'fixed',
+                      top: 0,
+                      left: 16,
                       zIndex: 50,
                       width: 'min(720px, calc(100vw - 32px))',
-                      minWidth: 'min(360px, calc(100vw - 32px))',
                     }}
                   >
                     <div className="card-body" style={{ padding: 16 }}>
