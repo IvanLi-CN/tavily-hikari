@@ -256,6 +256,32 @@ interface AdminTranslationsShape {
     placeholder: string
     addButton: string
     adding: string
+    batch: {
+      placeholder: string
+      hint: string
+      report: {
+        title: string
+        close: string
+        summary: {
+          inputLines: string
+          validLines: string
+          uniqueInInput: string
+          created: string
+          undeleted: string
+          existed: string
+          duplicateInInput: string
+          failed: string
+        }
+        failures: {
+          title: string
+          none: string
+          table: {
+            apiKey: string
+            error: string
+          }
+        }
+      }
+    }
     table: {
       keyId: string
       status: string
@@ -404,6 +430,7 @@ interface AdminTranslationsShape {
     errors: {
       copyKey: string
       addKey: string
+      addKeysBatch: string
       createToken: string
       copyToken: string
       toggleToken: string
@@ -739,6 +766,32 @@ export const translations: Record<Language, TranslationShape> = {
         placeholder: 'New Tavily API Key',
         addButton: 'Add Key',
         adding: 'Adding…',
+        batch: {
+          placeholder: 'Paste Tavily API keys (one per line)',
+          hint: 'One key per line (newline-separated only).',
+          report: {
+            title: 'Batch Import Report',
+            close: 'Done',
+            summary: {
+              inputLines: 'Input lines',
+              validLines: 'Valid lines',
+              uniqueInInput: 'Unique in input',
+              created: 'Created',
+              undeleted: 'Restored',
+              existed: 'Already existed',
+              duplicateInInput: 'Duplicates in input',
+              failed: 'Failed',
+            },
+            failures: {
+              title: 'Failures',
+              none: 'No failures.',
+              table: {
+                apiKey: 'API Key',
+                error: 'Error',
+              },
+            },
+          },
+        },
       table: {
         keyId: 'Key ID',
         status: 'Status',
@@ -900,6 +953,7 @@ export const translations: Record<Language, TranslationShape> = {
       errors: {
         copyKey: 'Failed to copy API key',
         addKey: 'Failed to add API key',
+        addKeysBatch: 'Failed to add API keys',
         createToken: 'Failed to create token',
         copyToken: 'Failed to copy token',
         toggleToken: 'Failed to update token status',
@@ -1194,6 +1248,32 @@ export const translations: Record<Language, TranslationShape> = {
         placeholder: '输入新的 Tavily API Key',
         addButton: '添加密钥',
         adding: '添加中…',
+        batch: {
+          placeholder: '粘贴 Tavily API Key（每行一个）',
+          hint: '每行一个 Key，仅支持换行分隔。',
+          report: {
+            title: '批量导入结果',
+            close: '完成',
+            summary: {
+              inputLines: '输入行数',
+              validLines: '有效行数',
+              uniqueInInput: '输入去重后',
+              created: '新增',
+              undeleted: '恢复',
+              existed: '已存在',
+              duplicateInInput: '输入重复',
+              failed: '失败',
+            },
+            failures: {
+              title: '失败明细',
+              none: '没有失败项。',
+              table: {
+                apiKey: 'API Key',
+                error: '原因',
+              },
+            },
+          },
+        },
         table: {
           keyId: 'Key ID',
           status: '状态',
@@ -1355,6 +1435,7 @@ export const translations: Record<Language, TranslationShape> = {
       errors: {
         copyKey: '复制 API Key 失败',
         addKey: '新增 API Key 失败',
+        addKeysBatch: '批量添加 API Key 失败',
         createToken: '创建令牌失败',
         copyToken: '复制令牌失败',
         toggleToken: '更新令牌状态失败',
