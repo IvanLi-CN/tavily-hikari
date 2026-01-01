@@ -360,6 +360,23 @@ pub struct TavilyProxy {
     affinity: Arc<Mutex<TokenAffinityState>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApiKeyUpsertStatus {
+    Created,
+    Undeleted,
+    Existed,
+}
+
+impl ApiKeyUpsertStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Created => "created",
+            Self::Undeleted => "undeleted",
+            Self::Existed => "existed",
+        }
+    }
+}
+
 impl TavilyProxy {
     pub async fn new<I, S>(keys: I, database_path: &str) -> Result<Self, ProxyError>
     where
@@ -1020,6 +1037,16 @@ impl TavilyProxy {
     /// Admin: add or undelete an API key. Returns the key ID.
     pub async fn add_or_undelete_key(&self, api_key: &str) -> Result<String, ProxyError> {
         self.key_store.add_or_undelete_key(api_key).await
+    }
+
+    /// Admin: add/undelete an API key and return the upsert status.
+    pub async fn add_or_undelete_key_with_status(
+        &self,
+        api_key: &str,
+    ) -> Result<(String, ApiKeyUpsertStatus), ProxyError> {
+        self.key_store
+            .add_or_undelete_key_with_status(api_key)
+            .await
     }
 
     /// Admin: soft delete a key by ID.
@@ -3721,6 +3748,50 @@ impl KeyStore {
         .await?;
         tx.commit().await?;
         Ok(id)
+    }
+
+    // Admin ops: add/undelete key by secret with status
+    async fn add_or_undelete_key_with_status(
+        &self,
+        api_key: &str,
+    ) -> Result<(String, ApiKeyUpsertStatus), ProxyError> {
+        let mut tx = self.pool.begin().await?;
+        let now = Utc::now().timestamp();
+        if let Some((id, deleted_at)) = sqlx::query_as::<_, (String, Option<i64>)>(
+            "SELECT id, deleted_at FROM api_keys WHERE api_key = ? LIMIT 1",
+        )
+        .bind(api_key)
+        .fetch_optional(&mut *tx)
+        .await?
+        {
+            if deleted_at.is_some() {
+                sqlx::query("UPDATE api_keys SET deleted_at = NULL WHERE id = ?")
+                    .bind(&id)
+                    .execute(&mut *tx)
+                    .await?;
+                tx.commit().await?;
+                return Ok((id, ApiKeyUpsertStatus::Undeleted));
+            }
+
+            tx.commit().await?;
+            return Ok((id, ApiKeyUpsertStatus::Existed));
+        }
+
+        let id = Self::generate_unique_key_id(&mut tx).await?;
+        sqlx::query(
+            r#"
+            INSERT INTO api_keys (id, api_key, status, status_changed_at)
+            VALUES (?, ?, ?, ?)
+            "#,
+        )
+        .bind(&id)
+        .bind(api_key)
+        .bind(STATUS_ACTIVE)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok((id, ApiKeyUpsertStatus::Created))
     }
 
     // Admin ops: soft-delete by ID (mark deleted_at)

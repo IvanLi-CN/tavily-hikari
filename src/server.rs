@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     io::Read,
     net::SocketAddr,
@@ -2683,6 +2683,39 @@ struct CreateKeyResponse {
     id: String,
 }
 
+const API_KEYS_BATCH_LIMIT: usize = 1000;
+
+#[derive(Debug, Deserialize)]
+struct BatchCreateKeysRequest {
+    api_keys: Vec<String>,
+}
+
+#[derive(Debug, Default, Serialize)]
+struct BatchCreateKeysSummary {
+    created: u64,
+    undeleted: u64,
+    existed: u64,
+    duplicate_in_input: u64,
+    failed: u64,
+    ignored_empty: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct BatchCreateKeysResult {
+    api_key: String,
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct BatchCreateKeysResponse {
+    summary: BatchCreateKeysSummary,
+    results: Vec<BatchCreateKeysResult>,
+}
+
 async fn create_api_key(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -2704,6 +2737,83 @@ async fn create_api_key(
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
+}
+
+async fn create_api_keys_batch(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<BatchCreateKeysRequest>,
+) -> Result<Response<Body>, StatusCode> {
+    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let mut summary = BatchCreateKeysSummary::default();
+    let mut trimmed = Vec::<String>::with_capacity(payload.api_keys.len());
+    for api_key in payload.api_keys {
+        let api_key = api_key.trim();
+        if api_key.is_empty() {
+            summary.ignored_empty += 1;
+            continue;
+        }
+        trimmed.push(api_key.to_string());
+    }
+
+    if trimmed.len() > API_KEYS_BATCH_LIMIT {
+        let body = Json(json!({
+            "error": "too_many_items",
+            "detail": format!("api_keys exceeds limit (max {})", API_KEYS_BATCH_LIMIT),
+        }));
+        return Ok((StatusCode::BAD_REQUEST, body).into_response());
+    }
+
+    let mut results = Vec::with_capacity(trimmed.len());
+    let mut seen = HashSet::<String>::new();
+
+    for api_key in trimmed {
+        if !seen.insert(api_key.clone()) {
+            summary.duplicate_in_input += 1;
+            results.push(BatchCreateKeysResult {
+                api_key,
+                status: "duplicate_in_input".to_string(),
+                id: None,
+                error: None,
+            });
+            continue;
+        }
+
+        match state.proxy.add_or_undelete_key_with_status(&api_key).await {
+            Ok((id, status)) => {
+                match status.as_str() {
+                    "created" => summary.created += 1,
+                    "undeleted" => summary.undeleted += 1,
+                    "existed" => summary.existed += 1,
+                    _ => {}
+                }
+                results.push(BatchCreateKeysResult {
+                    api_key,
+                    status: status.as_str().to_string(),
+                    id: Some(id),
+                    error: None,
+                });
+            }
+            Err(err) => {
+                summary.failed += 1;
+                results.push(BatchCreateKeysResult {
+                    api_key,
+                    status: "failed".to_string(),
+                    id: None,
+                    error: Some(err.to_string()),
+                });
+            }
+        }
+    }
+
+    Ok((
+        StatusCode::OK,
+        Json(BatchCreateKeysResponse { summary, results }),
+    )
+        .into_response())
 }
 
 async fn delete_api_key(
@@ -3221,6 +3331,7 @@ pub async fn serve(
         .route("/api/public/metrics", get(get_public_metrics))
         .route("/api/keys", get(list_keys))
         .route("/api/keys", post(create_api_key))
+        .route("/api/keys/batch", post(create_api_keys_batch))
         .route("/api/keys/:id", get(get_api_key_detail))
         .route("/api/keys/:id/sync-usage", post(post_sync_key_usage))
         .route("/api/keys/:id/secret", get(get_api_key_secret))
@@ -4929,6 +5040,33 @@ mod tests {
         addr
     }
 
+    async fn spawn_keys_admin_server(
+        proxy: TavilyProxy,
+        forward_auth: ForwardAuthConfig,
+        dev_open_admin: bool,
+    ) -> SocketAddr {
+        let state = Arc::new(AppState {
+            proxy,
+            static_dir: None,
+            forward_auth,
+            dev_open_admin,
+            usage_base: "http://127.0.0.1:58088".to_string(),
+        });
+
+        let app = Router::new()
+            .route("/api/keys/batch", post(create_api_keys_batch))
+            .with_state(state);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+        addr
+    }
+
     #[tokio::test]
     async fn tavily_http_search_returns_401_without_token() {
         let db_path = temp_db_path("http-search-401-missing");
@@ -4964,6 +5102,247 @@ mod tests {
             body.get("error"),
             Some(&serde_json::Value::String("missing token".into()))
         );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn api_keys_batch_returns_403_for_non_admin() {
+        let db_path = temp_db_path("keys-batch-403-non-admin");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        let forward_auth = ForwardAuthConfig::new(
+            Some(HeaderName::from_static("x-forward-user")),
+            Some("admin".to_string()),
+            None,
+            None,
+        );
+        let addr = spawn_keys_admin_server(proxy, forward_auth, false).await;
+
+        let client = Client::new();
+        let url = format!("http://{}/api/keys/batch", addr);
+        let resp = client
+            .post(url)
+            .json(&serde_json::json!({ "api_keys": ["k1"] }))
+            .send()
+            .await
+            .expect("request succeeds");
+
+        assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn api_keys_batch_rejects_over_limit() {
+        let db_path = temp_db_path("keys-batch-400-over-limit");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        let forward_auth = ForwardAuthConfig::new(
+            Some(HeaderName::from_static("x-forward-user")),
+            Some("admin".to_string()),
+            None,
+            None,
+        );
+        let addr = spawn_keys_admin_server(proxy, forward_auth, false).await;
+
+        let api_keys: Vec<String> = (0..=API_KEYS_BATCH_LIMIT)
+            .map(|i| format!("tvly-{i}"))
+            .collect();
+
+        let client = Client::new();
+        let url = format!("http://{}/api/keys/batch", addr);
+        let resp = client
+            .post(url)
+            .header("x-forward-user", "admin")
+            .json(&serde_json::json!({ "api_keys": api_keys }))
+            .send()
+            .await
+            .expect("request succeeds");
+
+        assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+
+        let body: serde_json::Value = resp.json().await.expect("parse json body");
+        assert_eq!(
+            body.get("error"),
+            Some(&serde_json::Value::String("too_many_items".into()))
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn api_keys_batch_reports_statuses_and_is_partial_success() {
+        let db_path = temp_db_path("keys-batch-mixed");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        // Pre-create: one active existing key, and one soft-deleted key.
+        let _existing_id = proxy
+            .add_or_undelete_key("tvly-existing")
+            .await
+            .expect("existing key created");
+        let deleted_id = proxy
+            .add_or_undelete_key("tvly-deleted")
+            .await
+            .expect("deleted key created");
+        proxy
+            .soft_delete_key_by_id(&deleted_id)
+            .await
+            .expect("key soft deleted");
+
+        // Create a trigger that forces a deterministic failure for one key.
+        let options = SqliteConnectOptions::new()
+            .filename(&db_str)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open db pool");
+        sqlx::query(
+            r#"
+            CREATE TRIGGER fail_insert_api_key
+            BEFORE INSERT ON api_keys
+            WHEN NEW.api_key = 'tvly-fail'
+            BEGIN
+                SELECT RAISE(ABORT, 'boom');
+            END;
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create trigger");
+
+        let forward_auth = ForwardAuthConfig::new(
+            Some(HeaderName::from_static("x-forward-user")),
+            Some("admin".to_string()),
+            None,
+            None,
+        );
+        let addr = spawn_keys_admin_server(proxy, forward_auth, false).await;
+
+        let input = vec![
+            "  tvly-new  ".to_string(),
+            "tvly-fail".to_string(),
+            "tvly-new-2".to_string(),
+            "tvly-existing".to_string(),
+            "tvly-deleted".to_string(),
+            "tvly-existing".to_string(),
+            "tvly-new-2".to_string(),
+            "".to_string(),
+            "   ".to_string(),
+        ];
+
+        let client = Client::new();
+        let url = format!("http://{}/api/keys/batch", addr);
+        let resp = client
+            .post(url)
+            .header("x-forward-user", "admin")
+            .json(&serde_json::json!({ "api_keys": input }))
+            .send()
+            .await
+            .expect("request succeeds");
+
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+        let body: serde_json::Value = resp.json().await.expect("parse json body");
+        let summary = body.get("summary").expect("summary exists");
+        assert_eq!(summary.get("created").and_then(|v| v.as_u64()), Some(2));
+        assert_eq!(summary.get("undeleted").and_then(|v| v.as_u64()), Some(1));
+        assert_eq!(summary.get("existed").and_then(|v| v.as_u64()), Some(1));
+        assert_eq!(
+            summary.get("duplicate_in_input").and_then(|v| v.as_u64()),
+            Some(2)
+        );
+        assert_eq!(summary.get("failed").and_then(|v| v.as_u64()), Some(1));
+        assert_eq!(
+            summary.get("ignored_empty").and_then(|v| v.as_u64()),
+            Some(2)
+        );
+
+        let results = body
+            .get("results")
+            .and_then(|v| v.as_array())
+            .expect("results array");
+        assert_eq!(results.len(), 7, "empty items are ignored in results");
+
+        let statuses: Vec<(&str, &str)> = results
+            .iter()
+            .map(|r| {
+                (
+                    r.get("api_key").and_then(|v| v.as_str()).unwrap_or(""),
+                    r.get("status").and_then(|v| v.as_str()).unwrap_or(""),
+                )
+            })
+            .collect();
+        assert_eq!(
+            statuses,
+            vec![
+                ("tvly-new", "created"),
+                ("tvly-fail", "failed"),
+                ("tvly-new-2", "created"),
+                ("tvly-existing", "existed"),
+                ("tvly-deleted", "undeleted"),
+                ("tvly-existing", "duplicate_in_input"),
+                ("tvly-new-2", "duplicate_in_input"),
+            ]
+        );
+
+        // id is present only when we hit the DB successfully.
+        for (idx, expected_has_id) in [
+            (0, true),
+            (1, false),
+            (2, true),
+            (3, true),
+            (4, true),
+            (5, false),
+            (6, false),
+        ] {
+            let has_id = results[idx].get("id").and_then(|v| v.as_str()).is_some();
+            assert_eq!(has_id, expected_has_id, "result[{idx}] id presence");
+        }
+
+        // error is required for failed.
+        let err = results[1]
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        assert!(
+            err.contains("boom"),
+            "failed error should include trigger message"
+        );
+
+        // DB side effects: soft-deleted key should be restored, failed key should not exist.
+        let deleted_at: Option<i64> =
+            sqlx::query_scalar("SELECT deleted_at FROM api_keys WHERE api_key = ?")
+                .bind("tvly-deleted")
+                .fetch_one(&pool)
+                .await
+                .expect("tvly-deleted exists");
+        assert!(deleted_at.is_none(), "tvly-deleted should be undeleted");
+
+        let fail_row: Option<String> =
+            sqlx::query_scalar("SELECT id FROM api_keys WHERE api_key = ?")
+                .bind("tvly-fail")
+                .fetch_optional(&pool)
+                .await
+                .expect("query fail key");
+        assert!(fail_row.is_none(), "tvly-fail should not be inserted");
 
         let _ = std::fs::remove_file(db_path);
     }
