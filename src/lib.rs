@@ -2788,6 +2788,11 @@ impl KeyStore {
         key_id: &str,
         since: i64,
     ) -> Result<ProxySummary, ProxyError> {
+        // `api_key_usage_buckets.bucket_start` is aligned to *server-local midnight* (stored as UTC ts).
+        // Callers might pass `since` aligned to UTC midnight (e.g. from browser). Normalize so daily
+        // bucket queries remain correct under non-UTC server timezones.
+        let since_bucket_start = local_day_bucket_start_utc_ts(since);
+
         let totals_row = sqlx::query(
             r#"
             SELECT
@@ -2800,7 +2805,7 @@ impl KeyStore {
             "#,
         )
         .bind(key_id)
-        .bind(since)
+        .bind(since_bucket_start)
         .fetch_one(&self.pool)
         .await?;
 
@@ -2819,7 +2824,7 @@ impl KeyStore {
                 .await?;
         let last_activity = key_last_used_at
             .and_then(normalize_timestamp)
-            .filter(|ts| *ts >= since);
+            .filter(|ts| *ts >= since_bucket_start);
 
         let (active_keys, exhausted_keys) = match status.as_deref() {
             Some(STATUS_EXHAUSTED) => (0, 1),
@@ -4748,8 +4753,8 @@ impl KeyStore {
               COALESCE(SUM(CASE WHEN result_status = ? AND created_at >= ? THEN 1 ELSE 0 END), 0) AS monthly_success,
               COALESCE(SUM(CASE WHEN result_status = ? AND created_at >= ? THEN 1 ELSE 0 END), 0) AS daily_success,
               COALESCE(SUM(CASE WHEN result_status = ? AND created_at >= ? THEN 1 ELSE 0 END), 0) AS daily_failure
-            FROM request_logs
-            WHERE auth_token_id = ?
+            FROM auth_token_logs
+            WHERE token_id = ?
             "#,
         )
         .bind(OUTCOME_SUCCESS)
@@ -5604,7 +5609,14 @@ mod tests {
     use super::*;
     use axum::{Json, Router, routing::post};
     use std::path::PathBuf;
+    use std::sync::{Arc, OnceLock};
     use tokio::net::TcpListener;
+
+    fn env_lock() -> Arc<tokio::sync::Mutex<()>> {
+        static LOCK: OnceLock<Arc<tokio::sync::Mutex<()>>> = OnceLock::new();
+        LOCK.get_or_init(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    }
 
     #[test]
     fn parse_hhmm_validates_clock_time() {
@@ -5619,6 +5631,8 @@ mod tests {
 
     #[test]
     fn request_logs_env_settings_enforce_minimums_and_defaults() {
+        let lock = env_lock();
+        let _guard = lock.blocking_lock();
         let prev_days = std::env::var("REQUEST_LOGS_RETENTION_DAYS").ok();
         let prev_at = std::env::var("REQUEST_LOGS_GC_AT").ok();
 
@@ -5854,6 +5868,7 @@ mod tests {
 
     #[tokio::test]
     async fn hourly_any_request_limit_blocks_after_threshold() {
+        let _guard = env_lock().lock_owned().await;
         let db_path = temp_db_path("any-limit-test");
         let db_str = db_path.to_string_lossy().to_string();
 
