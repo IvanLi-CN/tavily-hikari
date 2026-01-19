@@ -19,7 +19,7 @@ use axum::{
     response::{Json, Redirect},
     routing::{any, delete, get, patch, post},
 };
-use chrono::{DateTime, Datelike, Duration as ChronoDuration, NaiveDate, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Duration as ChronoDuration, Local, NaiveDate, TimeZone, Utc};
 use futures_util::Stream;
 use reqwest::header::{HeaderMap as ReqHeaderMap, HeaderValue as ReqHeaderValue};
 use serde::{Deserialize, Serialize};
@@ -30,7 +30,8 @@ use std::time::Duration;
 use tavily_hikari::{
     ApiKeyMetrics, AuthToken, ProxyError, ProxyRequest, ProxyResponse, ProxySummary, QuotaWindow,
     RequestLogRecord, TavilyProxy, TokenHourlyBucket, TokenHourlyRequestVerdict, TokenLogRecord,
-    TokenQuotaVerdict, TokenSummary, TokenUsageBucket, effective_token_daily_limit,
+    TokenQuotaVerdict, TokenSummary, TokenUsageBucket, effective_request_logs_gc_at,
+    effective_request_logs_retention_days, effective_token_daily_limit,
     effective_token_hourly_limit, effective_token_hourly_request_limit,
     effective_token_monthly_limit,
 };
@@ -381,6 +382,85 @@ fn spawn_auth_token_logs_gc_scheduler(state: Arc<AppState>) {
 
             // Run GC once per hour; retention window is enforced inside the proxy.
             tokio::time::sleep(Duration::from_secs(3600)).await;
+        }
+    });
+}
+
+fn spawn_request_logs_gc_scheduler(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        // Schedule: daily at configured local time.
+        loop {
+            let (hour, minute) = effective_request_logs_gc_at();
+
+            let now = Local::now();
+            let today = now.date_naive();
+            let scheduled_naive = today
+                .and_hms_opt(hour, minute, 0)
+                .unwrap_or_else(|| today.and_hms_opt(7, 0, 0).expect("valid default time"));
+            let scheduled_today = match Local.from_local_datetime(&scheduled_naive) {
+                chrono::LocalResult::Single(dt) => dt,
+                chrono::LocalResult::Ambiguous(dt, _) => dt,
+                chrono::LocalResult::None => now,
+            };
+            let scheduled_next = if scheduled_today > now {
+                scheduled_today
+            } else {
+                // Next day at the configured time.
+                let tomorrow = today.succ_opt().unwrap_or_else(|| {
+                    today
+                        .checked_add_days(chrono::Days::new(1))
+                        .unwrap_or(today)
+                });
+                let next_naive = tomorrow
+                    .and_hms_opt(hour, minute, 0)
+                    .unwrap_or_else(|| tomorrow.and_hms_opt(7, 0, 0).expect("valid default time"));
+                match Local.from_local_datetime(&next_naive) {
+                    chrono::LocalResult::Single(dt) => dt,
+                    chrono::LocalResult::Ambiguous(dt, _) => dt,
+                    chrono::LocalResult::None => now + ChronoDuration::hours(24),
+                }
+            };
+
+            let sleep_for = (scheduled_next - now)
+                .to_std()
+                .unwrap_or_else(|_| Duration::from_secs(0));
+            tokio::time::sleep(sleep_for).await;
+
+            // After we reach the scheduled time, keep retrying until we either run the job
+            // successfully or record an error for this run window.
+            loop {
+                let retention_days = effective_request_logs_retention_days();
+                let job_id = match state
+                    .proxy
+                    .scheduled_job_start("request_logs_gc", None, 1)
+                    .await
+                {
+                    Ok(id) => id,
+                    Err(err) => {
+                        eprintln!("request-logs-gc: start job error: {err}");
+                        tokio::time::sleep(Duration::from_secs(300)).await;
+                        continue;
+                    }
+                };
+
+                match state.proxy.gc_request_logs().await {
+                    Ok(deleted) => {
+                        let msg = format!("deleted_rows={deleted} retention_days={retention_days}");
+                        let _ = state
+                            .proxy
+                            .scheduled_job_finish(job_id, "success", Some(&msg))
+                            .await;
+                        break;
+                    }
+                    Err(err) => {
+                        let _ = state
+                            .proxy
+                            .scheduled_job_finish(job_id, "error", Some(&err.to_string()))
+                            .await;
+                        break;
+                    }
+                }
+            }
         }
     });
 }
@@ -3441,6 +3521,7 @@ pub async fn serve(
     spawn_quota_sync_scheduler(state.clone());
     spawn_token_usage_rollup_scheduler(state.clone());
     spawn_auth_token_logs_gc_scheduler(state.clone());
+    spawn_request_logs_gc_scheduler(state.clone());
 
     axum::serve(
         listener,
@@ -3735,25 +3816,27 @@ async fn get_key_metrics(
         since
     } else {
         // fallback by period
-        let now = chrono::Utc::now();
+        let now = chrono::Local::now();
+        let local_midnight_ts = |date: chrono::NaiveDate| -> i64 {
+            let naive = date.and_hms_opt(0, 0, 0).expect("valid midnight");
+            match chrono::Local.from_local_datetime(&naive) {
+                chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc).timestamp(),
+                chrono::LocalResult::Ambiguous(dt, _) => dt.with_timezone(&Utc).timestamp(),
+                chrono::LocalResult::None => now.with_timezone(&Utc).timestamp(),
+            }
+        };
         match q.period.as_deref() {
-            Some("day") => (now.date_naive().and_hms_opt(0, 0, 0).unwrap().and_utc()).timestamp(),
+            Some("day") => local_midnight_ts(now.date_naive()),
             Some("week") => {
                 let weekday = now.weekday().num_days_from_monday() as i64;
-                (now - chrono::Duration::days(weekday))
-                    .date_naive()
-                    .and_hms_opt(0, 0, 0)
-                    .unwrap()
-                    .and_utc()
-                    .timestamp()
+                let start = (now - chrono::Duration::days(weekday)).date_naive();
+                local_midnight_ts(start)
             }
             _ => {
                 // month default
-                let first = Utc
-                    .with_ymd_and_hms(now.year(), now.month(), 1, 0, 0, 0)
-                    .single()
-                    .expect("valid start of month");
-                first.timestamp()
+                let first =
+                    chrono::NaiveDate::from_ymd_opt(now.year(), now.month(), 1).expect("valid");
+                local_midnight_ts(first)
             }
         }
     };

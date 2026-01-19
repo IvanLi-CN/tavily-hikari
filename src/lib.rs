@@ -1,7 +1,8 @@
 use std::{cmp::min, collections::HashMap, sync::Arc, time::Duration};
 
 use bytes::Bytes;
-use chrono::{Datelike, TimeZone, Utc};
+use chrono::{Datelike, Local, TimeZone, Utc};
+use futures_util::TryStreamExt;
 use nanoid::nanoid;
 use rand::Rng;
 use reqwest::{
@@ -92,6 +93,8 @@ const TOKEN_AFFINITY_TTL_SECS: i64 = 15 * 60;
 // unbounded growth under churny traffic (many distinct tokens).
 const TOKEN_AFFINITY_MAX_ENTRIES: usize = 10_000;
 
+const REQUEST_LOGS_MIN_RETENTION_DAYS: i64 = 7;
+
 const GRANULARITY_MINUTE: &str = "minute";
 const GRANULARITY_HOUR: &str = "hour";
 // Per-token raw request counter (any request type), aggregated per minute.
@@ -111,6 +114,7 @@ const AUTH_TOKEN_LOG_RETENTION_SECS: i64 = 90 * SECS_PER_DAY;
 const META_KEY_DATA_CONSISTENCY_DONE: &str = "data_consistency_v1_done";
 const META_KEY_TOKEN_USAGE_ROLLUP_TS: &str = "token_usage_rollup_last_ts";
 const META_KEY_HEAL_ORPHAN_TOKENS_V1: &str = "heal_orphan_auth_tokens_from_logs_v1";
+const META_KEY_API_KEY_USAGE_BUCKETS_V1_DONE: &str = "api_key_usage_buckets_v1_done";
 
 fn token_limit_from_env(var: &str, default: i64) -> i64 {
     match std::env::var(var) {
@@ -126,6 +130,46 @@ fn token_limit_from_env(var: &str, default: i64) -> i64 {
         }
         Err(_) => default,
     }
+}
+
+fn parse_hhmm(raw: &str) -> Option<(u32, u32)> {
+    let trimmed = raw.trim();
+    let mut parts = trimmed.split(':');
+    let hh = parts.next()?;
+    let mm = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    if hh.len() != 2 || mm.len() != 2 {
+        return None;
+    }
+    let hour = hh.parse::<u32>().ok()?;
+    let minute = mm.parse::<u32>().ok()?;
+    if hour > 23 || minute > 59 {
+        return None;
+    }
+    Some((hour, minute))
+}
+
+/// Effective request log GC run time (local server time), including environment overrides.
+///
+/// Environment variable: `REQUEST_LOGS_GC_AT` (format `HH:mm`).
+pub fn effective_request_logs_gc_at() -> (u32, u32) {
+    match std::env::var("REQUEST_LOGS_GC_AT") {
+        Ok(raw) => parse_hhmm(&raw).unwrap_or((7, 0)),
+        Err(_) => (7, 0),
+    }
+}
+
+/// Effective request log retention days (minimum enforced), including environment overrides.
+///
+/// Environment variable: `REQUEST_LOGS_RETENTION_DAYS` (positive integer; min 7).
+pub fn effective_request_logs_retention_days() -> i64 {
+    let days = token_limit_from_env(
+        "REQUEST_LOGS_RETENTION_DAYS",
+        REQUEST_LOGS_MIN_RETENTION_DAYS,
+    );
+    days.max(REQUEST_LOGS_MIN_RETENTION_DAYS)
 }
 
 /// Effective hourly quota limit per access token, including environment overrides.
@@ -1071,9 +1115,9 @@ impl TavilyProxy {
 
     /// Public metrics: successful requests today and this month.
     pub async fn success_breakdown(&self) -> Result<SuccessBreakdown, ProxyError> {
-        let now = Utc::now();
-        let month_start = start_of_month(now).timestamp();
-        let day_start = start_of_day(now).timestamp();
+        let now = Local::now();
+        let month_start = start_of_local_month_utc_ts(now);
+        let day_start = start_of_local_day_utc_ts(now);
         self.key_store
             .fetch_success_breakdown(month_start, day_start)
             .await
@@ -1395,6 +1439,14 @@ impl TavilyProxy {
         self.key_store.delete_old_auth_token_logs(threshold).await
     }
 
+    /// Time-based garbage collection for request_logs (online recent logs only).
+    /// Retention is defined by local-day boundaries and enforced via environment variables.
+    pub async fn gc_request_logs(&self) -> Result<i64, ProxyError> {
+        let retention_days = effective_request_logs_retention_days();
+        let threshold = request_logs_retention_threshold_utc_ts(retention_days);
+        self.key_store.delete_old_request_logs(threshold).await
+    }
+
     /// Job logging helpers
     pub async fn scheduled_job_start(
         &self,
@@ -1509,6 +1561,33 @@ impl KeyStore {
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_request_logs_auth_token_time
                ON request_logs(auth_token_id, created_at DESC, id DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // API key usage rollups (for statistics that must not depend on request_logs retention).
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS api_key_usage_buckets (
+                api_key_id TEXT NOT NULL,
+                bucket_start INTEGER NOT NULL,
+                bucket_secs INTEGER NOT NULL,
+                total_requests INTEGER NOT NULL,
+                success_count INTEGER NOT NULL,
+                error_count INTEGER NOT NULL,
+                quota_exhausted_count INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (api_key_id, bucket_start, bucket_secs),
+                FOREIGN KEY (api_key_id) REFERENCES api_keys(id)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_api_key_usage_buckets_time
+               ON api_key_usage_buckets(bucket_start DESC)"#,
         )
         .execute(&self.pool)
         .await?;
@@ -1675,6 +1754,18 @@ impl KeyStore {
         .execute(&self.pool)
         .await?;
 
+        // Backfill API key usage buckets exactly once. This enables safe request_logs retention
+        // without changing the meaning of cumulative statistics.
+        if self
+            .get_meta_i64(META_KEY_API_KEY_USAGE_BUCKETS_V1_DONE)
+            .await?
+            .is_none()
+        {
+            self.migrate_api_key_usage_buckets_v1().await?;
+            self.set_meta_i64(META_KEY_API_KEY_USAGE_BUCKETS_V1_DONE, 1)
+                .await?;
+        }
+
         // After ensuring schemas, run the data consistency migration at most once.
         // Older versions incremented auth_tokens.total_requests during validation; this
         // migration reconciles those counters using auth_token_logs, then marks itself
@@ -1701,6 +1792,115 @@ impl KeyStore {
             self.heal_orphan_auth_tokens_from_logs().await?;
         }
 
+        Ok(())
+    }
+
+    async fn migrate_api_key_usage_buckets_v1(&self) -> Result<(), ProxyError> {
+        // Rebuild buckets from request_logs to preserve cumulative statistics after retention.
+        // This is safe to rerun because we clear and recompute deterministically.
+        let now_ts = Utc::now().timestamp();
+        let mut read_conn = self.pool.acquire().await?;
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query("DELETE FROM api_key_usage_buckets")
+            .execute(&mut *tx)
+            .await?;
+
+        let mut rows = sqlx::query(
+            r#"
+            SELECT api_key_id, created_at, result_status
+            FROM request_logs
+            ORDER BY api_key_id ASC, created_at ASC, id ASC
+            "#,
+        )
+        .fetch(&mut *read_conn);
+
+        #[derive(Clone, Copy, Default)]
+        struct BucketCounts {
+            total_requests: i64,
+            success_count: i64,
+            error_count: i64,
+            quota_exhausted_count: i64,
+        }
+
+        async fn flush_bucket(
+            tx: &mut Transaction<'_, Sqlite>,
+            now_ts: i64,
+            key: &str,
+            bucket_start: i64,
+            counts: BucketCounts,
+        ) -> Result<(), ProxyError> {
+            if counts.total_requests <= 0 {
+                return Ok(());
+            }
+            sqlx::query(
+                r#"
+                INSERT INTO api_key_usage_buckets (
+                    api_key_id,
+                    bucket_start,
+                    bucket_secs,
+                    total_requests,
+                    success_count,
+                    error_count,
+                    quota_exhausted_count,
+                    updated_at
+                ) VALUES (?, ?, 86400, ?, ?, ?, ?, ?)
+                "#,
+            )
+            .bind(key)
+            .bind(bucket_start)
+            .bind(counts.total_requests)
+            .bind(counts.success_count)
+            .bind(counts.error_count)
+            .bind(counts.quota_exhausted_count)
+            .bind(now_ts)
+            .execute(&mut **tx)
+            .await?;
+            Ok(())
+        }
+
+        let mut current_key: Option<String> = None;
+        let mut current_bucket_start: i64 = 0;
+        let mut counts = BucketCounts::default();
+
+        while let Some(row) = rows.try_next().await? {
+            let key_id: String = row.try_get("api_key_id")?;
+            let created_at: i64 = row.try_get("created_at")?;
+            let status: String = row.try_get("result_status")?;
+
+            let bucket_start = local_day_bucket_start_utc_ts(created_at);
+
+            let needs_flush = match current_key.as_deref() {
+                None => false,
+                Some(k) if k != key_id.as_str() => true,
+                Some(_) if current_bucket_start != bucket_start => true,
+                _ => false,
+            };
+
+            if needs_flush {
+                let key = current_key.as_deref().expect("flush key present");
+                flush_bucket(&mut tx, now_ts, key, current_bucket_start, counts).await?;
+
+                counts = BucketCounts::default();
+            }
+
+            current_key = Some(key_id);
+            current_bucket_start = bucket_start;
+
+            counts.total_requests += 1;
+            match status.as_str() {
+                OUTCOME_SUCCESS => counts.success_count += 1,
+                OUTCOME_ERROR => counts.error_count += 1,
+                OUTCOME_QUOTA_EXHAUSTED => counts.quota_exhausted_count += 1,
+                _ => {}
+            }
+        }
+
+        if let Some(key) = current_key.as_deref() {
+            flush_bucket(&mut tx, now_ts, key, current_bucket_start, counts).await?;
+        }
+
+        tx.commit().await?;
         Ok(())
     }
 
@@ -1992,6 +2192,36 @@ impl KeyStore {
         .await?;
 
         Ok(result.rows_affected() as i64)
+    }
+
+    async fn delete_old_request_logs(&self, threshold: i64) -> Result<i64, ProxyError> {
+        // Batched deletes reduce long-running write locks on large tables.
+        const BATCH_SIZE: i64 = 5_000;
+        let mut total_deleted = 0_i64;
+        loop {
+            let result = sqlx::query(
+                r#"
+                DELETE FROM request_logs
+                WHERE id IN (
+                    SELECT id
+                    FROM request_logs
+                    WHERE created_at < ?
+                    ORDER BY created_at ASC, id ASC
+                    LIMIT ?
+                )
+                "#,
+            )
+            .bind(threshold)
+            .bind(BATCH_SIZE)
+            .execute(&self.pool)
+            .await?;
+            let deleted = result.rows_affected() as i64;
+            total_deleted += deleted;
+            if deleted == 0 {
+                break;
+            }
+        }
+        Ok(total_deleted)
     }
 
     /// Aggregate per-token usage logs into hourly buckets in token_usage_stats.
@@ -2561,21 +2791,13 @@ impl KeyStore {
         let totals_row = sqlx::query(
             r#"
             SELECT
-              COUNT(1) AS total_requests,
-              SUM(CASE WHEN result_status = 'success' THEN 1 ELSE 0 END) AS success_count,
-              SUM(CASE WHEN result_status = 'error' THEN 1 ELSE 0 END) AS error_count,
-              SUM(CASE WHEN result_status = 'quota_exhausted' THEN 1 ELSE 0 END) AS quota_exhausted_count
-            FROM request_logs
-            WHERE api_key_id = ? AND created_at >= ?
+              COALESCE(SUM(total_requests), 0) AS total_requests,
+              COALESCE(SUM(success_count), 0) AS success_count,
+              COALESCE(SUM(error_count), 0) AS error_count,
+              COALESCE(SUM(quota_exhausted_count), 0) AS quota_exhausted_count
+            FROM api_key_usage_buckets
+            WHERE api_key_id = ? AND bucket_secs = 86400 AND bucket_start >= ?
             "#,
-        )
-        .bind(key_id)
-        .bind(since)
-        .fetch_one(&self.pool)
-        .await?;
-
-        let last_activity = sqlx::query_scalar::<_, Option<i64>>(
-            "SELECT MAX(created_at) FROM request_logs WHERE api_key_id = ? AND created_at >= ?",
         )
         .bind(key_id)
         .bind(since)
@@ -2589,6 +2811,15 @@ impl KeyStore {
                 .bind(key_id)
                 .fetch_optional(&self.pool)
                 .await?;
+
+        let key_last_used_at: Option<i64> =
+            sqlx::query_scalar("SELECT last_used_at FROM api_keys WHERE id = ? LIMIT 1")
+                .bind(key_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        let last_activity = key_last_used_at
+            .and_then(normalize_timestamp)
+            .filter(|ts| *ts >= since);
 
         let (active_keys, exhausted_keys) = match status.as_deref() {
             Some(STATUS_EXHAUSTED) => (0, 1),
@@ -3865,6 +4096,16 @@ impl KeyStore {
         let dropped_json =
             serde_json::to_string(entry.dropped_headers).unwrap_or_else(|_| "[]".to_string());
 
+        let bucket_start = local_day_bucket_start_utc_ts(created_at);
+        let (bucket_success, bucket_error, bucket_quota_exhausted) = match entry.outcome {
+            OUTCOME_SUCCESS => (1_i64, 0_i64, 0_i64),
+            OUTCOME_ERROR => (0_i64, 1_i64, 0_i64),
+            OUTCOME_QUOTA_EXHAUSTED => (0_i64, 0_i64, 1_i64),
+            _ => (0_i64, 0_i64, 0_i64),
+        };
+
+        let mut tx = self.pool.begin().await?;
+
         sqlx::query(
             r#"
             INSERT INTO request_logs (
@@ -3883,7 +4124,7 @@ impl KeyStore {
                 dropped_headers,
                 created_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        "#,
+            "#,
         )
         .bind(entry.key_id)
         .bind(entry.auth_token_id)
@@ -3899,8 +4140,41 @@ impl KeyStore {
         .bind(forwarded_json)
         .bind(dropped_json)
         .bind(created_at)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+
+        // Daily API-key rollup bucket (bucket_secs=86400, aligned to local midnight).
+        sqlx::query(
+            r#"
+            INSERT INTO api_key_usage_buckets (
+                api_key_id,
+                bucket_start,
+                bucket_secs,
+                total_requests,
+                success_count,
+                error_count,
+                quota_exhausted_count,
+                updated_at
+            ) VALUES (?, ?, 86400, 1, ?, ?, ?, ?)
+            ON CONFLICT(api_key_id, bucket_start, bucket_secs)
+            DO UPDATE SET
+                total_requests = total_requests + 1,
+                success_count = success_count + excluded.success_count,
+                error_count = error_count + excluded.error_count,
+                quota_exhausted_count = quota_exhausted_count + excluded.quota_exhausted_count,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(entry.key_id)
+        .bind(bucket_start)
+        .bind(bucket_success)
+        .bind(bucket_error)
+        .bind(bucket_quota_exhausted)
+        .bind(created_at)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
 
         Ok(())
     }
@@ -3925,11 +4199,12 @@ impl KeyStore {
             LEFT JOIN (
                 SELECT
                     api_key_id,
-                    COUNT(*) AS total_requests,
-                    SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END) AS success_count,
-                    SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END) AS error_count,
-                    SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END) AS quota_exhausted_count
-                FROM request_logs
+                    COALESCE(SUM(total_requests), 0) AS total_requests,
+                    COALESCE(SUM(success_count), 0) AS success_count,
+                    COALESCE(SUM(error_count), 0) AS error_count,
+                    COALESCE(SUM(quota_exhausted_count), 0) AS quota_exhausted_count
+                FROM api_key_usage_buckets
+                WHERE bucket_secs = 86400
                 GROUP BY api_key_id
             ) AS stats
             ON stats.api_key_id = ak.id
@@ -3937,9 +4212,6 @@ impl KeyStore {
             ORDER BY ak.status ASC, ak.last_used_at ASC, ak.id ASC
             "#,
         )
-        .bind(OUTCOME_SUCCESS)
-        .bind(OUTCOME_ERROR)
-        .bind(OUTCOME_QUOTA_EXHAUSTED)
         .fetch_all(&self.pool)
         .await?;
 
@@ -4301,7 +4573,7 @@ impl KeyStore {
         let where_clause = match group {
             "quota" => "WHERE job_type = 'quota_sync' OR job_type = 'quota_sync/manual'",
             "usage" => "WHERE job_type = 'token_usage_rollup'",
-            "logs" => "WHERE job_type = 'auth_token_logs_gc'",
+            "logs" => "WHERE job_type = 'auth_token_logs_gc' OR job_type = 'request_logs_gc'",
             _ => "",
         };
 
@@ -4382,16 +4654,14 @@ impl KeyStore {
         let totals_row = sqlx::query(
             r#"
             SELECT
-                COUNT(*) AS total_requests,
-                COALESCE(SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END), 0) AS success_count,
-                COALESCE(SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END), 0) AS error_count,
-                COALESCE(SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END), 0) AS quota_exhausted_count
-            FROM request_logs
+                COALESCE(SUM(total_requests), 0) AS total_requests,
+                COALESCE(SUM(success_count), 0) AS success_count,
+                COALESCE(SUM(error_count), 0) AS error_count,
+                COALESCE(SUM(quota_exhausted_count), 0) AS quota_exhausted_count
+            FROM api_key_usage_buckets
+            WHERE bucket_secs = 86400
             "#,
         )
-        .bind(OUTCOME_SUCCESS)
-        .bind(OUTCOME_ERROR)
-        .bind(OUTCOME_QUOTA_EXHAUSTED)
         .fetch_one(&self.pool)
         .await?;
 
@@ -4409,10 +4679,12 @@ impl KeyStore {
         .fetch_one(&self.pool)
         .await?;
 
-        let last_activity =
-            sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(created_at) FROM request_logs")
-                .fetch_one(&self.pool)
-                .await?;
+        let last_activity = sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT MAX(last_used_at) FROM api_keys WHERE deleted_at IS NULL",
+        )
+        .fetch_one(&self.pool)
+        .await?
+        .and_then(normalize_timestamp);
 
         // Aggregate quotas for overview
         let quotas_row = sqlx::query(
@@ -4447,14 +4719,13 @@ impl KeyStore {
         let row = sqlx::query(
             r#"
             SELECT
-              COALESCE(SUM(CASE WHEN result_status = ? AND created_at >= ? THEN 1 ELSE 0 END), 0) AS monthly_success,
-              COALESCE(SUM(CASE WHEN result_status = ? AND created_at >= ? THEN 1 ELSE 0 END), 0) AS daily_success
-            FROM request_logs
+              COALESCE(SUM(CASE WHEN bucket_start >= ? THEN success_count ELSE 0 END), 0) AS monthly_success,
+              COALESCE(SUM(CASE WHEN bucket_start >= ? THEN success_count ELSE 0 END), 0) AS daily_success
+            FROM api_key_usage_buckets
+            WHERE bucket_secs = 86400
             "#,
         )
-        .bind(OUTCOME_SUCCESS)
         .bind(month_since)
-        .bind(OUTCOME_SUCCESS)
         .bind(day_since)
         .fetch_one(&self.pool)
         .await?;
@@ -4814,6 +5085,22 @@ fn start_of_month(now: chrono::DateTime<Utc>) -> chrono::DateTime<Utc> {
         .expect("valid start of month")
 }
 
+fn start_of_local_month_utc_ts(now: chrono::DateTime<Local>) -> i64 {
+    let first_day = chrono::NaiveDate::from_ymd_opt(now.year(), now.month(), 1)
+        .expect("valid start of month date");
+    let naive = first_day
+        .and_hms_opt(0, 0, 0)
+        .expect("valid start of month time");
+    match Local.from_local_datetime(&naive) {
+        chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc).timestamp(),
+        chrono::LocalResult::Ambiguous(dt, _) => dt.with_timezone(&Utc).timestamp(),
+        chrono::LocalResult::None => {
+            // Extremely unlikely at midnight; fall back to current timestamp.
+            now.with_timezone(&Utc).timestamp()
+        }
+    }
+}
+
 fn start_of_next_month(current_month_start: chrono::DateTime<Utc>) -> chrono::DateTime<Utc> {
     let (year, month) = if current_month_start.month() == 12 {
         (current_month_start.year() + 1, 1)
@@ -4830,6 +5117,44 @@ fn start_of_day(now: chrono::DateTime<Utc>) -> chrono::DateTime<Utc> {
         .and_hms_opt(0, 0, 0)
         .expect("valid start of day")
         .and_utc()
+}
+
+fn start_of_local_day_utc_ts(now: chrono::DateTime<Local>) -> i64 {
+    let naive = now
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .expect("valid start of local day");
+    match Local.from_local_datetime(&naive) {
+        chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc).timestamp(),
+        chrono::LocalResult::Ambiguous(dt, _) => dt.with_timezone(&Utc).timestamp(),
+        chrono::LocalResult::None => {
+            // Extremely unlikely at midnight; fall back to current timestamp.
+            now.with_timezone(&Utc).timestamp()
+        }
+    }
+}
+
+fn local_day_bucket_start_utc_ts(created_at_utc_ts: i64) -> i64 {
+    let Some(utc_dt) = Utc.timestamp_opt(created_at_utc_ts, 0).single() else {
+        return 0;
+    };
+    start_of_local_day_utc_ts(utc_dt.with_timezone(&Local))
+}
+
+fn request_logs_retention_threshold_utc_ts(retention_days: i64) -> i64 {
+    let days = retention_days.max(REQUEST_LOGS_MIN_RETENTION_DAYS);
+    let today = Local::now().date_naive();
+    let keep_from_date = today
+        .checked_sub_days(chrono::Days::new((days - 1) as u64))
+        .unwrap_or(today);
+    let naive = keep_from_date
+        .and_hms_opt(0, 0, 0)
+        .expect("valid local midnight");
+    match Local.from_local_datetime(&naive) {
+        chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc).timestamp(),
+        chrono::LocalResult::Ambiguous(dt, _) => dt.with_timezone(&Utc).timestamp(),
+        chrono::LocalResult::None => Local::now().with_timezone(&Utc).timestamp(),
+    }
 }
 
 fn normalize_timestamp(timestamp: i64) -> Option<i64> {
@@ -5280,6 +5605,58 @@ mod tests {
     use axum::{Json, Router, routing::post};
     use std::path::PathBuf;
     use tokio::net::TcpListener;
+
+    #[test]
+    fn parse_hhmm_validates_clock_time() {
+        assert_eq!(parse_hhmm("07:00"), Some((7, 0)));
+        assert_eq!(parse_hhmm("23:59"), Some((23, 59)));
+        assert_eq!(parse_hhmm("7:00"), None);
+        assert_eq!(parse_hhmm("24:00"), None);
+        assert_eq!(parse_hhmm("00:60"), None);
+        assert_eq!(parse_hhmm(""), None);
+        assert_eq!(parse_hhmm("07:00:00"), None);
+    }
+
+    #[test]
+    fn request_logs_env_settings_enforce_minimums_and_defaults() {
+        let prev_days = std::env::var("REQUEST_LOGS_RETENTION_DAYS").ok();
+        let prev_at = std::env::var("REQUEST_LOGS_GC_AT").ok();
+
+        unsafe {
+            std::env::set_var("REQUEST_LOGS_RETENTION_DAYS", "3");
+        }
+        assert_eq!(effective_request_logs_retention_days(), 7);
+
+        unsafe {
+            std::env::set_var("REQUEST_LOGS_RETENTION_DAYS", "10");
+        }
+        assert_eq!(effective_request_logs_retention_days(), 10);
+
+        unsafe {
+            std::env::set_var("REQUEST_LOGS_RETENTION_DAYS", "not-a-number");
+            std::env::set_var("REQUEST_LOGS_GC_AT", "23:30");
+        }
+        assert_eq!(effective_request_logs_retention_days(), 7);
+        assert_eq!(effective_request_logs_gc_at(), (23, 30));
+
+        unsafe {
+            std::env::set_var("REQUEST_LOGS_GC_AT", "7:00");
+        }
+        assert_eq!(effective_request_logs_gc_at(), (7, 0));
+
+        unsafe {
+            if let Some(v) = prev_days {
+                std::env::set_var("REQUEST_LOGS_RETENTION_DAYS", v);
+            } else {
+                std::env::remove_var("REQUEST_LOGS_RETENTION_DAYS");
+            }
+            if let Some(v) = prev_at {
+                std::env::set_var("REQUEST_LOGS_GC_AT", v);
+            } else {
+                std::env::remove_var("REQUEST_LOGS_GC_AT");
+            }
+        }
+    }
 
     #[test]
     fn sanitize_headers_removes_blocked_and_keeps_allowed() {
