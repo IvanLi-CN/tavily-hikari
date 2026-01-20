@@ -4565,10 +4565,14 @@ async fn proxy_handler(
         auth_token_id,
     };
 
-    let token_id = token
-        .strip_prefix("th-")
-        .and_then(|rest| rest.split('-').next())
-        .map(|s| s.to_string());
+    let token_id = if state.dev_open_admin {
+        Some("dev".to_string())
+    } else {
+        token
+            .strip_prefix("th-")
+            .and_then(|rest| rest.split('-').next())
+            .map(|s| s.to_string())
+    };
 
     let mut _quota_verdict: Option<TokenQuotaVerdict> = None;
     if let Some(tid) = token_id.as_deref() {
@@ -5095,11 +5099,19 @@ mod tests {
     }
 
     async fn spawn_proxy_server(proxy: TavilyProxy, usage_base: String) -> SocketAddr {
+        spawn_proxy_server_with_dev(proxy, usage_base, false).await
+    }
+
+    async fn spawn_proxy_server_with_dev(
+        proxy: TavilyProxy,
+        usage_base: String,
+        dev_open_admin: bool,
+    ) -> SocketAddr {
         let state = Arc::new(AppState {
             proxy,
             static_dir: None,
             forward_auth: ForwardAuthConfig::new(None, None, None, None),
-            dev_open_admin: false,
+            dev_open_admin,
             usage_base,
         });
 
@@ -5185,6 +5197,42 @@ mod tests {
             body.get("error"),
             Some(&serde_json::Value::String("missing token".into()))
         );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn tavily_http_search_dev_open_admin_does_not_fail_foreign_key() {
+        let db_path = temp_db_path("http-search-dev-open-admin-fk");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let expected_api_key = "tvly-http-search-dev-open-admin-key";
+        let proxy = TavilyProxy::with_endpoint(
+            vec![expected_api_key.to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let upstream_addr =
+            spawn_http_search_mock_asserting_api_key(expected_api_key.to_string()).await;
+        let usage_base = format!("http://{}", upstream_addr);
+        let proxy_addr = spawn_proxy_server_with_dev(proxy, usage_base, true).await;
+
+        let client = Client::new();
+        let url = format!("http://{}/api/tavily/search", proxy_addr);
+        let resp = client
+            .post(url)
+            .json(&serde_json::json!({ "query": "dev-open-admin fk" }))
+            .send()
+            .await
+            .expect("request to proxy succeeds");
+
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+        let body: serde_json::Value = resp.json().await.expect("parse json body");
+        assert_eq!(body.get("status").and_then(|v| v.as_i64()), Some(200));
 
         let _ = std::fs::remove_file(db_path);
     }

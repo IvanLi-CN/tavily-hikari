@@ -28,6 +28,13 @@ const OUTCOME_ERROR: &str = "error";
 const OUTCOME_QUOTA_EXHAUSTED: &str = "quota_exhausted";
 const OUTCOME_UNKNOWN: &str = "unknown";
 
+// dev-open-admin mode uses a synthetic token id ("dev") for request attribution.
+// Keep a placeholder row in auth_tokens so SQLite FOREIGN KEY constraints in
+// token_usage_buckets / auth_token_quota / token_usage_stats never fail.
+const DEV_OPEN_ADMIN_TOKEN_ID: &str = "dev";
+const DEV_OPEN_ADMIN_TOKEN_SECRET: &str = "dev-open-admin";
+const DEV_OPEN_ADMIN_TOKEN_NOTE: &str = "[system] dev-open-admin placeholder";
+
 const BLOCKED_HEADERS: &[&str] = &[
     "forwarded",
     "via",
@@ -1612,6 +1619,7 @@ impl KeyStore {
         .await?;
 
         self.upgrade_auth_tokens_schema().await?;
+        self.ensure_dev_open_admin_token().await?;
 
         // Ensure per-token usage logs table exists BEFORE running data consistency migration
         // because the migration queries auth_token_logs.
@@ -1792,6 +1800,34 @@ impl KeyStore {
             self.heal_orphan_auth_tokens_from_logs().await?;
         }
 
+        Ok(())
+    }
+
+    async fn ensure_dev_open_admin_token(&self) -> Result<(), ProxyError> {
+        let now = Utc::now().timestamp();
+        sqlx::query(
+            r#"
+            INSERT INTO auth_tokens (
+                id,
+                secret,
+                enabled,
+                note,
+                group_name,
+                total_requests,
+                created_at,
+                last_used_at,
+                deleted_at
+            ) VALUES (?, ?, 0, ?, NULL, 0, ?, NULL, ?)
+            ON CONFLICT(id) DO NOTHING
+            "#,
+        )
+        .bind(DEV_OPEN_ADMIN_TOKEN_ID)
+        .bind(DEV_OPEN_ADMIN_TOKEN_SECRET)
+        .bind(DEV_OPEN_ADMIN_TOKEN_NOTE)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
