@@ -19,6 +19,9 @@ This example shows a simple Caddy gateway protecting Tavily Hikari with `forward
 ```bash
 cd examples/forwardauth-caddy
 docker compose up -d
+
+# If your Docker doesn't ship the `docker compose` plugin, use:
+docker-compose up -d
 ```
 
 ## Quick checks
