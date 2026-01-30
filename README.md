@@ -151,6 +151,8 @@ export FORWARD_AUTH_NICKNAME_HEADER=Remote-Name
 - `FORWARD_AUTH_NICKNAME_HEADER` (optional) is surfaced in the UI to show who is operating the console. When absent, the backend falls back to `ADMIN_MODE_NAME` (if provided) or hides the nickname.
 - For purely local experiments you can set `DEV_OPEN_ADMIN=true`, but never enable it in production.
 
+Deployment example (Caddy as gateway): see `examples/forwardauth-caddy/`.
+
 ## Frontend Highlights
 
 - Built with React 18, TanStack Router, DaisyUI, Tailwind, Iconify.
