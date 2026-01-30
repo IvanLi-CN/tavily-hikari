@@ -1,0 +1,52 @@
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - tavily-hikari
+      - auth-mock
+
+  auth-mock:
+    image: python:3.12-slim
+    working_dir: /app
+    command: ["python", "-u", "server.py"]
+    environment:
+      AUTH_USER: admin
+      AUTH_PASS: password
+    volumes:
+      - ./auth-mock:/app:ro
+
+  upstream-mock:
+    image: python:3.12-slim
+    working_dir: /app
+    command: ["python", "-u", "server.py"]
+    volumes:
+      - ./upstream-mock:/app:ro
+
+  tavily-hikari:
+    image: ghcr.io/ivanli-cn/tavily-hikari:latest
+    restart: unless-stopped
+    environment:
+      PROXY_BIND: 0.0.0.0
+      PROXY_PORT: 8787
+      PROXY_DB_PATH: /srv/app/data/tavily_proxy.db
+      WEB_STATIC_DIR: /srv/app/web
+      TAVILY_API_KEYS: tvly-demo
+      TAVILY_UPSTREAM: http://upstream-mock:8080/mcp
+      TAVILY_USAGE_BASE: http://upstream-mock:8080
+      FORWARD_AUTH_HEADER: Remote-Email
+      FORWARD_AUTH_ADMIN_VALUE: admin@example.com
+      FORWARD_AUTH_NICKNAME_HEADER: Remote-Name
+      DEV_OPEN_ADMIN: "false"
+    volumes:
+      - tavily-hikari-data:/srv/app/data
+    depends_on:
+      - upstream-mock
+
+volumes:
+  tavily-hikari-data:
+    driver: local
