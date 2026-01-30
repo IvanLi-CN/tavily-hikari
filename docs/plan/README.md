@@ -55,7 +55,7 @@
 
 ## Index（固定表格）
 
-|    ID | Title                               | Status          | Plan                                         | Last       | Notes                              |
-| ----: | ----------------------------------- | --------------- | -------------------------------------------- | ---------- | ---------------------------------- |
-|  0001 | request_logs 定时清理与统计口径保持 | 部分完成（5/5） | `0001:request-logs-gc/PLAN.md`               | 2026-01-19 | branch `feat/0001-request-logs-gc` |
-| wsx8t | Caddy ForwardAuth Compose + CI      | 待实现          | `wsx8t:caddy-forwardauth-compose-ci/PLAN.md` | 2026-01-30 | -                                  |
+|    ID | Title                               | Status          | Plan                                         | Last       | Notes                                            |
+| ----: | ----------------------------------- | --------------- | -------------------------------------------- | ---------- | ------------------------------------------------ |
+|  0001 | request_logs 定时清理与统计口径保持 | 部分完成（5/5） | `0001:request-logs-gc/PLAN.md`               | 2026-01-19 | branch `feat/0001-request-logs-gc`               |
+| wsx8t | Caddy ForwardAuth Compose + CI      | 已完成          | `wsx8t:caddy-forwardauth-compose-ci/PLAN.md` | 2026-01-30 | branch `feat/wsx8t-caddy-forwardauth-compose-ci` |

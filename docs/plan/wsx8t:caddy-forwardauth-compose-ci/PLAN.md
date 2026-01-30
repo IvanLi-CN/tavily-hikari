@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 待实现
+- Status: 已完成
 - Created: 2026-01-30
 - Last: 2026-01-30
 
@@ -73,9 +73,6 @@ None（本计划不新增/修改/删除后端对外接口，仅新增部署示�
 - Given 未提供口令（未鉴权）
   When 通过 Caddy 访问任一受保护资源（例如 `/` 或 `GET /api/debug/forward-auth`）
   Then 返回 `401` 且带 `WWW-Authenticate`（提示输入口令）
-- Given 未提供管理员身份（ForwardAuth 未注入/或注入为非管理员）
-  When 访问任一管理员接口（例如 `POST /api/keys` 或 `GET /api/debug/forward-auth`）
-  Then 返回 `403`
 - Given 提供正确口令完成鉴权，且通过 ForwardAuth 注入的 `FORWARD_AUTH_HEADER` 值等于 `FORWARD_AUTH_ADMIN_VALUE`
   When 通过 Caddy 访问 `GET /api/debug/forward-auth`
   Then 返回 `200` 且响应中 `is_admin=true`
@@ -115,9 +112,9 @@ None
 
 ## 实现里程碑（Milestones）
 
-- [ ] M1: 新增 `examples/forwardauth-caddy/`（compose + Caddyfile + README）并可本地启动验证
-- [ ] M2: CI 增加 compose-smoke job，覆盖 health + admin 鉴权边界
-- [ ] M3: 更新 `README.md` / `README.zh-CN.md` 链接到示例并明确安全约束
+- [x] M1: 新增 `examples/forwardauth-caddy/`（compose + Caddyfile + README）并可本地启动验证
+- [x] M2: CI 增加 compose-smoke job，覆盖 health + admin 鉴权边界
+- [x] M3: 更新 `README.md` / `README.zh-CN.md` 链接到示例并明确安全约束
 
 ## 方案概述（Approach, high-level）
 
@@ -137,6 +134,7 @@ None
 
 - 2026-01-30: 创建计划（待设计）
 - 2026-01-30: 冻结口径：`/health` 公开；鉴权不区分 admin/user；CI smoke 只测鉴权边界与 health
+- 2026-01-30: 实现完成：示例目录 + CI compose smoke + README 入口
 
 ## 参考（References）
 
