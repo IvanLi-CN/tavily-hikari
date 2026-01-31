@@ -1,0 +1,26 @@
+:8787 {
+	@health path /health
+	handle @health {
+		reverse_proxy tavily-hikari:8787
+	}
+
+	handle {
+		# Use route to preserve directive ordering: strip untrusted headers first,
+		# then forward_auth injects trusted identity headers for upstream.
+		route {
+			# Never trust inbound identity headers.
+			request_header -Remote-Email
+			request_header -Remote-Name
+
+			# Ask auth-mock to validate Basic Auth.
+			# On success, copy identity headers from auth response to the upstream request.
+			forward_auth auth-mock:8080 {
+				uri /auth
+				header_up Authorization {http.request.header.Authorization}
+				copy_headers Remote-Email Remote-Name
+			}
+
+			reverse_proxy tavily-hikari:8787
+		}
+	}
+}

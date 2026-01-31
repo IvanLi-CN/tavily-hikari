@@ -4,7 +4,7 @@
 
 ## 快速新增一个计划
 
-1. 分配一个新的四位编号 `ID`（查看下方 Index，取未使用的最小或递增编号）。
+1. 生成一个新的计划 `ID`（推荐 5 个字符的 nanoId 风格；若沿用历史四位数字 `0001`–`9999` 也允许共存）。
 2. 新建目录：`docs/plan/<id>:<title>/`（`<title>` 用简短 slug，建议 kebab-case）。
 3. 在该目录下创建 `PLAN.md`（模板见下方“PLAN.md 写法（简要）”）。
 4. 在下方 Index 表新增一行，并把 `Status` 设为 `待设计` 或 `待实现`（取决于是否已冻结验收标准），并填入 `Last`（通常为当天）。
@@ -12,7 +12,10 @@
 ## 目录与命名规则
 
 - 每个计划一个目录：`docs/plan/<id>:<title>/`
-- `<id>`：四位数字（`0001`–`9999`），一经分配不要变更。
+- `<id>`：推荐 5 个字符的 nanoId 风格，一经分配不要变更。
+  - 推荐字符集（小写 + 避免易混淆字符）：`23456789abcdefghjkmnpqrstuvwxyz`
+  - 正则：`[23456789abcdefghjkmnpqrstuvwxyz]{5}`
+  - 兼容：若仓库历史已使用四位数字 `0001`–`9999`，允许继续共存。
 - `<title>`：短标题 slug（建议 kebab-case，避免空格与特殊字符）；目录名尽量稳定。
 - 人类可读标题写在 Index 的 `Title` 列；标题变更优先改 `Title`，不强制改目录名。
 
@@ -52,6 +55,7 @@
 
 ## Index（固定表格）
 
-|   ID | Title                               | Status          | Plan                           | Last       | Notes                              |
-| ---: | ----------------------------------- | --------------- | ------------------------------ | ---------- | ---------------------------------- |
-| 0001 | request_logs 定时清理与统计口径保持 | 部分完成（5/5） | `0001:request-logs-gc/PLAN.md` | 2026-01-19 | branch `feat/0001-request-logs-gc` |
+|    ID | Title                               | Status          | Plan                                         | Last       | Notes                                            |
+| ----: | ----------------------------------- | --------------- | -------------------------------------------- | ---------- | ------------------------------------------------ |
+|  0001 | request_logs 定时清理与统计口径保持 | 部分完成（5/5） | `0001:request-logs-gc/PLAN.md`               | 2026-01-19 | branch `feat/0001-request-logs-gc`               |
+| wsx8t | Caddy ForwardAuth Compose + CI      | 已完成          | `wsx8t:caddy-forwardauth-compose-ci/PLAN.md` | 2026-01-31 | branch `feat/wsx8t-caddy-forwardauth-compose-ci` |

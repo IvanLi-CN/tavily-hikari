@@ -159,6 +159,8 @@ export FORWARD_AUTH_NICKNAME_HEADER=Remote-Name
 - `FORWARD_AUTH_NICKNAME_HEADER`（可选）会透传到前端，用于显示操作员昵称；缺省时可在 `ADMIN_MODE_NAME` 中设置固定昵称。
 - 本地快速验证可以临时设置 `DEV_OPEN_ADMIN=true`，生产环境务必保持默认的安全策略。
 
+部署示例（Caddy 作为网关）：见 `examples/forwardauth-caddy/`。
+
 ## 前端控制台
 
 - 构建产物位于 `web/dist`，可由后端直接托管或独立静态站点部署。
