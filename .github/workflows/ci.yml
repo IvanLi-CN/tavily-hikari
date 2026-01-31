@@ -177,7 +177,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          url="${BASE_URL}/api/debug/is-admin"
+          url="${BASE_URL}/api/profile"
           code="$(curl -sS -o /dev/null -w '%{http_code}' "${url}" || true)"
           if [ "${code}" != "401" ]; then
             echo "Expected 401, got ${code} for ${url}"
@@ -189,7 +189,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          url="${BASE_URL}/api/debug/is-admin"
+          url="${BASE_URL}/api/profile"
           tmp="$(mktemp)"
           code="$(curl -sS -u "${BASIC_AUTH_USER}:${BASIC_AUTH_PASS}" -o "${tmp}" -w '%{http_code}' "${url}" || true)"
           if [ "${code}" != "200" ]; then
@@ -197,8 +197,8 @@ jobs:
             cat "${tmp}" || true
             exit 1
           fi
-          jq -e '.is_admin == true' "${tmp}" >/dev/null
-          jq -e '.user_value == "admin@example.com"' "${tmp}" >/dev/null
+          jq -e '.isAdmin == true' "${tmp}" >/dev/null
+          jq -e '.displayName == "admin"' "${tmp}" >/dev/null
 
       - name: Dump compose logs (on failure)
         if: failure()
