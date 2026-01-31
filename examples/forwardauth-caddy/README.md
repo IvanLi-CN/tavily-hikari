@@ -24,6 +24,15 @@ docker compose up -d
 docker-compose up -d
 ```
 
+## CI / local image override
+
+For CI (or local testing), you can override the Hikari image without editing the compose file:
+
+```bash
+export TAVILY_HIKARI_IMAGE=tavily-hikari:ci
+docker compose up -d
+```
+
 ## Quick checks
 
 Public:

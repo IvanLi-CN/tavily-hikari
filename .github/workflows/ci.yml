@@ -104,9 +104,17 @@ jobs:
       COMPOSE_FILE: examples/forwardauth-caddy/docker-compose.yml
       BASIC_AUTH_USER: admin
       BASIC_AUTH_PASS: password
+      IMAGE_TAG: tavily-hikari:ci
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
 
       - name: Install system dependencies
         shell: bash
@@ -117,6 +125,25 @@ jobs:
           docker --version
           docker compose version || (sudo apt-get install -y docker-compose-plugin && docker compose version)
 
+      - name: Build web assets (required for Dockerfile)
+        working-directory: web
+        env:
+          VITE_APP_VERSION: ci-${{ github.sha }}
+        run: |
+          set -euo pipefail
+          npm ci
+          npx tsc -b
+          npx vite build && node scripts/write-version.mjs
+
+      - name: Build local Docker image (PR checkout)
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build \
+            --build-arg "APP_EFFECTIVE_VERSION=ci-${GITHUB_SHA}" \
+            -t "${IMAGE_TAG}" \
+            .
+
       - name: Start compose stack
         shell: bash
         run: |
@@ -125,6 +152,7 @@ jobs:
             echo "Missing compose file: ${COMPOSE_FILE}"
             exit 1
           fi
+          export TAVILY_HIKARI_IMAGE="${IMAGE_TAG}"
           docker compose -f "${COMPOSE_FILE}" up -d
           docker compose -f "${COMPOSE_FILE}" ps
 
@@ -149,7 +177,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          url="${BASE_URL}/api/debug/forward-auth"
+          url="${BASE_URL}/api/debug/is-admin"
           code="$(curl -sS -o /dev/null -w '%{http_code}' "${url}" || true)"
           if [ "${code}" != "401" ]; then
             echo "Expected 401, got ${code} for ${url}"
@@ -161,7 +189,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          url="${BASE_URL}/api/debug/forward-auth"
+          url="${BASE_URL}/api/debug/is-admin"
           tmp="$(mktemp)"
           code="$(curl -sS -u "${BASIC_AUTH_USER}:${BASIC_AUTH_PASS}" -o "${tmp}" -w '%{http_code}' "${url}" || true)"
           if [ "${code}" != "200" ]; then
@@ -170,6 +198,7 @@ jobs:
             exit 1
           fi
           jq -e '.is_admin == true' "${tmp}" >/dev/null
+          jq -e '.user_value == "admin@example.com"' "${tmp}" >/dev/null
 
       - name: Dump compose logs (on failure)
         if: failure()

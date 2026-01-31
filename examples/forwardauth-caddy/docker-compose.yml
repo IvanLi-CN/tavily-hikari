@@ -28,7 +28,7 @@ services:
       - ./upstream-mock:/app:ro
 
   tavily-hikari:
-    image: ghcr.io/ivanli-cn/tavily-hikari:latest
+    image: ${TAVILY_HIKARI_IMAGE:-ghcr.io/ivanli-cn/tavily-hikari:latest}
     restart: unless-stopped
     environment:
       PROXY_BIND: 0.0.0.0
