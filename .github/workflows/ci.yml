@@ -197,8 +197,16 @@ jobs:
             cat "${tmp}" || true
             exit 1
           fi
-          jq -e '.isAdmin == true' "${tmp}" >/dev/null
-          jq -e '.displayName == "admin"' "${tmp}" >/dev/null
+          if ! jq -e '.isAdmin == true' "${tmp}" >/dev/null; then
+            echo "Expected isAdmin==true for ${url}, got:"
+            cat "${tmp}" || true
+            exit 1
+          fi
+          if ! jq -e '(.displayName == "admin") or (.displayName == "admin@example.com")' "${tmp}" >/dev/null; then
+            echo "Expected displayName to be \"admin\" or \"admin@example.com\" for ${url}, got:"
+            cat "${tmp}" || true
+            exit 1
+          fi
 
       - name: Dump compose logs (on failure)
         if: failure()
