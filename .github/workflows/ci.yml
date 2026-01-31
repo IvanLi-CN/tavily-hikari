@@ -97,7 +97,7 @@ jobs:
     name: Compose Smoke (ForwardAuth + Caddy)
     runs-on: ubuntu-latest
     needs: [lint, unit-tests]
-    if: (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && hashFiles('examples/forwardauth-caddy/docker-compose.yml') != ''
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     timeout-minutes: 20
     env:
       BASE_URL: http://127.0.0.1:8787
