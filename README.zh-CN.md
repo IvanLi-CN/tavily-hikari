@@ -86,22 +86,23 @@ curl -X POST http://127.0.0.1:8787/api/keys \
 
 ## CLI / 环境变量
 
-| Flag / Env                                                        | 说明                                                                                                                         |
-| ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `--keys` / `TAVILY_API_KEYS`                                      | Tavily API key 列表（可选），支持逗号分隔或多次传参，仅用于一次性导入或开发场景；生产环境推荐通过管理员 API/前端控制台录入。 |
-| `--upstream` / `TAVILY_UPSTREAM`                                  | Tavily MCP 上游地址，默认 `https://mcp.tavily.com/mcp`。                                                                     |
-| `--bind` / `PROXY_BIND`                                           | 监听地址，默认 `127.0.0.1`。                                                                                                 |
-| `--port` / `PROXY_PORT`                                           | 监听端口，默认 `8787`。建议开发期使用高位端口（如 `58087`）。                                                                |
-| `--db-path` / `PROXY_DB_PATH`                                     | SQLite 文件路径，默认 `tavily_proxy.db`。                                                                                    |
-| `--static-dir` / `WEB_STATIC_DIR`                                 | Web 静态目录，若缺省且存在 `web/dist` 会自动挂载。                                                                           |
-| `--forward-auth-header` / `FORWARD_AUTH_HEADER`                   | 指定 ForwardAuth 注入的“用户标识”请求头（如 `Remote-Email`）。                                                               |
-| `--forward-auth-admin-value` / `FORWARD_AUTH_ADMIN_VALUE`         | 匹配到该值时视为管理员，可访问 `/api/keys/*` 接口。                                                                          |
-| `--forward-auth-nickname-header` / `FORWARD_AUTH_NICKNAME_HEADER` | 可选，提供 UI 展示的昵称头（如 `Remote-Name`）。                                                                             |
-| `--admin-mode-name` / `ADMIN_MODE_NAME`                           | 当缺少昵称头时用于覆盖前端显示的管理员名称。                                                                                 |
-| `--admin-auth-forward-enabled` / `ADMIN_AUTH_FORWARD_ENABLED`     | 是否启用 ForwardAuth 管理员校验（默认 `true`）。                                                                             |
-| `--admin-auth-builtin-enabled` / `ADMIN_AUTH_BUILTIN_ENABLED`     | 是否启用内置管理员登录（cookie 会话）（默认 `false`）。                                                                      |
-| `--admin-auth-builtin-password` / `ADMIN_AUTH_BUILTIN_PASSWORD`   | 内置管理员登录口令（启用内置登录时必填）。                                                                                   |
-| `--dev-open-admin` / `DEV_OPEN_ADMIN`                             | 仅限本地调试的开关，跳过管理员校验（默认 `false`）。                                                                         |
+| Flag / Env                                                                | 说明                                                                                                                         |
+| ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `--keys` / `TAVILY_API_KEYS`                                              | Tavily API key 列表（可选），支持逗号分隔或多次传参，仅用于一次性导入或开发场景；生产环境推荐通过管理员 API/前端控制台录入。 |
+| `--upstream` / `TAVILY_UPSTREAM`                                          | Tavily MCP 上游地址，默认 `https://mcp.tavily.com/mcp`。                                                                     |
+| `--bind` / `PROXY_BIND`                                                   | 监听地址，默认 `127.0.0.1`。                                                                                                 |
+| `--port` / `PROXY_PORT`                                                   | 监听端口，默认 `8787`。建议开发期使用高位端口（如 `58087`）。                                                                |
+| `--db-path` / `PROXY_DB_PATH`                                             | SQLite 文件路径，默认 `tavily_proxy.db`。                                                                                    |
+| `--static-dir` / `WEB_STATIC_DIR`                                         | Web 静态目录，若缺省且存在 `web/dist` 会自动挂载。                                                                           |
+| `--forward-auth-header` / `FORWARD_AUTH_HEADER`                           | 指定 ForwardAuth 注入的“用户标识”请求头（如 `Remote-Email`）。                                                               |
+| `--forward-auth-admin-value` / `FORWARD_AUTH_ADMIN_VALUE`                 | 匹配到该值时视为管理员，可访问 `/api/keys/*` 接口。                                                                          |
+| `--forward-auth-nickname-header` / `FORWARD_AUTH_NICKNAME_HEADER`         | 可选，提供 UI 展示的昵称头（如 `Remote-Name`）。                                                                             |
+| `--admin-mode-name` / `ADMIN_MODE_NAME`                                   | 当缺少昵称头时用于覆盖前端显示的管理员名称。                                                                                 |
+| `--admin-auth-forward-enabled` / `ADMIN_AUTH_FORWARD_ENABLED`             | 是否启用 ForwardAuth 管理员校验（默认 `true`）。                                                                             |
+| `--admin-auth-builtin-enabled` / `ADMIN_AUTH_BUILTIN_ENABLED`             | 是否启用内置管理员登录（cookie 会话）（默认 `false`）。                                                                      |
+| `--admin-auth-builtin-password-hash` / `ADMIN_AUTH_BUILTIN_PASSWORD_HASH` | 内置管理员口令哈希（PHC 字符串，推荐）。                                                                                     |
+| `--admin-auth-builtin-password` / `ADMIN_AUTH_BUILTIN_PASSWORD`           | 内置管理员登录口令（不推荐，优先使用口令哈希）。                                                                             |
+| `--dev-open-admin` / `DEV_OPEN_ADMIN`                                     | 仅限本地调试的开关，跳过管理员校验（默认 `false`）。                                                                         |
 
 首次运行会自动建表。若在 CLI/环境变量里显式传入 `--keys` 或 `TAVILY_API_KEYS`，会同步 `api_keys` 表：**在列表中**的 Key 会被新增或恢复为 `active`；**不在列表中**的 Key 会被标记为 `deleted`。默认推荐通过管理员 API/前端控制台维护 Key 集合。
 
@@ -169,7 +170,8 @@ export FORWARD_AUTH_NICKNAME_HEADER=Remote-Name
 
 ```bash
 export ADMIN_AUTH_BUILTIN_ENABLED=true
-export ADMIN_AUTH_BUILTIN_PASSWORD='change-me'
+echo -n 'change-me' | cargo run --quiet --bin admin_password_hash
+export ADMIN_AUTH_BUILTIN_PASSWORD_HASH='<phc-string>'
 # 不使用 ForwardAuth 时可关闭它：
 export ADMIN_AUTH_FORWARD_ENABLED=false
 ```
@@ -177,6 +179,7 @@ export ADMIN_AUTH_FORWARD_ENABLED=false
 - 开启内置登录且浏览器未登录时，首页会出现“管理员登录”按钮。
 - 登录成功会设置 HttpOnly cookie（`hikari_admin_session`），并解锁 `/admin` 与所有管理员接口。
 - 生产环境仍推荐使用 ForwardAuth；内置登录更适合自托管/小规模部署。
+  - 不要在环境变量里存放明文口令；优先使用 `ADMIN_AUTH_BUILTIN_PASSWORD_HASH`（PHC 字符串）并设置强口令。
 
 部署示例（Caddy 作为网关）：见 `examples/forwardauth-caddy/`。
 

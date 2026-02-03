@@ -7,6 +7,10 @@ use std::{
     sync::Arc,
 };
 
+use argon2::{
+    Argon2,
+    password_hash::{PasswordHash, PasswordVerifier},
+};
 use async_stream::stream;
 use axum::http::header::{
     CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, SET_COOKIE, TRANSFER_ENCODING,
@@ -66,6 +70,7 @@ pub struct AdminAuthOptions {
     pub forward_auth_enabled: bool,
     pub builtin_auth_enabled: bool,
     pub builtin_auth_password: Option<String>,
+    pub builtin_auth_password_hash: Option<String>,
 }
 
 impl ForwardAuthConfig {
@@ -154,14 +159,16 @@ const BUILTIN_ADMIN_SESSION_MAX_AGE_SECS: u64 = 60 * 60 * 24 * 14;
 struct BuiltinAdminAuth {
     enabled: bool,
     password: Option<String>,
+    password_hash: Option<String>,
     sessions: Arc<std::sync::RwLock<HashSet<String>>>,
 }
 
 impl BuiltinAdminAuth {
-    fn new(enabled: bool, password: Option<String>) -> Self {
+    fn new(enabled: bool, password: Option<String>, password_hash: Option<String>) -> Self {
         Self {
             enabled,
             password,
+            password_hash,
             sessions: Arc::new(std::sync::RwLock::new(HashSet::new())),
         }
     }
@@ -187,9 +194,19 @@ impl BuiltinAdminAuth {
         if !self.enabled {
             return None;
         }
-        let expected = self.password.as_deref()?;
-        if password != expected {
-            return None;
+        if let Some(hash) = self.password_hash.as_deref() {
+            let parsed = PasswordHash::new(hash).ok()?;
+            if Argon2::default()
+                .verify_password(password.as_bytes(), &parsed)
+                .is_err()
+            {
+                return None;
+            }
+        } else {
+            let expected = self.password.as_deref()?;
+            if password != expected {
+                return None;
+            }
         }
         Some(self.new_session())
     }
@@ -3579,8 +3596,13 @@ pub async fn serve(
         forward_auth_enabled,
         builtin_auth_enabled,
         builtin_auth_password,
+        builtin_auth_password_hash,
     } = admin_auth;
-    let builtin_admin = BuiltinAdminAuth::new(builtin_auth_enabled, builtin_auth_password);
+    let builtin_admin = BuiltinAdminAuth::new(
+        builtin_auth_enabled,
+        builtin_auth_password,
+        builtin_auth_password_hash,
+    );
     let state = Arc::new(AppState {
         proxy,
         static_dir: static_dir.clone(),
@@ -5341,7 +5363,7 @@ mod tests {
             static_dir: None,
             forward_auth: ForwardAuthConfig::new(None, None, None, None),
             forward_auth_enabled: true,
-            builtin_admin: BuiltinAdminAuth::new(false, None),
+            builtin_admin: BuiltinAdminAuth::new(false, None, None),
             dev_open_admin,
             usage_base,
         });
@@ -5376,7 +5398,7 @@ mod tests {
             static_dir: None,
             forward_auth,
             forward_auth_enabled: true,
-            builtin_admin: BuiltinAdminAuth::new(false, None),
+            builtin_admin: BuiltinAdminAuth::new(false, None, None),
             dev_open_admin,
             usage_base: "http://127.0.0.1:58088".to_string(),
         });
@@ -5396,13 +5418,24 @@ mod tests {
         addr
     }
 
+    fn hash_admin_password_for_test(password: &str) -> String {
+        use argon2::password_hash::{PasswordHasher, SaltString};
+
+        let salt = SaltString::generate(&mut rand::rngs::OsRng);
+        Argon2::default()
+            .hash_password(password.as_bytes(), &salt)
+            .expect("hash builtin admin password")
+            .to_string()
+    }
+
     async fn spawn_builtin_keys_admin_server(proxy: TavilyProxy, password: &str) -> SocketAddr {
+        let password_hash = hash_admin_password_for_test(password);
         let state = Arc::new(AppState {
             proxy,
             static_dir: None,
             forward_auth: ForwardAuthConfig::new(None, None, None, None),
             forward_auth_enabled: false,
-            builtin_admin: BuiltinAdminAuth::new(true, Some(password.to_string())),
+            builtin_admin: BuiltinAdminAuth::new(true, None, Some(password_hash)),
             dev_open_admin: false,
             usage_base: "http://127.0.0.1:58088".to_string(),
         });

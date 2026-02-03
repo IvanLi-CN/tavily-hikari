@@ -81,22 +81,23 @@ The stock [`docker-compose.yml`](docker-compose.yml) exposes port 8787 and mount
 
 ## CLI Flags & Environment Variables
 
-| Flag / Env                                                        | Description                                                                                                    |
-| ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `--keys` / `TAVILY_API_KEYS`                                      | Optional helper for bootstrapping or local experiments. In production, prefer the admin API/UI to manage keys. |
-| `--upstream` / `TAVILY_UPSTREAM`                                  | Tavily MCP upstream (default `https://mcp.tavily.com/mcp`).                                                    |
-| `--bind` / `PROXY_BIND`                                           | Listen address (default `127.0.0.1`).                                                                          |
-| `--port` / `PROXY_PORT`                                           | Listen port (default `8787`).                                                                                  |
-| `--db-path` / `PROXY_DB_PATH`                                     | SQLite file path (default `tavily_proxy.db`).                                                                  |
-| `--static-dir` / `WEB_STATIC_DIR`                                 | Directory for static assets; auto-detected if `web/dist` exists.                                               |
-| `--forward-auth-header` / `FORWARD_AUTH_HEADER`                   | Request header that carries the authenticated user identity (e.g., `Remote-Email`).                            |
-| `--forward-auth-admin-value` / `FORWARD_AUTH_ADMIN_VALUE`         | Header value that grants admin privileges; leave empty to disable.                                             |
-| `--forward-auth-nickname-header` / `FORWARD_AUTH_NICKNAME_HEADER` | Optional header for displaying a friendly name in the UI (e.g., `Remote-Name`).                                |
-| `--admin-mode-name` / `ADMIN_MODE_NAME`                           | Override nickname when ForwardAuth headers are missing.                                                        |
-| `--admin-auth-forward-enabled` / `ADMIN_AUTH_FORWARD_ENABLED`     | Boolean switch to enable ForwardAuth checks (default `true`).                                                  |
-| `--admin-auth-builtin-enabled` / `ADMIN_AUTH_BUILTIN_ENABLED`     | Boolean switch to enable built-in admin login (cookie session) (default `false`).                              |
-| `--admin-auth-builtin-password` / `ADMIN_AUTH_BUILTIN_PASSWORD`   | Built-in admin password (required when built-in login is enabled).                                             |
-| `--dev-open-admin` / `DEV_OPEN_ADMIN`                             | Boolean flag to bypass admin checks in local/dev setups (default `false`).                                     |
+| Flag / Env                                                                | Description                                                                                                    |
+| ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `--keys` / `TAVILY_API_KEYS`                                              | Optional helper for bootstrapping or local experiments. In production, prefer the admin API/UI to manage keys. |
+| `--upstream` / `TAVILY_UPSTREAM`                                          | Tavily MCP upstream (default `https://mcp.tavily.com/mcp`).                                                    |
+| `--bind` / `PROXY_BIND`                                                   | Listen address (default `127.0.0.1`).                                                                          |
+| `--port` / `PROXY_PORT`                                                   | Listen port (default `8787`).                                                                                  |
+| `--db-path` / `PROXY_DB_PATH`                                             | SQLite file path (default `tavily_proxy.db`).                                                                  |
+| `--static-dir` / `WEB_STATIC_DIR`                                         | Directory for static assets; auto-detected if `web/dist` exists.                                               |
+| `--forward-auth-header` / `FORWARD_AUTH_HEADER`                           | Request header that carries the authenticated user identity (e.g., `Remote-Email`).                            |
+| `--forward-auth-admin-value` / `FORWARD_AUTH_ADMIN_VALUE`                 | Header value that grants admin privileges; leave empty to disable.                                             |
+| `--forward-auth-nickname-header` / `FORWARD_AUTH_NICKNAME_HEADER`         | Optional header for displaying a friendly name in the UI (e.g., `Remote-Name`).                                |
+| `--admin-mode-name` / `ADMIN_MODE_NAME`                                   | Override nickname when ForwardAuth headers are missing.                                                        |
+| `--admin-auth-forward-enabled` / `ADMIN_AUTH_FORWARD_ENABLED`             | Boolean switch to enable ForwardAuth checks (default `true`).                                                  |
+| `--admin-auth-builtin-enabled` / `ADMIN_AUTH_BUILTIN_ENABLED`             | Boolean switch to enable built-in admin login (cookie session) (default `false`).                              |
+| `--admin-auth-builtin-password-hash` / `ADMIN_AUTH_BUILTIN_PASSWORD_HASH` | Built-in admin password hash (PHC string, recommended).                                                        |
+| `--admin-auth-builtin-password` / `ADMIN_AUTH_BUILTIN_PASSWORD`           | Built-in admin password (deprecated; prefer password hash).                                                    |
+| `--dev-open-admin` / `DEV_OPEN_ADMIN`                                     | Boolean flag to bypass admin checks in local/dev setups (default `false`).                                     |
 
 If `--keys`/`TAVILY_API_KEYS` is supplied, the database sync logic adds or revives keys listed there and soft deletes the rest. Otherwise, the admin workflow fully controls key state.
 
@@ -161,7 +162,8 @@ If you cannot (or do not want to) run a ForwardAuth gateway, Tavily Hikari can e
 
 ```bash
 export ADMIN_AUTH_BUILTIN_ENABLED=true
-export ADMIN_AUTH_BUILTIN_PASSWORD='change-me'
+echo -n 'change-me' | cargo run --quiet --bin admin_password_hash
+export ADMIN_AUTH_BUILTIN_PASSWORD_HASH='<phc-string>'
 # Optional: disable ForwardAuth entirely if you are not using it.
 export ADMIN_AUTH_FORWARD_ENABLED=false
 ```
@@ -169,6 +171,7 @@ export ADMIN_AUTH_FORWARD_ENABLED=false
 - When built-in login is enabled and the browser is not signed in, the public homepage shows an **Admin Login** button.
 - Successful login sets an HttpOnly cookie (`hikari_admin_session`) and unlocks admin-only APIs + `/admin`.
 - For production, prefer ForwardAuth. Built-in login is intended for small/self-hosted deployments.
+  - Avoid storing plaintext passwords in env vars. Prefer `ADMIN_AUTH_BUILTIN_PASSWORD_HASH` (PHC string) and use a strong password.
 
 Deployment example (Caddy as gateway): see `examples/forwardauth-caddy/`.
 
