@@ -57,6 +57,18 @@ struct Cli {
     #[arg(long, env = "ADMIN_MODE_NAME")]
     admin_mode_name: Option<String>,
 
+    /// Enable/disable ForwardAuth admin authentication (default true).
+    #[arg(long, env = "ADMIN_AUTH_FORWARD_ENABLED", default_value_t = true)]
+    admin_auth_forward_enabled: bool,
+
+    /// Enable/disable built-in admin login (cookie session) (default false).
+    #[arg(long, env = "ADMIN_AUTH_BUILTIN_ENABLED", default_value_t = false)]
+    admin_auth_builtin_enabled: bool,
+
+    /// Built-in admin password (required when ADMIN_AUTH_BUILTIN_ENABLED=true).
+    #[arg(long, env = "ADMIN_AUTH_BUILTIN_PASSWORD", hide_env_values = true)]
+    admin_auth_builtin_password: Option<String>,
+
     /// 开发模式：放开管理接口权限（仅本地验证使用）
     #[arg(long, env = "DEV_OPEN_ADMIN", default_value_t = false)]
     dev_open_admin: bool,
@@ -106,6 +118,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .filter(|value| !value.is_empty()),
     );
 
+    let builtin_password = cli
+        .admin_auth_builtin_password
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    if cli.admin_auth_builtin_enabled && builtin_password.is_none() {
+        return Err(
+            "ADMIN_AUTH_BUILTIN_PASSWORD must be set when ADMIN_AUTH_BUILTIN_ENABLED=true".into(),
+        );
+    }
+
+    let admin_auth = server::AdminAuthOptions {
+        forward_auth_enabled: cli.admin_auth_forward_enabled,
+        builtin_auth_enabled: cli.admin_auth_builtin_enabled,
+        builtin_auth_password: builtin_password,
+    };
+
     let static_dir = cli.static_dir.or_else(|| {
         let default = PathBuf::from("web/dist");
         if default.exists() {
@@ -120,6 +148,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         proxy,
         static_dir,
         forward_auth,
+        admin_auth,
         cli.dev_open_admin,
         cli.usage_base,
     )

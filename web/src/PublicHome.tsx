@@ -248,6 +248,7 @@ function PublicHome(): JSX.Element {
   }, [token])
 
   const isAdmin = profile?.isAdmin ?? false
+  const builtinAuthEnabled = profile?.builtinAuthEnabled ?? false
   const availableKeys = summary?.active_keys ?? null
   const exhaustedKeys = summary?.exhausted_keys ?? null
   const totalKeys = availableKeys != null && exhaustedKeys != null ? availableKeys + exhaustedKeys : null
@@ -396,14 +397,14 @@ function PublicHome(): JSX.Element {
             <div className="metric-subtitle">{publicStrings.metrics.pool.subtitle}</div>
           </div>
         </div>
-        {isAdmin && (
+        {(isAdmin || builtinAuthEnabled) && (
           <div className="public-home-actions">
             <button
               type="button"
               className="btn btn-primary"
-              onClick={() => { window.location.href = '/admin' }}
+              onClick={() => { window.location.href = isAdmin ? '/admin' : '/login' }}
             >
-              {publicStrings.adminButton}
+              {isAdmin ? publicStrings.adminButton : publicStrings.adminLoginButton}
             </button>
           </div>
         )}

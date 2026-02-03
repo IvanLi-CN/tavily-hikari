@@ -21,7 +21,20 @@ function withForwardAuth(): Partial<ProxyOptions> {
 // https://vitejs.dev/config/
 export default defineConfig({
   root: rootDir,
-  plugins: [react()],
+  plugins: [
+    react(),
+    {
+      name: 'rewrite-short-routes',
+      configureServer(server) {
+        server.middlewares.use((req, _res, next) => {
+          const url = req.url ?? ''
+          if (url === '/admin' || url === '/admin/') req.url = '/admin.html'
+          if (url === '/login' || url === '/login/') req.url = '/login.html'
+          next()
+        })
+      },
+    },
+  ],
   server: {
     host: '127.0.0.1',
     port: 55173, // high port to avoid conflicts
@@ -42,6 +55,7 @@ export default defineConfig({
       input: {
         main: resolve(rootDir, 'index.html'),
         admin: resolve(rootDir, 'admin.html'),
+        login: resolve(rootDir, 'login.html'),
       },
     },
   },

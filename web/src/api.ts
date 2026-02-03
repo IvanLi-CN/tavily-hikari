@@ -230,6 +230,8 @@ export type JobGroup = 'all' | 'quota' | 'usage' | 'logs'
 export interface Profile {
   displayName: string | null
   isAdmin: boolean
+  forwardAuthEnabled: boolean
+  builtinAuthEnabled: boolean
 }
 
 export function fetchProfile(signal?: AbortSignal): Promise<Profile> {

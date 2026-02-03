@@ -8,14 +8,16 @@ use std::{
 };
 
 use async_stream::stream;
-use axum::http::header::{CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, TRANSFER_ENCODING};
+use axum::http::header::{
+    CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, SET_COOKIE, TRANSFER_ENCODING,
+};
 use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::{
     Router,
     body::{self, Body},
     extract::{Path, Query, State},
-    http::{HeaderMap, HeaderName, Method, Request, Response, StatusCode},
+    http::{HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode},
     response::{Json, Redirect},
     routing::{any, delete, get, patch, post},
 };
@@ -45,6 +47,8 @@ struct AppState {
     proxy: TavilyProxy,
     static_dir: Option<PathBuf>,
     forward_auth: ForwardAuthConfig,
+    forward_auth_enabled: bool,
+    builtin_admin: BuiltinAdminAuth,
     dev_open_admin: bool,
     usage_base: String,
 }
@@ -55,6 +59,13 @@ pub struct ForwardAuthConfig {
     admin_value: Option<String>,
     nickname_header: Option<HeaderName>,
     admin_override_name: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct AdminAuthOptions {
+    pub forward_auth_enabled: bool,
+    pub builtin_auth_enabled: bool,
+    pub builtin_auth_password: Option<String>,
 }
 
 impl ForwardAuthConfig {
@@ -136,6 +147,114 @@ impl ForwardAuthConfig {
     }
 }
 
+const BUILTIN_ADMIN_COOKIE_NAME: &str = "hikari_admin_session";
+const BUILTIN_ADMIN_SESSION_MAX_AGE_SECS: u64 = 60 * 60 * 24 * 14;
+
+#[derive(Clone, Debug)]
+struct BuiltinAdminAuth {
+    enabled: bool,
+    password: Option<String>,
+    sessions: Arc<std::sync::RwLock<HashSet<String>>>,
+}
+
+impl BuiltinAdminAuth {
+    fn new(enabled: bool, password: Option<String>) -> Self {
+        Self {
+            enabled,
+            password,
+            sessions: Arc::new(std::sync::RwLock::new(HashSet::new())),
+        }
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    fn is_admin(&self, headers: &HeaderMap) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        let Some(value) = cookie_value(headers, BUILTIN_ADMIN_COOKIE_NAME) else {
+            return false;
+        };
+        self.sessions
+            .read()
+            .ok()
+            .is_some_and(|set| set.contains(&value))
+    }
+
+    fn login(&self, password: &str) -> Option<String> {
+        if !self.enabled {
+            return None;
+        }
+        let expected = self.password.as_deref()?;
+        if password != expected {
+            return None;
+        }
+        Some(self.new_session())
+    }
+
+    fn remember_session(&self, token: String) {
+        if !self.enabled {
+            return;
+        }
+        if let Ok(mut set) = self.sessions.write() {
+            set.insert(token);
+        }
+    }
+
+    fn forget_session(&self, headers: &HeaderMap) {
+        if !self.enabled {
+            return;
+        }
+        let Some(value) = cookie_value(headers, BUILTIN_ADMIN_COOKIE_NAME) else {
+            return;
+        };
+        if let Ok(mut set) = self.sessions.write() {
+            set.remove(&value);
+        }
+    }
+
+    fn new_session(&self) -> String {
+        use base64::Engine as _;
+        use rand::RngCore as _;
+
+        let mut bytes = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut bytes);
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+    }
+}
+
+fn cookie_value(headers: &HeaderMap, cookie_name: &str) -> Option<String> {
+    let raw = headers.get(COOKIE)?.to_str().ok()?;
+    for part in raw.split(';') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let Some((name, value)) = part.split_once('=') else {
+            continue;
+        };
+        if name.trim() == cookie_name {
+            return Some(value.trim().to_string());
+        }
+    }
+    None
+}
+
+fn is_admin_request(state: &AppState, headers: &HeaderMap) -> bool {
+    if state.dev_open_admin {
+        return true;
+    }
+    if state.forward_auth_enabled && state.forward_auth.is_request_admin(headers) {
+        return true;
+    }
+    if state.builtin_admin.is_admin(headers) {
+        return true;
+    }
+    false
+}
+
 fn parse_iso_timestamp(value: &str) -> Option<i64> {
     DateTime::parse_from_rfc3339(value)
         .map(|dt| dt.with_timezone(&Utc).timestamp())
@@ -207,6 +326,8 @@ fn start_of_month_dt(now: chrono::DateTime<Utc>) -> chrono::DateTime<Utc> {
 #[derive(Debug, Serialize)]
 struct IsAdminDebug {
     is_admin: bool,
+    forward_auth_admin: bool,
+    builtin_admin: bool,
     user_value: Option<String>,
 }
 
@@ -214,14 +335,22 @@ async fn debug_is_admin(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<IsAdminDebug>, StatusCode> {
-    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+    if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
     let cfg = &state.forward_auth;
-    let user_value = cfg.user_value(&headers).map(|s| s.to_string());
-    let is_admin = cfg.is_request_admin(&headers);
+    let user_value = if state.forward_auth_enabled {
+        cfg.user_value(&headers).map(|s| s.to_string())
+    } else {
+        None
+    };
+    let forward_auth_admin = state.forward_auth_enabled && cfg.is_request_admin(&headers);
+    let builtin_admin = state.builtin_admin.is_admin(&headers);
+    let is_admin = state.dev_open_admin || forward_auth_admin || builtin_admin;
     Ok(Json(IsAdminDebug {
         is_admin,
+        forward_auth_admin,
+        builtin_admin,
         user_value,
     }))
 }
@@ -503,11 +632,26 @@ async fn serve_admin_index(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Response<Body>, StatusCode> {
-    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
-        return Err(StatusCode::FORBIDDEN);
+    if is_admin_request(state.as_ref(), &headers) {
+        return load_spa_response(state.as_ref(), "admin.html").await;
     }
+    if state.builtin_admin.is_enabled() {
+        return Ok(Redirect::temporary("/login").into_response());
+    }
+    Err(StatusCode::FORBIDDEN)
+}
 
-    load_spa_response(state.as_ref(), "admin.html").await
+async fn serve_login(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Response<Body>, StatusCode> {
+    if !state.builtin_admin.is_enabled() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    if is_admin_request(state.as_ref(), &headers) {
+        return Ok(Redirect::temporary("/admin").into_response());
+    }
+    load_spa_response(state.as_ref(), "login.html").await
 }
 
 const BASE_404_STYLES: &str = r#"
@@ -2199,7 +2343,7 @@ async fn sse_dashboard(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<Event, axum::http::Error>>>, StatusCode> {
-    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+    if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
     let state = state.clone();
@@ -2430,7 +2574,7 @@ async fn list_jobs(
     headers: HeaderMap,
     Query(q): Query<JobsQuery>,
 ) -> Result<Json<PaginatedJobsView>, StatusCode> {
-    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+    if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
     let page = q.page.unwrap_or(1).max(1);
@@ -2488,7 +2632,7 @@ async fn post_sync_key_usage(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response<Body>, StatusCode> {
-    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+    if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
     let job_id = state
@@ -2584,6 +2728,8 @@ async fn get_admin_debug(
 struct ProfileView {
     display_name: Option<String>,
     is_admin: bool,
+    forward_auth_enabled: bool,
+    builtin_auth_enabled: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -2599,12 +2745,12 @@ async fn get_forward_auth_debug(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<ForwardAuthDebugView>, StatusCode> {
-    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+    if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
     let cfg = &state.forward_auth;
     Ok(Json(ForwardAuthDebugView {
-        enabled: cfg.is_enabled(),
+        enabled: state.forward_auth_enabled && cfg.is_enabled(),
         user_header: cfg.user_header().map(|h| h.to_string()),
         admin_value: None,
         nickname_header: cfg.nickname_header().map(|h| h.to_string()),
@@ -2615,7 +2761,7 @@ async fn debug_headers(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<(StatusCode, Json<serde_json::Value>), StatusCode> {
-    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+    if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
     let mut map = serde_json::Map::new();
@@ -2634,46 +2780,106 @@ async fn get_profile(
 ) -> Result<Json<ProfileView>, StatusCode> {
     let config = &state.forward_auth;
 
-    if let Some(name) = config.admin_override_name() {
-        return Ok(Json(ProfileView {
-            display_name: Some(name.to_owned()),
-            is_admin: true,
-        }));
-    }
+    let forward_auth_enabled = state.forward_auth_enabled && config.is_enabled();
+    let builtin_auth_enabled = state.builtin_admin.is_enabled();
 
     if state.dev_open_admin {
         return Ok(Json(ProfileView {
             display_name: Some("dev-mode".to_string()),
             is_admin: true,
+            forward_auth_enabled,
+            builtin_auth_enabled,
         }));
     }
 
-    if !config.is_enabled() {
-        return Ok(Json(ProfileView {
-            display_name: None,
-            is_admin: false,
-        }));
-    }
+    let forward_user_value = if forward_auth_enabled {
+        config.user_value(&headers).map(str::to_string)
+    } else {
+        None
+    };
 
-    let user_value = config.user_value(&headers).map(str::to_string);
+    let forward_nickname = if forward_auth_enabled {
+        config
+            .nickname_value(&headers)
+            .or_else(|| forward_user_value.clone())
+    } else {
+        None
+    };
 
-    let nickname = config
-        .nickname_value(&headers)
-        .or_else(|| user_value.clone());
+    let is_admin = is_admin_request(state.as_ref(), &headers);
 
-    if nickname.is_none() {
-        return Ok(Json(ProfileView {
-            display_name: None,
-            is_admin: false,
-        }));
-    }
-
-    let is_admin = config.is_request_admin(&headers);
+    let display_name = forward_nickname
+        .or_else(|| config.admin_override_name().map(str::to_string))
+        .or_else(|| is_admin.then(|| "admin".to_string()));
 
     Ok(Json(ProfileView {
-        display_name: nickname,
+        display_name,
         is_admin,
+        forward_auth_enabled,
+        builtin_auth_enabled,
     }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminLoginRequest {
+    password: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminLoginResponse {
+    ok: bool,
+}
+
+fn session_set_cookie(token: &str) -> Result<HeaderValue, StatusCode> {
+    let cookie = format!(
+        "{name}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}",
+        name = BUILTIN_ADMIN_COOKIE_NAME,
+        max_age = BUILTIN_ADMIN_SESSION_MAX_AGE_SECS
+    );
+    HeaderValue::from_str(&cookie).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+fn session_clear_cookie() -> Result<HeaderValue, StatusCode> {
+    let cookie = format!(
+        "{name}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0",
+        name = BUILTIN_ADMIN_COOKIE_NAME
+    );
+    HeaderValue::from_str(&cookie).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+async fn post_admin_login(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<AdminLoginRequest>,
+) -> Result<Response<Body>, StatusCode> {
+    if !state.builtin_admin.is_enabled() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let password = payload.password.trim();
+    let Some(token) = state.builtin_admin.login(password) else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+    state.builtin_admin.remember_session(token.clone());
+    let cookie = session_set_cookie(&token)?;
+    Ok((
+        StatusCode::OK,
+        [(SET_COOKIE, cookie)],
+        Json(AdminLoginResponse { ok: true }),
+    )
+        .into_response())
+}
+
+async fn post_admin_logout(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Response<Body>, StatusCode> {
+    if !state.builtin_admin.is_enabled() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    state.builtin_admin.forget_session(&headers);
+    let cookie = session_clear_cookie()?;
+    Ok((StatusCode::NO_CONTENT, [(SET_COOKIE, cookie)]).into_response())
 }
 
 fn detect_versions(static_dir: Option<&FsPath>) -> (String, String) {
@@ -2739,7 +2945,7 @@ async fn list_keys(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<ApiKeyView>>, StatusCode> {
-    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+    if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
     state
@@ -2801,7 +3007,7 @@ async fn create_api_key(
     headers: HeaderMap,
     Json(payload): Json<CreateKeyRequest>,
 ) -> Result<(StatusCode, Json<CreateKeyResponse>), StatusCode> {
-    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+    if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -2824,7 +3030,7 @@ async fn create_api_keys_batch(
     headers: HeaderMap,
     Json(payload): Json<BatchCreateKeysRequest>,
 ) -> Result<Response<Body>, StatusCode> {
-    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+    if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -2901,7 +3107,7 @@ async fn delete_api_key(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<StatusCode, StatusCode> {
-    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+    if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -2925,7 +3131,7 @@ async fn update_api_key_status(
     headers: HeaderMap,
     Json(payload): Json<UpdateKeyStatus>,
 ) -> Result<StatusCode, StatusCode> {
-    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+    if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -2954,7 +3160,7 @@ async fn get_api_key_secret(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<ApiKeySecretView>, StatusCode> {
-    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+    if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -2982,7 +3188,7 @@ async fn list_logs(
     headers: HeaderMap,
     Query(params): Query<LogsQuery>,
 ) -> Result<Json<PaginatedLogsView>, StatusCode> {
-    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+    if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -3050,7 +3256,7 @@ async fn list_tokens(
     headers: HeaderMap,
     Query(q): Query<ListTokensQuery>,
 ) -> Result<Json<ListTokensResponse>, StatusCode> {
-    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+    if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
     let page = q.page.unwrap_or(1).max(1);
@@ -3144,7 +3350,7 @@ async fn list_token_groups(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<TokenGroupView>>, StatusCode> {
-    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+    if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -3185,7 +3391,7 @@ async fn create_token(
     headers: HeaderMap,
     Json(payload): Json<CreateTokenRequest>,
 ) -> Result<(StatusCode, Json<AuthTokenSecretView>), StatusCode> {
-    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+    if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
     state
@@ -3211,7 +3417,7 @@ async fn delete_token(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<StatusCode, StatusCode> {
-    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+    if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
     state
@@ -3236,7 +3442,7 @@ async fn update_token_status(
     headers: HeaderMap,
     Json(payload): Json<UpdateTokenStatus>,
 ) -> Result<StatusCode, StatusCode> {
-    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+    if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
     state
@@ -3261,7 +3467,7 @@ async fn update_token_note(
     headers: HeaderMap,
     Json(payload): Json<UpdateTokenNote>,
 ) -> Result<StatusCode, StatusCode> {
-    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+    if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
     state
@@ -3280,7 +3486,7 @@ async fn get_token_secret(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<AuthTokenSecretView>, StatusCode> {
-    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+    if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
     match state.proxy.get_access_token_secret(&id).await {
@@ -3301,7 +3507,7 @@ async fn rotate_token_secret(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<AuthTokenSecretView>, StatusCode> {
-    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+    if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
     state
@@ -3337,7 +3543,7 @@ async fn create_tokens_batch(
     headers: HeaderMap,
     Json(payload): Json<BatchCreateTokenRequest>,
 ) -> Result<Json<BatchCreateTokenResponse>, StatusCode> {
-    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+    if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
     let group = payload.group.trim();
@@ -3365,18 +3571,36 @@ pub async fn serve(
     proxy: TavilyProxy,
     static_dir: Option<PathBuf>,
     forward_auth: ForwardAuthConfig,
+    admin_auth: AdminAuthOptions,
     dev_open_admin: bool,
     usage_base: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let AdminAuthOptions {
+        forward_auth_enabled,
+        builtin_auth_enabled,
+        builtin_auth_password,
+    } = admin_auth;
+    let builtin_admin = BuiltinAdminAuth::new(builtin_auth_enabled, builtin_auth_password);
     let state = Arc::new(AppState {
         proxy,
         static_dir: static_dir.clone(),
         forward_auth,
+        forward_auth_enabled,
+        builtin_admin,
         dev_open_admin,
         usage_base: usage_base.clone(),
     });
 
-    if let Some(h) = state.forward_auth.user_header() {
+    println!(
+        "Admin auth modes: forward_enabled={} builtin_enabled={} dev_open_admin={}",
+        state.forward_auth_enabled,
+        state.builtin_admin.is_enabled(),
+        state.dev_open_admin
+    );
+
+    if !state.forward_auth_enabled {
+        println!("Forward-Auth: disabled (ADMIN_AUTH_FORWARD_ENABLED=false)");
+    } else if let Some(h) = state.forward_auth.user_header() {
         println!(
             "Forward-Auth: header='{}' admin_value='{}'",
             h,
@@ -3402,6 +3626,8 @@ pub async fn serve(
         .route("/api/events", get(sse_dashboard))
         .route("/api/version", get(get_versions))
         .route("/api/profile", get(get_profile))
+        .route("/api/admin/login", post(post_admin_login))
+        .route("/api/admin/logout", post(post_admin_logout))
         .route("/api/tavily/search", post(tavily_http_search))
         .route("/api/tavily/extract", post(tavily_http_extract))
         .route("/api/tavily/crawl", post(tavily_http_crawl))
@@ -3456,6 +3682,9 @@ pub async fn serve(
                 router = router.route("/", get(serve_index));
                 router = router.route("/admin", get(serve_admin_index));
                 router = router.route("/admin/", get(serve_admin_index));
+                router = router.route("/login", get(serve_login));
+                router = router.route("/login/", get(serve_login));
+                router = router.route("/login.html", get(serve_login));
                 router =
                     router.route_service("/favicon.svg", ServeFile::new(dir.join("favicon.svg")));
             } else {
@@ -3809,7 +4038,7 @@ async fn get_key_metrics(
     Path(id): Path<String>,
     Query(q): Query<KeyMetricsQuery>,
 ) -> Result<Json<SummaryView>, StatusCode> {
-    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+    if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
     let since = if let Some(since) = q.since {
@@ -3861,7 +4090,7 @@ async fn get_key_logs(
     Path(id): Path<String>,
     Query(q): Query<KeyLogsQuery>,
 ) -> Result<Json<Vec<RequestLogView>>, StatusCode> {
-    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+    if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
     let limit = q.limit.unwrap_or(DEFAULT_LOG_LIMIT).clamp(1, 500);
@@ -3888,7 +4117,7 @@ async fn get_token_metrics(
     headers: HeaderMap,
     Query(q): Query<TokenMetricsQuery>,
 ) -> Result<Json<TokenSummaryView>, StatusCode> {
-    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+    if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
     let since = q
@@ -3927,7 +4156,7 @@ async fn get_token_logs(
     headers: HeaderMap,
     Query(q): Query<TokenLogsQuery>,
 ) -> Result<Json<Vec<TokenLogView>>, StatusCode> {
-    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+    if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
     let limit = q.limit.unwrap_or(DEFAULT_LOG_LIMIT).clamp(1, 500);
@@ -4023,7 +4252,7 @@ async fn get_token_logs_page(
     headers: HeaderMap,
     Query(q): Query<TokenLogsPageQuery>,
 ) -> Result<Json<TokenLogsPageView>, StatusCode> {
-    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+    if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
     let page = q.page.unwrap_or(1).max(1);
@@ -4072,7 +4301,7 @@ async fn get_token_hourly_breakdown(
     headers: HeaderMap,
     Query(q): Query<TokenHourlyQuery>,
 ) -> Result<Json<Vec<TokenHourlyBucketView>>, StatusCode> {
-    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+    if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
     let hours = q.hours.unwrap_or(25);
@@ -4116,7 +4345,7 @@ async fn get_token_usage_series(
     headers: HeaderMap,
     Query(q): Query<UsageSeriesQuery>,
 ) -> Result<Json<Vec<TokenUsageBucketView>>, StatusCode> {
-    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+    if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
     let now = Utc::now().timestamp();
@@ -4172,7 +4401,7 @@ async fn get_token_leaderboard(
     headers: HeaderMap,
     Query(q): Query<TokenLeaderboardQuery>,
 ) -> Result<Json<Vec<TokenLeaderboardItemView>>, StatusCode> {
-    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+    if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -4319,7 +4548,7 @@ async fn get_token_detail(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<AuthTokenView>, StatusCode> {
-    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+    if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
     let tokens = state
@@ -4344,7 +4573,7 @@ async fn sse_token(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, axum::http::Error>>>, StatusCode> {
-    if !state.dev_open_admin && !state.forward_auth.is_request_admin(&headers) {
+    if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
     let state = state.clone();
@@ -5111,6 +5340,8 @@ mod tests {
             proxy,
             static_dir: None,
             forward_auth: ForwardAuthConfig::new(None, None, None, None),
+            forward_auth_enabled: true,
+            builtin_admin: BuiltinAdminAuth::new(false, None),
             dev_open_admin,
             usage_base,
         });
@@ -5144,11 +5375,41 @@ mod tests {
             proxy,
             static_dir: None,
             forward_auth,
+            forward_auth_enabled: true,
+            builtin_admin: BuiltinAdminAuth::new(false, None),
             dev_open_admin,
             usage_base: "http://127.0.0.1:58088".to_string(),
         });
 
         let app = Router::new()
+            .route("/api/keys/batch", post(create_api_keys_batch))
+            .route("/api/admin/login", post(post_admin_login))
+            .with_state(state);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+        addr
+    }
+
+    async fn spawn_builtin_keys_admin_server(proxy: TavilyProxy, password: &str) -> SocketAddr {
+        let state = Arc::new(AppState {
+            proxy,
+            static_dir: None,
+            forward_auth: ForwardAuthConfig::new(None, None, None, None),
+            forward_auth_enabled: false,
+            builtin_admin: BuiltinAdminAuth::new(true, Some(password.to_string())),
+            dev_open_admin: false,
+            usage_base: "http://127.0.0.1:58088".to_string(),
+        });
+
+        let app = Router::new()
+            .route("/api/admin/login", post(post_admin_login))
+            .route("/api/admin/logout", post(post_admin_logout))
             .route("/api/keys/batch", post(create_api_keys_batch))
             .with_state(state);
 
@@ -5474,6 +5735,88 @@ mod tests {
                 .await
                 .expect("query fail key");
         assert!(fail_row.is_none(), "tvly-fail should not be inserted");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn builtin_admin_login_allows_admin_endpoints_and_logout_revokes() {
+        let db_path = temp_db_path("builtin-admin-login");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        let password = "pw-123";
+        let addr = spawn_builtin_keys_admin_server(proxy, password).await;
+
+        let client = Client::new();
+        let keys_url = format!("http://{}/api/keys/batch", addr);
+
+        let resp = client
+            .post(&keys_url)
+            .json(&serde_json::json!({ "api_keys": ["k1"] }))
+            .send()
+            .await
+            .expect("request succeeds");
+        assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+
+        let login_url = format!("http://{}/api/admin/login", addr);
+        let resp = client
+            .post(&login_url)
+            .json(&serde_json::json!({ "password": "wrong" }))
+            .send()
+            .await
+            .expect("login request succeeds");
+        assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+        let resp = client
+            .post(&login_url)
+            .json(&serde_json::json!({ "password": password }))
+            .send()
+            .await
+            .expect("login request succeeds");
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+        let set_cookie = resp
+            .headers()
+            .get(reqwest::header::SET_COOKIE)
+            .expect("set-cookie header")
+            .to_str()
+            .expect("set-cookie header string");
+        let cookie = set_cookie
+            .split(';')
+            .next()
+            .expect("cookie pair")
+            .to_string();
+
+        let resp = client
+            .post(&keys_url)
+            .header(reqwest::header::COOKIE, cookie.clone())
+            .json(&serde_json::json!({ "api_keys": ["k1"] }))
+            .send()
+            .await
+            .expect("request succeeds");
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+        let logout_url = format!("http://{}/api/admin/logout", addr);
+        let resp = client
+            .post(&logout_url)
+            .header(reqwest::header::COOKIE, cookie.clone())
+            .send()
+            .await
+            .expect("logout request succeeds");
+        assert_eq!(resp.status(), reqwest::StatusCode::NO_CONTENT);
+
+        let resp = client
+            .post(&keys_url)
+            .header(reqwest::header::COOKIE, cookie)
+            .json(&serde_json::json!({ "api_keys": ["k2"] }))
+            .send()
+            .await
+            .expect("request succeeds");
+        assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
 
         let _ = std::fs::remove_file(db_path);
     }
