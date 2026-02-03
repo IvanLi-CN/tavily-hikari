@@ -172,6 +172,9 @@ export ADMIN_AUTH_FORWARD_ENABLED=false
 - Successful login sets an HttpOnly cookie (`hikari_admin_session`) and unlocks admin-only APIs + `/admin`.
 - For production, prefer ForwardAuth. Built-in login is intended for small/self-hosted deployments.
   - Avoid storing plaintext passwords in env vars. Prefer `ADMIN_AUTH_BUILTIN_PASSWORD_HASH` (PHC string) and use a strong password.
+  - Sessions are stored in-memory and expire server-side (aligned with cookie `Max-Age`, default 14 days). Restarting the process logs users out.
+  - The in-memory session store is bounded (evicts oldest sessions when the cap is exceeded) to avoid unbounded growth.
+  - If you terminate TLS at a reverse proxy, set `X-Forwarded-Proto: https` (or `Forwarded: proto=https`) so the backend can mark the session cookie as `Secure`.
 
 Deployment example (Caddy as gateway): see `examples/forwardauth-caddy/`.
 

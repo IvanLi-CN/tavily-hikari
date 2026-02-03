@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use url::form_urlencoded;
 type SummarySig = (i64, i64, i64, i64, i64, i64, Option<i64>);
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tavily_hikari::{
     ApiKeyMetrics, AuthToken, ProxyError, ProxyRequest, ProxyResponse, ProxySummary, QuotaWindow,
     RequestLogRecord, TavilyProxy, TokenHourlyBucket, TokenHourlyRequestVerdict, TokenLogRecord,
@@ -154,13 +154,20 @@ impl ForwardAuthConfig {
 
 const BUILTIN_ADMIN_COOKIE_NAME: &str = "hikari_admin_session";
 const BUILTIN_ADMIN_SESSION_MAX_AGE_SECS: u64 = 60 * 60 * 24 * 14;
+const BUILTIN_ADMIN_SESSION_MAX_COUNT: usize = 1024;
+
+#[derive(Clone, Debug)]
+struct BuiltinAdminSession {
+    issued_at: Instant,
+    expires_at: Instant,
+}
 
 #[derive(Clone, Debug)]
 struct BuiltinAdminAuth {
     enabled: bool,
     password: Option<String>,
     password_hash: Option<String>,
-    sessions: Arc<std::sync::RwLock<HashSet<String>>>,
+    sessions: Arc<std::sync::RwLock<HashMap<String, BuiltinAdminSession>>>,
 }
 
 impl BuiltinAdminAuth {
@@ -169,7 +176,7 @@ impl BuiltinAdminAuth {
             enabled,
             password,
             password_hash,
-            sessions: Arc::new(std::sync::RwLock::new(HashSet::new())),
+            sessions: Arc::new(std::sync::RwLock::new(HashMap::new())),
         }
     }
 
@@ -184,10 +191,14 @@ impl BuiltinAdminAuth {
         let Some(value) = cookie_value(headers, BUILTIN_ADMIN_COOKIE_NAME) else {
             return false;
         };
-        self.sessions
-            .read()
-            .ok()
-            .is_some_and(|set| set.contains(&value))
+        let now = Instant::now();
+        let Ok(mut sessions) = self.sessions.write() else {
+            return false;
+        };
+        sessions.retain(|_, session| session.expires_at > now);
+        sessions
+            .get(&value)
+            .is_some_and(|session| session.expires_at > now)
     }
 
     fn login(&self, password: &str) -> Option<String> {
@@ -215,8 +226,30 @@ impl BuiltinAdminAuth {
         if !self.enabled {
             return;
         }
-        if let Ok(mut set) = self.sessions.write() {
-            set.insert(token);
+        let now = Instant::now();
+        let expires_at = now + Duration::from_secs(BUILTIN_ADMIN_SESSION_MAX_AGE_SECS);
+        if let Ok(mut sessions) = self.sessions.write() {
+            sessions.retain(|_, session| session.expires_at > now);
+            sessions.insert(
+                token,
+                BuiltinAdminSession {
+                    issued_at: now,
+                    expires_at,
+                },
+            );
+
+            // Bound memory usage: if too many sessions accumulate, evict oldest.
+            if sessions.len() > BUILTIN_ADMIN_SESSION_MAX_COUNT {
+                let over = sessions.len() - BUILTIN_ADMIN_SESSION_MAX_COUNT;
+                let mut issued: Vec<(String, Instant)> = sessions
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.issued_at))
+                    .collect();
+                issued.sort_by_key(|(_, ts)| *ts);
+                for (key, _) in issued.into_iter().take(over) {
+                    sessions.remove(&key);
+                }
+            }
         }
     }
 
@@ -227,8 +260,8 @@ impl BuiltinAdminAuth {
         let Some(value) = cookie_value(headers, BUILTIN_ADMIN_COOKIE_NAME) else {
             return;
         };
-        if let Ok(mut set) = self.sessions.write() {
-            set.remove(&value);
+        if let Ok(mut sessions) = self.sessions.write() {
+            sessions.remove(&value);
         }
     }
 
@@ -257,6 +290,35 @@ fn cookie_value(headers: &HeaderMap, cookie_name: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn wants_secure_cookie(headers: &HeaderMap) -> bool {
+    // Best-effort HTTPS detection for typical reverse proxy deployments.
+    // - RFC 7239: Forwarded: proto=https;host=...
+    // - De-facto: X-Forwarded-Proto: https
+    if headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .next()
+                .map(str::trim)
+                .is_some_and(|v| v.eq_ignore_ascii_case("https"))
+        })
+    {
+        return true;
+    }
+
+    if headers
+        .get("forwarded")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|value| value.to_ascii_lowercase().contains("proto=https"))
+    {
+        return true;
+    }
+
+    false
 }
 
 fn is_admin_request(state: &AppState, headers: &HeaderMap) -> bool {
@@ -2849,25 +2911,30 @@ struct AdminLoginResponse {
     ok: bool,
 }
 
-fn session_set_cookie(token: &str) -> Result<HeaderValue, StatusCode> {
+fn session_set_cookie(token: &str, secure: bool) -> Result<HeaderValue, StatusCode> {
+    let secure = if secure { "; Secure" } else { "" };
     let cookie = format!(
-        "{name}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}",
+        "{name}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}{secure}",
         name = BUILTIN_ADMIN_COOKIE_NAME,
-        max_age = BUILTIN_ADMIN_SESSION_MAX_AGE_SECS
+        max_age = BUILTIN_ADMIN_SESSION_MAX_AGE_SECS,
+        secure = secure
     );
     HeaderValue::from_str(&cookie).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
-fn session_clear_cookie() -> Result<HeaderValue, StatusCode> {
+fn session_clear_cookie(secure: bool) -> Result<HeaderValue, StatusCode> {
+    let secure = if secure { "; Secure" } else { "" };
     let cookie = format!(
-        "{name}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0",
-        name = BUILTIN_ADMIN_COOKIE_NAME
+        "{name}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0{secure}",
+        name = BUILTIN_ADMIN_COOKIE_NAME,
+        secure = secure
     );
     HeaderValue::from_str(&cookie).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 async fn post_admin_login(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(payload): Json<AdminLoginRequest>,
 ) -> Result<Response<Body>, StatusCode> {
     if !state.builtin_admin.is_enabled() {
@@ -2878,7 +2945,7 @@ async fn post_admin_login(
         return Err(StatusCode::UNAUTHORIZED);
     };
     state.builtin_admin.remember_session(token.clone());
-    let cookie = session_set_cookie(&token)?;
+    let cookie = session_set_cookie(&token, wants_secure_cookie(&headers))?;
     Ok((
         StatusCode::OK,
         [(SET_COOKIE, cookie)],
@@ -2895,7 +2962,7 @@ async fn post_admin_logout(
         return Err(StatusCode::NOT_FOUND);
     }
     state.builtin_admin.forget_session(&headers);
-    let cookie = session_clear_cookie()?;
+    let cookie = session_clear_cookie(wants_secure_cookie(&headers))?;
     Ok((StatusCode::NO_CONTENT, [(SET_COOKIE, cookie)]).into_response())
 }
 
