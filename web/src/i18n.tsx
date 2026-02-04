@@ -26,6 +26,29 @@ interface PublicTranslations {
     pool: { title: string; subtitle: string }
   }
   adminButton: string
+  adminLoginButton: string
+  adminLogin: {
+    title: string
+    description: string
+    password: {
+      label: string
+      placeholder: string
+    }
+    submit: {
+      label: string
+      loading: string
+    }
+    backHome: string
+    hints: {
+      checking: string
+      disabled: string
+    }
+    errors: {
+      invalid: string
+      disabled: string
+      generic: string
+    }
+  }
   accessPanel: {
     title: string
     stats: {
@@ -524,6 +547,29 @@ export const translations: Record<Language, TranslationShape> = {
         },
       },
       adminButton: 'Open Admin Dashboard',
+      adminLoginButton: 'Admin Login',
+      adminLogin: {
+        title: 'Admin Login',
+        description: 'Sign in to manage Tavily keys and access tokens.',
+        password: {
+          label: 'Admin Password',
+          placeholder: 'Enter admin password',
+        },
+        submit: {
+          label: 'Sign in',
+          loading: 'Signing in…',
+        },
+        backHome: 'Back to home',
+        hints: {
+          checking: 'Checking session…',
+          disabled: 'Built-in admin login is disabled on this server.',
+        },
+        errors: {
+          invalid: 'Invalid password.',
+          disabled: 'Built-in admin login is disabled on this server.',
+          generic: 'Login failed.',
+        },
+      },
       accessPanel: {
         title: 'Token Usage',
         stats: {
@@ -1007,6 +1053,29 @@ export const translations: Record<Language, TranslationShape> = {
         },
       },
       adminButton: '打开管理员面板',
+      adminLoginButton: '管理员登录',
+      adminLogin: {
+        title: '管理员登录',
+        description: '登录后可管理 Tavily key 与访问令牌。',
+        password: {
+          label: '管理员口令',
+          placeholder: '请输入管理员口令',
+        },
+        submit: {
+          label: '登录',
+          loading: '登录中…',
+        },
+        backHome: '返回首页',
+        hints: {
+          checking: '正在检查登录状态…',
+          disabled: '当前服务未启用内置管理员登录。',
+        },
+        errors: {
+          invalid: '口令不正确。',
+          disabled: '当前服务未启用内置管理员登录。',
+          generic: '登录失败。',
+        },
+      },
       accessPanel: {
         title: '令牌使用统计',
         stats: {

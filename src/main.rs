@@ -5,6 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use argon2::password_hash::PasswordHash;
 use clap::Parser;
 use dotenvy::dotenv;
 use tavily_hikari::{DEFAULT_UPSTREAM, TavilyProxy};
@@ -57,6 +58,22 @@ struct Cli {
     #[arg(long, env = "ADMIN_MODE_NAME")]
     admin_mode_name: Option<String>,
 
+    /// Enable/disable ForwardAuth admin authentication (default true).
+    #[arg(long, env = "ADMIN_AUTH_FORWARD_ENABLED", default_value_t = true)]
+    admin_auth_forward_enabled: bool,
+
+    /// Enable/disable built-in admin login (cookie session) (default false).
+    #[arg(long, env = "ADMIN_AUTH_BUILTIN_ENABLED", default_value_t = false)]
+    admin_auth_builtin_enabled: bool,
+
+    /// Built-in admin password (legacy; prefer ADMIN_AUTH_BUILTIN_PASSWORD_HASH).
+    #[arg(long, env = "ADMIN_AUTH_BUILTIN_PASSWORD", hide_env_values = true)]
+    admin_auth_builtin_password: Option<String>,
+
+    /// Built-in admin password hash (PHC string, recommended).
+    #[arg(long, env = "ADMIN_AUTH_BUILTIN_PASSWORD_HASH", hide_env_values = true)]
+    admin_auth_builtin_password_hash: Option<String>,
+
     /// 开发模式：放开管理接口权限（仅本地验证使用）
     #[arg(long, env = "DEV_OPEN_ADMIN", default_value_t = false)]
     dev_open_admin: bool,
@@ -106,6 +123,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .filter(|value| !value.is_empty()),
     );
 
+    let builtin_password = cli
+        .admin_auth_builtin_password
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    let builtin_password_hash = cli
+        .admin_auth_builtin_password_hash
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+
+    if let Some(ref hash) = builtin_password_hash {
+        PasswordHash::new(hash)
+            .map(|_| ())
+            .map_err(|_| "ADMIN_AUTH_BUILTIN_PASSWORD_HASH must be a valid PHC string")?;
+    }
+
+    if cli.admin_auth_builtin_enabled
+        && builtin_password.is_none()
+        && builtin_password_hash.is_none()
+    {
+        return Err(
+            "ADMIN_AUTH_BUILTIN_PASSWORD (or ADMIN_AUTH_BUILTIN_PASSWORD_HASH) must be set when ADMIN_AUTH_BUILTIN_ENABLED=true"
+                .into(),
+        );
+    }
+
+    if cli.admin_auth_builtin_enabled {
+        match (&builtin_password_hash, &builtin_password) {
+            (Some(_), Some(_)) => println!(
+                "Built-in auth: both password and password hash are set; using password hash"
+            ),
+            (None, Some(_)) => println!(
+                "Built-in auth: using plaintext password (not recommended); prefer ADMIN_AUTH_BUILTIN_PASSWORD_HASH"
+            ),
+            _ => {}
+        }
+    }
+
+    let admin_auth = server::AdminAuthOptions {
+        forward_auth_enabled: cli.admin_auth_forward_enabled,
+        builtin_auth_enabled: cli.admin_auth_builtin_enabled,
+        builtin_auth_password: builtin_password,
+        builtin_auth_password_hash: builtin_password_hash,
+    };
+
     let static_dir = cli.static_dir.or_else(|| {
         let default = PathBuf::from("web/dist");
         if default.exists() {
@@ -120,6 +181,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         proxy,
         static_dir,
         forward_auth,
+        admin_auth,
         cli.dev_open_admin,
         cli.usage_base,
     )
