@@ -1,0 +1,237 @@
+name: Release
+
+on:
+  workflow_run:
+    workflows: ["CI Pipeline"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write
+  packages: write
+  issues: read
+  pull-requests: read
+
+env:
+  REGISTRY: ghcr.io
+  PLATFORMS: linux/amd64
+  NODE_VERSION: "20"
+
+concurrency:
+  group: release-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare (intent + version + tag)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: github.event.workflow_run.conclusion == 'success'
+    outputs:
+      should_release: ${{ steps.intent.outputs.should_release }}
+      bump_level: ${{ steps.intent.outputs.bump_level }}
+      release_channel: ${{ steps.intent.outputs.release_channel }}
+      pr_number: ${{ steps.intent.outputs.pr_number }}
+      pr_url: ${{ steps.intent.outputs.pr_url }}
+      release_intent_label: ${{ steps.intent.outputs.release_intent_label }}
+      reason: ${{ steps.intent.outputs.reason }}
+      version: ${{ steps.tagmeta.outputs.version }}
+      tag: ${{ steps.tagmeta.outputs.tag }}
+    steps:
+      - name: Checkout (workflow_run)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Determine release intent (labels)
+        id: intent
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WORKFLOW_RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          bash ./.github/scripts/release-intent.sh
+
+      - name: Determine release version/tag (idempotent)
+        id: tagmeta
+        if: ${{ steps.intent.outputs.should_release == 'true' }}
+        shell: bash
+        env:
+          BUMP_LEVEL: ${{ steps.intent.outputs.bump_level }}
+          RELEASE_CHANNEL: ${{ steps.intent.outputs.release_channel }}
+        run: |
+          set -euo pipefail
+
+          # If HEAD already has a channel-matching tag, reuse it to keep reruns idempotent.
+          if [[ "${RELEASE_CHANNEL}" == "rc" ]]; then
+            existing_tag="$(git tag --points-at HEAD | grep -E '^v[0-9]+\\.[0-9]+\\.[0-9]+-rc\\.[0-9a-f]{7}$' | head -n1 || true)"
+          else
+            existing_tag="$(git tag --points-at HEAD | grep -E '^v[0-9]+\\.[0-9]+\\.[0-9]+$' | head -n1 || true)"
+          fi
+          if [[ -n "${existing_tag}" ]]; then
+            tag="${existing_tag}"
+            version="${tag#v}"
+            echo "reuse existing tag on HEAD: ${tag}"
+          else
+            base_version="$(bash ./.github/scripts/compute-version.sh --print-version)"
+            if [[ "${RELEASE_CHANNEL}" == "rc" ]]; then
+              sha="${{ github.event.workflow_run.head_sha }}"
+              short_sha="${sha:0:7}"
+              version="${base_version}-rc.${short_sha}"
+            else
+              version="${base_version}"
+            fi
+
+            tag="v${version}"
+            echo "computed version: ${version} (tag ${tag}, channel ${RELEASE_CHANNEL})"
+          fi
+
+          echo "APP_EFFECTIVE_VERSION=${version}" >> "${GITHUB_ENV}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+
+      - name: Configure Git user
+        if: ${{ steps.intent.outputs.should_release == 'true' }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Create and push tag (if missing)
+        if: ${{ steps.intent.outputs.should_release == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ steps.tagmeta.outputs.tag }}"
+          if [[ -z "${tag}" ]]; then
+            echo "missing tag output" >&2
+            exit 2
+          fi
+
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "tag exists: ${tag}"
+            exit 0
+          fi
+
+          git tag -a "${tag}" -m "${tag}"
+          git push origin "${tag}"
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### Release prepare"
+            echo "- head_sha: ${{ github.event.workflow_run.head_sha }}"
+            echo "- should_release: ${{ steps.intent.outputs.should_release }}"
+            echo "- intent_label: ${{ steps.intent.outputs.release_intent_label }}"
+            echo "- bump_level: ${{ steps.intent.outputs.bump_level }}"
+            echo "- release_channel: ${{ steps.intent.outputs.release_channel }}"
+            echo "- pr: ${{ steps.intent.outputs.pr_number }} (${{ steps.intent.outputs.pr_url }})"
+            echo "- reason: ${{ steps.intent.outputs.reason }}"
+            echo "- tag: ${{ steps.tagmeta.outputs.tag || '<none>' }}"
+            echo "- version: ${{ steps.tagmeta.outputs.version || '<none>' }}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  docker:
+    name: Build and push image (ghcr)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: [prepare]
+    if: ${{ needs.prepare.outputs.should_release == 'true' }}
+    permissions:
+      contents: read
+      packages: write
+    env:
+      APP_EFFECTIVE_VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - name: Checkout (workflow_run)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install front-end dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: TypeScript compile
+        working-directory: web
+        run: npx tsc -b
+
+      - name: Vite build
+        working-directory: web
+        env:
+          VITE_APP_VERSION: ${{ env.APP_EFFECTIVE_VERSION }}
+        run: npx vite build && node scripts/write-version.mjs
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Compute lowercase image name
+        id: image-name
+        shell: bash
+        run: |
+          set -euo pipefail
+          lower="${GITHUB_REPOSITORY,,}"
+          echo "IMAGE_NAME_LOWER=${lower}" >> "$GITHUB_ENV"
+          echo "image_name_lower=${lower}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}
+          tags: |
+            type=raw,value=latest,enable=${{ needs.prepare.outputs.release_channel == 'stable' }}
+            type=raw,value=v${{ env.APP_EFFECTIVE_VERSION }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ env.PLATFORMS }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_EFFECTIVE_VERSION=${{ env.APP_EFFECTIVE_VERSION }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:buildcache,mode=max
+
+  github-release:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [prepare, docker]
+    if: ${{ needs.prepare.outputs.should_release == 'true' }}
+    permissions:
+      contents: write
+    steps:
+      - name: Create/Update GitHub Release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ needs.prepare.outputs.tag }}
+          name: ${{ needs.prepare.outputs.tag }}
+          generateReleaseNotes: true
+          allowUpdates: true
+          omitBodyDuringUpdate: true
+          prerelease: ${{ needs.prepare.outputs.release_channel == 'rc' }}
+          token: ${{ secrets.GITHUB_TOKEN }}

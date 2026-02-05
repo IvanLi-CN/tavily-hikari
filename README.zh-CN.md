@@ -15,7 +15,7 @@ Tavily Hikari 是一个面向 MCP (Model Context Protocol) 的 Tavily 代理层�
 - **高匿透传**：仅透传 `/mcp` 与静态资源，自动清洗 `X-Forwarded-*` 等敏感头并重写 `Origin/Referer`，细节见 [`docs/high-anonymity-proxy.md`](docs/high-anonymity-proxy.md)。
 - **可视化运维**：`web/` 单页应用展示实时统计、请求日志、管理员操作入口，支持复制真实 Key、软删除/恢复等动作。
 - **完整审计**：`request_logs` 表保留 method/path/query、状态码、错误信息、透传/丢弃头部等字段，方便回溯配额损耗与异常请求。
-- **生产级 CI/CD**：GitHub Actions 对代码格式、lint、单元测试、release 镜像打包全流程把关，镜像发布至 `ghcr.io`。
+- **生产级 CI/CD**：GitHub Actions 对代码格式、lint、单元测试把关；发版由 PR intent label 驱动（打 tag + GitHub Release + 推送 `ghcr.io` 镜像）。
 
 ## 组件与数据流
 
@@ -243,7 +243,20 @@ codex mcp list | grep tavily_hikari
   - `cargo run -- --help` 查看完整 CLI。
 - **前端**：Node 20 + pnpm/npm 均可，推荐 `npm ci`；`npm run build` 会串行执行 `tsc -b` 与 `vite build`。
 - **Git Hooks**：运行 `lefthook install` 后，每次提交会自动执行 `cargo fmt`、`cargo clippy`、`npx dprint fmt` 与 `npx commitlint --edit`，确保遵循 Conventional Commits（英文）。
-- **CI**：`.github/workflows/ci.yml` 包含 lint、测试、PR 构建、release 打包与 GHCR 推送，可据此了解默认流水线。
+- **CI**：`.github/workflows/ci.yml` 负责 lint、测试、PR 构建与集成 smoke。
+- **Label Gate**：`.github/workflows/label-gate.yml` 强制 PR 必须且只能有 1 个 intent label（`type:*`）与 1 个 channel label（`channel:*`）。
+- **Release**：`.github/workflows/release.yml` 在 main CI 通过后触发，负责打 tag / 创建 Release / 推送 GHCR 镜像。
+
+## 发版（PR Label）
+
+本仓库使用 PR label 决定“是否发版 + bump 级别”：
+
+- 每个 PR 必须且只能有 1 个 intent label：`type:patch` / `type:minor` / `type:major` / `type:docs` / `type:skip`。
+- 每个 PR 必须且只能有 1 个 channel label：`channel:stable` / `channel:rc`。
+- PR 合并到 `main` 且 CI 通过后：
+  - `type:patch|minor|major`：计算下一版本并发布 tag（稳定：`vX.Y.Z`；预发布：`vX.Y.Z-rc.<sha7>`），同时创建 GitHub Release 与推送 GHCR 镜像（稳定：`latest`、`vX.Y.Z`；预发布：仅 `vX.Y.Z-rc.<sha7>`，不推进 `latest`）。
+  - `type:docs|skip`：不发版（不打 tag / 不推镜像）。
+- 如果某个 commit 无法映射到“恰好一个 PR”，则会保守跳过发版（避免误发）。
 
 ## 生产部署提示
 
