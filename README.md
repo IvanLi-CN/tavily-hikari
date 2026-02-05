@@ -18,7 +18,7 @@ Tavily Hikari is a Rust + Axum proxy for Tavily's MCP endpoint. It multiplexes m
 - **High-anonymity forwarding** – only `/mcp` traffic is tunneled upstream; sensitive headers are stripped or rewritten. See [`docs/high-anonymity-proxy.md`](docs/high-anonymity-proxy.md).
 - **Full audit trail** – `request_logs` persists method/path/query, upstream responses, error payloads, and the list of forwarded/dropped headers.
 - **Operator UI** – the SPA in `web/` visualizes key health, request logs, and admin actions (soft delete, restore, reveal real keys).
-- **CI + Docker image** – GitHub Actions runs lint/test/build and publishes `ghcr.io/ivanli-cn/tavily-hikari:<tag>` with prebuilt web assets.
+- **CI + Release** – GitHub Actions runs lint/tests; releases are driven by PR intent labels and publish `ghcr.io/ivanli-cn/tavily-hikari:<tag>` with prebuilt web assets.
 
 ## Architecture Snapshot
 
@@ -237,7 +237,18 @@ codex mcp list | grep tavily_hikari
 - Common commands: `cargo fmt`, `cargo clippy -- -D warnings`, `cargo test --locked --all-features`, `cargo run -- --help`.
 - Frontend: `npm ci`, `npm run dev`, `npm run build` (runs `tsc -b` + `vite build`).
 - Hooks: run `lefthook install` to enable automatic `cargo fmt`, `cargo clippy`, `npx dprint fmt`, and `npx commitlint --edit` on every commit.
-- CI: `.github/workflows/ci.yml` runs lint/tests/build and publishes Docker images to GHCR.
+- CI: `.github/workflows/ci.yml` runs lint/tests/build.
+- Release: `.github/workflows/release.yml` runs after main CI succeeds and publishes tags, GitHub Releases, and GHCR images.
+
+## Release (PR labels)
+
+Releases are label-driven:
+
+- Every PR must have exactly one intent label: `type:patch`, `type:minor`, `type:major`, `type:docs`, or `type:skip`.
+- When a PR is merged into `main` and CI passes, the release workflow computes the next semver tag (`vX.Y.Z`) and publishes:
+  - Git tag + GitHub Release
+  - GHCR image tags: `latest`, `vX.Y.Z`, and `sha-<commit>`
+- If a commit cannot be mapped to exactly one PR, release is skipped (conservative default).
 
 ## Deployment Notes
 

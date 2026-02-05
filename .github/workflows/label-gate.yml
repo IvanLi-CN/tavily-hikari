@@ -1,0 +1,63 @@
+name: PR Label Gate
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
+
+concurrency:
+  group: label-gate-${{ github.event.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  label-gate:
+    name: Release intent label gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate release intent label (exactly one)
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const allowed = new Set([
+              "type:docs",
+              "type:skip",
+              "type:patch",
+              "type:minor",
+              "type:major",
+            ]);
+
+            const labels = (context.payload.pull_request?.labels ?? [])
+              .map((l) => l?.name)
+              .filter((n) => typeof n === "string" && n.length > 0);
+
+            const present = labels.filter((n) => allowed.has(n));
+            const unknownType = labels.filter((n) => n.startsWith("type:") && !allowed.has(n));
+
+            core.info(`Allowed intent labels: ${Array.from(allowed).sort().join(", ")}`);
+            core.info(`Found labels: ${Array.from(new Set(labels)).sort().join(", ")}`);
+
+            if (unknownType.length > 0) {
+              core.setFailed(`Unknown intent label(s): ${Array.from(new Set(unknownType)).sort().join(", ")}`);
+              return;
+            }
+
+            if (present.length === 0) {
+              core.setFailed("Missing intent label: PR must have exactly one intent label");
+              return;
+            }
+
+            if (present.length > 1) {
+              core.setFailed(
+                `Conflicting intent labels: ${Array.from(new Set(present)).sort().join(", ")} (must be exactly one)`,
+              );
+              return;
+            }
+
+            core.notice(`Intent label OK: ${present[0]}`);
+
