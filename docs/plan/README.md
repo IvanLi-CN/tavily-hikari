@@ -60,4 +60,4 @@
 |  0001 | request_logs 定时清理与统计口径保持  | 部分完成（5/5） | `0001:request-logs-gc/PLAN.md`               | 2026-01-19 | branch `feat/0001-request-logs-gc`               |
 | wsx8t | Caddy ForwardAuth Compose + CI       | 已完成          | `wsx8t:caddy-forwardauth-compose-ci/PLAN.md` | 2026-01-31 | branch `feat/wsx8t-caddy-forwardauth-compose-ci` |
 | e5g7f | Admin 登录（ForwardAuth + 内置登录） | 待实现          | `e5g7f-admin-login-modes/PLAN.md`            | 2026-02-03 | branch `th/feat/e5g7f-admin-login-modes`         |
-| 2qhen | PR Label 发版（CI 后置 Release）     | 待实现          | `2qhen:pr-label-release/PLAN.md`             | 2026-02-05 | branch `th/pr-label-release`                     |
+| 2qhen | PR Label 发版（CI 后置 Release）     | 已完成          | `2qhen:pr-label-release/PLAN.md`             | 2026-02-05 | PR #64                                           |
