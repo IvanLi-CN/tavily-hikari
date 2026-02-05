@@ -30,6 +30,7 @@ jobs:
     outputs:
       should_release: ${{ steps.intent.outputs.should_release }}
       bump_level: ${{ steps.intent.outputs.bump_level }}
+      release_channel: ${{ steps.intent.outputs.release_channel }}
       pr_number: ${{ steps.intent.outputs.pr_number }}
       pr_url: ${{ steps.intent.outputs.pr_url }}
       release_intent_label: ${{ steps.intent.outputs.release_intent_label }}
@@ -58,19 +59,28 @@ jobs:
         shell: bash
         env:
           BUMP_LEVEL: ${{ steps.intent.outputs.bump_level }}
+          RELEASE_CHANNEL: ${{ steps.intent.outputs.release_channel }}
         run: |
           set -euo pipefail
 
-          # If HEAD already has a semver tag, reuse it to keep reruns idempotent.
-          existing_tag="$(git tag --points-at HEAD | grep -E '^v[0-9]+\\.[0-9]+\\.[0-9]+$' | head -n1 || true)"
+          # If HEAD already has a semver(-ish) tag, reuse it to keep reruns idempotent.
+          existing_tag="$(git tag --points-at HEAD | grep -E '^v[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$' | head -n1 || true)"
           if [[ -n "${existing_tag}" ]]; then
             tag="${existing_tag}"
             version="${tag#v}"
             echo "reuse existing tag on HEAD: ${tag}"
           else
-            version="$(bash ./.github/scripts/compute-version.sh --print-version)"
+            base_version="$(bash ./.github/scripts/compute-version.sh --print-version)"
+            if [[ "${RELEASE_CHANNEL}" == "prerelease" ]]; then
+              sha="${{ github.event.workflow_run.head_sha }}"
+              short_sha="${sha:0:8}"
+              version="${base_version}-rc.${short_sha}"
+            else
+              version="${base_version}"
+            fi
+
             tag="v${version}"
-            echo "computed version: ${version} (tag ${tag})"
+            echo "computed version: ${version} (tag ${tag}, channel ${RELEASE_CHANNEL})"
           fi
 
           echo "APP_EFFECTIVE_VERSION=${version}" >> "${GITHUB_ENV}"
@@ -112,6 +122,7 @@ jobs:
             echo "- should_release: ${{ steps.intent.outputs.should_release }}"
             echo "- intent_label: ${{ steps.intent.outputs.release_intent_label }}"
             echo "- bump_level: ${{ steps.intent.outputs.bump_level }}"
+            echo "- release_channel: ${{ steps.intent.outputs.release_channel }}"
             echo "- pr: ${{ steps.intent.outputs.pr_number }} (${{ steps.intent.outputs.pr_url }})"
             echo "- reason: ${{ steps.intent.outputs.reason }}"
             echo "- tag: ${{ steps.tagmeta.outputs.tag || '<none>' }}"
@@ -184,7 +195,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}
           tags: |
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ needs.prepare.outputs.release_channel != 'prerelease' }}
             type=raw,value=v${{ env.APP_EFFECTIVE_VERSION }}
             type=raw,value=sha-${{ github.event.workflow_run.head_sha }}
 
@@ -219,5 +230,5 @@ jobs:
           generateReleaseNotes: true
           allowUpdates: true
           omitBodyDuringUpdate: true
+          prerelease: ${{ needs.prepare.outputs.release_channel == 'prerelease' }}
           token: ${{ secrets.GITHUB_TOKEN }}
-

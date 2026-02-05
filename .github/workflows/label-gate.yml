@@ -24,7 +24,7 @@ jobs:
         with:
           github-token: ${{ github.token }}
           script: |
-            const allowed = new Set([
+            const allowedIntent = new Set([
               "type:docs",
               "type:skip",
               "type:patch",
@@ -32,14 +32,22 @@ jobs:
               "type:major",
             ]);
 
+            const allowedChannel = new Set([
+              "channel:prerelease",
+            ]);
+
             const labels = (context.payload.pull_request?.labels ?? [])
               .map((l) => l?.name)
               .filter((n) => typeof n === "string" && n.length > 0);
 
-            const present = labels.filter((n) => allowed.has(n));
-            const unknownType = labels.filter((n) => n.startsWith("type:") && !allowed.has(n));
+            const presentIntent = labels.filter((n) => allowedIntent.has(n));
+            const unknownType = labels.filter((n) => n.startsWith("type:") && !allowedIntent.has(n));
 
-            core.info(`Allowed intent labels: ${Array.from(allowed).sort().join(", ")}`);
+            const presentChannel = labels.filter((n) => allowedChannel.has(n));
+            const unknownChannel = labels.filter((n) => n.startsWith("channel:") && !allowedChannel.has(n));
+
+            core.info(`Allowed intent labels: ${Array.from(allowedIntent).sort().join(", ")}`);
+            core.info(`Allowed channel labels (optional): ${Array.from(allowedChannel).sort().join(", ")}`);
             core.info(`Found labels: ${Array.from(new Set(labels)).sort().join(", ")}`);
 
             if (unknownType.length > 0) {
@@ -47,17 +55,29 @@ jobs:
               return;
             }
 
-            if (present.length === 0) {
-              core.setFailed("Missing intent label: PR must have exactly one intent label");
+            if (unknownChannel.length > 0) {
+              core.setFailed(`Unknown channel label(s): ${Array.from(new Set(unknownChannel)).sort().join(", ")}`);
               return;
             }
 
-            if (present.length > 1) {
+            if (presentChannel.length > 1) {
               core.setFailed(
-                `Conflicting intent labels: ${Array.from(new Set(present)).sort().join(", ")} (must be exactly one)`,
+                `Conflicting channel labels: ${Array.from(new Set(presentChannel)).sort().join(", ")} (must be at most one)`,
               );
               return;
             }
 
-            core.notice(`Intent label OK: ${present[0]}`);
+            if (presentIntent.length === 0) {
+              core.setFailed("Missing intent label: PR must have exactly one intent label");
+              return;
+            }
 
+            if (presentIntent.length > 1) {
+              core.setFailed(
+                `Conflicting intent labels: ${Array.from(new Set(presentIntent)).sort().join(", ")} (must be exactly one)`,
+              );
+              return;
+            }
+
+            core.notice(`Intent label OK: ${presentIntent[0]}`);
+            core.notice(`Release channel: ${presentChannel[0] ?? "stable"}`);

@@ -245,9 +245,12 @@ codex mcp list | grep tavily_hikari
 Releases are label-driven:
 
 - Every PR must have exactly one intent label: `type:patch`, `type:minor`, `type:major`, `type:docs`, or `type:skip`.
+- Optional channel label: `channel:prerelease` (publish a prerelease GitHub Release + image tags; does not move `latest`).
 - When a PR is merged into `main` and CI passes, the release workflow computes the next semver tag (`vX.Y.Z`) and publishes:
   - Git tag + GitHub Release
-  - GHCR image tags: `latest`, `vX.Y.Z`, and `sha-<commit>`
+  - GHCR image tags:
+    - stable: `latest`, `vX.Y.Z`, `sha-<commit>`
+    - prerelease: `vX.Y.Z-rc.<sha>`, `sha-<commit>` (no `latest`)
 - If a commit cannot be mapped to exactly one PR, release is skipped (conservative default).
 
 ## Deployment Notes

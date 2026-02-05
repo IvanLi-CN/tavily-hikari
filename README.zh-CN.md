@@ -252,6 +252,7 @@ codex mcp list | grep tavily_hikari
 本仓库使用 PR label 决定“是否发版 + bump 级别”：
 
 - 每个 PR 必须且只能有 1 个 intent label：`type:patch` / `type:minor` / `type:major` / `type:docs` / `type:skip`。
+- 可选 channel label：`channel:prerelease`（产出预发布 GitHub Release 与镜像 tag，但不会推进 `latest`）。
 - PR 合并到 `main` 且 CI 通过后：
   - `type:patch|minor|major`：计算下一版本并发布 tag（`vX.Y.Z`），同时创建 GitHub Release 与推送 GHCR 镜像（`latest`、`vX.Y.Z`、`sha-<commit>`）。
   - `type:docs|skip`：不发版（不打 tag / 不推镜像）。

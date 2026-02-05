@@ -43,12 +43,14 @@ if [[ -z "${token}" ]]; then
 fi
 
 allowed_labels=("type:docs" "type:skip" "type:patch" "type:minor" "type:major")
+allowed_channels=("channel:prerelease")
 
 conservative_skip() {
   local reason="$1"
   echo "should_release=false"
   echo "bump_level="
   echo "release_intent_label="
+  echo "release_channel=stable"
   echo "pr_number="
   echo "pr_url="
   echo "reason=${reason}"
@@ -58,6 +60,7 @@ conservative_skip() {
       echo "should_release=false"
       echo "bump_level="
       echo "release_intent_label="
+      echo "release_channel=stable"
       echo "pr_number="
       echo "pr_url="
       echo "reason=${reason}"
@@ -150,16 +153,43 @@ allowed = {
     "type:major",
 }
 
+allowed_channels = {
+    "channel:prerelease",
+}
+
 labels = json.loads(os.environ["labels_json"])
 names = [l.get("name", "") for l in labels if isinstance(l, dict)]
 type_like = {n for n in names if n.startswith("type:")}
 unknown_type = sorted({n for n in type_like if n not in allowed})
 present = sorted({n for n in names if n in allowed})
 
+channel_like = {n for n in names if n.startswith("channel:")}
+unknown_channel = sorted({n for n in channel_like if n not in allowed_channels})
+present_channel = sorted({n for n in names if n in allowed_channels})
+
+if unknown_channel:
+    print("should_release=false")
+    print("bump_level=")
+    print("release_intent_label=")
+    print("release_channel=stable")
+    print(f"reason=unknown_channel_label({','.join(unknown_channel)})")
+    sys.exit(0)
+
+if len(present_channel) > 1:
+    print("should_release=false")
+    print("bump_level=")
+    print("release_intent_label=")
+    print("release_channel=stable")
+    print(f"reason=invalid_channel_label_count({len(present_channel)})")
+    sys.exit(0)
+
+release_channel = "prerelease" if len(present_channel) == 1 else "stable"
+
 if unknown_type:
     print("should_release=false")
     print("bump_level=")
     print("release_intent_label=")
+    print(f"release_channel={release_channel}")
     print(f"reason=unknown_intent_label({','.join(unknown_type)})")
     sys.exit(0)
 
@@ -167,6 +197,7 @@ if len(present) != 1:
     print("should_release=false")
     print("bump_level=")
     print("release_intent_label=")
+    print(f"release_channel={release_channel}")
     print(f"reason=invalid_intent_label_count({len(present)})")
     sys.exit(0)
 
@@ -175,6 +206,7 @@ if label in ("type:docs", "type:skip"):
     print("should_release=false")
     print("bump_level=")
     print(f"release_intent_label={label}")
+    print(f"release_channel={release_channel}")
     print("reason=intent_skip")
     sys.exit(0)
 
@@ -182,6 +214,7 @@ bump_level = label.removeprefix("type:")
 print("should_release=true")
 print(f"bump_level={bump_level}")
 print(f"release_intent_label={label}")
+print(f"release_channel={release_channel}")
 print("reason=intent_release")
 PY
 )"
@@ -189,12 +222,14 @@ PY
 should_release="$(echo "$decision" | sed -n 's/^should_release=//p')"
 bump_level="$(echo "$decision" | sed -n 's/^bump_level=//p')"
 intent_label="$(echo "$decision" | sed -n 's/^release_intent_label=//p')"
+release_channel="$(echo "$decision" | sed -n 's/^release_channel=//p')"
 reason="$(echo "$decision" | sed -n 's/^reason=//p')"
 
 echo "Release intent decision:"
 echo "  sha=${sha}"
 echo "  pr_number=${pr_number}"
 echo "  intent_label=${intent_label:-<none>}"
+echo "  release_channel=${release_channel:-stable}"
 echo "  should_release=${should_release}"
 echo "  bump_level=${bump_level:-<none>}"
 echo "  reason=${reason}"
@@ -204,9 +239,9 @@ if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
     echo "should_release=${should_release}"
     echo "bump_level=${bump_level}"
     echo "release_intent_label=${intent_label}"
+    echo "release_channel=${release_channel}"
     echo "pr_number=${pr_number}"
     echo "pr_url=${pr_url}"
     echo "reason=${reason}"
   } >> "${GITHUB_OUTPUT}"
 fi
-
