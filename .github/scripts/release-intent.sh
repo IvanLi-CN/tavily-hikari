@@ -43,14 +43,14 @@ if [[ -z "${token}" ]]; then
 fi
 
 allowed_labels=("type:docs" "type:skip" "type:patch" "type:minor" "type:major")
-allowed_channels=("channel:prerelease")
+allowed_channels=("channel:stable" "channel:rc")
 
 conservative_skip() {
   local reason="$1"
   echo "should_release=false"
   echo "bump_level="
   echo "release_intent_label="
-  echo "release_channel=stable"
+  echo "release_channel="
   echo "pr_number="
   echo "pr_url="
   echo "reason=${reason}"
@@ -60,7 +60,7 @@ conservative_skip() {
       echo "should_release=false"
       echo "bump_level="
       echo "release_intent_label="
-      echo "release_channel=stable"
+      echo "release_channel="
       echo "pr_number="
       echo "pr_url="
       echo "reason=${reason}"
@@ -154,7 +154,8 @@ allowed = {
 }
 
 allowed_channels = {
-    "channel:prerelease",
+    "channel:stable",
+    "channel:rc",
 }
 
 labels = json.loads(os.environ["labels_json"])
@@ -171,19 +172,23 @@ if unknown_channel:
     print("should_release=false")
     print("bump_level=")
     print("release_intent_label=")
-    print("release_channel=stable")
+    print("release_channel=")
     print(f"reason=unknown_channel_label({','.join(unknown_channel)})")
     sys.exit(0)
 
-if len(present_channel) > 1:
+if len(present_channel) != 1:
     print("should_release=false")
     print("bump_level=")
     print("release_intent_label=")
-    print("release_channel=stable")
-    print(f"reason=invalid_channel_label_count({len(present_channel)})")
+    print("release_channel=")
+    if len(present_channel) == 0:
+        print("reason=missing_channel_label")
+    else:
+        print(f"reason=invalid_channel_label_count({len(present_channel)})")
     sys.exit(0)
 
-release_channel = "prerelease" if len(present_channel) == 1 else "stable"
+channel_label = present_channel[0]
+release_channel = "rc" if channel_label == "channel:rc" else "stable"
 
 if unknown_type:
     print("should_release=false")
@@ -229,7 +234,7 @@ echo "Release intent decision:"
 echo "  sha=${sha}"
 echo "  pr_number=${pr_number}"
 echo "  intent_label=${intent_label:-<none>}"
-echo "  release_channel=${release_channel:-stable}"
+echo "  release_channel=${release_channel:-<none>}"
 echo "  should_release=${should_release}"
 echo "  bump_level=${bump_level:-<none>}"
 echo "  reason=${reason}"

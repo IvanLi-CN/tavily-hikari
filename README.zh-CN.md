@@ -244,7 +244,7 @@ codex mcp list | grep tavily_hikari
 - **前端**：Node 20 + pnpm/npm 均可，推荐 `npm ci`；`npm run build` 会串行执行 `tsc -b` 与 `vite build`。
 - **Git Hooks**：运行 `lefthook install` 后，每次提交会自动执行 `cargo fmt`、`cargo clippy`、`npx dprint fmt` 与 `npx commitlint --edit`，确保遵循 Conventional Commits（英文）。
 - **CI**：`.github/workflows/ci.yml` 负责 lint、测试、PR 构建与集成 smoke。
-- **Label Gate**：`.github/workflows/label-gate.yml` 强制 PR 必须且只能有 1 个 intent label（`type:*`）。
+- **Label Gate**：`.github/workflows/label-gate.yml` 强制 PR 必须且只能有 1 个 intent label（`type:*`）与 1 个 channel label（`channel:*`）。
 - **Release**：`.github/workflows/release.yml` 在 main CI 通过后触发，负责打 tag / 创建 Release / 推送 GHCR 镜像。
 
 ## 发版（PR Label）
@@ -252,9 +252,9 @@ codex mcp list | grep tavily_hikari
 本仓库使用 PR label 决定“是否发版 + bump 级别”：
 
 - 每个 PR 必须且只能有 1 个 intent label：`type:patch` / `type:minor` / `type:major` / `type:docs` / `type:skip`。
-- 可选 channel label：`channel:prerelease`（产出预发布 GitHub Release 与镜像 tag，但不会推进 `latest`）。
+- 每个 PR 必须且只能有 1 个 channel label：`channel:stable` / `channel:rc`。
 - PR 合并到 `main` 且 CI 通过后：
-  - `type:patch|minor|major`：计算下一版本并发布 tag（`vX.Y.Z`），同时创建 GitHub Release 与推送 GHCR 镜像（`latest`、`vX.Y.Z`、`sha-<commit>`）。
+  - `type:patch|minor|major`：计算下一版本并发布 tag（稳定：`vX.Y.Z`；预发布：`vX.Y.Z-rc.<sha7>`），同时创建 GitHub Release 与推送 GHCR 镜像（稳定：`latest`、`vX.Y.Z`；预发布：仅 `vX.Y.Z-rc.<sha7>`，不推进 `latest`）。
   - `type:docs|skip`：不发版（不打 tag / 不推镜像）。
 - 如果某个 commit 无法映射到“恰好一个 PR”，则会保守跳过发版（避免误发）。
 

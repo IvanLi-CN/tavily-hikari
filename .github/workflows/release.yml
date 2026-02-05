@@ -63,17 +63,21 @@ jobs:
         run: |
           set -euo pipefail
 
-          # If HEAD already has a semver(-ish) tag, reuse it to keep reruns idempotent.
-          existing_tag="$(git tag --points-at HEAD | grep -E '^v[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$' | head -n1 || true)"
+          # If HEAD already has a channel-matching tag, reuse it to keep reruns idempotent.
+          if [[ "${RELEASE_CHANNEL}" == "rc" ]]; then
+            existing_tag="$(git tag --points-at HEAD | grep -E '^v[0-9]+\\.[0-9]+\\.[0-9]+-rc\\.[0-9a-f]{7}$' | head -n1 || true)"
+          else
+            existing_tag="$(git tag --points-at HEAD | grep -E '^v[0-9]+\\.[0-9]+\\.[0-9]+$' | head -n1 || true)"
+          fi
           if [[ -n "${existing_tag}" ]]; then
             tag="${existing_tag}"
             version="${tag#v}"
             echo "reuse existing tag on HEAD: ${tag}"
           else
             base_version="$(bash ./.github/scripts/compute-version.sh --print-version)"
-            if [[ "${RELEASE_CHANNEL}" == "prerelease" ]]; then
+            if [[ "${RELEASE_CHANNEL}" == "rc" ]]; then
               sha="${{ github.event.workflow_run.head_sha }}"
-              short_sha="${sha:0:8}"
+              short_sha="${sha:0:7}"
               version="${base_version}-rc.${short_sha}"
             else
               version="${base_version}"
@@ -195,9 +199,8 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}
           tags: |
-            type=raw,value=latest,enable=${{ needs.prepare.outputs.release_channel != 'prerelease' }}
+            type=raw,value=latest,enable=${{ needs.prepare.outputs.release_channel == 'stable' }}
             type=raw,value=v${{ env.APP_EFFECTIVE_VERSION }}
-            type=raw,value=sha-${{ github.event.workflow_run.head_sha }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
@@ -230,5 +233,5 @@ jobs:
           generateReleaseNotes: true
           allowUpdates: true
           omitBodyDuringUpdate: true
-          prerelease: ${{ needs.prepare.outputs.release_channel == 'prerelease' }}
+          prerelease: ${{ needs.prepare.outputs.release_channel == 'rc' }}
           token: ${{ secrets.GITHUB_TOKEN }}

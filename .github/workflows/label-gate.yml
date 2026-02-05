@@ -32,9 +32,7 @@ jobs:
               "type:major",
             ]);
 
-            const allowedChannel = new Set([
-              "channel:prerelease",
-            ]);
+            const allowedChannel = new Set(["channel:stable", "channel:rc"]);
 
             const labels = (context.payload.pull_request?.labels ?? [])
               .map((l) => l?.name)
@@ -47,7 +45,7 @@ jobs:
             const unknownChannel = labels.filter((n) => n.startsWith("channel:") && !allowedChannel.has(n));
 
             core.info(`Allowed intent labels: ${Array.from(allowedIntent).sort().join(", ")}`);
-            core.info(`Allowed channel labels (optional): ${Array.from(allowedChannel).sort().join(", ")}`);
+            core.info(`Allowed channel labels: ${Array.from(allowedChannel).sort().join(", ")}`);
             core.info(`Found labels: ${Array.from(new Set(labels)).sort().join(", ")}`);
 
             if (unknownType.length > 0) {
@@ -60,9 +58,14 @@ jobs:
               return;
             }
 
+            if (presentChannel.length === 0) {
+              core.setFailed("Missing channel label: PR must have exactly one channel label");
+              return;
+            }
+
             if (presentChannel.length > 1) {
               core.setFailed(
-                `Conflicting channel labels: ${Array.from(new Set(presentChannel)).sort().join(", ")} (must be at most one)`,
+                `Conflicting channel labels: ${Array.from(new Set(presentChannel)).sort().join(", ")} (must be exactly one)`,
               );
               return;
             }
@@ -80,4 +83,4 @@ jobs:
             }
 
             core.notice(`Intent label OK: ${presentIntent[0]}`);
-            core.notice(`Release channel: ${presentChannel[0] ?? "stable"}`);
+            core.notice(`Release channel OK: ${presentChannel[0]}`);

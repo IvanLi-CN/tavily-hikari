@@ -47,17 +47,20 @@
 - PR 打开/同步/打标签时，`label-gate` 会强制：
   - 允许的 intent labels 只有：`type:docs|skip|patch|minor|major`
   - 只要出现未知 `type:*` label 或 0/2+ 个 intent labels，CI 失败。
-  - 可选 channel label：`channel:prerelease`（最多一个）；未知 `channel:*` label 视为 CI 失败。
+  - 允许的 channel labels 只有：`channel:stable|channel:rc`
+  - 只要出现未知 `channel:*` label 或 0/2+ 个 channel labels，CI 失败。
 - 合并到 `main` 后：
   - 若该提交对应 PR 的 intent label 为 `type:patch|minor|major`，且 main CI 通过：
-    - 生成且只生成一个 semver tag（格式 `vX.Y.Z`）
-    - 创建/更新 GitHub Release（tag 同名）
-    - 推送 ghcr 镜像，至少包含：`latest` 与 `vX.Y.Z`
+    - `channel:stable`：
+      - 生成且只生成一个 semver tag（格式 `vX.Y.Z`）
+      - 创建/更新 GitHub Release（非 prerelease）
+      - 推送 ghcr 镜像：`latest` 与 `vX.Y.Z`
+    - `channel:rc`：
+      - 生成 prerelease tag（格式 `vX.Y.Z-rc.<sha7>`）
+      - 发布 prerelease GitHub Release
+      - 推送 ghcr 镜像：仅 `vX.Y.Z-rc.<sha7>`（不更新 `latest`）
   - 若 intent label 为 `type:docs|skip`：
     - 不创建 tag，不创建 Release，不推送镜像（只跑 CI）。
-  - 若 intent label 为 `type:patch|minor|major` 且带 `channel:prerelease`：
-    - 生成 prerelease tag（格式 `vX.Y.Z-rc.<sha>`）并发布 prerelease GitHub Release
-    - 推送 ghcr 镜像 tag（包含 `vX.Y.Z-rc.<sha>`），但不更新 `latest`
 - 若 commit 无法解析到“恰好一个 PR”，则 `release.yml` 保守跳过发版并给出可读 reason。
 
 ## Testing / Verification
