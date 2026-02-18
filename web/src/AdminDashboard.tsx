@@ -407,6 +407,28 @@ function AdminDashboard(): JSX.Element {
   const isAdmin = profile?.isAdmin ?? false
 
   useEffect(() => {
+    if (!keysBatchExpanded) return
+    const reason = keysBatchOpenReasonRef.current
+    if (!reason) return
+
+    const active = document.activeElement
+    const canStealFocusOnHover =
+      reason === 'hover' &&
+      (active == null ||
+        active === document.body ||
+        !(
+          active instanceof HTMLInputElement ||
+          active instanceof HTMLTextAreaElement ||
+          active instanceof HTMLSelectElement ||
+          (active instanceof HTMLElement && active.isContentEditable)
+        ))
+
+    if (reason === 'focus' || canStealFocusOnHover) {
+      window.requestAnimationFrame(() => keysBatchTextareaRef.current?.focus())
+    }
+  }, [keysBatchExpanded])
+
+  useEffect(() => {
     const recordPointer = (event: PointerEvent) => {
       keysBatchLastPointerRef.current = { x: event.clientX, y: event.clientY }
     }
@@ -1541,7 +1563,7 @@ function AdminDashboard(): JSX.Element {
         createPortal(
           <div
             ref={keysBatchOverlayRef}
-            className="card bg-base-100 shadow-xl border border-base-300"
+            className="card bg-base-100 shadow-xl border border-base-300 keys-batch-overlay"
             style={{
               position: 'fixed',
               top: 0,
@@ -1943,8 +1965,6 @@ function AdminDashboard(): JSX.Element {
                 onFocusCapture={() => {
                   keysBatchOpenReasonRef.current = 'focus'
                   setKeysBatchExpanded(true)
-                  // Focus into the expanded textarea for click/tab activation.
-                  window.requestAnimationFrame(() => keysBatchTextareaRef.current?.focus())
                 }}
                 style={{ position: 'relative' }}
               >

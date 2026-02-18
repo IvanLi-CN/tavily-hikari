@@ -1527,6 +1527,30 @@ tbody tr:hover {
   user-select: none;
 }
 
+/* Admin / API Keys batch overlay: animate in so it feels like the input expands in-place. */
+.keys-batch-overlay {
+  transform-origin: top right;
+  animation: keys-batch-overlay-in 140ms ease-out;
+  will-change: transform, opacity;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .keys-batch-overlay {
+    animation: none;
+  }
+}
+
+@keyframes keys-batch-overlay-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scaleX(0.98) scaleY(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scaleX(1) scaleY(1);
+  }
+}
+
 /* Jobs table: prevent start time from wrapping and overflowing (jobs list only, not tokens table) */
 .jobs-table:not(.tokens-table) th:nth-child(6),
 .jobs-table:not(.tokens-table) td:nth-child(6) {
