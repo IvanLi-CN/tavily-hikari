@@ -373,6 +373,8 @@ function AdminDashboard(): JSX.Element {
   const [newKeysText, setNewKeysText] = useState('')
   const [keysBatchExpanded, setKeysBatchExpanded] = useState(false)
   const keysBatchOpenReasonRef = useRef<'hover' | 'focus' | null>(null)
+  const keysBatchSuppressNextHoverRef = useRef(false)
+  const keysBatchLastPointerRef = useRef<{ x: number; y: number } | null>(null)
   const keysBatchAnchorRef = useRef<HTMLDivElement | null>(null)
   const keysBatchCollapsedInputRef = useRef<HTMLInputElement | null>(null)
   const keysBatchTextareaRef = useRef<HTMLTextAreaElement | null>(null)
@@ -405,6 +407,33 @@ function AdminDashboard(): JSX.Element {
   const isAdmin = profile?.isAdmin ?? false
 
   useEffect(() => {
+    const recordPointer = (event: PointerEvent) => {
+      keysBatchLastPointerRef.current = { x: event.clientX, y: event.clientY }
+    }
+    window.addEventListener('pointermove', recordPointer, { passive: true })
+    window.addEventListener('pointerdown', recordPointer)
+    return () => {
+      window.removeEventListener('pointermove', recordPointer)
+      window.removeEventListener('pointerdown', recordPointer)
+    }
+  }, [])
+
+  const maybeSuppressHoverReopen = useCallback(() => {
+    const anchor = keysBatchAnchorRef.current
+    const pointer = keysBatchLastPointerRef.current
+    if (!anchor || !pointer) return
+    const rect = anchor.getBoundingClientRect()
+    if (
+      pointer.x >= rect.left &&
+      pointer.x <= rect.right &&
+      pointer.y >= rect.top &&
+      pointer.y <= rect.bottom
+    ) {
+      keysBatchSuppressNextHoverRef.current = true
+    }
+  }, [])
+
+  useEffect(() => {
     if (!keysBatchExpanded) return
 
     const handlePointerDown = (event: PointerEvent) => {
@@ -417,6 +446,7 @@ function AdminDashboard(): JSX.Element {
         (root == null || !root.contains(target)) &&
         (overlay == null || !overlay.contains(target))
       ) {
+        maybeSuppressHoverReopen()
         keysBatchOpenReasonRef.current = null
         setKeysBatchExpanded(false)
       }
@@ -424,6 +454,7 @@ function AdminDashboard(): JSX.Element {
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        maybeSuppressHoverReopen()
         keysBatchOpenReasonRef.current = null
         setKeysBatchExpanded(false)
       }
@@ -435,7 +466,7 @@ function AdminDashboard(): JSX.Element {
       document.removeEventListener('pointerdown', handlePointerDown)
       document.removeEventListener('keydown', handleKeyDown)
     }
-  }, [keysBatchExpanded])
+  }, [keysBatchExpanded, maybeSuppressHoverReopen])
 
   const copyStateKey = useCallback((scope: 'keys' | 'logs' | 'tokens', identifier: string | number) => {
     return `${scope}:${identifier}`
@@ -892,17 +923,18 @@ function AdminDashboard(): JSX.Element {
     const anchorRect = anchor.getBoundingClientRect()
     const layoutAnchorRect = (anchorInput ?? anchor).getBoundingClientRect()
     const visualViewport = window.visualViewport
-    const visibleTop = visualViewport ? visualViewport.offsetTop : 0
     const visibleBottom = visualViewport ? visualViewport.offsetTop + visualViewport.height : window.innerHeight
 
     const viewportWidth = window.innerWidth
-    // Treat the overlay as an "expanded" version of the collapsed controls:
-    // keep the same width as the collapsed group (input + button), but align the top/left to the input
-    // so it feels like the input grows in-place.
-    const overlayWidth = Math.max(0, Math.min(anchorRect.width, viewportWidth - 32))
+    // The overlay is the "expanded" version of the collapsed controls:
+    // keep its position anchored to the original control, but expand the card width for a proper
+    // multi-line paste experience (matching the pre-existing wide overlay feel).
+    const overlayWidth = Math.max(0, Math.min(720, viewportWidth - 32))
     const leftMin = 16
     const leftMax = Math.max(leftMin, viewportWidth - leftMin - overlayWidth)
-    const preferredLeft = layoutAnchorRect.left
+    // Right-align to the collapsed control group so expansion grows leftwards instead of jumping
+    // off-screen (the controls live on the right side of the header).
+    const preferredLeft = anchorRect.right - overlayWidth
     const left = Math.min(leftMax, Math.max(leftMin, preferredLeft))
     const topPreferred = layoutAnchorRect.top
 
@@ -928,20 +960,15 @@ function AdminDashboard(): JSX.Element {
       textarea.style.overflowY = textarea.scrollHeight > maxTextareaHeight ? 'auto' : 'hidden'
     }
 
-    // Expand in-place (same top-left as the collapsed input group), and shrink textarea
-    // to stay within the visual viewport instead of flipping the overlay elsewhere.
+    // Expand in-place from the collapsed control position.
     overlay.style.top = `${Math.round(topPreferred)}px`
     fitTextarea()
 
     const overlayRect = overlay.getBoundingClientRect()
     const overflowBottom = overlayRect.bottom - (visibleBottom - 16)
     if (overflowBottom > 0) {
-      const topMin = visibleTop + 16
-      const topMax = Math.max(topMin, visibleBottom - 16 - overlayRect.height)
-      // Move upward just enough to fit, but keep within the visible viewport bounds.
-      const shiftedTop = topPreferred - overflowBottom
-      const clampedTop = Math.min(topMax, Math.max(topMin, shiftedTop))
-      overlay.style.top = `${Math.round(clampedTop)}px`
+      // Keep the overlay anchored; just re-fit the textarea height so the card stays within view.
+      // This preserves the "expands from the input" mental model.
       fitTextarea()
     }
   }, [keysBatchExpanded])
@@ -1018,6 +1045,7 @@ function AdminDashboard(): JSX.Element {
       setKeysBatchReport({ kind: 'success', response })
       window.requestAnimationFrame(() => keysBatchReportDialogRef.current?.showModal())
       setNewKeysText('')
+      maybeSuppressHoverReopen()
       keysBatchOpenReasonRef.current = null
       setKeysBatchExpanded(false)
       const controller = new AbortController()
@@ -1030,6 +1058,7 @@ function AdminDashboard(): JSX.Element {
       setKeysBatchReport({ kind: 'error', message, input_lines: rawLines.length, valid_lines: apiKeys.length })
       window.requestAnimationFrame(() => keysBatchReportDialogRef.current?.showModal())
       setNewKeysText('')
+      maybeSuppressHoverReopen()
       keysBatchOpenReasonRef.current = null
       setKeysBatchExpanded(false)
       setError(message)
@@ -1901,8 +1930,15 @@ function AdminDashboard(): JSX.Element {
               <div
                 ref={keysBatchAnchorRef}
                 onMouseEnter={() => {
+                  if (keysBatchSuppressNextHoverRef.current) {
+                    keysBatchSuppressNextHoverRef.current = false
+                    return
+                  }
                   keysBatchOpenReasonRef.current = 'hover'
                   setKeysBatchExpanded(true)
+                }}
+                onMouseLeave={() => {
+                  keysBatchSuppressNextHoverRef.current = false
                 }}
                 onFocusCapture={() => {
                   keysBatchOpenReasonRef.current = 'focus'
