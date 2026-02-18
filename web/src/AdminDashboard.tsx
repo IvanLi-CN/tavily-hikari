@@ -896,12 +896,15 @@ function AdminDashboard(): JSX.Element {
     const visibleBottom = visualViewport ? visualViewport.offsetTop + visualViewport.height : window.innerHeight
 
     const viewportWidth = window.innerWidth
-    const overlayWidth = Math.max(0, Math.min(720, viewportWidth - 32))
+    // Treat the overlay as an "expanded" version of the collapsed input group:
+    // align the card's top/left with the collapsed controls, and keep the same width,
+    // so the expanded UI doesn't jump around.
+    const overlayWidth = Math.max(0, Math.min(anchorRect.width, viewportWidth - 32))
     const leftMin = 16
     const leftMax = Math.max(leftMin, viewportWidth - leftMin - overlayWidth)
-    const preferredLeft = anchorRect.right - overlayWidth
+    const preferredLeft = layoutAnchorRect.left
     const left = Math.min(leftMax, Math.max(leftMin, preferredLeft))
-    const topBelow = layoutAnchorRect.bottom + 8
+    const topPreferred = layoutAnchorRect.top
 
     overlay.style.left = `${Math.round(left)}px`
     overlay.style.width = `${Math.round(overlayWidth)}px`
@@ -925,17 +928,19 @@ function AdminDashboard(): JSX.Element {
       textarea.style.overflowY = textarea.scrollHeight > maxTextareaHeight ? 'auto' : 'hidden'
     }
 
-    // Prefer positioning below the anchor, but flip above if it would go offscreen.
-    overlay.style.top = `${Math.round(topBelow)}px`
+    // Expand in-place (same top-left as the collapsed input group), and shrink textarea
+    // to stay within the visual viewport instead of flipping the overlay elsewhere.
+    overlay.style.top = `${Math.round(topPreferred)}px`
     fitTextarea()
 
     const overlayRect = overlay.getBoundingClientRect()
     const overflowBottom = overlayRect.bottom - (visibleBottom - 16)
     if (overflowBottom > 0) {
-      const topAbove = layoutAnchorRect.top - overlayRect.height - 8
       const topMin = visibleTop + 16
       const topMax = Math.max(topMin, visibleBottom - 16 - overlayRect.height)
-      const clampedTop = Math.min(topMax, Math.max(topMin, topAbove))
+      // Move upward just enough to fit, but keep within the visible viewport bounds.
+      const shiftedTop = topPreferred - overflowBottom
+      const clampedTop = Math.min(topMax, Math.max(topMin, shiftedTop))
       overlay.style.top = `${Math.round(clampedTop)}px`
       fitTextarea()
     }
