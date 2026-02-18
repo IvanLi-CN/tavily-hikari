@@ -421,22 +421,7 @@ function AdminDashboard(): JSX.Element {
 
   useEffect(() => {
     if (!keysBatchExpanded) return
-    const reason = keysBatchOpenReasonRef.current
-    if (!reason) return
-
-    const active = document.activeElement
-    const canStealFocusOnHover =
-      reason === 'hover' &&
-      (active == null ||
-        active === document.body ||
-        !(
-          active instanceof HTMLInputElement ||
-          active instanceof HTMLTextAreaElement ||
-          active instanceof HTMLSelectElement ||
-          (active instanceof HTMLElement && active.isContentEditable)
-        ))
-
-    if (reason === 'focus' || canStealFocusOnHover) {
+    if (keysBatchOpenReasonRef.current === 'focus') {
       window.requestAnimationFrame(() => keysBatchTextareaRef.current?.focus())
     }
   }, [keysBatchExpanded])
@@ -467,6 +452,47 @@ function AdminDashboard(): JSX.Element {
       keysBatchSuppressNextHoverRef.current = true
     }
   }, [])
+
+  const scheduleKeysBatchAutoCollapse = useCallback(
+    (mode: 'blur' | 'hover') => {
+      if (!keysBatchExpanded) return
+
+      const textarea = keysBatchTextareaRef.current
+      if (!textarea) return
+      if (textarea.value.trim().length !== 0) return
+
+      clearKeysBatchAutoCollapseTimer()
+      keysBatchAutoCollapseTimerRef.current = window.setTimeout(() => {
+        keysBatchAutoCollapseTimerRef.current = null
+
+        const currentOverlay = keysBatchOverlayRef.current
+        const currentTextarea = keysBatchTextareaRef.current
+        if (!currentOverlay || !currentTextarea) return
+        if (currentTextarea.value.trim().length !== 0) return
+
+        // If the user re-focused the overlay before the timeout, keep it open.
+        const active = document.activeElement
+        if (active instanceof Node && currentOverlay.contains(active)) return
+
+        if (mode === 'hover') {
+          const pointer = keysBatchLastPointerRef.current
+          const anchor = keysBatchAnchorRef.current
+          if (pointer && anchor) {
+            const anchorRect = anchor.getBoundingClientRect()
+            const overlayRect = currentOverlay.getBoundingClientRect()
+            const containsPointer = (rect: DOMRect) =>
+              pointer.x >= rect.left && pointer.x <= rect.right && pointer.y >= rect.top && pointer.y <= rect.bottom
+            if (containsPointer(anchorRect) || containsPointer(overlayRect)) return
+          }
+        }
+
+        maybeSuppressHoverReopen()
+        keysBatchOpenReasonRef.current = null
+        setKeysBatchExpanded(false)
+      }, KEYS_BATCH_EMPTY_BLUR_COLLAPSE_MS)
+    },
+    [clearKeysBatchAutoCollapseTimer, keysBatchExpanded, maybeSuppressHoverReopen],
+  )
 
   useEffect(() => {
     if (!keysBatchExpanded) return
@@ -1581,6 +1607,8 @@ function AdminDashboard(): JSX.Element {
           <div
             ref={keysBatchOverlayRef}
             className="card bg-base-100 shadow-xl border border-base-300 keys-batch-overlay"
+            onMouseEnter={() => clearKeysBatchAutoCollapseTimer()}
+            onMouseLeave={() => scheduleKeysBatchAutoCollapse('hover')}
             style={{
               position: 'fixed',
               top: 0,
@@ -1600,24 +1628,11 @@ function AdminDashboard(): JSX.Element {
                 onChange={(e) => setNewKeysText(e.target.value)}
                 onFocus={() => clearKeysBatchAutoCollapseTimer()}
                 onBlur={(event) => {
-                  if (newKeysText.trim().length !== 0) return
+                  if (event.currentTarget.value.trim().length !== 0) return
                   const overlay = keysBatchOverlayRef.current
                   const next = event.relatedTarget
                   if (overlay && next instanceof Node && overlay.contains(next)) return
-
-                  clearKeysBatchAutoCollapseTimer()
-                  keysBatchAutoCollapseTimerRef.current = window.setTimeout(() => {
-                    keysBatchAutoCollapseTimerRef.current = null
-                    const currentOverlay = keysBatchOverlayRef.current
-                    const currentTextarea = keysBatchTextareaRef.current
-                    if (!currentOverlay || !currentTextarea) return
-                    if (currentTextarea.value.trim().length !== 0) return
-                    const active = document.activeElement
-                    if (active instanceof Node && currentOverlay.contains(active)) return
-                    maybeSuppressHoverReopen()
-                    keysBatchOpenReasonRef.current = null
-                    setKeysBatchExpanded(false)
-                  }, KEYS_BATCH_EMPTY_BLUR_COLLAPSE_MS)
+                  scheduleKeysBatchAutoCollapse('blur')
                 }}
                 style={{
                   fontFamily:
@@ -1990,6 +2005,7 @@ function AdminDashboard(): JSX.Element {
               <div
                 ref={keysBatchAnchorRef}
                 onMouseEnter={() => {
+                  clearKeysBatchAutoCollapseTimer()
                   if (keysBatchSuppressNextHoverRef.current) {
                     keysBatchSuppressNextHoverRef.current = false
                     return
@@ -1999,8 +2015,10 @@ function AdminDashboard(): JSX.Element {
                 }}
                 onMouseLeave={() => {
                   keysBatchSuppressNextHoverRef.current = false
+                  scheduleKeysBatchAutoCollapse('hover')
                 }}
                 onFocusCapture={() => {
+                  clearKeysBatchAutoCollapseTimer()
                   keysBatchOpenReasonRef.current = 'focus'
                   setKeysBatchExpanded(true)
                 }}
