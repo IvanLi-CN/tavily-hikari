@@ -58,6 +58,7 @@ function parseHashForTokenId(): string | null {
 const REFRESH_INTERVAL_MS = 30_000
 const LOGS_PER_PAGE = 20
 const LOGS_MAX_PAGES = 10
+const KEYS_BATCH_EMPTY_BLUR_COLLAPSE_MS = 500
 
 function leaderboardPrimaryValue(
   item: TokenUsageLeaderboardItem,
@@ -375,6 +376,7 @@ function AdminDashboard(): JSX.Element {
   const keysBatchOpenReasonRef = useRef<'hover' | 'focus' | null>(null)
   const keysBatchSuppressNextHoverRef = useRef(false)
   const keysBatchLastPointerRef = useRef<{ x: number; y: number } | null>(null)
+  const keysBatchAutoCollapseTimerRef = useRef<number | null>(null)
   const keysBatchAnchorRef = useRef<HTMLDivElement | null>(null)
   const keysBatchCollapsedInputRef = useRef<HTMLInputElement | null>(null)
   const keysBatchTextareaRef = useRef<HTMLTextAreaElement | null>(null)
@@ -405,6 +407,17 @@ function AdminDashboard(): JSX.Element {
   const [batchCreating, setBatchCreating] = useState(false)
   const [batchShareText, setBatchShareText] = useState<string | null>(null)
   const isAdmin = profile?.isAdmin ?? false
+
+  const clearKeysBatchAutoCollapseTimer = useCallback(() => {
+    if (keysBatchAutoCollapseTimerRef.current != null) {
+      window.clearTimeout(keysBatchAutoCollapseTimerRef.current)
+      keysBatchAutoCollapseTimerRef.current = null
+    }
+  }, [])
+
+  useEffect(() => () => {
+    clearKeysBatchAutoCollapseTimer()
+  }, [clearKeysBatchAutoCollapseTimer])
 
   useEffect(() => {
     if (!keysBatchExpanded) return
@@ -468,6 +481,7 @@ function AdminDashboard(): JSX.Element {
         (root == null || !root.contains(target)) &&
         (overlay == null || !overlay.contains(target))
       ) {
+        clearKeysBatchAutoCollapseTimer()
         maybeSuppressHoverReopen()
         keysBatchOpenReasonRef.current = null
         setKeysBatchExpanded(false)
@@ -476,6 +490,7 @@ function AdminDashboard(): JSX.Element {
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        clearKeysBatchAutoCollapseTimer()
         maybeSuppressHoverReopen()
         keysBatchOpenReasonRef.current = null
         setKeysBatchExpanded(false)
@@ -1067,6 +1082,7 @@ function AdminDashboard(): JSX.Element {
       setKeysBatchReport({ kind: 'success', response })
       window.requestAnimationFrame(() => keysBatchReportDialogRef.current?.showModal())
       setNewKeysText('')
+      clearKeysBatchAutoCollapseTimer()
       maybeSuppressHoverReopen()
       keysBatchOpenReasonRef.current = null
       setKeysBatchExpanded(false)
@@ -1080,6 +1096,7 @@ function AdminDashboard(): JSX.Element {
       setKeysBatchReport({ kind: 'error', message, input_lines: rawLines.length, valid_lines: apiKeys.length })
       window.requestAnimationFrame(() => keysBatchReportDialogRef.current?.showModal())
       setNewKeysText('')
+      clearKeysBatchAutoCollapseTimer()
       maybeSuppressHoverReopen()
       keysBatchOpenReasonRef.current = null
       setKeysBatchExpanded(false)
@@ -1581,6 +1598,27 @@ function AdminDashboard(): JSX.Element {
                 aria-label={keyStrings.batch.placeholder}
                 value={newKeysText}
                 onChange={(e) => setNewKeysText(e.target.value)}
+                onFocus={() => clearKeysBatchAutoCollapseTimer()}
+                onBlur={(event) => {
+                  if (newKeysText.trim().length !== 0) return
+                  const overlay = keysBatchOverlayRef.current
+                  const next = event.relatedTarget
+                  if (overlay && next instanceof Node && overlay.contains(next)) return
+
+                  clearKeysBatchAutoCollapseTimer()
+                  keysBatchAutoCollapseTimerRef.current = window.setTimeout(() => {
+                    keysBatchAutoCollapseTimerRef.current = null
+                    const currentOverlay = keysBatchOverlayRef.current
+                    const currentTextarea = keysBatchTextareaRef.current
+                    if (!currentOverlay || !currentTextarea) return
+                    if (currentTextarea.value.trim().length !== 0) return
+                    const active = document.activeElement
+                    if (active instanceof Node && currentOverlay.contains(active)) return
+                    maybeSuppressHoverReopen()
+                    keysBatchOpenReasonRef.current = null
+                    setKeysBatchExpanded(false)
+                  }, KEYS_BATCH_EMPTY_BLUR_COLLAPSE_MS)
+                }}
                 style={{
                   fontFamily:
                     'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
