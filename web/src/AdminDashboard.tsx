@@ -889,17 +889,16 @@ function AdminDashboard(): JSX.Element {
     const textarea = keysBatchTextareaRef.current
     if (!anchor || !overlay || !textarea) return
 
-    const anchorRect = anchor.getBoundingClientRect()
     const layoutAnchorRect = (anchorInput ?? anchor).getBoundingClientRect()
     const visualViewport = window.visualViewport
     const visibleTop = visualViewport ? visualViewport.offsetTop : 0
     const visibleBottom = visualViewport ? visualViewport.offsetTop + visualViewport.height : window.innerHeight
 
     const viewportWidth = window.innerWidth
-    // Treat the overlay as an "expanded" version of the collapsed input group:
-    // align the card's top/left with the collapsed controls, and keep the same width,
-    // so the expanded UI doesn't jump around.
-    const overlayWidth = Math.max(0, Math.min(anchorRect.width, viewportWidth - 32))
+    // Treat the overlay as an "expanded" version of the collapsed input:
+    // align the card's top/left with the input, and keep the same width so it feels like
+    // the input grows in-place instead of opening a separate panel.
+    const overlayWidth = Math.max(0, Math.min(layoutAnchorRect.width, viewportWidth - 32))
     const leftMin = 16
     const leftMax = Math.max(leftMin, viewportWidth - leftMin - overlayWidth)
     const preferredLeft = layoutAnchorRect.left
