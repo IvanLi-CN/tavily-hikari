@@ -372,6 +372,7 @@ function AdminDashboard(): JSX.Element {
 
   const [newKeysText, setNewKeysText] = useState('')
   const [keysBatchExpanded, setKeysBatchExpanded] = useState(false)
+  const keysBatchOpenReasonRef = useRef<'hover' | 'focus' | null>(null)
   const keysBatchAnchorRef = useRef<HTMLDivElement | null>(null)
   const keysBatchCollapsedInputRef = useRef<HTMLInputElement | null>(null)
   const keysBatchTextareaRef = useRef<HTMLTextAreaElement | null>(null)
@@ -416,12 +417,14 @@ function AdminDashboard(): JSX.Element {
         (root == null || !root.contains(target)) &&
         (overlay == null || !overlay.contains(target))
       ) {
+        keysBatchOpenReasonRef.current = null
         setKeysBatchExpanded(false)
       }
     }
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        keysBatchOpenReasonRef.current = null
         setKeysBatchExpanded(false)
       }
     }
@@ -1010,6 +1013,7 @@ function AdminDashboard(): JSX.Element {
       setKeysBatchReport({ kind: 'success', response })
       window.requestAnimationFrame(() => keysBatchReportDialogRef.current?.showModal())
       setNewKeysText('')
+      keysBatchOpenReasonRef.current = null
       setKeysBatchExpanded(false)
       const controller = new AbortController()
       setLoading(true)
@@ -1021,6 +1025,7 @@ function AdminDashboard(): JSX.Element {
       setKeysBatchReport({ kind: 'error', message, input_lines: rawLines.length, valid_lines: apiKeys.length })
       window.requestAnimationFrame(() => keysBatchReportDialogRef.current?.showModal())
       setNewKeysText('')
+      keysBatchOpenReasonRef.current = null
       setKeysBatchExpanded(false)
       setError(message)
     } finally {
@@ -1890,11 +1895,21 @@ function AdminDashboard(): JSX.Element {
             {isAdmin && (
               <div
                 ref={keysBatchAnchorRef}
-                onMouseEnter={() => setKeysBatchExpanded(true)}
-                onFocusCapture={() => setKeysBatchExpanded(true)}
+                onMouseEnter={() => {
+                  keysBatchOpenReasonRef.current = 'hover'
+                  setKeysBatchExpanded(true)
+                }}
+                onFocusCapture={() => {
+                  keysBatchOpenReasonRef.current = 'focus'
+                  setKeysBatchExpanded(true)
+                  // Focus into the expanded textarea for click/tab activation.
+                  window.requestAnimationFrame(() => keysBatchTextareaRef.current?.focus())
+                }}
                 style={{ position: 'relative' }}
               >
                 <div
+                  className={`keys-batch-collapsed${keysBatchExpanded ? ' is-hidden' : ''}`}
+                  aria-hidden={keysBatchExpanded}
                   style={{
                     display: 'flex',
                     alignItems: 'center',
@@ -1912,13 +1927,14 @@ function AdminDashboard(): JSX.Element {
                     aria-label={keyStrings.placeholder}
                     value={keysBatchFirstLine}
                     onChange={(e) => setNewKeysText(e.target.value)}
+                    disabled={keysBatchExpanded}
                     style={{ flex: '1 1 160px', minWidth: 160, maxWidth: '100%' }}
                   />
                   <button
                     type="button"
                     className="btn btn-primary"
                     onClick={() => void handleAddKey()}
-                    disabled={submitting || keysBatchParsed.length === 0}
+                    disabled={keysBatchExpanded || submitting || keysBatchParsed.length === 0}
                     style={{ flexShrink: 0 }}
                   >
                     {submitting ? keyStrings.adding : keyStrings.addButton}

@@ -1520,6 +1520,13 @@ tbody tr:hover {
   color: #111827;
 }
 
+/* Admin / API Keys batch input: when overlay is expanded, hide collapsed controls but keep layout for anchoring. */
+.keys-batch-collapsed.is-hidden {
+  opacity: 0;
+  pointer-events: none;
+  user-select: none;
+}
+
 /* Jobs table: prevent start time from wrapping and overflowing (jobs list only, not tokens table) */
 .jobs-table:not(.tokens-table) th:nth-child(6),
 .jobs-table:not(.tokens-table) td:nth-child(6) {
