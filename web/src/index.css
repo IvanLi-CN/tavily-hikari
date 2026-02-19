@@ -1520,6 +1520,46 @@ tbody tr:hover {
   color: #111827;
 }
 
+/* Admin / API Keys batch input: when overlay is expanded, hide collapsed controls but keep layout for anchoring. */
+.keys-batch-collapsed.is-hidden {
+  opacity: 0;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Admin / API Keys batch overlay: animate in so it feels like the input expands in-place. */
+.keys-batch-overlay {
+  /* Keep in sync with `KEYS_BATCH_CLOSE_ANIMATION_MS` in AdminDashboard.tsx. */
+  --keys-batch-close-ms: 200ms;
+  transform-origin: top right;
+  animation: keys-batch-overlay-in 140ms ease-out;
+  will-change: transform, opacity;
+  transition: opacity var(--keys-batch-close-ms) ease-in, transform var(--keys-batch-close-ms) ease-in;
+}
+
+.keys-batch-overlay.is-closing {
+  opacity: 0;
+  transform: translateY(4px) scaleX(0.98) scaleY(0.96);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .keys-batch-overlay {
+    animation: none;
+    transition: none;
+  }
+}
+
+@keyframes keys-batch-overlay-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scaleX(0.98) scaleY(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scaleX(1) scaleY(1);
+  }
+}
+
 /* Jobs table: prevent start time from wrapping and overflowing (jobs list only, not tokens table) */
 .jobs-table:not(.tokens-table) th:nth-child(6),
 .jobs-table:not(.tokens-table) td:nth-child(6) {

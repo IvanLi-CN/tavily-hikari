@@ -58,6 +58,11 @@ function parseHashForTokenId(): string | null {
 const REFRESH_INTERVAL_MS = 30_000
 const LOGS_PER_PAGE = 20
 const LOGS_MAX_PAGES = 10
+// Auto-collapse behavior for the API keys batch overlay (empty textarea only):
+// The user wants "delay + close animation" to total 500ms.
+const KEYS_BATCH_CLOSE_ANIMATION_MS = 200
+const KEYS_BATCH_AUTO_COLLAPSE_TOTAL_MS = 500
+const KEYS_BATCH_AUTO_COLLAPSE_DELAY_MS = Math.max(0, KEYS_BATCH_AUTO_COLLAPSE_TOTAL_MS - KEYS_BATCH_CLOSE_ANIMATION_MS)
 
 function leaderboardPrimaryValue(
   item: TokenUsageLeaderboardItem,
@@ -372,6 +377,12 @@ function AdminDashboard(): JSX.Element {
 
   const [newKeysText, setNewKeysText] = useState('')
   const [keysBatchExpanded, setKeysBatchExpanded] = useState(false)
+  const [keysBatchClosing, setKeysBatchClosing] = useState(false)
+  const keysBatchOpenReasonRef = useRef<'hover' | 'focus' | null>(null)
+  const keysBatchSuppressNextHoverRef = useRef(false)
+  const keysBatchLastPointerRef = useRef<{ x: number; y: number } | null>(null)
+  const keysBatchAutoCollapseTimerRef = useRef<number | null>(null)
+  const keysBatchCloseTimerRef = useRef<number | null>(null)
   const keysBatchAnchorRef = useRef<HTMLDivElement | null>(null)
   const keysBatchCollapsedInputRef = useRef<HTMLInputElement | null>(null)
   const keysBatchTextareaRef = useRef<HTMLTextAreaElement | null>(null)
@@ -402,6 +413,127 @@ function AdminDashboard(): JSX.Element {
   const [batchCreating, setBatchCreating] = useState(false)
   const [batchShareText, setBatchShareText] = useState<string | null>(null)
   const isAdmin = profile?.isAdmin ?? false
+  const keysBatchVisible = keysBatchExpanded || keysBatchClosing
+
+  const clearKeysBatchAutoCollapseTimer = useCallback(() => {
+    if (keysBatchAutoCollapseTimerRef.current != null) {
+      window.clearTimeout(keysBatchAutoCollapseTimerRef.current)
+      keysBatchAutoCollapseTimerRef.current = null
+    }
+  }, [])
+
+  const clearKeysBatchCloseTimer = useCallback(() => {
+    if (keysBatchCloseTimerRef.current != null) {
+      window.clearTimeout(keysBatchCloseTimerRef.current)
+      keysBatchCloseTimerRef.current = null
+    }
+  }, [])
+
+  useEffect(() => () => {
+    clearKeysBatchAutoCollapseTimer()
+    clearKeysBatchCloseTimer()
+  }, [clearKeysBatchAutoCollapseTimer, clearKeysBatchCloseTimer])
+
+  useEffect(() => {
+    if (!keysBatchExpanded) return
+    if (keysBatchOpenReasonRef.current === 'focus') {
+      window.requestAnimationFrame(() => keysBatchTextareaRef.current?.focus())
+    }
+  }, [keysBatchExpanded])
+
+  useEffect(() => {
+    const recordPointer = (event: PointerEvent) => {
+      keysBatchLastPointerRef.current = { x: event.clientX, y: event.clientY }
+    }
+    window.addEventListener('pointermove', recordPointer, { passive: true })
+    window.addEventListener('pointerdown', recordPointer)
+    return () => {
+      window.removeEventListener('pointermove', recordPointer)
+      window.removeEventListener('pointerdown', recordPointer)
+    }
+  }, [])
+
+  const maybeSuppressHoverReopen = useCallback(() => {
+    const anchor = keysBatchAnchorRef.current
+    const pointer = keysBatchLastPointerRef.current
+    if (!anchor || !pointer) return
+    const rect = anchor.getBoundingClientRect()
+    if (
+      pointer.x >= rect.left &&
+      pointer.x <= rect.right &&
+      pointer.y >= rect.top &&
+      pointer.y <= rect.bottom
+    ) {
+      keysBatchSuppressNextHoverRef.current = true
+    }
+  }, [])
+
+  const beginKeysBatchClose = useCallback(() => {
+    if (!keysBatchVisible) return
+
+    clearKeysBatchAutoCollapseTimer()
+    clearKeysBatchCloseTimer()
+
+    maybeSuppressHoverReopen()
+    keysBatchOpenReasonRef.current = null
+    setKeysBatchExpanded(false)
+
+    const prefersReducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ?? false
+    if (prefersReducedMotion) {
+      setKeysBatchClosing(false)
+      return
+    }
+
+    setKeysBatchClosing(true)
+    keysBatchCloseTimerRef.current = window.setTimeout(() => {
+      keysBatchCloseTimerRef.current = null
+      setKeysBatchClosing(false)
+    }, KEYS_BATCH_CLOSE_ANIMATION_MS)
+  }, [
+    clearKeysBatchAutoCollapseTimer,
+    clearKeysBatchCloseTimer,
+    keysBatchVisible,
+    maybeSuppressHoverReopen,
+  ])
+
+  const scheduleKeysBatchAutoCollapse = useCallback(
+    (mode: 'blur' | 'hover') => {
+      if (!keysBatchExpanded) return
+
+      const textarea = keysBatchTextareaRef.current
+      if (!textarea) return
+      if (textarea.value.trim().length !== 0) return
+
+      clearKeysBatchAutoCollapseTimer()
+      keysBatchAutoCollapseTimerRef.current = window.setTimeout(() => {
+        keysBatchAutoCollapseTimerRef.current = null
+
+        const currentOverlay = keysBatchOverlayRef.current
+        const currentTextarea = keysBatchTextareaRef.current
+        if (!currentOverlay || !currentTextarea) return
+        if (currentTextarea.value.trim().length !== 0) return
+
+        // If the user re-focused the overlay before the timeout, keep it open.
+        const active = document.activeElement
+        if (active instanceof Node && currentOverlay.contains(active)) return
+
+        if (mode === 'hover') {
+          const pointer = keysBatchLastPointerRef.current
+          const anchor = keysBatchAnchorRef.current
+          if (pointer && anchor) {
+            const anchorRect = anchor.getBoundingClientRect()
+            const overlayRect = currentOverlay.getBoundingClientRect()
+            const containsPointer = (rect: DOMRect) =>
+              pointer.x >= rect.left && pointer.x <= rect.right && pointer.y >= rect.top && pointer.y <= rect.bottom
+            if (containsPointer(anchorRect) || containsPointer(overlayRect)) return
+          }
+        }
+
+        beginKeysBatchClose()
+      }, KEYS_BATCH_AUTO_COLLAPSE_DELAY_MS)
+    },
+    [beginKeysBatchClose, clearKeysBatchAutoCollapseTimer, keysBatchExpanded],
+  )
 
   useEffect(() => {
     if (!keysBatchExpanded) return
@@ -416,13 +548,13 @@ function AdminDashboard(): JSX.Element {
         (root == null || !root.contains(target)) &&
         (overlay == null || !overlay.contains(target))
       ) {
-        setKeysBatchExpanded(false)
+        beginKeysBatchClose()
       }
     }
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        setKeysBatchExpanded(false)
+        beginKeysBatchClose()
       }
     }
 
@@ -432,7 +564,7 @@ function AdminDashboard(): JSX.Element {
       document.removeEventListener('pointerdown', handlePointerDown)
       document.removeEventListener('keydown', handleKeyDown)
     }
-  }, [keysBatchExpanded])
+  }, [beginKeysBatchClose, keysBatchExpanded])
 
   const copyStateKey = useCallback((scope: 'keys' | 'logs' | 'tokens', identifier: string | number) => {
     return `${scope}:${identifier}`
@@ -889,16 +1021,20 @@ function AdminDashboard(): JSX.Element {
     const anchorRect = anchor.getBoundingClientRect()
     const layoutAnchorRect = (anchorInput ?? anchor).getBoundingClientRect()
     const visualViewport = window.visualViewport
-    const visibleTop = visualViewport ? visualViewport.offsetTop : 0
     const visibleBottom = visualViewport ? visualViewport.offsetTop + visualViewport.height : window.innerHeight
 
     const viewportWidth = window.innerWidth
+    // The overlay is the "expanded" version of the collapsed controls:
+    // keep its position anchored to the original control, but expand the card width for a proper
+    // multi-line paste experience (matching the pre-existing wide overlay feel).
     const overlayWidth = Math.max(0, Math.min(720, viewportWidth - 32))
     const leftMin = 16
     const leftMax = Math.max(leftMin, viewportWidth - leftMin - overlayWidth)
+    // Right-align to the collapsed control group so expansion grows leftwards instead of jumping
+    // off-screen (the controls live on the right side of the header).
     const preferredLeft = anchorRect.right - overlayWidth
     const left = Math.min(leftMax, Math.max(leftMin, preferredLeft))
-    const topBelow = layoutAnchorRect.bottom + 8
+    const topPreferred = layoutAnchorRect.top
 
     overlay.style.left = `${Math.round(left)}px`
     overlay.style.width = `${Math.round(overlayWidth)}px`
@@ -922,18 +1058,15 @@ function AdminDashboard(): JSX.Element {
       textarea.style.overflowY = textarea.scrollHeight > maxTextareaHeight ? 'auto' : 'hidden'
     }
 
-    // Prefer positioning below the anchor, but flip above if it would go offscreen.
-    overlay.style.top = `${Math.round(topBelow)}px`
+    // Expand in-place from the collapsed control position.
+    overlay.style.top = `${Math.round(topPreferred)}px`
     fitTextarea()
 
     const overlayRect = overlay.getBoundingClientRect()
     const overflowBottom = overlayRect.bottom - (visibleBottom - 16)
     if (overflowBottom > 0) {
-      const topAbove = layoutAnchorRect.top - overlayRect.height - 8
-      const topMin = visibleTop + 16
-      const topMax = Math.max(topMin, visibleBottom - 16 - overlayRect.height)
-      const clampedTop = Math.min(topMax, Math.max(topMin, topAbove))
-      overlay.style.top = `${Math.round(clampedTop)}px`
+      // Keep the overlay anchored; just re-fit the textarea height so the card stays within view.
+      // This preserves the "expands from the input" mental model.
       fitTextarea()
     }
   }, [keysBatchExpanded])
@@ -1010,7 +1143,7 @@ function AdminDashboard(): JSX.Element {
       setKeysBatchReport({ kind: 'success', response })
       window.requestAnimationFrame(() => keysBatchReportDialogRef.current?.showModal())
       setNewKeysText('')
-      setKeysBatchExpanded(false)
+      beginKeysBatchClose()
       const controller = new AbortController()
       setLoading(true)
       await loadData(controller.signal)
@@ -1021,7 +1154,7 @@ function AdminDashboard(): JSX.Element {
       setKeysBatchReport({ kind: 'error', message, input_lines: rawLines.length, valid_lines: apiKeys.length })
       window.requestAnimationFrame(() => keysBatchReportDialogRef.current?.showModal())
       setNewKeysText('')
-      setKeysBatchExpanded(false)
+      beginKeysBatchClose()
       setError(message)
     } finally {
       setSubmitting(false)
@@ -1497,12 +1630,42 @@ function AdminDashboard(): JSX.Element {
   const hasTokenGroups = tokenGroupList.length > 0
   return (
     <>
-      {keysBatchExpanded &&
+      {keysBatchVisible &&
         typeof document !== 'undefined' &&
         createPortal(
           <div
             ref={keysBatchOverlayRef}
-            className="card bg-base-100 shadow-xl border border-base-300"
+            className={`card bg-base-100 shadow-xl border border-base-300 keys-batch-overlay${keysBatchClosing ? ' is-closing' : ''}`}
+            onMouseEnter={() => {
+              clearKeysBatchAutoCollapseTimer()
+              if (keysBatchClosing) {
+                clearKeysBatchCloseTimer()
+                setKeysBatchClosing(false)
+                keysBatchOpenReasonRef.current = 'hover'
+                setKeysBatchExpanded(true)
+              }
+            }}
+            onMouseLeave={() => scheduleKeysBatchAutoCollapse('hover')}
+            onPointerDown={(event) => {
+              clearKeysBatchAutoCollapseTimer()
+              if (keysBatchClosing) {
+                clearKeysBatchCloseTimer()
+                setKeysBatchClosing(false)
+                setKeysBatchExpanded(true)
+              }
+              keysBatchOpenReasonRef.current = 'focus'
+
+              // The overlay visually "replaces" the collapsed input. If the user clicks the card padding
+              // (common when the overlay opens on hover), ensure the textarea receives focus so blur-based
+              // auto-collapse works as expected.
+              if (document.activeElement === keysBatchTextareaRef.current) return
+              if (event.target instanceof Element) {
+                if (event.target.closest('textarea')) return
+                if (event.target.closest('button')) return
+              }
+
+              window.requestAnimationFrame(() => keysBatchTextareaRef.current?.focus())
+            }}
             style={{
               position: 'fixed',
               top: 0,
@@ -1520,6 +1683,14 @@ function AdminDashboard(): JSX.Element {
                 aria-label={keyStrings.batch.placeholder}
                 value={newKeysText}
                 onChange={(e) => setNewKeysText(e.target.value)}
+                onFocus={() => clearKeysBatchAutoCollapseTimer()}
+                onBlur={(event) => {
+                  if (event.currentTarget.value.trim().length !== 0) return
+                  const overlay = keysBatchOverlayRef.current
+                  const next = event.relatedTarget
+                  if (overlay && next instanceof Node && overlay.contains(next)) return
+                  scheduleKeysBatchAutoCollapse('blur')
+                }}
                 style={{
                   fontFamily:
                     'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
@@ -1880,7 +2051,7 @@ function AdminDashboard(): JSX.Element {
         )}
       </section>
 
-      <section className="surface panel" style={keysBatchExpanded ? { position: 'relative', zIndex: 40 } : undefined}>
+      <section className="surface panel" style={keysBatchVisible ? { position: 'relative', zIndex: 40 } : undefined}>
         <div className="panel-header" style={{ flexWrap: 'wrap', gap: 12, alignItems: 'flex-start' }}>
           <div style={{ flex: '1 1 320px', minWidth: 240 }}>
             <h2>{keyStrings.title}</h2>
@@ -1890,11 +2061,33 @@ function AdminDashboard(): JSX.Element {
             {isAdmin && (
               <div
                 ref={keysBatchAnchorRef}
-                onMouseEnter={() => setKeysBatchExpanded(true)}
-                onFocusCapture={() => setKeysBatchExpanded(true)}
+                onMouseEnter={() => {
+                  clearKeysBatchAutoCollapseTimer()
+                  clearKeysBatchCloseTimer()
+                  setKeysBatchClosing(false)
+                  if (keysBatchSuppressNextHoverRef.current) {
+                    keysBatchSuppressNextHoverRef.current = false
+                    return
+                  }
+                  keysBatchOpenReasonRef.current = 'hover'
+                  setKeysBatchExpanded(true)
+                }}
+                onMouseLeave={() => {
+                  keysBatchSuppressNextHoverRef.current = false
+                  scheduleKeysBatchAutoCollapse('hover')
+                }}
+                onFocusCapture={() => {
+                  clearKeysBatchAutoCollapseTimer()
+                  clearKeysBatchCloseTimer()
+                  setKeysBatchClosing(false)
+                  keysBatchOpenReasonRef.current = 'focus'
+                  setKeysBatchExpanded(true)
+                }}
                 style={{ position: 'relative' }}
               >
                 <div
+                  className={`keys-batch-collapsed${keysBatchVisible ? ' is-hidden' : ''}`}
+                  aria-hidden={keysBatchVisible}
                   style={{
                     display: 'flex',
                     alignItems: 'center',
@@ -1912,13 +2105,14 @@ function AdminDashboard(): JSX.Element {
                     aria-label={keyStrings.placeholder}
                     value={keysBatchFirstLine}
                     onChange={(e) => setNewKeysText(e.target.value)}
+                    disabled={keysBatchVisible}
                     style={{ flex: '1 1 160px', minWidth: 160, maxWidth: '100%' }}
                   />
                   <button
                     type="button"
                     className="btn btn-primary"
                     onClick={() => void handleAddKey()}
-                    disabled={submitting || keysBatchParsed.length === 0}
+                    disabled={keysBatchVisible || submitting || keysBatchParsed.length === 0}
                     style={{ flexShrink: 0 }}
                   >
                     {submitting ? keyStrings.adding : keyStrings.addButton}
