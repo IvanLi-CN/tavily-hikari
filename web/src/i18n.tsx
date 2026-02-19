@@ -281,6 +281,7 @@ interface AdminTranslationsShape {
     adding: string
     batch: {
       placeholder: string
+      groupPlaceholder: string
       hint: string
       count: string
       report: {
@@ -306,6 +307,13 @@ interface AdminTranslationsShape {
         }
       }
     }
+    groups: {
+      label: string
+      all: string
+      ungrouped: string
+      moreShow: string
+      moreHide: string
+    }
     table: {
       keyId: string
       status: string
@@ -324,6 +332,7 @@ interface AdminTranslationsShape {
     empty: {
       loading: string
       none: string
+      filtered: string
     }
     actions: {
       copy: string
@@ -815,6 +824,7 @@ export const translations: Record<Language, TranslationShape> = {
         adding: 'Adding…',
         batch: {
           placeholder: 'Paste Tavily API keys (one per line)',
+          groupPlaceholder: 'Group (optional)',
           hint: 'One key per line (newline-separated only).',
           count: '{count} keys',
           report: {
@@ -840,6 +850,13 @@ export const translations: Record<Language, TranslationShape> = {
             },
           },
         },
+        groups: {
+          label: 'Groups',
+          all: 'All',
+          ungrouped: 'Ungrouped',
+          moreShow: 'Show all groups',
+          moreHide: 'Collapse groups',
+        },
       table: {
         keyId: 'Key ID',
         status: 'Status',
@@ -858,6 +875,7 @@ export const translations: Record<Language, TranslationShape> = {
         empty: {
           loading: 'Loading key statistics…',
           none: 'No key data recorded yet.',
+          filtered: 'No keys in this group.',
         },
         actions: {
           copy: 'Copy original API key',
@@ -1321,6 +1339,7 @@ export const translations: Record<Language, TranslationShape> = {
         adding: '添加中…',
         batch: {
           placeholder: '粘贴 Tavily API Key（每行一个）',
+          groupPlaceholder: '分组名（可选）',
           hint: '每行一个 Key，仅支持换行分隔。',
           count: '非空行 {count}',
           report: {
@@ -1346,6 +1365,13 @@ export const translations: Record<Language, TranslationShape> = {
             },
           },
         },
+        groups: {
+          label: '分组',
+          all: '全部',
+          ungrouped: '未分组',
+          moreShow: '展开全部分组',
+          moreHide: '收起分组',
+        },
         table: {
           keyId: 'Key ID',
           status: '状态',
@@ -1364,6 +1390,7 @@ export const translations: Record<Language, TranslationShape> = {
         empty: {
           loading: '正在加载密钥统计…',
           none: '暂时没有密钥数据。',
+          filtered: '该分组下暂无密钥。',
         },
         actions: {
           copy: '复制原始 API Key',

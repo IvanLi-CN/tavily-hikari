@@ -1090,6 +1090,17 @@ impl TavilyProxy {
         self.key_store.add_or_undelete_key(api_key).await
     }
 
+    /// Admin: add or undelete an API key and optionally assign it to a group.
+    pub async fn add_or_undelete_key_in_group(
+        &self,
+        api_key: &str,
+        group: Option<&str>,
+    ) -> Result<String, ProxyError> {
+        self.key_store
+            .add_or_undelete_key_in_group(api_key, group)
+            .await
+    }
+
     /// Admin: add/undelete an API key and return the upsert status.
     pub async fn add_or_undelete_key_with_status(
         &self,
@@ -1097,6 +1108,17 @@ impl TavilyProxy {
     ) -> Result<(String, ApiKeyUpsertStatus), ProxyError> {
         self.key_store
             .add_or_undelete_key_with_status(api_key)
+            .await
+    }
+
+    /// Admin: add/undelete an API key in the provided group and return the upsert status.
+    pub async fn add_or_undelete_key_with_status_in_group(
+        &self,
+        api_key: &str,
+        group: Option<&str>,
+    ) -> Result<(String, ApiKeyUpsertStatus), ProxyError> {
+        self.key_store
+            .add_or_undelete_key_with_status_in_group(api_key, group)
             .await
     }
 
@@ -1523,6 +1545,7 @@ impl KeyStore {
             CREATE TABLE IF NOT EXISTS api_keys (
                 id TEXT PRIMARY KEY,
                 api_key TEXT NOT NULL UNIQUE,
+                group_name TEXT,
                 status TEXT NOT NULL DEFAULT 'active',
                 status_changed_at INTEGER,
                 last_used_at INTEGER NOT NULL DEFAULT 0,
@@ -2467,6 +2490,12 @@ impl KeyStore {
                 .await?;
         }
 
+        if !self.api_keys_column_exists("group_name").await? {
+            sqlx::query("ALTER TABLE api_keys ADD COLUMN group_name TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
+
         // Add deleted_at for soft delete marker (timestamp)
         if !self.api_keys_column_exists("deleted_at").await? {
             sqlx::query("ALTER TABLE api_keys ADD COLUMN deleted_at INTEGER")
@@ -2583,14 +2612,24 @@ impl KeyStore {
 
         let mut tx = self.pool.begin().await?;
 
+        // Ensure the temp table schema is up-to-date even if a previous migration attempt left it behind.
+        sqlx::query("DROP TABLE IF EXISTS api_keys_new")
+            .execute(&mut *tx)
+            .await?;
+
         sqlx::query(
             r#"
-            CREATE TABLE IF NOT EXISTS api_keys_new (
+            CREATE TABLE api_keys_new (
                 id TEXT PRIMARY KEY,
                 api_key TEXT NOT NULL UNIQUE,
+                group_name TEXT,
                 status TEXT NOT NULL DEFAULT 'active',
                 status_changed_at INTEGER,
-                last_used_at INTEGER NOT NULL DEFAULT 0
+                last_used_at INTEGER NOT NULL DEFAULT 0,
+                quota_limit INTEGER,
+                quota_remaining INTEGER,
+                quota_synced_at INTEGER,
+                deleted_at INTEGER
             )
             "#,
         )
@@ -2599,8 +2638,29 @@ impl KeyStore {
 
         sqlx::query(
             r#"
-            INSERT INTO api_keys_new (id, api_key, status, status_changed_at, last_used_at)
-            SELECT id, api_key, status, status_changed_at, last_used_at
+            INSERT INTO api_keys_new (
+                id,
+                api_key,
+                group_name,
+                status,
+                status_changed_at,
+                last_used_at,
+                quota_limit,
+                quota_remaining,
+                quota_synced_at,
+                deleted_at
+            )
+            SELECT
+                id,
+                api_key,
+                group_name,
+                status,
+                status_changed_at,
+                last_used_at,
+                quota_limit,
+                quota_remaining,
+                quota_synced_at,
+                deleted_at
             FROM api_keys
             "#,
         )
@@ -3986,39 +4046,18 @@ impl KeyStore {
 
     // Admin ops: add/undelete key by secret
     async fn add_or_undelete_key(&self, api_key: &str) -> Result<String, ProxyError> {
-        let mut tx = self.pool.begin().await?;
-        let now = Utc::now().timestamp();
-        if let Some((id, deleted_at)) = sqlx::query_as::<_, (String, Option<i64>)>(
-            "SELECT id, deleted_at FROM api_keys WHERE api_key = ? LIMIT 1",
-        )
-        .bind(api_key)
-        .fetch_optional(&mut *tx)
-        .await?
-        {
-            if deleted_at.is_some() {
-                sqlx::query("UPDATE api_keys SET deleted_at = NULL WHERE id = ?")
-                    .bind(&id)
-                    .execute(&mut *tx)
-                    .await?;
-            }
-            tx.commit().await?;
-            return Ok(id);
-        }
+        self.add_or_undelete_key_in_group(api_key, None).await
+    }
 
-        let id = Self::generate_unique_key_id(&mut tx).await?;
-        sqlx::query(
-            r#"
-            INSERT INTO api_keys (id, api_key, status, status_changed_at)
-            VALUES (?, ?, ?, ?)
-            "#,
-        )
-        .bind(&id)
-        .bind(api_key)
-        .bind(STATUS_ACTIVE)
-        .bind(now)
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
+    // Admin ops: add/undelete key by secret and optionally assign a group.
+    async fn add_or_undelete_key_in_group(
+        &self,
+        api_key: &str,
+        group: Option<&str>,
+    ) -> Result<String, ProxyError> {
+        let (id, _) = self
+            .add_or_undelete_key_with_status_in_group(api_key, group)
+            .await?;
         Ok(id)
     }
 
@@ -4027,22 +4066,67 @@ impl KeyStore {
         &self,
         api_key: &str,
     ) -> Result<(String, ApiKeyUpsertStatus), ProxyError> {
+        self.add_or_undelete_key_with_status_in_group(api_key, None)
+            .await
+    }
+
+    // Admin ops: add/undelete key by secret with status and optional group assignment.
+    //
+    // Behavior:
+    // - created / undeleted: set group_name when group is provided and non-empty
+    // - existed: set group_name only if the stored group is empty (do not override)
+    async fn add_or_undelete_key_with_status_in_group(
+        &self,
+        api_key: &str,
+        group: Option<&str>,
+    ) -> Result<(String, ApiKeyUpsertStatus), ProxyError> {
         let mut tx = self.pool.begin().await?;
         let now = Utc::now().timestamp();
-        if let Some((id, deleted_at)) = sqlx::query_as::<_, (String, Option<i64>)>(
-            "SELECT id, deleted_at FROM api_keys WHERE api_key = ? LIMIT 1",
-        )
-        .bind(api_key)
-        .fetch_optional(&mut *tx)
-        .await?
+
+        let group = group.map(str::trim).filter(|g| !g.is_empty());
+
+        if let Some((id, deleted_at, existing_group)) =
+            sqlx::query_as::<_, (String, Option<i64>, Option<String>)>(
+                "SELECT id, deleted_at, group_name FROM api_keys WHERE api_key = ? LIMIT 1",
+            )
+            .bind(api_key)
+            .fetch_optional(&mut *tx)
+            .await?
         {
+            let existing_empty = existing_group
+                .as_deref()
+                .map(str::trim)
+                .map(|g| g.is_empty())
+                .unwrap_or(true);
+
             if deleted_at.is_some() {
-                sqlx::query("UPDATE api_keys SET deleted_at = NULL WHERE id = ?")
+                if let Some(group) = group {
+                    sqlx::query(
+                        "UPDATE api_keys SET deleted_at = NULL, group_name = ? WHERE id = ?",
+                    )
+                    .bind(group)
                     .bind(&id)
                     .execute(&mut *tx)
                     .await?;
+                } else {
+                    sqlx::query("UPDATE api_keys SET deleted_at = NULL WHERE id = ?")
+                        .bind(&id)
+                        .execute(&mut *tx)
+                        .await?;
+                }
+
                 tx.commit().await?;
                 return Ok((id, ApiKeyUpsertStatus::Undeleted));
+            }
+
+            if let Some(group) = group
+                && existing_empty
+            {
+                sqlx::query("UPDATE api_keys SET group_name = ? WHERE id = ?")
+                    .bind(group)
+                    .bind(&id)
+                    .execute(&mut *tx)
+                    .await?;
             }
 
             tx.commit().await?;
@@ -4052,12 +4136,13 @@ impl KeyStore {
         let id = Self::generate_unique_key_id(&mut tx).await?;
         sqlx::query(
             r#"
-            INSERT INTO api_keys (id, api_key, status, status_changed_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO api_keys (id, api_key, group_name, status, status_changed_at)
+            VALUES (?, ?, ?, ?, ?)
             "#,
         )
         .bind(&id)
         .bind(api_key)
+        .bind(group)
         .bind(STATUS_ACTIVE)
         .bind(now)
         .execute(&mut *tx)
@@ -4226,6 +4311,7 @@ impl KeyStore {
             SELECT
                 ak.id,
                 ak.status,
+                ak.group_name,
                 ak.status_changed_at,
                 ak.last_used_at,
                 ak.deleted_at,
@@ -4261,6 +4347,7 @@ impl KeyStore {
             .map(|row| -> Result<ApiKeyMetrics, sqlx::Error> {
                 let id: String = row.try_get("id")?;
                 let status: String = row.try_get("status")?;
+                let group_name: Option<String> = row.try_get("group_name")?;
                 let status_changed_at: Option<i64> = row.try_get("status_changed_at")?;
                 let last_used_at: i64 = row.try_get("last_used_at")?;
                 let deleted_at: Option<i64> = row.try_get("deleted_at")?;
@@ -4275,6 +4362,14 @@ impl KeyStore {
                 Ok(ApiKeyMetrics {
                     id,
                     status,
+                    group_name: group_name.and_then(|name| {
+                        let trimmed = name.trim();
+                        if trimmed.is_empty() {
+                            None
+                        } else {
+                            Some(trimmed.to_owned())
+                        }
+                    }),
                     status_changed_at: status_changed_at.and_then(normalize_timestamp),
                     last_used_at: normalize_timestamp(last_used_at),
                     deleted_at: deleted_at.and_then(normalize_timestamp),
@@ -4955,6 +5050,7 @@ impl QuotaWindow {
 pub struct ApiKeyMetrics {
     pub id: String,
     pub status: String,
+    pub group_name: Option<String>,
     pub status_changed_at: Option<i64>,
     pub last_used_at: Option<i64>,
     pub deleted_at: Option<i64>,
