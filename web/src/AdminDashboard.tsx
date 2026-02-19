@@ -1609,6 +1609,21 @@ function AdminDashboard(): JSX.Element {
             className="card bg-base-100 shadow-xl border border-base-300 keys-batch-overlay"
             onMouseEnter={() => clearKeysBatchAutoCollapseTimer()}
             onMouseLeave={() => scheduleKeysBatchAutoCollapse('hover')}
+            onPointerDown={(event) => {
+              clearKeysBatchAutoCollapseTimer()
+              keysBatchOpenReasonRef.current = 'focus'
+
+              // The overlay visually "replaces" the collapsed input. If the user clicks the card padding
+              // (common when the overlay opens on hover), ensure the textarea receives focus so blur-based
+              // auto-collapse works as expected.
+              if (document.activeElement === keysBatchTextareaRef.current) return
+              if (event.target instanceof Element) {
+                if (event.target.closest('textarea')) return
+                if (event.target.closest('button')) return
+              }
+
+              window.requestAnimationFrame(() => keysBatchTextareaRef.current?.focus())
+            }}
             style={{
               position: 'fixed',
               top: 0,
