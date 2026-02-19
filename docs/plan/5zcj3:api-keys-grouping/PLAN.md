@@ -106,3 +106,13 @@
 ## 变更记录 / Change log
 
 - 2026-02-19: Landed via PR #67.
+
+## Screenshots
+
+Batch overlay group input:
+
+![API Keys batch overlay group input](./assets/api-keys-batch-overlay-group-input.png)
+
+API Keys group filter chips:
+
+![API Keys group filter chips](./assets/api-keys-group-filter-chips.png)
