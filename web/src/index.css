@@ -1529,14 +1529,23 @@ tbody tr:hover {
 
 /* Admin / API Keys batch overlay: animate in so it feels like the input expands in-place. */
 .keys-batch-overlay {
+  /* Keep in sync with `KEYS_BATCH_CLOSE_ANIMATION_MS` in AdminDashboard.tsx. */
+  --keys-batch-close-ms: 200ms;
   transform-origin: top right;
   animation: keys-batch-overlay-in 140ms ease-out;
   will-change: transform, opacity;
+  transition: opacity var(--keys-batch-close-ms) ease-in, transform var(--keys-batch-close-ms) ease-in;
+}
+
+.keys-batch-overlay.is-closing {
+  opacity: 0;
+  transform: translateY(4px) scaleX(0.98) scaleY(0.96);
 }
 
 @media (prefers-reduced-motion: reduce) {
   .keys-batch-overlay {
     animation: none;
+    transition: none;
   }
 }
 

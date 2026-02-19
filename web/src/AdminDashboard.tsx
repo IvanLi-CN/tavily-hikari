@@ -58,7 +58,11 @@ function parseHashForTokenId(): string | null {
 const REFRESH_INTERVAL_MS = 30_000
 const LOGS_PER_PAGE = 20
 const LOGS_MAX_PAGES = 10
-const KEYS_BATCH_EMPTY_BLUR_COLLAPSE_MS = 500
+// Auto-collapse behavior for the API keys batch overlay (empty textarea only):
+// The user wants "delay + close animation" to total 500ms.
+const KEYS_BATCH_CLOSE_ANIMATION_MS = 200
+const KEYS_BATCH_AUTO_COLLAPSE_TOTAL_MS = 500
+const KEYS_BATCH_AUTO_COLLAPSE_DELAY_MS = Math.max(0, KEYS_BATCH_AUTO_COLLAPSE_TOTAL_MS - KEYS_BATCH_CLOSE_ANIMATION_MS)
 
 function leaderboardPrimaryValue(
   item: TokenUsageLeaderboardItem,
@@ -373,10 +377,12 @@ function AdminDashboard(): JSX.Element {
 
   const [newKeysText, setNewKeysText] = useState('')
   const [keysBatchExpanded, setKeysBatchExpanded] = useState(false)
+  const [keysBatchClosing, setKeysBatchClosing] = useState(false)
   const keysBatchOpenReasonRef = useRef<'hover' | 'focus' | null>(null)
   const keysBatchSuppressNextHoverRef = useRef(false)
   const keysBatchLastPointerRef = useRef<{ x: number; y: number } | null>(null)
   const keysBatchAutoCollapseTimerRef = useRef<number | null>(null)
+  const keysBatchCloseTimerRef = useRef<number | null>(null)
   const keysBatchAnchorRef = useRef<HTMLDivElement | null>(null)
   const keysBatchCollapsedInputRef = useRef<HTMLInputElement | null>(null)
   const keysBatchTextareaRef = useRef<HTMLTextAreaElement | null>(null)
@@ -407,6 +413,7 @@ function AdminDashboard(): JSX.Element {
   const [batchCreating, setBatchCreating] = useState(false)
   const [batchShareText, setBatchShareText] = useState<string | null>(null)
   const isAdmin = profile?.isAdmin ?? false
+  const keysBatchVisible = keysBatchExpanded || keysBatchClosing
 
   const clearKeysBatchAutoCollapseTimer = useCallback(() => {
     if (keysBatchAutoCollapseTimerRef.current != null) {
@@ -415,9 +422,17 @@ function AdminDashboard(): JSX.Element {
     }
   }, [])
 
+  const clearKeysBatchCloseTimer = useCallback(() => {
+    if (keysBatchCloseTimerRef.current != null) {
+      window.clearTimeout(keysBatchCloseTimerRef.current)
+      keysBatchCloseTimerRef.current = null
+    }
+  }, [])
+
   useEffect(() => () => {
     clearKeysBatchAutoCollapseTimer()
-  }, [clearKeysBatchAutoCollapseTimer])
+    clearKeysBatchCloseTimer()
+  }, [clearKeysBatchAutoCollapseTimer, clearKeysBatchCloseTimer])
 
   useEffect(() => {
     if (!keysBatchExpanded) return
@@ -453,6 +468,34 @@ function AdminDashboard(): JSX.Element {
     }
   }, [])
 
+  const beginKeysBatchClose = useCallback(() => {
+    if (!keysBatchVisible) return
+
+    clearKeysBatchAutoCollapseTimer()
+    clearKeysBatchCloseTimer()
+
+    maybeSuppressHoverReopen()
+    keysBatchOpenReasonRef.current = null
+    setKeysBatchExpanded(false)
+
+    const prefersReducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ?? false
+    if (prefersReducedMotion) {
+      setKeysBatchClosing(false)
+      return
+    }
+
+    setKeysBatchClosing(true)
+    keysBatchCloseTimerRef.current = window.setTimeout(() => {
+      keysBatchCloseTimerRef.current = null
+      setKeysBatchClosing(false)
+    }, KEYS_BATCH_CLOSE_ANIMATION_MS)
+  }, [
+    clearKeysBatchAutoCollapseTimer,
+    clearKeysBatchCloseTimer,
+    keysBatchVisible,
+    maybeSuppressHoverReopen,
+  ])
+
   const scheduleKeysBatchAutoCollapse = useCallback(
     (mode: 'blur' | 'hover') => {
       if (!keysBatchExpanded) return
@@ -486,12 +529,10 @@ function AdminDashboard(): JSX.Element {
           }
         }
 
-        maybeSuppressHoverReopen()
-        keysBatchOpenReasonRef.current = null
-        setKeysBatchExpanded(false)
-      }, KEYS_BATCH_EMPTY_BLUR_COLLAPSE_MS)
+        beginKeysBatchClose()
+      }, KEYS_BATCH_AUTO_COLLAPSE_DELAY_MS)
     },
-    [clearKeysBatchAutoCollapseTimer, keysBatchExpanded, maybeSuppressHoverReopen],
+    [beginKeysBatchClose, clearKeysBatchAutoCollapseTimer, keysBatchExpanded],
   )
 
   useEffect(() => {
@@ -507,19 +548,13 @@ function AdminDashboard(): JSX.Element {
         (root == null || !root.contains(target)) &&
         (overlay == null || !overlay.contains(target))
       ) {
-        clearKeysBatchAutoCollapseTimer()
-        maybeSuppressHoverReopen()
-        keysBatchOpenReasonRef.current = null
-        setKeysBatchExpanded(false)
+        beginKeysBatchClose()
       }
     }
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        clearKeysBatchAutoCollapseTimer()
-        maybeSuppressHoverReopen()
-        keysBatchOpenReasonRef.current = null
-        setKeysBatchExpanded(false)
+        beginKeysBatchClose()
       }
     }
 
@@ -529,7 +564,7 @@ function AdminDashboard(): JSX.Element {
       document.removeEventListener('pointerdown', handlePointerDown)
       document.removeEventListener('keydown', handleKeyDown)
     }
-  }, [keysBatchExpanded, maybeSuppressHoverReopen])
+  }, [beginKeysBatchClose, keysBatchExpanded])
 
   const copyStateKey = useCallback((scope: 'keys' | 'logs' | 'tokens', identifier: string | number) => {
     return `${scope}:${identifier}`
@@ -1108,10 +1143,7 @@ function AdminDashboard(): JSX.Element {
       setKeysBatchReport({ kind: 'success', response })
       window.requestAnimationFrame(() => keysBatchReportDialogRef.current?.showModal())
       setNewKeysText('')
-      clearKeysBatchAutoCollapseTimer()
-      maybeSuppressHoverReopen()
-      keysBatchOpenReasonRef.current = null
-      setKeysBatchExpanded(false)
+      beginKeysBatchClose()
       const controller = new AbortController()
       setLoading(true)
       await loadData(controller.signal)
@@ -1122,10 +1154,7 @@ function AdminDashboard(): JSX.Element {
       setKeysBatchReport({ kind: 'error', message, input_lines: rawLines.length, valid_lines: apiKeys.length })
       window.requestAnimationFrame(() => keysBatchReportDialogRef.current?.showModal())
       setNewKeysText('')
-      clearKeysBatchAutoCollapseTimer()
-      maybeSuppressHoverReopen()
-      keysBatchOpenReasonRef.current = null
-      setKeysBatchExpanded(false)
+      beginKeysBatchClose()
       setError(message)
     } finally {
       setSubmitting(false)
@@ -1601,16 +1630,29 @@ function AdminDashboard(): JSX.Element {
   const hasTokenGroups = tokenGroupList.length > 0
   return (
     <>
-      {keysBatchExpanded &&
+      {keysBatchVisible &&
         typeof document !== 'undefined' &&
         createPortal(
           <div
             ref={keysBatchOverlayRef}
-            className="card bg-base-100 shadow-xl border border-base-300 keys-batch-overlay"
-            onMouseEnter={() => clearKeysBatchAutoCollapseTimer()}
+            className={`card bg-base-100 shadow-xl border border-base-300 keys-batch-overlay${keysBatchClosing ? ' is-closing' : ''}`}
+            onMouseEnter={() => {
+              clearKeysBatchAutoCollapseTimer()
+              if (keysBatchClosing) {
+                clearKeysBatchCloseTimer()
+                setKeysBatchClosing(false)
+                keysBatchOpenReasonRef.current = 'hover'
+                setKeysBatchExpanded(true)
+              }
+            }}
             onMouseLeave={() => scheduleKeysBatchAutoCollapse('hover')}
             onPointerDown={(event) => {
               clearKeysBatchAutoCollapseTimer()
+              if (keysBatchClosing) {
+                clearKeysBatchCloseTimer()
+                setKeysBatchClosing(false)
+                setKeysBatchExpanded(true)
+              }
               keysBatchOpenReasonRef.current = 'focus'
 
               // The overlay visually "replaces" the collapsed input. If the user clicks the card padding
@@ -2009,7 +2051,7 @@ function AdminDashboard(): JSX.Element {
         )}
       </section>
 
-      <section className="surface panel" style={keysBatchExpanded ? { position: 'relative', zIndex: 40 } : undefined}>
+      <section className="surface panel" style={keysBatchVisible ? { position: 'relative', zIndex: 40 } : undefined}>
         <div className="panel-header" style={{ flexWrap: 'wrap', gap: 12, alignItems: 'flex-start' }}>
           <div style={{ flex: '1 1 320px', minWidth: 240 }}>
             <h2>{keyStrings.title}</h2>
@@ -2021,6 +2063,8 @@ function AdminDashboard(): JSX.Element {
                 ref={keysBatchAnchorRef}
                 onMouseEnter={() => {
                   clearKeysBatchAutoCollapseTimer()
+                  clearKeysBatchCloseTimer()
+                  setKeysBatchClosing(false)
                   if (keysBatchSuppressNextHoverRef.current) {
                     keysBatchSuppressNextHoverRef.current = false
                     return
@@ -2034,14 +2078,16 @@ function AdminDashboard(): JSX.Element {
                 }}
                 onFocusCapture={() => {
                   clearKeysBatchAutoCollapseTimer()
+                  clearKeysBatchCloseTimer()
+                  setKeysBatchClosing(false)
                   keysBatchOpenReasonRef.current = 'focus'
                   setKeysBatchExpanded(true)
                 }}
                 style={{ position: 'relative' }}
               >
                 <div
-                  className={`keys-batch-collapsed${keysBatchExpanded ? ' is-hidden' : ''}`}
-                  aria-hidden={keysBatchExpanded}
+                  className={`keys-batch-collapsed${keysBatchVisible ? ' is-hidden' : ''}`}
+                  aria-hidden={keysBatchVisible}
                   style={{
                     display: 'flex',
                     alignItems: 'center',
@@ -2059,14 +2105,14 @@ function AdminDashboard(): JSX.Element {
                     aria-label={keyStrings.placeholder}
                     value={keysBatchFirstLine}
                     onChange={(e) => setNewKeysText(e.target.value)}
-                    disabled={keysBatchExpanded}
+                    disabled={keysBatchVisible}
                     style={{ flex: '1 1 160px', minWidth: 160, maxWidth: '100%' }}
                   />
                   <button
                     type="button"
                     className="btn btn-primary"
                     onClick={() => void handleAddKey()}
-                    disabled={keysBatchExpanded || submitting || keysBatchParsed.length === 0}
+                    disabled={keysBatchVisible || submitting || keysBatchParsed.length === 0}
                     style={{ flexShrink: 0 }}
                   >
                     {submitting ? keyStrings.adding : keyStrings.addButton}
