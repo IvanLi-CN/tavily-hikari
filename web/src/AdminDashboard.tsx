@@ -1785,11 +1785,11 @@ function AdminDashboard(): JSX.Element {
                 }}
               />
 	              <div ref={keysBatchFooterRef} className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-	                <div className="text-xs opacity-70">
+	                <div className="text-xs opacity-70 flex-1 min-w-0">
 	                  <div>{keyStrings.batch.hint}</div>
 	                  <div>{keyStrings.batch.count.replace('{count}', formatNumber(keysBatchParsed.length))}</div>
 	                </div>
-	                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+	                <div className="flex gap-2 items-center justify-end flex-wrap sm:flex-nowrap sm:flex-shrink-0">
 	                  <input
 	                    type="text"
 	                    className="input input-bordered"
@@ -1798,13 +1798,8 @@ function AdminDashboard(): JSX.Element {
 	                    value={newKeysGroup}
 	                    onChange={(e) => setNewKeysGroup(e.target.value)}
 	                    list="api-key-group-datalist"
-	                    style={{ flex: '1 1 220px', minWidth: 200, maxWidth: '100%' }}
+	                    style={{ flex: '1 1 220px', minWidth: 160, maxWidth: '100%' }}
 	                  />
-	                  <datalist id="api-key-group-datalist">
-	                    {namedKeyGroups.map((group) => (
-	                      <option key={group.name} value={group.name} />
-	                    ))}
-	                  </datalist>
 	                  <button
 	                    type="button"
 	                    className="btn btn-primary"
@@ -2198,29 +2193,45 @@ function AdminDashboard(): JSX.Element {
                     maxWidth: 'min(520px, 100%)',
                   }}
                 >
-                  <input
-                    ref={keysBatchCollapsedInputRef}
-                    type="text"
-                    className="input input-bordered"
-                    placeholder={keyStrings.placeholder}
-                    aria-label={keyStrings.placeholder}
-                    value={keysBatchFirstLine}
-                    onChange={(e) => setNewKeysText(e.target.value)}
-                    disabled={keysBatchVisible}
-                    style={{ flex: '1 1 160px', minWidth: 160, maxWidth: '100%' }}
-                  />
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    onClick={() => void handleAddKey()}
-                    disabled={keysBatchVisible || submitting || keysBatchParsed.length === 0}
+	                  <input
+	                    ref={keysBatchCollapsedInputRef}
+	                    type="text"
+	                    className="input input-bordered"
+	                    placeholder={keyStrings.placeholder}
+	                    aria-label={keyStrings.placeholder}
+	                    value={keysBatchFirstLine}
+	                    onChange={(e) => setNewKeysText(e.target.value)}
+	                    disabled={keysBatchVisible}
+	                    style={{ flex: '1 1 160px', minWidth: 160, maxWidth: '100%' }}
+	                  />
+	                  <input
+	                    type="text"
+	                    className="input input-bordered"
+	                    placeholder={keyStrings.batch.groupPlaceholder}
+	                    aria-label={keyStrings.batch.groupPlaceholder}
+	                    value={newKeysGroup}
+	                    onChange={(e) => setNewKeysGroup(e.target.value)}
+	                    list="api-key-group-datalist"
+	                    disabled={keysBatchVisible}
+	                    style={{ flex: '1 1 200px', minWidth: 160, maxWidth: '100%' }}
+	                  />
+	                  <button
+	                    type="button"
+	                    className="btn btn-primary"
+	                    onClick={() => void handleAddKey()}
+	                    disabled={keysBatchVisible || submitting || keysBatchParsed.length === 0}
                     style={{ flexShrink: 0 }}
                   >
-                    {submitting ? keyStrings.adding : keyStrings.addButton}
-                  </button>
-                </div>
-              </div>
-            )}
+	                    {submitting ? keyStrings.adding : keyStrings.addButton}
+	                  </button>
+	                </div>
+	                <datalist id="api-key-group-datalist">
+	                  {namedKeyGroups.map((group) => (
+	                    <option key={group.name} value={group.name} />
+	                  ))}
+	                </datalist>
+	              </div>
+	            )}
 	          </div>
 	        </div>
 	        {hasKeyGroups && (
