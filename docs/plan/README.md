@@ -62,3 +62,4 @@
 | e5g7f | Admin 登录（ForwardAuth + 内置登录） | 待实现          | `e5g7f-admin-login-modes/PLAN.md`                      | 2026-02-03 | branch `th/feat/e5g7f-admin-login-modes`         |
 | 2qhen | PR Label 发版（CI 后置 Release）     | 已完成          | `2qhen:pr-label-release/PLAN.md`                       | 2026-02-05 | PR #64                                           |
 | zsuyk | Admin API Keys 批量浮层互斥显示      | 已完成          | `zsuyk:admin-api-keys-batch-overlay-exclusive/PLAN.md` | 2026-02-18 | PR #66                                           |
+| 5zcj3 | Admin API Keys 分组录入与筛选        | 已完成          | `5zcj3:api-keys-grouping/PLAN.md`                      | 2026-02-19 | PR #67                                           |

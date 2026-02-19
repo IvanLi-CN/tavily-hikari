@@ -3046,6 +3046,7 @@ async fn list_keys(
 #[derive(Debug, Deserialize)]
 struct CreateKeyRequest {
     api_key: String,
+    group: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -3058,10 +3059,14 @@ const API_KEYS_BATCH_LIMIT: usize = 1000;
 #[derive(Debug, Deserialize)]
 struct BatchCreateKeysRequest {
     api_keys: Vec<String>,
+    group: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize)]
 struct BatchCreateKeysSummary {
+    input_lines: u64,
+    valid_lines: u64,
+    unique_in_input: u64,
     created: u64,
     undeleted: u64,
     existed: u64,
@@ -3095,12 +3100,25 @@ async fn create_api_key(
         return Err(StatusCode::FORBIDDEN);
     }
 
-    let api_key = payload.api_key.trim();
+    let CreateKeyRequest {
+        api_key,
+        group: group_raw,
+    } = payload;
+    let api_key = api_key.trim();
     if api_key.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    match state.proxy.add_or_undelete_key(api_key).await {
+    let group = group_raw
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    match state
+        .proxy
+        .add_or_undelete_key_in_group(api_key, group)
+        .await
+    {
         Ok(id) => Ok((StatusCode::CREATED, Json(CreateKeyResponse { id }))),
         Err(err) => {
             eprintln!("create api key error: {err}");
@@ -3118,9 +3136,22 @@ async fn create_api_keys_batch(
         return Err(StatusCode::FORBIDDEN);
     }
 
-    let mut summary = BatchCreateKeysSummary::default();
-    let mut trimmed = Vec::<String>::with_capacity(payload.api_keys.len());
-    for api_key in payload.api_keys {
+    let BatchCreateKeysRequest {
+        api_keys,
+        group: group_raw,
+    } = payload;
+    let group = group_raw
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    let mut summary = BatchCreateKeysSummary {
+        input_lines: api_keys.len() as u64,
+        ..Default::default()
+    };
+
+    let mut trimmed = Vec::<String>::with_capacity(api_keys.len());
+    for api_key in api_keys {
         let api_key = api_key.trim();
         if api_key.is_empty() {
             summary.ignored_empty += 1;
@@ -3128,6 +3159,7 @@ async fn create_api_keys_batch(
         }
         trimmed.push(api_key.to_string());
     }
+    summary.valid_lines = trimmed.len() as u64;
 
     if trimmed.len() > API_KEYS_BATCH_LIMIT {
         let body = Json(json!({
@@ -3152,7 +3184,11 @@ async fn create_api_keys_batch(
             continue;
         }
 
-        match state.proxy.add_or_undelete_key_with_status(&api_key).await {
+        match state
+            .proxy
+            .add_or_undelete_key_with_status_in_group(&api_key, group)
+            .await
+        {
             Ok((id, status)) => {
                 match status.as_str() {
                     "created" => summary.created += 1,
@@ -3178,6 +3214,8 @@ async fn create_api_keys_batch(
             }
         }
     }
+
+    summary.unique_in_input = seen.len() as u64;
 
     Ok((
         StatusCode::OK,
@@ -3903,6 +3941,7 @@ const DEFAULT_LOG_LIMIT: usize = 200;
 struct ApiKeyView {
     id: String,
     status: String,
+    group: Option<String>,
     status_changed_at: Option<i64>,
     last_used_at: Option<i64>,
     deleted_at: Option<i64>,
@@ -5153,6 +5192,7 @@ impl From<ApiKeyMetrics> for ApiKeyView {
         Self {
             id: metrics.id,
             status: metrics.status,
+            group: metrics.group_name,
             status_changed_at: metrics.status_changed_at,
             last_used_at: metrics.last_used_at,
             deleted_at: metrics.deleted_at,
@@ -5745,7 +5785,7 @@ mod tests {
         let resp = client
             .post(url)
             .header("x-forward-user", "admin")
-            .json(&serde_json::json!({ "api_keys": input }))
+            .json(&serde_json::json!({ "api_keys": input, "group": "team-a" }))
             .send()
             .await
             .expect("request succeeds");
@@ -5828,6 +5868,20 @@ mod tests {
                 .expect("tvly-deleted exists");
         assert!(deleted_at.is_none(), "tvly-deleted should be undeleted");
 
+        for key in ["tvly-new", "tvly-new-2", "tvly-existing", "tvly-deleted"] {
+            let group_name: Option<String> =
+                sqlx::query_scalar("SELECT group_name FROM api_keys WHERE api_key = ?")
+                    .bind(key)
+                    .fetch_one(&pool)
+                    .await
+                    .expect("key exists");
+            assert_eq!(
+                group_name.as_deref(),
+                Some("team-a"),
+                "{key} should have group_name=team-a"
+            );
+        }
+
         let fail_row: Option<String> =
             sqlx::query_scalar("SELECT id FROM api_keys WHERE api_key = ?")
                 .bind("tvly-fail")
@@ -5835,6 +5889,72 @@ mod tests {
                 .await
                 .expect("query fail key");
         assert!(fail_row.is_none(), "tvly-fail should not be inserted");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn api_keys_batch_does_not_override_existing_group() {
+        let db_path = temp_db_path("keys-batch-group-no-override");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        // Existing key already belongs to a group.
+        proxy
+            .add_or_undelete_key_in_group("tvly-existing", Some("old"))
+            .await
+            .expect("existing key created in old group");
+
+        let options = SqliteConnectOptions::new()
+            .filename(&db_str)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open db pool");
+
+        let forward_auth = ForwardAuthConfig::new(
+            Some(HeaderName::from_static("x-forward-user")),
+            Some("admin".to_string()),
+            None,
+            None,
+        );
+        let addr = spawn_keys_admin_server(proxy, forward_auth, false).await;
+
+        let client = Client::new();
+        let url = format!("http://{}/api/keys/batch", addr);
+        let resp = client
+            .post(url)
+            .header("x-forward-user", "admin")
+            .json(&serde_json::json!({ "api_keys": ["tvly-existing"], "group": "new" }))
+            .send()
+            .await
+            .expect("request succeeds");
+
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+        let body: serde_json::Value = resp.json().await.expect("parse json body");
+        let summary = body.get("summary").expect("summary exists");
+        assert_eq!(summary.get("existed").and_then(|v| v.as_u64()), Some(1));
+
+        let group_name: Option<String> =
+            sqlx::query_scalar("SELECT group_name FROM api_keys WHERE api_key = ?")
+                .bind("tvly-existing")
+                .fetch_one(&pool)
+                .await
+                .expect("tvly-existing exists");
+        assert_eq!(
+            group_name.as_deref(),
+            Some("old"),
+            "group_name should not be overridden for existing keys"
+        );
 
         let _ = std::fs::remove_file(db_path);
     }

@@ -369,6 +369,7 @@ function AdminDashboard(): JSX.Element {
   const secretCacheRef = useRef<Map<string, string>>(new Map())
   const tokenSecretCacheRef = useRef<Map<string, string>>(new Map())
   const tokenGroupsListRef = useRef<HTMLDivElement | null>(null)
+  const keyGroupsListRef = useRef<HTMLDivElement | null>(null)
   const [copyState, setCopyState] = useState<Map<string, 'loading' | 'copied'>>(() => new Map())
   const [expandedLogs, setExpandedLogs] = useState<Set<number>>(() => new Set())
   type AddKeysBatchReportState =
@@ -376,6 +377,11 @@ function AdminDashboard(): JSX.Element {
     | { kind: 'error'; message: string; input_lines: number; valid_lines: number }
 
   const [newKeysText, setNewKeysText] = useState('')
+  const [newKeysGroup, setNewKeysGroup] = useState('')
+  const [selectedKeyGroupName, setSelectedKeyGroupName] = useState<string | null>(null)
+  const [selectedKeyUngrouped, setSelectedKeyUngrouped] = useState(false)
+  const [keyGroupsExpanded, setKeyGroupsExpanded] = useState(false)
+  const [keyGroupsCollapsedOverflowing, setKeyGroupsCollapsedOverflowing] = useState(false)
   const [keysBatchExpanded, setKeysBatchExpanded] = useState(false)
   const [keysBatchClosing, setKeysBatchClosing] = useState(false)
   const keysBatchOpenReasonRef = useRef<'hover' | 'focus' | null>(null)
@@ -994,6 +1000,59 @@ function AdminDashboard(): JSX.Element {
     })
   }, [dedupedKeys])
 
+  type KeyGroup = { name: string; keyCount: number; latestUsedAt: number }
+
+  const keyGroupList = useMemo(() => {
+    const map = new Map<string, KeyGroup>()
+    for (const item of dedupedKeys) {
+      const name = (item.group ?? '').trim()
+      const existing = map.get(name) ?? { name, keyCount: 0, latestUsedAt: 0 }
+      existing.keyCount += 1
+      existing.latestUsedAt = Math.max(existing.latestUsedAt, item.last_used_at ?? 0)
+      map.set(name, existing)
+    }
+    const out = Array.from(map.values())
+    out.sort((a, b) => {
+      if (a.latestUsedAt !== b.latestUsedAt) return b.latestUsedAt - a.latestUsedAt
+      return a.name.localeCompare(b.name)
+    })
+    return out
+  }, [dedupedKeys])
+
+  const ungroupedKeyGroup = keyGroupList.find((group) => group.name.trim().length === 0)
+  const namedKeyGroups = keyGroupList.filter((group) => group.name.trim().length > 0)
+  const hasKeyGroups = keyGroupList.length > 0
+
+  const visibleKeys = useMemo(() => {
+    if (selectedKeyUngrouped) {
+      return sortedKeys.filter((item) => (item.group ?? '').trim().length === 0)
+    }
+    if (selectedKeyGroupName != null) {
+      return sortedKeys.filter((item) => (item.group ?? '').trim() === selectedKeyGroupName)
+    }
+    return sortedKeys
+  }, [selectedKeyGroupName, selectedKeyUngrouped, sortedKeys])
+
+  // Detect whether the collapsed key groups row overflows horizontally.
+  // If everything fits in a single line, we hide the "more" toggle button.
+  useEffect(() => {
+    if (!Array.isArray(keyGroupList) || keyGroupList.length === 0 || keyGroupsExpanded) {
+      setKeyGroupsCollapsedOverflowing(false)
+      return
+    }
+    const el = keyGroupsListRef.current
+    if (!el) return
+
+    const measure = () => {
+      const overflowing = el.scrollWidth > el.clientWidth
+      setKeyGroupsCollapsedOverflowing(overflowing)
+    }
+
+    measure()
+    window.addEventListener('resize', measure)
+    return () => window.removeEventListener('resize', measure)
+  }, [keyGroupList, keyGroupsExpanded, selectedKeyGroupName, selectedKeyUngrouped])
+
   const keysBatchParsed = useMemo(() => {
     return newKeysText
       .split(/\r?\n/)
@@ -1137,12 +1196,14 @@ function AdminDashboard(): JSX.Element {
     const rawLines = newKeysText.split(/\r?\n/)
     const apiKeys = rawLines.map((line) => line.trim()).filter((line) => line.length > 0)
     if (apiKeys.length === 0) return
+    const group = newKeysGroup.trim()
     setSubmitting(true)
     try {
-      const response = await addApiKeysBatch(apiKeys)
+      const response = await addApiKeysBatch(apiKeys, group.length > 0 ? group : undefined)
       setKeysBatchReport({ kind: 'success', response })
       window.requestAnimationFrame(() => keysBatchReportDialogRef.current?.showModal())
       setNewKeysText('')
+      setNewKeysGroup('')
       beginKeysBatchClose()
       const controller = new AbortController()
       setLoading(true)
@@ -1154,6 +1215,7 @@ function AdminDashboard(): JSX.Element {
       setKeysBatchReport({ kind: 'error', message, input_lines: rawLines.length, valid_lines: apiKeys.length })
       window.requestAnimationFrame(() => keysBatchReportDialogRef.current?.showModal())
       setNewKeysText('')
+      setNewKeysGroup('')
       beginKeysBatchClose()
       setError(message)
     } finally {
@@ -1219,6 +1281,25 @@ function AdminDashboard(): JSX.Element {
 
   const toggleTokenGroupsExpanded = () => {
     setTokenGroupsExpanded((previous) => !previous)
+  }
+
+  const handleSelectKeyGroupAll = () => {
+    setSelectedKeyGroupName(null)
+    setSelectedKeyUngrouped(false)
+  }
+
+  const handleSelectKeyGroupUngrouped = () => {
+    setSelectedKeyGroupName(null)
+    setSelectedKeyUngrouped(true)
+  }
+
+  const handleSelectKeyGroupNamed = (group: string) => {
+    setSelectedKeyGroupName(group)
+    setSelectedKeyUngrouped(false)
+  }
+
+  const toggleKeyGroupsExpanded = () => {
+    setKeyGroupsExpanded((previous) => !previous)
   }
 
   const openBatchDialog = () => {
@@ -1658,11 +1739,14 @@ function AdminDashboard(): JSX.Element {
               // The overlay visually "replaces" the collapsed input. If the user clicks the card padding
               // (common when the overlay opens on hover), ensure the textarea receives focus so blur-based
               // auto-collapse works as expected.
-              if (document.activeElement === keysBatchTextareaRef.current) return
-              if (event.target instanceof Element) {
-                if (event.target.closest('textarea')) return
-                if (event.target.closest('button')) return
-              }
+	              if (document.activeElement === keysBatchTextareaRef.current) return
+	              if (event.target instanceof Element) {
+	                if (event.target.closest('textarea')) return
+	                if (event.target.closest('button')) return
+	                if (event.target.closest('input')) return
+	                if (event.target.closest('select')) return
+	                if (event.target.closest('a')) return
+	              }
 
               window.requestAnimationFrame(() => keysBatchTextareaRef.current?.focus())
             }}
@@ -1700,22 +1784,34 @@ function AdminDashboard(): JSX.Element {
                   overflowY: 'hidden',
                 }}
               />
-              <div ref={keysBatchFooterRef} className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <div className="text-xs opacity-70">
-                  <div>{keyStrings.batch.hint}</div>
-                  <div>{keyStrings.batch.count.replace('{count}', formatNumber(keysBatchParsed.length))}</div>
-                </div>
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  onClick={() => void handleAddKey()}
-                  disabled={submitting || keysBatchParsed.length === 0}
-                >
-                  {submitting ? keyStrings.adding : keyStrings.addButton}
-                </button>
-              </div>
-            </div>
-          </div>,
+	              <div ref={keysBatchFooterRef} className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+	                <div className="text-xs opacity-70 flex-1 min-w-0">
+	                  <div>{keyStrings.batch.hint}</div>
+	                  <div>{keyStrings.batch.count.replace('{count}', formatNumber(keysBatchParsed.length))}</div>
+	                </div>
+	                <div className="flex gap-2 items-center justify-end flex-wrap sm:flex-nowrap sm:flex-shrink-0">
+	                  <input
+	                    type="text"
+	                    className="input input-bordered"
+	                    placeholder={keyStrings.batch.groupPlaceholder}
+	                    aria-label={keyStrings.batch.groupPlaceholder}
+	                    value={newKeysGroup}
+	                    onChange={(e) => setNewKeysGroup(e.target.value)}
+	                    list="api-key-group-datalist"
+	                    style={{ flex: '1 1 220px', minWidth: 160, maxWidth: '100%' }}
+	                  />
+	                  <button
+	                    type="button"
+	                    className="btn btn-primary"
+	                    onClick={() => void handleAddKey()}
+	                    disabled={submitting || keysBatchParsed.length === 0}
+	                  >
+	                    {submitting ? keyStrings.adding : keyStrings.addButton}
+	                  </button>
+	                </div>
+	              </div>
+	            </div>
+	          </div>,
           document.body,
         )}
       <main className="app-shell">
@@ -2052,11 +2148,11 @@ function AdminDashboard(): JSX.Element {
       </section>
 
       <section className="surface panel" style={keysBatchVisible ? { position: 'relative', zIndex: 40 } : undefined}>
-        <div className="panel-header" style={{ flexWrap: 'wrap', gap: 12, alignItems: 'flex-start' }}>
-          <div style={{ flex: '1 1 320px', minWidth: 240 }}>
-            <h2>{keyStrings.title}</h2>
-            <p className="panel-description">{keyStrings.description}</p>
-          </div>
+	        <div className="panel-header" style={{ flexWrap: 'wrap', gap: 12, alignItems: 'flex-start' }}>
+	          <div style={{ flex: '1 1 320px', minWidth: 240 }}>
+	            <h2>{keyStrings.title}</h2>
+	            <p className="panel-description">{keyStrings.description}</p>
+	          </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, flex: '0 1 auto', justifyContent: 'flex-end', marginLeft: 'auto' }}>
             {isAdmin && (
               <div
@@ -2097,37 +2193,108 @@ function AdminDashboard(): JSX.Element {
                     maxWidth: 'min(520px, 100%)',
                   }}
                 >
-                  <input
-                    ref={keysBatchCollapsedInputRef}
-                    type="text"
-                    className="input input-bordered"
-                    placeholder={keyStrings.placeholder}
-                    aria-label={keyStrings.placeholder}
-                    value={keysBatchFirstLine}
-                    onChange={(e) => setNewKeysText(e.target.value)}
-                    disabled={keysBatchVisible}
-                    style={{ flex: '1 1 160px', minWidth: 160, maxWidth: '100%' }}
-                  />
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    onClick={() => void handleAddKey()}
-                    disabled={keysBatchVisible || submitting || keysBatchParsed.length === 0}
+	                  <input
+	                    ref={keysBatchCollapsedInputRef}
+	                    type="text"
+	                    className="input input-bordered"
+	                    placeholder={keyStrings.placeholder}
+	                    aria-label={keyStrings.placeholder}
+	                    value={keysBatchFirstLine}
+	                    onChange={(e) => setNewKeysText(e.target.value)}
+	                    disabled={keysBatchVisible}
+	                    style={{ flex: '1 1 160px', minWidth: 160, maxWidth: '100%' }}
+	                  />
+	                  <button
+	                    type="button"
+	                    className="btn btn-primary"
+	                    onClick={() => void handleAddKey()}
+	                    disabled={keysBatchVisible || submitting || keysBatchParsed.length === 0}
                     style={{ flexShrink: 0 }}
                   >
-                    {submitting ? keyStrings.adding : keyStrings.addButton}
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-        <div className="table-wrapper jobs-table-wrapper">
-          {sortedKeys.length === 0 ? (
-            <div className="empty-state alert">{loading ? keyStrings.empty.loading : keyStrings.empty.none}</div>
-          ) : (
-            <table>
-              <thead>
+	                    {submitting ? keyStrings.adding : keyStrings.addButton}
+	                  </button>
+	                </div>
+	                <datalist id="api-key-group-datalist">
+	                  {namedKeyGroups.map((group) => (
+	                    <option key={group.name} value={group.name} />
+	                  ))}
+	                </datalist>
+	              </div>
+	            )}
+	          </div>
+	        </div>
+	        {hasKeyGroups && (
+	          <div className="token-groups-container">
+	            <div className="token-groups-label">
+	              <span>{keyStrings.groups.label}</span>
+	            </div>
+	            <div className="token-groups-row">
+	              <div
+	                ref={keyGroupsListRef}
+	                className={`token-groups-list${keyGroupsExpanded ? ' token-groups-list-expanded' : ''}`}
+	              >
+	                <button
+	                  type="button"
+	                  className={`token-group-chip${
+	                    !selectedKeyUngrouped && selectedKeyGroupName == null ? ' token-group-chip-active' : ''
+	                  }`}
+	                  onClick={handleSelectKeyGroupAll}
+	                >
+	                  <span className="token-group-name">{keyStrings.groups.all}</span>
+	                </button>
+	                {ungroupedKeyGroup && (
+	                  <button
+	                    type="button"
+	                    className={`token-group-chip${selectedKeyUngrouped ? ' token-group-chip-active' : ''}`}
+	                    onClick={handleSelectKeyGroupUngrouped}
+	                  >
+	                    <span className="token-group-name">{keyStrings.groups.ungrouped}</span>
+	                    {keyGroupsExpanded && (
+	                      <span className="token-group-count">
+	                        {formatNumber(ungroupedKeyGroup.keyCount)}
+	                      </span>
+	                    )}
+	                  </button>
+	                )}
+	                {namedKeyGroups.map((group) => (
+	                  <button
+	                    key={group.name}
+	                    type="button"
+	                    className={`token-group-chip${
+	                      !selectedKeyUngrouped && selectedKeyGroupName === group.name ? ' token-group-chip-active' : ''
+	                    }`}
+	                    onClick={() => handleSelectKeyGroupNamed(group.name)}
+	                  >
+	                    <span className="token-group-name">{group.name}</span>
+	                    {keyGroupsExpanded && (
+	                      <span className="token-group-count">
+	                        {formatNumber(group.keyCount)}
+	                      </span>
+	                    )}
+	                  </button>
+	                ))}
+	              </div>
+	              {(keyGroupsCollapsedOverflowing || keyGroupsExpanded) && (
+	                <button
+	                  type="button"
+	                  className={`token-group-chip token-group-toggle${keyGroupsExpanded ? ' token-group-toggle-active' : ''}`}
+	                  onClick={toggleKeyGroupsExpanded}
+	                  aria-label={keyGroupsExpanded ? keyStrings.groups.moreHide : keyStrings.groups.moreShow}
+	                >
+	                  <Icon icon={keyGroupsExpanded ? 'mdi:chevron-up' : 'mdi:chevron-down'} width={18} height={18} />
+	                </button>
+	              )}
+	            </div>
+	          </div>
+	        )}
+	        <div className="table-wrapper jobs-table-wrapper">
+	          {visibleKeys.length === 0 ? (
+	            <div className="empty-state alert">
+	              {loading ? keyStrings.empty.loading : sortedKeys.length === 0 ? keyStrings.empty.none : keyStrings.empty.filtered}
+	            </div>
+	          ) : (
+	            <table>
+	              <thead>
                 <tr>
                   <th>{keyStrings.table.keyId}</th>
                   <th>{keyStrings.table.status}</th>
@@ -2139,13 +2306,13 @@ function AdminDashboard(): JSX.Element {
                   <th>{keyStrings.table.statusChanged}</th>
                   {isAdmin && <th>{keyStrings.table.actions}</th>}
                 </tr>
-              </thead>
-              <tbody>
-                {sortedKeys.map((item) => {
-                  const total = item.total_requests || 0
-                  const stateKey = copyStateKey('keys', item.id)
-                  const state = copyState.get(stateKey)
-                  return (
+	              </thead>
+	              <tbody>
+	                {visibleKeys.map((item) => {
+	                  const total = item.total_requests || 0
+	                  const stateKey = copyStateKey('keys', item.id)
+	                  const state = copyState.get(stateKey)
+	                  return (
                     <tr key={item.id}>
                       <td>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>

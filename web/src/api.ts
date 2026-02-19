@@ -70,6 +70,7 @@ interface ServerPublicTokenLog {
 export interface ApiKeyStats {
   id: string
   status: string
+  group: string | null
   status_changed_at: number | null
   last_used_at: number | null
   deleted_at: number | null
@@ -242,11 +243,15 @@ export interface CreateKeyResponse {
   id: string
 }
 
-export async function addApiKey(apiKey: string): Promise<CreateKeyResponse> {
+export async function addApiKey(apiKey: string, group?: string): Promise<CreateKeyResponse> {
+  const trimmedGroup = group?.trim()
   return await requestJson('/api/keys', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ api_key: apiKey }),
+    body: JSON.stringify({
+      api_key: apiKey,
+      group: trimmedGroup && trimmedGroup.length > 0 ? trimmedGroup : undefined,
+    }),
   })
 }
 
@@ -273,11 +278,15 @@ export interface AddApiKeysBatchResponse {
   results: AddApiKeysBatchResult[]
 }
 
-export async function addApiKeysBatch(apiKeys: string[]): Promise<AddApiKeysBatchResponse> {
+export async function addApiKeysBatch(apiKeys: string[], group?: string): Promise<AddApiKeysBatchResponse> {
+  const trimmedGroup = group?.trim()
   return await requestJson('/api/keys/batch', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ api_keys: apiKeys }),
+    body: JSON.stringify({
+      api_keys: apiKeys,
+      group: trimmedGroup && trimmedGroup.length > 0 ? trimmedGroup : undefined,
+    }),
   })
 }
 
