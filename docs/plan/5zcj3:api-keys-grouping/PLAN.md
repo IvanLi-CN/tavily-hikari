@@ -91,14 +91,18 @@
 
 ## 实现里程碑
 
-- [ ] DB schema 升级：`api_keys.group_name`（含 ensure_api_keys_primary_key 重建表不丢列）
-- [ ] API：`GET /api/keys` 返回 `group`；batch/single create 支持 `group`
-- [ ] 前端：批量导入浮层新增分组输入 + 自动完成；修复 onPointerDown 聚焦策略
-- [ ] 前端：API Keys 分组筛选 chips（对齐 tokens）
-- [ ] 增补/调整 Rust 测试用例并通过 `cargo test`
-- [ ] 通过 `web npm run build` 并在 PR Test Plan 记录结果
+- [x] DB schema 升级：`api_keys.group_name`（含 ensure_api_keys_primary_key 重建表不丢列）
+- [x] API：`GET /api/keys` 返回 `group`；batch/single create 支持 `group`
+- [x] 前端：批量导入浮层新增分组输入 + 自动完成；修复 onPointerDown 聚焦策略
+- [x] 前端：API Keys 分组筛选 chips（对齐 tokens）
+- [x] 增补/调整 Rust 测试用例并通过 `cargo test`
+- [x] 通过 `web npm run build` 并在 PR Test Plan 记录结果
 
 ## 风险与备注
 
 - `ensure_api_keys_primary_key()` 会重建 `api_keys` 表：必须同步扩展新表列集合，否则可能导致历史数据（quota、deleted_at、group）丢失。
 - 批量导入浮层目前有“点击区域强制聚焦 textarea”的策略：新增 input 后需更新 guard，避免交互回归。
+
+## 变更记录 / Change log
+
+- 2026-02-19: Landed via PR #67.
