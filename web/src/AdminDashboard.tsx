@@ -2204,17 +2204,6 @@ function AdminDashboard(): JSX.Element {
 	                    disabled={keysBatchVisible}
 	                    style={{ flex: '1 1 160px', minWidth: 160, maxWidth: '100%' }}
 	                  />
-	                  <input
-	                    type="text"
-	                    className="input input-bordered"
-	                    placeholder={keyStrings.batch.groupPlaceholder}
-	                    aria-label={keyStrings.batch.groupPlaceholder}
-	                    value={newKeysGroup}
-	                    onChange={(e) => setNewKeysGroup(e.target.value)}
-	                    list="api-key-group-datalist"
-	                    disabled={keysBatchVisible}
-	                    style={{ flex: '1 1 200px', minWidth: 160, maxWidth: '100%' }}
-	                  />
 	                  <button
 	                    type="button"
 	                    className="btn btn-primary"
