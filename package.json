@@ -2,8 +2,9 @@
   "name": "tavily-hikari-hooks",
   "private": true,
   "version": "0.0.0",
+  "packageManager": "bun@1.3.9",
   "scripts": {
-    "test:tavily-http": "node tests/e2e/tavily_http_node.cjs"
+    "test:tavily-http": "bun tests/e2e/tavily_http_node.cjs"
   },
   "devDependencies": {
     "@commitlint/cli": "^20.1.0",

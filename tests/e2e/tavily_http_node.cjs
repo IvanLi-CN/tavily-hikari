@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 /**
  * Simple end-to-end smoke test for the Tavily HTTP proxy using the official
