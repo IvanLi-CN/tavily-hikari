@@ -581,7 +581,7 @@ impl TavilyProxy {
                     .await?;
 
                 if status.as_u16() == 432 || outcome.mark_exhausted {
-                    self.key_store.mark_quota_exhausted(&lease.secret).await?;
+                    let _changed = self.key_store.mark_quota_exhausted(&lease.secret).await?;
                 } else {
                     self.key_store.restore_active_status(&lease.secret).await?;
                 }
@@ -713,7 +713,7 @@ impl TavilyProxy {
                     .await?;
 
                 if status.as_u16() == 432 || analysis.mark_exhausted {
-                    self.key_store.mark_quota_exhausted(&lease.secret).await?;
+                    let _changed = self.key_store.mark_quota_exhausted(&lease.secret).await?;
                 } else {
                     self.key_store.restore_active_status(&lease.secret).await?;
                 }
@@ -1424,7 +1424,7 @@ impl TavilyProxy {
     pub async fn mark_key_quota_exhausted_by_secret(
         &self,
         api_key: &str,
-    ) -> Result<(), ProxyError> {
+    ) -> Result<bool, ProxyError> {
         self.key_store.mark_quota_exhausted(api_key).await
     }
 
@@ -4036,9 +4036,9 @@ impl KeyStore {
         Ok(())
     }
 
-    async fn mark_quota_exhausted(&self, key: &str) -> Result<(), ProxyError> {
+    async fn mark_quota_exhausted(&self, key: &str) -> Result<bool, ProxyError> {
         let now = Utc::now().timestamp();
-        sqlx::query(
+        let res = sqlx::query(
             r#"
             UPDATE api_keys
             SET status = ?, status_changed_at = ?, last_used_at = ?
@@ -4052,7 +4052,7 @@ impl KeyStore {
         .bind(STATUS_DISABLED)
         .execute(&self.pool)
         .await?;
-        Ok(())
+        Ok(res.rows_affected() > 0)
     }
 
     async fn restore_active_status(&self, key: &str) -> Result<(), ProxyError> {

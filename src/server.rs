@@ -3130,14 +3130,19 @@ struct ValidateKeysResponse {
     results: Vec<ValidateKeyResult>,
 }
 
-fn truncate_detail(input: String, max_len: usize) -> String {
+fn truncate_detail(mut input: String, max_len: usize) -> String {
     if input.len() <= max_len {
         return input;
     }
-    let mut out = input;
-    out.truncate(max_len);
-    out.push('…');
-    out
+
+    // `String::truncate` requires a UTF-8 char boundary; otherwise it panics.
+    let mut end = max_len;
+    while end > 0 && !input.is_char_boundary(end) {
+        end -= 1;
+    }
+    input.truncate(end);
+    input.push('…');
+    input
 }
 
 async fn validate_single_key(
@@ -3465,7 +3470,7 @@ async fn create_api_keys_batch(
                         .mark_key_quota_exhausted_by_secret(&api_key)
                         .await
                     {
-                        Ok(()) => Some(true),
+                        Ok(changed) => Some(changed),
                         Err(err) => {
                             eprintln!("mark exhausted failed for key: {err}");
                             Some(false)
