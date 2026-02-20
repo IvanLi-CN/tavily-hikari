@@ -15,7 +15,6 @@ permissions:
 env:
   REGISTRY: ghcr.io
   PLATFORMS: linux/amd64
-  NODE_VERSION: "20"
 
 concurrency:
   group: release-${{ github.event.workflow_run.head_branch }}
@@ -150,26 +149,19 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
         with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+          bun-version-file: .bun-version
 
-      - name: Install front-end dependencies
-        working-directory: web
-        run: npm ci
-
-      - name: TypeScript compile
-        working-directory: web
-        run: npx tsc -b
-
-      - name: Vite build
+      - name: Build web assets
         working-directory: web
         env:
           VITE_APP_VERSION: ${{ env.APP_EFFECTIVE_VERSION }}
-        run: npx vite build && node scripts/write-version.mjs
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          bun run build
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3

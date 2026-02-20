@@ -41,7 +41,7 @@ Client → Tavily Hikari (Axum) ──┬─> Tavily upstream (/mcp)
 cargo run -- --bind 127.0.0.1 --port 58087
 
 # Optional: start SPA dev server
-cd web && npm ci && npm run dev -- --host 127.0.0.1 --port 55173
+cd web && bun install --frozen-lockfile && bun run dev -- --host 127.0.0.1 --port 55173
 
 # Register Tavily keys via admin API (ForwardAuth headers depend on your setup)
 curl -X POST http://127.0.0.1:58087/api/keys \
@@ -183,7 +183,7 @@ Deployment example (Caddy as gateway): see `examples/forwardauth-caddy/`.
 - Built with React 18, TanStack Router, DaisyUI, Tailwind, Iconify.
 - Displays live key table, request log stream, and admin-only actions (copy real key, restore, delete).
 - `scripts/write-version.mjs` stamps the build version into the UI during CI releases.
-- `npm run dev` proxies `/api`, `/mcp`, and `/health` to the backend to avoid CORS hassle during development.
+- `bun run dev` proxies `/api`, `/mcp`, and `/health` to the backend to avoid CORS hassle during development.
 
 ## Screenshots
 
@@ -235,8 +235,8 @@ codex mcp list | grep tavily_hikari
 
 - Rust toolchain pinned to 1.91.0 via `rust-toolchain.toml`.
 - Common commands: `cargo fmt`, `cargo clippy -- -D warnings`, `cargo test --locked --all-features`, `cargo run -- --help`.
-- Frontend: `npm ci`, `npm run dev`, `npm run build` (runs `tsc -b` + `vite build`).
-- Hooks: run `lefthook install` to enable automatic `cargo fmt`, `cargo clippy`, `npx dprint fmt`, and `npx commitlint --edit` on every commit.
+- Frontend (Bun, pinned via `.bun-version`): `bun install --frozen-lockfile`, `bun run dev`, `bun run build` (runs `tsc -b` + `vite build`).
+- Hooks: run `lefthook install` to enable automatic `cargo fmt`, `cargo clippy`, `bunx dprint fmt`, and `bunx commitlint --edit` on every commit.
 - CI: `.github/workflows/ci.yml` runs lint/tests/build.
 - Release: `.github/workflows/release.yml` runs after main CI succeeds and publishes tags, GitHub Releases, and GHCR images.
 

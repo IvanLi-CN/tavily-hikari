@@ -24,12 +24,12 @@ PORT="${PORT:-55173}"
 pushd "$APP_DIR" >/dev/null
 
 if [[ ! -d node_modules ]]; then
-  echo "node_modules missing; installing dependencies via npm ci..."
-  npm ci
+  echo "node_modules missing; installing dependencies via bun install..."
+  bun install --frozen-lockfile
 fi
 
 echo "Starting frontend dev server on $HOST:$PORT (logging to $LOG_FILE)..."
-nohup npm run dev -- --host "$HOST" --port "$PORT" >"$LOG_FILE" 2>&1 &
+nohup bun run dev -- --host "$HOST" --port "$PORT" >"$LOG_FILE" 2>&1 &
 FRONTEND_PID=$!
 echo "$FRONTEND_PID" > "$PID_FILE"
 

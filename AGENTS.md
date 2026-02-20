@@ -15,8 +15,8 @@
   - `cargo fmt` — format Rust code; `cargo clippy -- -D warnings` — lint.
   - `cargo test` — run tests (add as you go).
 - Frontend (`web/`)
-  - `npm ci` — install deps; `npm run dev` — local dev (Vite).
-  - `npm run build` — build SPA to `web/dist`; `npm run preview` — preview build.
+  - `bun install --frozen-lockfile` — install deps; `bun run dev` — local dev (Vite).
+  - `bun run build` — build SPA to `web/dist`; `bun run preview` — preview build.
 - Hooks
   - `lefthook install` — enable pre-commit (`cargo fmt`, `clippy`, Markdown format) and commitlint.
 
@@ -24,7 +24,7 @@
 
 - Rust: 2024 edition, rustfmt defaults; modules/files `snake_case`, types `PascalCase`, functions/vars `snake_case`.
 - TypeScript/React: components `PascalCase` in `*.tsx`; hooks `useXxx`.
-- Markdown: formatted by dprint (line width 100). Run `npx dprint fmt` for changed `.md`.
+- Markdown: formatted by dprint (line width 100). Run `bunx dprint fmt` for changed `.md`.
 
 ## Testing Guidelines
 
@@ -53,7 +53,7 @@
 
 - Frontend (Vite):
   - **Always** use `scripts/start-frontend-dev.sh` to bring up the Vite dev server (automatically installs dependencies if `node_modules` is missing, and records PID/logs under `logs/`).
-  - Build for static serving: `cd web && npm run build`, then run backend with `scripts/start-backend-dev.sh` so it picks up `web/dist`.
+  - Build for static serving: `cd web && bun run build`, then run backend with `scripts/start-backend-dev.sh` so it picks up `web/dist`.
 
 - Stop background servers:
   - Backend: `kill $(cat logs/backend.pid)` (the script recreates PID file on next start)
