@@ -26,7 +26,6 @@ RUST_LOG="${RUST_LOG:-info}"
 
 pushd "$ROOT_DIR" >/dev/null
 
-echo "Starting backend on $BIND_ADDR:$PORT (logging to $LOG_FILE)..."
 CMD=(cargo run --bin tavily-hikari -- --bind "$BIND_ADDR" --port "$PORT" --db-path "$DB_PATH")
 if [[ -d "$STATIC_DIR" ]]; then
   CMD+=(--static-dir "$STATIC_DIR")
@@ -34,10 +33,17 @@ fi
 if [[ "${DEV_OPEN_ADMIN:-}" == "true" || "${DEV_OPEN_ADMIN:-}" == "1" ]]; then
   CMD+=(--dev-open-admin)
 fi
-nohup env RUST_LOG="$RUST_LOG" "${CMD[@]}" >"$LOG_FILE" 2>&1 &
-BACKEND_PID=$!
-echo "$BACKEND_PID" > "$PID_FILE"
+if [[ "${FOREGROUND:-}" == "1" || "${FOREGROUND:-}" == "true" ]]; then
+  echo "Starting backend in foreground on $BIND_ADDR:$PORT..."
+  # In foreground mode, stdout/stderr should be captured by the caller (e.g. devctl).
+  exec env RUST_LOG="$RUST_LOG" "${CMD[@]}"
+else
+  echo "Starting backend on $BIND_ADDR:$PORT (logging to $LOG_FILE)..."
+  nohup env RUST_LOG="$RUST_LOG" "${CMD[@]}" >"$LOG_FILE" 2>&1 &
+  BACKEND_PID=$!
+  echo "$BACKEND_PID" > "$PID_FILE"
 
-popd >/dev/null
+  popd >/dev/null
 
-echo "Backend started with PID $BACKEND_PID"
+  echo "Backend started with PID $BACKEND_PID"
+fi

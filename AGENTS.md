@@ -48,19 +48,26 @@
 - Default high ports: backend `58087`, frontend `55173` (increment within high range if needed).
 
 - Backend (Rust):
-  - **Always** use `scripts/start-backend-dev.sh` to launch the dev server (respects env vars like `TAVILY_API_KEYS`, `TAVILY_UPSTREAM`, `DEV_OPEN_ADMIN`). The script handles `logs/backend.dev.log` + `logs/backend.pid` automatically.
-  - For a one-off smoke check, `timeout 120s scripts/start-backend-dev.sh` can be used, but do not hand-roll `cargo run` commands in this repo.
+  - **Long-lived / persistent (Codex):** use `devctl` (Zellij) so it survives turn boundaries:
+    - `~/.codex/bin/devctl up api -- env FOREGROUND=1 scripts/start-backend-dev.sh`
+  - The script respects env vars like `TAVILY_API_KEYS`, `TAVILY_UPSTREAM`, `DEV_OPEN_ADMIN`.
+  - One-off smoke check (foreground): `timeout 120s env FOREGROUND=1 scripts/start-backend-dev.sh` (avoid hand-rolling `cargo run`).
 
 - Frontend (Vite):
-  - **Always** use `scripts/start-frontend-dev.sh` to bring up the Vite dev server (automatically installs dependencies if `node_modules` is missing, and records PID/logs under `logs/`).
+  - **Long-lived / persistent (Codex):** use `devctl` (Zellij):
+    - `~/.codex/bin/devctl up web -- env FOREGROUND=1 scripts/start-frontend-dev.sh`
+  - `scripts/start-frontend-dev.sh` automatically installs dependencies if `node_modules` is missing.
   - Build for static serving: `cd web && bun run build`, then run backend with `scripts/start-backend-dev.sh` so it picks up `web/dist`.
 
-- Stop background servers:
-  - Backend: `kill $(cat logs/backend.pid)` (the script recreates PID file on next start)
-  - Frontend: `kill $(cat logs/frontend.pid)`
+- Stop services:
+  - Persistent (devctl): `~/.codex/bin/devctl down api` and `~/.codex/bin/devctl down web` (or `~/.codex/bin/devctl down-all`)
+  - Legacy nohup mode:
+    - Backend: `kill $(cat logs/backend.pid)` (the script recreates PID file on next start)
+    - Frontend: `kill $(cat logs/frontend.pid)`
 
 - Logs & notes:
-  - `tail -f logs/backend.dev.log` and `tail -f logs/web.dev.log` to monitor runtime.
+  - Persistent (devctl): `~/.codex/bin/devctl logs api -n 200` and `~/.codex/bin/devctl logs web -n 200`
+  - Legacy nohup mode: `tail -f logs/backend.dev.log` and `tail -f logs/web.dev.log`
   - Ensure `logs/` exists; do not commit log or PID files.
   - Vite dev server proxies to backend when configured in `web/vite.config.ts`.
 
