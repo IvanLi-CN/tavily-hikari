@@ -26,7 +26,8 @@ use axum::{
     routing::{any, delete, get, patch, post},
 };
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, Local, NaiveDate, TimeZone, Utc};
-use futures_util::Stream;
+use futures_util::stream as futures_stream;
+use futures_util::{Stream, StreamExt};
 use reqwest::header::{HeaderMap as ReqHeaderMap, HeaderValue as ReqHeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -3060,6 +3061,7 @@ const API_KEYS_BATCH_LIMIT: usize = 1000;
 struct BatchCreateKeysRequest {
     api_keys: Vec<String>,
     group: Option<String>,
+    exhausted_api_keys: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -3083,12 +3085,263 @@ struct BatchCreateKeysResult {
     id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    marked_exhausted: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
 struct BatchCreateKeysResponse {
     summary: BatchCreateKeysSummary,
     results: Vec<BatchCreateKeysResult>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ValidateKeysRequest {
+    api_keys: Vec<String>,
+}
+
+#[derive(Debug, Default, Serialize)]
+struct ValidateKeysSummary {
+    input_lines: u64,
+    valid_lines: u64,
+    unique_in_input: u64,
+    duplicate_in_input: u64,
+    ok: u64,
+    exhausted: u64,
+    invalid: u64,
+    error: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct ValidateKeyResult {
+    api_key: String,
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    quota_limit: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    quota_remaining: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ValidateKeysResponse {
+    summary: ValidateKeysSummary,
+    results: Vec<ValidateKeyResult>,
+}
+
+fn truncate_detail(input: String, max_len: usize) -> String {
+    if input.len() <= max_len {
+        return input;
+    }
+    let mut out = input;
+    out.truncate(max_len);
+    out.push('…');
+    out
+}
+
+async fn validate_single_key(
+    proxy: TavilyProxy,
+    usage_base: String,
+    api_key: String,
+) -> (ValidateKeyResult, &'static str) {
+    match proxy.probe_api_key_quota(&api_key, &usage_base).await {
+        Ok((limit, remaining)) => {
+            if remaining <= 0 {
+                (
+                    ValidateKeyResult {
+                        api_key,
+                        status: "ok_exhausted".to_string(),
+                        quota_limit: Some(limit),
+                        quota_remaining: Some(remaining),
+                        detail: None,
+                    },
+                    "exhausted",
+                )
+            } else {
+                (
+                    ValidateKeyResult {
+                        api_key,
+                        status: "ok".to_string(),
+                        quota_limit: Some(limit),
+                        quota_remaining: Some(remaining),
+                        detail: None,
+                    },
+                    "ok",
+                )
+            }
+        }
+        Err(ProxyError::UsageHttp { status, body }) => {
+            let mut detail = format!("Tavily usage request failed with {status}: {body}");
+            detail = truncate_detail(detail, 1400);
+            if status == reqwest::StatusCode::UNAUTHORIZED {
+                (
+                    ValidateKeyResult {
+                        api_key,
+                        status: "unauthorized".to_string(),
+                        quota_limit: None,
+                        quota_remaining: None,
+                        detail: Some(detail),
+                    },
+                    "invalid",
+                )
+            } else if status == reqwest::StatusCode::FORBIDDEN {
+                (
+                    ValidateKeyResult {
+                        api_key,
+                        status: "forbidden".to_string(),
+                        quota_limit: None,
+                        quota_remaining: None,
+                        detail: Some(detail),
+                    },
+                    "invalid",
+                )
+            } else if status.is_client_error() {
+                (
+                    ValidateKeyResult {
+                        api_key,
+                        status: "invalid".to_string(),
+                        quota_limit: None,
+                        quota_remaining: None,
+                        detail: Some(detail),
+                    },
+                    "invalid",
+                )
+            } else {
+                (
+                    ValidateKeyResult {
+                        api_key,
+                        status: "error".to_string(),
+                        quota_limit: None,
+                        quota_remaining: None,
+                        detail: Some(detail),
+                    },
+                    "error",
+                )
+            }
+        }
+        Err(ProxyError::QuotaDataMissing { reason }) => (
+            ValidateKeyResult {
+                api_key,
+                status: "invalid".to_string(),
+                quota_limit: None,
+                quota_remaining: None,
+                detail: Some(truncate_detail(
+                    format!("quota_data_missing: {reason}"),
+                    1400,
+                )),
+            },
+            "invalid",
+        ),
+        Err(err) => (
+            ValidateKeyResult {
+                api_key,
+                status: "error".to_string(),
+                quota_limit: None,
+                quota_remaining: None,
+                detail: Some(truncate_detail(err.to_string(), 1400)),
+            },
+            "error",
+        ),
+    }
+}
+
+async fn post_validate_api_keys(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<ValidateKeysRequest>,
+) -> Result<Response<Body>, StatusCode> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let ValidateKeysRequest { api_keys } = payload;
+
+    let mut summary = ValidateKeysSummary {
+        input_lines: api_keys.len() as u64,
+        ..Default::default()
+    };
+
+    let mut trimmed = Vec::<String>::with_capacity(api_keys.len());
+    for api_key in api_keys {
+        let api_key = api_key.trim();
+        if api_key.is_empty() {
+            continue;
+        }
+        trimmed.push(api_key.to_string());
+    }
+    summary.valid_lines = trimmed.len() as u64;
+
+    if trimmed.len() > API_KEYS_BATCH_LIMIT {
+        let body = Json(json!({
+            "error": "too_many_items",
+            "detail": format!("api_keys exceeds limit (max {})", API_KEYS_BATCH_LIMIT),
+        }));
+        return Ok((StatusCode::BAD_REQUEST, body).into_response());
+    }
+
+    let mut results = Vec::<ValidateKeyResult>::with_capacity(trimmed.len());
+    let mut pending = Vec::<(usize, String)>::new();
+    let mut seen = HashSet::<String>::new();
+
+    for api_key in trimmed {
+        if !seen.insert(api_key.clone()) {
+            summary.duplicate_in_input += 1;
+            results.push(ValidateKeyResult {
+                api_key,
+                status: "duplicate_in_input".to_string(),
+                quota_limit: None,
+                quota_remaining: None,
+                detail: None,
+            });
+            continue;
+        }
+
+        let pos = results.len();
+        results.push(ValidateKeyResult {
+            api_key: api_key.clone(),
+            status: "pending".to_string(),
+            quota_limit: None,
+            quota_remaining: None,
+            detail: None,
+        });
+        pending.push((pos, api_key));
+    }
+
+    summary.unique_in_input = seen.len() as u64;
+
+    let proxy = state.proxy.clone();
+    let usage_base = state.usage_base.clone();
+    let checked = futures_stream::iter(pending.into_iter())
+        .map(|(pos, api_key)| {
+            let proxy = proxy.clone();
+            let usage_base = usage_base.clone();
+            async move {
+                let (result, kind) = validate_single_key(proxy, usage_base, api_key).await;
+                (pos, result, kind)
+            }
+        })
+        .buffer_unordered(8)
+        .collect::<Vec<_>>()
+        .await;
+
+    for (pos, result, kind) in checked {
+        if let Some(slot) = results.get_mut(pos) {
+            *slot = result;
+        }
+        match kind {
+            "ok" => summary.ok += 1,
+            "exhausted" => summary.exhausted += 1,
+            "invalid" => summary.invalid += 1,
+            _ => summary.error += 1,
+        }
+    }
+
+    Ok((
+        StatusCode::OK,
+        Json(ValidateKeysResponse { summary, results }),
+    )
+        .into_response())
 }
 
 async fn create_api_key(
@@ -3139,11 +3392,19 @@ async fn create_api_keys_batch(
     let BatchCreateKeysRequest {
         api_keys,
         group: group_raw,
+        exhausted_api_keys,
     } = payload;
     let group = group_raw
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
+
+    let exhausted_set: HashSet<String> = exhausted_api_keys
+        .unwrap_or_default()
+        .into_iter()
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+        .collect();
 
     let mut summary = BatchCreateKeysSummary {
         input_lines: api_keys.len() as u64,
@@ -3180,6 +3441,7 @@ async fn create_api_keys_batch(
                 status: "duplicate_in_input".to_string(),
                 id: None,
                 error: None,
+                marked_exhausted: None,
             });
             continue;
         }
@@ -3196,11 +3458,26 @@ async fn create_api_keys_batch(
                     "existed" => summary.existed += 1,
                     _ => {}
                 }
+                let mut marked_exhausted = None;
+                if exhausted_set.contains(&api_key) {
+                    marked_exhausted = match state
+                        .proxy
+                        .mark_key_quota_exhausted_by_secret(&api_key)
+                        .await
+                    {
+                        Ok(()) => Some(true),
+                        Err(err) => {
+                            eprintln!("mark exhausted failed for key: {err}");
+                            Some(false)
+                        }
+                    };
+                }
                 results.push(BatchCreateKeysResult {
                     api_key,
                     status: status.as_str().to_string(),
                     id: Some(id),
                     error: None,
+                    marked_exhausted,
                 });
             }
             Err(err) => {
@@ -3210,6 +3487,7 @@ async fn create_api_keys_batch(
                     status: "failed".to_string(),
                     id: None,
                     error: Some(err.to_string()),
+                    marked_exhausted: None,
                 });
             }
         }
@@ -3764,6 +4042,7 @@ pub async fn serve(
         .route("/api/public/metrics", get(get_public_metrics))
         .route("/api/keys", get(list_keys))
         .route("/api/keys", post(create_api_key))
+        .route("/api/keys/validate", post(post_validate_api_keys))
         .route("/api/keys/batch", post(create_api_keys_batch))
         .route("/api/keys/:id", get(get_api_key_detail))
         .route("/api/keys/:id/sync-usage", post(post_sync_key_usage))
@@ -5525,6 +5804,87 @@ mod tests {
         addr
     }
 
+    async fn spawn_keys_admin_server_with_usage_base(
+        proxy: TavilyProxy,
+        forward_auth: ForwardAuthConfig,
+        dev_open_admin: bool,
+        usage_base: String,
+    ) -> SocketAddr {
+        let state = Arc::new(AppState {
+            proxy,
+            static_dir: None,
+            forward_auth,
+            forward_auth_enabled: true,
+            builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            dev_open_admin,
+            usage_base,
+        });
+
+        let app = Router::new()
+            .route("/api/keys/batch", post(create_api_keys_batch))
+            .route("/api/keys/validate", post(post_validate_api_keys))
+            .route("/api/admin/login", post(post_admin_login))
+            .with_state(state);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+        addr
+    }
+
+    async fn spawn_usage_mock_server() -> SocketAddr {
+        let app = Router::new().route(
+            "/usage",
+            get(|headers: HeaderMap| async move {
+                let auth = headers
+                    .get("authorization")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("");
+
+                match auth {
+                    // ok: remaining > 0
+                    "Bearer tvly-ok" => (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "key": { "limit": 1000, "usage": 10 },
+                        })),
+                    )
+                        .into_response(),
+                    // ok_exhausted: remaining == 0
+                    "Bearer tvly-exhausted" => (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "key": { "limit": 1000, "usage": 1000 },
+                        })),
+                    )
+                        .into_response(),
+                    // unauthorized
+                    "Bearer tvly-unauth" => {
+                        (StatusCode::UNAUTHORIZED, Body::from("unauthorized")).into_response()
+                    }
+                    // forbidden
+                    "Bearer tvly-forbidden" => {
+                        (StatusCode::FORBIDDEN, Body::from("forbidden")).into_response()
+                    }
+                    _ => (StatusCode::BAD_REQUEST, Body::from("unknown key")).into_response(),
+                }
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+        addr
+    }
+
     fn hash_admin_password_for_test(password: &str) -> String {
         use argon2::password_hash::{PasswordHasher, SaltString};
 
@@ -5665,6 +6025,156 @@ mod tests {
             .expect("request succeeds");
 
         assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn api_keys_validate_reports_ok_exhausted_and_duplicates() {
+        let db_path = temp_db_path("keys-validate-ok-exhausted");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        let forward_auth = ForwardAuthConfig::new(
+            Some(HeaderName::from_static("x-forward-user")),
+            Some("admin".to_string()),
+            None,
+            None,
+        );
+
+        let usage_addr = spawn_usage_mock_server().await;
+        let usage_base = format!("http://{}", usage_addr);
+        let addr =
+            spawn_keys_admin_server_with_usage_base(proxy, forward_auth, false, usage_base).await;
+
+        let client = Client::new();
+        let url = format!("http://{}/api/keys/validate", addr);
+        let resp = client
+            .post(url)
+            .header("x-forward-user", "admin")
+            .json(&serde_json::json!({
+                "api_keys": ["tvly-ok", "tvly-exhausted", "tvly-unauth", "tvly-ok"]
+            }))
+            .send()
+            .await
+            .expect("request succeeds");
+
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        let body: serde_json::Value = resp.json().await.expect("parse json body");
+        let summary = body.get("summary").expect("summary");
+        assert_eq!(summary.get("input_lines").and_then(|v| v.as_u64()), Some(4));
+        assert_eq!(summary.get("valid_lines").and_then(|v| v.as_u64()), Some(4));
+        assert_eq!(
+            summary.get("unique_in_input").and_then(|v| v.as_u64()),
+            Some(3)
+        );
+        assert_eq!(
+            summary.get("duplicate_in_input").and_then(|v| v.as_u64()),
+            Some(1)
+        );
+        assert_eq!(summary.get("ok").and_then(|v| v.as_u64()), Some(1));
+        assert_eq!(summary.get("exhausted").and_then(|v| v.as_u64()), Some(1));
+        assert_eq!(summary.get("invalid").and_then(|v| v.as_u64()), Some(1));
+        assert_eq!(summary.get("error").and_then(|v| v.as_u64()), Some(0));
+
+        let results = body
+            .get("results")
+            .and_then(|v| v.as_array())
+            .expect("results array");
+        assert_eq!(results.len(), 4);
+        assert_eq!(
+            results[0].get("status").and_then(|v| v.as_str()),
+            Some("ok")
+        );
+        assert_eq!(
+            results[1].get("status").and_then(|v| v.as_str()),
+            Some("ok_exhausted")
+        );
+        assert_eq!(
+            results[2].get("status").and_then(|v| v.as_str()),
+            Some("unauthorized")
+        );
+        assert_eq!(
+            results[3].get("status").and_then(|v| v.as_str()),
+            Some("duplicate_in_input")
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn api_keys_batch_can_mark_exhausted_by_secret() {
+        let db_path = temp_db_path("keys-batch-mark-exhausted");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        let forward_auth = ForwardAuthConfig::new(
+            Some(HeaderName::from_static("x-forward-user")),
+            Some("admin".to_string()),
+            None,
+            None,
+        );
+
+        let addr = spawn_keys_admin_server_with_usage_base(
+            proxy.clone(),
+            forward_auth,
+            false,
+            "http://127.0.0.1:58088".to_string(),
+        )
+        .await;
+
+        let client = Client::new();
+        let url = format!("http://{}/api/keys/batch", addr);
+        let resp = client
+            .post(url)
+            .header("x-forward-user", "admin")
+            .json(&serde_json::json!({
+                "api_keys": ["tvly-mark-exhausted"],
+                "exhausted_api_keys": ["tvly-mark-exhausted"],
+            }))
+            .send()
+            .await
+            .expect("request succeeds");
+
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        let body: serde_json::Value = resp.json().await.expect("parse json body");
+        let results = body
+            .get("results")
+            .and_then(|v| v.as_array())
+            .expect("results array");
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].get("status").and_then(|v| v.as_str()),
+            Some("created")
+        );
+        assert_eq!(
+            results[0].get("marked_exhausted").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+
+        let metrics = proxy.list_api_key_metrics().await.expect("list keys");
+        assert!(!metrics.is_empty(), "expected at least one key metric row");
+
+        let mut found = None;
+        for m in metrics {
+            let secret = proxy
+                .get_api_key_secret(&m.id)
+                .await
+                .expect("fetch secret")
+                .unwrap_or_default();
+            if secret == "tvly-mark-exhausted" {
+                found = Some(m);
+                break;
+            }
+        }
+        let found = found.expect("find inserted key");
+        assert_eq!(found.status, "exhausted");
 
         let _ = std::fs::remove_file(db_path);
     }

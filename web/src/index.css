@@ -1350,6 +1350,52 @@ table {
   transform: translateY(-50%) scale(1);
 }
 
+.key-validation-detail {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.key-validation-detail-trigger {
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: default;
+}
+
+.key-validation-detail-trigger:focus-visible {
+  outline: 2px solid rgba(99, 102, 241, 0.6);
+  outline-offset: 2px;
+  border-radius: 999px;
+}
+
+.key-validation-bubble {
+  position: absolute;
+  left: calc(100% + 10px);
+  top: 50%;
+  transform: translateY(-50%) scale(0.95);
+  background: #0f172a;
+  color: #fff;
+  padding: 10px 12px;
+  border-radius: 14px;
+  max-width: min(520px, calc(100vw - 64px));
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.85rem;
+  line-height: 1.35;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  z-index: 20;
+}
+
+.key-validation-detail:hover .key-validation-bubble,
+.key-validation-detail:focus-within .key-validation-bubble {
+  opacity: 1;
+  transform: translateY(-50%) scale(1);
+}
+
 .log-token-link code {
   color: #0f172a;
 }

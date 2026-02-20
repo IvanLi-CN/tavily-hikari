@@ -1400,6 +1400,39 @@ impl TavilyProxy {
         let Some(secret) = self.key_store.fetch_api_key_secret(key_id).await? else {
             return Err(ProxyError::Database(sqlx::Error::RowNotFound));
         };
+        let (limit, remaining) = self
+            .fetch_usage_quota_for_secret(&secret, usage_base)
+            .await?;
+        let now = Utc::now().timestamp();
+        self.key_store
+            .update_quota_for_key(key_id, limit, remaining, now)
+            .await?;
+        Ok((limit, remaining))
+    }
+
+    /// Probe usage/quota for an API key secret via Tavily Usage API base (e.g., https://api.tavily.com).
+    /// This performs *no* database mutation and is safe to use for admin validation flows.
+    pub async fn probe_api_key_quota(
+        &self,
+        api_key: &str,
+        usage_base: &str,
+    ) -> Result<(i64, i64), ProxyError> {
+        self.fetch_usage_quota_for_secret(api_key, usage_base).await
+    }
+
+    /// Admin: mark a key as quota-exhausted by its secret string.
+    pub async fn mark_key_quota_exhausted_by_secret(
+        &self,
+        api_key: &str,
+    ) -> Result<(), ProxyError> {
+        self.key_store.mark_quota_exhausted(api_key).await
+    }
+
+    async fn fetch_usage_quota_for_secret(
+        &self,
+        secret: &str,
+        usage_base: &str,
+    ) -> Result<(i64, i64), ProxyError> {
         let base = Url::parse(usage_base).map_err(|e| ProxyError::InvalidEndpoint {
             endpoint: usage_base.to_string(),
             source: e,
@@ -1446,10 +1479,6 @@ impl TavilyProxy {
             });
         }
         let remaining = (limit - used).max(0);
-        let now = Utc::now().timestamp();
-        self.key_store
-            .update_quota_for_key(key_id, limit, remaining, now)
-            .await?;
         Ok((limit, remaining))
     }
 

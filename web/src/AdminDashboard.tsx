@@ -10,6 +10,8 @@ import {
   fetchApiKeySecret,
   addApiKeysBatch,
   type AddApiKeysBatchResponse,
+  validateApiKeys,
+  type ValidateKeyResult,
   deleteApiKey,
   setKeyStatus,
   fetchProfile,
@@ -396,6 +398,43 @@ function AdminDashboard(): JSX.Element {
   const keysBatchOverlayRef = useRef<HTMLDivElement | null>(null)
   const keysBatchReportDialogRef = useRef<HTMLDialogElement | null>(null)
   const [keysBatchReport, setKeysBatchReport] = useState<AddKeysBatchReportState | null>(null)
+
+  type KeyValidationStatus =
+    | 'pending'
+    | 'duplicate_in_input'
+    | 'ok'
+    | 'ok_exhausted'
+    | 'unauthorized'
+    | 'forbidden'
+    | 'invalid'
+    | 'error'
+
+  type KeyValidationRow = {
+    api_key: string
+    status: KeyValidationStatus
+    quota_limit?: number
+    quota_remaining?: number
+    detail?: string
+    attempts: number
+  }
+
+  type KeysValidationState = {
+    group: string
+    input_lines: number
+    valid_lines: number
+    unique_in_input: number
+    duplicate_in_input: number
+    checking: boolean
+    importing: boolean
+    rows: KeyValidationRow[]
+    importReport?: AddApiKeysBatchResponse
+    importError?: string
+  }
+
+  const keysValidateDialogRef = useRef<HTMLDialogElement | null>(null)
+  const keysValidateAbortRef = useRef<AbortController | null>(null)
+  const keysValidateRunIdRef = useRef(0)
+  const [keysValidation, setKeysValidation] = useState<KeysValidationState | null>(null)
   const [newTokenNote, setNewTokenNote] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
@@ -1069,6 +1108,63 @@ function AdminDashboard(): JSX.Element {
     return keysBatchReport.response.results.filter((item) => item.status === 'failed')
   }, [keysBatchReport])
 
+  const keysValidationCounts = useMemo(() => {
+    const rows = keysValidation?.rows ?? []
+    let pending = 0
+    let duplicate = 0
+    let ok = 0
+    let exhausted = 0
+    let invalid = 0
+    let errorCount = 0
+    for (const row of rows) {
+      switch (row.status) {
+        case 'pending':
+          pending += 1
+          break
+        case 'duplicate_in_input':
+          duplicate += 1
+          break
+        case 'ok':
+          ok += 1
+          break
+        case 'ok_exhausted':
+          exhausted += 1
+          break
+        case 'unauthorized':
+        case 'forbidden':
+        case 'invalid':
+          invalid += 1
+          break
+        case 'error':
+          errorCount += 1
+          break
+      }
+    }
+    const checked = ok + exhausted + invalid + errorCount
+    const totalToCheck = keysValidation?.unique_in_input ?? 0
+    return { pending, duplicate, ok, exhausted, invalid, error: errorCount, checked, totalToCheck }
+  }, [keysValidation])
+
+  const keysValidationValidKeys = useMemo(() => {
+    const set = new Set<string>()
+    for (const row of keysValidation?.rows ?? []) {
+      if (row.status === 'ok' || row.status === 'ok_exhausted') {
+        set.add(row.api_key)
+      }
+    }
+    return Array.from(set)
+  }, [keysValidation])
+
+  const keysValidationExhaustedKeys = useMemo(() => {
+    const set = new Set<string>()
+    for (const row of keysValidation?.rows ?? []) {
+      if (row.status === 'ok_exhausted') {
+        set.add(row.api_key)
+      }
+    }
+    return Array.from(set)
+  }, [keysValidation])
+
   const updateKeysBatchOverlayLayout = useCallback(() => {
     if (!keysBatchExpanded) return
     const anchor = keysBatchAnchorRef.current
@@ -1192,19 +1288,225 @@ function AdminDashboard(): JSX.Element {
     })
   }, [])
 
+  const closeKeysValidationDialog = useCallback(() => {
+    keysValidateAbortRef.current?.abort()
+    keysValidateAbortRef.current = null
+    keysValidateDialogRef.current?.close()
+    setKeysValidation(null)
+  }, [])
+
+  useEffect(() => () => {
+    keysValidateAbortRef.current?.abort()
+    keysValidateAbortRef.current = null
+  }, [])
+
+  const coerceValidationStatus = (raw: string): KeyValidationStatus => {
+    switch ((raw || '').toLowerCase()) {
+      case 'pending':
+        return 'pending'
+      case 'duplicate_in_input':
+        return 'duplicate_in_input'
+      case 'ok':
+        return 'ok'
+      case 'ok_exhausted':
+        return 'ok_exhausted'
+      case 'unauthorized':
+        return 'unauthorized'
+      case 'forbidden':
+        return 'forbidden'
+      case 'invalid':
+        return 'invalid'
+      case 'error':
+        return 'error'
+      default:
+        return 'error'
+    }
+  }
+
+  const applyValidationResults = useCallback((results: ValidateKeyResult[], runId: number) => {
+    setKeysValidation((prev) => {
+      if (!prev) return prev
+      if (runId !== keysValidateRunIdRef.current) return prev
+      const byKey = new Map(results.map((r) => [r.api_key, r]))
+      const nextRows = prev.rows.map((row): KeyValidationRow => {
+        if (row.status === 'duplicate_in_input') return row
+        const res = byKey.get(row.api_key)
+        if (!res) return row
+        const status = coerceValidationStatus(res.status)
+        return {
+          ...row,
+          status,
+          quota_limit: res.quota_limit,
+          quota_remaining: res.quota_remaining,
+          detail: res.detail,
+        }
+      })
+      return { ...prev, rows: nextRows }
+    })
+  }, [])
+
+  const markKeysPendingForRetry = useCallback((apiKeys: string[], runId: number) => {
+    setKeysValidation((prev) => {
+      if (!prev) return prev
+      if (runId !== keysValidateRunIdRef.current) return prev
+      const set = new Set(apiKeys)
+      const rows = prev.rows.map((row): KeyValidationRow => {
+        if (!set.has(row.api_key)) return row
+        if (row.status === 'duplicate_in_input') return row
+        return {
+          ...row,
+          status: 'pending' as const,
+          detail: undefined,
+          attempts: row.attempts + 1,
+        }
+      })
+      return { ...prev, rows }
+    })
+  }, [])
+
+  const runValidateKeys = useCallback(async (apiKeys: string[], runId: number) => {
+    const controller = new AbortController()
+    keysValidateAbortRef.current?.abort()
+    keysValidateAbortRef.current = controller
+
+    const CHUNK_SIZE = 25
+    for (let i = 0; i < apiKeys.length; i += CHUNK_SIZE) {
+      const chunk = apiKeys.slice(i, i + CHUNK_SIZE)
+      if (chunk.length === 0) continue
+      try {
+        const resp = await validateApiKeys(chunk, controller.signal)
+        applyValidationResults(resp.results, runId)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to validate keys'
+        applyValidationResults(
+          chunk.map((api_key) => ({ api_key, status: 'error', detail: message })),
+          runId,
+        )
+      }
+    }
+
+    // Only mark "checking" as done if this is still the active run.
+    setKeysValidation((prev) => {
+      if (!prev) return prev
+      if (runId !== keysValidateRunIdRef.current) return prev
+      return { ...prev, checking: false }
+    })
+    keysValidateAbortRef.current = null
+  }, [applyValidationResults])
+
   const handleAddKey = async () => {
     const rawLines = newKeysText.split(/\r?\n/)
     const apiKeys = rawLines.map((line) => line.trim()).filter((line) => line.length > 0)
     if (apiKeys.length === 0) return
+
     const group = newKeysGroup.trim()
-    setSubmitting(true)
+
+    const seen = new Set<string>()
+    const rows: KeyValidationRow[] = []
+    const uniqueKeys: string[] = []
+    let duplicateCount = 0
+    for (const api_key of apiKeys) {
+      if (seen.has(api_key)) {
+        duplicateCount += 1
+        rows.push({ api_key, status: 'duplicate_in_input', attempts: 0 })
+        continue
+      }
+      seen.add(api_key)
+      uniqueKeys.push(api_key)
+      rows.push({ api_key, status: 'pending', attempts: 0 })
+    }
+
+    const runId = Date.now()
+    keysValidateRunIdRef.current = runId
+    setKeysValidation({
+      group,
+      input_lines: rawLines.length,
+      valid_lines: apiKeys.length,
+      unique_in_input: uniqueKeys.length,
+      duplicate_in_input: duplicateCount,
+      checking: true,
+      importing: false,
+      rows,
+    })
+
+    window.requestAnimationFrame(() => keysValidateDialogRef.current?.showModal())
+
+    // Collapse the in-place overlay once we hand off to the modal.
+    setNewKeysText('')
+    setNewKeysGroup('')
+    beginKeysBatchClose()
+
+    await runValidateKeys(uniqueKeys, runId)
+  }
+
+  const validationStatusTone = (status: KeyValidationStatus): StatusTone => {
+    switch (status) {
+      case 'ok':
+        return 'success'
+      case 'ok_exhausted':
+        return 'warning'
+      case 'pending':
+        return 'info'
+      case 'duplicate_in_input':
+        return 'neutral'
+      case 'unauthorized':
+      case 'forbidden':
+      case 'invalid':
+        return 'error'
+      case 'error':
+        return 'error'
+    }
+  }
+
+  const validationStatusLabel = (status: KeyValidationStatus): string => {
+    const map: any = (keyStrings as any)?.validation?.statuses
+    return (map && map[status]) ? map[status] : status
+  }
+
+  const handleRetryFailedValidation = async () => {
+    if (!keysValidation) return
+    if (keysValidation.checking || keysValidation.importing) return
+
+    const failed = new Set<string>()
+    for (const row of keysValidation.rows) {
+      if (row.status === 'unauthorized' || row.status === 'forbidden' || row.status === 'invalid' || row.status === 'error') {
+        failed.add(row.api_key)
+      }
+    }
+    const failedKeys = Array.from(failed)
+    if (failedKeys.length === 0) return
+
+    const runId = Date.now()
+    keysValidateRunIdRef.current = runId
+    setKeysValidation((prev) => prev ? ({ ...prev, checking: true, importError: undefined }) : prev)
+    markKeysPendingForRetry(failedKeys, runId)
+    await runValidateKeys(failedKeys, runId)
+  }
+
+  const handleRetryOneValidation = async (api_key: string) => {
+    if (!keysValidation) return
+    if (keysValidation.checking || keysValidation.importing) return
+    const runId = Date.now()
+    keysValidateRunIdRef.current = runId
+    setKeysValidation((prev) => prev ? ({ ...prev, checking: true, importError: undefined }) : prev)
+    markKeysPendingForRetry([api_key], runId)
+    await runValidateKeys([api_key], runId)
+  }
+
+  const handleImportValidatedKeys = async () => {
+    if (!keysValidation) return
+    if (keysValidation.checking) return
+    if (keysValidationValidKeys.length === 0) return
+
+    const group = keysValidation.group.trim()
+    setKeysValidation((prev) => prev ? ({ ...prev, importing: true, importError: undefined, importReport: undefined }) : prev)
     try {
-      const response = await addApiKeysBatch(apiKeys, group.length > 0 ? group : undefined)
-      setKeysBatchReport({ kind: 'success', response })
-      window.requestAnimationFrame(() => keysBatchReportDialogRef.current?.showModal())
-      setNewKeysText('')
-      setNewKeysGroup('')
-      beginKeysBatchClose()
+      const response = await addApiKeysBatch(
+        keysValidationValidKeys,
+        group.length > 0 ? group : undefined,
+        keysValidationExhaustedKeys,
+      )
+      setKeysValidation((prev) => prev ? ({ ...prev, importing: false, importReport: response }) : prev)
       const controller = new AbortController()
       setLoading(true)
       await loadData(controller.signal)
@@ -1212,14 +1514,7 @@ function AdminDashboard(): JSX.Element {
     } catch (err) {
       console.error(err)
       const message = err instanceof Error ? err.message : errorStrings.addKeysBatch
-      setKeysBatchReport({ kind: 'error', message, input_lines: rawLines.length, valid_lines: apiKeys.length })
-      window.requestAnimationFrame(() => keysBatchReportDialogRef.current?.showModal())
-      setNewKeysText('')
-      setNewKeysGroup('')
-      beginKeysBatchClose()
-      setError(message)
-    } finally {
-      setSubmitting(false)
+      setKeysValidation((prev) => prev ? ({ ...prev, importing: false, importError: message }) : prev)
     }
   }
 
@@ -2870,6 +3165,186 @@ function AdminDashboard(): JSX.Element {
             </div>
           </>
         )}
+      </div>
+    </dialog>
+
+    {/* API Keys Validation (daisyUI modal) */}
+    <dialog
+      id="keys_validation_modal"
+      ref={keysValidateDialogRef}
+      className="modal"
+      onClose={() => {
+        keysValidateAbortRef.current?.abort()
+        keysValidateAbortRef.current = null
+        setKeysValidation(null)
+      }}
+    >
+      <div className="modal-box" style={{ maxHeight: 'min(calc(100dvh - 6rem), calc(100vh - 6rem))', display: 'flex', flexDirection: 'column' }}>
+        <h3 className="font-bold text-lg" style={{ marginTop: 0 }}>
+          {keyStrings.validation?.title ?? 'Verify API Keys'}
+        </h3>
+        <div style={{ overflowY: 'auto', minHeight: 0, paddingTop: 12 }}>
+          {keysValidation ? (
+            <>
+              <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(2, minmax(0, 1fr))' }}>
+                <div>
+                  <span className="opacity-70">{keyStrings.validation?.summary?.inputLines ?? 'Input lines'}</span>{' '}
+                  {formatNumber(keysValidation.input_lines)}
+                </div>
+                <div>
+                  <span className="opacity-70">{keyStrings.validation?.summary?.validLines ?? 'Valid lines'}</span>{' '}
+                  {formatNumber(keysValidation.valid_lines)}
+                </div>
+                <div>
+                  <span className="opacity-70">{keyStrings.validation?.summary?.uniqueInInput ?? 'Unique'}</span>{' '}
+                  {formatNumber(keysValidation.unique_in_input)}
+                </div>
+                <div>
+                  <span className="opacity-70">{keyStrings.validation?.summary?.duplicateInInput ?? 'Duplicates'}</span>{' '}
+                  {formatNumber(keysValidation.duplicate_in_input)}
+                </div>
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <div className="opacity-70" style={{ marginBottom: 6 }}>
+                    {(keyStrings.validation?.summary?.checked ?? 'Checked').replace('{checked}', String(keysValidationCounts.checked)).replace('{total}', String(keysValidationCounts.totalToCheck))}
+                  </div>
+                  <progress
+                    className="progress progress-primary w-full"
+                    value={keysValidationCounts.checked}
+                    max={Math.max(1, keysValidationCounts.totalToCheck)}
+                  />
+                </div>
+                <div>
+                  <span className="opacity-70">{keyStrings.validation?.summary?.ok ?? 'Valid'}</span>{' '}
+                  {formatNumber(keysValidationCounts.ok)}
+                </div>
+                <div>
+                  <span className="opacity-70">{keyStrings.validation?.summary?.exhausted ?? 'Exhausted'}</span>{' '}
+                  {formatNumber(keysValidationCounts.exhausted)}
+                </div>
+                <div>
+                  <span className="opacity-70">{keyStrings.validation?.summary?.invalid ?? 'Invalid'}</span>{' '}
+                  {formatNumber(keysValidationCounts.invalid)}
+                </div>
+                <div>
+                  <span className="opacity-70">{keyStrings.validation?.summary?.error ?? 'Error'}</span>{' '}
+                  {formatNumber(keysValidationCounts.error)}
+                </div>
+              </div>
+
+              {keysValidation.importError && (
+                <div className="alert alert-error" style={{ marginTop: 12 }}>
+                  {keysValidation.importError}
+                </div>
+              )}
+
+              {keysValidation.importReport && (
+                <div style={{ marginTop: 12 }}>
+                  <h4 className="font-bold">{keyStrings.validation?.import?.title ?? 'Import Result'}</h4>
+                  <div className="py-2" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 }}>
+                    <div>
+                      <span className="opacity-70">{keyStrings.batch.report.summary.created}</span>{' '}
+                      {formatNumber(keysValidation.importReport.summary.created)}
+                    </div>
+                    <div>
+                      <span className="opacity-70">{keyStrings.batch.report.summary.undeleted}</span>{' '}
+                      {formatNumber(keysValidation.importReport.summary.undeleted)}
+                    </div>
+                    <div>
+                      <span className="opacity-70">{keyStrings.batch.report.summary.existed}</span>{' '}
+                      {formatNumber(keysValidation.importReport.summary.existed)}
+                    </div>
+                    <div>
+                      <span className="opacity-70">{keyStrings.batch.report.summary.failed}</span>{' '}
+                      {formatNumber(keysValidation.importReport.summary.failed)}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className="overflow-x-auto" style={{ marginTop: 12 }}>
+                <table className="table table-zebra">
+                  <thead>
+                    <tr>
+                      <th>{keyStrings.validation?.table?.apiKey ?? 'API Key'}</th>
+                      <th>{keyStrings.validation?.table?.result ?? 'Result'}</th>
+                      <th>{keyStrings.validation?.table?.quota ?? 'Quota'}</th>
+                      <th>{keyStrings.validation?.table?.actions ?? 'Actions'}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {keysValidation.rows.map((row, index) => {
+                      const canRetry = !keysValidation.checking && !keysValidation.importing && (
+                        row.status === 'unauthorized' || row.status === 'forbidden' || row.status === 'invalid' || row.status === 'error'
+                      )
+                      const quotaLabel =
+                        row.quota_remaining != null && row.quota_limit != null
+                          ? `${formatNumber(row.quota_remaining)} / ${formatNumber(row.quota_limit)}`
+                          : '—'
+                      const label = validationStatusLabel(row.status)
+                      return (
+                        <tr key={`${row.api_key}-${index}`}>
+                          <td style={{ wordBreak: 'break-all' }}>
+                            <code>{row.api_key}</code>
+                          </td>
+                          <td>
+                            <div className="key-validation-detail">
+                              <button type="button" className="key-validation-detail-trigger" aria-label={label}>
+                                <StatusBadge tone={validationStatusTone(row.status)}>{label}</StatusBadge>
+                              </button>
+                              {row.detail && (
+                                <div className="key-validation-bubble">{row.detail}</div>
+                              )}
+                            </div>
+                          </td>
+                          <td>{quotaLabel}</td>
+                          <td>
+                            <button
+                              type="button"
+                              className="btn btn-sm"
+                              onClick={() => void handleRetryOneValidation(row.api_key)}
+                              disabled={!canRetry}
+                            >
+                              <Icon icon="mdi:refresh" width={16} height={16} />
+                              &nbsp;{keyStrings.validation?.actions?.retry ?? 'Retry'}
+                            </button>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          ) : (
+            <div className="py-2">{keyStrings.validation?.hint ?? keyStrings.batch.hint}</div>
+          )}
+        </div>
+        <div className="modal-action" style={{ marginTop: 12 }}>
+          <form method="dialog" onSubmit={(e) => e.preventDefault()} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <button type="button" className="btn" onClick={closeKeysValidationDialog}>
+              {keyStrings.validation?.actions?.close ?? keyStrings.batch.report.close}
+            </button>
+            <button
+              type="button"
+              className="btn btn-outline"
+              onClick={() => void handleRetryFailedValidation()}
+              disabled={!keysValidation || keysValidation.checking || keysValidation.importing || keysValidationCounts.invalid + keysValidationCounts.error === 0}
+            >
+              <Icon icon="mdi:refresh" width={18} height={18} />
+              &nbsp;{keyStrings.validation?.actions?.retryFailed ?? 'Retry failed'}
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => void handleImportValidatedKeys()}
+              disabled={!keysValidation || keysValidation.checking || keysValidation.importing || keysValidationCounts.pending > 0 || keysValidationValidKeys.length === 0}
+            >
+              <Icon icon={keysValidation?.importing ? 'mdi:progress-helper' : 'mdi:tray-arrow-down'} width={18} height={18} />
+              &nbsp;
+              {(keyStrings.validation?.actions?.importValid ?? 'Import {count} valid keys').replace('{count}', String(keysValidationValidKeys.length))}
+            </button>
+          </form>
+        </div>
       </div>
     </dialog>
 

@@ -271,6 +271,7 @@ export interface AddApiKeysBatchResult {
   status: string
   id?: string
   error?: string
+  marked_exhausted?: boolean
 }
 
 export interface AddApiKeysBatchResponse {
@@ -278,7 +279,11 @@ export interface AddApiKeysBatchResponse {
   results: AddApiKeysBatchResult[]
 }
 
-export async function addApiKeysBatch(apiKeys: string[], group?: string): Promise<AddApiKeysBatchResponse> {
+export async function addApiKeysBatch(
+  apiKeys: string[],
+  group?: string,
+  exhaustedApiKeys?: string[],
+): Promise<AddApiKeysBatchResponse> {
   const trimmedGroup = group?.trim()
   return await requestJson('/api/keys/batch', {
     method: 'POST',
@@ -286,6 +291,7 @@ export async function addApiKeysBatch(apiKeys: string[], group?: string): Promis
     body: JSON.stringify({
       api_keys: apiKeys,
       group: trimmedGroup && trimmedGroup.length > 0 ? trimmedGroup : undefined,
+      exhausted_api_keys: exhaustedApiKeys && exhaustedApiKeys.length > 0 ? exhaustedApiKeys : undefined,
     }),
   })
 }
@@ -328,6 +334,40 @@ export function fetchKeyMetrics(id: string, period?: 'day' | 'week' | 'month', s
   if (since != null) params.set('since', String(since))
   const encoded = encodeURIComponent(id)
   return requestJson(`/api/keys/${encoded}/metrics?${params.toString()}`, { signal })
+}
+
+// ---- Key validation (admin only) ----
+export interface ValidateKeysSummary {
+  input_lines: number
+  valid_lines: number
+  unique_in_input: number
+  duplicate_in_input: number
+  ok: number
+  exhausted: number
+  invalid: number
+  error: number
+}
+
+export interface ValidateKeyResult {
+  api_key: string
+  status: string
+  quota_limit?: number
+  quota_remaining?: number
+  detail?: string
+}
+
+export interface ValidateKeysResponse {
+  summary: ValidateKeysSummary
+  results: ValidateKeyResult[]
+}
+
+export async function validateApiKeys(apiKeys: string[], signal?: AbortSignal): Promise<ValidateKeysResponse> {
+  return await requestJson('/api/keys/validate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    signal,
+    body: JSON.stringify({ api_keys: apiKeys }),
+  })
 }
 
 export function fetchKeyLogs(id: string, limit = 50, since?: number, signal?: AbortSignal): Promise<RequestLog[]> {
