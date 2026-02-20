@@ -1,5 +1,6 @@
 import { Icon } from '@iconify/react'
 import { StatusBadge, type StatusTone } from './components/StatusBadge'
+import { ApiKeysValidationDialog } from './components/ApiKeysValidationDialog'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import LanguageSwitcher from './components/LanguageSwitcher'
@@ -1446,30 +1447,6 @@ function AdminDashboard(): JSX.Element {
     beginKeysBatchClose()
 
     await runValidateKeys(uniqueKeys, runId)
-  }
-
-  const validationStatusTone = (status: KeyValidationStatus): StatusTone => {
-    switch (status) {
-      case 'ok':
-        return 'success'
-      case 'ok_exhausted':
-        return 'warning'
-      case 'pending':
-        return 'info'
-      case 'duplicate_in_input':
-        return 'neutral'
-      case 'unauthorized':
-      case 'forbidden':
-      case 'invalid':
-        return 'error'
-      case 'error':
-        return 'error'
-    }
-  }
-
-  const validationStatusLabel = (status: KeyValidationStatus): string => {
-    const map: any = (keyStrings as any)?.validation?.statuses
-    return (map && map[status]) ? map[status] : status
   }
 
   const handleRetryFailedValidation = async () => {
@@ -3178,184 +3155,17 @@ function AdminDashboard(): JSX.Element {
     </dialog>
 
     {/* API Keys Validation (daisyUI modal) */}
-    <dialog
-      id="keys_validation_modal"
-      ref={keysValidateDialogRef}
-      className="modal"
-      onClose={() => {
-        keysValidateAbortRef.current?.abort()
-        keysValidateAbortRef.current = null
-        setKeysValidation(null)
-      }}
-    >
-      <div className="modal-box" style={{ maxHeight: 'min(calc(100dvh - 6rem), calc(100vh - 6rem))', display: 'flex', flexDirection: 'column' }}>
-        <h3 className="font-bold text-lg" style={{ marginTop: 0 }}>
-          {keyStrings.validation?.title ?? 'Verify API Keys'}
-        </h3>
-        <div style={{ overflowY: 'auto', minHeight: 0, paddingTop: 12 }}>
-          {keysValidation ? (
-            <>
-              <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(2, minmax(0, 1fr))' }}>
-                <div>
-                  <span className="opacity-70">{keyStrings.validation?.summary?.inputLines ?? 'Input lines'}</span>{' '}
-                  {formatNumber(keysValidation.input_lines)}
-                </div>
-                <div>
-                  <span className="opacity-70">{keyStrings.validation?.summary?.validLines ?? 'Valid lines'}</span>{' '}
-                  {formatNumber(keysValidation.valid_lines)}
-                </div>
-                <div>
-                  <span className="opacity-70">{keyStrings.validation?.summary?.uniqueInInput ?? 'Unique'}</span>{' '}
-                  {formatNumber(keysValidation.unique_in_input)}
-                </div>
-                <div>
-                  <span className="opacity-70">{keyStrings.validation?.summary?.duplicateInInput ?? 'Duplicates'}</span>{' '}
-                  {formatNumber(keysValidation.duplicate_in_input)}
-                </div>
-                <div style={{ gridColumn: '1 / -1' }}>
-                  <div className="opacity-70" style={{ marginBottom: 6 }}>
-                    {(keyStrings.validation?.summary?.checked ?? 'Checked').replace('{checked}', String(keysValidationCounts.checked)).replace('{total}', String(keysValidationCounts.totalToCheck))}
-                  </div>
-                  <progress
-                    className="progress progress-primary w-full"
-                    value={keysValidationCounts.checked}
-                    max={Math.max(1, keysValidationCounts.totalToCheck)}
-                  />
-                </div>
-                <div>
-                  <span className="opacity-70">{keyStrings.validation?.summary?.ok ?? 'Valid'}</span>{' '}
-                  {formatNumber(keysValidationCounts.ok)}
-                </div>
-                <div>
-                  <span className="opacity-70">{keyStrings.validation?.summary?.exhausted ?? 'Exhausted'}</span>{' '}
-                  {formatNumber(keysValidationCounts.exhausted)}
-                </div>
-                <div>
-                  <span className="opacity-70">{keyStrings.validation?.summary?.invalid ?? 'Invalid'}</span>{' '}
-                  {formatNumber(keysValidationCounts.invalid)}
-                </div>
-                <div>
-                  <span className="opacity-70">{keyStrings.validation?.summary?.error ?? 'Error'}</span>{' '}
-                  {formatNumber(keysValidationCounts.error)}
-                </div>
-              </div>
-
-              {keysValidation.importError && (
-                <div className="alert alert-error" style={{ marginTop: 12 }}>
-                  {keysValidation.importError}
-                </div>
-              )}
-
-              {keysValidation.importReport && (
-                <div style={{ marginTop: 12 }}>
-                  <h4 className="font-bold">{keyStrings.validation?.import?.title ?? 'Import Result'}</h4>
-                  <div className="py-2" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 }}>
-                    <div>
-                      <span className="opacity-70">{keyStrings.batch.report.summary.created}</span>{' '}
-                      {formatNumber(keysValidation.importReport.summary.created)}
-                    </div>
-                    <div>
-                      <span className="opacity-70">{keyStrings.batch.report.summary.undeleted}</span>{' '}
-                      {formatNumber(keysValidation.importReport.summary.undeleted)}
-                    </div>
-                    <div>
-                      <span className="opacity-70">{keyStrings.batch.report.summary.existed}</span>{' '}
-                      {formatNumber(keysValidation.importReport.summary.existed)}
-                    </div>
-                    <div>
-                      <span className="opacity-70">{keyStrings.batch.report.summary.failed}</span>{' '}
-                      {formatNumber(keysValidation.importReport.summary.failed)}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              <div className="overflow-x-auto" style={{ marginTop: 12 }}>
-                <table className="table table-zebra">
-                  <thead>
-                    <tr>
-                      <th>{keyStrings.validation?.table?.apiKey ?? 'API Key'}</th>
-                      <th>{keyStrings.validation?.table?.result ?? 'Result'}</th>
-                      <th>{keyStrings.validation?.table?.quota ?? 'Quota'}</th>
-                      <th>{keyStrings.validation?.table?.actions ?? 'Actions'}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {keysValidation.rows.map((row, index) => {
-                      const canRetry = !keysValidation.checking && !keysValidation.importing && (
-                        row.status === 'unauthorized' || row.status === 'forbidden' || row.status === 'invalid' || row.status === 'error'
-                      )
-                      const quotaLabel =
-                        row.quota_remaining != null && row.quota_limit != null
-                          ? `${formatNumber(row.quota_remaining)} / ${formatNumber(row.quota_limit)}`
-                          : '—'
-                      const label = validationStatusLabel(row.status)
-                      return (
-                        <tr key={`${row.api_key}-${index}`}>
-                          <td style={{ wordBreak: 'break-all' }}>
-                            <code>{row.api_key}</code>
-                          </td>
-                          <td>
-                            <div className="key-validation-detail">
-                              <button type="button" className="key-validation-detail-trigger" aria-label={label}>
-                                <StatusBadge tone={validationStatusTone(row.status)}>{label}</StatusBadge>
-                              </button>
-                              {row.detail && (
-                                <div className="key-validation-bubble">{row.detail}</div>
-                              )}
-                            </div>
-                          </td>
-                          <td>{quotaLabel}</td>
-                          <td>
-                            <button
-                              type="button"
-                              className="btn btn-sm"
-                              onClick={() => void handleRetryOneValidation(row.api_key)}
-                              disabled={!canRetry}
-                            >
-                              <Icon icon="mdi:refresh" width={16} height={16} />
-                              &nbsp;{keyStrings.validation?.actions?.retry ?? 'Retry'}
-                            </button>
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          ) : (
-            <div className="py-2">{keyStrings.validation?.hint ?? keyStrings.batch.hint}</div>
-          )}
-        </div>
-        <div className="modal-action" style={{ marginTop: 12 }}>
-          <form method="dialog" onSubmit={(e) => e.preventDefault()} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-            <button type="button" className="btn" onClick={closeKeysValidationDialog}>
-              {keyStrings.validation?.actions?.close ?? keyStrings.batch.report.close}
-            </button>
-            <button
-              type="button"
-              className="btn btn-outline"
-              onClick={() => void handleRetryFailedValidation()}
-              disabled={!keysValidation || keysValidation.checking || keysValidation.importing || keysValidationCounts.invalid + keysValidationCounts.error === 0}
-            >
-              <Icon icon="mdi:refresh" width={18} height={18} />
-              &nbsp;{keyStrings.validation?.actions?.retryFailed ?? 'Retry failed'}
-            </button>
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={() => void handleImportValidatedKeys()}
-              disabled={!keysValidation || keysValidation.checking || keysValidation.importing || keysValidationCounts.pending > 0 || keysValidationValidKeys.length === 0}
-            >
-              <Icon icon={keysValidation?.importing ? 'mdi:progress-helper' : 'mdi:tray-arrow-down'} width={18} height={18} />
-              &nbsp;
-              {(keyStrings.validation?.actions?.importValid ?? 'Import {count} valid keys').replace('{count}', String(keysValidationValidKeys.length))}
-            </button>
-          </form>
-        </div>
-      </div>
-    </dialog>
+    <ApiKeysValidationDialog
+      dialogRef={keysValidateDialogRef as any}
+      state={keysValidation as any}
+      counts={keysValidationCounts as any}
+      validKeys={keysValidationValidKeys}
+      exhaustedKeys={keysValidationExhaustedKeys}
+      onClose={closeKeysValidationDialog}
+      onRetryFailed={() => void handleRetryFailedValidation()}
+      onRetryOne={(apiKey) => void handleRetryOneValidation(apiKey)}
+      onImportValid={() => void handleImportValidatedKeys()}
+    />
 
     {/* Batch Add API Keys Report (daisyUI modal) */}
     <dialog id="batch_add_keys_report_modal" ref={keysBatchReportDialogRef} className="modal">

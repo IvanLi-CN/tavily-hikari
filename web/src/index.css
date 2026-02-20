@@ -1358,10 +1358,7 @@ table {
 }
 
 .key-validation-detail-trigger {
-  border: none;
-  background: transparent;
-  padding: 0;
-  cursor: default;
+  cursor: help;
 }
 
 .key-validation-detail-trigger:focus-visible {
@@ -1372,22 +1369,38 @@ table {
 
 .key-validation-bubble {
   position: absolute;
-  left: calc(100% + 10px);
+  left: calc(100% + 12px);
   top: 50%;
   transform: translateY(-50%) scale(0.95);
-  background: #0f172a;
-  color: #fff;
-  padding: 10px 12px;
-  border-radius: 14px;
+  background: hsl(var(--n) / 0.96);
+  color: hsl(var(--nc) / 1);
+  border: 1px solid hsl(var(--n) / 0.12);
+  padding: 12px 14px;
+  border-radius: 16px;
   max-width: min(520px, calc(100vw - 64px));
   white-space: pre-wrap;
   word-break: break-word;
   font-size: 0.85rem;
   line-height: 1.35;
   opacity: 0;
-  pointer-events: none;
+  pointer-events: auto;
+  user-select: text;
   transition: opacity 0.15s ease, transform 0.15s ease;
   z-index: 20;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.18);
+}
+
+.key-validation-bubble::before {
+  content: "";
+  position: absolute;
+  left: -7px;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  transform: translateY(-50%) rotate(45deg);
+  background: hsl(var(--n) / 0.96);
+  border-left: 1px solid hsl(var(--n) / 0.12);
+  border-bottom: 1px solid hsl(var(--n) / 0.12);
 }
 
 .key-validation-detail:hover .key-validation-bubble,

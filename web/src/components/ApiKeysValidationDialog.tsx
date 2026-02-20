@@ -153,85 +153,144 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
   const tableStrings = validationStrings.table ?? {};
   const importStrings = validationStrings.import ?? {};
 
+  const groupLabel = props.state?.group?.trim() || "default";
+  const groupText = (summaryStrings.group ?? "Group: {group}").replace("{group}", groupLabel);
+
   return (
     <dialog
       id="keys_validation_modal"
       ref={props.dialogRef}
-      className="modal"
+      className="modal modal-bottom sm:modal-middle"
       onClose={props.onClose}
       {...(props.forceOpen ? { open: true } : {})}
     >
       <div
-        className="modal-box"
+        className="modal-box w-11/12 max-w-6xl p-0"
         style={{
           maxHeight: "min(calc(100dvh - 6rem), calc(100vh - 6rem))",
           display: "flex",
           flexDirection: "column",
         }}
       >
-        <h3 className="font-bold text-lg" style={{ marginTop: 0 }}>
-          {validationStrings.title ?? "Verify API Keys"}
-        </h3>
-        <div style={{ overflowY: "auto", minHeight: 0, paddingTop: 12 }}>
+        {/* Header */}
+        <div className="p-5 sm:p-6 border-b border-base-200/70 bg-base-100">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="inline-flex h-9 w-9 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+                  <Icon icon="mdi:key-chain-variant" width={20} height={20} />
+                </span>
+                <h3 className="font-extrabold text-xl tracking-tight m-0">
+                  {validationStrings.title ?? "Verify API Keys"}
+                </h3>
+              </div>
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
+                <span className="badge badge-outline">{groupText}</span>
+                {props.state && (
+                  <>
+                    <span className="badge badge-ghost">
+                      {(summaryStrings.inputLines ?? "Input lines").replace("{count}", String(props.state.input_lines))}
+                      :&nbsp;{formatNumber(props.state.input_lines)}
+                    </span>
+                    <span className="badge badge-ghost">
+                      {(summaryStrings.uniqueInInput ?? "Unique").replace("{count}", String(props.state.unique_in_input))}
+                      :&nbsp;{formatNumber(props.state.unique_in_input)}
+                    </span>
+                    {props.state.duplicate_in_input > 0 && (
+                      <span className="badge badge-ghost">
+                        {(summaryStrings.duplicateInInput ?? "Duplicates").replace(
+                          "{count}",
+                          String(props.state.duplicate_in_input),
+                        )}
+                        :&nbsp;{formatNumber(props.state.duplicate_in_input)}
+                      </span>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+            <button type="button" className="btn btn-sm btn-ghost btn-circle" onClick={props.onClose}>
+              <Icon icon="mdi:close" width={18} height={18} />
+            </button>
+          </div>
+        </div>
+
+        {/* Body */}
+        <div className="px-5 sm:px-6 py-4" style={{ overflowY: "auto", minHeight: 0 }}>
           {props.state ? (
             <>
-              <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
-                <div>
-                  <span className="opacity-70">{summaryStrings.inputLines ?? "Input lines"}</span>{" "}
-                  {formatNumber(props.state.input_lines)}
-                </div>
-                <div>
-                  <span className="opacity-70">{summaryStrings.validLines ?? "Valid lines"}</span>{" "}
-                  {formatNumber(props.state.valid_lines)}
-                </div>
-                <div>
-                  <span className="opacity-70">{summaryStrings.uniqueInInput ?? "Unique"}</span>{" "}
-                  {formatNumber(props.state.unique_in_input)}
-                </div>
-                <div>
-                  <span className="opacity-70">{summaryStrings.duplicateInInput ?? "Duplicates"}</span>{" "}
-                  {formatNumber(props.state.duplicate_in_input)}
-                </div>
-                <div style={{ gridColumn: "1 / -1" }}>
-                  <div className="opacity-70" style={{ marginBottom: 6 }}>
-                    {(summaryStrings.checked ?? "Checked {checked} / {total}")
-                      .replace("{checked}", String(props.counts.checked))
-                      .replace("{total}", String(props.counts.totalToCheck))}
+              {/* Progress + headline stats */}
+              <div className="rounded-2xl border border-base-200 bg-base-100 p-4">
+                <div className="flex items-center gap-3">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between gap-3 text-sm opacity-70">
+                      <div className="truncate">
+                        {(summaryStrings.checked ?? "Checked {checked} / {total}")
+                          .replace("{checked}", String(props.counts.checked))
+                          .replace("{total}", String(props.counts.totalToCheck))}
+                      </div>
+                      <div className="font-mono tabular-nums">
+                        {formatNumber(props.counts.checked)} / {formatNumber(props.counts.totalToCheck)}
+                      </div>
+                    </div>
+                    <progress
+                      className="progress progress-primary w-full mt-2"
+                      value={props.counts.checked}
+                      max={Math.max(1, props.counts.totalToCheck)}
+                    />
                   </div>
-                  <progress
-                    className="progress progress-primary w-full"
-                    value={props.counts.checked}
-                    max={Math.max(1, props.counts.totalToCheck)}
-                  />
+                  <div className="hidden sm:flex">
+                    <div
+                      className="radial-progress text-primary"
+                      style={
+                        {
+                          "--value": Math.round((props.counts.checked / Math.max(1, props.counts.totalToCheck)) * 100),
+                          "--size": "3.25rem",
+                          "--thickness": "6px",
+                        } as React.CSSProperties
+                      }
+                      aria-label="Progress percent"
+                    >
+                      <span className="text-sm font-mono tabular-nums">
+                        {Math.round((props.counts.checked / Math.max(1, props.counts.totalToCheck)) * 100)}%
+                      </span>
+                    </div>
+                  </div>
                 </div>
-                <div>
-                  <span className="opacity-70">{summaryStrings.ok ?? "Valid"}</span>{" "}
-                  {formatNumber(props.counts.ok)}
-                </div>
-                <div>
-                  <span className="opacity-70">{summaryStrings.exhausted ?? "Exhausted"}</span>{" "}
-                  {formatNumber(props.counts.exhausted)}
-                </div>
-                <div>
-                  <span className="opacity-70">{summaryStrings.invalid ?? "Invalid"}</span>{" "}
-                  {formatNumber(props.counts.invalid)}
-                </div>
-                <div>
-                  <span className="opacity-70">{summaryStrings.error ?? "Error"}</span>{" "}
-                  {formatNumber(props.counts.error)}
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4">
+                  <div className="rounded-xl bg-base-200/60 p-3">
+                    <div className="text-xs uppercase tracking-wide opacity-70">{summaryStrings.ok ?? "Valid"}</div>
+                    <div className="text-lg font-bold tabular-nums">{formatNumber(props.counts.ok)}</div>
+                  </div>
+                  <div className="rounded-xl bg-base-200/60 p-3">
+                    <div className="text-xs uppercase tracking-wide opacity-70">{summaryStrings.exhausted ?? "Exhausted"}</div>
+                    <div className="text-lg font-bold tabular-nums">{formatNumber(props.counts.exhausted)}</div>
+                  </div>
+                  <div className="rounded-xl bg-base-200/60 p-3">
+                    <div className="text-xs uppercase tracking-wide opacity-70">{summaryStrings.invalid ?? "Invalid"}</div>
+                    <div className="text-lg font-bold tabular-nums">{formatNumber(props.counts.invalid)}</div>
+                  </div>
+                  <div className="rounded-xl bg-base-200/60 p-3">
+                    <div className="text-xs uppercase tracking-wide opacity-70">{summaryStrings.error ?? "Error"}</div>
+                    <div className="text-lg font-bold tabular-nums">{formatNumber(props.counts.error)}</div>
+                  </div>
                 </div>
               </div>
 
               {props.state.importError && (
-                <div className="alert alert-error" style={{ marginTop: 12 }}>
+                <div className="alert alert-error mt-4">
                   {props.state.importError}
                 </div>
               )}
 
               {props.state.importReport && (
-                <div style={{ marginTop: 12 }}>
-                  <h4 className="font-bold">{importStrings.title ?? "Import Result"}</h4>
-                  <div className="py-2" style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
+                <div className="mt-4">
+                  <div className="flex items-center gap-2">
+                    <h4 className="font-bold m-0">{importStrings.title ?? "Import Result"}</h4>
+                    <span className="badge badge-success badge-outline">{actions.imported ?? "Imported"}</span>
+                  </div>
+                  <div className="mt-2 grid grid-cols-2 sm:grid-cols-4 gap-2">
                     <div>
                       <span className="opacity-70">{keyStrings.batch.report.summary.created}</span>{" "}
                       {formatNumber(props.state.importReport.summary.created)}
@@ -252,8 +311,16 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                 </div>
               )}
 
-              <div className="overflow-x-auto" style={{ marginTop: 12 }}>
-                <table className="table table-zebra">
+              <div className="mt-4 rounded-2xl border border-base-200 bg-base-100">
+                <div className="px-4 py-3 border-b border-base-200/70 flex items-center justify-between gap-2">
+                  <div className="font-semibold">{tableStrings.title ?? "Keys"}</div>
+                  <div className="text-sm opacity-70">
+                    {formatNumber(props.state.rows.length)}{" "}
+                    {(tableStrings.rows ?? "rows").replace("{count}", String(props.state.rows.length))}
+                  </div>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="table table-sm table-zebra">
                   <thead>
                     <tr>
                       <th>{tableStrings.apiKey ?? "API Key"}</th>
@@ -275,22 +342,31 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                       const label = statuses[row.status] ?? row.status;
                       return (
                         <tr key={`${row.api_key}-${index}`}>
-                          <td style={{ wordBreak: "break-all" }}>
-                            <code>{row.api_key}</code>
+                          <td style={{ wordBreak: "break-all" }} className="font-mono text-xs">
+                            <code className="bg-base-200/50 px-2 py-1 rounded-lg">{row.api_key}</code>
                           </td>
                           <td>
                             <div className="key-validation-detail">
-                              <button type="button" className="key-validation-detail-trigger" aria-label={label}>
-                                <StatusBadge tone={statusTone(row.status)}>{label}</StatusBadge>
-                              </button>
-                              {row.detail && <div className="key-validation-bubble">{row.detail}</div>}
+                              <StatusBadge tone={statusTone(row.status)}>{label}</StatusBadge>
+                              {row.detail && (
+                                <>
+                                  <button
+                                    type="button"
+                                    className="btn btn-ghost btn-xs key-validation-detail-trigger"
+                                    aria-label={actions.details ?? "Details"}
+                                  >
+                                    <Icon icon="mdi:information-outline" width={16} height={16} />
+                                  </button>
+                                  <div className="key-validation-bubble">{row.detail}</div>
+                                </>
+                              )}
                             </div>
                           </td>
-                          <td>{quotaLabel}</td>
+                          <td className="font-mono text-xs tabular-nums">{quotaLabel}</td>
                           <td>
                             <button
                               type="button"
-                              className="btn btn-sm"
+                              className="btn btn-xs btn-outline"
                               onClick={() => props.onRetryOne(row.api_key)}
                               disabled={!canRetry}
                             >
@@ -303,6 +379,7 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                     })}
                   </tbody>
                 </table>
+                </div>
               </div>
             </>
           ) : (
@@ -310,34 +387,43 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
           )}
         </div>
 
-        <div className="modal-action" style={{ marginTop: 12 }}>
-          <form
-            method="dialog"
-            onSubmit={(e) => e.preventDefault()}
-            style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}
-          >
-            <button type="button" className="btn" onClick={props.onClose}>
-              {actions.close ?? keyStrings.batch.report.close}
-            </button>
-            <button
-              type="button"
-              className="btn btn-outline"
-              onClick={props.onRetryFailed}
-              disabled={!props.state || props.state.checking || props.state.importing || props.counts.invalid + props.counts.error === 0}
-            >
-              <Icon icon="mdi:refresh" width={18} height={18} />
-              &nbsp;{actions.retryFailed ?? "Retry failed"}
-            </button>
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={props.onImportValid}
-              disabled={!props.state || props.state.checking || props.state.importing || props.counts.pending > 0 || props.validKeys.length === 0}
-            >
-              <Icon icon={props.state?.importing ? "mdi:progress-helper" : "mdi:tray-arrow-down"} width={18} height={18} />
-              &nbsp;
-              {(actions.importValid ?? "Import {count} valid keys").replace("{count}", String(props.validKeys.length))}
-            </button>
+        {/* Footer */}
+        <div className="px-5 sm:px-6 py-4 border-t border-base-200/70 bg-base-100">
+          <form method="dialog" onSubmit={(e) => e.preventDefault()} className="flex flex-wrap gap-2 items-center justify-between">
+            <div className="flex flex-wrap gap-2 items-center">
+              <button
+                type="button"
+                className="btn btn-outline"
+                onClick={props.onRetryFailed}
+                disabled={!props.state || props.state.checking || props.state.importing || props.counts.invalid + props.counts.error === 0}
+              >
+                <Icon icon="mdi:refresh" width={18} height={18} />
+                &nbsp;{actions.retryFailed ?? "Retry failed"}
+              </button>
+              {props.exhaustedKeys.length > 0 && (
+                <span className="text-sm opacity-70">
+                  <Icon icon="mdi:alert-circle-outline" width={16} height={16} />{" "}
+                  {(summaryStrings.exhaustedNote ?? "{count} keys will be imported as exhausted")
+                    .replace("{count}", String(props.exhaustedKeys.length))}
+                </span>
+              )}
+            </div>
+
+            <div className="flex flex-wrap gap-2 items-center justify-end">
+              <button type="button" className="btn" onClick={props.onClose}>
+                {actions.close ?? keyStrings.batch.report.close}
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={props.onImportValid}
+                disabled={!props.state || props.state.checking || props.state.importing || props.counts.pending > 0 || props.validKeys.length === 0}
+              >
+                <Icon icon={props.state?.importing ? "mdi:progress-helper" : "mdi:tray-arrow-down"} width={18} height={18} />
+                &nbsp;
+                {(actions.importValid ?? "Import {count} valid keys").replace("{count}", String(props.validKeys.length))}
+              </button>
+            </div>
           </form>
         </div>
       </div>
