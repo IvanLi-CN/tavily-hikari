@@ -3157,8 +3157,8 @@ function AdminDashboard(): JSX.Element {
     {/* API Keys Validation (daisyUI modal) */}
     <ApiKeysValidationDialog
       dialogRef={keysValidateDialogRef as any}
-      state={keysValidation as any}
-      counts={keysValidationCounts as any}
+      state={keysValidation}
+      counts={keysValidationCounts}
       validKeys={keysValidationValidKeys}
       exhaustedKeys={keysValidationExhaustedKeys}
       onClose={closeKeysValidationDialog}
