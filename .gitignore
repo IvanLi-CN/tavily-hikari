@@ -6,6 +6,7 @@
 *.db-shm
 *.db-journal
 node_modules
+.codex/
 .serena/
 web/node_modules
 web/dist

@@ -28,11 +28,17 @@ if [[ ! -d node_modules ]]; then
   bun install --frozen-lockfile
 fi
 
-echo "Starting frontend dev server on $HOST:$PORT (logging to $LOG_FILE)..."
-nohup bun run dev -- --host "$HOST" --port "$PORT" >"$LOG_FILE" 2>&1 &
-FRONTEND_PID=$!
-echo "$FRONTEND_PID" > "$PID_FILE"
+if [[ "${FOREGROUND:-}" == "1" || "${FOREGROUND:-}" == "true" ]]; then
+  echo "Starting frontend dev server in foreground on $HOST:$PORT..."
+  # In foreground mode, stdout/stderr should be captured by the caller (e.g. devctl).
+  exec bun run dev -- --host "$HOST" --port "$PORT"
+else
+  echo "Starting frontend dev server on $HOST:$PORT (logging to $LOG_FILE)..."
+  nohup bun run dev -- --host "$HOST" --port "$PORT" >"$LOG_FILE" 2>&1 &
+  FRONTEND_PID=$!
+  echo "$FRONTEND_PID" > "$PID_FILE"
 
-popd >/dev/null
+  popd >/dev/null
 
-echo "Frontend started with PID $FRONTEND_PID"
+  echo "Frontend started with PID $FRONTEND_PID"
+fi
