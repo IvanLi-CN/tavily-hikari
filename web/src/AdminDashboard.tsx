@@ -1357,6 +1357,8 @@ function AdminDashboard(): JSX.Element {
           ...row,
           status: 'pending' as const,
           detail: undefined,
+          quota_limit: undefined,
+          quota_remaining: undefined,
           attempts: row.attempts + 1,
         }
       })
@@ -1416,8 +1418,8 @@ function AdminDashboard(): JSX.Element {
       rows.push({ api_key, status: 'pending', attempts: 0 })
     }
 
-    const runId = Date.now()
-    keysValidateRunIdRef.current = runId
+    keysValidateRunIdRef.current = (keysValidateRunIdRef.current ?? 0) + 1
+    const runId = keysValidateRunIdRef.current
     setKeysValidation({
       group,
       input_lines: rawLines.length,
@@ -1429,7 +1431,11 @@ function AdminDashboard(): JSX.Element {
       rows,
     })
 
-    window.requestAnimationFrame(() => keysValidateDialogRef.current?.showModal())
+    window.requestAnimationFrame(() => {
+      const dialog = keysValidateDialogRef.current
+      if (!dialog) return
+      if (!dialog.open) dialog.showModal()
+    })
 
     // Collapse the in-place overlay once we hand off to the modal.
     setNewKeysText('')
@@ -1476,8 +1482,8 @@ function AdminDashboard(): JSX.Element {
     const failedKeys = Array.from(failed)
     if (failedKeys.length === 0) return
 
-    const runId = Date.now()
-    keysValidateRunIdRef.current = runId
+    keysValidateRunIdRef.current = (keysValidateRunIdRef.current ?? 0) + 1
+    const runId = keysValidateRunIdRef.current
     setKeysValidation((prev) => prev ? ({ ...prev, checking: true, importError: undefined }) : prev)
     markKeysPendingForRetry(failedKeys, runId)
     await runValidateKeys(failedKeys, runId)
@@ -1486,8 +1492,8 @@ function AdminDashboard(): JSX.Element {
   const handleRetryOneValidation = async (api_key: string) => {
     if (!keysValidation) return
     if (keysValidation.checking || keysValidation.importing) return
-    const runId = Date.now()
-    keysValidateRunIdRef.current = runId
+    keysValidateRunIdRef.current = (keysValidateRunIdRef.current ?? 0) + 1
+    const runId = keysValidateRunIdRef.current
     setKeysValidation((prev) => prev ? ({ ...prev, checking: true, importError: undefined }) : prev)
     markKeysPendingForRetry([api_key], runId)
     await runValidateKeys([api_key], runId)

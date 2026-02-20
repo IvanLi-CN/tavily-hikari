@@ -3136,12 +3136,25 @@ fn truncate_detail(mut input: String, max_len: usize) -> String {
     }
 
     // `String::truncate` requires a UTF-8 char boundary; otherwise it panics.
-    let mut end = max_len;
+    if max_len == 0 {
+        return String::new();
+    }
+
+    let ellipsis = '…';
+    let ellipsis_len = ellipsis.len_utf8();
+    // Keep the output length <= max_len (including the ellipsis).
+    let mut end = if max_len > ellipsis_len {
+        max_len - ellipsis_len
+    } else {
+        max_len
+    };
     while end > 0 && !input.is_char_boundary(end) {
         end -= 1;
     }
     input.truncate(end);
-    input.push('…');
+    if max_len > ellipsis_len {
+        input.push(ellipsis);
+    }
     input
 }
 
