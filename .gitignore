@@ -10,6 +10,7 @@ node_modules
 .serena/
 web/node_modules
 web/dist
+web/storybook-static
 web/*.tsbuildinfo
 web/vite.config.js
 web/vite.config.d.ts

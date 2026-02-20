@@ -17,6 +17,7 @@
 - Frontend (`web/`)
   - `bun install --frozen-lockfile` — install deps; `bun run dev` — local dev (Vite).
   - `bun run build` — build SPA to `web/dist`; `bun run preview` — preview build.
+  - `bun run storybook` — run Storybook dev server at `http://127.0.0.1:56006`.
 - Hooks
   - `lefthook install` — enable pre-commit (`cargo fmt`, `clippy`, Markdown format) and commitlint.
 
@@ -70,6 +71,11 @@
   - Legacy nohup mode: `tail -f logs/backend.dev.log` and `tail -f logs/web.dev.log`
   - Ensure `logs/` exists; do not commit log or PID files.
   - Vite dev server proxies to backend when configured in `web/vite.config.ts`.
+
+- Storybook:
+  - Start: `cd web && bun install --frozen-lockfile && bun run storybook` → `http://127.0.0.1:56006`
+  - Long-lived: `~/.codex/bin/devctl up storybook -- bash -lc 'cd web && bun run storybook'`
+  - Stop/logs: `~/.codex/bin/devctl down storybook` / `~/.codex/bin/devctl logs storybook -n 200`
 
 - Validation:
   - Keep Playwright/Chrome DevTools sessions open for review; verify `/api/*`, `/mcp`, and SPA routes.
