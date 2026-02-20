@@ -1393,7 +1393,10 @@ function AdminDashboard(): JSX.Element {
       if (runId !== keysValidateRunIdRef.current) return prev
       return { ...prev, checking: false }
     })
-    keysValidateAbortRef.current = null
+    // Avoid clobbering a newer validation run's abort controller.
+    if (keysValidateAbortRef.current === controller) {
+      keysValidateAbortRef.current = null
+    }
   }, [applyValidationResults])
 
   const handleAddKey = async () => {
