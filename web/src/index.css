@@ -1357,6 +1357,13 @@ table {
   gap: 8px;
 }
 
+.key-validation-modal {
+  overflow-x: hidden;
+}
+.key-validation-modal .modal-box {
+  overflow-x: hidden;
+}
+
 .key-validation-detail-trigger {
   cursor: help;
 }
