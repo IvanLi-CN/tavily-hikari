@@ -161,6 +161,22 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
     .replace("{total}", String(props.counts.totalToCheck));
 
   const isBusy = !!props.state?.checking || !!props.state?.importing;
+  const hasFailures = props.counts.invalid + props.counts.error > 0;
+  const canRetryFailed = !!props.state && !isBusy && hasFailures;
+  const canImport = !!props.state && !isBusy && props.counts.pending === 0 && props.validKeys.length > 0;
+
+  React.useEffect(() => {
+    if (!props.state) return;
+    // Prevent "mystery" horizontal scrollbars on the page while the modal is open.
+    const prevHtml = document.documentElement.style.overflowX;
+    const prevBody = document.body.style.overflowX;
+    document.documentElement.style.overflowX = "hidden";
+    document.body.style.overflowX = "hidden";
+    return () => {
+      document.documentElement.style.overflowX = prevHtml;
+      document.body.style.overflowX = prevBody;
+    };
+  }, [props.state]);
 
   return (
     <dialog
@@ -172,138 +188,112 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
       style={{ overflowX: "hidden" }}
     >
       <div
-        className="modal-box w-11/12 max-w-7xl p-4 sm:p-5"
+        className="modal-box w-11/12 max-w-7xl p-0 overflow-hidden"
         style={{
           height: "min(calc(100dvh - 6rem), 760px)",
-          display: "flex",
-          flexDirection: "column",
           overflowX: "hidden",
         }}
       >
-        {/* Header (dense) */}
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h3 className="m-0 font-extrabold text-lg sm:text-xl tracking-tight">
-              {validationStrings.title ?? "Verify API Keys"}
-            </h3>
-            <div className="mt-1 text-sm opacity-70 truncate">
-              {groupText}
-              {props.state ? (
-                <>
-                  {" "}
-                  · {checkedText}
-                </>
-              ) : null}
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              className="btn btn-sm btn-outline"
-              onClick={props.onRetryFailed}
-              disabled={!props.state || isBusy || props.counts.invalid + props.counts.error === 0}
-              title={actions.retryFailed ?? "Retry failed"}
-            >
-              <Icon icon="mdi:refresh" width={18} height={18} />
-              <span className="hidden sm:inline">&nbsp;{actions.retryFailed ?? "Retry failed"}</span>
-            </button>
-            <button
-              type="button"
-              className="btn btn-sm btn-primary"
-              onClick={props.onImportValid}
-              disabled={!props.state || isBusy || props.counts.pending > 0 || props.validKeys.length === 0}
-              title={(actions.importValid ?? "Import {count} valid keys").replace("{count}", String(props.validKeys.length))}
-            >
-              <Icon icon={props.state?.importing ? "mdi:progress-helper" : "mdi:tray-arrow-down"} width={18} height={18} />
-              <span className="hidden sm:inline">
-                &nbsp;
-                {(actions.importValid ?? "Import {count} valid keys").replace("{count}", String(props.validKeys.length))}
-              </span>
-            </button>
-            <button type="button" className="btn btn-sm btn-ghost btn-circle" onClick={props.onClose} title={actions.close ?? "Close"}>
-              <Icon icon="mdi:close" width={18} height={18} />
-            </button>
-          </div>
-        </div>
-
-        {/* Progress + compact stats */}
-        <div className="mt-3">
-          {props.state ? (
-            <>
-              <progress
-                className="progress progress-primary w-full"
-                value={props.counts.checked}
-                max={Math.max(1, props.counts.totalToCheck)}
-              />
-              <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm">
-                <span className="opacity-70">
-                  {summaryStrings.ok ?? "Valid"}: <span className="font-mono tabular-nums">{formatNumber(props.counts.ok)}</span>
-                </span>
-                <span className="opacity-70">
-                  {summaryStrings.exhausted ?? "Exhausted"}:{" "}
-                  <span className="font-mono tabular-nums">{formatNumber(props.counts.exhausted)}</span>
-                </span>
-                <span className="opacity-70">
-                  {summaryStrings.invalid ?? "Invalid"}:{" "}
-                  <span className="font-mono tabular-nums">{formatNumber(props.counts.invalid)}</span>
-                </span>
-                <span className="opacity-70">
-                  {summaryStrings.error ?? "Error"}: <span className="font-mono tabular-nums">{formatNumber(props.counts.error)}</span>
-                </span>
-                <span className="opacity-70">
-                  {summaryStrings.uniqueInInput ?? "Unique"}:{" "}
-                  <span className="font-mono tabular-nums">{formatNumber(props.state.unique_in_input)}</span>
-                </span>
-                {props.state.duplicate_in_input > 0 && (
-                  <span className="opacity-70">
-                    {summaryStrings.duplicateInInput ?? "Duplicates"}:{" "}
-                    <span className="font-mono tabular-nums">{formatNumber(props.state.duplicate_in_input)}</span>
-                  </span>
-                )}
+        <div className="flex flex-col h-full">
+          {/* Header */}
+          <div className="px-4 sm:px-5 pt-4 pb-3 border-b border-base-200/70">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h3 className="m-0 font-extrabold text-lg sm:text-xl tracking-tight">
+                  {validationStrings.title ?? "Verify API Keys"}
+                </h3>
+                <div className="mt-1 text-sm opacity-70 truncate">
+                  {groupText}
+                  {props.state ? (
+                    <>
+                      {" "}
+                      · {checkedText}
+                    </>
+                  ) : null}
+                </div>
               </div>
+              <button
+                type="button"
+                className="btn btn-sm btn-ghost btn-circle"
+                onClick={props.onClose}
+                title={actions.close ?? "Close"}
+              >
+                <Icon icon="mdi:close" width={18} height={18} />
+              </button>
+            </div>
 
-              {props.state.importError && (
-                <div className="alert alert-error mt-4">
-                  {props.state.importError}
+            {props.state ? (
+              <div className="mt-3">
+                <progress
+                  className="progress progress-primary w-full"
+                  value={props.counts.checked}
+                  max={Math.max(1, props.counts.totalToCheck)}
+                />
+                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm">
+                  <span className="opacity-70">
+                    {summaryStrings.ok ?? "Valid"}:{" "}
+                    <span className="font-mono tabular-nums">{formatNumber(props.counts.ok)}</span>
+                  </span>
+                  <span className="opacity-70">
+                    {summaryStrings.exhausted ?? "Exhausted"}:{" "}
+                    <span className="font-mono tabular-nums">{formatNumber(props.counts.exhausted)}</span>
+                  </span>
+                  <span className="opacity-70">
+                    {summaryStrings.invalid ?? "Invalid"}:{" "}
+                    <span className="font-mono tabular-nums">{formatNumber(props.counts.invalid)}</span>
+                  </span>
+                  <span className="opacity-70">
+                    {summaryStrings.error ?? "Error"}:{" "}
+                    <span className="font-mono tabular-nums">{formatNumber(props.counts.error)}</span>
+                  </span>
                 </div>
-              )}
+              </div>
+            ) : null}
+          </div>
 
-              {props.state.importReport && (
-                <div className="mt-4">
-                  <div className="flex items-center gap-2">
-                    <h4 className="font-bold m-0">{importStrings.title ?? "Import Result"}</h4>
-                    <span className="badge badge-success badge-outline">{actions.imported ?? "Imported"}</span>
+          {/* Body */}
+          <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-4 sm:px-5 py-3">
+            {props.state ? (
+              <>
+                {props.state.importError && (
+                  <div className="alert alert-error mb-3">
+                    {props.state.importError}
                   </div>
-                  <div className="mt-2 grid grid-cols-2 sm:grid-cols-4 gap-2">
-                    <div>
-                      <span className="opacity-70">{keyStrings.batch.report.summary.created}</span>{" "}
-                      {formatNumber(props.state.importReport.summary.created)}
-                    </div>
-                    <div>
-                      <span className="opacity-70">{keyStrings.batch.report.summary.undeleted}</span>{" "}
-                      {formatNumber(props.state.importReport.summary.undeleted)}
-                    </div>
-                    <div>
-                      <span className="opacity-70">{keyStrings.batch.report.summary.existed}</span>{" "}
-                      {formatNumber(props.state.importReport.summary.existed)}
-                    </div>
-                    <div>
-                      <span className="opacity-70">{keyStrings.batch.report.summary.failed}</span>{" "}
-                      {formatNumber(props.state.importReport.summary.failed)}
-                    </div>
-                  </div>
-                </div>
-              )}
+                )}
 
-              {/* Keys list takes remaining space; only this section scrolls vertically */}
-              <div className="mt-3 flex-1 min-h-0 rounded-xl border border-base-200 bg-base-100 overflow-hidden">
-                {/* Mobile: stacked rows (no horizontal scroll) */}
-                <div className="md:hidden overflow-y-auto h-full" style={{ overflowX: "hidden" }}>
+                {props.state.importReport && (
+                  <div className="mb-3 rounded-xl border border-base-200 bg-base-100 p-3">
+                    <div className="flex items-center gap-2">
+                      <h4 className="font-bold m-0">{importStrings.title ?? "Import Result"}</h4>
+                      <span className="badge badge-success badge-outline">{actions.imported ?? "Imported"}</span>
+                    </div>
+                    <div className="mt-2 grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
+                      <div>
+                        <span className="opacity-70">{keyStrings.batch.report.summary.created}</span>{" "}
+                        {formatNumber(props.state.importReport.summary.created)}
+                      </div>
+                      <div>
+                        <span className="opacity-70">{keyStrings.batch.report.summary.undeleted}</span>{" "}
+                        {formatNumber(props.state.importReport.summary.undeleted)}
+                      </div>
+                      <div>
+                        <span className="opacity-70">{keyStrings.batch.report.summary.existed}</span>{" "}
+                        {formatNumber(props.state.importReport.summary.existed)}
+                      </div>
+                      <div>
+                        <span className="opacity-70">{keyStrings.batch.report.summary.failed}</span>{" "}
+                        {formatNumber(props.state.importReport.summary.failed)}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* < md: stacked cards */}
+                <div className="md:hidden rounded-xl border border-base-200 bg-base-100 overflow-hidden">
                   <div className="divide-y divide-base-200/70">
                     {props.state.rows.map((row, index) => {
                       const canRetry =
-                        !props.state?.checking &&
-                        !props.state?.importing &&
+                        !isBusy &&
                         (row.status === "unauthorized" ||
                           row.status === "forbidden" ||
                           row.status === "invalid" ||
@@ -316,7 +306,7 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                       return (
                         <div key={`${row.api_key}-${index}`} className="p-3">
                           <div className="flex items-start justify-between gap-3">
-                            <code className="block font-mono text-xs break-all bg-base-200/50 px-2 py-1 rounded-lg">
+                            <code className="block font-mono text-xs break-all whitespace-normal bg-base-200/50 px-2 py-1 rounded-lg max-w-full">
                               {row.api_key}
                             </code>
                             <button
@@ -332,7 +322,7 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
 
                           <div className="mt-2 flex flex-wrap items-center gap-2">
                             <StatusBadge tone={statusTone(row.status)}>{label}</StatusBadge>
-                            <span className="text-xs font-mono tabular-nums opacity-70">{quotaLabel}</span>
+                            <span className="text-xs font-mono tabular-nums opacity-70 whitespace-nowrap">{quotaLabel}</span>
                           </div>
 
                           {row.detail && (
@@ -346,88 +336,120 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                   </div>
                 </div>
 
-                {/* Desktop: table-fixed so it wraps instead of overflowing */}
-                <div className="hidden md:block">
-                  <div className="h-full overflow-y-auto" style={{ overflowX: "hidden" }}>
-                    <table className="table table-sm table-zebra table-fixed w-full">
-                    <colgroup>
-                      <col style={{ width: "58%" }} />
-                      <col style={{ width: "20%" }} />
-                      <col style={{ width: "14%" }} />
-                      <col style={{ width: "8%" }} />
-                    </colgroup>
-                    <thead>
-                      <tr>
-                        <th className="whitespace-nowrap">{tableStrings.apiKey ?? "API Key"}</th>
-                        <th className="whitespace-nowrap">{tableStrings.result ?? "Result"}</th>
-                        <th className="whitespace-nowrap">{tableStrings.quota ?? "Quota"}</th>
-                        <th className="whitespace-nowrap text-right">{tableStrings.actions ?? "Actions"}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {props.state.rows.map((row, index) => {
-                        const canRetry =
-                          !props.state?.checking &&
-                          !props.state?.importing &&
-                          (row.status === "unauthorized" ||
-                            row.status === "forbidden" ||
-                            row.status === "invalid" ||
-                            row.status === "error");
-                        const quotaLabel =
-                          row.quota_remaining != null && row.quota_limit != null
-                            ? `${formatNumber(row.quota_remaining)} / ${formatNumber(row.quota_limit)}`
-                            : "—";
-                        const label = statuses[row.status] ?? row.status;
-                        return (
-                          <tr key={`${row.api_key}-${index}`}>
-                            <td className="max-w-0">
-                              <code className="block font-mono text-xs break-all bg-base-200/50 px-2 py-1 rounded-lg">
-                                {row.api_key}
-                              </code>
-                            </td>
-                            <td className="max-w-0">
-                              <div className="key-validation-detail">
-                                {row.detail ? (
-                                  <details className="min-w-0 max-w-full">
-                                    <summary className="cursor-pointer list-none inline-flex items-center gap-2">
-                                      <StatusBadge tone={statusTone(row.status)}>{label}</StatusBadge>
-                                      <span className="opacity-60">
-                                        <Icon icon="mdi:information-outline" width={16} height={16} />
-                                      </span>
-                                    </summary>
-                                    <div className="mt-2 text-sm whitespace-pre-wrap break-all opacity-80 max-w-full">
-                                      {row.detail}
-                                    </div>
-                                  </details>
-                                ) : (
+                {/* >= md: grid list (table-like), no horizontal scroll */}
+                <div className="hidden md:block rounded-xl border border-base-200 bg-base-100 overflow-hidden">
+                  <div className="px-4 py-2 border-b border-base-200/70 text-xs font-bold uppercase tracking-wider opacity-70 grid grid-cols-[minmax(0,1fr)_auto_auto_auto] gap-3">
+                    <div>{tableStrings.apiKey ?? "API Key"}</div>
+                    <div>{tableStrings.result ?? "Result"}</div>
+                    <div className="text-right">{tableStrings.quota ?? "Quota"}</div>
+                    <div className="text-right">{tableStrings.actions ?? "Actions"}</div>
+                  </div>
+                  <div className="divide-y divide-base-200/70">
+                    {props.state.rows.map((row, index) => {
+                      const canRetry =
+                        !isBusy &&
+                        (row.status === "unauthorized" ||
+                          row.status === "forbidden" ||
+                          row.status === "invalid" ||
+                          row.status === "error");
+                      const quotaLabel =
+                        row.quota_remaining != null && row.quota_limit != null
+                          ? `${formatNumber(row.quota_remaining)} / ${formatNumber(row.quota_limit)}`
+                          : "—";
+                      const label = statuses[row.status] ?? row.status;
+                      return (
+                        <div
+                          key={`${row.api_key}-${index}`}
+                          className="px-4 py-3 grid grid-cols-[minmax(0,1fr)_auto_auto_auto] gap-3 items-start"
+                        >
+                          <div className="min-w-0">
+                            <code className="block font-mono text-xs break-all whitespace-normal bg-base-200/50 px-2 py-1 rounded-lg max-w-full">
+                              {row.api_key}
+                            </code>
+                          </div>
+
+                          <div className="min-w-0">
+                            {row.detail ? (
+                              <details className="min-w-0 max-w-full">
+                                <summary className="cursor-pointer list-none inline-flex items-center gap-2">
                                   <StatusBadge tone={statusTone(row.status)}>{label}</StatusBadge>
-                                )}
-                              </div>
-                            </td>
-                            <td className="font-mono text-xs tabular-nums">{quotaLabel}</td>
-                            <td className="text-right">
-                              <button
-                                type="button"
-                                className="btn btn-ghost btn-xs btn-square"
-                                onClick={() => props.onRetryOne(row.api_key)}
-                                disabled={!canRetry}
-                                aria-label={actions.retry ?? "Retry"}
-                              >
-                                <Icon icon="mdi:refresh" width={16} height={16} />
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                                  <span className="opacity-60">
+                                    <Icon icon="mdi:information-outline" width={16} height={16} />
+                                  </span>
+                                </summary>
+                                <div className="mt-2 text-sm whitespace-pre-wrap break-all opacity-80 max-w-full">
+                                  {row.detail}
+                                </div>
+                              </details>
+                            ) : (
+                              <StatusBadge tone={statusTone(row.status)}>{label}</StatusBadge>
+                            )}
+                          </div>
+
+                          <div className="text-right font-mono text-xs tabular-nums opacity-70 whitespace-nowrap">
+                            {quotaLabel}
+                          </div>
+
+                          <div className="text-right">
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-xs btn-square"
+                              onClick={() => props.onRetryOne(row.api_key)}
+                              disabled={!canRetry}
+                              aria-label={actions.retry ?? "Retry"}
+                            >
+                              <Icon icon="mdi:refresh" width={16} height={16} />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
-              </div>
-            </>
-          ) : (
-            <div className="py-2">{validationStrings.hint ?? keyStrings.batch.hint}</div>
-          )}
+              </>
+            ) : (
+              <div className="py-2">{validationStrings.hint ?? keyStrings.batch.hint}</div>
+            )}
+          </div>
+
+          {/* Footer */}
+          <div className="px-4 sm:px-5 py-3 border-t border-base-200/70 bg-base-100 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                className="btn btn-outline"
+                onClick={props.onRetryFailed}
+                disabled={!canRetryFailed}
+              >
+                <Icon icon="mdi:refresh" width={18} height={18} />
+                &nbsp;{actions.retryFailed ?? "Retry failed"}
+              </button>
+              {props.exhaustedKeys.length > 0 && (
+                <span className="text-sm opacity-70">
+                  <Icon icon="mdi:alert-circle-outline" width={16} height={16} />{" "}
+                  {(summaryStrings.exhaustedNote ?? "{count} keys will be imported as exhausted").replace(
+                    "{count}",
+                    String(props.exhaustedKeys.length),
+                  )}
+                </span>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-2 justify-end">
+              <button type="button" className="btn" onClick={props.onClose}>
+                {actions.close ?? keyStrings.batch.report.close}
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={props.onImportValid}
+                disabled={!canImport}
+              >
+                <Icon icon={props.state?.importing ? "mdi:progress-helper" : "mdi:tray-arrow-down"} width={18} height={18} />
+                &nbsp;
+                {(actions.importValid ?? "Import {count} valid keys").replace("{count}", String(props.validKeys.length))}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </dialog>

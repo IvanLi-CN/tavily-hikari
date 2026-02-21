@@ -1292,7 +1292,9 @@ function AdminDashboard(): JSX.Element {
   const closeKeysValidationDialog = useCallback(() => {
     keysValidateAbortRef.current?.abort()
     keysValidateAbortRef.current = null
-    keysValidateDialogRef.current?.close()
+    const dialog = keysValidateDialogRef.current
+    // onClose fires after the dialog is closed (ESC/backdrop); avoid InvalidStateError.
+    if (dialog?.open) dialog.close()
     setKeysValidation(null)
   }, [])
 
