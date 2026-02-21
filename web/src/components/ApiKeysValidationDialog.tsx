@@ -300,7 +300,7 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                           row.status === "error");
                       const quotaLabel =
                         row.quota_remaining != null && row.quota_limit != null
-                          ? `${formatNumber(row.quota_remaining)} / ${formatNumber(row.quota_limit)}`
+                          ? `${formatNumber(row.quota_remaining)}/${formatNumber(row.quota_limit)}`
                           : "—";
                       const label = statuses[row.status] ?? row.status;
                       return (
@@ -346,17 +346,19 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                   <div style={{ overflowX: "hidden" }}>
                     <table className="table table-sm table-zebra table-fixed w-full">
                       <colgroup>
-                        <col style={{ width: "60%" }} />
-                        <col style={{ width: "22%" }} />
-                        <col style={{ width: "12%" }} />
-                        <col style={{ width: "6%" }} />
+                        <col style={{ width: "52%" }} />
+                        <col style={{ width: "26%" }} />
+                        <col style={{ width: "14%" }} />
+                        <col style={{ width: "8%" }} />
                       </colgroup>
                       <thead>
                         <tr>
                           <th className="whitespace-nowrap">{tableStrings.apiKey ?? "API Key"}</th>
                           <th className="whitespace-nowrap">{tableStrings.result ?? "Result"}</th>
                           <th className="whitespace-nowrap text-right">{tableStrings.quota ?? "Quota"}</th>
-                          <th className="whitespace-nowrap text-right">{tableStrings.actions ?? "Actions"}</th>
+                          <th className="whitespace-nowrap text-right px-2">
+                            {tableStrings.actions ?? "Actions"}
+                          </th>
                         </tr>
                       </thead>
                       <tbody>
@@ -369,7 +371,7 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                               row.status === "error");
                           const quotaLabel =
                             row.quota_remaining != null && row.quota_limit != null
-                              ? `${formatNumber(row.quota_remaining)} / ${formatNumber(row.quota_limit)}`
+                              ? `${formatNumber(row.quota_remaining)}/${formatNumber(row.quota_limit)}`
                               : "—";
                           const label = statuses[row.status] ?? row.status;
                           return (
@@ -409,7 +411,7 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                               <td className="text-right font-mono text-xs tabular-nums opacity-70 whitespace-nowrap">
                                 {quotaLabel}
                               </td>
-                              <td className="text-right">
+                              <td className="text-right px-2">
                                 <button
                                   type="button"
                                   className="btn btn-ghost btn-xs btn-square"
@@ -435,8 +437,21 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
 
           {/* Footer */}
           <div className="px-4 sm:px-5 py-3 border-t border-base-200/70 bg-base-100">
-            <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2 items-center">
-              <div className="flex items-center gap-2 min-w-0">
+            {props.exhaustedKeys.length > 0 && (
+              <div className="mb-2 text-sm opacity-70 flex items-start gap-2 min-w-0">
+                <span className="flex-shrink-0 mt-0.5">
+                  <Icon icon="mdi:alert-circle-outline" width={16} height={16} />
+                </span>
+                <span className="min-w-0 whitespace-normal break-words">
+                  {(summaryStrings.exhaustedNote ?? "{count} keys will be imported as exhausted").replace(
+                    "{count}",
+                    String(props.exhaustedKeys.length),
+                  )}
+                </span>
+              </div>
+            )}
+
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <button
                 type="button"
                 className="btn btn-outline"
@@ -446,34 +461,29 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                 <Icon icon="mdi:refresh" width={18} height={18} />
                 &nbsp;{actions.retryFailed ?? "Retry failed"}
               </button>
-              {props.exhaustedKeys.length > 0 && (
-                <span className="text-sm opacity-70 inline-flex items-center gap-1 min-w-0 break-words">
-                  <Icon icon="mdi:alert-circle-outline" width={16} height={16} />
-                  <span className="min-w-0 whitespace-normal break-words">
-                    {(summaryStrings.exhaustedNote ?? "{count} keys will be imported as exhausted").replace(
-                      "{count}",
-                      String(props.exhaustedKeys.length),
-                    )}
-                  </span>
-                </span>
-              )}
-              </div>
 
-              <div className="flex items-center gap-2 justify-end">
-              <button type="button" className="btn" onClick={props.onClose}>
-                {actions.close ?? keyStrings.batch.report.close}
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={props.onImportValid}
-                disabled={!canImport}
-              >
-                <Icon icon={props.state?.importing ? "mdi:progress-helper" : "mdi:tray-arrow-down"} width={18} height={18} />
-                &nbsp;
-                {(actions.importValid ?? "Import {count} valid keys").replace("{count}", String(props.validKeys.length))}
-              </button>
-            </div>
+              <div className="flex items-center gap-2 justify-end flex-wrap sm:flex-nowrap flex-shrink-0">
+                <button type="button" className="btn" onClick={props.onClose}>
+                  {actions.close ?? keyStrings.batch.report.close}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={props.onImportValid}
+                  disabled={!canImport}
+                >
+                  <Icon
+                    icon={props.state?.importing ? "mdi:progress-helper" : "mdi:tray-arrow-down"}
+                    width={18}
+                    height={18}
+                  />
+                  &nbsp;
+                  {(actions.importValid ?? "Import {count} valid keys").replace(
+                    "{count}",
+                    String(props.validKeys.length),
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         </div>

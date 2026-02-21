@@ -2132,8 +2132,8 @@ function AdminDashboard(): JSX.Element {
       </section>
 
       <section className="surface panel">
-        <div className="panel-header">
-          <div>
+        <div className="panel-header" style={{ flexWrap: 'wrap', gap: 12, alignItems: 'flex-start' }}>
+          <div style={{ flex: '1 1 320px', minWidth: 240 }}>
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
               <h2 style={{ margin: 0 }}>{tokenStrings.title}</h2>
               <div className="tooltip" data-tip={tokenStrings.actions.viewLeaderboard}>
@@ -2150,14 +2150,26 @@ function AdminDashboard(): JSX.Element {
             <p className="panel-description">{tokenStrings.description}</p>
           </div>
           {isAdmin && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                flexWrap: 'wrap',
+                justifyContent: 'flex-end',
+                flex: '0 1 auto',
+                minWidth: 0,
+                maxWidth: '100%',
+                marginLeft: 'auto',
+              }}
+            >
               <input
                 type="text"
                 className="input input-bordered"
                 placeholder={tokenStrings.notePlaceholder}
                 value={newTokenNote}
                 onChange={(e) => setNewTokenNote(e.target.value)}
-                style={{ minWidth: 240 }}
+                style={{ minWidth: 0, flex: '1 1 240px' }}
                 aria-label={tokenStrings.notePlaceholder}
               />
               <button
@@ -2175,13 +2187,6 @@ function AdminDashboard(): JSX.Element {
                 disabled={submitting}
               >
                 {tokenStrings.batchCreate}
-              </button>
-              <button
-                type="button"
-                className="btn btn-outline"
-                onClick={navigateTokenLeaderboard}
-              >
-                {tokenStrings.actions.viewLeaderboard}
               </button>
             </div>
           )}
