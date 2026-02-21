@@ -1350,6 +1350,73 @@ table {
   transform: translateY(-50%) scale(1);
 }
 
+.key-validation-detail {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.key-validation-modal {
+  overflow-x: hidden;
+}
+.key-validation-modal .modal-box {
+  overflow-x: hidden;
+}
+
+.key-validation-detail-trigger {
+  cursor: help;
+}
+
+.key-validation-detail-trigger:focus-visible {
+  outline: 2px solid rgba(99, 102, 241, 0.6);
+  outline-offset: 2px;
+  border-radius: 999px;
+}
+
+.key-validation-bubble {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 8px);
+  transform: scale(0.98);
+  background: hsl(var(--n) / 0.96);
+  color: hsl(var(--nc) / 1);
+  border: 1px solid hsl(var(--n) / 0.12);
+  padding: 12px 14px;
+  border-radius: 16px;
+  width: max-content;
+  max-width: min(620px, calc(100vw - 64px));
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.85rem;
+  line-height: 1.35;
+  opacity: 0;
+  pointer-events: auto;
+  user-select: text;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  z-index: 20;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.18);
+}
+
+.key-validation-bubble::before {
+  content: "";
+  position: absolute;
+  left: 18px;
+  top: -7px;
+  width: 14px;
+  height: 14px;
+  transform: rotate(45deg);
+  background: hsl(var(--n) / 0.96);
+  border-left: 1px solid hsl(var(--n) / 0.12);
+  border-top: 1px solid hsl(var(--n) / 0.12);
+}
+
+.key-validation-detail:hover .key-validation-bubble,
+.key-validation-detail:focus-within .key-validation-bubble {
+  opacity: 1;
+  transform: translateY(-50%) scale(1);
+}
+
 .log-token-link code {
   color: #0f172a;
 }
