@@ -156,6 +156,10 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
   const groupLabel = props.state?.group?.trim() || "default";
   const groupText = (summaryStrings.group ?? "Group: {group}").replace("{group}", groupLabel);
 
+  const checkedText = (summaryStrings.checked ?? "Checked {checked} / {total}")
+    .replace("{checked}", String(props.counts.checked))
+    .replace("{total}", String(props.counts.totalToCheck));
+
   return (
     <dialog
       id="keys_validation_modal"
@@ -173,7 +177,7 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
         }}
       >
         {/* Header */}
-        <div className="p-5 sm:p-6 border-b border-base-200/70 bg-base-100">
+        <div className="p-4 sm:p-5 border-b border-base-200/70 bg-base-100">
           <div className="flex items-start justify-between gap-3">
             <div>
               <div className="flex items-center gap-2">
@@ -216,19 +220,15 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
         </div>
 
         {/* Body */}
-        <div className="px-5 sm:px-6 py-4" style={{ overflowY: "auto", minHeight: 0 }}>
+        <div className="p-4 sm:p-5" style={{ overflowY: "auto", minHeight: 0 }}>
           {props.state ? (
             <>
               {/* Progress + headline stats */}
-              <div className="rounded-2xl border border-base-200 bg-base-100 p-4">
-                <div className="flex items-center gap-3">
+              <div className="rounded-2xl border border-base-200 bg-base-100 p-3">
+                <div className="flex flex-col md:flex-row md:items-center gap-3">
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between gap-3 text-sm opacity-70">
-                      <div className="truncate">
-                        {(summaryStrings.checked ?? "Checked {checked} / {total}")
-                          .replace("{checked}", String(props.counts.checked))
-                          .replace("{total}", String(props.counts.totalToCheck))}
-                      </div>
+                      <div className="truncate">{checkedText}</div>
                       <div className="font-mono tabular-nums">
                         {formatNumber(props.counts.checked)} / {formatNumber(props.counts.totalToCheck)}
                       </div>
@@ -239,41 +239,24 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                       max={Math.max(1, props.counts.totalToCheck)}
                     />
                   </div>
-                  <div className="hidden sm:flex">
-                    <div
-                      className="radial-progress text-primary"
-                      style={
-                        {
-                          "--value": Math.round((props.counts.checked / Math.max(1, props.counts.totalToCheck)) * 100),
-                          "--size": "3.25rem",
-                          "--thickness": "6px",
-                        } as React.CSSProperties
-                      }
-                      aria-label="Progress percent"
-                    >
-                      <span className="text-sm font-mono tabular-nums">
-                        {Math.round((props.counts.checked / Math.max(1, props.counts.totalToCheck)) * 100)}%
-                      </span>
-                    </div>
-                  </div>
-                </div>
 
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4">
-                  <div className="rounded-xl bg-base-200/60 p-3">
-                    <div className="text-xs uppercase tracking-wide opacity-70">{summaryStrings.ok ?? "Valid"}</div>
-                    <div className="text-lg font-bold tabular-nums">{formatNumber(props.counts.ok)}</div>
-                  </div>
-                  <div className="rounded-xl bg-base-200/60 p-3">
-                    <div className="text-xs uppercase tracking-wide opacity-70">{summaryStrings.exhausted ?? "Exhausted"}</div>
-                    <div className="text-lg font-bold tabular-nums">{formatNumber(props.counts.exhausted)}</div>
-                  </div>
-                  <div className="rounded-xl bg-base-200/60 p-3">
-                    <div className="text-xs uppercase tracking-wide opacity-70">{summaryStrings.invalid ?? "Invalid"}</div>
-                    <div className="text-lg font-bold tabular-nums">{formatNumber(props.counts.invalid)}</div>
-                  </div>
-                  <div className="rounded-xl bg-base-200/60 p-3">
-                    <div className="text-xs uppercase tracking-wide opacity-70">{summaryStrings.error ?? "Error"}</div>
-                    <div className="text-lg font-bold tabular-nums">{formatNumber(props.counts.error)}</div>
+                  <div className="flex flex-wrap gap-2 items-center">
+                    <span className="badge badge-success badge-outline">
+                      {(summaryStrings.ok ?? "Valid")}:&nbsp;{formatNumber(props.counts.ok)}
+                    </span>
+                    <span className="badge badge-warning badge-outline">
+                      {(summaryStrings.exhausted ?? "Exhausted")}:&nbsp;{formatNumber(props.counts.exhausted)}
+                    </span>
+                    {(props.counts.invalid > 0 || props.counts.error > 0) && (
+                      <>
+                        <span className="badge badge-error badge-outline">
+                          {(summaryStrings.invalid ?? "Invalid")}:&nbsp;{formatNumber(props.counts.invalid)}
+                        </span>
+                        <span className="badge badge-error badge-outline">
+                          {(summaryStrings.error ?? "Error")}:&nbsp;{formatNumber(props.counts.error)}
+                        </span>
+                      </>
+                    )}
                   </div>
                 </div>
               </div>
@@ -319,66 +302,125 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                     {(tableStrings.rows ?? "rows").replace("{count}", String(props.state.rows.length))}
                   </div>
                 </div>
-                <div className="overflow-x-auto">
-                  <table className="table table-sm table-zebra">
-                  <thead>
-                    <tr>
-                      <th>{tableStrings.apiKey ?? "API Key"}</th>
-                      <th>{tableStrings.result ?? "Result"}</th>
-                      <th>{tableStrings.quota ?? "Quota"}</th>
-                      <th>{tableStrings.actions ?? "Actions"}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
+                {/* Mobile: stacked rows (no horizontal scroll) */}
+                <div className="md:hidden">
+                  <div className="divide-y divide-base-200/70">
                     {props.state.rows.map((row, index) => {
                       const canRetry =
                         !props.state?.checking &&
                         !props.state?.importing &&
-                        (row.status === "unauthorized" || row.status === "forbidden" || row.status === "invalid" || row.status === "error");
+                        (row.status === "unauthorized" ||
+                          row.status === "forbidden" ||
+                          row.status === "invalid" ||
+                          row.status === "error");
                       const quotaLabel =
                         row.quota_remaining != null && row.quota_limit != null
                           ? `${formatNumber(row.quota_remaining)} / ${formatNumber(row.quota_limit)}`
                           : "—";
                       const label = statuses[row.status] ?? row.status;
                       return (
-                        <tr key={`${row.api_key}-${index}`}>
-                          <td style={{ wordBreak: "break-all" }} className="font-mono text-xs">
-                            <code className="bg-base-200/50 px-2 py-1 rounded-lg">{row.api_key}</code>
-                          </td>
-                          <td>
-                            <div className="key-validation-detail">
-                              <StatusBadge tone={statusTone(row.status)}>{label}</StatusBadge>
-                              {row.detail && (
-                                <>
-                                  <button
-                                    type="button"
-                                    className="btn btn-ghost btn-xs key-validation-detail-trigger"
-                                    aria-label={actions.details ?? "Details"}
-                                  >
-                                    <Icon icon="mdi:information-outline" width={16} height={16} />
-                                  </button>
-                                  <div className="key-validation-bubble">{row.detail}</div>
-                                </>
-                              )}
-                            </div>
-                          </td>
-                          <td className="font-mono text-xs tabular-nums">{quotaLabel}</td>
-                          <td>
+                        <div key={`${row.api_key}-${index}`} className="p-4">
+                          <div className="flex items-start justify-between gap-3">
+                            <code className="block font-mono text-xs break-all bg-base-200/50 px-2 py-1 rounded-lg">
+                              {row.api_key}
+                            </code>
                             <button
                               type="button"
-                              className="btn btn-xs btn-outline"
+                              className="btn btn-ghost btn-xs btn-square"
                               onClick={() => props.onRetryOne(row.api_key)}
                               disabled={!canRetry}
+                              aria-label={actions.retry ?? "Retry"}
                             >
                               <Icon icon="mdi:refresh" width={16} height={16} />
-                              &nbsp;{actions.retry ?? "Retry"}
                             </button>
-                          </td>
-                        </tr>
+                          </div>
+
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                            <StatusBadge tone={statusTone(row.status)}>{label}</StatusBadge>
+                            <span className="text-xs font-mono tabular-nums opacity-70">{quotaLabel}</span>
+                          </div>
+
+                          {row.detail && (
+                            <div className="mt-2 text-sm whitespace-pre-wrap break-words opacity-80">{row.detail}</div>
+                          )}
+                        </div>
                       );
                     })}
-                  </tbody>
-                </table>
+                  </div>
+                </div>
+
+                {/* Desktop: table-fixed so it wraps instead of overflowing */}
+                <div className="hidden md:block">
+                  <table className="table table-sm table-zebra table-fixed w-full">
+                    <colgroup>
+                      <col style={{ width: "58%" }} />
+                      <col style={{ width: "20%" }} />
+                      <col style={{ width: "14%" }} />
+                      <col style={{ width: "8%" }} />
+                    </colgroup>
+                    <thead>
+                      <tr>
+                        <th className="whitespace-nowrap">{tableStrings.apiKey ?? "API Key"}</th>
+                        <th className="whitespace-nowrap">{tableStrings.result ?? "Result"}</th>
+                        <th className="whitespace-nowrap">{tableStrings.quota ?? "Quota"}</th>
+                        <th className="whitespace-nowrap text-right">{tableStrings.actions ?? "Actions"}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {props.state.rows.map((row, index) => {
+                        const canRetry =
+                          !props.state?.checking &&
+                          !props.state?.importing &&
+                          (row.status === "unauthorized" ||
+                            row.status === "forbidden" ||
+                            row.status === "invalid" ||
+                            row.status === "error");
+                        const quotaLabel =
+                          row.quota_remaining != null && row.quota_limit != null
+                            ? `${formatNumber(row.quota_remaining)} / ${formatNumber(row.quota_limit)}`
+                            : "—";
+                        const label = statuses[row.status] ?? row.status;
+                        return (
+                          <tr key={`${row.api_key}-${index}`}>
+                            <td className="max-w-0">
+                              <code className="block font-mono text-xs break-all bg-base-200/50 px-2 py-1 rounded-lg">
+                                {row.api_key}
+                              </code>
+                            </td>
+                            <td className="max-w-0">
+                              <div className="key-validation-detail">
+                                <StatusBadge tone={statusTone(row.status)}>{label}</StatusBadge>
+                                {row.detail && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      className="btn btn-ghost btn-xs btn-square key-validation-detail-trigger"
+                                      aria-label={actions.details ?? "Details"}
+                                    >
+                                      <Icon icon="mdi:information-outline" width={16} height={16} />
+                                    </button>
+                                    <div className="key-validation-bubble">{row.detail}</div>
+                                  </>
+                                )}
+                              </div>
+                            </td>
+                            <td className="font-mono text-xs tabular-nums">{quotaLabel}</td>
+                            <td className="text-right">
+                              <button
+                                type="button"
+                                className="btn btn-ghost btn-xs btn-square"
+                                onClick={() => props.onRetryOne(row.api_key)}
+                                disabled={!canRetry}
+                                aria-label={actions.retry ?? "Retry"}
+                              >
+                                <Icon icon="mdi:refresh" width={16} height={16} />
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
                 </div>
               </div>
             </>
@@ -388,7 +430,7 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
         </div>
 
         {/* Footer */}
-        <div className="px-5 sm:px-6 py-4 border-t border-base-200/70 bg-base-100">
+        <div className="px-4 sm:px-5 py-4 border-t border-base-200/70 bg-base-100">
           <form method="dialog" onSubmit={(e) => e.preventDefault()} className="flex flex-wrap gap-2 items-center justify-between">
             <div className="flex flex-wrap gap-2 items-center">
               <button
