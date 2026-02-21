@@ -321,7 +321,12 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                           </div>
 
                           <div className="mt-2 flex flex-wrap items-center gap-2">
-                            <StatusBadge tone={statusTone(row.status)}>{label}</StatusBadge>
+                            <StatusBadge
+                              tone={statusTone(row.status)}
+                              className="max-w-full flex-wrap whitespace-normal break-words"
+                            >
+                              {label}
+                            </StatusBadge>
                             <span className="text-xs font-mono tabular-nums opacity-70 whitespace-nowrap">{quotaLabel}</span>
                           </div>
 
@@ -336,74 +341,90 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                   </div>
                 </div>
 
-                {/* >= md: grid list (table-like), no horizontal scroll */}
+                {/* >= md: table layout (fixed columns) */}
                 <div className="hidden md:block rounded-xl border border-base-200 bg-base-100 overflow-hidden">
-                  <div className="px-4 py-2 border-b border-base-200/70 text-xs font-bold uppercase tracking-wider opacity-70 grid grid-cols-[minmax(0,1fr)_auto_auto_auto] gap-3">
-                    <div>{tableStrings.apiKey ?? "API Key"}</div>
-                    <div>{tableStrings.result ?? "Result"}</div>
-                    <div className="text-right">{tableStrings.quota ?? "Quota"}</div>
-                    <div className="text-right">{tableStrings.actions ?? "Actions"}</div>
-                  </div>
-                  <div className="divide-y divide-base-200/70">
-                    {props.state.rows.map((row, index) => {
-                      const canRetry =
-                        !isBusy &&
-                        (row.status === "unauthorized" ||
-                          row.status === "forbidden" ||
-                          row.status === "invalid" ||
-                          row.status === "error");
-                      const quotaLabel =
-                        row.quota_remaining != null && row.quota_limit != null
-                          ? `${formatNumber(row.quota_remaining)} / ${formatNumber(row.quota_limit)}`
-                          : "—";
-                      const label = statuses[row.status] ?? row.status;
-                      return (
-                        <div
-                          key={`${row.api_key}-${index}`}
-                          className="px-4 py-3 grid grid-cols-[minmax(0,1fr)_auto_auto_auto] gap-3 items-start"
-                        >
-                          <div className="min-w-0">
-                            <code className="block font-mono text-xs break-all whitespace-normal bg-base-200/50 px-2 py-1 rounded-lg max-w-full">
-                              {row.api_key}
-                            </code>
-                          </div>
-
-                          <div className="min-w-0">
-                            {row.detail ? (
-                              <details className="min-w-0 max-w-full">
-                                <summary className="cursor-pointer list-none inline-flex items-center gap-2">
-                                  <StatusBadge tone={statusTone(row.status)}>{label}</StatusBadge>
-                                  <span className="opacity-60">
-                                    <Icon icon="mdi:information-outline" width={16} height={16} />
-                                  </span>
-                                </summary>
-                                <div className="mt-2 text-sm whitespace-pre-wrap break-all opacity-80 max-w-full">
-                                  {row.detail}
-                                </div>
-                              </details>
-                            ) : (
-                              <StatusBadge tone={statusTone(row.status)}>{label}</StatusBadge>
-                            )}
-                          </div>
-
-                          <div className="text-right font-mono text-xs tabular-nums opacity-70 whitespace-nowrap">
-                            {quotaLabel}
-                          </div>
-
-                          <div className="text-right">
-                            <button
-                              type="button"
-                              className="btn btn-ghost btn-xs btn-square"
-                              onClick={() => props.onRetryOne(row.api_key)}
-                              disabled={!canRetry}
-                              aria-label={actions.retry ?? "Retry"}
-                            >
-                              <Icon icon="mdi:refresh" width={16} height={16} />
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
+                  <div style={{ overflowX: "hidden" }}>
+                    <table className="table table-sm table-zebra table-fixed w-full">
+                      <colgroup>
+                        <col style={{ width: "60%" }} />
+                        <col style={{ width: "22%" }} />
+                        <col style={{ width: "12%" }} />
+                        <col style={{ width: "6%" }} />
+                      </colgroup>
+                      <thead>
+                        <tr>
+                          <th className="whitespace-nowrap">{tableStrings.apiKey ?? "API Key"}</th>
+                          <th className="whitespace-nowrap">{tableStrings.result ?? "Result"}</th>
+                          <th className="whitespace-nowrap text-right">{tableStrings.quota ?? "Quota"}</th>
+                          <th className="whitespace-nowrap text-right">{tableStrings.actions ?? "Actions"}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {props.state.rows.map((row, index) => {
+                          const canRetry =
+                            !isBusy &&
+                            (row.status === "unauthorized" ||
+                              row.status === "forbidden" ||
+                              row.status === "invalid" ||
+                              row.status === "error");
+                          const quotaLabel =
+                            row.quota_remaining != null && row.quota_limit != null
+                              ? `${formatNumber(row.quota_remaining)} / ${formatNumber(row.quota_limit)}`
+                              : "—";
+                          const label = statuses[row.status] ?? row.status;
+                          return (
+                            <tr key={`${row.api_key}-${index}`}>
+                              <td className="max-w-0">
+                                <code className="block font-mono text-xs break-all whitespace-normal bg-base-200/50 px-2 py-1 rounded-lg max-w-full">
+                                  {row.api_key}
+                                </code>
+                              </td>
+                              <td className="max-w-0">
+                                {row.detail ? (
+                                  <details className="min-w-0 max-w-full">
+                                    <summary className="cursor-pointer list-none inline-flex items-center gap-2 flex-wrap">
+                                      <StatusBadge
+                                        tone={statusTone(row.status)}
+                                        className="max-w-full flex-wrap whitespace-normal break-words"
+                                      >
+                                        {label}
+                                      </StatusBadge>
+                                      <span className="opacity-60">
+                                        <Icon icon="mdi:information-outline" width={16} height={16} />
+                                      </span>
+                                    </summary>
+                                    <div className="mt-2 text-sm whitespace-pre-wrap break-all opacity-80 max-w-full">
+                                      {row.detail}
+                                    </div>
+                                  </details>
+                                ) : (
+                                  <StatusBadge
+                                    tone={statusTone(row.status)}
+                                    className="max-w-full flex-wrap whitespace-normal break-words"
+                                  >
+                                    {label}
+                                  </StatusBadge>
+                                )}
+                              </td>
+                              <td className="text-right font-mono text-xs tabular-nums opacity-70 whitespace-nowrap">
+                                {quotaLabel}
+                              </td>
+                              <td className="text-right">
+                                <button
+                                  type="button"
+                                  className="btn btn-ghost btn-xs btn-square"
+                                  onClick={() => props.onRetryOne(row.api_key)}
+                                  disabled={!canRetry}
+                                  aria-label={actions.retry ?? "Retry"}
+                                >
+                                  <Icon icon="mdi:refresh" width={16} height={16} />
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
               </>
@@ -413,8 +434,9 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
           </div>
 
           {/* Footer */}
-          <div className="px-4 sm:px-5 py-3 border-t border-base-200/70 bg-base-100 flex flex-wrap items-center justify-between gap-2">
-            <div className="flex flex-wrap items-center gap-2">
+          <div className="px-4 sm:px-5 py-3 border-t border-base-200/70 bg-base-100">
+            <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2 items-center">
+              <div className="flex items-center gap-2 min-w-0">
               <button
                 type="button"
                 className="btn btn-outline"
@@ -425,16 +447,19 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                 &nbsp;{actions.retryFailed ?? "Retry failed"}
               </button>
               {props.exhaustedKeys.length > 0 && (
-                <span className="text-sm opacity-70">
-                  <Icon icon="mdi:alert-circle-outline" width={16} height={16} />{" "}
-                  {(summaryStrings.exhaustedNote ?? "{count} keys will be imported as exhausted").replace(
-                    "{count}",
-                    String(props.exhaustedKeys.length),
-                  )}
+                <span className="text-sm opacity-70 inline-flex items-center gap-1 min-w-0 break-words">
+                  <Icon icon="mdi:alert-circle-outline" width={16} height={16} />
+                  <span className="min-w-0 whitespace-normal break-words">
+                    {(summaryStrings.exhaustedNote ?? "{count} keys will be imported as exhausted").replace(
+                      "{count}",
+                      String(props.exhaustedKeys.length),
+                    )}
+                  </span>
                 </span>
               )}
-            </div>
-            <div className="flex flex-wrap items-center gap-2 justify-end">
+              </div>
+
+              <div className="flex items-center gap-2 justify-end">
               <button type="button" className="btn" onClick={props.onClose}>
                 {actions.close ?? keyStrings.batch.report.close}
               </button>
@@ -448,6 +473,7 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                 &nbsp;
                 {(actions.importValid ?? "Import {count} valid keys").replace("{count}", String(props.validKeys.length))}
               </button>
+            </div>
             </div>
           </div>
         </div>
