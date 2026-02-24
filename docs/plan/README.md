@@ -65,3 +65,4 @@
 | 5zcj3 | Admin API Keys 分组录入与筛选        | 已完成          | `5zcj3:api-keys-grouping/PLAN.md`                      | 2026-02-19 | PR #67                                           |
 | 9b9w5 | Bun 工具链迁移（root + web + CI）    | 已完成          | `9b9w5:bun-migration/PLAN.md`                          | 2026-02-20 | PR #68                                           |
 | y5vgt | Devctl/Zellij 长驻开发服务对齐       | 已完成          | `y5vgt:devctl-zellij-dev-runtime/PLAN.md`              | 2026-02-20 | PR #69                                           |
+| kgakn | Admin API Keys 校验对话框与可用入库  | 已完成          | `kgakn:admin-api-keys-validation-dialog/PLAN.md`       | 2026-02-24 | PR #71                                           |

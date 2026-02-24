@@ -307,6 +307,51 @@ interface AdminTranslationsShape {
         }
       }
     }
+    validation: {
+      title: string
+      hint: string
+      actions: {
+        close: string
+        retry: string
+        retryFailed: string
+        importValid: string
+        imported: string
+      }
+      import: {
+        title: string
+        exhaustedMarkFailed: string
+      }
+      summary: {
+        group: string
+        inputLines: string
+        validLines: string
+        uniqueInInput: string
+        duplicateInInput: string
+        checked: string
+        ok: string
+        exhausted: string
+        exhaustedNote: string
+        invalid: string
+        error: string
+      }
+      emptyFiltered: string
+      table: {
+        apiKey: string
+        result: string
+        quota: string
+        actions: string
+      }
+      statuses: {
+        pending: string
+        duplicate_in_input: string
+        ok: string
+        ok_exhausted: string
+        unauthorized: string
+        forbidden: string
+        invalid: string
+        error: string
+      }
+    }
     groups: {
       label: string
       all: string
@@ -850,6 +895,51 @@ export const translations: Record<Language, TranslationShape> = {
             },
           },
         },
+        validation: {
+          title: 'Verify API Keys',
+          hint: 'Paste one key per line, then validate before importing.',
+          actions: {
+            close: 'Close',
+            retry: 'Retry',
+            retryFailed: 'Retry failed',
+            importValid: 'Import {count} valid keys',
+            imported: 'Imported',
+          },
+          import: {
+            title: 'Import Result',
+            exhaustedMarkFailed: '{count} exhausted keys could not be marked as exhausted',
+          },
+          summary: {
+            group: 'Group: {group}',
+            inputLines: 'Input lines',
+            validLines: 'Valid lines',
+            uniqueInInput: 'Unique in input',
+            duplicateInInput: 'Duplicates in input',
+            checked: 'Checked {checked} / {total}',
+            ok: 'Valid',
+            exhausted: 'Exhausted',
+            exhaustedNote: '{count} keys will be imported as exhausted',
+            invalid: 'Invalid',
+            error: 'Error',
+          },
+          emptyFiltered: 'No rows match the selected status.',
+          table: {
+            apiKey: 'API Key',
+            result: 'Result',
+            quota: 'Quota',
+            actions: 'Actions',
+          },
+          statuses: {
+            pending: 'Pending',
+            duplicate_in_input: 'Duplicate',
+            ok: 'Valid',
+            ok_exhausted: 'Valid (exhausted)',
+            unauthorized: 'Unauthorized',
+            forbidden: 'Forbidden',
+            invalid: 'Invalid',
+            error: 'Error',
+          },
+        },
         groups: {
           label: 'Groups',
           all: 'All',
@@ -1363,6 +1453,51 @@ export const translations: Record<Language, TranslationShape> = {
                 error: '原因',
               },
             },
+          },
+        },
+        validation: {
+          title: '检测 API Keys',
+          hint: '先检测可用性，再手动确认入库。',
+          actions: {
+            close: '关闭',
+            retry: '重试',
+            retryFailed: '重试失败项',
+            importValid: '入库 {count} 个可用 key',
+            imported: '已入库',
+          },
+          import: {
+            title: '入库结果',
+            exhaustedMarkFailed: '{count} 个已耗尽 key 未能标记为已耗尽',
+          },
+          summary: {
+            group: '分组：{group}',
+            inputLines: '输入行数',
+            validLines: '有效行数',
+            uniqueInInput: '输入去重后',
+            duplicateInInput: '输入重复',
+            checked: '已检测 {checked} / {total}',
+            ok: '可用',
+            exhausted: '已耗尽',
+            exhaustedNote: '{count} 个 key 将以已耗尽状态入库',
+            invalid: '不可用',
+            error: '错误',
+          },
+          emptyFiltered: '没有符合当前筛选状态的记录。',
+          table: {
+            apiKey: 'API Key',
+            result: '结果',
+            quota: '额度',
+            actions: '操作',
+          },
+          statuses: {
+            pending: '检测中',
+            duplicate_in_input: '输入重复',
+            ok: '可用',
+            ok_exhausted: '可用（已耗尽）',
+            unauthorized: '未授权',
+            forbidden: '禁止',
+            invalid: '不可用',
+            error: '错误',
           },
         },
         groups: {

@@ -1,5 +1,6 @@
 import { Icon } from '@iconify/react'
 import { StatusBadge, type StatusTone } from './components/StatusBadge'
+import { ApiKeysValidationDialog } from './components/ApiKeysValidationDialog'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import LanguageSwitcher from './components/LanguageSwitcher'
@@ -10,6 +11,8 @@ import {
   fetchApiKeySecret,
   addApiKeysBatch,
   type AddApiKeysBatchResponse,
+  validateApiKeys,
+  type ValidateKeyResult,
   deleteApiKey,
   setKeyStatus,
   fetchProfile,
@@ -63,6 +66,7 @@ const LOGS_MAX_PAGES = 10
 const KEYS_BATCH_CLOSE_ANIMATION_MS = 200
 const KEYS_BATCH_AUTO_COLLAPSE_TOTAL_MS = 500
 const KEYS_BATCH_AUTO_COLLAPSE_DELAY_MS = Math.max(0, KEYS_BATCH_AUTO_COLLAPSE_TOTAL_MS - KEYS_BATCH_CLOSE_ANIMATION_MS)
+const API_KEYS_IMPORT_CHUNK_SIZE = 1000
 
 function leaderboardPrimaryValue(
   item: TokenUsageLeaderboardItem,
@@ -396,6 +400,44 @@ function AdminDashboard(): JSX.Element {
   const keysBatchOverlayRef = useRef<HTMLDivElement | null>(null)
   const keysBatchReportDialogRef = useRef<HTMLDialogElement | null>(null)
   const [keysBatchReport, setKeysBatchReport] = useState<AddKeysBatchReportState | null>(null)
+
+  type KeyValidationStatus =
+    | 'pending'
+    | 'duplicate_in_input'
+    | 'ok'
+    | 'ok_exhausted'
+    | 'unauthorized'
+    | 'forbidden'
+    | 'invalid'
+    | 'error'
+
+  type KeyValidationRow = {
+    api_key: string
+    status: KeyValidationStatus
+    quota_limit?: number
+    quota_remaining?: number
+    detail?: string
+    attempts: number
+  }
+
+  type KeysValidationState = {
+    group: string
+    input_lines: number
+    valid_lines: number
+    unique_in_input: number
+    duplicate_in_input: number
+    checking: boolean
+    importing: boolean
+    rows: KeyValidationRow[]
+    importReport?: AddApiKeysBatchResponse
+    importWarning?: string
+    importError?: string
+  }
+
+  const keysValidateDialogRef = useRef<HTMLDialogElement | null>(null)
+  const keysValidateAbortRef = useRef<AbortController | null>(null)
+  const keysValidateRunIdRef = useRef(0)
+  const [keysValidation, setKeysValidation] = useState<KeysValidationState | null>(null)
   const [newTokenNote, setNewTokenNote] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
@@ -1069,6 +1111,63 @@ function AdminDashboard(): JSX.Element {
     return keysBatchReport.response.results.filter((item) => item.status === 'failed')
   }, [keysBatchReport])
 
+  const keysValidationCounts = useMemo(() => {
+    const rows = keysValidation?.rows ?? []
+    let pending = 0
+    let duplicate = 0
+    let ok = 0
+    let exhausted = 0
+    let invalid = 0
+    let errorCount = 0
+    for (const row of rows) {
+      switch (row.status) {
+        case 'pending':
+          pending += 1
+          break
+        case 'duplicate_in_input':
+          duplicate += 1
+          break
+        case 'ok':
+          ok += 1
+          break
+        case 'ok_exhausted':
+          exhausted += 1
+          break
+        case 'unauthorized':
+        case 'forbidden':
+        case 'invalid':
+          invalid += 1
+          break
+        case 'error':
+          errorCount += 1
+          break
+      }
+    }
+    const checked = ok + exhausted + invalid + errorCount
+    const totalToCheck = keysValidation?.unique_in_input ?? 0
+    return { pending, duplicate, ok, exhausted, invalid, error: errorCount, checked, totalToCheck }
+  }, [keysValidation])
+
+  const keysValidationValidKeys = useMemo(() => {
+    const set = new Set<string>()
+    for (const row of keysValidation?.rows ?? []) {
+      if (row.status === 'ok' || row.status === 'ok_exhausted') {
+        set.add(row.api_key)
+      }
+    }
+    return Array.from(set)
+  }, [keysValidation])
+
+  const keysValidationExhaustedKeys = useMemo(() => {
+    const set = new Set<string>()
+    for (const row of keysValidation?.rows ?? []) {
+      if (row.status === 'ok_exhausted') {
+        set.add(row.api_key)
+      }
+    }
+    return Array.from(set)
+  }, [keysValidation])
+
   const updateKeysBatchOverlayLayout = useCallback(() => {
     if (!keysBatchExpanded) return
     const anchor = keysBatchAnchorRef.current
@@ -1192,19 +1291,267 @@ function AdminDashboard(): JSX.Element {
     })
   }, [])
 
+  const closeKeysValidationDialog = useCallback(() => {
+    keysValidateAbortRef.current?.abort()
+    keysValidateAbortRef.current = null
+    const dialog = keysValidateDialogRef.current
+    // onClose fires after the dialog is closed (ESC/backdrop); avoid InvalidStateError.
+    if (dialog?.open) dialog.close()
+    setKeysValidation(null)
+  }, [])
+
+  useEffect(() => () => {
+    keysValidateAbortRef.current?.abort()
+    keysValidateAbortRef.current = null
+  }, [])
+
+  const coerceValidationStatus = (raw: string): KeyValidationStatus => {
+    switch ((raw || '').toLowerCase()) {
+      case 'pending':
+        return 'pending'
+      case 'duplicate_in_input':
+        return 'duplicate_in_input'
+      case 'ok':
+        return 'ok'
+      case 'ok_exhausted':
+        return 'ok_exhausted'
+      case 'unauthorized':
+        return 'unauthorized'
+      case 'forbidden':
+        return 'forbidden'
+      case 'invalid':
+        return 'invalid'
+      case 'error':
+        return 'error'
+      default:
+        return 'error'
+    }
+  }
+
+  const applyValidationResults = useCallback((results: ValidateKeyResult[], runId: number) => {
+    setKeysValidation((prev) => {
+      if (!prev) return prev
+      if (runId !== keysValidateRunIdRef.current) return prev
+      const byKey = new Map(results.map((r) => [r.api_key, r]))
+      const nextRows = prev.rows.map((row): KeyValidationRow => {
+        if (row.status === 'duplicate_in_input') return row
+        const res = byKey.get(row.api_key)
+        if (!res) return row
+        const status = coerceValidationStatus(res.status)
+        return {
+          ...row,
+          status,
+          quota_limit: res.quota_limit,
+          quota_remaining: res.quota_remaining,
+          detail: res.detail,
+        }
+      })
+      return { ...prev, rows: nextRows }
+    })
+  }, [])
+
+  const markKeysPendingForRetry = useCallback((apiKeys: string[], runId: number) => {
+    setKeysValidation((prev) => {
+      if (!prev) return prev
+      if (runId !== keysValidateRunIdRef.current) return prev
+      const set = new Set(apiKeys)
+      const rows = prev.rows.map((row): KeyValidationRow => {
+        if (!set.has(row.api_key)) return row
+        if (row.status === 'duplicate_in_input') return row
+        return {
+          ...row,
+          status: 'pending' as const,
+          detail: undefined,
+          quota_limit: undefined,
+          quota_remaining: undefined,
+          attempts: row.attempts + 1,
+        }
+      })
+      return { ...prev, rows }
+    })
+  }, [])
+
+  const runValidateKeys = useCallback(async (apiKeys: string[], runId: number) => {
+    const controller = new AbortController()
+    keysValidateAbortRef.current?.abort()
+    keysValidateAbortRef.current = controller
+
+    const CHUNK_SIZE = 25
+    for (let i = 0; i < apiKeys.length; i += CHUNK_SIZE) {
+      const chunk = apiKeys.slice(i, i + CHUNK_SIZE)
+      if (chunk.length === 0) continue
+      try {
+        const resp = await validateApiKeys(chunk, controller.signal)
+        applyValidationResults(resp.results, runId)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to validate keys'
+        applyValidationResults(
+          chunk.map((api_key) => ({ api_key, status: 'error', detail: message })),
+          runId,
+        )
+      }
+    }
+
+    // Only mark "checking" as done if this is still the active run.
+    setKeysValidation((prev) => {
+      if (!prev) return prev
+      if (runId !== keysValidateRunIdRef.current) return prev
+      return { ...prev, checking: false }
+    })
+    // Avoid clobbering a newer validation run's abort controller.
+    if (keysValidateAbortRef.current === controller) {
+      keysValidateAbortRef.current = null
+    }
+  }, [applyValidationResults])
+
   const handleAddKey = async () => {
     const rawLines = newKeysText.split(/\r?\n/)
     const apiKeys = rawLines.map((line) => line.trim()).filter((line) => line.length > 0)
     if (apiKeys.length === 0) return
+
     const group = newKeysGroup.trim()
-    setSubmitting(true)
+
+    const seen = new Set<string>()
+    const rows: KeyValidationRow[] = []
+    const uniqueKeys: string[] = []
+    let duplicateCount = 0
+    for (const api_key of apiKeys) {
+      if (seen.has(api_key)) {
+        duplicateCount += 1
+        rows.push({ api_key, status: 'duplicate_in_input', attempts: 0 })
+        continue
+      }
+      seen.add(api_key)
+      uniqueKeys.push(api_key)
+      rows.push({ api_key, status: 'pending', attempts: 0 })
+    }
+
+    keysValidateRunIdRef.current = (keysValidateRunIdRef.current ?? 0) + 1
+    const runId = keysValidateRunIdRef.current
+    setKeysValidation({
+      group,
+      input_lines: rawLines.length,
+      valid_lines: apiKeys.length,
+      unique_in_input: uniqueKeys.length,
+      duplicate_in_input: duplicateCount,
+      checking: true,
+      importing: false,
+      rows,
+    })
+
+    window.requestAnimationFrame(() => {
+      const dialog = keysValidateDialogRef.current
+      if (!dialog) return
+      if (!dialog.open) dialog.showModal()
+    })
+
+    // Collapse the in-place overlay once we hand off to the modal.
+    setNewKeysText('')
+    setNewKeysGroup('')
+    beginKeysBatchClose()
+
+    await runValidateKeys(uniqueKeys, runId)
+  }
+
+  const handleRetryFailedValidation = async () => {
+    if (!keysValidation) return
+    if (keysValidation.checking || keysValidation.importing) return
+
+    const failed = new Set<string>()
+    for (const row of keysValidation.rows) {
+      if (row.status === 'unauthorized' || row.status === 'forbidden' || row.status === 'invalid' || row.status === 'error') {
+        failed.add(row.api_key)
+      }
+    }
+    const failedKeys = Array.from(failed)
+    if (failedKeys.length === 0) return
+
+    keysValidateRunIdRef.current = (keysValidateRunIdRef.current ?? 0) + 1
+    const runId = keysValidateRunIdRef.current
+    setKeysValidation((prev) => prev ? ({
+      ...prev,
+      checking: true,
+      importError: undefined,
+      importWarning: undefined,
+    }) : prev)
+    markKeysPendingForRetry(failedKeys, runId)
+    await runValidateKeys(failedKeys, runId)
+  }
+
+  const handleRetryOneValidation = async (api_key: string) => {
+    if (!keysValidation) return
+    if (keysValidation.checking || keysValidation.importing) return
+    keysValidateRunIdRef.current = (keysValidateRunIdRef.current ?? 0) + 1
+    const runId = keysValidateRunIdRef.current
+    setKeysValidation((prev) => prev ? ({
+      ...prev,
+      checking: true,
+      importError: undefined,
+      importWarning: undefined,
+    }) : prev)
+    markKeysPendingForRetry([api_key], runId)
+    await runValidateKeys([api_key], runId)
+  }
+
+  const handleImportValidatedKeys = async () => {
+    if (!keysValidation) return
+    if (keysValidation.checking || keysValidation.importing) return
+    if (keysValidationValidKeys.length === 0) return
+
+    const group = keysValidation.group.trim()
+    const normalizedGroup = group.length > 0 ? group : undefined
+    const exhaustedSet = new Set(keysValidationExhaustedKeys)
+    setKeysValidation((prev) => prev ? ({
+      ...prev,
+      importing: true,
+      importError: undefined,
+      importWarning: undefined,
+      importReport: undefined,
+    }) : prev)
     try {
-      const response = await addApiKeysBatch(apiKeys, group.length > 0 ? group : undefined)
-      setKeysBatchReport({ kind: 'success', response })
-      window.requestAnimationFrame(() => keysBatchReportDialogRef.current?.showModal())
-      setNewKeysText('')
-      setNewKeysGroup('')
-      beginKeysBatchClose()
+      const response: AddApiKeysBatchResponse = {
+        summary: {
+          input_lines: 0,
+          valid_lines: 0,
+          unique_in_input: 0,
+          created: 0,
+          undeleted: 0,
+          existed: 0,
+          duplicate_in_input: 0,
+          failed: 0,
+        },
+        results: [],
+      }
+      let markExhaustedFailedCount = 0
+
+      for (let i = 0; i < keysValidationValidKeys.length; i += API_KEYS_IMPORT_CHUNK_SIZE) {
+        const chunk = keysValidationValidKeys.slice(i, i + API_KEYS_IMPORT_CHUNK_SIZE)
+        const exhaustedInChunk = chunk.filter((apiKey) => exhaustedSet.has(apiKey))
+        const chunkResponse = await addApiKeysBatch(chunk, normalizedGroup, exhaustedInChunk)
+        response.summary.input_lines += chunkResponse.summary.input_lines
+        response.summary.valid_lines += chunkResponse.summary.valid_lines
+        response.summary.unique_in_input += chunkResponse.summary.unique_in_input
+        response.summary.created += chunkResponse.summary.created
+        response.summary.undeleted += chunkResponse.summary.undeleted
+        response.summary.existed += chunkResponse.summary.existed
+        response.summary.duplicate_in_input += chunkResponse.summary.duplicate_in_input
+        response.summary.failed += chunkResponse.summary.failed
+        for (const result of chunkResponse.results) {
+          if (!exhaustedSet.has(result.api_key)) continue
+          if (result.status === 'failed') continue
+          if (result.marked_exhausted === true) continue
+          markExhaustedFailedCount += 1
+        }
+        response.results.push(...chunkResponse.results)
+      }
+
+      setKeysValidation((prev) => {
+        if (!prev) return prev
+        const warning = markExhaustedFailedCount > 0
+          ? keyStrings.validation.import.exhaustedMarkFailed.replace('{count}', String(markExhaustedFailedCount))
+          : undefined
+        return { ...prev, importing: false, importReport: response, importWarning: warning }
+      })
       const controller = new AbortController()
       setLoading(true)
       await loadData(controller.signal)
@@ -1212,14 +1559,7 @@ function AdminDashboard(): JSX.Element {
     } catch (err) {
       console.error(err)
       const message = err instanceof Error ? err.message : errorStrings.addKeysBatch
-      setKeysBatchReport({ kind: 'error', message, input_lines: rawLines.length, valid_lines: apiKeys.length })
-      window.requestAnimationFrame(() => keysBatchReportDialogRef.current?.showModal())
-      setNewKeysText('')
-      setNewKeysGroup('')
-      beginKeysBatchClose()
-      setError(message)
-    } finally {
-      setSubmitting(false)
+      setKeysValidation((prev) => prev ? ({ ...prev, importing: false, importWarning: undefined, importError: message }) : prev)
     }
   }
 
@@ -1849,8 +2189,8 @@ function AdminDashboard(): JSX.Element {
       </section>
 
       <section className="surface panel">
-        <div className="panel-header">
-          <div>
+        <div className="panel-header" style={{ flexWrap: 'wrap', gap: 12, alignItems: 'flex-start' }}>
+          <div style={{ flex: '1 1 320px', minWidth: 240 }}>
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
               <h2 style={{ margin: 0 }}>{tokenStrings.title}</h2>
               <div className="tooltip" data-tip={tokenStrings.actions.viewLeaderboard}>
@@ -1867,14 +2207,26 @@ function AdminDashboard(): JSX.Element {
             <p className="panel-description">{tokenStrings.description}</p>
           </div>
           {isAdmin && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                flexWrap: 'wrap',
+                justifyContent: 'flex-end',
+                flex: '0 1 auto',
+                minWidth: 0,
+                maxWidth: '100%',
+                marginLeft: 'auto',
+              }}
+            >
               <input
                 type="text"
                 className="input input-bordered"
                 placeholder={tokenStrings.notePlaceholder}
                 value={newTokenNote}
                 onChange={(e) => setNewTokenNote(e.target.value)}
-                style={{ minWidth: 240 }}
+                style={{ minWidth: 0, flex: '1 1 240px' }}
                 aria-label={tokenStrings.notePlaceholder}
               />
               <button
@@ -1892,13 +2244,6 @@ function AdminDashboard(): JSX.Element {
                 disabled={submitting}
               >
                 {tokenStrings.batchCreate}
-              </button>
-              <button
-                type="button"
-                className="btn btn-outline"
-                onClick={navigateTokenLeaderboard}
-              >
-                {tokenStrings.actions.viewLeaderboard}
               </button>
             </div>
           )}
@@ -2872,6 +3217,19 @@ function AdminDashboard(): JSX.Element {
         )}
       </div>
     </dialog>
+
+    {/* API Keys Validation (daisyUI modal) */}
+    <ApiKeysValidationDialog
+      dialogRef={keysValidateDialogRef as any}
+      state={keysValidation}
+      counts={keysValidationCounts}
+      validKeys={keysValidationValidKeys}
+      exhaustedKeys={keysValidationExhaustedKeys}
+      onClose={closeKeysValidationDialog}
+      onRetryFailed={() => void handleRetryFailedValidation()}
+      onRetryOne={(apiKey) => void handleRetryOneValidation(apiKey)}
+      onImportValid={() => void handleImportValidatedKeys()}
+    />
 
     {/* Batch Add API Keys Report (daisyUI modal) */}
     <dialog id="batch_add_keys_report_modal" ref={keysBatchReportDialogRef} className="modal">

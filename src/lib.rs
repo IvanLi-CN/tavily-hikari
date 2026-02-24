@@ -112,6 +112,7 @@ const SECS_PER_MINUTE: i64 = 60;
 const SECS_PER_HOUR: i64 = 3600;
 const SECS_PER_DAY: i64 = 24 * SECS_PER_HOUR;
 const TOKEN_USAGE_STATS_BUCKET_SECS: i64 = SECS_PER_HOUR;
+const USAGE_PROBE_TIMEOUT_SECS: u64 = 8;
 
 // Time-based retention for per-token access logs (auth_token_logs).
 // This is purely time-driven and must not depend on access token enable/disable/delete status,
@@ -581,7 +582,7 @@ impl TavilyProxy {
                     .await?;
 
                 if status.as_u16() == 432 || outcome.mark_exhausted {
-                    self.key_store.mark_quota_exhausted(&lease.secret).await?;
+                    let _changed = self.key_store.mark_quota_exhausted(&lease.secret).await?;
                 } else {
                     self.key_store.restore_active_status(&lease.secret).await?;
                 }
@@ -713,7 +714,7 @@ impl TavilyProxy {
                     .await?;
 
                 if status.as_u16() == 432 || analysis.mark_exhausted {
-                    self.key_store.mark_quota_exhausted(&lease.secret).await?;
+                    let _changed = self.key_store.mark_quota_exhausted(&lease.secret).await?;
                 } else {
                     self.key_store.restore_active_status(&lease.secret).await?;
                 }
@@ -1400,6 +1401,45 @@ impl TavilyProxy {
         let Some(secret) = self.key_store.fetch_api_key_secret(key_id).await? else {
             return Err(ProxyError::Database(sqlx::Error::RowNotFound));
         };
+        let (limit, remaining) = self
+            .fetch_usage_quota_for_secret(&secret, usage_base, None)
+            .await?;
+        let now = Utc::now().timestamp();
+        self.key_store
+            .update_quota_for_key(key_id, limit, remaining, now)
+            .await?;
+        Ok((limit, remaining))
+    }
+
+    /// Probe usage/quota for an API key secret via Tavily Usage API base (e.g., https://api.tavily.com).
+    /// This performs *no* database mutation and is safe to use for admin validation flows.
+    pub async fn probe_api_key_quota(
+        &self,
+        api_key: &str,
+        usage_base: &str,
+    ) -> Result<(i64, i64), ProxyError> {
+        self.fetch_usage_quota_for_secret(
+            api_key,
+            usage_base,
+            Some(Duration::from_secs(USAGE_PROBE_TIMEOUT_SECS)),
+        )
+        .await
+    }
+
+    /// Admin: mark a key as quota-exhausted by its secret string.
+    pub async fn mark_key_quota_exhausted_by_secret(
+        &self,
+        api_key: &str,
+    ) -> Result<bool, ProxyError> {
+        self.key_store.mark_quota_exhausted(api_key).await
+    }
+
+    async fn fetch_usage_quota_for_secret(
+        &self,
+        secret: &str,
+        usage_base: &str,
+        timeout: Option<Duration>,
+    ) -> Result<(i64, i64), ProxyError> {
         let base = Url::parse(usage_base).map_err(|e| ProxyError::InvalidEndpoint {
             endpoint: usage_base.to_string(),
             source: e,
@@ -1407,13 +1447,14 @@ impl TavilyProxy {
         let mut url = base.clone();
         url.set_path("/usage");
 
-        let resp = self
+        let mut req = self
             .client
             .get(url)
-            .header("Authorization", format!("Bearer {}", secret))
-            .send()
-            .await
-            .map_err(ProxyError::Http)?;
+            .header("Authorization", format!("Bearer {}", secret));
+        if let Some(timeout) = timeout {
+            req = req.timeout(timeout);
+        }
+        let resp = req.send().await.map_err(ProxyError::Http)?;
         let status = resp.status();
         let bytes = resp.bytes().await.map_err(ProxyError::Http)?;
         if !status.is_success() {
@@ -1446,10 +1487,6 @@ impl TavilyProxy {
             });
         }
         let remaining = (limit - used).max(0);
-        let now = Utc::now().timestamp();
-        self.key_store
-            .update_quota_for_key(key_id, limit, remaining, now)
-            .await?;
         Ok((limit, remaining))
     }
 
@@ -4007,9 +4044,9 @@ impl KeyStore {
         Ok(())
     }
 
-    async fn mark_quota_exhausted(&self, key: &str) -> Result<(), ProxyError> {
+    async fn mark_quota_exhausted(&self, key: &str) -> Result<bool, ProxyError> {
         let now = Utc::now().timestamp();
-        sqlx::query(
+        let res = sqlx::query(
             r#"
             UPDATE api_keys
             SET status = ?, status_changed_at = ?, last_used_at = ?
@@ -4023,7 +4060,7 @@ impl KeyStore {
         .bind(STATUS_DISABLED)
         .execute(&self.pool)
         .await?;
-        Ok(())
+        Ok(res.rows_affected() > 0)
     }
 
     async fn restore_active_status(&self, key: &str) -> Result<(), ProxyError> {
