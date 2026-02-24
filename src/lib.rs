@@ -112,6 +112,7 @@ const SECS_PER_MINUTE: i64 = 60;
 const SECS_PER_HOUR: i64 = 3600;
 const SECS_PER_DAY: i64 = 24 * SECS_PER_HOUR;
 const TOKEN_USAGE_STATS_BUCKET_SECS: i64 = SECS_PER_HOUR;
+const USAGE_PROBE_TIMEOUT_SECS: u64 = 8;
 
 // Time-based retention for per-token access logs (auth_token_logs).
 // This is purely time-driven and must not depend on access token enable/disable/delete status,
@@ -1401,7 +1402,7 @@ impl TavilyProxy {
             return Err(ProxyError::Database(sqlx::Error::RowNotFound));
         };
         let (limit, remaining) = self
-            .fetch_usage_quota_for_secret(&secret, usage_base)
+            .fetch_usage_quota_for_secret(&secret, usage_base, None)
             .await?;
         let now = Utc::now().timestamp();
         self.key_store
@@ -1417,7 +1418,12 @@ impl TavilyProxy {
         api_key: &str,
         usage_base: &str,
     ) -> Result<(i64, i64), ProxyError> {
-        self.fetch_usage_quota_for_secret(api_key, usage_base).await
+        self.fetch_usage_quota_for_secret(
+            api_key,
+            usage_base,
+            Some(Duration::from_secs(USAGE_PROBE_TIMEOUT_SECS)),
+        )
+        .await
     }
 
     /// Admin: mark a key as quota-exhausted by its secret string.
@@ -1432,6 +1438,7 @@ impl TavilyProxy {
         &self,
         secret: &str,
         usage_base: &str,
+        timeout: Option<Duration>,
     ) -> Result<(i64, i64), ProxyError> {
         let base = Url::parse(usage_base).map_err(|e| ProxyError::InvalidEndpoint {
             endpoint: usage_base.to_string(),
@@ -1440,13 +1447,14 @@ impl TavilyProxy {
         let mut url = base.clone();
         url.set_path("/usage");
 
-        let resp = self
+        let mut req = self
             .client
             .get(url)
-            .header("Authorization", format!("Bearer {}", secret))
-            .send()
-            .await
-            .map_err(ProxyError::Http)?;
+            .header("Authorization", format!("Bearer {}", secret));
+        if let Some(timeout) = timeout {
+            req = req.timeout(timeout);
+        }
+        let resp = req.send().await.map_err(ProxyError::Http)?;
         let status = resp.status();
         let bytes = resp.bytes().await.map_err(ProxyError::Http)?;
         if !status.is_success() {
