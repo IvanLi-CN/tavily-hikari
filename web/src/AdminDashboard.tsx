@@ -1483,7 +1483,7 @@ function AdminDashboard(): JSX.Element {
 
   const handleImportValidatedKeys = async () => {
     if (!keysValidation) return
-    if (keysValidation.checking) return
+    if (keysValidation.checking || keysValidation.importing) return
     if (keysValidationValidKeys.length === 0) return
 
     const group = keysValidation.group.trim()
