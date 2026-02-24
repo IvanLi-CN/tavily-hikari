@@ -66,6 +66,7 @@ const LOGS_MAX_PAGES = 10
 const KEYS_BATCH_CLOSE_ANIMATION_MS = 200
 const KEYS_BATCH_AUTO_COLLAPSE_TOTAL_MS = 500
 const KEYS_BATCH_AUTO_COLLAPSE_DELAY_MS = Math.max(0, KEYS_BATCH_AUTO_COLLAPSE_TOTAL_MS - KEYS_BATCH_CLOSE_ANIMATION_MS)
+const API_KEYS_IMPORT_CHUNK_SIZE = 1000
 
 function leaderboardPrimaryValue(
   item: TokenUsageLeaderboardItem,
@@ -1487,13 +1488,39 @@ function AdminDashboard(): JSX.Element {
     if (keysValidationValidKeys.length === 0) return
 
     const group = keysValidation.group.trim()
+    const normalizedGroup = group.length > 0 ? group : undefined
+    const exhaustedSet = new Set(keysValidationExhaustedKeys)
     setKeysValidation((prev) => prev ? ({ ...prev, importing: true, importError: undefined, importReport: undefined }) : prev)
     try {
-      const response = await addApiKeysBatch(
-        keysValidationValidKeys,
-        group.length > 0 ? group : undefined,
-        keysValidationExhaustedKeys,
-      )
+      const response: AddApiKeysBatchResponse = {
+        summary: {
+          input_lines: 0,
+          valid_lines: 0,
+          unique_in_input: 0,
+          created: 0,
+          undeleted: 0,
+          existed: 0,
+          duplicate_in_input: 0,
+          failed: 0,
+        },
+        results: [],
+      }
+
+      for (let i = 0; i < keysValidationValidKeys.length; i += API_KEYS_IMPORT_CHUNK_SIZE) {
+        const chunk = keysValidationValidKeys.slice(i, i + API_KEYS_IMPORT_CHUNK_SIZE)
+        const exhaustedInChunk = chunk.filter((apiKey) => exhaustedSet.has(apiKey))
+        const chunkResponse = await addApiKeysBatch(chunk, normalizedGroup, exhaustedInChunk)
+        response.summary.input_lines += chunkResponse.summary.input_lines
+        response.summary.valid_lines += chunkResponse.summary.valid_lines
+        response.summary.unique_in_input += chunkResponse.summary.unique_in_input
+        response.summary.created += chunkResponse.summary.created
+        response.summary.undeleted += chunkResponse.summary.undeleted
+        response.summary.existed += chunkResponse.summary.existed
+        response.summary.duplicate_in_input += chunkResponse.summary.duplicate_in_input
+        response.summary.failed += chunkResponse.summary.failed
+        response.results.push(...chunkResponse.results)
+      }
+
       setKeysValidation((prev) => prev ? ({ ...prev, importing: false, importReport: response }) : prev)
       const controller = new AbortController()
       setLoading(true)

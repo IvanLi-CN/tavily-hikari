@@ -37,7 +37,9 @@ function ModalHarness(props: { initial: KeysValidationState }): JSX.Element {
       counts={counts}
       validKeys={validKeys}
       exhaustedKeys={exhaustedKeys}
-      onClose={() => dialogRef.current?.close()}
+      onClose={() => {
+        if (dialogRef.current?.open) dialogRef.current.close();
+      }}
       onRetryFailed={() => {
         // Fake retry: convert failures to ok to showcase the UI.
         setState((prev) => ({
