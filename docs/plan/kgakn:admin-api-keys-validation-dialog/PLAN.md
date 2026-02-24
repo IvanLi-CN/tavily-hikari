@@ -79,11 +79,11 @@
 
 ## 实现里程碑
 
-- [ ] Backend：实现 `/api/keys/validate`（含状态映射与 detail 截断）
-- [ ] Backend：扩展 `/api/keys/batch` 支持 `exhausted_api_keys` 并标记 exhausted
-- [ ] Frontend：新增校验对话框 + 进度/摘要/列表/错误气泡
-- [ ] Frontend：实现单条/批量重试与手动入库
-- [ ] 验证：cargo test + web build + 手动回归
+- [x] Backend：实现 `/api/keys/validate`（含状态映射与 detail 截断）
+- [x] Backend：扩展 `/api/keys/batch` 支持 `exhausted_api_keys` 并标记 exhausted
+- [x] Frontend：新增校验对话框 + 进度/摘要/列表/错误气泡
+- [x] Frontend：实现单条/批量重试与手动入库
+- [x] 验证：cargo test + web build + 手动回归
 
 ## 风险与备注
 
