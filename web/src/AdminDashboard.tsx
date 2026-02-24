@@ -430,6 +430,7 @@ function AdminDashboard(): JSX.Element {
     importing: boolean
     rows: KeyValidationRow[]
     importReport?: AddApiKeysBatchResponse
+    importWarning?: string
     importError?: string
   }
 
@@ -1467,7 +1468,12 @@ function AdminDashboard(): JSX.Element {
 
     keysValidateRunIdRef.current = (keysValidateRunIdRef.current ?? 0) + 1
     const runId = keysValidateRunIdRef.current
-    setKeysValidation((prev) => prev ? ({ ...prev, checking: true, importError: undefined }) : prev)
+    setKeysValidation((prev) => prev ? ({
+      ...prev,
+      checking: true,
+      importError: undefined,
+      importWarning: undefined,
+    }) : prev)
     markKeysPendingForRetry(failedKeys, runId)
     await runValidateKeys(failedKeys, runId)
   }
@@ -1477,7 +1483,12 @@ function AdminDashboard(): JSX.Element {
     if (keysValidation.checking || keysValidation.importing) return
     keysValidateRunIdRef.current = (keysValidateRunIdRef.current ?? 0) + 1
     const runId = keysValidateRunIdRef.current
-    setKeysValidation((prev) => prev ? ({ ...prev, checking: true, importError: undefined }) : prev)
+    setKeysValidation((prev) => prev ? ({
+      ...prev,
+      checking: true,
+      importError: undefined,
+      importWarning: undefined,
+    }) : prev)
     markKeysPendingForRetry([api_key], runId)
     await runValidateKeys([api_key], runId)
   }
@@ -1490,7 +1501,13 @@ function AdminDashboard(): JSX.Element {
     const group = keysValidation.group.trim()
     const normalizedGroup = group.length > 0 ? group : undefined
     const exhaustedSet = new Set(keysValidationExhaustedKeys)
-    setKeysValidation((prev) => prev ? ({ ...prev, importing: true, importError: undefined, importReport: undefined }) : prev)
+    setKeysValidation((prev) => prev ? ({
+      ...prev,
+      importing: true,
+      importError: undefined,
+      importWarning: undefined,
+      importReport: undefined,
+    }) : prev)
     try {
       const response: AddApiKeysBatchResponse = {
         summary: {
@@ -1505,6 +1522,7 @@ function AdminDashboard(): JSX.Element {
         },
         results: [],
       }
+      let markExhaustedFailedCount = 0
 
       for (let i = 0; i < keysValidationValidKeys.length; i += API_KEYS_IMPORT_CHUNK_SIZE) {
         const chunk = keysValidationValidKeys.slice(i, i + API_KEYS_IMPORT_CHUNK_SIZE)
@@ -1518,10 +1536,22 @@ function AdminDashboard(): JSX.Element {
         response.summary.existed += chunkResponse.summary.existed
         response.summary.duplicate_in_input += chunkResponse.summary.duplicate_in_input
         response.summary.failed += chunkResponse.summary.failed
+        for (const result of chunkResponse.results) {
+          if (!exhaustedSet.has(result.api_key)) continue
+          if (result.status === 'failed') continue
+          if (result.marked_exhausted === true) continue
+          markExhaustedFailedCount += 1
+        }
         response.results.push(...chunkResponse.results)
       }
 
-      setKeysValidation((prev) => prev ? ({ ...prev, importing: false, importReport: response }) : prev)
+      setKeysValidation((prev) => {
+        if (!prev) return prev
+        const warning = markExhaustedFailedCount > 0
+          ? keyStrings.validation.import.exhaustedMarkFailed.replace('{count}', String(markExhaustedFailedCount))
+          : undefined
+        return { ...prev, importing: false, importReport: response, importWarning: warning }
+      })
       const controller = new AbortController()
       setLoading(true)
       await loadData(controller.signal)
@@ -1529,7 +1559,7 @@ function AdminDashboard(): JSX.Element {
     } catch (err) {
       console.error(err)
       const message = err instanceof Error ? err.message : errorStrings.addKeysBatch
-      setKeysValidation((prev) => prev ? ({ ...prev, importing: false, importError: message }) : prev)
+      setKeysValidation((prev) => prev ? ({ ...prev, importing: false, importWarning: undefined, importError: message }) : prev)
     }
   }
 

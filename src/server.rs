@@ -3214,7 +3214,7 @@ async fn validate_single_key(
                     },
                     "invalid",
                 )
-            } else if status.is_client_error() {
+            } else if status == reqwest::StatusCode::BAD_REQUEST {
                 (
                     ValidateKeyResult {
                         api_key,
@@ -5888,6 +5888,10 @@ mod tests {
                     "Bearer tvly-forbidden" => {
                         (StatusCode::FORBIDDEN, Body::from("forbidden")).into_response()
                     }
+                    // rate-limited transient client error
+                    "Bearer tvly-rate-limited" => {
+                        (StatusCode::TOO_MANY_REQUESTS, Body::from("rate limited")).into_response()
+                    }
                     _ => (StatusCode::BAD_REQUEST, Body::from("unknown key")).into_response(),
                 }
             }),
@@ -6074,7 +6078,7 @@ mod tests {
             .post(url)
             .header("x-forward-user", "admin")
             .json(&serde_json::json!({
-                "api_keys": ["tvly-ok", "tvly-exhausted", "tvly-unauth", "tvly-ok"]
+                "api_keys": ["tvly-ok", "tvly-exhausted", "tvly-unauth", "tvly-rate-limited", "tvly-ok"]
             }))
             .send()
             .await
@@ -6083,11 +6087,11 @@ mod tests {
         assert_eq!(resp.status(), reqwest::StatusCode::OK);
         let body: serde_json::Value = resp.json().await.expect("parse json body");
         let summary = body.get("summary").expect("summary");
-        assert_eq!(summary.get("input_lines").and_then(|v| v.as_u64()), Some(4));
-        assert_eq!(summary.get("valid_lines").and_then(|v| v.as_u64()), Some(4));
+        assert_eq!(summary.get("input_lines").and_then(|v| v.as_u64()), Some(5));
+        assert_eq!(summary.get("valid_lines").and_then(|v| v.as_u64()), Some(5));
         assert_eq!(
             summary.get("unique_in_input").and_then(|v| v.as_u64()),
-            Some(3)
+            Some(4)
         );
         assert_eq!(
             summary.get("duplicate_in_input").and_then(|v| v.as_u64()),
@@ -6096,13 +6100,13 @@ mod tests {
         assert_eq!(summary.get("ok").and_then(|v| v.as_u64()), Some(1));
         assert_eq!(summary.get("exhausted").and_then(|v| v.as_u64()), Some(1));
         assert_eq!(summary.get("invalid").and_then(|v| v.as_u64()), Some(1));
-        assert_eq!(summary.get("error").and_then(|v| v.as_u64()), Some(0));
+        assert_eq!(summary.get("error").and_then(|v| v.as_u64()), Some(1));
 
         let results = body
             .get("results")
             .and_then(|v| v.as_array())
             .expect("results array");
-        assert_eq!(results.len(), 4);
+        assert_eq!(results.len(), 5);
         assert_eq!(
             results[0].get("status").and_then(|v| v.as_str()),
             Some("ok")
@@ -6117,6 +6121,10 @@ mod tests {
         );
         assert_eq!(
             results[3].get("status").and_then(|v| v.as_str()),
+            Some("error")
+        );
+        assert_eq!(
+            results[4].get("status").and_then(|v| v.as_str()),
             Some("duplicate_in_input")
         );
 
