@@ -6,7 +6,12 @@
 *.db-shm
 *.db-journal
 node_modules
-.codex/
+.codex/*
+!.codex/skills/
+.codex/skills/*
+!.codex/skills/ui-ux-pro-max/
+!.codex/skills/ui-ux-pro-max/**
+.codex/skills/ui-ux-pro-max/scripts/__pycache__/
 .serena/
 web/node_modules
 web/dist
