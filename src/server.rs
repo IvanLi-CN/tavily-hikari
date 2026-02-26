@@ -3266,8 +3266,7 @@ async fn get_linuxdo_callback(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
     let Some(redirect_to) = redirect_to else {
-        let clear_cookie = oauth_login_binding_clear_cookie(use_secure_cookie)?;
-        return Ok((StatusCode::BAD_REQUEST, [(SET_COOKIE, clear_cookie)]).into_response());
+        return Err(StatusCode::BAD_REQUEST);
     };
 
     let client = reqwest::Client::new();
