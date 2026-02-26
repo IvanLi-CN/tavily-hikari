@@ -963,8 +963,20 @@ impl TavilyProxy {
         redirect_to: Option<&str>,
         ttl_secs: i64,
     ) -> Result<String, ProxyError> {
+        self.create_oauth_login_state_with_binding(provider, redirect_to, ttl_secs, None)
+            .await
+    }
+
+    /// Create a one-time OAuth login state bound to optional browser context hash.
+    pub async fn create_oauth_login_state_with_binding(
+        &self,
+        provider: &str,
+        redirect_to: Option<&str>,
+        ttl_secs: i64,
+        binding_hash: Option<&str>,
+    ) -> Result<String, ProxyError> {
         self.key_store
-            .insert_oauth_login_state(provider, redirect_to, ttl_secs)
+            .insert_oauth_login_state(provider, redirect_to, ttl_secs, binding_hash)
             .await
     }
 
@@ -974,8 +986,19 @@ impl TavilyProxy {
         provider: &str,
         state: &str,
     ) -> Result<Option<Option<String>>, ProxyError> {
+        self.consume_oauth_login_state_with_binding(provider, state, None)
+            .await
+    }
+
+    /// Consume and invalidate an OAuth login state bound to optional browser context hash.
+    pub async fn consume_oauth_login_state_with_binding(
+        &self,
+        provider: &str,
+        state: &str,
+        binding_hash: Option<&str>,
+    ) -> Result<Option<Option<String>>, ProxyError> {
         self.key_store
-            .consume_oauth_login_state(provider, state)
+            .consume_oauth_login_state(provider, state, binding_hash)
             .await
     }
 
@@ -1843,6 +1866,7 @@ impl KeyStore {
                 state TEXT PRIMARY KEY,
                 provider TEXT NOT NULL,
                 redirect_to TEXT,
+                binding_hash TEXT,
                 created_at INTEGER NOT NULL,
                 expires_at INTEGER NOT NULL,
                 consumed_at INTEGER
@@ -1857,6 +1881,15 @@ impl KeyStore {
         )
         .execute(&self.pool)
         .await?;
+
+        if !self
+            .table_column_exists("oauth_login_states", "binding_hash")
+            .await?
+        {
+            sqlx::query("ALTER TABLE oauth_login_states ADD COLUMN binding_hash TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
 
         self.ensure_dev_open_admin_token().await?;
 
@@ -3722,6 +3755,7 @@ impl KeyStore {
         provider: &str,
         redirect_to: Option<&str>,
         ttl_secs: i64,
+        binding_hash: Option<&str>,
     ) -> Result<String, ProxyError> {
         const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
         let now = Utc::now().timestamp();
@@ -3738,12 +3772,17 @@ impl KeyStore {
             let state = random_string(ALPHABET, 48);
             let res = sqlx::query(
                 r#"INSERT INTO oauth_login_states
-                   (state, provider, redirect_to, created_at, expires_at, consumed_at)
-                   VALUES (?, ?, ?, ?, ?, NULL)"#,
+                   (state, provider, redirect_to, binding_hash, created_at, expires_at, consumed_at)
+                   VALUES (?, ?, ?, ?, ?, ?, NULL)"#,
             )
             .bind(&state)
             .bind(provider)
             .bind(redirect_to.map(str::trim).filter(|value| !value.is_empty()))
+            .bind(
+                binding_hash
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty()),
+            )
             .bind(now)
             .bind(expires_at)
             .execute(&self.pool)
@@ -3761,6 +3800,7 @@ impl KeyStore {
         &self,
         provider: &str,
         state: &str,
+        binding_hash: Option<&str>,
     ) -> Result<Option<Option<String>>, ProxyError> {
         let now = Utc::now().timestamp();
         let mut tx = self.pool.begin().await?;
@@ -3772,17 +3812,43 @@ impl KeyStore {
         .execute(&mut *tx)
         .await?;
 
-        let row = sqlx::query_as::<_, (Option<String>,)>(
-            r#"SELECT redirect_to
-               FROM oauth_login_states
-               WHERE state = ? AND provider = ? AND consumed_at IS NULL AND expires_at >= ?
-               LIMIT 1"#,
-        )
-        .bind(state)
-        .bind(provider)
-        .bind(now)
-        .fetch_optional(&mut *tx)
-        .await?;
+        let row = if let Some(hash) = binding_hash
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            sqlx::query_as::<_, (Option<String>,)>(
+                r#"SELECT redirect_to
+                   FROM oauth_login_states
+                   WHERE state = ?
+                     AND provider = ?
+                     AND consumed_at IS NULL
+                     AND expires_at >= ?
+                     AND binding_hash = ?
+                   LIMIT 1"#,
+            )
+            .bind(state)
+            .bind(provider)
+            .bind(now)
+            .bind(hash)
+            .fetch_optional(&mut *tx)
+            .await?
+        } else {
+            sqlx::query_as::<_, (Option<String>,)>(
+                r#"SELECT redirect_to
+                   FROM oauth_login_states
+                   WHERE state = ?
+                     AND provider = ?
+                     AND consumed_at IS NULL
+                     AND expires_at >= ?
+                     AND binding_hash IS NULL
+                   LIMIT 1"#,
+            )
+            .bind(state)
+            .bind(provider)
+            .bind(now)
+            .fetch_optional(&mut *tx)
+            .await?
+        };
 
         let Some((redirect_to,)) = row else {
             tx.rollback().await.ok();
@@ -7080,6 +7146,40 @@ mod tests {
 
         assert_eq!(first, Some(Some("/".to_string())));
         assert_eq!(second, None, "oauth state must be single-use");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn oauth_login_state_binding_hash_must_match() {
+        let db_path = temp_db_path("oauth-state-binding-hash");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        let state = proxy
+            .create_oauth_login_state_with_binding("linuxdo", Some("/"), 120, Some("nonce-hash-a"))
+            .await
+            .expect("create oauth state");
+
+        let wrong_hash = proxy
+            .consume_oauth_login_state_with_binding("linuxdo", &state, Some("nonce-hash-b"))
+            .await
+            .expect("consume oauth state with wrong hash");
+        assert_eq!(wrong_hash, None, "wrong hash must not consume oauth state");
+
+        let matched = proxy
+            .consume_oauth_login_state_with_binding("linuxdo", &state, Some("nonce-hash-a"))
+            .await
+            .expect("consume oauth state with matching hash");
+        assert_eq!(matched, Some(Some("/".to_string())));
+
+        let reused = proxy
+            .consume_oauth_login_state_with_binding("linuxdo", &state, Some("nonce-hash-a"))
+            .await
+            .expect("consume oauth state reused");
+        assert_eq!(reused, None, "oauth state must remain single-use");
 
         let _ = std::fs::remove_file(db_path);
     }

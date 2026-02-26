@@ -31,6 +31,7 @@ use futures_util::{Stream, StreamExt};
 use reqwest::header::{HeaderMap as ReqHeaderMap, HeaderValue as ReqHeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use url::form_urlencoded;
 type SummarySig = (i64, i64, i64, i64, i64, i64, Option<i64>);
 use std::time::{Duration, Instant};
@@ -209,6 +210,7 @@ const BUILTIN_ADMIN_COOKIE_NAME: &str = "hikari_admin_session";
 const BUILTIN_ADMIN_SESSION_MAX_AGE_SECS: u64 = 60 * 60 * 24 * 14;
 const BUILTIN_ADMIN_SESSION_MAX_COUNT: usize = 1024;
 const USER_SESSION_COOKIE_NAME: &str = "hikari_user_session";
+const OAUTH_LOGIN_BINDING_COOKIE_NAME: &str = "hikari_oauth_login_binding";
 
 #[derive(Clone, Debug)]
 struct BuiltinAdminSession {
@@ -3054,6 +3056,68 @@ fn user_session_clear_cookie(secure: bool) -> Result<HeaderValue, StatusCode> {
     HeaderValue::from_str(&cookie).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
+fn oauth_login_binding_set_cookie(
+    token: &str,
+    max_age_secs: i64,
+    secure: bool,
+) -> Result<HeaderValue, StatusCode> {
+    let secure = if secure { "; Secure" } else { "" };
+    let cookie = format!(
+        "{name}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}{secure}",
+        name = OAUTH_LOGIN_BINDING_COOKIE_NAME,
+        max_age = max_age_secs.max(60),
+        secure = secure
+    );
+    HeaderValue::from_str(&cookie).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+fn oauth_login_binding_clear_cookie(secure: bool) -> Result<HeaderValue, StatusCode> {
+    let secure = if secure { "; Secure" } else { "" };
+    let cookie = format!(
+        "{name}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0{secure}",
+        name = OAUTH_LOGIN_BINDING_COOKIE_NAME,
+        secure = secure
+    );
+    HeaderValue::from_str(&cookie).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+fn new_cookie_nonce() -> String {
+    use base64::Engine as _;
+    use rand::RngCore as _;
+
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn hash_oauth_binding(nonce: &str) -> String {
+    use base64::Engine as _;
+    let digest = Sha256::digest(nonce.as_bytes());
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest)
+}
+
+fn map_oauth_upstream_transport_error(err: &reqwest::Error) -> StatusCode {
+    if err.is_timeout() {
+        StatusCode::GATEWAY_TIMEOUT
+    } else {
+        StatusCode::BAD_GATEWAY
+    }
+}
+
+fn map_oauth_upstream_status(status: reqwest::StatusCode) -> StatusCode {
+    if status.is_server_error() {
+        return StatusCode::BAD_GATEWAY;
+    }
+    match status {
+        reqwest::StatusCode::BAD_REQUEST => StatusCode::BAD_REQUEST,
+        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
+            StatusCode::UNAUTHORIZED
+        }
+        reqwest::StatusCode::TOO_MANY_REQUESTS => StatusCode::SERVICE_UNAVAILABLE,
+        _ => StatusCode::BAD_GATEWAY,
+    }
+}
+
 async fn post_admin_login(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -3115,15 +3179,23 @@ fn json_value_to_string(value: &Value) -> Option<String> {
 
 async fn get_linuxdo_auth(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
 ) -> Result<Response<Body>, StatusCode> {
     let cfg = &state.linuxdo_oauth;
     if !cfg.is_enabled_and_configured() {
         return Err(StatusCode::NOT_FOUND);
     }
 
+    let binding_nonce = new_cookie_nonce();
+    let binding_hash = hash_oauth_binding(&binding_nonce);
     let state_token = state
         .proxy
-        .create_oauth_login_state("linuxdo", Some("/"), cfg.login_state_ttl_secs)
+        .create_oauth_login_state_with_binding(
+            "linuxdo",
+            Some("/"),
+            cfg.login_state_ttl_secs,
+            Some(&binding_hash),
+        )
         .await
         .map_err(|err| {
             eprintln!("create linuxdo oauth state error: {err}");
@@ -3144,7 +3216,16 @@ async fn get_linuxdo_auth(
         pairs.append_pair("state", &state_token);
     }
 
-    Ok(Redirect::temporary(url.as_ref()).into_response())
+    let binding_cookie = oauth_login_binding_set_cookie(
+        &binding_nonce,
+        cfg.login_state_ttl_secs,
+        wants_secure_cookie(&headers),
+    )?;
+    Ok((
+        [(SET_COOKIE, binding_cookie)],
+        Redirect::temporary(url.as_ref()),
+    )
+        .into_response())
 }
 
 async fn get_linuxdo_callback(
@@ -3156,6 +3237,7 @@ async fn get_linuxdo_callback(
     if !cfg.is_enabled_and_configured() {
         return Err(StatusCode::NOT_FOUND);
     }
+    let use_secure_cookie = wants_secure_cookie(&headers);
     let code = query
         .code
         .as_deref()
@@ -3169,17 +3251,23 @@ async fn get_linuxdo_callback(
     let (Some(code), Some(oauth_state)) = (code, oauth_state) else {
         return Err(StatusCode::BAD_REQUEST);
     };
+    let binding_nonce = cookie_value(&headers, OAUTH_LOGIN_BINDING_COOKIE_NAME)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or(StatusCode::BAD_REQUEST)?;
+    let binding_hash = hash_oauth_binding(&binding_nonce);
 
     let redirect_to = state
         .proxy
-        .consume_oauth_login_state("linuxdo", oauth_state)
+        .consume_oauth_login_state_with_binding("linuxdo", oauth_state, Some(&binding_hash))
         .await
         .map_err(|err| {
             eprintln!("consume linuxdo oauth state error: {err}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
     let Some(redirect_to) = redirect_to else {
-        return Err(StatusCode::BAD_REQUEST);
+        let clear_cookie = oauth_login_binding_clear_cookie(use_secure_cookie)?;
+        return Ok((StatusCode::BAD_REQUEST, [(SET_COOKIE, clear_cookie)]).into_response());
     };
 
     let client = reqwest::Client::new();
@@ -3203,21 +3291,21 @@ async fn get_linuxdo_callback(
         .await
         .map_err(|err| {
             eprintln!("linuxdo token request error: {err}");
-            StatusCode::UNAUTHORIZED
+            map_oauth_upstream_transport_error(&err)
         })?;
     if !token_resp.status().is_success() {
         let status = token_resp.status();
         let body = token_resp.text().await.unwrap_or_default();
         eprintln!("linuxdo token response status={} body={}", status, body);
-        return Err(StatusCode::UNAUTHORIZED);
+        return Err(map_oauth_upstream_status(status));
     }
     let token_payload: LinuxDoTokenResponse = token_resp.json().await.map_err(|err| {
         eprintln!("linuxdo token parse error: {err}");
-        StatusCode::UNAUTHORIZED
+        StatusCode::BAD_GATEWAY
     })?;
     let access_token = token_payload.access_token.trim().to_string();
     if access_token.is_empty() {
-        return Err(StatusCode::UNAUTHORIZED);
+        return Err(StatusCode::BAD_GATEWAY);
     }
 
     let user_resp = client
@@ -3228,17 +3316,17 @@ async fn get_linuxdo_callback(
         .await
         .map_err(|err| {
             eprintln!("linuxdo userinfo request error: {err}");
-            StatusCode::UNAUTHORIZED
+            map_oauth_upstream_transport_error(&err)
         })?;
     if !user_resp.status().is_success() {
         let status = user_resp.status();
         let body = user_resp.text().await.unwrap_or_default();
         eprintln!("linuxdo userinfo response status={} body={}", status, body);
-        return Err(StatusCode::UNAUTHORIZED);
+        return Err(map_oauth_upstream_status(status));
     }
     let user_json: Value = user_resp.json().await.map_err(|err| {
         eprintln!("linuxdo userinfo parse error: {err}");
-        StatusCode::UNAUTHORIZED
+        StatusCode::BAD_GATEWAY
     })?;
 
     let provider_user_id = user_json
@@ -3312,14 +3400,17 @@ async fn get_linuxdo_callback(
             eprintln!("create user session error: {err}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
-    let cookie = user_session_set_cookie(
-        &session.token,
-        cfg.session_max_age_secs,
-        wants_secure_cookie(&headers),
-    )?;
+    let cookie =
+        user_session_set_cookie(&session.token, cfg.session_max_age_secs, use_secure_cookie)?;
+    let clear_binding_cookie = oauth_login_binding_clear_cookie(use_secure_cookie)?;
 
     let target = redirect_to.unwrap_or_else(|| "/".to_string());
-    Ok(([(SET_COOKIE, cookie)], Redirect::temporary(&target)).into_response())
+    let mut response = Redirect::temporary(&target).into_response();
+    response.headers_mut().append(SET_COOKIE, cookie);
+    response
+        .headers_mut()
+        .append(SET_COOKIE, clear_binding_cookie);
+    Ok(response)
 }
 
 async fn post_user_logout(
