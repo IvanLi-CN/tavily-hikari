@@ -1535,16 +1535,21 @@ function AdminDashboard(): JSX.Element {
     if (keysValidation.checking || keysValidation.importing) return
     if (keysValidationValidKeys.length === 0) return
 
+    const importRunId = keysValidateRunIdRef.current
     const group = keysValidation.group.trim()
     const normalizedGroup = group.length > 0 ? group : undefined
     const exhaustedSet = new Set(keysValidationExhaustedKeys)
-    setKeysValidation((prev) => prev ? ({
-      ...prev,
-      importing: true,
-      importError: undefined,
-      importWarning: undefined,
-      importReport: undefined,
-    }) : prev)
+    setKeysValidation((prev) => {
+      if (!prev) return prev
+      if (importRunId !== keysValidateRunIdRef.current) return prev
+      return {
+        ...prev,
+        importing: true,
+        importError: undefined,
+        importWarning: undefined,
+        importReport: undefined,
+      }
+    })
     try {
       const response: AddApiKeysBatchResponse = {
         summary: {
@@ -1591,11 +1596,10 @@ function AdminDashboard(): JSX.Element {
 
       const imported = new Set(keysValidation.imported_api_keys)
       for (const apiKey of importedByResponse) imported.add(apiKey)
-      const shouldAutoClose =
-        markExhaustedFailedCount === 0 &&
-        keysValidation.rows.every((row) => imported.has(row.api_key))
+      const shouldAutoClose = keysValidation.rows.every((row) => imported.has(row.api_key))
       setKeysValidation((prev) => {
         if (!prev) return prev
+        if (importRunId !== keysValidateRunIdRef.current) return prev
         const warning = markExhaustedFailedCount > 0
           ? keyStrings.validation.import.exhaustedMarkFailed.replace('{count}', String(markExhaustedFailedCount))
           : undefined
@@ -1607,7 +1611,7 @@ function AdminDashboard(): JSX.Element {
           importWarning: warning,
         }
       })
-      if (shouldAutoClose) {
+      if (shouldAutoClose && importRunId === keysValidateRunIdRef.current) {
         window.requestAnimationFrame(() => closeKeysValidationDialog())
       }
       const controller = new AbortController()
@@ -1617,7 +1621,11 @@ function AdminDashboard(): JSX.Element {
     } catch (err) {
       console.error(err)
       const message = err instanceof Error ? err.message : errorStrings.addKeysBatch
-      setKeysValidation((prev) => prev ? ({ ...prev, importing: false, importWarning: undefined, importError: message }) : prev)
+      setKeysValidation((prev) => {
+        if (!prev) return prev
+        if (importRunId !== keysValidateRunIdRef.current) return prev
+        return { ...prev, importing: false, importWarning: undefined, importError: message }
+      })
     }
   }
 
