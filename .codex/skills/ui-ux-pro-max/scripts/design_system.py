@@ -14,8 +14,9 @@ Usage:
 """
 
 import csv
+import hashlib
 import json
-import os
+import re
 from datetime import datetime
 from pathlib import Path
 from core import search, DATA_DIR
@@ -31,6 +32,30 @@ SEARCH_CONFIG = {
     "landing": {"max_results": 2},
     "typography": {"max_results": 2}
 }
+
+
+def _safe_slug(value: str, fallback: str = "default") -> str:
+    """Generate a filesystem-safe slug to avoid path traversal and invalid names."""
+    raw = str(value or "").strip()
+    text = raw.lower().replace("_", "-").replace(" ", "-")
+    text = re.sub(r"[^a-z0-9-]+", "-", text)
+    text = re.sub(r"-{2,}", "-", text).strip("-")
+    if text:
+        return text
+
+    # Keep non-ASCII project names unique and deterministic instead of collapsing to "default".
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8] if raw else "00000000"
+    return f"{fallback}-{digest}"
+
+
+def _assert_within(path: Path, root: Path) -> None:
+    """Ensure a path stays inside the expected root directory."""
+    resolved_root = root.resolve()
+    resolved_path = path.resolve()
+    try:
+        resolved_path.relative_to(resolved_root)
+    except ValueError as exc:
+        raise ValueError(f"Refusing to write outside {resolved_root}: {resolved_path}") from exc
 
 
 # ============ DESIGN SYSTEM GENERATOR ============
@@ -501,22 +526,28 @@ def persist_design_system(design_system: dict, page: str = None, output_dir: str
     Returns:
         dict with created file paths and status
     """
-    base_dir = Path(output_dir) if output_dir else Path.cwd()
-    
-    # Use project name for project-specific folder
+    base_dir = Path(output_dir).resolve() if output_dir else Path.cwd().resolve()
+    design_system_root = (base_dir / "design-system").resolve()
+
+    # Use project name for project-specific folder and keep it filesystem-safe.
     project_name = design_system.get("project_name", "default")
-    project_slug = project_name.lower().replace(' ', '-')
-    
-    design_system_dir = base_dir / "design-system" / project_slug
+    project_slug = _safe_slug(project_name, "default")
+
+    design_system_dir = design_system_root / project_slug
     pages_dir = design_system_dir / "pages"
     
     created_files = []
-    
+
+    # Ensure all generated paths stay inside the design-system root.
+    _assert_within(design_system_dir, design_system_root)
+    _assert_within(pages_dir, design_system_root)
+
     # Create directories
     design_system_dir.mkdir(parents=True, exist_ok=True)
     pages_dir.mkdir(parents=True, exist_ok=True)
     
     master_file = design_system_dir / "MASTER.md"
+    _assert_within(master_file, design_system_root)
     
     # Generate and write MASTER.md
     master_content = format_master_md(design_system)
@@ -526,7 +557,8 @@ def persist_design_system(design_system: dict, page: str = None, output_dir: str
     
     # If page is specified, create page override file with intelligent content
     if page:
-        page_file = pages_dir / f"{page.lower().replace(' ', '-')}.md"
+        page_file = pages_dir / f"{_safe_slug(page, 'page')}.md"
+        _assert_within(page_file, design_system_root)
         page_content = format_page_override_md(design_system, page, page_query)
         with open(page_file, 'w', encoding='utf-8') as f:
             f.write(page_content)
@@ -556,7 +588,8 @@ def format_master_md(design_system: dict) -> str:
     # Logic header
     lines.append("# Design System Master File")
     lines.append("")
-    lines.append("> **LOGIC:** When building a specific page, first check `design-system/pages/[page-name].md`.")
+    project_slug = _safe_slug(project, "default")
+    lines.append(f"> **LOGIC:** When building a specific page, first check `design-system/{project_slug}/pages/[page-name].md`.")
     lines.append("> If that file exists, its rules **override** this Master file.")
     lines.append("> If not, strictly follow the rules below.")
     lines.append("")
@@ -819,7 +852,8 @@ def format_page_override_md(design_system: dict, page_name: str, page_query: str
     lines.append(f"> **Generated:** {timestamp}")
     lines.append(f"> **Page Type:** {page_overrides.get('page_type', 'General')}")
     lines.append("")
-    lines.append("> ⚠️ **IMPORTANT:** Rules in this file **override** the Master file (`design-system/MASTER.md`).")
+    project_slug = _safe_slug(project, "default")
+    lines.append(f"> ⚠️ **IMPORTANT:** Rules in this file **override** the Master file (`design-system/{project_slug}/MASTER.md`).")
     lines.append("> Only deviations from the Master are documented here. For all other rules, refer to the Master.")
     lines.append("")
     lines.append("---")

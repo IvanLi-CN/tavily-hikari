@@ -109,7 +109,8 @@ class BM25:
     def tokenize(self, text):
         """Lowercase, split, remove punctuation, filter short words"""
         text = re.sub(r'[^\w\s]', ' ', str(text).lower())
-        return [w for w in text.split() if len(w) > 2]
+        short_keywords = {"ui", "ux", "js", "ai", "ar", "vr", "3d"}
+        return [w for w in text.split() if len(w) > 2 or w in short_keywords]
 
     def fit(self, documents):
         """Build BM25 index from documents"""
@@ -190,6 +191,12 @@ def _search_csv(filepath, search_cols, output_cols, query, max_results):
 def detect_domain(query):
     """Auto-detect the most relevant domain from query"""
     query_lower = query.lower()
+    query_terms = re.findall(r"[a-z0-9]+", query_lower)
+    query_terms_set = set(query_terms)
+    for term in query_terms:
+        if len(term) > 3 and term.endswith("s"):
+            query_terms_set.add(term[:-1])
+    normalized_query = " ".join(query_terms)
 
     domain_keywords = {
         "color": ["color", "palette", "hex", "#", "rgb"],
@@ -204,7 +211,23 @@ def detect_domain(query):
         "web": ["aria", "focus", "outline", "semantic", "virtualize", "autocomplete", "form", "input type", "preconnect"]
     }
 
-    scores = {domain: sum(1 for kw in keywords if kw in query_lower) for domain, keywords in domain_keywords.items()}
+    def keyword_matches(kw: str) -> bool:
+        if kw == "#":
+            return "#" in query
+
+        kw_terms = re.findall(r"[a-z0-9]+", kw.lower())
+        if not kw_terms:
+            return False
+
+        # Single keywords must match tokens exactly to avoid false positives
+        # like "build" accidentally matching "ui".
+        if len(kw_terms) == 1:
+            return kw_terms[0] in query_terms_set
+
+        phrase = " ".join(kw_terms)
+        return phrase in normalized_query or all(term in query_terms_set for term in kw_terms)
+
+    scores = {domain: sum(1 for kw in keywords if keyword_matches(kw)) for domain, keywords in domain_keywords.items()}
     best = max(scores, key=scores.get)
     return best if scores[best] > 0 else "style"
 
