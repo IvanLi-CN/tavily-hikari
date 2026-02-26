@@ -148,3 +148,77 @@ export const CheckingInProgress: Story = {
     },
   },
 };
+
+export const PostImportNoRemainingRows: Story = {
+  args: {
+    initial: {
+      group: "default",
+      input_lines: 4,
+      valid_lines: 0,
+      unique_in_input: 0,
+      duplicate_in_input: 0,
+      checking: false,
+      importing: false,
+      rows: [],
+      importReport: {
+        summary: {
+          input_lines: 4,
+          valid_lines: 4,
+          unique_in_input: 4,
+          duplicate_in_input: 0,
+          created: 1,
+          undeleted: 1,
+          existed: 2,
+          failed: 0,
+        },
+        results: [
+          { api_key: "tvly-IMPORTED-1", status: "created" },
+          { api_key: "tvly-IMPORTED-2", status: "undeleted" },
+          { api_key: "tvly-IMPORTED-3", status: "existed" },
+          { api_key: "tvly-IMPORTED-4", status: "existed" },
+        ],
+      },
+    },
+  },
+};
+
+export const PostImportWithRemainingRows: Story = {
+  args: {
+    initial: {
+      group: "default",
+      input_lines: 5,
+      valid_lines: 1,
+      unique_in_input: 1,
+      duplicate_in_input: 0,
+      checking: false,
+      importing: false,
+      rows: [
+        {
+          api_key: "tvly-INVALID-REMAINING",
+          status: "invalid",
+          detail: "400 Bad Request",
+          attempts: 1,
+        },
+      ],
+      importReport: {
+        summary: {
+          input_lines: 5,
+          valid_lines: 5,
+          unique_in_input: 5,
+          duplicate_in_input: 0,
+          created: 2,
+          undeleted: 1,
+          existed: 1,
+          failed: 1,
+        },
+        results: [
+          { api_key: "tvly-IMPORTED-1", status: "created" },
+          { api_key: "tvly-IMPORTED-2", status: "created" },
+          { api_key: "tvly-IMPORTED-3", status: "undeleted" },
+          { api_key: "tvly-IMPORTED-4", status: "existed" },
+          { api_key: "tvly-INVALID-REMAINING", status: "failed", error: "400 Bad Request" },
+        ],
+      },
+    },
+  },
+};

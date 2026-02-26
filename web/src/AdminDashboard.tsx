@@ -429,6 +429,7 @@ function AdminDashboard(): JSX.Element {
     checking: boolean
     importing: boolean
     rows: KeyValidationRow[]
+    imported_api_keys: string[]
     importReport?: AddApiKeysBatchResponse
     importWarning?: string
     importError?: string
@@ -1111,8 +1112,39 @@ function AdminDashboard(): JSX.Element {
     return keysBatchReport.response.results.filter((item) => item.status === 'failed')
   }, [keysBatchReport])
 
-  const keysValidationCounts = useMemo(() => {
+  const keysValidationImportedSet = useMemo(
+    () => new Set(keysValidation?.imported_api_keys ?? []),
+    [keysValidation?.imported_api_keys],
+  )
+
+  const keysValidationVisibleRows = useMemo(() => {
     const rows = keysValidation?.rows ?? []
+    if (keysValidationImportedSet.size === 0) return rows
+    return rows.filter((row) => !keysValidationImportedSet.has(row.api_key))
+  }, [keysValidation?.rows, keysValidationImportedSet])
+
+  const keysValidationVisibleState = useMemo(() => {
+    if (!keysValidation) return null
+    if (keysValidationImportedSet.size === 0) return keysValidation
+    const uniqueVisible = new Set<string>()
+    let duplicateVisible = 0
+    for (const row of keysValidationVisibleRows) {
+      if (row.status === 'duplicate_in_input') {
+        duplicateVisible += 1
+      } else {
+        uniqueVisible.add(row.api_key)
+      }
+    }
+    return {
+      ...keysValidation,
+      rows: keysValidationVisibleRows,
+      unique_in_input: uniqueVisible.size,
+      duplicate_in_input: duplicateVisible,
+    }
+  }, [keysValidation, keysValidationImportedSet, keysValidationVisibleRows])
+
+  const keysValidationCounts = useMemo(() => {
+    const rows = keysValidationVisibleRows
     let pending = 0
     let duplicate = 0
     let ok = 0
@@ -1144,29 +1176,33 @@ function AdminDashboard(): JSX.Element {
       }
     }
     const checked = ok + exhausted + invalid + errorCount
-    const totalToCheck = keysValidation?.unique_in_input ?? 0
+    const totalToCheck = new Set(
+      rows
+        .filter((row) => row.status !== 'duplicate_in_input')
+        .map((row) => row.api_key),
+    ).size
     return { pending, duplicate, ok, exhausted, invalid, error: errorCount, checked, totalToCheck }
-  }, [keysValidation])
+  }, [keysValidationVisibleRows])
 
   const keysValidationValidKeys = useMemo(() => {
     const set = new Set<string>()
-    for (const row of keysValidation?.rows ?? []) {
+    for (const row of keysValidationVisibleRows) {
       if (row.status === 'ok' || row.status === 'ok_exhausted') {
         set.add(row.api_key)
       }
     }
     return Array.from(set)
-  }, [keysValidation])
+  }, [keysValidationVisibleRows])
 
   const keysValidationExhaustedKeys = useMemo(() => {
     const set = new Set<string>()
-    for (const row of keysValidation?.rows ?? []) {
+    for (const row of keysValidationVisibleRows) {
       if (row.status === 'ok_exhausted') {
         set.add(row.api_key)
       }
     }
     return Array.from(set)
-  }, [keysValidation])
+  }, [keysValidationVisibleRows])
 
   const updateKeysBatchOverlayLayout = useCallback(() => {
     if (!keysBatchExpanded) return
@@ -1437,6 +1473,7 @@ function AdminDashboard(): JSX.Element {
       checking: true,
       importing: false,
       rows,
+      imported_api_keys: [],
     })
 
     window.requestAnimationFrame(() => {
@@ -1498,16 +1535,21 @@ function AdminDashboard(): JSX.Element {
     if (keysValidation.checking || keysValidation.importing) return
     if (keysValidationValidKeys.length === 0) return
 
+    const importRunId = keysValidateRunIdRef.current
     const group = keysValidation.group.trim()
     const normalizedGroup = group.length > 0 ? group : undefined
     const exhaustedSet = new Set(keysValidationExhaustedKeys)
-    setKeysValidation((prev) => prev ? ({
-      ...prev,
-      importing: true,
-      importError: undefined,
-      importWarning: undefined,
-      importReport: undefined,
-    }) : prev)
+    setKeysValidation((prev) => {
+      if (!prev) return prev
+      if (importRunId !== keysValidateRunIdRef.current) return prev
+      return {
+        ...prev,
+        importing: true,
+        importError: undefined,
+        importWarning: undefined,
+        importReport: undefined,
+      }
+    })
     try {
       const response: AddApiKeysBatchResponse = {
         summary: {
@@ -1545,13 +1587,33 @@ function AdminDashboard(): JSX.Element {
         response.results.push(...chunkResponse.results)
       }
 
+      const importedByResponse = new Set<string>()
+      for (const result of response.results) {
+        if (result.status === 'created' || result.status === 'undeleted' || result.status === 'existed') {
+          importedByResponse.add(result.api_key)
+        }
+      }
+
+      const imported = new Set(keysValidation.imported_api_keys)
+      for (const apiKey of importedByResponse) imported.add(apiKey)
+      const shouldAutoClose = keysValidation.rows.every((row) => imported.has(row.api_key))
       setKeysValidation((prev) => {
         if (!prev) return prev
+        if (importRunId !== keysValidateRunIdRef.current) return prev
         const warning = markExhaustedFailedCount > 0
           ? keyStrings.validation.import.exhaustedMarkFailed.replace('{count}', String(markExhaustedFailedCount))
           : undefined
-        return { ...prev, importing: false, importReport: response, importWarning: warning }
+        return {
+          ...prev,
+          importing: false,
+          imported_api_keys: Array.from(imported),
+          importReport: response,
+          importWarning: warning,
+        }
       })
+      if (shouldAutoClose && importRunId === keysValidateRunIdRef.current) {
+        window.requestAnimationFrame(() => closeKeysValidationDialog())
+      }
       const controller = new AbortController()
       setLoading(true)
       await loadData(controller.signal)
@@ -1559,7 +1621,11 @@ function AdminDashboard(): JSX.Element {
     } catch (err) {
       console.error(err)
       const message = err instanceof Error ? err.message : errorStrings.addKeysBatch
-      setKeysValidation((prev) => prev ? ({ ...prev, importing: false, importWarning: undefined, importError: message }) : prev)
+      setKeysValidation((prev) => {
+        if (!prev) return prev
+        if (importRunId !== keysValidateRunIdRef.current) return prev
+        return { ...prev, importing: false, importWarning: undefined, importError: message }
+      })
     }
   }
 
@@ -3221,7 +3287,7 @@ function AdminDashboard(): JSX.Element {
     {/* API Keys Validation (daisyUI modal) */}
     <ApiKeysValidationDialog
       dialogRef={keysValidateDialogRef as any}
-      state={keysValidation}
+      state={keysValidationVisibleState}
       counts={keysValidationCounts}
       validKeys={keysValidationValidKeys}
       exhaustedKeys={keysValidationExhaustedKeys}
