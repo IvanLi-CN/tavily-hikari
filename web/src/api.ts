@@ -233,10 +233,21 @@ export interface Profile {
   isAdmin: boolean
   forwardAuthEnabled: boolean
   builtinAuthEnabled: boolean
+  userLoggedIn?: boolean
+  userProvider?: 'linuxdo' | null
+  userDisplayName?: string | null
 }
 
 export function fetchProfile(signal?: AbortSignal): Promise<Profile> {
   return requestJson('/api/profile', { signal })
+}
+
+export interface UserTokenResponse {
+  token: string
+}
+
+export function fetchUserToken(signal?: AbortSignal): Promise<UserTokenResponse> {
+  return requestJson('/api/user/token', { signal })
 }
 
 export interface CreateKeyResponse {

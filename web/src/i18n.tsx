@@ -27,6 +27,10 @@ interface PublicTranslations {
   }
   adminButton: string
   adminLoginButton: string
+  linuxDoLogin: {
+    button: string
+    logoAlt: string
+  }
   adminLogin: {
     title: string
     description: string
@@ -602,6 +606,10 @@ export const translations: Record<Language, TranslationShape> = {
       },
       adminButton: 'Open Admin Dashboard',
       adminLoginButton: 'Admin Login',
+      linuxDoLogin: {
+        button: 'Sign in with Linux DO',
+        logoAlt: 'Linux DO logo',
+      },
       adminLogin: {
         title: 'Admin Login',
         description: 'Sign in to manage Tavily keys and access tokens.',
@@ -1162,6 +1170,10 @@ export const translations: Record<Language, TranslationShape> = {
       },
       adminButton: '打开管理员面板',
       adminLoginButton: '管理员登录',
+      linuxDoLogin: {
+        button: '使用 Linux DO 登录',
+        logoAlt: 'Linux DO 标志',
+      },
       adminLogin: {
         title: '管理员登录',
         description: '登录后可管理 Tavily key 与访问令牌。',

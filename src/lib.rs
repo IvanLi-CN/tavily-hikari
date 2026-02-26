@@ -956,6 +956,74 @@ impl TavilyProxy {
         self.key_store.rotate_access_token_secret(id).await
     }
 
+    /// Create a one-time OAuth login state with TTL for CSRF/replay protection.
+    pub async fn create_oauth_login_state(
+        &self,
+        provider: &str,
+        redirect_to: Option<&str>,
+        ttl_secs: i64,
+    ) -> Result<String, ProxyError> {
+        self.key_store
+            .insert_oauth_login_state(provider, redirect_to, ttl_secs)
+            .await
+    }
+
+    /// Consume and invalidate an OAuth login state. Returns redirect target when valid.
+    pub async fn consume_oauth_login_state(
+        &self,
+        provider: &str,
+        state: &str,
+    ) -> Result<Option<Option<String>>, ProxyError> {
+        self.key_store
+            .consume_oauth_login_state(provider, state)
+            .await
+    }
+
+    /// Upsert local user identity from third-party OAuth profile.
+    pub async fn upsert_oauth_account(
+        &self,
+        profile: &OAuthAccountProfile,
+    ) -> Result<UserIdentity, ProxyError> {
+        self.key_store.upsert_oauth_account(profile).await
+    }
+
+    /// Ensure one-to-one user token binding exists, creating a token only when missing.
+    pub async fn ensure_user_token_binding(
+        &self,
+        user_id: &str,
+        note: Option<&str>,
+    ) -> Result<AuthTokenSecret, ProxyError> {
+        self.key_store
+            .ensure_user_token_binding(user_id, note)
+            .await
+    }
+
+    /// Fetch current user token by user_id. Does not auto-recreate when unavailable.
+    pub async fn get_user_token(&self, user_id: &str) -> Result<UserTokenLookup, ProxyError> {
+        self.key_store.get_user_token(user_id).await
+    }
+
+    /// Create persisted user session.
+    pub async fn create_user_session(
+        &self,
+        user: &UserIdentity,
+        session_max_age_secs: i64,
+    ) -> Result<UserSession, ProxyError> {
+        self.key_store
+            .create_user_session(user, session_max_age_secs)
+            .await
+    }
+
+    /// Lookup valid user session from cookie token.
+    pub async fn get_user_session(&self, token: &str) -> Result<Option<UserSession>, ProxyError> {
+        self.key_store.get_user_session(token).await
+    }
+
+    /// Revoke persisted user session token.
+    pub async fn revoke_user_session(&self, token: &str) -> Result<(), ProxyError> {
+        self.key_store.revoke_user_session(token).await
+    }
+
     /// Record a token usage log. Intended for /mcp proxy handler.
     #[allow(clippy::too_many_arguments)]
     pub async fn record_token_attempt(
@@ -1679,6 +1747,117 @@ impl KeyStore {
         .await?;
 
         self.upgrade_auth_tokens_schema().await?;
+
+        // User identity model (separated from admin auth):
+        // - users: local user records
+        // - oauth_accounts: third-party account bindings (provider + provider_user_id unique)
+        // - user_sessions: persisted user sessions for browser auth
+        // - user_token_bindings: one user maps to one auth token
+        // - oauth_login_states: one-time OAuth state tokens for CSRF/replay protection
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                display_name TEXT,
+                username TEXT,
+                avatar_template TEXT,
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                last_login_at INTEGER
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS oauth_accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                provider TEXT NOT NULL,
+                provider_user_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                username TEXT,
+                name TEXT,
+                avatar_template TEXT,
+                active INTEGER NOT NULL DEFAULT 1,
+                trust_level INTEGER,
+                raw_payload TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(provider, provider_user_id),
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_oauth_accounts_user ON oauth_accounts(user_id)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS user_sessions (
+                token TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                revoked_at INTEGER,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id, expires_at DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS user_token_bindings (
+                user_id TEXT PRIMARY KEY,
+                token_id TEXT NOT NULL UNIQUE,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (token_id) REFERENCES auth_tokens(id)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS oauth_login_states (
+                state TEXT PRIMARY KEY,
+                provider TEXT NOT NULL,
+                redirect_to TEXT,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                consumed_at INTEGER
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_oauth_login_states_expire ON oauth_login_states(expires_at)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
         self.ensure_dev_open_admin_token().await?;
 
         // Ensure per-token usage logs table exists BEFORE running data consistency migration
@@ -3538,6 +3717,545 @@ impl KeyStore {
         })
     }
 
+    async fn insert_oauth_login_state(
+        &self,
+        provider: &str,
+        redirect_to: Option<&str>,
+        ttl_secs: i64,
+    ) -> Result<String, ProxyError> {
+        const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        let now = Utc::now().timestamp();
+        let expires_at = now + ttl_secs.max(60);
+
+        sqlx::query(
+            "DELETE FROM oauth_login_states WHERE expires_at < ? OR consumed_at IS NOT NULL",
+        )
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+
+        loop {
+            let state = random_string(ALPHABET, 48);
+            let res = sqlx::query(
+                r#"INSERT INTO oauth_login_states
+                   (state, provider, redirect_to, created_at, expires_at, consumed_at)
+                   VALUES (?, ?, ?, ?, ?, NULL)"#,
+            )
+            .bind(&state)
+            .bind(provider)
+            .bind(redirect_to.map(str::trim).filter(|value| !value.is_empty()))
+            .bind(now)
+            .bind(expires_at)
+            .execute(&self.pool)
+            .await;
+
+            match res {
+                Ok(_) => return Ok(state),
+                Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => continue,
+                Err(err) => return Err(ProxyError::Database(err)),
+            }
+        }
+    }
+
+    async fn consume_oauth_login_state(
+        &self,
+        provider: &str,
+        state: &str,
+    ) -> Result<Option<Option<String>>, ProxyError> {
+        let now = Utc::now().timestamp();
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query(
+            "DELETE FROM oauth_login_states WHERE expires_at < ? OR consumed_at IS NOT NULL",
+        )
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+
+        let row = sqlx::query_as::<_, (Option<String>,)>(
+            r#"SELECT redirect_to
+               FROM oauth_login_states
+               WHERE state = ? AND provider = ? AND consumed_at IS NULL AND expires_at >= ?
+               LIMIT 1"#,
+        )
+        .bind(state)
+        .bind(provider)
+        .bind(now)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        let Some((redirect_to,)) = row else {
+            tx.rollback().await.ok();
+            return Ok(None);
+        };
+
+        let updated = sqlx::query(
+            r#"UPDATE oauth_login_states
+               SET consumed_at = ?
+               WHERE state = ? AND provider = ? AND consumed_at IS NULL"#,
+        )
+        .bind(now)
+        .bind(state)
+        .bind(provider)
+        .execute(&mut *tx)
+        .await?;
+
+        if updated.rows_affected() == 0 {
+            tx.rollback().await.ok();
+            return Ok(None);
+        }
+
+        tx.commit().await?;
+        Ok(Some(redirect_to))
+    }
+
+    async fn upsert_oauth_account(
+        &self,
+        profile: &OAuthAccountProfile,
+    ) -> Result<UserIdentity, ProxyError> {
+        let display_name = profile
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                profile
+                    .username
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .map(str::to_string)
+            });
+        let username = profile
+            .username
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string);
+        let avatar = profile
+            .avatar_template
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string);
+        let active = if profile.active { 1 } else { 0 };
+        let now = Utc::now().timestamp();
+
+        for _ in 0..4 {
+            let mut tx = self.pool.begin().await?;
+
+            let existing = sqlx::query_as::<_, (String,)>(
+                r#"SELECT user_id
+                   FROM oauth_accounts
+                   WHERE provider = ? AND provider_user_id = ?
+                   LIMIT 1"#,
+            )
+            .bind(&profile.provider)
+            .bind(&profile.provider_user_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+
+            let user_id = if let Some((user_id,)) = existing {
+                user_id
+            } else {
+                const ALPHABET: &[u8] =
+                    b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+                let mut created_user_id = None;
+                for _ in 0..8 {
+                    let candidate = random_string(ALPHABET, 12);
+                    let inserted = sqlx::query(
+                        r#"INSERT INTO users
+                           (id, display_name, username, avatar_template, active, created_at, updated_at, last_login_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)"#,
+                    )
+                    .bind(&candidate)
+                    .bind(display_name.clone())
+                    .bind(username.clone())
+                    .bind(avatar.clone())
+                    .bind(active)
+                    .bind(now)
+                    .bind(now)
+                    .bind(now)
+                    .execute(&mut *tx)
+                    .await;
+
+                    match inserted {
+                        Ok(_) => {
+                            created_user_id = Some(candidate);
+                            break;
+                        }
+                        Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
+                            continue;
+                        }
+                        Err(err) => {
+                            tx.rollback().await.ok();
+                            return Err(ProxyError::Database(err));
+                        }
+                    }
+                }
+
+                let Some(user_id) = created_user_id else {
+                    tx.rollback().await.ok();
+                    return Err(ProxyError::Other(
+                        "failed to allocate unique local user id".to_string(),
+                    ));
+                };
+
+                let inserted_account = sqlx::query(
+                    r#"INSERT INTO oauth_accounts
+                       (provider, provider_user_id, user_id, username, name, avatar_template, active, trust_level, raw_payload, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+                )
+                .bind(&profile.provider)
+                .bind(&profile.provider_user_id)
+                .bind(&user_id)
+                .bind(username.clone())
+                .bind(display_name.clone())
+                .bind(avatar.clone())
+                .bind(active)
+                .bind(profile.trust_level)
+                .bind(profile.raw_payload_json.clone())
+                .bind(now)
+                .bind(now)
+                .execute(&mut *tx)
+                .await;
+
+                match inserted_account {
+                    Ok(_) => user_id,
+                    Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
+                        tx.rollback().await.ok();
+                        continue;
+                    }
+                    Err(err) => {
+                        tx.rollback().await.ok();
+                        return Err(ProxyError::Database(err));
+                    }
+                }
+            };
+
+            sqlx::query(
+                r#"UPDATE users
+                   SET display_name = ?, username = ?, avatar_template = ?, active = ?, updated_at = ?, last_login_at = ?
+                   WHERE id = ?"#,
+            )
+            .bind(display_name.clone())
+            .bind(username.clone())
+            .bind(avatar.clone())
+            .bind(active)
+            .bind(now)
+            .bind(now)
+            .bind(&user_id)
+            .execute(&mut *tx)
+            .await?;
+
+            sqlx::query(
+                r#"UPDATE oauth_accounts
+                   SET username = ?, name = ?, avatar_template = ?, active = ?, trust_level = ?, raw_payload = ?, updated_at = ?
+                   WHERE provider = ? AND provider_user_id = ?"#,
+            )
+            .bind(username.clone())
+            .bind(display_name.clone())
+            .bind(avatar.clone())
+            .bind(active)
+            .bind(profile.trust_level)
+            .bind(profile.raw_payload_json.clone())
+            .bind(now)
+            .bind(&profile.provider)
+            .bind(&profile.provider_user_id)
+            .execute(&mut *tx)
+            .await?;
+
+            tx.commit().await?;
+            return Ok(UserIdentity {
+                user_id,
+                provider: profile.provider.clone(),
+                provider_user_id: profile.provider_user_id.clone(),
+                display_name,
+                username,
+                avatar_template: avatar,
+            });
+        }
+
+        Err(ProxyError::Other(
+            "failed to upsert oauth account after retries".to_string(),
+        ))
+    }
+
+    async fn ensure_user_token_binding(
+        &self,
+        user_id: &str,
+        note: Option<&str>,
+    ) -> Result<AuthTokenSecret, ProxyError> {
+        if let Some(existing) = self.fetch_user_token_any_status(user_id).await? {
+            return Ok(existing);
+        }
+
+        const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        let now = Utc::now().timestamp();
+        let note = note.unwrap_or("").trim().to_string();
+
+        for _ in 0..4 {
+            let mut tx = self.pool.begin().await?;
+            if let Some((token_id, secret)) = sqlx::query_as::<_, (String, String)>(
+                r#"SELECT b.token_id, t.secret
+                   FROM user_token_bindings b
+                   JOIN auth_tokens t ON t.id = b.token_id
+                   WHERE b.user_id = ?
+                   LIMIT 1"#,
+            )
+            .bind(user_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            {
+                tx.rollback().await.ok();
+                return Ok(AuthTokenSecret {
+                    id: token_id.clone(),
+                    token: Self::compose_full_token(&token_id, &secret),
+                });
+            }
+
+            let mut created: Option<(String, String)> = None;
+            for _ in 0..8 {
+                let token_id = random_string(ALPHABET, 4);
+                let secret = random_string(ALPHABET, 24);
+
+                let inserted_token = sqlx::query(
+                    r#"INSERT INTO auth_tokens
+                       (id, secret, enabled, note, group_name, total_requests, created_at, last_used_at, deleted_at)
+                       VALUES (?, ?, 1, ?, NULL, 0, ?, NULL, NULL)"#,
+                )
+                .bind(&token_id)
+                .bind(&secret)
+                .bind(&note)
+                .bind(now)
+                .execute(&mut *tx)
+                .await;
+
+                match inserted_token {
+                    Ok(_) => {
+                        created = Some((token_id, secret));
+                        break;
+                    }
+                    Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => continue,
+                    Err(err) => {
+                        tx.rollback().await.ok();
+                        return Err(ProxyError::Database(err));
+                    }
+                }
+            }
+
+            let Some((token_id, secret)) = created else {
+                tx.rollback().await.ok();
+                return Err(ProxyError::Other(
+                    "failed to create auth token for user binding".to_string(),
+                ));
+            };
+
+            let inserted_binding = sqlx::query(
+                r#"INSERT INTO user_token_bindings (user_id, token_id, created_at, updated_at)
+                   VALUES (?, ?, ?, ?)"#,
+            )
+            .bind(user_id)
+            .bind(&token_id)
+            .bind(now)
+            .bind(now)
+            .execute(&mut *tx)
+            .await;
+
+            match inserted_binding {
+                Ok(_) => {
+                    tx.commit().await?;
+                    return Ok(AuthTokenSecret {
+                        id: token_id.clone(),
+                        token: Self::compose_full_token(&token_id, &secret),
+                    });
+                }
+                Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
+                    tx.rollback().await.ok();
+                    continue;
+                }
+                Err(err) => {
+                    tx.rollback().await.ok();
+                    return Err(ProxyError::Database(err));
+                }
+            }
+        }
+
+        Err(ProxyError::Other(
+            "failed to ensure user token binding after retries".to_string(),
+        ))
+    }
+
+    async fn fetch_user_token_any_status(
+        &self,
+        user_id: &str,
+    ) -> Result<Option<AuthTokenSecret>, ProxyError> {
+        let row = sqlx::query_as::<_, (String, String)>(
+            r#"SELECT b.token_id, t.secret
+               FROM user_token_bindings b
+               JOIN auth_tokens t ON t.id = b.token_id
+               WHERE b.user_id = ?
+               LIMIT 1"#,
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|(token_id, secret)| AuthTokenSecret {
+            id: token_id.clone(),
+            token: Self::compose_full_token(&token_id, &secret),
+        }))
+    }
+
+    async fn get_user_token(&self, user_id: &str) -> Result<UserTokenLookup, ProxyError> {
+        let row = sqlx::query_as::<_, (String, Option<String>, Option<i64>, Option<i64>)>(
+            r#"SELECT b.token_id, t.secret, t.enabled, t.deleted_at
+               FROM user_token_bindings b
+               LEFT JOIN auth_tokens t ON t.id = b.token_id
+               WHERE b.user_id = ?
+               LIMIT 1"#,
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let Some((token_id, maybe_secret, maybe_enabled, maybe_deleted_at)) = row else {
+            return Ok(UserTokenLookup::MissingBinding);
+        };
+        let Some(secret) = maybe_secret else {
+            return Ok(UserTokenLookup::Unavailable);
+        };
+        let enabled = maybe_enabled.unwrap_or(0);
+        if enabled != 1 || maybe_deleted_at.is_some() {
+            return Ok(UserTokenLookup::Unavailable);
+        }
+
+        Ok(UserTokenLookup::Found(AuthTokenSecret {
+            id: token_id.clone(),
+            token: Self::compose_full_token(&token_id, &secret),
+        }))
+    }
+
+    async fn create_user_session(
+        &self,
+        user: &UserIdentity,
+        session_max_age_secs: i64,
+    ) -> Result<UserSession, ProxyError> {
+        const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_";
+        let now = Utc::now().timestamp();
+        let expires_at = now + session_max_age_secs.max(60);
+
+        sqlx::query("DELETE FROM user_sessions WHERE expires_at < ? OR revoked_at IS NOT NULL")
+            .bind(now)
+            .execute(&self.pool)
+            .await?;
+
+        loop {
+            let token = random_string(ALPHABET, 48);
+            let inserted = sqlx::query(
+                r#"INSERT INTO user_sessions (token, user_id, provider, created_at, expires_at, revoked_at)
+                   VALUES (?, ?, ?, ?, ?, NULL)"#,
+            )
+            .bind(&token)
+            .bind(&user.user_id)
+            .bind(&user.provider)
+            .bind(now)
+            .bind(expires_at)
+            .execute(&self.pool)
+            .await;
+
+            match inserted {
+                Ok(_) => {
+                    return Ok(UserSession {
+                        token,
+                        user: user.clone(),
+                        expires_at,
+                    });
+                }
+                Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => continue,
+                Err(err) => return Err(ProxyError::Database(err)),
+            }
+        }
+    }
+
+    async fn get_user_session(&self, token: &str) -> Result<Option<UserSession>, ProxyError> {
+        let now = Utc::now().timestamp();
+        sqlx::query("DELETE FROM user_sessions WHERE expires_at < ?")
+            .bind(now)
+            .execute(&self.pool)
+            .await?;
+
+        let row = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                i64,
+            ),
+        >(
+            r#"SELECT
+                    s.token,
+                    s.user_id,
+                    s.provider,
+                    oa.provider_user_id,
+                    u.display_name,
+                    u.username,
+                    u.avatar_template,
+                    s.expires_at
+               FROM user_sessions s
+               JOIN users u ON u.id = s.user_id
+               LEFT JOIN oauth_accounts oa ON oa.user_id = u.id AND oa.provider = s.provider
+               WHERE s.token = ? AND s.revoked_at IS NULL AND s.expires_at > ?
+               LIMIT 1"#,
+        )
+        .bind(token)
+        .bind(now)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(
+            |(
+                token,
+                user_id,
+                provider,
+                provider_user_id,
+                display_name,
+                username,
+                avatar_template,
+                expires_at,
+            )| UserSession {
+                token,
+                user: UserIdentity {
+                    user_id,
+                    provider,
+                    provider_user_id: provider_user_id.unwrap_or_default(),
+                    display_name,
+                    username,
+                    avatar_template,
+                },
+                expires_at,
+            },
+        ))
+    }
+
+    async fn revoke_user_session(&self, token: &str) -> Result<(), ProxyError> {
+        let now = Utc::now().timestamp();
+        sqlx::query(
+            "UPDATE user_sessions SET revoked_at = ? WHERE token = ? AND revoked_at IS NULL",
+        )
+        .bind(now)
+        .bind(token)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     // ----- Token usage logs & metrics -----
     #[allow(clippy::too_many_arguments)]
     async fn insert_token_log(
@@ -5187,6 +5905,46 @@ pub struct AuthTokenSecret {
     pub token: String, // th-<id>-<secret>
 }
 
+/// Third-party profile normalized for local account upsert.
+#[derive(Debug, Clone)]
+pub struct OAuthAccountProfile {
+    pub provider: String,
+    pub provider_user_id: String,
+    pub username: Option<String>,
+    pub name: Option<String>,
+    pub avatar_template: Option<String>,
+    pub active: bool,
+    pub trust_level: Option<i64>,
+    pub raw_payload_json: Option<String>,
+}
+
+/// Local user identity resolved from oauth_accounts/users.
+#[derive(Debug, Clone)]
+pub struct UserIdentity {
+    pub user_id: String,
+    pub provider: String,
+    pub provider_user_id: String,
+    pub display_name: Option<String>,
+    pub username: Option<String>,
+    pub avatar_template: Option<String>,
+}
+
+/// Persisted user session record.
+#[derive(Debug, Clone)]
+pub struct UserSession {
+    pub token: String,
+    pub user: UserIdentity,
+    pub expires_at: i64,
+}
+
+/// User-facing token lookup status for `/api/user/token`.
+#[derive(Debug, Clone)]
+pub enum UserTokenLookup {
+    Found(AuthTokenSecret),
+    MissingBinding,
+    Unavailable,
+}
+
 /// Per-token log for detail UI
 #[derive(Debug, Clone)]
 pub struct TokenLogRecord {
@@ -6294,6 +7052,160 @@ mod tests {
         assert!(
             deleted_at.is_some(),
             "restored token should be marked soft-deleted"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn oauth_login_state_is_single_use() {
+        let db_path = temp_db_path("oauth-state-single-use");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        let state = proxy
+            .create_oauth_login_state("linuxdo", Some("/"), 120)
+            .await
+            .expect("create oauth state");
+        let first = proxy
+            .consume_oauth_login_state("linuxdo", &state)
+            .await
+            .expect("consume oauth state first");
+        let second = proxy
+            .consume_oauth_login_state("linuxdo", &state)
+            .await
+            .expect("consume oauth state second");
+
+        assert_eq!(first, Some(Some("/".to_string())));
+        assert_eq!(second, None, "oauth state must be single-use");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn ensure_user_token_binding_reuses_existing_binding() {
+        let db_path = temp_db_path("user-token-binding-reuse");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        let alice = proxy
+            .upsert_oauth_account(&OAuthAccountProfile {
+                provider: "linuxdo".to_string(),
+                provider_user_id: "alice-uid".to_string(),
+                username: Some("alice".to_string()),
+                name: Some("Alice".to_string()),
+                avatar_template: None,
+                active: true,
+                trust_level: Some(2),
+                raw_payload_json: None,
+            })
+            .await
+            .expect("upsert alice");
+
+        let first = proxy
+            .ensure_user_token_binding(&alice.user_id, Some("linuxdo:alice"))
+            .await
+            .expect("bind alice first");
+        let second = proxy
+            .ensure_user_token_binding(&alice.user_id, Some("linuxdo:alice"))
+            .await
+            .expect("bind alice second");
+
+        assert_eq!(
+            first.id, second.id,
+            "same user should reuse one token binding"
+        );
+        assert_eq!(first.token, second.token);
+
+        let bob = proxy
+            .upsert_oauth_account(&OAuthAccountProfile {
+                provider: "linuxdo".to_string(),
+                provider_user_id: "bob-uid".to_string(),
+                username: Some("bob".to_string()),
+                name: Some("Bob".to_string()),
+                avatar_template: None,
+                active: true,
+                trust_level: Some(1),
+                raw_payload_json: None,
+            })
+            .await
+            .expect("upsert bob");
+        let bob_token = proxy
+            .ensure_user_token_binding(&bob.user_id, Some("linuxdo:bob"))
+            .await
+            .expect("bind bob");
+
+        assert_ne!(
+            first.id, bob_token.id,
+            "different users must not share the same token binding"
+        );
+
+        let store = proxy.key_store.clone();
+        let (alice_bindings,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM user_token_bindings WHERE user_id = ?")
+                .bind(&alice.user_id)
+                .fetch_one(&store.pool)
+                .await
+                .expect("count alice bindings");
+        assert_eq!(
+            alice_bindings, 1,
+            "alice should have exactly one binding row"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn get_user_token_returns_unavailable_after_soft_delete() {
+        let db_path = temp_db_path("user-token-unavailable");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        let user = proxy
+            .upsert_oauth_account(&OAuthAccountProfile {
+                provider: "linuxdo".to_string(),
+                provider_user_id: "charlie-uid".to_string(),
+                username: Some("charlie".to_string()),
+                name: Some("Charlie".to_string()),
+                avatar_template: None,
+                active: true,
+                trust_level: Some(0),
+                raw_payload_json: None,
+            })
+            .await
+            .expect("upsert charlie");
+        let token = proxy
+            .ensure_user_token_binding(&user.user_id, Some("linuxdo:charlie"))
+            .await
+            .expect("bind charlie");
+
+        let before = proxy
+            .get_user_token(&user.user_id)
+            .await
+            .expect("lookup user token before delete");
+        assert!(
+            matches!(before, UserTokenLookup::Found(_)),
+            "token should be available before delete"
+        );
+
+        proxy
+            .delete_access_token(&token.id)
+            .await
+            .expect("soft delete token");
+
+        let after = proxy
+            .get_user_token(&user.user_id)
+            .await
+            .expect("lookup user token after delete");
+        assert!(
+            matches!(after, UserTokenLookup::Unavailable),
+            "soft-deleted binding should report unavailable"
         );
 
         let _ = std::fs::remove_file(db_path);
