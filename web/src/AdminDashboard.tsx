@@ -3,8 +3,8 @@ import { StatusBadge, type StatusTone } from './components/StatusBadge'
 import { ApiKeysValidationDialog } from './components/ApiKeysValidationDialog'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import LanguageSwitcher from './components/LanguageSwitcher'
 import ThemeToggle from './components/ThemeToggle'
+import AdminPanelHeader from './components/AdminPanelHeader'
 import TokenDetail from './pages/TokenDetail'
 import { useTranslate, type AdminTranslations } from './i18n'
 import {
@@ -2223,39 +2223,18 @@ function AdminDashboard(): JSX.Element {
           document.body,
         )}
       <main className="app-shell">
-      <section className="surface app-header">
-        <div className="title-group">
-          <h1>{headerStrings.title}</h1>
-          <p>{headerStrings.subtitle}</p>
-        </div>
-        <div className="header-right">
-          <div className="admin-language-switcher">
-            <ThemeToggle />
-            <LanguageSwitcher />
-          </div>
-          {displayName && (
-            <div className={`user-badge${isAdmin ? ' user-badge-admin' : ''}`}>
-              {isAdmin && <Icon icon="mdi:crown-outline" className="user-badge-icon" aria-hidden="true" />}
-              <span>{displayName}</span>
-            </div>
-          )}
-          <div className="controls">
-            {lastUpdated && (
-              <span className="panel-description updated-time" style={{ marginRight: 8 }}>
-                {headerStrings.updatedPrefix} {timeOnlyFormatter.format(lastUpdated)}
-              </span>
-            )}
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={handleManualRefresh}
-              disabled={loading}
-            >
-              {loading ? headerStrings.refreshing : headerStrings.refreshNow}
-            </button>
-          </div>
-        </div>
-      </section>
+      <AdminPanelHeader
+        title={headerStrings.title}
+        subtitle={headerStrings.subtitle}
+        displayName={displayName}
+        isAdmin={isAdmin}
+        updatedPrefix={headerStrings.updatedPrefix}
+        updatedTime={lastUpdated ? timeOnlyFormatter.format(lastUpdated) : null}
+        isRefreshing={loading}
+        refreshLabel={headerStrings.refreshNow}
+        refreshingLabel={headerStrings.refreshing}
+        onRefresh={handleManualRefresh}
+      />
 
       <section className="surface panel">
         <div className="panel-header" style={{ flexWrap: 'wrap', gap: 12, alignItems: 'flex-start' }}>

@@ -558,12 +558,26 @@ function PublicHome(): JSX.Element {
               <button
                 type="button"
                 className={`btn token-copy-button${
-                  copyState === 'copied' ? ' btn-success' : ' btn-secondary'
+                  copyState === 'copied'
+                    ? ' btn-success'
+                    : copyState === 'error'
+                      ? ' btn-warning'
+                      : ' btn-outline'
                 }`}
                 onClick={handleCopyToken}
                 aria-label={publicStrings.copyToken.iconAlt}
               >
-                <img src={`${ICONIFY_ENDPOINT}/mdi/content-copy.svg?color=%23ffffff`} alt={publicStrings.copyToken.iconAlt} />
+                <Icon
+                  icon={
+                    copyState === 'copied'
+                      ? 'mdi:check'
+                      : copyState === 'error'
+                        ? 'mdi:alert-circle-outline'
+                        : 'mdi:content-copy'
+                  }
+                  aria-hidden="true"
+                  className="token-copy-icon"
+                />
                 <span>
                   {copyState === 'copied'
                     ? publicStrings.copyToken.copied
@@ -982,11 +996,11 @@ function buildGuideContent(language: Language, baseUrl: string, prettyToken: str
 function buildCodexSnippet(baseUrl: string): string {
   return [
     '<span class="hl-comment"># ~/.codex/config.toml</span>',
-    'experimental_use_rmcp_client = true',
+    '<span class="hl-key">experimental_use_rmcp_client</span> = <span class="hl-boolean">true</span>',
     '',
-    '[mcp_servers.tavily_hikari]',
-    `url = "<span class="hl-string">${baseUrl}/mcp</span>"`,
-    'bearer_token_env_var = "TAVILY_HIKARI_TOKEN"',
+    '[<span class="hl-section">mcp_servers.tavily_hikari</span>]',
+    `<span class="hl-key">url</span> = <span class="hl-string">"${baseUrl}/mcp"</span>`,
+    '<span class="hl-key">bearer_token_env_var</span> = <span class="hl-string">"TAVILY_HIKARI_TOKEN"</span>',
   ].join('\n')
 }
 
