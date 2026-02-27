@@ -5,6 +5,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { createPortal } from 'react-dom'
 import ThemeToggle from './components/ThemeToggle'
 import AdminPanelHeader from './components/AdminPanelHeader'
+import SegmentedTabs from './components/ui/SegmentedTabs'
 import TokenDetail from './pages/TokenDetail'
 import { useTranslate, type AdminTranslations } from './i18n'
 import {
@@ -1977,52 +1978,26 @@ function AdminDashboard(): JSX.Element {
               <Icon icon="mdi:arrow-left" width={18} height={18} />
               &nbsp;{tokenLeaderboardStrings.back}
             </button>
-            <div className="segmented-control">
-              <button
-                type="button"
-                className={tokenLeaderboardPeriod === 'day' ? 'active' : ''}
-                onClick={() => setTokenLeaderboardPeriod('day')}
-              >
-                {tokenLeaderboardStrings.period.day}
-              </button>
-              <button
-                type="button"
-                className={tokenLeaderboardPeriod === 'month' ? 'active' : ''}
-                onClick={() => setTokenLeaderboardPeriod('month')}
-              >
-                {tokenLeaderboardStrings.period.month}
-              </button>
-              <button
-                type="button"
-                className={tokenLeaderboardPeriod === 'all' ? 'active' : ''}
-                onClick={() => setTokenLeaderboardPeriod('all')}
-              >
-                {tokenLeaderboardStrings.period.all}
-              </button>
-            </div>
-            <div className="segmented-control">
-              <button
-                type="button"
-                className={tokenLeaderboardFocus === 'usage' ? 'active' : ''}
-                onClick={() => setTokenLeaderboardFocus('usage')}
-              >
-                {tokenLeaderboardStrings.focus.usage}
-              </button>
-              <button
-                type="button"
-                className={tokenLeaderboardFocus === 'errors' ? 'active' : ''}
-                onClick={() => setTokenLeaderboardFocus('errors')}
-              >
-                {tokenLeaderboardStrings.focus.errors}
-              </button>
-              <button
-                type="button"
-                className={tokenLeaderboardFocus === 'other' ? 'active' : ''}
-                onClick={() => setTokenLeaderboardFocus('other')}
-              >
-                {tokenLeaderboardStrings.focus.other}
-              </button>
-            </div>
+            <SegmentedTabs<'day' | 'month' | 'all'>
+              value={tokenLeaderboardPeriod}
+              onChange={setTokenLeaderboardPeriod}
+              options={[
+                { value: 'day', label: tokenLeaderboardStrings.period.day },
+                { value: 'month', label: tokenLeaderboardStrings.period.month },
+                { value: 'all', label: tokenLeaderboardStrings.period.all },
+              ]}
+              ariaLabel={tokenLeaderboardStrings.title}
+            />
+            <SegmentedTabs<'usage' | 'errors' | 'other'>
+              value={tokenLeaderboardFocus}
+              onChange={setTokenLeaderboardFocus}
+              options={[
+                { value: 'usage', label: tokenLeaderboardStrings.focus.usage },
+                { value: 'errors', label: tokenLeaderboardStrings.focus.errors },
+                { value: 'other', label: tokenLeaderboardStrings.focus.other },
+              ]}
+              ariaLabel={tokenLeaderboardStrings.focus.usage}
+            />
             <button
               type="button"
               className="btn"
@@ -2818,48 +2793,20 @@ function AdminDashboard(): JSX.Element {
             <p className="panel-description">{logStrings.description}</p>
           </div>
           <div className="panel-actions">
-            <div className="segmented-control">
-              <button
-                type="button"
-                className={logResultFilter === 'all' ? 'active' : ''}
-                onClick={() => {
-                  setLogResultFilter('all')
-                  setLogsPage(1)
-                }}
-              >
-                {logStrings.filters.all}
-              </button>
-              <button
-                type="button"
-                className={logResultFilter === 'success' ? 'active' : ''}
-                onClick={() => {
-                  setLogResultFilter('success')
-                  setLogsPage(1)
-                }}
-              >
-                {logStrings.filters.success}
-              </button>
-              <button
-                type="button"
-                className={logResultFilter === 'error' ? 'active' : ''}
-                onClick={() => {
-                  setLogResultFilter('error')
-                  setLogsPage(1)
-                }}
-              >
-                {logStrings.filters.error}
-              </button>
-              <button
-                type="button"
-                className={logResultFilter === 'quota_exhausted' ? 'active' : ''}
-                onClick={() => {
-                  setLogResultFilter('quota_exhausted')
-                  setLogsPage(1)
-                }}
-              >
-                {logStrings.filters.quota}
-              </button>
-            </div>
+            <SegmentedTabs<'all' | 'success' | 'error' | 'quota_exhausted'>
+              value={logResultFilter}
+              onChange={(next) => {
+                setLogResultFilter(next)
+                setLogsPage(1)
+              }}
+              options={[
+                { value: 'all', label: logStrings.filters.all },
+                { value: 'success', label: logStrings.filters.success },
+                { value: 'error', label: logStrings.filters.error },
+                { value: 'quota_exhausted', label: logStrings.filters.quota },
+              ]}
+              ariaLabel={logStrings.title}
+            />
           </div>
         </div>
         <div className="table-wrapper jobs-table-wrapper">
@@ -2920,36 +2867,17 @@ function AdminDashboard(): JSX.Element {
             <p className="panel-description">{jobsStrings.description}</p>
           </div>
           <div className="panel-actions">
-            <div className="segmented-control">
-              <button
-                type="button"
-                className={jobFilter === 'all' ? 'active' : ''}
-                onClick={() => setJobFilter('all')}
-              >
-                {jobsStrings.filters.all}
-              </button>
-              <button
-                type="button"
-                className={jobFilter === 'quota' ? 'active' : ''}
-                onClick={() => setJobFilter('quota')}
-              >
-                {jobsStrings.filters.quota}
-              </button>
-              <button
-                type="button"
-                className={jobFilter === 'usage' ? 'active' : ''}
-                onClick={() => setJobFilter('usage')}
-              >
-                {jobsStrings.filters.usage}
-              </button>
-              <button
-                type="button"
-                className={jobFilter === 'logs' ? 'active' : ''}
-                onClick={() => setJobFilter('logs')}
-              >
-                {jobsStrings.filters.logs}
-              </button>
-            </div>
+            <SegmentedTabs<'all' | 'quota' | 'usage' | 'logs'>
+              value={jobFilter}
+              onChange={setJobFilter}
+              options={[
+                { value: 'all', label: jobsStrings.filters.all },
+                { value: 'quota', label: jobsStrings.filters.quota },
+                { value: 'usage', label: jobsStrings.filters.usage },
+                { value: 'logs', label: jobsStrings.filters.logs },
+              ]}
+              ariaLabel={jobsStrings.title}
+            />
           </div>
         </div>
         <div className="table-wrapper jobs-table-wrapper">
