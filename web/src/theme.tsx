@@ -15,7 +15,12 @@ const ThemeContext = createContext<ThemeContextValue | undefined>(undefined)
 
 function readStoredThemeMode(): ThemeMode | null {
   if (typeof window === 'undefined') return null
-  const value = window.localStorage.getItem(THEME_STORAGE_KEY)
+  let value: string | null = null
+  try {
+    value = window.localStorage.getItem(THEME_STORAGE_KEY)
+  } catch {
+    return null
+  }
   if (value === 'light' || value === 'dark' || value === 'system') return value
   return null
 }
@@ -31,7 +36,11 @@ function resolveTheme(mode: ThemeMode): ResolvedTheme {
 
 function persistThemeMode(mode: ThemeMode): void {
   if (typeof window === 'undefined') return
-  window.localStorage.setItem(THEME_STORAGE_KEY, mode)
+  try {
+    window.localStorage.setItem(THEME_STORAGE_KEY, mode)
+  } catch {
+    // Ignore storage failures (private mode / strict embedded contexts).
+  }
 }
 
 function applyTheme(resolvedTheme: ResolvedTheme): void {
@@ -61,8 +70,12 @@ export function ThemeProvider({ children }: { children: ReactNode }): JSX.Elemen
       setResolvedTheme(next)
       applyTheme(next)
     }
-    media.addEventListener('change', onChange)
-    return () => media.removeEventListener('change', onChange)
+    if (typeof media.addEventListener === 'function') {
+      media.addEventListener('change', onChange)
+      return () => media.removeEventListener('change', onChange)
+    }
+    media.addListener(onChange)
+    return () => media.removeListener(onChange)
   }, [mode])
 
   const value = useMemo<ThemeContextValue>(
