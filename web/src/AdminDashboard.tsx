@@ -3,8 +3,10 @@ import { StatusBadge, type StatusTone } from './components/StatusBadge'
 import { ApiKeysValidationDialog } from './components/ApiKeysValidationDialog'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import LanguageSwitcher from './components/LanguageSwitcher'
 import ThemeToggle from './components/ThemeToggle'
+import AdminPanelHeader from './components/AdminPanelHeader'
+import SegmentedTabs from './components/ui/SegmentedTabs'
+import TokenUsageHeader from './components/TokenUsageHeader'
 import TokenDetail from './pages/TokenDetail'
 import { useTranslate, type AdminTranslations } from './i18n'
 import {
@@ -1966,74 +1968,31 @@ function AdminDashboard(): JSX.Element {
 
     return (
       <main className="app-shell">
-        <section className="surface app-header">
-          <div className="title-group">
-            <h1>{tokenLeaderboardStrings.title}</h1>
-            <p>{tokenLeaderboardStrings.description}</p>
-          </div>
-          <div className="controls" style={{ gap: 12, flexWrap: 'wrap' }}>
-            <ThemeToggle />
-            <button type="button" className="btn btn-ghost" onClick={navigateHome}>
-              <Icon icon="mdi:arrow-left" width={18} height={18} />
-              &nbsp;{tokenLeaderboardStrings.back}
-            </button>
-            <div className="segmented-control">
-              <button
-                type="button"
-                className={tokenLeaderboardPeriod === 'day' ? 'active' : ''}
-                onClick={() => setTokenLeaderboardPeriod('day')}
-              >
-                {tokenLeaderboardStrings.period.day}
-              </button>
-              <button
-                type="button"
-                className={tokenLeaderboardPeriod === 'month' ? 'active' : ''}
-                onClick={() => setTokenLeaderboardPeriod('month')}
-              >
-                {tokenLeaderboardStrings.period.month}
-              </button>
-              <button
-                type="button"
-                className={tokenLeaderboardPeriod === 'all' ? 'active' : ''}
-                onClick={() => setTokenLeaderboardPeriod('all')}
-              >
-                {tokenLeaderboardStrings.period.all}
-              </button>
-            </div>
-            <div className="segmented-control">
-              <button
-                type="button"
-                className={tokenLeaderboardFocus === 'usage' ? 'active' : ''}
-                onClick={() => setTokenLeaderboardFocus('usage')}
-              >
-                {tokenLeaderboardStrings.focus.usage}
-              </button>
-              <button
-                type="button"
-                className={tokenLeaderboardFocus === 'errors' ? 'active' : ''}
-                onClick={() => setTokenLeaderboardFocus('errors')}
-              >
-                {tokenLeaderboardStrings.focus.errors}
-              </button>
-              <button
-                type="button"
-                className={tokenLeaderboardFocus === 'other' ? 'active' : ''}
-                onClick={() => setTokenLeaderboardFocus('other')}
-              >
-                {tokenLeaderboardStrings.focus.other}
-              </button>
-            </div>
-            <button
-              type="button"
-              className="btn"
-              onClick={() => setTokenLeaderboardNonce((x) => x + 1)}
-              disabled={tokenLeaderboardLoading}
-            >
-              <Icon icon={tokenLeaderboardLoading ? 'mdi:clock-outline' : 'mdi:refresh'} width={18} height={18} />
-              &nbsp;{tokenLeaderboardLoading ? headerStrings.refreshing : headerStrings.refreshNow}
-            </button>
-          </div>
-        </section>
+        <TokenUsageHeader
+          title={tokenLeaderboardStrings.title}
+          subtitle={tokenLeaderboardStrings.description}
+          visualPreset="accent"
+          backLabel={tokenLeaderboardStrings.back}
+          refreshLabel={headerStrings.refreshNow}
+          refreshingLabel={headerStrings.refreshing}
+          isRefreshing={tokenLeaderboardLoading}
+          period={tokenLeaderboardPeriod}
+          focus={tokenLeaderboardFocus}
+          periodOptions={[
+            { value: 'day', label: tokenLeaderboardStrings.period.day },
+            { value: 'month', label: tokenLeaderboardStrings.period.month },
+            { value: 'all', label: tokenLeaderboardStrings.period.all },
+          ]}
+          focusOptions={[
+            { value: 'usage', label: tokenLeaderboardStrings.focus.usage },
+            { value: 'errors', label: tokenLeaderboardStrings.focus.errors },
+            { value: 'other', label: tokenLeaderboardStrings.focus.other },
+          ]}
+          onBack={navigateHome}
+          onRefresh={() => setTokenLeaderboardNonce((x) => x + 1)}
+          onPeriodChange={setTokenLeaderboardPeriod}
+          onFocusChange={setTokenLeaderboardFocus}
+        />
         <section className="surface panel token-leaderboard-panel">
           <div className="table-wrapper jobs-table-wrapper token-leaderboard-wrapper">
           {tokenLeaderboardView.length === 0 ? (
@@ -2223,39 +2182,18 @@ function AdminDashboard(): JSX.Element {
           document.body,
         )}
       <main className="app-shell">
-      <section className="surface app-header">
-        <div className="title-group">
-          <h1>{headerStrings.title}</h1>
-          <p>{headerStrings.subtitle}</p>
-        </div>
-        <div className="header-right">
-          <div className="admin-language-switcher">
-            <ThemeToggle />
-            <LanguageSwitcher />
-          </div>
-          {displayName && (
-            <div className={`user-badge${isAdmin ? ' user-badge-admin' : ''}`}>
-              {isAdmin && <Icon icon="mdi:crown-outline" className="user-badge-icon" aria-hidden="true" />}
-              <span>{displayName}</span>
-            </div>
-          )}
-          <div className="controls">
-            {lastUpdated && (
-              <span className="panel-description updated-time" style={{ marginRight: 8 }}>
-                {headerStrings.updatedPrefix} {timeOnlyFormatter.format(lastUpdated)}
-              </span>
-            )}
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={handleManualRefresh}
-              disabled={loading}
-            >
-              {loading ? headerStrings.refreshing : headerStrings.refreshNow}
-            </button>
-          </div>
-        </div>
-      </section>
+      <AdminPanelHeader
+        title={headerStrings.title}
+        subtitle={headerStrings.subtitle}
+        displayName={displayName}
+        isAdmin={isAdmin}
+        updatedPrefix={headerStrings.updatedPrefix}
+        updatedTime={lastUpdated ? timeOnlyFormatter.format(lastUpdated) : null}
+        isRefreshing={loading}
+        refreshLabel={headerStrings.refreshNow}
+        refreshingLabel={headerStrings.refreshing}
+        onRefresh={handleManualRefresh}
+      />
 
       <section className="surface panel">
         <div className="panel-header" style={{ flexWrap: 'wrap', gap: 12, alignItems: 'flex-start' }}>
@@ -2450,7 +2388,7 @@ function AdminDashboard(): JSX.Element {
                           <div className="table-actions">
                             <button
                               type="button"
-                              className={`btn btn-circle btn-ghost btn-sm${
+                              className={`token-action-button btn btn-circle btn-ghost btn-sm${
                                 state === 'copied' ? ' btn-success' : ''
                               }`}
                               title={tokenStrings.actions.copy}
@@ -2458,11 +2396,11 @@ function AdminDashboard(): JSX.Element {
                               onClick={() => void handleCopyToken(t.id, stateKey)}
                               disabled={state === 'loading'}
                             >
-                              <Icon icon={state === 'copied' ? 'mdi:check' : 'mdi:content-copy'} width={18} height={18} />
+                              <Icon icon={state === 'copied' ? 'mdi:check' : 'mdi:content-copy'} width={16} height={16} />
                             </button>
                             <button
                               type="button"
-                              className={`btn btn-circle btn-ghost btn-sm${
+                              className={`token-action-button btn btn-circle btn-ghost btn-sm${
                                 shareState === 'copied' ? ' btn-success' : ''
                               }`}
                               title={tokenStrings.actions.share}
@@ -2470,39 +2408,39 @@ function AdminDashboard(): JSX.Element {
                               onClick={() => void handleShareToken(t.id, shareStateKey)}
                               disabled={shareState === 'loading'}
                             >
-                              <Icon icon={shareState === 'copied' ? 'mdi:check' : 'mdi:share-variant'} width={18} height={18} />
+                              <Icon icon={shareState === 'copied' ? 'mdi:check' : 'mdi:share-variant'} width={16} height={16} />
                             </button>
                             <button
                               type="button"
-                              className="btn btn-circle btn-ghost btn-sm"
+                              className="token-action-button btn btn-circle btn-ghost btn-sm"
                               title={keyStrings.actions.details}
                               aria-label={keyStrings.actions.details}
                               onClick={() => navigateToken(t.id)}
                             >
-                              <Icon icon="mdi:eye-outline" width={18} height={18} />
+                              <Icon icon="mdi:eye-outline" width={16} height={16} />
                             </button>
                             <button
                               type="button"
-                              className="btn btn-circle btn-ghost btn-sm"
+                              className="token-action-button btn btn-circle btn-ghost btn-sm"
                               title={t.enabled ? tokenStrings.actions.disable : tokenStrings.actions.enable}
                               aria-label={t.enabled ? tokenStrings.actions.disable : tokenStrings.actions.enable}
                               onClick={() => void toggleToken(t.id, t.enabled)}
                               disabled={togglingId === t.id}
                             >
-                              <Icon icon={t.enabled ? 'mdi:pause-circle-outline' : 'mdi:play-circle-outline'} width={18} height={18} />
+                              <Icon icon={t.enabled ? 'mdi:pause-circle-outline' : 'mdi:play-circle-outline'} width={16} height={16} />
                             </button>
                             <button
                               type="button"
-                              className="btn btn-circle btn-ghost btn-sm"
+                              className="token-action-button btn btn-circle btn-ghost btn-sm"
                               title={tokenStrings.actions.edit}
                               aria-label={tokenStrings.actions.edit}
                               onClick={() => openTokenNoteEdit(t.id, t.note)}
                             >
-                              <Icon icon="mdi:pencil-outline" width={18} height={18} />
+                              <Icon icon="mdi:pencil-outline" width={16} height={16} />
                             </button>
                             <button
                               type="button"
-                              className="btn btn-circle btn-ghost btn-sm"
+                              className="token-action-button btn btn-circle btn-ghost btn-sm"
                               title={tokenStrings.actions.delete}
                               aria-label={tokenStrings.actions.delete}
                               onClick={() => openTokenDeleteConfirm(t.id)}
@@ -2510,8 +2448,8 @@ function AdminDashboard(): JSX.Element {
                             >
                               <Icon
                                 icon={deletingId === t.id ? 'mdi:progress-helper' : 'mdi:trash-outline'}
-                                width={18}
-                                height={18}
+                                width={16}
+                                height={16}
                                 color="#ef4444"
                               />
                             </button>
@@ -2839,48 +2777,20 @@ function AdminDashboard(): JSX.Element {
             <p className="panel-description">{logStrings.description}</p>
           </div>
           <div className="panel-actions">
-            <div className="segmented-control">
-              <button
-                type="button"
-                className={logResultFilter === 'all' ? 'active' : ''}
-                onClick={() => {
-                  setLogResultFilter('all')
-                  setLogsPage(1)
-                }}
-              >
-                {logStrings.filters.all}
-              </button>
-              <button
-                type="button"
-                className={logResultFilter === 'success' ? 'active' : ''}
-                onClick={() => {
-                  setLogResultFilter('success')
-                  setLogsPage(1)
-                }}
-              >
-                {logStrings.filters.success}
-              </button>
-              <button
-                type="button"
-                className={logResultFilter === 'error' ? 'active' : ''}
-                onClick={() => {
-                  setLogResultFilter('error')
-                  setLogsPage(1)
-                }}
-              >
-                {logStrings.filters.error}
-              </button>
-              <button
-                type="button"
-                className={logResultFilter === 'quota_exhausted' ? 'active' : ''}
-                onClick={() => {
-                  setLogResultFilter('quota_exhausted')
-                  setLogsPage(1)
-                }}
-              >
-                {logStrings.filters.quota}
-              </button>
-            </div>
+            <SegmentedTabs<'all' | 'success' | 'error' | 'quota_exhausted'>
+              value={logResultFilter}
+              onChange={(next) => {
+                setLogResultFilter(next)
+                setLogsPage(1)
+              }}
+              options={[
+                { value: 'all', label: logStrings.filters.all },
+                { value: 'success', label: logStrings.filters.success },
+                { value: 'error', label: logStrings.filters.error },
+                { value: 'quota_exhausted', label: logStrings.filters.quota },
+              ]}
+              ariaLabel={logStrings.title}
+            />
           </div>
         </div>
         <div className="table-wrapper jobs-table-wrapper">
@@ -2941,36 +2851,17 @@ function AdminDashboard(): JSX.Element {
             <p className="panel-description">{jobsStrings.description}</p>
           </div>
           <div className="panel-actions">
-            <div className="segmented-control">
-              <button
-                type="button"
-                className={jobFilter === 'all' ? 'active' : ''}
-                onClick={() => setJobFilter('all')}
-              >
-                {jobsStrings.filters.all}
-              </button>
-              <button
-                type="button"
-                className={jobFilter === 'quota' ? 'active' : ''}
-                onClick={() => setJobFilter('quota')}
-              >
-                {jobsStrings.filters.quota}
-              </button>
-              <button
-                type="button"
-                className={jobFilter === 'usage' ? 'active' : ''}
-                onClick={() => setJobFilter('usage')}
-              >
-                {jobsStrings.filters.usage}
-              </button>
-              <button
-                type="button"
-                className={jobFilter === 'logs' ? 'active' : ''}
-                onClick={() => setJobFilter('logs')}
-              >
-                {jobsStrings.filters.logs}
-              </button>
-            </div>
+            <SegmentedTabs<'all' | 'quota' | 'usage' | 'logs'>
+              value={jobFilter}
+              onChange={setJobFilter}
+              options={[
+                { value: 'all', label: jobsStrings.filters.all },
+                { value: 'quota', label: jobsStrings.filters.quota },
+                { value: 'usage', label: jobsStrings.filters.usage },
+                { value: 'logs', label: jobsStrings.filters.logs },
+              ]}
+              ariaLabel={jobsStrings.title}
+            />
           </div>
         </div>
         <div className="table-wrapper jobs-table-wrapper">

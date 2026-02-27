@@ -80,12 +80,12 @@ function AdminLogin(): JSX.Element {
   }
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
+    <div className="auth-shell min-h-screen bg-background text-foreground">
       <div className="mx-auto flex w-full max-w-4xl flex-col gap-6 px-6 py-10">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="space-y-1">
-            <h1 className="text-3xl font-semibold tracking-tight">{ui.title}</h1>
-            <p className="text-sm text-muted-foreground">{ui.description}</p>
+            <h1 className="auth-title text-3xl font-semibold tracking-tight">{ui.title}</h1>
+            <p className="auth-subtitle text-sm text-muted-foreground">{ui.description}</p>
           </div>
           <div className="flex items-center gap-2">
             <ThemeToggle />
@@ -93,7 +93,7 @@ function AdminLogin(): JSX.Element {
           </div>
         </div>
 
-        <Card className="border-border/80 bg-card/90 backdrop-blur">
+        <Card className="auth-card border-border/80 bg-card/90 backdrop-blur">
           <CardHeader>
             <CardTitle>{ui.title}</CardTitle>
             <CardDescription>{ui.description}</CardDescription>
