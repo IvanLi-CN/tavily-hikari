@@ -4612,6 +4612,10 @@ pub async fn serve(
                 router = router.route("/login.html", get(serve_login));
                 router =
                     router.route_service("/favicon.svg", ServeFile::new(dir.join("favicon.svg")));
+                router = router.route_service(
+                    "/linuxdo-logo.svg",
+                    ServeFile::new(dir.join("linuxdo-logo.svg")),
+                );
             } else {
                 eprintln!(
                     "static index.html not found at {} — skip serving SPA",
