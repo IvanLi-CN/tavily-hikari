@@ -7,6 +7,7 @@ import {
   fetchProfile,
   fetchSummary,
   fetchTokenMetrics,
+  fetchUserToken,
   fetchPublicLogs,
   type Profile,
   type PublicMetrics,
@@ -92,6 +93,7 @@ function PublicHome(): JSX.Element {
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
   const [isMobileGuide, setIsMobileGuide] = useState(false)
   const [recentTokenUsage, setRecentTokenUsage] = useState<TokenMetrics | null>(null)
+  const [userTokenHydrationDone, setUserTokenHydrationDone] = useState(false)
 
   useEffect(() => {
     const hash = window.location.hash.slice(1)
@@ -249,6 +251,7 @@ function PublicHome(): JSX.Element {
 
   const isAdmin = profile?.isAdmin ?? false
   const builtinAuthEnabled = profile?.builtinAuthEnabled ?? false
+  const showLinuxDoLogin = profile?.userLoggedIn === false
   const availableKeys = summary?.active_keys ?? null
   const exhaustedKeys = summary?.exhausted_keys ?? null
   const totalKeys = availableKeys != null && exhaustedKeys != null ? availableKeys + exhaustedKeys : null
@@ -321,6 +324,32 @@ function PublicHome(): JSX.Element {
       .catch((err: any) => { setPublicLogs([]); setInvalidToken(Boolean(err?.status) && err.status >= 400 && err.status < 500) })
       .finally(() => setPublicLogsLoading(false))
   }, [])
+
+  useEffect(() => {
+    if (!profile?.userLoggedIn) {
+      setUserTokenHydrationDone(false)
+      return
+    }
+    if (userTokenHydrationDone) return
+
+    const controller = new AbortController()
+    fetchUserToken(controller.signal)
+      .then(({ token: userToken }) => {
+        if (isFullToken(userToken)) {
+          persistToken(userToken)
+        }
+      })
+      .catch(() => {
+        // Keep manual token entry available when user token lookup fails.
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setUserTokenHydrationDone(true)
+        }
+      })
+
+    return () => controller.abort()
+  }, [profile?.userLoggedIn, persistToken, userTokenHydrationDone])
 
   const togglePublicLog = useCallback((id: number) => {
     setExpandedPublicLogs((prev) => {
@@ -397,15 +426,28 @@ function PublicHome(): JSX.Element {
             <div className="metric-subtitle">{publicStrings.metrics.pool.subtitle}</div>
           </div>
         </div>
-        {(isAdmin || builtinAuthEnabled) && (
+        {(showLinuxDoLogin || isAdmin || builtinAuthEnabled) && (
           <div className="public-home-actions">
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={() => { window.location.href = isAdmin ? '/admin' : '/login' }}
-            >
-              {isAdmin ? publicStrings.adminButton : publicStrings.adminLoginButton}
-            </button>
+            {showLinuxDoLogin && (
+              <a href="/auth/linuxdo" className="linuxdo-login-button" aria-label={publicStrings.linuxDoLogin.button}>
+                <img
+                  src="/linuxdo-logo.svg"
+                  alt={publicStrings.linuxDoLogin.logoAlt}
+                  width={20}
+                  height={20}
+                />
+                <span>{publicStrings.linuxDoLogin.button}</span>
+              </a>
+            )}
+            {(isAdmin || builtinAuthEnabled) && (
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => { window.location.href = isAdmin ? '/admin' : '/login' }}
+              >
+                {isAdmin ? publicStrings.adminButton : publicStrings.adminLoginButton}
+              </button>
+            )}
           </div>
         )}
       </section>

@@ -31,16 +31,17 @@ use futures_util::{Stream, StreamExt};
 use reqwest::header::{HeaderMap as ReqHeaderMap, HeaderValue as ReqHeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use url::form_urlencoded;
 type SummarySig = (i64, i64, i64, i64, i64, i64, Option<i64>);
 use std::time::{Duration, Instant};
 use tavily_hikari::{
-    ApiKeyMetrics, AuthToken, ProxyError, ProxyRequest, ProxyResponse, ProxySummary, QuotaWindow,
-    RequestLogRecord, TavilyProxy, TokenHourlyBucket, TokenHourlyRequestVerdict, TokenLogRecord,
-    TokenQuotaVerdict, TokenSummary, TokenUsageBucket, effective_request_logs_gc_at,
-    effective_request_logs_retention_days, effective_token_daily_limit,
-    effective_token_hourly_limit, effective_token_hourly_request_limit,
-    effective_token_monthly_limit,
+    ApiKeyMetrics, AuthToken, OAuthAccountProfile, ProxyError, ProxyRequest, ProxyResponse,
+    ProxySummary, QuotaWindow, RequestLogRecord, TavilyProxy, TokenHourlyBucket,
+    TokenHourlyRequestVerdict, TokenLogRecord, TokenQuotaVerdict, TokenSummary, TokenUsageBucket,
+    UserTokenLookup, effective_request_logs_gc_at, effective_request_logs_retention_days,
+    effective_token_daily_limit, effective_token_hourly_limit,
+    effective_token_hourly_request_limit, effective_token_monthly_limit,
 };
 use tokio::signal;
 #[cfg(unix)]
@@ -54,6 +55,7 @@ struct AppState {
     forward_auth: ForwardAuthConfig,
     forward_auth_enabled: bool,
     builtin_admin: BuiltinAdminAuth,
+    linuxdo_oauth: LinuxDoOAuthOptions,
     dev_open_admin: bool,
     usage_base: String,
 }
@@ -72,6 +74,57 @@ pub struct AdminAuthOptions {
     pub builtin_auth_enabled: bool,
     pub builtin_auth_password: Option<String>,
     pub builtin_auth_password_hash: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct LinuxDoOAuthOptions {
+    pub enabled: bool,
+    pub client_id: Option<String>,
+    pub client_secret: Option<String>,
+    pub authorize_url: String,
+    pub token_url: String,
+    pub userinfo_url: String,
+    pub scope: String,
+    pub redirect_url: Option<String>,
+    pub session_max_age_secs: i64,
+    pub login_state_ttl_secs: i64,
+}
+
+impl LinuxDoOAuthOptions {
+    #[cfg(test)]
+    fn disabled() -> Self {
+        Self {
+            enabled: false,
+            client_id: None,
+            client_secret: None,
+            authorize_url: "https://connect.linux.do/oauth2/authorize".to_string(),
+            token_url: "https://connect.linux.do/oauth2/token".to_string(),
+            userinfo_url: "https://connect.linux.do/api/user".to_string(),
+            scope: "user".to_string(),
+            redirect_url: None,
+            session_max_age_secs: 60 * 60 * 24 * 14,
+            login_state_ttl_secs: 600,
+        }
+    }
+
+    fn is_enabled_and_configured(&self) -> bool {
+        self.enabled
+            && self
+                .client_id
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|v| !v.is_empty())
+            && self
+                .client_secret
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|v| !v.is_empty())
+            && self
+                .redirect_url
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|v| !v.is_empty())
+    }
 }
 
 impl ForwardAuthConfig {
@@ -156,6 +209,8 @@ impl ForwardAuthConfig {
 const BUILTIN_ADMIN_COOKIE_NAME: &str = "hikari_admin_session";
 const BUILTIN_ADMIN_SESSION_MAX_AGE_SECS: u64 = 60 * 60 * 24 * 14;
 const BUILTIN_ADMIN_SESSION_MAX_COUNT: usize = 1024;
+const USER_SESSION_COOKIE_NAME: &str = "hikari_user_session";
+const OAUTH_LOGIN_BINDING_COOKIE_NAME: &str = "hikari_oauth_login_binding";
 
 #[derive(Clone, Debug)]
 struct BuiltinAdminSession {
@@ -333,6 +388,20 @@ fn is_admin_request(state: &AppState, headers: &HeaderMap) -> bool {
         return true;
     }
     false
+}
+
+async fn resolve_user_session(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Option<tavily_hikari::UserSession> {
+    if !state.linuxdo_oauth.is_enabled_and_configured() {
+        return None;
+    }
+    let cookie = cookie_value(headers, USER_SESSION_COOKIE_NAME)?;
+    match state.proxy.get_user_session(&cookie).await {
+        Ok(Some(session)) => Some(session),
+        _ => None,
+    }
 }
 
 fn parse_iso_timestamp(value: &str) -> Option<i64> {
@@ -2810,6 +2879,12 @@ struct ProfileView {
     is_admin: bool,
     forward_auth_enabled: bool,
     builtin_auth_enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user_logged_in: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user_provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user_display_name: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -2869,6 +2944,9 @@ async fn get_profile(
             is_admin: true,
             forward_auth_enabled,
             builtin_auth_enabled,
+            user_logged_in: None,
+            user_provider: None,
+            user_display_name: None,
         }));
     }
 
@@ -2892,11 +2970,31 @@ async fn get_profile(
         .or_else(|| config.admin_override_name().map(str::to_string))
         .or_else(|| is_admin.then(|| "admin".to_string()));
 
+    let user_session = resolve_user_session(state.as_ref(), &headers).await;
+    let user_logged_in = if state.linuxdo_oauth.is_enabled_and_configured() {
+        Some(user_session.is_some())
+    } else {
+        None
+    };
+    let user_provider = user_session
+        .as_ref()
+        .map(|session| session.user.provider.clone());
+    let user_display_name = user_session.as_ref().and_then(|session| {
+        session
+            .user
+            .display_name
+            .clone()
+            .or_else(|| session.user.username.clone())
+    });
+
     Ok(Json(ProfileView {
         display_name,
         is_admin,
         forward_auth_enabled,
         builtin_auth_enabled,
+        user_logged_in,
+        user_provider,
+        user_display_name,
     }))
 }
 
@@ -2933,6 +3031,93 @@ fn session_clear_cookie(secure: bool) -> Result<HeaderValue, StatusCode> {
     HeaderValue::from_str(&cookie).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
+fn user_session_set_cookie(
+    token: &str,
+    max_age_secs: i64,
+    secure: bool,
+) -> Result<HeaderValue, StatusCode> {
+    let secure = if secure { "; Secure" } else { "" };
+    let cookie = format!(
+        "{name}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}{secure}",
+        name = USER_SESSION_COOKIE_NAME,
+        max_age = max_age_secs.max(60),
+        secure = secure
+    );
+    HeaderValue::from_str(&cookie).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+fn user_session_clear_cookie(secure: bool) -> Result<HeaderValue, StatusCode> {
+    let secure = if secure { "; Secure" } else { "" };
+    let cookie = format!(
+        "{name}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0{secure}",
+        name = USER_SESSION_COOKIE_NAME,
+        secure = secure
+    );
+    HeaderValue::from_str(&cookie).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+fn oauth_login_binding_set_cookie(
+    token: &str,
+    max_age_secs: i64,
+    secure: bool,
+) -> Result<HeaderValue, StatusCode> {
+    let secure = if secure { "; Secure" } else { "" };
+    let cookie = format!(
+        "{name}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}{secure}",
+        name = OAUTH_LOGIN_BINDING_COOKIE_NAME,
+        max_age = max_age_secs.max(60),
+        secure = secure
+    );
+    HeaderValue::from_str(&cookie).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+fn oauth_login_binding_clear_cookie(secure: bool) -> Result<HeaderValue, StatusCode> {
+    let secure = if secure { "; Secure" } else { "" };
+    let cookie = format!(
+        "{name}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0{secure}",
+        name = OAUTH_LOGIN_BINDING_COOKIE_NAME,
+        secure = secure
+    );
+    HeaderValue::from_str(&cookie).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+fn new_cookie_nonce() -> String {
+    use base64::Engine as _;
+    use rand::RngCore as _;
+
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn hash_oauth_binding(nonce: &str) -> String {
+    use base64::Engine as _;
+    let digest = Sha256::digest(nonce.as_bytes());
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest)
+}
+
+fn map_oauth_upstream_transport_error(err: &reqwest::Error) -> StatusCode {
+    if err.is_timeout() {
+        StatusCode::GATEWAY_TIMEOUT
+    } else {
+        StatusCode::BAD_GATEWAY
+    }
+}
+
+fn map_oauth_upstream_status(status: reqwest::StatusCode) -> StatusCode {
+    if status.is_server_error() {
+        return StatusCode::BAD_GATEWAY;
+    }
+    match status {
+        reqwest::StatusCode::BAD_REQUEST => StatusCode::BAD_REQUEST,
+        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
+            StatusCode::UNAUTHORIZED
+        }
+        reqwest::StatusCode::TOO_MANY_REQUESTS => StatusCode::SERVICE_UNAVAILABLE,
+        _ => StatusCode::BAD_GATEWAY,
+    }
+}
+
 async fn post_admin_login(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -2965,6 +3150,304 @@ async fn post_admin_logout(
     state.builtin_admin.forget_session(&headers);
     let cookie = session_clear_cookie(wants_secure_cookie(&headers))?;
     Ok((StatusCode::NO_CONTENT, [(SET_COOKIE, cookie)]).into_response())
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UserTokenView {
+    token: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LinuxDoCallbackQuery {
+    code: Option<String>,
+    state: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LinuxDoTokenResponse {
+    access_token: String,
+}
+
+fn json_value_to_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(v) => Some(v.clone()),
+        Value::Number(v) => Some(v.to_string()),
+        _ => None,
+    }
+}
+
+async fn get_linuxdo_auth(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Response<Body>, StatusCode> {
+    let cfg = &state.linuxdo_oauth;
+    if !cfg.is_enabled_and_configured() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    let binding_nonce = new_cookie_nonce();
+    let binding_hash = hash_oauth_binding(&binding_nonce);
+    let state_token = state
+        .proxy
+        .create_oauth_login_state_with_binding(
+            "linuxdo",
+            Some("/"),
+            cfg.login_state_ttl_secs,
+            Some(&binding_hash),
+        )
+        .await
+        .map_err(|err| {
+            eprintln!("create linuxdo oauth state error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let mut url =
+        reqwest::Url::parse(&cfg.authorize_url).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    {
+        let mut pairs = url.query_pairs_mut();
+        pairs.append_pair("client_id", cfg.client_id.as_deref().unwrap_or_default());
+        pairs.append_pair(
+            "redirect_uri",
+            cfg.redirect_url.as_deref().unwrap_or_default(),
+        );
+        pairs.append_pair("response_type", "code");
+        pairs.append_pair("scope", &cfg.scope);
+        pairs.append_pair("state", &state_token);
+    }
+
+    let binding_cookie = oauth_login_binding_set_cookie(
+        &binding_nonce,
+        cfg.login_state_ttl_secs,
+        wants_secure_cookie(&headers),
+    )?;
+    Ok((
+        [(SET_COOKIE, binding_cookie)],
+        Redirect::temporary(url.as_ref()),
+    )
+        .into_response())
+}
+
+async fn get_linuxdo_callback(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<LinuxDoCallbackQuery>,
+) -> Result<Response<Body>, StatusCode> {
+    let cfg = &state.linuxdo_oauth;
+    if !cfg.is_enabled_and_configured() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let use_secure_cookie = wants_secure_cookie(&headers);
+    let code = query
+        .code
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty());
+    let oauth_state = query
+        .state
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty());
+    let (Some(code), Some(oauth_state)) = (code, oauth_state) else {
+        return Err(StatusCode::BAD_REQUEST);
+    };
+    let binding_nonce = cookie_value(&headers, OAUTH_LOGIN_BINDING_COOKIE_NAME)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or(StatusCode::BAD_REQUEST)?;
+    let binding_hash = hash_oauth_binding(&binding_nonce);
+
+    let redirect_to = state
+        .proxy
+        .consume_oauth_login_state_with_binding("linuxdo", oauth_state, Some(&binding_hash))
+        .await
+        .map_err(|err| {
+            eprintln!("consume linuxdo oauth state error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let Some(redirect_to) = redirect_to else {
+        return Err(StatusCode::BAD_REQUEST);
+    };
+
+    let client = reqwest::Client::new();
+    let token_resp = client
+        .post(&cfg.token_url)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .form(&[
+            ("client_id", cfg.client_id.as_deref().unwrap_or_default()),
+            (
+                "client_secret",
+                cfg.client_secret.as_deref().unwrap_or_default(),
+            ),
+            ("code", code),
+            (
+                "redirect_uri",
+                cfg.redirect_url.as_deref().unwrap_or_default(),
+            ),
+            ("grant_type", "authorization_code"),
+        ])
+        .send()
+        .await
+        .map_err(|err| {
+            eprintln!("linuxdo token request error: {err}");
+            map_oauth_upstream_transport_error(&err)
+        })?;
+    if !token_resp.status().is_success() {
+        let status = token_resp.status();
+        let body = token_resp.text().await.unwrap_or_default();
+        eprintln!("linuxdo token response status={} body={}", status, body);
+        return Err(map_oauth_upstream_status(status));
+    }
+    let token_payload: LinuxDoTokenResponse = token_resp.json().await.map_err(|err| {
+        eprintln!("linuxdo token parse error: {err}");
+        StatusCode::BAD_GATEWAY
+    })?;
+    let access_token = token_payload.access_token.trim().to_string();
+    if access_token.is_empty() {
+        return Err(StatusCode::BAD_GATEWAY);
+    }
+
+    let user_resp = client
+        .get(&cfg.userinfo_url)
+        .bearer_auth(&access_token)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .send()
+        .await
+        .map_err(|err| {
+            eprintln!("linuxdo userinfo request error: {err}");
+            map_oauth_upstream_transport_error(&err)
+        })?;
+    if !user_resp.status().is_success() {
+        let status = user_resp.status();
+        let body = user_resp.text().await.unwrap_or_default();
+        eprintln!("linuxdo userinfo response status={} body={}", status, body);
+        return Err(map_oauth_upstream_status(status));
+    }
+    let user_json: Value = user_resp.json().await.map_err(|err| {
+        eprintln!("linuxdo userinfo parse error: {err}");
+        StatusCode::BAD_GATEWAY
+    })?;
+
+    let provider_user_id = user_json
+        .get("id")
+        .and_then(json_value_to_string)
+        .filter(|v| !v.is_empty())
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let username = user_json
+        .get("username")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string);
+    let name = user_json
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string);
+    let avatar_template = user_json
+        .get("avatar_template")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string);
+    let active = user_json
+        .get("active")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let trust_level = user_json.get("trust_level").and_then(|v| v.as_i64());
+    let raw_payload_json = serde_json::to_string(&user_json).ok();
+
+    let profile = OAuthAccountProfile {
+        provider: "linuxdo".to_string(),
+        provider_user_id: provider_user_id.clone(),
+        username: username.clone(),
+        name: name.clone(),
+        avatar_template,
+        active,
+        trust_level,
+        raw_payload_json,
+    };
+
+    let user = state
+        .proxy
+        .upsert_oauth_account(&profile)
+        .await
+        .map_err(|err| {
+            eprintln!("upsert linuxdo oauth account error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let note = format!(
+        "linuxdo:{}",
+        username.clone().unwrap_or_else(|| provider_user_id.clone())
+    );
+    state
+        .proxy
+        .ensure_user_token_binding(&user.user_id, Some(&note))
+        .await
+        .map_err(|err| {
+            eprintln!("ensure user token binding error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let session = state
+        .proxy
+        .create_user_session(&user, cfg.session_max_age_secs)
+        .await
+        .map_err(|err| {
+            eprintln!("create user session error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let cookie =
+        user_session_set_cookie(&session.token, cfg.session_max_age_secs, use_secure_cookie)?;
+    let clear_binding_cookie = oauth_login_binding_clear_cookie(use_secure_cookie)?;
+
+    let target = redirect_to.unwrap_or_else(|| "/".to_string());
+    let mut response = Redirect::temporary(&target).into_response();
+    response.headers_mut().append(SET_COOKIE, cookie);
+    response
+        .headers_mut()
+        .append(SET_COOKIE, clear_binding_cookie);
+    Ok(response)
+}
+
+async fn post_user_logout(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Response<Body>, StatusCode> {
+    if !state.linuxdo_oauth.is_enabled_and_configured() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    if let Some(token) = cookie_value(&headers, USER_SESSION_COOKIE_NAME) {
+        let _ = state.proxy.revoke_user_session(&token).await;
+    }
+    let cookie = user_session_clear_cookie(wants_secure_cookie(&headers))?;
+    Ok((StatusCode::NO_CONTENT, [(SET_COOKIE, cookie)]).into_response())
+}
+
+async fn get_user_token(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<UserTokenView>, StatusCode> {
+    if !state.linuxdo_oauth.is_enabled_and_configured() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let Some(user_session) = resolve_user_session(state.as_ref(), &headers).await else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+
+    match state.proxy.get_user_token(&user_session.user.user_id).await {
+        Ok(UserTokenLookup::Found(secret)) => Ok(Json(UserTokenView {
+            token: secret.token,
+        })),
+        Ok(UserTokenLookup::MissingBinding) => Err(StatusCode::NOT_FOUND),
+        Ok(UserTokenLookup::Unavailable) => Err(StatusCode::CONFLICT),
+        Err(err) => {
+            eprintln!("get user token error: {err}");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
 }
 
 fn detect_versions(static_dir: Option<&FsPath>) -> (String, String) {
@@ -3984,6 +4467,7 @@ async fn create_tokens_batch(
         })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn serve(
     addr: SocketAddr,
     proxy: TavilyProxy,
@@ -3992,6 +4476,7 @@ pub async fn serve(
     admin_auth: AdminAuthOptions,
     dev_open_admin: bool,
     usage_base: String,
+    linuxdo_oauth: LinuxDoOAuthOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let AdminAuthOptions {
         forward_auth_enabled,
@@ -4010,6 +4495,7 @@ pub async fn serve(
         forward_auth,
         forward_auth_enabled,
         builtin_admin,
+        linuxdo_oauth,
         dev_open_admin,
         usage_base: usage_base.clone(),
     });
@@ -4037,6 +4523,17 @@ pub async fn serve(
         );
     }
 
+    println!(
+        "LinuxDo OAuth: enabled={} configured={} redirect={}",
+        state.linuxdo_oauth.enabled,
+        state.linuxdo_oauth.is_enabled_and_configured(),
+        state
+            .linuxdo_oauth
+            .redirect_url
+            .as_deref()
+            .unwrap_or("<none>")
+    );
+
     let mut router = Router::new()
         .route("/health", get(health_check))
         .route("/api/debug/headers", get(debug_headers))
@@ -4049,6 +4546,10 @@ pub async fn serve(
         .route("/api/events", get(sse_dashboard))
         .route("/api/version", get(get_versions))
         .route("/api/profile", get(get_profile))
+        .route("/auth/linuxdo", get(get_linuxdo_auth))
+        .route("/auth/linuxdo/callback", get(get_linuxdo_callback))
+        .route("/api/user/logout", post(post_user_logout))
+        .route("/api/user/token", get(get_user_token))
         .route("/api/admin/login", post(post_admin_login))
         .route("/api/admin/logout", post(post_admin_logout))
         .route("/api/tavily/search", post(tavily_http_search))
@@ -4111,6 +4612,10 @@ pub async fn serve(
                 router = router.route("/login.html", get(serve_login));
                 router =
                     router.route_service("/favicon.svg", ServeFile::new(dir.join("favicon.svg")));
+                router = router.route_service(
+                    "/linuxdo-logo.svg",
+                    ServeFile::new(dir.join("linuxdo-logo.svg")),
+                );
             } else {
                 eprintln!(
                     "static index.html not found at {} — skip serving SPA",
@@ -5556,7 +6061,7 @@ mod tests {
     use axum::Router;
     use axum::extract::{Json, Query};
     use axum::http::Method;
-    use axum::routing::{any, post};
+    use axum::routing::{any, get, post};
     use nanoid::nanoid;
     use reqwest::Client;
     use sqlx::Row;
@@ -5768,6 +6273,7 @@ mod tests {
             forward_auth: ForwardAuthConfig::new(None, None, None, None),
             forward_auth_enabled: true,
             builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
             dev_open_admin,
             usage_base,
         });
@@ -5803,6 +6309,7 @@ mod tests {
             forward_auth,
             forward_auth_enabled: true,
             builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
             dev_open_admin,
             usage_base: "http://127.0.0.1:58088".to_string(),
         });
@@ -5834,6 +6341,7 @@ mod tests {
             forward_auth,
             forward_auth_enabled: true,
             builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
             dev_open_admin,
             usage_base,
         });
@@ -5925,6 +6433,7 @@ mod tests {
             forward_auth: ForwardAuthConfig::new(None, None, None, None),
             forward_auth_enabled: false,
             builtin_admin: BuiltinAdminAuth::new(true, None, Some(password_hash)),
+            linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
             dev_open_admin: false,
             usage_base: "http://127.0.0.1:58088".to_string(),
         });
@@ -5933,6 +6442,48 @@ mod tests {
             .route("/api/admin/login", post(post_admin_login))
             .route("/api/admin/logout", post(post_admin_logout))
             .route("/api/keys/batch", post(create_api_keys_batch))
+            .with_state(state);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+        addr
+    }
+
+    fn linuxdo_oauth_options_for_test() -> LinuxDoOAuthOptions {
+        LinuxDoOAuthOptions {
+            enabled: true,
+            client_id: Some("linuxdo-test-client-id".to_string()),
+            client_secret: Some("linuxdo-test-client-secret".to_string()),
+            authorize_url: "https://connect.linux.do/oauth2/authorize".to_string(),
+            token_url: "https://connect.linux.do/oauth2/token".to_string(),
+            userinfo_url: "https://connect.linux.do/api/user".to_string(),
+            scope: "user".to_string(),
+            redirect_url: Some("http://127.0.0.1/auth/linuxdo/callback".to_string()),
+            session_max_age_secs: 3600,
+            login_state_ttl_secs: 600,
+        }
+    }
+
+    async fn spawn_user_oauth_server(proxy: TavilyProxy) -> SocketAddr {
+        let state = Arc::new(AppState {
+            proxy,
+            static_dir: None,
+            forward_auth: ForwardAuthConfig::new(None, None, None, None),
+            forward_auth_enabled: false,
+            builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            linuxdo_oauth: linuxdo_oauth_options_for_test(),
+            dev_open_admin: false,
+            usage_base: "http://127.0.0.1:58088".to_string(),
+        });
+
+        let app = Router::new()
+            .route("/api/profile", get(get_profile))
+            .route("/api/user/token", get(get_user_token))
             .with_state(state);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -6573,6 +7124,104 @@ mod tests {
             .await
             .expect("request succeeds");
         assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn user_profile_and_user_token_reflect_linuxdo_session() {
+        let db_path = temp_db_path("linuxdo-profile-token");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        let user = proxy
+            .upsert_oauth_account(&OAuthAccountProfile {
+                provider: "linuxdo".to_string(),
+                provider_user_id: "linuxdo-user-1".to_string(),
+                username: Some("linuxdo_alice".to_string()),
+                name: Some("LinuxDO Alice".to_string()),
+                avatar_template: None,
+                active: true,
+                trust_level: Some(2),
+                raw_payload_json: None,
+            })
+            .await
+            .expect("upsert oauth user");
+        let bound_token = proxy
+            .ensure_user_token_binding(&user.user_id, Some("linuxdo:linuxdo_alice"))
+            .await
+            .expect("ensure token binding");
+        let session = proxy
+            .create_user_session(&user, 3600)
+            .await
+            .expect("create user session");
+
+        let addr = spawn_user_oauth_server(proxy).await;
+        let client = Client::new();
+
+        let profile_url = format!("http://{}/api/profile", addr);
+        let anonymous_profile_resp = client
+            .get(&profile_url)
+            .send()
+            .await
+            .expect("anonymous profile request");
+        assert_eq!(anonymous_profile_resp.status(), reqwest::StatusCode::OK);
+        let anonymous_profile: serde_json::Value = anonymous_profile_resp
+            .json()
+            .await
+            .expect("anonymous profile json");
+        assert_eq!(
+            anonymous_profile.get("userLoggedIn"),
+            Some(&serde_json::Value::Bool(false))
+        );
+
+        let user_cookie = format!("{USER_SESSION_COOKIE_NAME}={}", session.token);
+        let logged_in_profile_resp = client
+            .get(&profile_url)
+            .header(reqwest::header::COOKIE, user_cookie.clone())
+            .send()
+            .await
+            .expect("logged-in profile request");
+        assert_eq!(logged_in_profile_resp.status(), reqwest::StatusCode::OK);
+        let logged_in_profile: serde_json::Value = logged_in_profile_resp
+            .json()
+            .await
+            .expect("logged-in profile json");
+        assert_eq!(
+            logged_in_profile.get("userLoggedIn"),
+            Some(&serde_json::Value::Bool(true))
+        );
+        assert_eq!(
+            logged_in_profile.get("userProvider"),
+            Some(&serde_json::Value::String("linuxdo".to_string()))
+        );
+        assert_eq!(
+            logged_in_profile.get("userDisplayName"),
+            Some(&serde_json::Value::String("LinuxDO Alice".to_string()))
+        );
+
+        let token_url = format!("http://{}/api/user/token", addr);
+        let unauth_resp = client
+            .get(&token_url)
+            .send()
+            .await
+            .expect("user token anonymous request");
+        assert_eq!(unauth_resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+        let token_resp = client
+            .get(&token_url)
+            .header(reqwest::header::COOKIE, user_cookie)
+            .send()
+            .await
+            .expect("user token request");
+        assert_eq!(token_resp.status(), reqwest::StatusCode::OK);
+        let token_body: serde_json::Value = token_resp.json().await.expect("user token json");
+        assert_eq!(
+            token_body.get("token").and_then(|value| value.as_str()),
+            Some(bound_token.token.as_str())
+        );
 
         let _ = std::fs::remove_file(db_path);
     }

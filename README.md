@@ -98,6 +98,16 @@ The stock [`docker-compose.yml`](docker-compose.yml) exposes port 8787 and mount
 | `--admin-auth-builtin-password-hash` / `ADMIN_AUTH_BUILTIN_PASSWORD_HASH` | Built-in admin password hash (PHC string, recommended).                                                        |
 | `--admin-auth-builtin-password` / `ADMIN_AUTH_BUILTIN_PASSWORD`           | Built-in admin password (deprecated; prefer password hash).                                                    |
 | `--dev-open-admin` / `DEV_OPEN_ADMIN`                                     | Boolean flag to bypass admin checks in local/dev setups (default `false`).                                     |
+| `--linuxdo-oauth-enabled` / `LINUXDO_OAUTH_ENABLED`                       | Enable Linux DO Connect OAuth2 login for end users (default `false`).                                          |
+| `--linuxdo-oauth-client-id` / `LINUXDO_OAUTH_CLIENT_ID`                   | Linux DO OAuth2 client ID (`connect.linux.do` app).                                                            |
+| `--linuxdo-oauth-client-secret` / `LINUXDO_OAUTH_CLIENT_SECRET`           | Linux DO OAuth2 client secret.                                                                                 |
+| `--linuxdo-oauth-authorize-url` / `LINUXDO_OAUTH_AUTHORIZE_URL`           | OAuth2 authorize endpoint (default `https://connect.linux.do/oauth2/authorize`).                               |
+| `--linuxdo-oauth-token-url` / `LINUXDO_OAUTH_TOKEN_URL`                   | OAuth2 token endpoint (default `https://connect.linux.do/oauth2/token`).                                       |
+| `--linuxdo-oauth-userinfo-url` / `LINUXDO_OAUTH_USERINFO_URL`             | OAuth2 user profile endpoint (default `https://connect.linux.do/api/user`).                                    |
+| `--linuxdo-oauth-scope` / `LINUXDO_OAUTH_SCOPE`                           | OAuth scope (default `user`).                                                                                  |
+| `--linuxdo-oauth-redirect-url` / `LINUXDO_OAUTH_REDIRECT_URL`             | Callback URL on this service (for example `https://tavily.ivanli.cc/auth/linuxdo/callback`).                   |
+| `--user-session-max-age-secs` / `USER_SESSION_MAX_AGE_SECS`               | End-user login cookie max age in seconds (default `1209600`, 14 days).                                         |
+| `--oauth-login-state-ttl-secs` / `OAUTH_LOGIN_STATE_TTL_SECS`             | One-time OAuth state token TTL in seconds (default `600`).                                                     |
 
 If `--keys`/`TAVILY_API_KEYS` is supplied, the database sync logic adds or revives keys listed there and soft deletes the rest. Otherwise, the admin workflow fully controls key state.
 
@@ -177,6 +187,30 @@ export ADMIN_AUTH_FORWARD_ENABLED=false
   - If you terminate TLS at a reverse proxy, set `X-Forwarded-Proto: https` (or `Forwarded: proto=https`) so the backend can mark the session cookie as `Secure`.
 
 Deployment example (Caddy as gateway): see `examples/forwardauth-caddy/`.
+
+## Linux DO OAuth Login (User Flow)
+
+Tavily Hikari can expose Linux DO Connect OAuth2 login for regular users, independent from admin auth.
+
+```bash
+export LINUXDO_OAUTH_ENABLED=true
+export LINUXDO_OAUTH_CLIENT_ID='<your-linuxdo-client-id>'
+export LINUXDO_OAUTH_CLIENT_SECRET='<your-linuxdo-client-secret>'
+export LINUXDO_OAUTH_REDIRECT_URL='https://tavily.ivanli.cc/auth/linuxdo/callback'
+```
+
+- Homepage behavior:
+  - When not logged in, area ① shows a **Sign in with Linux DO** button.
+  - After login, area ① is hidden and area ② auto-fills the user's bound `th-...` token.
+- Token policy:
+  - First Linux DO login automatically creates and binds one Hikari access token.
+  - Later logins reuse the same binding; no extra token is created.
+  - If the bound token is disabled/deleted, `/api/user/token` returns an error (`404` or `409`) and does not auto-regenerate.
+- New endpoints:
+  - `GET /auth/linuxdo`
+  - `GET /auth/linuxdo/callback`
+  - `GET /api/user/token`
+  - `POST /api/user/logout`
 
 ## Frontend Highlights
 

@@ -103,6 +103,16 @@ curl -X POST http://127.0.0.1:8787/api/keys \
 | `--admin-auth-builtin-password-hash` / `ADMIN_AUTH_BUILTIN_PASSWORD_HASH` | 内置管理员口令哈希（PHC 字符串，推荐）。                                                                                     |
 | `--admin-auth-builtin-password` / `ADMIN_AUTH_BUILTIN_PASSWORD`           | 内置管理员登录口令（不推荐，优先使用口令哈希）。                                                                             |
 | `--dev-open-admin` / `DEV_OPEN_ADMIN`                                     | 仅限本地调试的开关，跳过管理员校验（默认 `false`）。                                                                         |
+| `--linuxdo-oauth-enabled` / `LINUXDO_OAUTH_ENABLED`                       | 是否启用 Linux DO Connect OAuth2 用户登录（默认 `false`）。                                                                  |
+| `--linuxdo-oauth-client-id` / `LINUXDO_OAUTH_CLIENT_ID`                   | Linux DO OAuth2 客户端 ID（`connect.linux.do` 应用）。                                                                       |
+| `--linuxdo-oauth-client-secret` / `LINUXDO_OAUTH_CLIENT_SECRET`           | Linux DO OAuth2 客户端密钥。                                                                                                 |
+| `--linuxdo-oauth-authorize-url` / `LINUXDO_OAUTH_AUTHORIZE_URL`           | OAuth2 授权端点（默认 `https://connect.linux.do/oauth2/authorize`）。                                                        |
+| `--linuxdo-oauth-token-url` / `LINUXDO_OAUTH_TOKEN_URL`                   | OAuth2 换 token 端点（默认 `https://connect.linux.do/oauth2/token`）。                                                       |
+| `--linuxdo-oauth-userinfo-url` / `LINUXDO_OAUTH_USERINFO_URL`             | OAuth2 用户信息端点（默认 `https://connect.linux.do/api/user`）。                                                            |
+| `--linuxdo-oauth-scope` / `LINUXDO_OAUTH_SCOPE`                           | OAuth scope（默认 `user`）。                                                                                                 |
+| `--linuxdo-oauth-redirect-url` / `LINUXDO_OAUTH_REDIRECT_URL`             | 本服务回调地址（例如 `https://tavily.ivanli.cc/auth/linuxdo/callback`）。                                                    |
+| `--user-session-max-age-secs` / `USER_SESSION_MAX_AGE_SECS`               | 用户登录会话 cookie 的有效期（秒，默认 `1209600`，即 14 天）。                                                               |
+| `--oauth-login-state-ttl-secs` / `OAUTH_LOGIN_STATE_TTL_SECS`             | OAuth 一次性 state 的有效期（秒，默认 `600`）。                                                                              |
 
 首次运行会自动建表。若在 CLI/环境变量里显式传入 `--keys` 或 `TAVILY_API_KEYS`，会同步 `api_keys` 表：**在列表中**的 Key 会被新增或恢复为 `active`；**不在列表中**的 Key 会被标记为 `deleted`。默认推荐通过管理员 API/前端控制台维护 Key 集合。
 
@@ -182,6 +192,30 @@ export ADMIN_AUTH_FORWARD_ENABLED=false
   - 不要在环境变量里存放明文口令；优先使用 `ADMIN_AUTH_BUILTIN_PASSWORD_HASH`（PHC 字符串）并设置强口令。
 
 部署示例（Caddy 作为网关）：见 `examples/forwardauth-caddy/`。
+
+## Linux DO OAuth 登录（用户侧）
+
+Tavily Hikari 现可独立于管理员体系，提供 Linux DO Connect OAuth2 登录能力。
+
+```bash
+export LINUXDO_OAUTH_ENABLED=true
+export LINUXDO_OAUTH_CLIENT_ID='<你的-linuxdo-client-id>'
+export LINUXDO_OAUTH_CLIENT_SECRET='<你的-linuxdo-client-secret>'
+export LINUXDO_OAUTH_REDIRECT_URL='https://tavily.ivanli.cc/auth/linuxdo/callback'
+```
+
+- 首页行为：
+  - 未登录时，首页 ① 区域显示 **使用 Linux DO 登录** 按钮。
+  - 登录成功后，① 自动隐藏，并在 ② 自动填充该用户绑定的 `th-...` token。
+- Token 绑定策略：
+  - 首次 Linux DO 登录会自动创建并绑定 1 个 Hikari 访问令牌。
+  - 后续登录复用同一绑定，不重复创建。
+  - 若绑定 token 被禁用或删除，`/api/user/token` 会返回错误（`404` 或 `409`），不会自动重建。
+- 新增接口：
+  - `GET /auth/linuxdo`
+  - `GET /auth/linuxdo/callback`
+  - `GET /api/user/token`
+  - `POST /api/user/logout`
 
 ## 前端控制台
 

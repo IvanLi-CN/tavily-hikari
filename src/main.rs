@@ -85,6 +85,58 @@ struct Cli {
         default_value = "https://api.tavily.com"
     )]
     usage_base: String,
+
+    /// Enable/disable LinuxDo OAuth2 login for user-facing flow.
+    #[arg(long, env = "LINUXDO_OAUTH_ENABLED", default_value_t = false)]
+    linuxdo_oauth_enabled: bool,
+
+    /// LinuxDo OAuth2 client id.
+    #[arg(long, env = "LINUXDO_OAUTH_CLIENT_ID")]
+    linuxdo_oauth_client_id: Option<String>,
+
+    /// LinuxDo OAuth2 client secret.
+    #[arg(long, env = "LINUXDO_OAUTH_CLIENT_SECRET", hide_env_values = true)]
+    linuxdo_oauth_client_secret: Option<String>,
+
+    /// LinuxDo OAuth2 authorize endpoint.
+    #[arg(
+        long,
+        env = "LINUXDO_OAUTH_AUTHORIZE_URL",
+        default_value = "https://connect.linux.do/oauth2/authorize"
+    )]
+    linuxdo_oauth_authorize_url: String,
+
+    /// LinuxDo OAuth2 token endpoint.
+    #[arg(
+        long,
+        env = "LINUXDO_OAUTH_TOKEN_URL",
+        default_value = "https://connect.linux.do/oauth2/token"
+    )]
+    linuxdo_oauth_token_url: String,
+
+    /// LinuxDo OAuth2 userinfo endpoint.
+    #[arg(
+        long,
+        env = "LINUXDO_OAUTH_USERINFO_URL",
+        default_value = "https://connect.linux.do/api/user"
+    )]
+    linuxdo_oauth_userinfo_url: String,
+
+    /// LinuxDo OAuth2 requested scope.
+    #[arg(long, env = "LINUXDO_OAUTH_SCOPE", default_value = "user")]
+    linuxdo_oauth_scope: String,
+
+    /// OAuth callback URL for this service.
+    #[arg(long, env = "LINUXDO_OAUTH_REDIRECT_URL")]
+    linuxdo_oauth_redirect_url: Option<String>,
+
+    /// Max age for persisted user session cookie.
+    #[arg(long, env = "USER_SESSION_MAX_AGE_SECS", default_value_t = 60 * 60 * 24 * 14)]
+    user_session_max_age_secs: i64,
+
+    /// One-time OAuth login state TTL.
+    #[arg(long, env = "OAUTH_LOGIN_STATE_TTL_SECS", default_value_t = 600)]
+    oauth_login_state_ttl_secs: i64,
 }
 
 #[tokio::main]
@@ -167,6 +219,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         builtin_auth_password_hash: builtin_password_hash,
     };
 
+    let linuxdo_oauth_client_id = cli
+        .linuxdo_oauth_client_id
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    let linuxdo_oauth_client_secret = cli
+        .linuxdo_oauth_client_secret
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    let linuxdo_oauth_redirect_url = cli
+        .linuxdo_oauth_redirect_url
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    let linuxdo_oauth_scope = {
+        let scope = cli.linuxdo_oauth_scope.trim();
+        if scope.is_empty() {
+            "user".to_string()
+        } else {
+            scope.to_string()
+        }
+    };
+
+    if cli.linuxdo_oauth_enabled
+        && (linuxdo_oauth_client_id.is_none()
+            || linuxdo_oauth_client_secret.is_none()
+            || linuxdo_oauth_redirect_url.is_none())
+    {
+        return Err(
+            "LINUXDO_OAUTH_CLIENT_ID, LINUXDO_OAUTH_CLIENT_SECRET and LINUXDO_OAUTH_REDIRECT_URL are required when LINUXDO_OAUTH_ENABLED=true"
+                .into(),
+        );
+    }
+
+    let linuxdo_oauth = server::LinuxDoOAuthOptions {
+        enabled: cli.linuxdo_oauth_enabled,
+        client_id: linuxdo_oauth_client_id,
+        client_secret: linuxdo_oauth_client_secret,
+        authorize_url: cli.linuxdo_oauth_authorize_url.trim().to_string(),
+        token_url: cli.linuxdo_oauth_token_url.trim().to_string(),
+        userinfo_url: cli.linuxdo_oauth_userinfo_url.trim().to_string(),
+        scope: linuxdo_oauth_scope,
+        redirect_url: linuxdo_oauth_redirect_url,
+        session_max_age_secs: cli.user_session_max_age_secs.max(60),
+        login_state_ttl_secs: cli.oauth_login_state_ttl_secs.max(60),
+    };
+
     let static_dir = cli.static_dir.or_else(|| {
         let default = PathBuf::from("web/dist");
         if default.exists() {
@@ -184,6 +281,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         admin_auth,
         cli.dev_open_admin,
         cli.usage_base,
+        linuxdo_oauth,
     )
     .await?;
 
