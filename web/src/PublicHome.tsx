@@ -430,12 +430,7 @@ function PublicHome(): JSX.Element {
           <div className="public-home-actions">
             {showLinuxDoLogin && (
               <a href="/auth/linuxdo" className="linuxdo-login-button" aria-label={publicStrings.linuxDoLogin.button}>
-                <img
-                  src="/linuxdo-logo.svg"
-                  alt={publicStrings.linuxDoLogin.logoAlt}
-                  width={20}
-                  height={20}
-                />
+                <Icon icon="simple-icons:linux" className="linuxdo-login-icon" width={20} height={20} aria-hidden="true" />
                 <span>{publicStrings.linuxDoLogin.button}</span>
               </a>
             )}

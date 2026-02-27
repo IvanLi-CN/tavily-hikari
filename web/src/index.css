@@ -211,10 +211,11 @@ button {
   transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
 }
 
-.linuxdo-login-button img {
+.linuxdo-login-button .linuxdo-login-icon {
   width: 20px;
   height: 20px;
-  border-radius: 50%;
+  color: #111827;
+  flex: 0 0 auto;
 }
 
 .linuxdo-login-button:hover {
