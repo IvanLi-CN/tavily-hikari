@@ -1,51 +1,75 @@
 /** @type {import('tailwindcss').Config} */
 module.exports = {
-  content: ['./index.html', './src/**/*.{ts,tsx}'],
-  theme: { extend: {} },
-  plugins: [require('daisyui')],
-  daisyui: {
-    themes: [
-      {
-        tavily: {
-          'color-scheme': 'light',
-          'base-100': 'oklch(98% 0 0)',
-          'base-200': 'oklch(97% 0 0)',
-          'base-300': 'oklch(92% 0 0)',
-          'base-content': 'oklch(20% 0 0)',
-          primary: '#5D8BFA',
-          'primary-content': 'oklch(100% 0 0)',
-          secondary: '#2D2F32',
-          'secondary-content': 'oklch(98% 0.003 247.858)',
-          accent: 'oklch(87% 0.01 258.338)',
-          'accent-content': 'oklch(13% 0.028 261.692)',
-          neutral: 'oklch(43% 0 0)',
-          'neutral-content': 'oklch(98% 0 0)',
-          info: 'oklch(60% 0.126 221.723)',
-          'info-content': 'oklch(98% 0.019 200.873)',
-          success: 'oklch(59% 0.145 163.225)',
-          'success-content': 'oklch(97% 0.021 166.113)',
-          warning: '#EFBD39',
-          'warning-content': 'oklch(98% 0.026 102.212)',
-          error: '#E14D41',
-          'error-content': 'oklch(97% 0.013 17.38)',
-          // extra shape tokens (kept for potential custom styling)
-          '--radius-selector': '2rem',
-          '--radius-field': '2rem',
-          '--radius-box': '2rem',
-          '--size-selector': '0.25rem',
-          '--size-field': '0.25rem',
-          '--border': '1px',
-          '--depth': '0',
-          '--noise': '1',
-          // align with daisyUI rounding vars for current version
-          '--rounded-box': '2rem',
-          '--rounded-btn': '2rem',
-          '--rounded-badge': '2rem',
-          '--tab-border': '1px',
-          '--tab-radius': '0.25rem',
-        },
+  darkMode: ['class'],
+  content: ['./index.html', './admin.html', './login.html', './src/**/*.{ts,tsx}'],
+  theme: {
+    container: {
+      center: true,
+      padding: '1rem',
+      screens: {
+        '2xl': '1440px',
       },
-      'light',
-    ],
+    },
+    extend: {
+      colors: {
+        border: 'hsl(var(--border) / <alpha-value>)',
+        input: 'hsl(var(--input) / <alpha-value>)',
+        ring: 'hsl(var(--ring) / <alpha-value>)',
+        background: 'hsl(var(--background) / <alpha-value>)',
+        foreground: 'hsl(var(--foreground) / <alpha-value>)',
+        primary: {
+          DEFAULT: 'hsl(var(--primary) / <alpha-value>)',
+          foreground: 'hsl(var(--primary-foreground) / <alpha-value>)',
+        },
+        secondary: {
+          DEFAULT: 'hsl(var(--secondary) / <alpha-value>)',
+          foreground: 'hsl(var(--secondary-foreground) / <alpha-value>)',
+        },
+        destructive: {
+          DEFAULT: 'hsl(var(--destructive) / <alpha-value>)',
+          foreground: 'hsl(var(--destructive-foreground) / <alpha-value>)',
+        },
+        muted: {
+          DEFAULT: 'hsl(var(--muted) / <alpha-value>)',
+          foreground: 'hsl(var(--muted-foreground) / <alpha-value>)',
+        },
+        accent: {
+          DEFAULT: 'hsl(var(--accent) / <alpha-value>)',
+          foreground: 'hsl(var(--accent-foreground) / <alpha-value>)',
+        },
+        popover: {
+          DEFAULT: 'hsl(var(--popover) / <alpha-value>)',
+          foreground: 'hsl(var(--popover-foreground) / <alpha-value>)',
+        },
+        card: {
+          DEFAULT: 'hsl(var(--card) / <alpha-value>)',
+          foreground: 'hsl(var(--card-foreground) / <alpha-value>)',
+        },
+        warning: {
+          DEFAULT: 'hsl(var(--warning) / <alpha-value>)',
+          foreground: 'hsl(var(--warning-foreground) / <alpha-value>)',
+        },
+        success: {
+          DEFAULT: 'hsl(var(--success) / <alpha-value>)',
+          foreground: 'hsl(var(--success-foreground) / <alpha-value>)',
+        },
+        info: {
+          DEFAULT: 'hsl(var(--info) / <alpha-value>)',
+          foreground: 'hsl(var(--info-foreground) / <alpha-value>)',
+        },
+        // Compatibility aliases for existing utility classes used by current pages.
+        'base-100': 'hsl(var(--base-100) / <alpha-value>)',
+        'base-200': 'hsl(var(--base-200) / <alpha-value>)',
+        'base-300': 'hsl(var(--base-300) / <alpha-value>)',
+        'base-content': 'hsl(var(--base-content) / <alpha-value>)',
+      },
+      borderRadius: {
+        lg: 'var(--radius)',
+        md: 'calc(var(--radius) - 2px)',
+        sm: 'calc(var(--radius) - 4px)',
+        box: 'var(--radius-xl)',
+      },
+    },
   },
+  plugins: [],
 }

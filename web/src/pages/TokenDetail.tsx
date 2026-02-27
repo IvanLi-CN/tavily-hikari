@@ -3,6 +3,7 @@ import { Icon } from '@iconify/react'
 import { Chart as ChartJS, BarElement, CategoryScale, Legend, LinearScale, Tooltip, type ChartOptions } from 'chart.js'
 import { Bar } from 'react-chartjs-2'
 import { fetchTokenUsageSeries, rotateTokenSecret, type TokenUsageBucket } from '../api'
+import ThemeToggle from '../components/ThemeToggle'
 import { StatusBadge, type StatusTone } from '../components/StatusBadge'
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip, Legend)
@@ -625,6 +626,7 @@ export default function TokenDetail({ id, onBack }: { id: string; onBack?: () =>
           <div className="subtitle">Token <code>{id}</code></div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
+          <ThemeToggle />
           <span className={`sse-chip ${sseConnected ? 'sse-chip-ok' : 'sse-chip-warn'}`} title="Live updates via SSE">
             <span className="sse-dot" aria-hidden="true" /> {sseConnected ? 'Live' : 'Offline'}
           </span>

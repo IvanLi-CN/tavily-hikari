@@ -30,7 +30,7 @@ Client → Tavily Hikari (Axum) ──┬─> Tavily upstream (/mcp)
 
 - **Backend**: Rust 2024 edition, Axum, SQLx, Tokio, Clap.
 - **Data**: SQLite single-file DB with `api_keys` + `request_logs`.
-- **Frontend**: React 18, TanStack Router, Tailwind CSS, DaisyUI, Vite 5 (served from `web/dist` or via Vite dev server).
+- **Frontend**: React 18, TanStack Router, Tailwind CSS, shadcn/ui (Radix), Vite 5 (served from `web/dist` or via Vite dev server).
 
 ## Quick Start
 
@@ -214,7 +214,7 @@ export LINUXDO_OAUTH_REDIRECT_URL='https://tavily.ivanli.cc/auth/linuxdo/callbac
 
 ## Frontend Highlights
 
-- Built with React 18, TanStack Router, DaisyUI, Tailwind, Iconify.
+- Built with React 18, TanStack Router, shadcn/ui (Radix), Tailwind, Iconify.
 - Displays live key table, request log stream, and admin-only actions (copy real key, restore, delete).
 - `scripts/write-version.mjs` stamps the build version into the UI during CI releases.
 - `bun run dev` proxies `/api`, `/mcp`, and `/health` to the backend to avoid CORS hassle during development.

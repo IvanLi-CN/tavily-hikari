@@ -4,6 +4,7 @@ import { ApiKeysValidationDialog } from './components/ApiKeysValidationDialog'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import LanguageSwitcher from './components/LanguageSwitcher'
+import ThemeToggle from './components/ThemeToggle'
 import TokenDetail from './pages/TokenDetail'
 import { useTranslate, type AdminTranslations } from './i18n'
 import {
@@ -1900,7 +1901,7 @@ function AdminDashboard(): JSX.Element {
     }
   }
 
-  // DaisyUI disable confirm flow
+  // Disable confirm flow
   const openDisableConfirm = (id: string) => {
     if (!id) return
     setPendingDisableId(id)
@@ -1971,6 +1972,7 @@ function AdminDashboard(): JSX.Element {
             <p>{tokenLeaderboardStrings.description}</p>
           </div>
           <div className="controls" style={{ gap: 12, flexWrap: 'wrap' }}>
+            <ThemeToggle />
             <button type="button" className="btn btn-ghost" onClick={navigateHome}>
               <Icon icon="mdi:arrow-left" width={18} height={18} />
               &nbsp;{tokenLeaderboardStrings.back}
@@ -2228,6 +2230,7 @@ function AdminDashboard(): JSX.Element {
         </div>
         <div className="header-right">
           <div className="admin-language-switcher">
+            <ThemeToggle />
             <LanguageSwitcher />
           </div>
           {displayName && (
@@ -3202,7 +3205,7 @@ function AdminDashboard(): JSX.Element {
         </span>
       </div>
     </main>
-    {/* Batch Create Tokens (DaisyUI modal) */}
+    {/* Batch Create Tokens modal */}
     <dialog id="batch_create_tokens_modal" ref={batchDialogRef} className="modal">
       <div className="modal-box">
         <h3 className="font-bold text-lg" style={{ marginTop: 0 }}>{tokenStrings.batchDialog.title}</h3>
@@ -3284,7 +3287,7 @@ function AdminDashboard(): JSX.Element {
       </div>
     </dialog>
 
-    {/* API Keys Validation (daisyUI modal) */}
+    {/* API Keys Validation modal */}
     <ApiKeysValidationDialog
       dialogRef={keysValidateDialogRef as any}
       state={keysValidationVisibleState}
@@ -3297,7 +3300,7 @@ function AdminDashboard(): JSX.Element {
       onImportValid={() => void handleImportValidatedKeys()}
     />
 
-    {/* Batch Add API Keys Report (daisyUI modal) */}
+    {/* Batch Add API Keys Report modal */}
     <dialog id="batch_add_keys_report_modal" ref={keysBatchReportDialogRef} className="modal">
       <div className="modal-box" style={{ maxHeight: 'min(calc(100dvh - 6rem), calc(100vh - 6rem))', display: 'flex', flexDirection: 'column' }}>
         <h3 className="font-bold text-lg" style={{ marginTop: 0 }}>{keyStrings.batch.report.title}</h3>
@@ -3404,7 +3407,7 @@ function AdminDashboard(): JSX.Element {
       </div>
     </dialog>
 
-    {/* Disable Confirmation (daisyUI modal) */}
+    {/* Disable Confirmation modal */}
     <dialog id="confirm_disable_modal" ref={disableDialogRef} className="modal">
       <div className="modal-box">
         <h3 className="font-bold text-lg" style={{ marginTop: 0 }}>{keyStrings.dialogs.disable.title}</h3>
@@ -3420,7 +3423,7 @@ function AdminDashboard(): JSX.Element {
       </div>
     </dialog>
 
-    {/* Delete Confirmation (daisyUI modal) */}
+    {/* Delete Confirmation modal */}
     <dialog id="confirm_delete_modal" ref={deleteDialogRef} className="modal">
       <div className="modal-box">
         <h3 className="font-bold text-lg" style={{ marginTop: 0 }}>{keyStrings.dialogs.delete.title}</h3>
@@ -3451,7 +3454,7 @@ function AdminDashboard(): JSX.Element {
       </div>
     </dialog>
 
-    {/* Token Edit Note (DaisyUI modal) */}
+    {/* Token Edit Note modal */}
     <dialog id="edit_token_note_modal" ref={tokenNoteDialogRef} className="modal">
       <div className="modal-box">
         <h3 className="font-bold text-lg" style={{ marginTop: 0 }}>{tokenStrings.dialogs.note.title}</h3>
@@ -3745,6 +3748,7 @@ function KeyDetails({ id, onBack }: { id: string; onBack: () => void }): JSX.Ele
           </p>
         </div>
         <div className="controls">
+          <ThemeToggle />
           <button
             type="button"
             className={`btn${syncState === 'success' ? ' btn-success' : ''}`}

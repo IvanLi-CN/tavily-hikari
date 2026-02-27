@@ -16,6 +16,7 @@ import {
   type PublicTokenLog,
 } from './api'
 import LanguageSwitcher from './components/LanguageSwitcher'
+import ThemeToggle from './components/ThemeToggle'
 import useUpdateAvailable from './hooks/useUpdateAvailable'
 import RollingNumber from './components/RollingNumber'
 import { useLanguage, useTranslate, type Language } from './i18n'
@@ -402,6 +403,7 @@ function PublicHome(): JSX.Element {
       )}
       <section className="surface public-home-hero">
         <div className="language-switcher-row">
+          <ThemeToggle />
           <LanguageSwitcher />
         </div>
         <h1 className="hero-title">{publicStrings.heroTitle}</h1>
@@ -669,7 +671,7 @@ function PublicHome(): JSX.Element {
       </section>
       <section className="surface panel public-home-guide">
         <h2>{publicStrings.guide.title}</h2>
-        {/* Mobile: DaisyUI dropdown menu with icons */}
+        {/* Mobile: compact dropdown menu with icons */}
         {isMobileGuide && (
           <div className="guide-select" aria-label="Client selector (mobile)">
             <MobileGuideDropdown

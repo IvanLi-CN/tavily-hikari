@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
-import LanguageSwitcher from '../components/LanguageSwitcher'
+
 import { fetchProfile } from '../api'
+import LanguageSwitcher from '../components/LanguageSwitcher'
+import ThemeToggle from '../components/ThemeToggle'
+import { Button } from '../components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
+import { Input } from '../components/ui/input'
 import { useTranslate } from '../i18n'
 
 type LoginState = 'checking' | 'ready' | 'submitting'
@@ -75,67 +80,67 @@ function AdminLogin(): JSX.Element {
   }
 
   return (
-    <div className="min-h-screen bg-base-200">
-      <div className="max-w-3xl mx-auto px-6 py-10">
-        <div className="flex items-center justify-between">
+    <div className="min-h-screen bg-background text-foreground">
+      <div className="mx-auto flex w-full max-w-4xl flex-col gap-6 px-6 py-10">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="space-y-1">
-            <h1 className="text-2xl font-semibold tracking-tight">{ui.title}</h1>
-            <p className="text-sm text-base-content/70">{ui.description}</p>
+            <h1 className="text-3xl font-semibold tracking-tight">{ui.title}</h1>
+            <p className="text-sm text-muted-foreground">{ui.description}</p>
           </div>
-          <LanguageSwitcher />
+          <div className="flex items-center gap-2">
+            <ThemeToggle />
+            <LanguageSwitcher />
+          </div>
         </div>
 
-        <div className="mt-8 grid gap-6">
-          <div className="card bg-base-100 shadow-xl">
-            <div className="card-body gap-5">
-              {builtinEnabled === false && (
-                <div className="alert alert-warning">
-                  <span>{ui.hints.disabled}</span>
+        <Card className="border-border/80 bg-card/90 backdrop-blur">
+          <CardHeader>
+            <CardTitle>{ui.title}</CardTitle>
+            <CardDescription>{ui.description}</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-5">
+            {builtinEnabled === false ? (
+              <div className="rounded-lg border border-warning/35 bg-warning/10 p-3 text-sm text-warning">
+                {ui.hints.disabled}
+              </div>
+            ) : null}
+
+            <form onSubmit={submit} className="grid gap-4">
+              <label className="grid w-full gap-2 text-sm font-medium" htmlFor="admin-password-input">
+                <span>{ui.password.label}</span>
+                <Input
+                  id="admin-password-input"
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder={ui.password.placeholder}
+                  autoComplete="current-password"
+                  disabled={state !== 'ready'}
+                />
+              </label>
+
+              {error ? (
+                <div className="rounded-lg border border-destructive/35 bg-destructive/10 p-3 text-sm text-destructive">
+                  {error}
                 </div>
-              )}
+              ) : null}
 
-              <form onSubmit={submit} className="grid gap-4">
-                <label className="form-control w-full">
-                  <div className="label">
-                    <span className="label-text">{ui.password.label}</span>
-                  </div>
-                  <input
-                    type="password"
-                    className="input input-bordered w-full"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder={ui.password.placeholder}
-                    autoComplete="current-password"
-                    disabled={state !== 'ready'}
-                  />
-                </label>
+              <div className="flex items-center justify-between gap-3">
+                <a href="/" className="text-sm text-primary underline-offset-4 hover:underline">
+                  {ui.backHome}
+                </a>
+                <Button type="submit" disabled={!canSubmit}>
+                  {state === 'submitting' ? ui.submit.loading : ui.submit.label}
+                </Button>
+              </div>
+            </form>
+          </CardContent>
+        </Card>
 
-                {error && (
-                  <div className="alert alert-error">
-                    <span>{error}</span>
-                  </div>
-                )}
-
-                <div className="flex items-center justify-between gap-3">
-                  <a href="/" className="link link-hover text-sm">
-                    {ui.backHome}
-                  </a>
-                  <button type="submit" className="btn btn-primary" disabled={!canSubmit}>
-                    {state === 'submitting' ? ui.submit.loading : ui.submit.label}
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-
-          {state === 'checking' && (
-            <div className="text-center text-sm text-base-content/60">{ui.hints.checking}</div>
-          )}
-        </div>
+        {state === 'checking' ? <div className="text-center text-sm text-muted-foreground">{ui.hints.checking}</div> : null}
       </div>
     </div>
   )
 }
 
 export default AdminLogin
-
