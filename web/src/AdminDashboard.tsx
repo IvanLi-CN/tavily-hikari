@@ -6,6 +6,7 @@ import { createPortal } from 'react-dom'
 import ThemeToggle from './components/ThemeToggle'
 import AdminPanelHeader from './components/AdminPanelHeader'
 import SegmentedTabs from './components/ui/SegmentedTabs'
+import TokenUsageHeader from './components/TokenUsageHeader'
 import TokenDetail from './pages/TokenDetail'
 import { useTranslate, type AdminTranslations } from './i18n'
 import {
@@ -1967,48 +1968,31 @@ function AdminDashboard(): JSX.Element {
 
     return (
       <main className="app-shell">
-        <section className="surface app-header">
-          <div className="title-group">
-            <h1>{tokenLeaderboardStrings.title}</h1>
-            <p>{tokenLeaderboardStrings.description}</p>
-          </div>
-          <div className="controls" style={{ gap: 12, flexWrap: 'wrap' }}>
-            <ThemeToggle />
-            <button type="button" className="btn btn-ghost" onClick={navigateHome}>
-              <Icon icon="mdi:arrow-left" width={18} height={18} />
-              &nbsp;{tokenLeaderboardStrings.back}
-            </button>
-            <SegmentedTabs<'day' | 'month' | 'all'>
-              value={tokenLeaderboardPeriod}
-              onChange={setTokenLeaderboardPeriod}
-              options={[
-                { value: 'day', label: tokenLeaderboardStrings.period.day },
-                { value: 'month', label: tokenLeaderboardStrings.period.month },
-                { value: 'all', label: tokenLeaderboardStrings.period.all },
-              ]}
-              ariaLabel={tokenLeaderboardStrings.title}
-            />
-            <SegmentedTabs<'usage' | 'errors' | 'other'>
-              value={tokenLeaderboardFocus}
-              onChange={setTokenLeaderboardFocus}
-              options={[
-                { value: 'usage', label: tokenLeaderboardStrings.focus.usage },
-                { value: 'errors', label: tokenLeaderboardStrings.focus.errors },
-                { value: 'other', label: tokenLeaderboardStrings.focus.other },
-              ]}
-              ariaLabel={tokenLeaderboardStrings.focus.usage}
-            />
-            <button
-              type="button"
-              className="btn"
-              onClick={() => setTokenLeaderboardNonce((x) => x + 1)}
-              disabled={tokenLeaderboardLoading}
-            >
-              <Icon icon={tokenLeaderboardLoading ? 'mdi:clock-outline' : 'mdi:refresh'} width={18} height={18} />
-              &nbsp;{tokenLeaderboardLoading ? headerStrings.refreshing : headerStrings.refreshNow}
-            </button>
-          </div>
-        </section>
+        <TokenUsageHeader
+          title={tokenLeaderboardStrings.title}
+          subtitle={tokenLeaderboardStrings.description}
+          visualPreset="accent"
+          backLabel={tokenLeaderboardStrings.back}
+          refreshLabel={headerStrings.refreshNow}
+          refreshingLabel={headerStrings.refreshing}
+          isRefreshing={tokenLeaderboardLoading}
+          period={tokenLeaderboardPeriod}
+          focus={tokenLeaderboardFocus}
+          periodOptions={[
+            { value: 'day', label: tokenLeaderboardStrings.period.day },
+            { value: 'month', label: tokenLeaderboardStrings.period.month },
+            { value: 'all', label: tokenLeaderboardStrings.period.all },
+          ]}
+          focusOptions={[
+            { value: 'usage', label: tokenLeaderboardStrings.focus.usage },
+            { value: 'errors', label: tokenLeaderboardStrings.focus.errors },
+            { value: 'other', label: tokenLeaderboardStrings.focus.other },
+          ]}
+          onBack={navigateHome}
+          onRefresh={() => setTokenLeaderboardNonce((x) => x + 1)}
+          onPeriodChange={setTokenLeaderboardPeriod}
+          onFocusChange={setTokenLeaderboardFocus}
+        />
         <section className="surface panel token-leaderboard-panel">
           <div className="table-wrapper jobs-table-wrapper token-leaderboard-wrapper">
           {tokenLeaderboardView.length === 0 ? (
@@ -2404,7 +2388,7 @@ function AdminDashboard(): JSX.Element {
                           <div className="table-actions">
                             <button
                               type="button"
-                              className={`btn btn-circle btn-ghost btn-sm${
+                              className={`token-action-button btn btn-circle btn-ghost btn-sm${
                                 state === 'copied' ? ' btn-success' : ''
                               }`}
                               title={tokenStrings.actions.copy}
@@ -2412,11 +2396,11 @@ function AdminDashboard(): JSX.Element {
                               onClick={() => void handleCopyToken(t.id, stateKey)}
                               disabled={state === 'loading'}
                             >
-                              <Icon icon={state === 'copied' ? 'mdi:check' : 'mdi:content-copy'} width={18} height={18} />
+                              <Icon icon={state === 'copied' ? 'mdi:check' : 'mdi:content-copy'} width={16} height={16} />
                             </button>
                             <button
                               type="button"
-                              className={`btn btn-circle btn-ghost btn-sm${
+                              className={`token-action-button btn btn-circle btn-ghost btn-sm${
                                 shareState === 'copied' ? ' btn-success' : ''
                               }`}
                               title={tokenStrings.actions.share}
@@ -2424,39 +2408,39 @@ function AdminDashboard(): JSX.Element {
                               onClick={() => void handleShareToken(t.id, shareStateKey)}
                               disabled={shareState === 'loading'}
                             >
-                              <Icon icon={shareState === 'copied' ? 'mdi:check' : 'mdi:share-variant'} width={18} height={18} />
+                              <Icon icon={shareState === 'copied' ? 'mdi:check' : 'mdi:share-variant'} width={16} height={16} />
                             </button>
                             <button
                               type="button"
-                              className="btn btn-circle btn-ghost btn-sm"
+                              className="token-action-button btn btn-circle btn-ghost btn-sm"
                               title={keyStrings.actions.details}
                               aria-label={keyStrings.actions.details}
                               onClick={() => navigateToken(t.id)}
                             >
-                              <Icon icon="mdi:eye-outline" width={18} height={18} />
+                              <Icon icon="mdi:eye-outline" width={16} height={16} />
                             </button>
                             <button
                               type="button"
-                              className="btn btn-circle btn-ghost btn-sm"
+                              className="token-action-button btn btn-circle btn-ghost btn-sm"
                               title={t.enabled ? tokenStrings.actions.disable : tokenStrings.actions.enable}
                               aria-label={t.enabled ? tokenStrings.actions.disable : tokenStrings.actions.enable}
                               onClick={() => void toggleToken(t.id, t.enabled)}
                               disabled={togglingId === t.id}
                             >
-                              <Icon icon={t.enabled ? 'mdi:pause-circle-outline' : 'mdi:play-circle-outline'} width={18} height={18} />
+                              <Icon icon={t.enabled ? 'mdi:pause-circle-outline' : 'mdi:play-circle-outline'} width={16} height={16} />
                             </button>
                             <button
                               type="button"
-                              className="btn btn-circle btn-ghost btn-sm"
+                              className="token-action-button btn btn-circle btn-ghost btn-sm"
                               title={tokenStrings.actions.edit}
                               aria-label={tokenStrings.actions.edit}
                               onClick={() => openTokenNoteEdit(t.id, t.note)}
                             >
-                              <Icon icon="mdi:pencil-outline" width={18} height={18} />
+                              <Icon icon="mdi:pencil-outline" width={16} height={16} />
                             </button>
                             <button
                               type="button"
-                              className="btn btn-circle btn-ghost btn-sm"
+                              className="token-action-button btn btn-circle btn-ghost btn-sm"
                               title={tokenStrings.actions.delete}
                               aria-label={tokenStrings.actions.delete}
                               onClick={() => openTokenDeleteConfirm(t.id)}
@@ -2464,8 +2448,8 @@ function AdminDashboard(): JSX.Element {
                             >
                               <Icon
                                 icon={deletingId === t.id ? 'mdi:progress-helper' : 'mdi:trash-outline'}
-                                width={18}
-                                height={18}
+                                width={16}
+                                height={16}
                                 color="#ef4444"
                               />
                             </button>
