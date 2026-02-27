@@ -27,7 +27,7 @@ Client → Tavily Hikari (Axum) ──┬─> Tavily upstream (/mcp)
 
 - 后端：Rust 2024 edition、Axum、SQLx、Tokio；负责 CLI、Key 生命周期、请求透传/审计、静态资源托管。
 - 数据层：SQLite 单文件库，包含 `api_keys`（状态、短 ID、配额字段）与 `request_logs`（请求/响应/错误）。
-- 前端：React 18 + TanStack Router + Tailwind CSS + DaisyUI + Vite 5；构建后输出 `web/dist`，由后端静态挂载或通过 Vite Dev Server 代理到 `http://127.0.0.1:58087`。
+- 前端：React 18 + TanStack Router + Tailwind CSS + shadcn/ui（Radix）+ Vite 5；构建后输出 `web/dist`，由后端静态挂载或通过 Vite Dev Server 代理到 `http://127.0.0.1:58087`。
 
 ## 快速开始
 
@@ -221,7 +221,7 @@ export LINUXDO_OAUTH_REDIRECT_URL='https://tavily.ivanli.cc/auth/linuxdo/callbac
 
 - 构建产物位于 `web/dist`，可由后端直接托管或独立静态站点部署。
 - 通过 React + TanStack Router 实现实时仪表盘：Key 列表、状态筛选、请求日志流式刷新。
-- DaisyUI + Tailwind 提供深浅色主题，Iconify 提供图标，自带版本号展示（`scripts/write-version.mjs` 会把版本写入构建结果）。
+- shadcn/ui（Radix）+ Tailwind 提供组件与深浅色主题，Iconify 提供图标，自带版本号展示（`scripts/write-version.mjs` 会把版本写入构建结果）。
 - 开发期 `bun run dev` 会把 `/api`、`/mcp`、`/health` 请求代理到后端，减少 CORS 与鉴权配置成本。
 
 ## 界面截图

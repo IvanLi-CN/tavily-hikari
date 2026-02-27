@@ -1,13 +1,15 @@
-import React from "react"
+import React from 'react'
 
-export type StatusTone = "success" | "warning" | "error" | "info" | "neutral"
+import { Badge } from './ui/badge'
 
-const toneClassMap: Record<StatusTone, string> = {
-  success: "status-pill-success",
-  warning: "status-pill-warning",
-  error: "status-pill-error",
-  info: "status-pill-info",
-  neutral: "status-pill-neutral",
+export type StatusTone = 'success' | 'warning' | 'error' | 'info' | 'neutral'
+
+const toneVariantMap: Record<StatusTone, 'success' | 'warning' | 'destructive' | 'info' | 'neutral'> = {
+  success: 'success',
+  warning: 'warning',
+  error: 'destructive',
+  info: 'info',
+  neutral: 'neutral',
 }
 
 export interface StatusBadgeProps {
@@ -16,11 +18,10 @@ export interface StatusBadgeProps {
   className?: string
 }
 
-export function StatusBadge({ tone, children, className = "" }: StatusBadgeProps): JSX.Element {
-  const toneClass = toneClassMap[tone]
+export function StatusBadge({ tone, children, className = '' }: StatusBadgeProps): JSX.Element {
   return (
-    <span className={`status-badge status-pill ${toneClass} ${className}`}>
+    <Badge variant={toneVariantMap[tone]} className={`status-badge status-pill ${className}`}>
       {children}
-    </span>
+    </Badge>
   )
 }

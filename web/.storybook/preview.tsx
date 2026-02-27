@@ -1,38 +1,31 @@
-import type { Preview } from "@storybook/react-vite";
-import React, { useEffect } from "react";
+import type { Preview } from '@storybook/react-vite'
+import React, { useEffect } from 'react'
 
-import "../src/index.css";
-import { LanguageProvider, useLanguage, type Language } from "../src/i18n";
+import '../src/index.css'
+import { LanguageProvider, type Language, useLanguage } from '../src/i18n'
+import { ThemeProvider } from '../src/theme'
 
 function SyncGlobals(props: { language: Language; children: React.ReactNode }): JSX.Element {
-  const { language, setLanguage } = useLanguage();
+  const { language, setLanguage } = useLanguage()
 
   useEffect(() => {
-    // Keep Storybook's toolbar state and the app language in sync.
-    if (props.language !== language) setLanguage(props.language);
-  }, [props.language, language, setLanguage]);
+    if (props.language !== language) setLanguage(props.language)
+  }, [props.language, language, setLanguage])
 
-  useEffect(() => {
-    // Match the app's default DaisyUI theme.
-    if (typeof document !== "undefined") {
-      document.documentElement.dataset.theme = "tavily";
-    }
-  }, []);
-
-  return <>{props.children}</>;
+  return <>{props.children}</>
 }
 
 const preview: Preview = {
   globalTypes: {
     language: {
-      name: "Language",
-      description: "UI language",
-      defaultValue: "en",
+      name: 'Language',
+      description: 'UI language',
+      defaultValue: 'en',
       toolbar: {
-        icon: "globe",
+        icon: 'globe',
         items: [
-          { value: "en", title: "English" },
-          { value: "zh", title: "中文" },
+          { value: 'en', title: 'English' },
+          { value: 'zh', title: '中文' },
         ],
         dynamicTitle: true,
       },
@@ -40,16 +33,18 @@ const preview: Preview = {
   },
   decorators: [
     (Story, context) => {
-      const language = (context.globals.language ?? "en") as Language;
+      const language = (context.globals.language ?? 'en') as Language
       return (
         <LanguageProvider>
-          <SyncGlobals language={language}>
-            <Story />
-          </SyncGlobals>
+          <ThemeProvider>
+            <SyncGlobals language={language}>
+              <Story />
+            </SyncGlobals>
+          </ThemeProvider>
         </LanguageProvider>
-      );
+      )
     },
   ],
-};
+}
 
-export default preview;
+export default preview
