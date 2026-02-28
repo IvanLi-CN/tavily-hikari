@@ -64,9 +64,9 @@ jobs:
 
           # If HEAD already has a channel-matching tag, reuse it to keep reruns idempotent.
           if [[ "${RELEASE_CHANNEL}" == "rc" ]]; then
-            existing_tag="$(git tag --points-at HEAD | grep -E '^v[0-9]+\\.[0-9]+\\.[0-9]+-rc\\.[0-9a-f]{7}$' | head -n1 || true)"
+            existing_tag="$(git tag --points-at HEAD | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9a-f]{7}$' | head -n1 || true)"
           else
-            existing_tag="$(git tag --points-at HEAD | grep -E '^v[0-9]+\\.[0-9]+\\.[0-9]+$' | head -n1 || true)"
+            existing_tag="$(git tag --points-at HEAD | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || true)"
           fi
           if [[ -n "${existing_tag}" ]]; then
             tag="${existing_tag}"
@@ -84,6 +84,32 @@ jobs:
 
             tag="v${version}"
             echo "computed version: ${version} (tag ${tag}, channel ${RELEASE_CHANNEL})"
+          fi
+
+          if [[ "${RELEASE_CHANNEL}" == "stable" ]]; then
+            latest_stable_tag="$(
+              git tag -l \
+                | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' \
+                | sed -E 's/^v//' \
+                | sort -Vu \
+                | tail -n1 \
+                || true
+            )"
+
+            if [[ -n "${latest_stable_tag}" ]]; then
+              if [[ -n "${existing_tag}" ]]; then
+                if [[ "${version}" != "${latest_stable_tag}" ]]; then
+                  echo "existing stable tag '${version}' on HEAD is behind latest stable '${latest_stable_tag}'" >&2
+                  exit 1
+                fi
+              else
+                highest="$(printf '%s\n%s\n' "${latest_stable_tag}" "${version}" | sort -V | tail -n1)"
+                if [[ "${highest}" != "${version}" || "${version}" == "${latest_stable_tag}" ]]; then
+                  echo "computed stable version '${version}' must be greater than latest stable '${latest_stable_tag}'" >&2
+                  exit 1
+                fi
+              fi
+            fi
           fi
 
           echo "APP_EFFECTIVE_VERSION=${version}" >> "${GITHUB_ENV}"

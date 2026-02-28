@@ -74,7 +74,7 @@ esac
 
 latest_tag="$(
   git tag -l \
-    | grep -E '^v?[0-9]+\\.[0-9]+\\.[0-9]+$' \
+    | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' \
     | sed -E 's/^v//' \
     | sort -Vu \
     | tail -n1 \
