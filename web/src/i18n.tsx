@@ -876,10 +876,10 @@ export const translations: Record<Language, TranslationShape> = {
         addButton: 'Add Key',
         adding: 'Adding…',
         batch: {
-          placeholder: 'Paste Tavily API keys (one per line)',
+          placeholder: 'Paste text (extract first tvly-dev-* key per line)',
           groupPlaceholder: 'Group (optional)',
-          hint: 'One key per line (newline-separated only).',
-          count: '{count} keys',
+          hint: 'Each line extracts the first tvly-dev-* key; unmatched lines are ignored.',
+          count: 'Extracted keys {count}',
           report: {
             title: 'Batch Import Report',
             close: 'Done',
@@ -905,7 +905,7 @@ export const translations: Record<Language, TranslationShape> = {
         },
         validation: {
           title: 'Verify API Keys',
-          hint: 'Paste one key per line, then validate before importing.',
+          hint: 'Support text paste: extract the first tvly-dev-* key from each line before validation.',
           actions: {
             close: 'Close',
             retry: 'Retry',
@@ -1440,10 +1440,10 @@ export const translations: Record<Language, TranslationShape> = {
         addButton: '添加密钥',
         adding: '添加中…',
         batch: {
-          placeholder: '粘贴 Tavily API Key（每行一个）',
+          placeholder: '粘贴文本（每行提取首个 tvly-dev-* key）',
           groupPlaceholder: '分组名（可选）',
-          hint: '每行一个 Key，仅支持换行分隔。',
-          count: '非空行 {count}',
+          hint: '每行提取首个 tvly-dev-* key，未匹配行会被忽略。',
+          count: '可提取 key {count}',
           report: {
             title: '批量导入结果',
             close: '完成',
@@ -1469,7 +1469,7 @@ export const translations: Record<Language, TranslationShape> = {
         },
         validation: {
           title: '检测 API Keys',
-          hint: '先检测可用性，再手动确认入库。',
+          hint: '支持粘贴文本：每行先提取首个 tvly-dev-* key，再检测并入库。',
           actions: {
             close: '关闭',
             retry: '重试',
