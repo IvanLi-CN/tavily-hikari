@@ -9,6 +9,7 @@ import SegmentedTabs from './components/ui/SegmentedTabs'
 import TokenUsageHeader from './components/TokenUsageHeader'
 import TokenDetail from './pages/TokenDetail'
 import { useTranslate, type AdminTranslations } from './i18n'
+import { extractTvlyDevApiKeysFromText } from './lib/api-key-extract'
 import {
   fetchApiKeys,
   fetchApiKeySecret,
@@ -1100,10 +1101,7 @@ function AdminDashboard(): JSX.Element {
   }, [keyGroupList, keyGroupsExpanded, selectedKeyGroupName, selectedKeyUngrouped])
 
   const keysBatchParsed = useMemo(() => {
-    return newKeysText
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0)
+    return extractTvlyDevApiKeysFromText(newKeysText)
   }, [newKeysText])
 
   const keysBatchFirstLine = useMemo(() => {
@@ -1445,7 +1443,7 @@ function AdminDashboard(): JSX.Element {
 
   const handleAddKey = async () => {
     const rawLines = newKeysText.split(/\r?\n/)
-    const apiKeys = rawLines.map((line) => line.trim()).filter((line) => line.length > 0)
+    const apiKeys = extractTvlyDevApiKeysFromText(newKeysText)
     if (apiKeys.length === 0) return
 
     const group = newKeysGroup.trim()

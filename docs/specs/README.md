@@ -10,6 +10,7 @@
 |    ID | Title                                       | Status          | Spec                                             | Last       | Notes                                                                    |
 | ----: | ------------------------------------------- | --------------- | ------------------------------------------------ | ---------- | ------------------------------------------------------------------------ |
 | v9k2m | Release 版本回退防护与 latest 稳定修复      | 已完成          | `v9k2m-release-version-regression-guard/SPEC.md` | 2026-02-28 | fix semver detection + stable monotonic guard                            |
+| jy9mu | Admin API Keys 文本提取（tvly-dev）         | 已完成          | `jy9mu-admin-api-keys-text-extraction/SPEC.md`   | 2026-02-28 | fast-track                                                               |
 | rqbqk | Web shadcn/ui 全量重构与双主题品牌化        | 已完成          | `rqbqk-shadcn-ui-rebuild/SPEC.md`                | 2026-02-27 | full UI migration to shadcn/ui + dual theme                              |
 | kgakn | Admin API Keys 校验对话框与可用入库（迁移） | 已完成          | `kgakn-admin-api-keys-validation-dialog/SPEC.md` | 2026-02-24 | migrated from `docs/plan/kgakn:admin-api-keys-validation-dialog/PLAN.md` |
 | 2fd7v | Admin API Keys 入库后自动关闭与已入库隐藏   | 已完成          | `2fd7v-admin-api-keys-import-auto-close/SPEC.md` | 2026-02-26 | follow-up of `kgakn`                                                     |
