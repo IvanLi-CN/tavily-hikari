@@ -888,6 +888,37 @@
   }
 }
 
+/* Token access modal: make token row wrap and avoid horizontal overflow on narrow screens. */
+@media (max-width: 560px) {
+  .token-access-modal .token-label {
+    width: 100%;
+    text-align: left;
+  }
+  .token-access-modal .token-input-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    justify-content: flex-start;
+    width: 100%;
+  }
+  .token-access-modal .token-input-shell {
+    flex: 1 1 100%;
+    min-width: 0;
+    display: block;
+  }
+  .token-access-modal .token-input {
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+  }
+  .token-access-modal .token-copy-button {
+    margin-left: auto;
+    white-space: nowrap;
+    flex: 0 0 auto;
+  }
+}
+
 .token-input:focus {
   outline: none;
   border-color: hsl(var(--primary) / 0.56);

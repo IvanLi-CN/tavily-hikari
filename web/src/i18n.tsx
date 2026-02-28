@@ -79,6 +79,18 @@ interface PublicTranslations {
     copied: string
     error: string
   }
+  tokenAccess: {
+    button: string
+    dialog: {
+      title: string
+      description: string
+      actions: {
+        cancel: string
+        confirm: string
+      }
+      loginHint: string
+    }
+  }
   guide: {
     title: string
     dataSourceLabel: string
@@ -658,6 +670,18 @@ export const translations: Record<Language, TranslationShape> = {
         copied: 'Copied',
         error: 'Copy failed',
       },
+      tokenAccess: {
+        button: 'Use Access Token',
+        dialog: {
+          title: 'Use Access Token',
+          description: 'Enter an access token to view usage and recent requests.',
+          actions: {
+            cancel: 'Cancel',
+            confirm: 'Continue',
+          },
+          loginHint: 'Tip: Sign in via linux.do to bind your account.',
+        },
+      },
       guide: {
         title: 'Connect Tavily Hikari to common MCP clients',
         dataSourceLabel: 'Reference: ',
@@ -1221,6 +1245,18 @@ export const translations: Record<Language, TranslationShape> = {
         copy: '复制令牌',
         copied: '已复制',
         error: '复制失败',
+      },
+      tokenAccess: {
+        button: '使用令牌访问',
+        dialog: {
+          title: '使用令牌访问',
+          description: '输入 Access Token 后即可查看用量与近期请求。',
+          actions: {
+            cancel: '取消',
+            confirm: '开始使用',
+          },
+          loginHint: '提示：建议使用 linux.do 登录，以绑定账号。',
+        },
       },
       guide: {
         title: '如何在常见 MCP 客户端接入 Tavily Hikari',
