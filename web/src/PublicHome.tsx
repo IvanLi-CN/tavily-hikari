@@ -333,22 +333,27 @@ function PublicHome(): JSX.Element {
 
   const openTokenAccessDialog = useCallback(() => {
     setTokenDraft(token)
+    // Ensure the modal starts masked and doesn't leak into the main input after confirm.
+    setTokenVisible(false)
+    setCopyState('idle')
     const dialog = tokenAccessDialogRef.current
     if (!dialog) return
-    window.requestAnimationFrame(() => {
-      if (!dialog.open) dialog.showModal()
-    })
+    if (!dialog.open) dialog.showModal()
   }, [token])
 
   const closeTokenAccessDialog = useCallback(() => {
     tokenAccessDialogRef.current?.close()
+    setTokenVisible(false)
+    setCopyState('idle')
   }, [])
 
   const confirmTokenAccessDialog = useCallback(() => {
     const next = tokenDraft.trim()
-    if (!next) return
+    if (!isFullToken(next)) return
     persistToken(next)
     tokenAccessDialogRef.current?.close()
+    setTokenVisible(false)
+    setCopyState('idle')
   }, [persistToken, tokenDraft])
 
   useEffect(() => {
@@ -797,6 +802,11 @@ function PublicHome(): JSX.Element {
           // Close when clicking on the backdrop (not inside the modal box).
           if (event.target === event.currentTarget) closeTokenAccessDialog()
         }}
+        onClose={() => {
+          // Dialog can also be closed via ESC; keep sensitive states reset.
+          setTokenVisible(false)
+          setCopyState('idle')
+        }}
       >
         <div className="modal-box">
           <h3 className="font-bold text-lg" style={{ marginTop: 0 }}>
@@ -851,8 +861,9 @@ function PublicHome(): JSX.Element {
                       ? ' btn-warning'
                       : ' btn-outline'
                 }`}
-                onClick={() => void handleCopyToken(tokenDraft)}
+                onClick={() => void handleCopyToken(tokenDraft.trim())}
                 aria-label={publicStrings.copyToken.iconAlt}
+                disabled={tokenDraft.trim().length === 0}
               >
                 <Icon
                   icon={
@@ -890,7 +901,7 @@ function PublicHome(): JSX.Element {
                 type="button"
                 className="btn btn-primary"
                 onClick={confirmTokenAccessDialog}
-                disabled={tokenDraft.trim().length === 0}
+                disabled={!isFullToken(tokenDraft.trim())}
               >
                 {publicStrings.tokenAccess.dialog.actions.confirm}
               </button>
