@@ -1,4 +1,4 @@
-import React, { ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
+import React, { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Icon } from '@iconify/react'
 import { StatusBadge, type StatusTone } from './components/StatusBadge'
 import CherryStudioMock from './components/CherryStudioMock'
@@ -78,7 +78,9 @@ function PublicHome(): JSX.Element {
   const publicStrings = strings.public
   const { language } = useLanguage()
   const [token, setToken] = useState('')
+  const [tokenDraft, setTokenDraft] = useState('')
   const [tokenVisible, setTokenVisible] = useState(false)
+  const tokenAccessDialogRef = useRef<HTMLDialogElement>(null)
   const [metrics, setMetrics] = useState<PublicMetrics | null>(null)
   const [tokenMetrics, setTokenMetrics] = useState<TokenMetrics | null>(null)
   const [publicLogs, setPublicLogs] = useState<PublicTokenLog[]>([])
@@ -252,7 +254,10 @@ function PublicHome(): JSX.Element {
 
   const isAdmin = profile?.isAdmin ?? false
   const builtinAuthEnabled = profile?.builtinAuthEnabled ?? false
-  const showLinuxDoLogin = profile?.userLoggedIn === false
+  const isLoggedOut = profile?.userLoggedIn === false
+  const showLinuxDoLogin = isLoggedOut
+  const hasTokenInfo = token.trim().length > 0
+  const hideTokenPanels = isLoggedOut && !hasTokenInfo
   const availableKeys = summary?.active_keys ?? null
   const exhaustedKeys = summary?.exhausted_keys ?? null
   const totalKeys = availableKeys != null && exhaustedKeys != null ? availableKeys + exhaustedKeys : null
@@ -274,16 +279,16 @@ function PublicHome(): JSX.Element {
     ? `${REPO_URL}/tree/v${encodeURIComponent(updateBanner.currentVersion)}`
     : null
 
-  const handleCopyToken = useCallback(async () => {
+  const handleCopyToken = useCallback(async (value: string) => {
     try {
-      await navigator.clipboard.writeText(token)
+      await navigator.clipboard.writeText(value)
       setCopyState('copied')
       window.setTimeout(() => setCopyState('idle'), 2500)
     } catch {
       setCopyState('error')
       window.setTimeout(() => setCopyState('idle'), 2500)
     }
-  }, [token])
+  }, [])
 
   const persistToken = useCallback((next: string) => {
     setToken(next)
@@ -325,6 +330,31 @@ function PublicHome(): JSX.Element {
       .catch((err: any) => { setPublicLogs([]); setInvalidToken(Boolean(err?.status) && err.status >= 400 && err.status < 500) })
       .finally(() => setPublicLogsLoading(false))
   }, [])
+
+  const openTokenAccessDialog = useCallback(() => {
+    setTokenDraft(token)
+    // Ensure the modal starts masked and doesn't leak into the main input after confirm.
+    setTokenVisible(false)
+    setCopyState('idle')
+    const dialog = tokenAccessDialogRef.current
+    if (!dialog) return
+    if (!dialog.open) dialog.showModal()
+  }, [token])
+
+  const closeTokenAccessDialog = useCallback(() => {
+    tokenAccessDialogRef.current?.close()
+    setTokenVisible(false)
+    setCopyState('idle')
+  }, [])
+
+  const confirmTokenAccessDialog = useCallback(() => {
+    const next = tokenDraft.trim()
+    if (!isFullToken(next)) return
+    persistToken(next)
+    tokenAccessDialogRef.current?.close()
+    setTokenVisible(false)
+    setCopyState('idle')
+  }, [persistToken, tokenDraft])
 
   useEffect(() => {
     if (!profile?.userLoggedIn) {
@@ -441,6 +471,12 @@ function PublicHome(): JSX.Element {
                 <span>{publicStrings.linuxDoLogin.button}</span>
               </a>
             )}
+            {hideTokenPanels && (
+              <button type="button" className="token-access-button" onClick={openTokenAccessDialog}>
+                <Icon icon="mdi:key-outline" aria-hidden="true" className="token-access-icon" />
+                <span>{publicStrings.tokenAccess.button}</span>
+              </button>
+            )}
             {(isAdmin || builtinAuthEnabled) && (
               <button
                 type="button"
@@ -453,236 +489,240 @@ function PublicHome(): JSX.Element {
           </div>
         )}
       </section>
-      <section className="surface panel access-panel">
-        <div className="access-panel-grid">
-          <header className="panel-header" style={{ marginBottom: 8 }}>
-            <h2>{publicStrings.accessPanel.title}</h2>
-          </header>
-          <div className="access-stats">
-            {/* Group 1: usage counts */}
-            <div className="access-stat">
-              <h4>{publicStrings.accessPanel.stats.dailySuccess}</h4>
-              <p><RollingNumber value={loading ? null : tokenMetrics?.dailySuccess ?? 0} /></p>
-            </div>
-            <div className="access-stat">
-              <h4>{publicStrings.accessPanel.stats.dailyFailure}</h4>
-              <p><RollingNumber value={loading ? null : tokenMetrics?.dailyFailure ?? 0} /></p>
-            </div>
-            <div className="access-stat">
-              <h4>{publicStrings.accessPanel.stats.monthlySuccess}</h4>
-              <p><RollingNumber value={loading ? null : tokenMetrics?.monthlySuccess ?? 0} /></p>
-            </div>
-          </div>
-          <div className="access-stats">
-            {/* Group 2: rolling quota limits, styled similar to admin quick stats */}
-            <div className="access-stat quota-stat-card">
-              <div className="quota-stat-label">{publicStrings.accessPanel.stats.hourlyLimit}</div>
-              <div className="quota-stat-value">
-                {formatNumber(recentTokenUsage?.quotaHourlyUsed ?? 0)}
-                <span>/ {formatNumber(recentTokenUsage?.quotaHourlyLimit ?? TOKEN_HOURLY_LIMIT)}</span>
+      {!hideTokenPanels && (
+        <>
+          <section className="surface panel access-panel">
+            <div className="access-panel-grid">
+              <header className="panel-header" style={{ marginBottom: 8 }}>
+                <h2>{publicStrings.accessPanel.title}</h2>
+              </header>
+              <div className="access-stats">
+                {/* Group 1: usage counts */}
+                <div className="access-stat">
+                  <h4>{publicStrings.accessPanel.stats.dailySuccess}</h4>
+                  <p><RollingNumber value={loading ? null : tokenMetrics?.dailySuccess ?? 0} /></p>
+                </div>
+                <div className="access-stat">
+                  <h4>{publicStrings.accessPanel.stats.dailyFailure}</h4>
+                  <p><RollingNumber value={loading ? null : tokenMetrics?.dailyFailure ?? 0} /></p>
+                </div>
+                <div className="access-stat">
+                  <h4>{publicStrings.accessPanel.stats.monthlySuccess}</h4>
+                  <p><RollingNumber value={loading ? null : tokenMetrics?.monthlySuccess ?? 0} /></p>
+                </div>
               </div>
-              <div className="quota-stat-description">Rolling 1-hour window</div>
-            </div>
-            <div className="access-stat quota-stat-card">
-              <div className="quota-stat-label">{publicStrings.accessPanel.stats.dailyLimit}</div>
-              <div className="quota-stat-value">
-                {formatNumber(recentTokenUsage?.quotaDailyUsed ?? 0)}
-                <span>/ {formatNumber(recentTokenUsage?.quotaDailyLimit ?? TOKEN_DAILY_LIMIT)}</span>
+              <div className="access-stats">
+                {/* Group 2: rolling quota limits, styled similar to admin quick stats */}
+                <div className="access-stat quota-stat-card">
+                  <div className="quota-stat-label">{publicStrings.accessPanel.stats.hourlyLimit}</div>
+                  <div className="quota-stat-value">
+                    {formatNumber(recentTokenUsage?.quotaHourlyUsed ?? 0)}
+                    <span>/ {formatNumber(recentTokenUsage?.quotaHourlyLimit ?? TOKEN_HOURLY_LIMIT)}</span>
+                  </div>
+                  <div className="quota-stat-description">Rolling 1-hour window</div>
+                </div>
+                <div className="access-stat quota-stat-card">
+                  <div className="quota-stat-label">{publicStrings.accessPanel.stats.dailyLimit}</div>
+                  <div className="quota-stat-value">
+                    {formatNumber(recentTokenUsage?.quotaDailyUsed ?? 0)}
+                    <span>/ {formatNumber(recentTokenUsage?.quotaDailyLimit ?? TOKEN_DAILY_LIMIT)}</span>
+                  </div>
+                  <div className="quota-stat-description">Rolling 24-hour window</div>
+                </div>
+                <div className="access-stat quota-stat-card">
+                  <div className="quota-stat-label">{publicStrings.accessPanel.stats.monthlyLimit}</div>
+                  <div className="quota-stat-value">
+                    {formatNumber(recentTokenUsage?.quotaMonthlyUsed ?? 0)}
+                    <span>/ {formatNumber(recentTokenUsage?.quotaMonthlyLimit ?? TOKEN_MONTHLY_LIMIT)}</span>
+                  </div>
+                  <div className="quota-stat-description">Calendar month</div>
+                </div>
               </div>
-              <div className="quota-stat-description">Rolling 24-hour window</div>
-            </div>
-            <div className="access-stat quota-stat-card">
-              <div className="quota-stat-label">{publicStrings.accessPanel.stats.monthlyLimit}</div>
-              <div className="quota-stat-value">
-                {formatNumber(recentTokenUsage?.quotaMonthlyUsed ?? 0)}
-                <span>/ {formatNumber(recentTokenUsage?.quotaMonthlyLimit ?? TOKEN_MONTHLY_LIMIT)}</span>
+              <div className="access-token-box">
+                <label htmlFor="access-token" className="token-label">
+                  {publicStrings.accessToken.label}
+                </label>
+                <div className="token-input-row">
+                  <div className="token-input-shell">
+                    <input
+                      id="access-token"
+                      name="not-a-login-field"
+                      className={`token-input${tokenVisible ? '' : ' masked'}`}
+                      // Always use text input to avoid triggering password managers
+                      type="text"
+                      value={token}
+                      onChange={(event) => {
+                        const value = event.target.value
+                        setToken(value)
+                      }}
+                      onBlur={(event) => {
+                        const next = event.target.value
+                        persistToken(next)
+                        if (isFullToken(next)) {
+                          fetchTokenMetrics(next)
+                            .then((tm) => {
+                              setTokenMetrics(tm)
+                              setRecentTokenUsage(tm)
+                            })
+                            .catch(() => {
+                              setTokenMetrics(null)
+                              setRecentTokenUsage(null)
+                            })
+                        }
+                      }}
+                      placeholder={publicStrings.accessToken.placeholder}
+                      autoComplete="off"
+                      autoCorrect="off"
+                      autoCapitalize="off"
+                      spellCheck={false}
+                      aria-autocomplete="none"
+                      inputMode="text"
+                      data-1p-ignore="true"
+                      data-lpignore="true"
+                      data-form-type="other"
+                    />
+                    <button
+                      type="button"
+                      className="token-visibility-button"
+                      onClick={() => setTokenVisible((prev) => !prev)}
+                      aria-label={tokenVisible ? publicStrings.accessToken.toggle.hide : publicStrings.accessToken.toggle.show}
+                    >
+                      <img
+                        src={`${ICONIFY_ENDPOINT}/mdi/${tokenVisible ? 'eye-off-outline' : 'eye-outline'}.svg?color=%236b7280`}
+                        alt={publicStrings.accessToken.toggle.iconAlt}
+                      />
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    className={`btn token-copy-button${
+                      copyState === 'copied'
+                        ? ' btn-success'
+                        : copyState === 'error'
+                          ? ' btn-warning'
+                          : ' btn-outline'
+                    }`}
+                    onClick={() => void handleCopyToken(token)}
+                    aria-label={publicStrings.copyToken.iconAlt}
+                  >
+                    <Icon
+                      icon={
+                        copyState === 'copied'
+                          ? 'mdi:check'
+                          : copyState === 'error'
+                            ? 'mdi:alert-circle-outline'
+                            : 'mdi:content-copy'
+                      }
+                      aria-hidden="true"
+                      className="token-copy-icon"
+                    />
+                    <span>
+                      {copyState === 'copied'
+                        ? publicStrings.copyToken.copied
+                        : copyState === 'error'
+                          ? publicStrings.copyToken.error
+                          : publicStrings.copyToken.copy}
+                    </span>
+                  </button>
+                </div>
               </div>
-              <div className="quota-stat-description">Calendar month</div>
             </div>
-          </div>
-          <div className="access-token-box">
-            <label htmlFor="access-token" className="token-label">
-              {publicStrings.accessToken.label}
-            </label>
-            <div className="token-input-row">
-              <div className="token-input-shell">
-                <input
-                  id="access-token"
-                  name="not-a-login-field"
-                  className={`token-input${tokenVisible ? '' : ' masked'}`}
-                  // Always use text input to avoid triggering password managers
-                  type="text"
-                  value={token}
-                  onChange={(event) => {
-                    const value = event.target.value
-                    setToken(value)
-                  }}
-                  onBlur={(event) => {
-                    const next = event.target.value
-                    persistToken(next)
-                    if (isFullToken(next)) {
-                      fetchTokenMetrics(next)
-                        .then((tm) => {
-                          setTokenMetrics(tm)
-                          setRecentTokenUsage(tm)
-                        })
-                        .catch(() => {
-                          setTokenMetrics(null)
-                          setRecentTokenUsage(null)
-                        })
-                    }
-                  }}
-                  placeholder={publicStrings.accessToken.placeholder}
-                  autoComplete="off"
-                  autoCorrect="off"
-                  autoCapitalize="off"
-                  spellCheck={false}
-                  aria-autocomplete="none"
-                  inputMode="text"
-                  data-1p-ignore="true"
-                  data-lpignore="true"
-                  data-form-type="other"
-                />
-                <button
-                  type="button"
-                  className="token-visibility-button"
-                  onClick={() => setTokenVisible((prev) => !prev)}
-                  aria-label={tokenVisible ? publicStrings.accessToken.toggle.hide : publicStrings.accessToken.toggle.show}
-                >
-                  <img
-                    src={`${ICONIFY_ENDPOINT}/mdi/${tokenVisible ? 'eye-off-outline' : 'eye-outline'}.svg?color=%236b7280`}
-                    alt={publicStrings.accessToken.toggle.iconAlt}
-                  />
-                </button>
+          </section>
+          <section className="surface panel">
+            <div className="panel-header">
+              <div>
+                <h2>{publicStrings.logs.title}</h2>
+                <p className="panel-description">{publicStrings.logs.description}</p>
               </div>
-              <button
-                type="button"
-                className={`btn token-copy-button${
-                  copyState === 'copied'
-                    ? ' btn-success'
-                    : copyState === 'error'
-                      ? ' btn-warning'
-                      : ' btn-outline'
-                }`}
-                onClick={handleCopyToken}
-                aria-label={publicStrings.copyToken.iconAlt}
-              >
-                <Icon
-                  icon={
-                    copyState === 'copied'
-                      ? 'mdi:check'
-                      : copyState === 'error'
-                        ? 'mdi:alert-circle-outline'
-                        : 'mdi:content-copy'
-                  }
-                  aria-hidden="true"
-                  className="token-copy-icon"
-                />
-                <span>
-                  {copyState === 'copied'
-                    ? publicStrings.copyToken.copied
-                    : copyState === 'error'
-                      ? publicStrings.copyToken.error
-                      : publicStrings.copyToken.copy}
-                </span>
-              </button>
             </div>
-          </div>
-        </div>
-      </section>
-      <section className="surface panel">
-        <div className="panel-header">
-          <div>
-            <h2>{publicStrings.logs.title}</h2>
-            <p className="panel-description">{publicStrings.logs.description}</p>
-          </div>
-        </div>
-        <div className="table-wrapper">
-          {(!isFullToken(token) || invalidToken) ? (
-            <div className="empty-state alert">
-              <p style={{ margin: 0 }}>
-                {publicStrings.logs.empty.noToken}{' '}
-                <span style={{ opacity: 0.9 }}>{publicStrings.logs.empty.hint}</span>
-              </p>
-            </div>
-          ) : publicLogsLoading ? (
-            <div className="empty-state alert">{publicStrings.logs.empty.loading}</div>
-          ) : publicLogs.length === 0 ? (
-            <div className="empty-state alert">{publicStrings.logs.empty.none}</div>
-          ) : (
-            <table className="token-detail-table">
-              <thead>
-                <tr>
-                  <th>{publicStrings.logs.table.time}</th>
-                  <th>{publicStrings.logs.table.httpStatus}</th>
-                  <th>{publicStrings.logs.table.mcpStatus}</th>
-                  <th>{publicStrings.logs.table.result}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {publicLogs.map((log) => (
-                  <React.Fragment key={log.id}>
+            <div className="table-wrapper">
+              {(!isFullToken(token) || invalidToken) ? (
+                <div className="empty-state alert">
+                  <p style={{ margin: 0 }}>
+                    {publicStrings.logs.empty.noToken}{' '}
+                    <span style={{ opacity: 0.9 }}>{publicStrings.logs.empty.hint}</span>
+                  </p>
+                </div>
+              ) : publicLogsLoading ? (
+                <div className="empty-state alert">{publicStrings.logs.empty.loading}</div>
+              ) : publicLogs.length === 0 ? (
+                <div className="empty-state alert">{publicStrings.logs.empty.none}</div>
+              ) : (
+                <table className="token-detail-table">
+                  <thead>
                     <tr>
-                      <td>{formatTimestamp(log.created_at)}</td>
-                      <td>{log.http_status ?? '—'}</td>
-                      <td>{log.mcp_status ?? '—'}</td>
-                      <td>
-                        <button
-                          type="button"
-                          className={`log-result-button${expandedPublicLogs.has(log.id) ? ' log-result-button-active' : ''}`}
-                          onClick={() => togglePublicLog(log.id)}
-                          aria-expanded={expandedPublicLogs.has(log.id)}
-                          aria-controls={`plog-${log.id}`}
-                          aria-label={expandedPublicLogs.has(log.id) ? publicStrings.logs.toggles.hide : publicStrings.logs.toggles.show}
-                          title={expandedPublicLogs.has(log.id) ? publicStrings.logs.toggles.hide : publicStrings.logs.toggles.show}
-                        >
-                          <StatusBadge tone={statusTone(log.result_status)}>
-                            {log.result_status}
-                          </StatusBadge>
-                          <Icon
-                            icon={expandedPublicLogs.has(log.id) ? 'mdi:chevron-up' : 'mdi:chevron-down'}
-                            width={18}
-                            height={18}
-                            className="log-result-icon"
-                          />
-                        </button>
-                      </td>
+                      <th>{publicStrings.logs.table.time}</th>
+                      <th>{publicStrings.logs.table.httpStatus}</th>
+                      <th>{publicStrings.logs.table.mcpStatus}</th>
+                      <th>{publicStrings.logs.table.result}</th>
                     </tr>
-                    {expandedPublicLogs.has(log.id) && (
-                      <tr className="log-details-row">
-                        <td colSpan={4} id={`plog-${log.id}`}>
-                          <div className="log-details-panel">
-                            <div className="log-details-summary">
-                              <div>
-                                <span className="log-details-label">Request</span>
-                                <span className="log-details-value">{`${log.method} ${log.path}${log.query ? `?${log.query}` : ''}`}</span>
-                              </div>
-                              <div>
-                                <span className="log-details-label">Response</span>
-                                <span className="log-details-value">{`${publicStrings.logs.table.httpStatus}: ${log.http_status ?? '—'} · ${publicStrings.logs.table.mcpStatus}: ${log.mcp_status ?? '—'}`}</span>
-                              </div>
-                              <div>
-                                <span className="log-details-label">Outcome</span>
-                                <span className="log-details-value">{log.result_status}</span>
-                              </div>
-                              {log.error_message && (
-                                <div>
-                                  <span className="log-details-label">Error</span>
-                                  <span className="log-details-value">{log.error_message}</span>
+                  </thead>
+                  <tbody>
+                    {publicLogs.map((log) => (
+                      <React.Fragment key={log.id}>
+                        <tr>
+                          <td>{formatTimestamp(log.created_at)}</td>
+                          <td>{log.http_status ?? '—'}</td>
+                          <td>{log.mcp_status ?? '—'}</td>
+                          <td>
+                            <button
+                              type="button"
+                              className={`log-result-button${expandedPublicLogs.has(log.id) ? ' log-result-button-active' : ''}`}
+                              onClick={() => togglePublicLog(log.id)}
+                              aria-expanded={expandedPublicLogs.has(log.id)}
+                              aria-controls={`plog-${log.id}`}
+                              aria-label={expandedPublicLogs.has(log.id) ? publicStrings.logs.toggles.hide : publicStrings.logs.toggles.show}
+                              title={expandedPublicLogs.has(log.id) ? publicStrings.logs.toggles.hide : publicStrings.logs.toggles.show}
+                            >
+                              <StatusBadge tone={statusTone(log.result_status)}>
+                                {log.result_status}
+                              </StatusBadge>
+                              <Icon
+                                icon={expandedPublicLogs.has(log.id) ? 'mdi:chevron-up' : 'mdi:chevron-down'}
+                                width={18}
+                                height={18}
+                                className="log-result-icon"
+                              />
+                            </button>
+                          </td>
+                        </tr>
+                        {expandedPublicLogs.has(log.id) && (
+                          <tr className="log-details-row">
+                            <td colSpan={4} id={`plog-${log.id}`}>
+                              <div className="log-details-panel">
+                                <div className="log-details-summary">
+                                  <div>
+                                    <span className="log-details-label">Request</span>
+                                    <span className="log-details-value">{`${log.method} ${log.path}${log.query ? `?${log.query}` : ''}`}</span>
+                                  </div>
+                                  <div>
+                                    <span className="log-details-label">Response</span>
+                                    <span className="log-details-value">{`${publicStrings.logs.table.httpStatus}: ${log.http_status ?? '—'} · ${publicStrings.logs.table.mcpStatus}: ${log.mcp_status ?? '—'}`}</span>
+                                  </div>
+                                  <div>
+                                    <span className="log-details-label">Outcome</span>
+                                    <span className="log-details-value">{log.result_status}</span>
+                                  </div>
+                                  {log.error_message && (
+                                    <div>
+                                      <span className="log-details-label">Error</span>
+                                      <span className="log-details-value">{log.error_message}</span>
+                                    </div>
+                                  )}
                                 </div>
-                              )}
-                            </div>
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                  </React.Fragment>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-      </section>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </section>
+        </>
+      )}
       <section className="surface panel public-home-guide">
         <h2>{publicStrings.guide.title}</h2>
         {/* Mobile: compact dropdown menu with icons */}
@@ -756,6 +796,120 @@ function PublicHome(): JSX.Element {
           )}
         </div>
       </footer>
+      <dialog
+        ref={tokenAccessDialogRef}
+        className="modal token-access-modal"
+        onClick={(event) => {
+          // Close when clicking on the backdrop (not inside the modal box).
+          if (event.target === event.currentTarget) closeTokenAccessDialog()
+        }}
+        onClose={() => {
+          // Dialog can also be closed via ESC; keep sensitive states reset.
+          setTokenVisible(false)
+          setCopyState('idle')
+        }}
+      >
+        <div className="modal-box">
+          <h3 className="font-bold text-lg" style={{ marginTop: 0 }}>
+            {publicStrings.tokenAccess.dialog.title}
+          </h3>
+          <p className="opacity-80" style={{ marginTop: 8 }}>
+            {publicStrings.tokenAccess.dialog.description}
+          </p>
+          <div className="token-input-wrapper" style={{ marginTop: 14 }}>
+            <label htmlFor="access-token-modal" className="token-label">
+              {publicStrings.accessToken.label}
+            </label>
+            <div className="token-input-row">
+              <div className="token-input-shell">
+                <input
+                  id="access-token-modal"
+                  name="not-a-login-field"
+                  className={`token-input${tokenVisible ? '' : ' masked'}`}
+                  // Always use text input to avoid triggering password managers
+                  type="text"
+                  value={tokenDraft}
+                  onChange={(event) => setTokenDraft(event.target.value)}
+                  placeholder={publicStrings.accessToken.placeholder}
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                  aria-autocomplete="none"
+                  inputMode="text"
+                  data-1p-ignore="true"
+                  data-lpignore="true"
+                  data-form-type="other"
+                />
+                <button
+                  type="button"
+                  className="token-visibility-button"
+                  onClick={() => setTokenVisible((prev) => !prev)}
+                  aria-label={tokenVisible ? publicStrings.accessToken.toggle.hide : publicStrings.accessToken.toggle.show}
+                >
+                  <img
+                    src={`${ICONIFY_ENDPOINT}/mdi/${tokenVisible ? 'eye-off-outline' : 'eye-outline'}.svg?color=%236b7280`}
+                    alt={publicStrings.accessToken.toggle.iconAlt}
+                  />
+                </button>
+              </div>
+              <button
+                type="button"
+                className={`btn token-copy-button${
+                  copyState === 'copied'
+                    ? ' btn-success'
+                    : copyState === 'error'
+                      ? ' btn-warning'
+                      : ' btn-outline'
+                }`}
+                onClick={() => void handleCopyToken(tokenDraft.trim())}
+                aria-label={publicStrings.copyToken.iconAlt}
+                disabled={tokenDraft.trim().length === 0}
+              >
+                <Icon
+                  icon={
+                    copyState === 'copied'
+                      ? 'mdi:check'
+                      : copyState === 'error'
+                        ? 'mdi:alert-circle-outline'
+                        : 'mdi:content-copy'
+                  }
+                  aria-hidden="true"
+                  className="token-copy-icon"
+                />
+                <span>
+                  {copyState === 'copied'
+                    ? publicStrings.copyToken.copied
+                    : copyState === 'error'
+                      ? publicStrings.copyToken.error
+                      : publicStrings.copyToken.copy}
+                </span>
+              </button>
+            </div>
+          </div>
+          <p className="opacity-80" style={{ marginTop: 14, marginBottom: 0 }}>
+            {publicStrings.tokenAccess.dialog.loginHint}{' '}
+            <a href="/auth/linuxdo" className="link">
+              {publicStrings.linuxDoLogin.button}
+            </a>
+          </p>
+          <div className="modal-action">
+            <form method="dialog" onSubmit={(e) => e.preventDefault()} style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button type="button" className="btn" onClick={closeTokenAccessDialog}>
+                {publicStrings.tokenAccess.dialog.actions.cancel}
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={confirmTokenAccessDialog}
+                disabled={!isFullToken(tokenDraft.trim())}
+              >
+                {publicStrings.tokenAccess.dialog.actions.confirm}
+              </button>
+            </form>
+          </div>
+        </div>
+      </dialog>
     </main>
   )
 }
