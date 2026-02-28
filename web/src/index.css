@@ -857,6 +857,28 @@
   opacity: 1;
 }
 
+/* Token access modal: let the token input row expand to the full modal width. */
+.token-access-modal .token-input-wrapper {
+  align-items: stretch;
+}
+
+.token-access-modal .token-input-row {
+  display: flex;
+  width: 100%;
+}
+
+.token-access-modal .token-input-shell {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: block;
+}
+
+.token-access-modal .token-input {
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+}
+
 /* Public page, narrow screens: make token row wrap and align ends */
 @media (max-width: 560px) {
   .public-home .access-token-box .token-label {
