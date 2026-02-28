@@ -1536,6 +1536,7 @@ async fn tavily_http_extract(
             &path,
             options,
             &headers,
+            false,
         )
         .await;
 
@@ -1819,6 +1820,7 @@ async fn tavily_http_crawl(
             &path,
             options,
             &headers,
+            false,
         )
         .await;
 
@@ -2044,6 +2046,7 @@ async fn tavily_http_map(
             &path,
             options,
             &headers,
+            true,
         )
         .await;
 
