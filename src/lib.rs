@@ -636,6 +636,7 @@ impl TavilyProxy {
         display_path: &str,
         options: Value,
         original_headers: &HeaderMap,
+        inject_upstream_bearer_auth: bool,
     ) -> Result<(ProxyResponse, AttemptAnalysis), ProxyError> {
         let lease = self.acquire_key_for(auth_token_id).await?;
 
@@ -682,6 +683,9 @@ impl TavilyProxy {
                 continue;
             }
             builder = builder.header(name, value);
+        }
+        if inject_upstream_bearer_auth {
+            builder = builder.header("Authorization", format!("Bearer {}", lease.secret));
         }
 
         let response = builder.body(request_body.clone()).send().await;
@@ -772,6 +776,7 @@ impl TavilyProxy {
             display_path,
             options,
             original_headers,
+            false,
         )
         .await
     }
