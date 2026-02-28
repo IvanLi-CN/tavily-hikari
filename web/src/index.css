@@ -649,7 +649,8 @@
   margin-top: 24px;
 }
 
-.linuxdo-login-button {
+.linuxdo-login-button,
+.token-access-button {
   display: inline-flex;
   align-items: center;
   gap: 10px;
@@ -665,19 +666,36 @@
   transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
 }
 
+.token-access-button {
+  appearance: none;
+  cursor: pointer;
+  /* `font: inherit` resets weight/line-height, so re-apply to match the anchor. */
+  font: inherit;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.token-access-icon {
+  width: 20px;
+  height: 20px;
+  opacity: 0.85;
+}
+
 .linuxdo-login-button img {
   width: 20px;
   height: 20px;
   border-radius: 50%;
 }
 
-.linuxdo-login-button:hover {
+.linuxdo-login-button:hover,
+.token-access-button:hover {
   border-color: hsl(var(--foreground) / 0.32);
   box-shadow: 0 6px 14px hsl(var(--border) / 0.96);
   transform: translateY(-1px);
 }
 
-.linuxdo-login-button:active {
+.linuxdo-login-button:active,
+.token-access-button:active {
   transform: translateY(0);
   box-shadow: 0 2px 6px hsl(var(--border) / 0.96);
 }
@@ -4106,14 +4124,16 @@ tbody .log-details-row:hover {
     color: hsl(var(--foreground));
   }
 
-  .linuxdo-login-button {
+  .linuxdo-login-button,
+  .token-access-button {
     border: 1px solid hsl(var(--border));
     background: hsl(var(--card) / 0.95);
     color: hsl(var(--foreground));
     box-shadow: 0 10px 20px -18px hsl(var(--foreground) / 0.5);
   }
 
-  .linuxdo-login-button:hover {
+  .linuxdo-login-button:hover,
+  .token-access-button:hover {
     border-color: hsl(var(--primary) / 0.5);
     box-shadow: 0 14px 26px -20px hsl(var(--primary) / 0.45);
   }

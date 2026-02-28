@@ -472,8 +472,9 @@ function PublicHome(): JSX.Element {
               </a>
             )}
             {hideTokenPanels && (
-              <button type="button" className="btn btn-outline" onClick={openTokenAccessDialog}>
-                {publicStrings.tokenAccess.button}
+              <button type="button" className="token-access-button" onClick={openTokenAccessDialog}>
+                <Icon icon="mdi:key-outline" aria-hidden="true" className="token-access-icon" />
+                <span>{publicStrings.tokenAccess.button}</span>
               </button>
             )}
             {(isAdmin || builtinAuthEnabled) && (
