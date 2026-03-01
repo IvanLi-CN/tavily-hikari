@@ -2544,123 +2544,232 @@ impl KeyStore {
     /// Returns (rows_affected, new_last_rollup_ts). When there are no new logs,
     /// rows_affected is 0 and new_last_rollup_ts is None.
     async fn rollup_token_usage_stats(&self) -> Result<(i64, Option<i64>), ProxyError> {
+        async fn read_meta_i64(
+            tx: &mut Transaction<'_, Sqlite>,
+            key: &str,
+        ) -> Result<Option<i64>, ProxyError> {
+            let value =
+                sqlx::query_scalar::<_, String>("SELECT value FROM meta WHERE key = ? LIMIT 1")
+                    .bind(key)
+                    .fetch_optional(&mut **tx)
+                    .await?;
+            Ok(value.and_then(|v| v.parse::<i64>().ok()))
+        }
+
+        async fn write_meta_i64(
+            tx: &mut Transaction<'_, Sqlite>,
+            key: &str,
+            value: i64,
+        ) -> Result<(), ProxyError> {
+            sqlx::query(
+                r#"
+                INSERT INTO meta (key, value)
+                VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                "#,
+            )
+            .bind(key)
+            .bind(value.to_string())
+            .execute(&mut **tx)
+            .await?;
+            Ok(())
+        }
+
+        let mut tx = self.pool.begin().await?;
+
         // v2 cursor: strictly monotonic auth_token_logs.id to guarantee idempotent rollup.
-        // Backward compatibility: if v2 cursor is missing, map legacy timestamp cursor once.
-        let last_log_id = if let Some(id) = self
-            .get_meta_i64(META_KEY_TOKEN_USAGE_ROLLUP_LOG_ID_V2)
-            .await?
-        {
-            id
+        // Backward compatibility: on first v2 run, legacy timestamp is used only to filter
+        // the migration batch, then the cursor permanently switches to id-based mode.
+        let v2_cursor = read_meta_i64(&mut tx, META_KEY_TOKEN_USAGE_ROLLUP_LOG_ID_V2).await?;
+        let (last_log_id, migration_legacy_ts) = if let Some(id) = v2_cursor {
+            (id, None)
         } else {
-            let legacy_ts = self.get_meta_i64(META_KEY_TOKEN_USAGE_ROLLUP_TS).await?;
-            let mapped_id = if let Some(ts) = legacy_ts {
-                sqlx::query_scalar::<_, Option<i64>>(
-                    "SELECT MAX(id) FROM auth_token_logs WHERE counts_business_quota = 1 AND created_at <= ?",
-                )
-                .bind(ts)
-                .fetch_one(&self.pool)
-                .await?
-                .unwrap_or(0)
-            } else {
-                0
-            };
-            self.set_meta_i64(META_KEY_TOKEN_USAGE_ROLLUP_LOG_ID_V2, mapped_id)
-                .await?;
-            mapped_id
+            (
+                0,
+                read_meta_i64(&mut tx, META_KEY_TOKEN_USAGE_ROLLUP_TS).await?,
+            )
         };
 
-        let (max_log_id, max_created_at): (Option<i64>, Option<i64>) = sqlx::query_as(
-            r#"
-            SELECT
-                MAX(id) AS max_log_id,
-                MAX(created_at) AS max_created_at
-            FROM auth_token_logs
-            WHERE counts_business_quota = 1
-              AND id > ?
-            "#,
-        )
-        .bind(last_log_id)
-        .fetch_one(&self.pool)
-        .await?;
+        let (max_log_id, max_created_at): (Option<i64>, Option<i64>) =
+            if let Some(legacy_ts) = migration_legacy_ts {
+                sqlx::query_as(
+                    r#"
+                    SELECT
+                        MAX(id) AS max_log_id,
+                        MAX(CASE WHEN created_at >= ? THEN created_at END) AS max_created_at
+                    FROM auth_token_logs
+                    WHERE counts_business_quota = 1
+                    "#,
+                )
+                .bind(legacy_ts)
+                .fetch_one(&mut *tx)
+                .await?
+            } else {
+                sqlx::query_as(
+                    r#"
+                    SELECT
+                        MAX(id) AS max_log_id,
+                        MAX(created_at) AS max_created_at
+                    FROM auth_token_logs
+                    WHERE counts_business_quota = 1
+                      AND id > ?
+                    "#,
+                )
+                .bind(last_log_id)
+                .fetch_one(&mut *tx)
+                .await?
+            };
 
         let Some(max_log_id) = max_log_id else {
+            if migration_legacy_ts.is_some() {
+                // No billable logs yet: initialize v2 cursor to complete migration.
+                write_meta_i64(&mut tx, META_KEY_TOKEN_USAGE_ROLLUP_LOG_ID_V2, 0).await?;
+            }
+            tx.commit().await?;
             return Ok((0, None));
         };
 
         let bucket_secs = TOKEN_USAGE_STATS_BUCKET_SECS;
 
-        let result = sqlx::query(
-            r#"
-            INSERT INTO token_usage_stats (
-                token_id,
-                bucket_start,
-                bucket_secs,
-                success_count,
-                system_failure_count,
-                external_failure_count,
-                quota_exhausted_count
+        let result = if let Some(legacy_ts) = migration_legacy_ts {
+            sqlx::query(
+                r#"
+                INSERT INTO token_usage_stats (
+                    token_id,
+                    bucket_start,
+                    bucket_secs,
+                    success_count,
+                    system_failure_count,
+                    external_failure_count,
+                    quota_exhausted_count
+                )
+                SELECT
+                    token_id,
+                    (created_at / ?) * ? AS bucket_start,
+                    ? AS bucket_secs,
+                    SUM(CASE WHEN result_status = 'success' THEN 1 ELSE 0 END) AS success_count,
+                    SUM(
+                        CASE
+                            WHEN result_status != 'success'
+                                 AND result_status != 'quota_exhausted'
+                                 AND (
+                                    (http_status BETWEEN 400 AND 599)
+                                    OR (mcp_status BETWEEN 400 AND 599)
+                                ) THEN 1
+                            ELSE 0
+                        END
+                    ) AS system_failure_count,
+                    SUM(
+                        CASE
+                            WHEN result_status != 'success'
+                                 AND result_status != 'quota_exhausted'
+                                 AND NOT (
+                                    (http_status BETWEEN 400 AND 599)
+                                    OR (mcp_status BETWEEN 400 AND 599)
+                                ) THEN 1
+                            ELSE 0
+                        END
+                    ) AS external_failure_count,
+                    SUM(CASE WHEN result_status = 'quota_exhausted' THEN 1 ELSE 0 END) AS quota_exhausted_count
+                FROM auth_token_logs
+                WHERE counts_business_quota = 1
+                  AND created_at >= ? AND id <= ?
+                GROUP BY token_id, bucket_start
+                ON CONFLICT(token_id, bucket_start, bucket_secs) DO UPDATE SET
+                    success_count = token_usage_stats.success_count + excluded.success_count,
+                    system_failure_count =
+                        token_usage_stats.system_failure_count + excluded.system_failure_count,
+                    external_failure_count =
+                        token_usage_stats.external_failure_count + excluded.external_failure_count,
+                    quota_exhausted_count =
+                        token_usage_stats.quota_exhausted_count + excluded.quota_exhausted_count
+                "#,
             )
-            SELECT
-                token_id,
-                (created_at / ?) * ? AS bucket_start,
-                ? AS bucket_secs,
-                SUM(CASE WHEN result_status = 'success' THEN 1 ELSE 0 END) AS success_count,
-                SUM(
-                    CASE
-                        WHEN result_status != 'success'
-                             AND result_status != 'quota_exhausted'
-                             AND (
-                                (http_status BETWEEN 400 AND 599)
-                                OR (mcp_status BETWEEN 400 AND 599)
-                            ) THEN 1
-                        ELSE 0
-                    END
-                ) AS system_failure_count,
-                SUM(
-                    CASE
-                        WHEN result_status != 'success'
-                             AND result_status != 'quota_exhausted'
-                             AND NOT (
-                                (http_status BETWEEN 400 AND 599)
-                                OR (mcp_status BETWEEN 400 AND 599)
-                            ) THEN 1
-                        ELSE 0
-                    END
-                ) AS external_failure_count,
-                SUM(CASE WHEN result_status = 'quota_exhausted' THEN 1 ELSE 0 END) AS quota_exhausted_count
-            FROM auth_token_logs
-            WHERE counts_business_quota = 1
-              AND id > ? AND id <= ?
-            GROUP BY token_id, bucket_start
-            ON CONFLICT(token_id, bucket_start, bucket_secs) DO UPDATE SET
-                success_count = token_usage_stats.success_count + excluded.success_count,
-                system_failure_count =
-                    token_usage_stats.system_failure_count + excluded.system_failure_count,
-                external_failure_count =
-                    token_usage_stats.external_failure_count + excluded.external_failure_count,
-                quota_exhausted_count =
-                    token_usage_stats.quota_exhausted_count + excluded.quota_exhausted_count
-            "#,
-        )
-        .bind(bucket_secs)
-        .bind(bucket_secs)
-        .bind(bucket_secs)
-        .bind(last_log_id)
-        .bind(max_log_id)
-        .execute(&self.pool)
-        .await?;
+            .bind(bucket_secs)
+            .bind(bucket_secs)
+            .bind(bucket_secs)
+            .bind(legacy_ts)
+            .bind(max_log_id)
+            .execute(&mut *tx)
+            .await?
+        } else {
+            sqlx::query(
+                r#"
+                INSERT INTO token_usage_stats (
+                    token_id,
+                    bucket_start,
+                    bucket_secs,
+                    success_count,
+                    system_failure_count,
+                    external_failure_count,
+                    quota_exhausted_count
+                )
+                SELECT
+                    token_id,
+                    (created_at / ?) * ? AS bucket_start,
+                    ? AS bucket_secs,
+                    SUM(CASE WHEN result_status = 'success' THEN 1 ELSE 0 END) AS success_count,
+                    SUM(
+                        CASE
+                            WHEN result_status != 'success'
+                                 AND result_status != 'quota_exhausted'
+                                 AND (
+                                    (http_status BETWEEN 400 AND 599)
+                                    OR (mcp_status BETWEEN 400 AND 599)
+                                ) THEN 1
+                            ELSE 0
+                        END
+                    ) AS system_failure_count,
+                    SUM(
+                        CASE
+                            WHEN result_status != 'success'
+                                 AND result_status != 'quota_exhausted'
+                                 AND NOT (
+                                    (http_status BETWEEN 400 AND 599)
+                                    OR (mcp_status BETWEEN 400 AND 599)
+                                ) THEN 1
+                            ELSE 0
+                        END
+                    ) AS external_failure_count,
+                    SUM(CASE WHEN result_status = 'quota_exhausted' THEN 1 ELSE 0 END) AS quota_exhausted_count
+                FROM auth_token_logs
+                WHERE counts_business_quota = 1
+                  AND id > ? AND id <= ?
+                GROUP BY token_id, bucket_start
+                ON CONFLICT(token_id, bucket_start, bucket_secs) DO UPDATE SET
+                    success_count = token_usage_stats.success_count + excluded.success_count,
+                    system_failure_count =
+                        token_usage_stats.system_failure_count + excluded.system_failure_count,
+                    external_failure_count =
+                        token_usage_stats.external_failure_count + excluded.external_failure_count,
+                    quota_exhausted_count =
+                        token_usage_stats.quota_exhausted_count + excluded.quota_exhausted_count
+                "#,
+            )
+            .bind(bucket_secs)
+            .bind(bucket_secs)
+            .bind(bucket_secs)
+            .bind(last_log_id)
+            .bind(max_log_id)
+            .execute(&mut *tx)
+            .await?
+        };
 
         let affected = result.rows_affected() as i64;
+        let mut new_last_rollup_ts = max_created_at;
 
-        self.set_meta_i64(META_KEY_TOKEN_USAGE_ROLLUP_LOG_ID_V2, max_log_id)
-            .await?;
+        write_meta_i64(&mut tx, META_KEY_TOKEN_USAGE_ROLLUP_LOG_ID_V2, max_log_id).await?;
         if let Some(ts) = max_created_at {
-            // Keep legacy timestamp cursor updated for observability and downgrade compatibility.
-            self.set_meta_i64(META_KEY_TOKEN_USAGE_ROLLUP_TS, ts)
-                .await?;
+            // Keep legacy timestamp cursor monotonic for observability and downgrade compatibility.
+            // This prevents accidental timestamp regression when newer log ids carry older created_at.
+            let legacy_ts = read_meta_i64(&mut tx, META_KEY_TOKEN_USAGE_ROLLUP_TS).await?;
+            let clamped_ts = legacy_ts.map_or(ts, |old| old.max(ts));
+            write_meta_i64(&mut tx, META_KEY_TOKEN_USAGE_ROLLUP_TS, clamped_ts).await?;
+            new_last_rollup_ts = Some(clamped_ts);
         }
 
-        Ok((affected, max_created_at))
+        tx.commit().await?;
+        Ok((affected, new_last_rollup_ts))
     }
 
     async fn increment_monthly_quota(
@@ -7294,8 +7403,108 @@ mod tests {
             .await
             .expect("summary after migrated rollup");
         assert_eq!(
+            summary.total_requests, 2,
+            "migration should include boundary-second rows to avoid undercount on legacy_ts"
+        );
+        assert_eq!(summary.success_count, 2);
+
+        let expected_last_id = sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT MAX(id) FROM auth_token_logs WHERE counts_business_quota = 1",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("max log id")
+        .expect("max log id should exist");
+        let cursor_v2_raw: String = sqlx::query_scalar("SELECT value FROM meta WHERE key = ?")
+            .bind(META_KEY_TOKEN_USAGE_ROLLUP_LOG_ID_V2)
+            .fetch_one(&store.pool)
+            .await
+            .expect("v2 cursor exists");
+        let cursor_v2 = cursor_v2_raw
+            .parse::<i64>()
+            .expect("v2 cursor should be numeric");
+        assert_eq!(cursor_v2, expected_last_id);
+
+        let second = proxy
+            .rollup_token_usage_stats()
+            .await
+            .expect("second rollup after migration");
+        assert_eq!(second.0, 0, "should not reprocess previous logs");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn rollup_token_usage_stats_migration_handles_out_of_order_timestamps() {
+        let db_path = temp_db_path("rollup-legacy-cursor-out-of-order");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        let token = proxy
+            .create_access_token(Some("rollup-legacy-cursor-out-of-order"))
+            .await
+            .expect("create token");
+        let store = proxy.key_store.clone();
+        let legacy_ts = 1_700_020_000i64;
+
+        // Insert a newer log first, then an older-timestamp log second to create id/timestamp disorder.
+        sqlx::query(
+            r#"
+            INSERT INTO auth_token_logs (
+                token_id, method, path, query, http_status, mcp_status, result_status, error_message, counts_business_quota, created_at
+            ) VALUES (?, 'GET', '/mcp', NULL, 200, NULL, 'success', NULL, 1, ?)
+            "#,
+        )
+        .bind(&token.id)
+        .bind(legacy_ts + 100)
+        .execute(&store.pool)
+        .await
+        .expect("insert newer log first");
+
+        sqlx::query(
+            r#"
+            INSERT INTO auth_token_logs (
+                token_id, method, path, query, http_status, mcp_status, result_status, error_message, counts_business_quota, created_at
+            ) VALUES (?, 'GET', '/mcp', NULL, 200, NULL, 'success', NULL, 1, ?)
+            "#,
+        )
+        .bind(&token.id)
+        .bind(legacy_ts - 100)
+        .execute(&store.pool)
+        .await
+        .expect("insert older log second");
+
+        sqlx::query("DELETE FROM meta WHERE key = ?")
+            .bind(META_KEY_TOKEN_USAGE_ROLLUP_LOG_ID_V2)
+            .execute(&store.pool)
+            .await
+            .expect("delete v2 cursor");
+        sqlx::query(
+            r#"
+            INSERT INTO meta (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            "#,
+        )
+        .bind(META_KEY_TOKEN_USAGE_ROLLUP_TS)
+        .bind(legacy_ts.to_string())
+        .execute(&store.pool)
+        .await
+        .expect("set legacy cursor");
+
+        proxy
+            .rollup_token_usage_stats()
+            .await
+            .expect("rollup with out-of-order migration");
+
+        let summary = proxy
+            .token_summary_since(&token.id, 0, None)
+            .await
+            .expect("summary after migration");
+        assert_eq!(
             summary.total_requests, 1,
-            "should only process logs after mapped legacy cursor"
+            "migration should include all logs newer than legacy_ts even when id/timestamp are out of order"
         );
         assert_eq!(summary.success_count, 1);
 
@@ -7320,7 +7529,180 @@ mod tests {
             .rollup_token_usage_stats()
             .await
             .expect("second rollup after migration");
-        assert_eq!(second.0, 0, "should not reprocess previous logs");
+        assert_eq!(second.0, 0, "second rollup should be a no-op");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn rollup_token_usage_stats_migration_includes_same_second_boundary_logs() {
+        let db_path = temp_db_path("rollup-legacy-cursor-same-second");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        let token = proxy
+            .create_access_token(Some("rollup-legacy-cursor-same-second"))
+            .await
+            .expect("create token");
+        let store = proxy.key_store.clone();
+        let legacy_ts = 1_700_030_000i64;
+
+        for _ in 0..2 {
+            sqlx::query(
+                r#"
+                INSERT INTO auth_token_logs (
+                    token_id, method, path, query, http_status, mcp_status, result_status, error_message, counts_business_quota, created_at
+                ) VALUES (?, 'GET', '/mcp', NULL, 200, NULL, 'success', NULL, 1, ?)
+                "#,
+            )
+            .bind(&token.id)
+            .bind(legacy_ts)
+            .execute(&store.pool)
+            .await
+            .expect("insert same-second log");
+        }
+
+        sqlx::query("DELETE FROM meta WHERE key = ?")
+            .bind(META_KEY_TOKEN_USAGE_ROLLUP_LOG_ID_V2)
+            .execute(&store.pool)
+            .await
+            .expect("delete v2 cursor");
+        sqlx::query(
+            r#"
+            INSERT INTO meta (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            "#,
+        )
+        .bind(META_KEY_TOKEN_USAGE_ROLLUP_TS)
+        .bind(legacy_ts.to_string())
+        .execute(&store.pool)
+        .await
+        .expect("set legacy cursor");
+
+        proxy
+            .rollup_token_usage_stats()
+            .await
+            .expect("rollup with same-second migration boundary");
+
+        let summary = proxy
+            .token_summary_since(&token.id, 0, None)
+            .await
+            .expect("summary after migration");
+        assert_eq!(
+            summary.total_requests, 2,
+            "migration must not miss logs at the same second as legacy_ts"
+        );
+        assert_eq!(summary.success_count, 2);
+
+        let expected_last_id = sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT MAX(id) FROM auth_token_logs WHERE counts_business_quota = 1",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("max log id")
+        .expect("max log id should exist");
+        let cursor_v2_raw: String = sqlx::query_scalar("SELECT value FROM meta WHERE key = ?")
+            .bind(META_KEY_TOKEN_USAGE_ROLLUP_LOG_ID_V2)
+            .fetch_one(&store.pool)
+            .await
+            .expect("v2 cursor exists");
+        let cursor_v2 = cursor_v2_raw
+            .parse::<i64>()
+            .expect("v2 cursor should be numeric");
+        assert_eq!(cursor_v2, expected_last_id);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn rollup_token_usage_stats_keeps_legacy_timestamp_cursor_monotonic() {
+        let db_path = temp_db_path("rollup-legacy-ts-monotonic");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        let token = proxy
+            .create_access_token(Some("rollup-legacy-ts-monotonic"))
+            .await
+            .expect("create token");
+        let store = proxy.key_store.clone();
+        let newer_ts = 1_700_010_000i64;
+        let older_ts = newer_ts - 3_600;
+
+        sqlx::query(
+            r#"
+            INSERT INTO auth_token_logs (
+                token_id, method, path, query, http_status, mcp_status, result_status, error_message, counts_business_quota, created_at
+            ) VALUES (?, 'GET', '/mcp', NULL, 200, NULL, 'success', NULL, 1, ?)
+            "#,
+        )
+        .bind(&token.id)
+        .bind(newer_ts)
+        .execute(&store.pool)
+        .await
+        .expect("insert newer log first");
+
+        proxy
+            .rollup_token_usage_stats()
+            .await
+            .expect("first rollup");
+
+        let first_legacy_ts_raw: String =
+            sqlx::query_scalar("SELECT value FROM meta WHERE key = ?")
+                .bind(META_KEY_TOKEN_USAGE_ROLLUP_TS)
+                .fetch_one(&store.pool)
+                .await
+                .expect("legacy cursor exists after first rollup");
+        let first_legacy_ts = first_legacy_ts_raw
+            .parse::<i64>()
+            .expect("legacy ts should be numeric");
+        assert_eq!(first_legacy_ts, newer_ts);
+
+        sqlx::query(
+            r#"
+            INSERT INTO auth_token_logs (
+                token_id, method, path, query, http_status, mcp_status, result_status, error_message, counts_business_quota, created_at
+            ) VALUES (?, 'GET', '/mcp', NULL, 200, NULL, 'success', NULL, 1, ?)
+            "#,
+        )
+        .bind(&token.id)
+        .bind(older_ts)
+        .execute(&store.pool)
+        .await
+        .expect("insert older log with newer id");
+
+        let second = proxy
+            .rollup_token_usage_stats()
+            .await
+            .expect("second rollup");
+        assert_eq!(
+            second.1,
+            Some(newer_ts),
+            "reported last_rollup_ts should stay aligned with the clamped legacy cursor"
+        );
+
+        let second_legacy_ts_raw: String =
+            sqlx::query_scalar("SELECT value FROM meta WHERE key = ?")
+                .bind(META_KEY_TOKEN_USAGE_ROLLUP_TS)
+                .fetch_one(&store.pool)
+                .await
+                .expect("legacy cursor exists after second rollup");
+        let second_legacy_ts = second_legacy_ts_raw
+            .parse::<i64>()
+            .expect("legacy ts should be numeric");
+        assert_eq!(
+            second_legacy_ts, newer_ts,
+            "legacy ts must not regress when processed logs have older timestamps"
+        );
+
+        let summary = proxy
+            .token_summary_since(&token.id, 0, None)
+            .await
+            .expect("summary after second rollup");
+        assert_eq!(summary.total_requests, 2);
+        assert_eq!(summary.success_count, 2);
 
         let _ = std::fs::remove_file(db_path);
     }
