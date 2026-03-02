@@ -16,11 +16,12 @@ export interface StatusBadgeProps {
   tone: StatusTone
   children: React.ReactNode
   className?: string
+  title?: string
 }
 
-export function StatusBadge({ tone, children, className = '' }: StatusBadgeProps): JSX.Element {
+export function StatusBadge({ tone, children, className = '', title }: StatusBadgeProps): JSX.Element {
   return (
-    <Badge variant={toneVariantMap[tone]} className={`status-badge status-pill ${className}`}>
+    <Badge variant={toneVariantMap[tone]} className={`status-badge status-pill ${className}`} title={title}>
       {children}
     </Badge>
   )

@@ -252,9 +252,14 @@ function formatDateOnly(value: number | null): string {
 
 function statusTone(status: string): StatusTone {
   const normalized = status.toLowerCase()
-  if (normalized === 'active' || normalized === 'success') return 'success'
-  if (normalized === 'exhausted' || normalized === 'quota_exhausted') return 'warning'
-  if (normalized === 'error') return 'error'
+  if (normalized === 'active' || normalized === 'success' || normalized === 'completed') return 'success'
+  if (normalized === 'exhausted' || normalized === 'quota_exhausted' || normalized === 'retry_exhausted') return 'warning'
+  if (normalized === 'running' || normalized === 'in_progress' || normalized === 'queued' || normalized === 'pending') {
+    return 'info'
+  }
+  if (normalized === 'error' || normalized === 'failed' || normalized === 'timeout' || normalized === 'cancelled' || normalized === 'canceled') {
+    return 'error'
+  }
   if (normalized === 'deleted') return 'neutral'
   return 'neutral'
 }
@@ -270,6 +275,57 @@ function quotaTone(quotaState: string): StatusTone {
 function statusLabel(status: string, strings: AdminTranslations): string {
   const normalized = status.toLowerCase()
   return strings.statuses[normalized] ?? status
+}
+
+function jobTypeLabel(jobType: string, strings: AdminTranslations['jobs']): string {
+  const normalized = jobType.trim()
+  if (!normalized) return '—'
+
+  const direct = strings.types?.[normalized]
+  if (direct) return direct
+
+  const aliases: Record<string, string> = {
+    usage_aggregation: 'token_usage_rollup',
+    log_cleanup: 'auth_token_logs_gc',
+  }
+  const aliasTarget = aliases[normalized]
+  if (aliasTarget && strings.types?.[aliasTarget]) {
+    return strings.types[aliasTarget]
+  }
+
+  return normalized
+    .replace(/[\/_]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function jobStatusLabel(status: string): string {
+  const normalized = status.trim().toLowerCase()
+  if (!normalized) return '—'
+
+  const aliases: Record<string, string> = {
+    success: 'Success',
+    running: 'Running',
+    in_progress: 'In progress',
+    pending: 'Pending',
+    queued: 'Queued',
+    completed: 'Completed',
+    error: 'Error',
+    failed: 'Failed',
+    quota_exhausted: 'Quota exhausted',
+    retry_exhausted: 'Retry exhausted',
+    timeout: 'Timed out',
+    cancelled: 'Canceled',
+    canceled: 'Canceled',
+  }
+  const alias = aliases[normalized]
+  if (alias) return alias
+
+  return normalized
+    .replace(/[\/_]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b[a-z]/g, (ch) => ch.toUpperCase())
 }
 
 function formatErrorMessage(log: RequestLog, errorsStrings: AdminTranslations['logs']['errors']): string {
@@ -3068,7 +3124,7 @@ function AdminDashboard(): JSX.Element {
               {loading ? jobsStrings.empty.loading : jobsStrings.empty.none}
             </div>
           ) : (
-            <table className="jobs-table">
+            <table className="jobs-table jobs-module-table">
               <thead>
                 <tr>
                   <th>{jobsStrings.table.id}</th>
@@ -3084,7 +3140,8 @@ function AdminDashboard(): JSX.Element {
                 {jobs.map((j) => {
                   const job: any = j as any
                   const jt = job.job_type ?? job.jobType ?? ''
-                  const jobTypeLabel = jobsStrings.types?.[jt] ?? jt
+                  const jobTypeLabelText = jobTypeLabel(jt, jobsStrings)
+                  const jobStatusText = jobStatusLabel(String(j.status ?? ''))
                   const keyId = job.key_id ?? job.keyId ?? '—'
                   const started: number | null = job.started_at ?? job.startedAt ?? null
                   const finished: number | null = job.finished_at ?? job.finishedAt ?? null
@@ -3116,10 +3173,12 @@ function AdminDashboard(): JSX.Element {
                   rows.push(
                     <tr key={j.id}>
                         <td>{j.id}</td>
-                        <td>{jobTypeLabel}</td>
+                        <td>{jobTypeLabelText}</td>
                         <td>{keyId ?? '—'}</td>
                         <td>
-                          <StatusBadge tone={statusTone(j.status)}>{j.status}</StatusBadge>
+                          <StatusBadge tone={statusTone(j.status)} title={String(j.status ?? '')}>
+                            {jobStatusText}
+                          </StatusBadge>
                         </td>
                         <td>{j.attempt}</td>
                         <td>{started ? startedTimeLabel : '—'}</td>
@@ -3170,7 +3229,7 @@ function AdminDashboard(): JSX.Element {
                                         className="job-type-trigger"
                                         aria-label={jt}
                                       >
-                                        <span className="job-type-main">{jobTypeLabel}</span>
+                                        <span className="job-type-main">{jobTypeLabelText}</span>
                                       </button>
                                       <div className="job-type-bubble">{jt}</div>
                                     </span>
@@ -3185,7 +3244,7 @@ function AdminDashboard(): JSX.Element {
                               </div>
                               <div>
                                 <div className="log-details-label">{jobsStrings.table.status}</div>
-                                <div className="log-details-value">{j.status}</div>
+                                <div className="log-details-value">{jobStatusText}</div>
                               </div>
                               <div>
                                 <div className="log-details-label">{jobsStrings.table.attempt}</div>

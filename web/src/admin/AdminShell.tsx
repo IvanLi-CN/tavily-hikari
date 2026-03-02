@@ -54,7 +54,7 @@ export default function AdminShell({
       </aside>
 
       <section id="admin-main-content" className="admin-main-content" role="main">
-        <div className="app-shell">{children}</div>
+        <div className="app-shell admin-shell-content">{children}</div>
       </section>
     </div>
   )

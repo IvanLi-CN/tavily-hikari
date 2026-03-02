@@ -2506,24 +2506,45 @@ table {
   color: hsl(var(--muted-foreground));
 }
 
-/* Admin Recent Requests table: keep only the Error column truncatable */
+/* Admin Recent Requests table: prioritize in-cell fitting over horizontal scroll */
 .admin-logs-table {
-  table-layout: auto;
+  table-layout: fixed;
   width: 100%;
 }
-.admin-logs-table th,
-.admin-logs-table td {
-  white-space: nowrap; /* 其他列一律不换行 */
+.admin-logs-table th {
+  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
 }
-/* Fix the Error column (6th) to a reasonable width and ellipsize overflow */
-.admin-logs-table th:last-child,
-.admin-logs-table td:last-child {
-  width: 36ch;
-  max-width: 36ch;
+.admin-logs-table td {
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap; /* 不允许换行，超出显示省略号 */
+}
+.admin-logs-table th:nth-child(1),
+.admin-logs-table td:nth-child(1) {
+  width: 13ch;
+}
+.admin-logs-table th:nth-child(2),
+.admin-logs-table td:nth-child(2),
+.admin-logs-table th:nth-child(3),
+.admin-logs-table td:nth-child(3) {
+  width: 9ch;
+}
+.admin-logs-table th:nth-child(4),
+.admin-logs-table td:nth-child(4),
+.admin-logs-table th:nth-child(5),
+.admin-logs-table td:nth-child(5) {
+  width: 12ch;
+}
+.admin-logs-table th:nth-child(6),
+.admin-logs-table td:nth-child(6) {
+  width: 14ch;
+}
+.admin-logs-table th:last-child,
+.admin-logs-table td:last-child {
   color: hsl(var(--muted-foreground));
+  width: 24ch;
 }
 /* 确保“结果”列徽章不换行并右对齐（兼容 4/5 列位置） */
 .admin-logs-table td:nth-child(6) .status-badge,
@@ -3289,6 +3310,43 @@ tbody tr:hover {
   width: 24%;
 }
 
+.jobs-table:not(.tokens-table) th,
+.jobs-table:not(.tokens-table) td {
+  padding-inline: 12px;
+}
+
+.jobs-table:not(.tokens-table) th:nth-child(1),
+.jobs-table:not(.tokens-table) td:nth-child(1) {
+  width: 7ch;
+  white-space: nowrap;
+}
+
+.jobs-table:not(.tokens-table) th:nth-child(3),
+.jobs-table:not(.tokens-table) td:nth-child(3) {
+  width: 9ch;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.jobs-table:not(.tokens-table) th:nth-child(4),
+.jobs-table:not(.tokens-table) td:nth-child(4) {
+  width: 13ch;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.jobs-table:not(.tokens-table) th:nth-child(5),
+.jobs-table:not(.tokens-table) td:nth-child(5) {
+  width: 8ch;
+  white-space: nowrap;
+}
+
+.jobs-table:not(.tokens-table) td:nth-child(4) .status-pill {
+  min-width: 68px;
+}
+
 .jobs-message-cell {
   max-width: 0;
 }
@@ -3370,7 +3428,7 @@ tbody tr:hover {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  width: 22ch;
+  width: 17ch;
 }
 
 /* Jobs table: keep type column inside its cell (jobs list only, not tokens table) */
@@ -3379,6 +3437,128 @@ tbody tr:hover {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  width: 16ch;
+}
+
+/* Mid/narrow width: keep row stable by collapsing message text to icon-only toggle. */
+@media (max-width: 1160px) {
+  .jobs-table:not(.tokens-table) th:nth-child(7),
+  .jobs-table:not(.tokens-table) td.jobs-message-cell {
+    width: 3.2rem;
+  }
+
+  .jobs-table:not(.tokens-table) th:nth-child(7) {
+    font-size: 0;
+  }
+
+  .jobs-table:not(.tokens-table) td.jobs-message-cell .jobs-message-text {
+    display: none;
+  }
+
+  .jobs-table:not(.tokens-table) td.jobs-message-cell .jobs-message-button {
+    justify-content: center;
+  }
+
+  .jobs-table:not(.tokens-table) th,
+  .jobs-table:not(.tokens-table) td {
+    padding-inline: 10px;
+  }
+
+  .jobs-table:not(.tokens-table) td:nth-child(4) .status-pill {
+    min-width: 60px;
+    padding-inline: 8px;
+  }
+}
+
+/* Jobs module: use container width (not viewport width) so Storybook split panes stay stable. */
+.jobs-module-table-wrapper {
+  container-type: inline-size;
+}
+
+.jobs-table.jobs-module-table th:nth-child(2),
+.jobs-table.jobs-module-table td:nth-child(2) {
+  width: 15ch;
+}
+
+.jobs-table.jobs-module-table th:nth-child(4),
+.jobs-table.jobs-module-table td:nth-child(4) {
+  width: 12ch;
+}
+
+.jobs-table.jobs-module-table th:nth-child(5),
+.jobs-table.jobs-module-table td:nth-child(5) {
+  width: 10ch;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.jobs-table.jobs-module-table td:nth-child(5) {
+  font-weight: 600;
+}
+
+.jobs-table.jobs-module-table th:nth-child(6),
+.jobs-table.jobs-module-table td:nth-child(6) {
+  width: 15ch;
+}
+
+.jobs-table.jobs-module-table td:nth-child(4) .status-pill {
+  min-width: 0;
+  max-width: 100%;
+  padding-inline: 8px;
+}
+
+@container (max-width: 840px) {
+  .jobs-table.jobs-module-table th:nth-child(2),
+  .jobs-table.jobs-module-table td:nth-child(2) {
+    width: 13ch;
+  }
+
+  .jobs-table.jobs-module-table th:nth-child(6),
+  .jobs-table.jobs-module-table td:nth-child(6) {
+    width: 13ch;
+  }
+
+  .jobs-table.jobs-module-table th:nth-child(7),
+  .jobs-table.jobs-module-table td.jobs-message-cell {
+    width: 3.2rem;
+  }
+
+  .jobs-table.jobs-module-table th:nth-child(7) {
+    font-size: 0;
+  }
+
+  .jobs-table.jobs-module-table td.jobs-message-cell .jobs-message-text {
+    display: none;
+  }
+
+  .jobs-table.jobs-module-table td.jobs-message-cell .jobs-message-button {
+    justify-content: center;
+  }
+
+  .jobs-table.jobs-module-table th,
+  .jobs-table.jobs-module-table td {
+    padding-inline: 10px;
+  }
+}
+
+@container (max-width: 760px) {
+  .jobs-table.jobs-module-table th:nth-child(4),
+  .jobs-table.jobs-module-table td:nth-child(4) {
+    width: 10ch;
+  }
+
+  .jobs-table.jobs-module-table th:nth-child(5),
+  .jobs-table.jobs-module-table td:nth-child(5) {
+    width: 8.8ch;
+  }
+
+  .jobs-table.jobs-module-table td:nth-child(4) .status-pill {
+    padding-inline: 6px;
+    font-size: 0.72rem;
+  }
 }
 
 .jobs-table .log-time-bubble {
@@ -4831,4 +5011,8 @@ tbody .log-details-row:hover {
   .auth-card {
     max-width: 100%;
   }
+}
+
+.admin-shell-content {
+  padding-top: 0;
 }
