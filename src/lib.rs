@@ -903,37 +903,57 @@ impl TavilyProxy {
         }
         let ids: Vec<String> = tokens.iter().map(|t| t.id.clone()).collect();
         let verdicts = self.token_quota.snapshot_many(&ids).await?;
+        let token_bindings = self.key_store.list_user_bindings_for_tokens(&ids).await?;
         let now = Utc::now();
         let now_ts = now.timestamp();
         let minute_bucket = now_ts - (now_ts % 60);
         let hour_bucket = now_ts - (now_ts % SECS_PER_HOUR);
         let hour_window_start = minute_bucket - 59 * 60;
         let day_window_start = hour_bucket - 23 * SECS_PER_HOUR;
-        let hourly_oldest = self
+        let token_hourly_oldest = self
             .key_store
             .earliest_usage_bucket_since_bulk(&ids, GRANULARITY_MINUTE, hour_window_start)
             .await?;
-        let daily_oldest = self
+        let token_daily_oldest = self
             .key_store
             .earliest_usage_bucket_since_bulk(&ids, GRANULARITY_HOUR, day_window_start)
+            .await?;
+        let mut user_ids: Vec<String> = token_bindings.values().cloned().collect();
+        user_ids.sort_unstable();
+        user_ids.dedup();
+        let account_hourly_oldest = self
+            .key_store
+            .earliest_account_usage_bucket_since_bulk(
+                &user_ids,
+                GRANULARITY_MINUTE,
+                hour_window_start,
+            )
+            .await?;
+        let account_daily_oldest = self
+            .key_store
+            .earliest_account_usage_bucket_since_bulk(&user_ids, GRANULARITY_HOUR, day_window_start)
             .await?;
         let month_start = start_of_month(now);
         let next_month_reset = start_of_next_month(month_start).timestamp();
         for token in tokens.iter_mut() {
             if let Some(verdict) = verdicts.get(&token.id) {
+                let hourly_oldest = if let Some(user_id) = token_bindings.get(&token.id) {
+                    account_hourly_oldest.get(user_id).copied()
+                } else {
+                    token_hourly_oldest.get(&token.id).copied()
+                };
+                let daily_oldest = if let Some(user_id) = token_bindings.get(&token.id) {
+                    account_daily_oldest.get(user_id).copied()
+                } else {
+                    token_daily_oldest.get(&token.id).copied()
+                };
                 token.quota_hourly_reset_at = if verdict.hourly_used > 0 {
-                    hourly_oldest
-                        .get(&token.id)
-                        .copied()
-                        .map(|bucket| bucket + SECS_PER_HOUR)
+                    hourly_oldest.map(|bucket| bucket + SECS_PER_HOUR)
                 } else {
                     None
                 };
                 token.quota_daily_reset_at = if verdict.daily_used > 0 {
-                    daily_oldest
-                        .get(&token.id)
-                        .copied()
-                        .map(|bucket| bucket + SECS_PER_DAY)
+                    daily_oldest.map(|bucket| bucket + SECS_PER_DAY)
                 } else {
                     None
                 };
@@ -2926,6 +2946,41 @@ impl KeyStore {
         Ok(map)
     }
 
+    async fn earliest_account_usage_bucket_since_bulk(
+        &self,
+        user_ids: &[String],
+        granularity: &str,
+        bucket_start_at_least: i64,
+    ) -> Result<HashMap<String, i64>, ProxyError> {
+        if user_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut builder = QueryBuilder::new(
+            "SELECT user_id, MIN(bucket_start) as earliest FROM account_usage_buckets WHERE granularity = ",
+        );
+        builder.push_bind(granularity);
+        builder.push(" AND bucket_start >= ");
+        builder.push_bind(bucket_start_at_least);
+        builder.push(" AND user_id IN (");
+        {
+            let mut separated = builder.separated(", ");
+            for user_id in user_ids {
+                separated.push_bind(user_id);
+            }
+        }
+        builder.push(") GROUP BY user_id");
+
+        let rows = builder
+            .build_query_as::<(String, i64)>()
+            .fetch_all(&self.pool)
+            .await?;
+        let mut map = HashMap::new();
+        for (user_id, bucket_start) in rows {
+            map.insert(user_id, bucket_start);
+        }
+        Ok(map)
+    }
+
     async fn fetch_monthly_counts(
         &self,
         token_ids: &[String],
@@ -4552,6 +4607,34 @@ impl KeyStore {
         .fetch_optional(&self.pool)
         .await?;
         Ok(exists.is_some())
+    }
+
+    async fn list_user_bindings_for_tokens(
+        &self,
+        token_ids: &[String],
+    ) -> Result<HashMap<String, String>, ProxyError> {
+        if token_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut builder = QueryBuilder::new(
+            "SELECT token_id, user_id FROM user_token_bindings WHERE token_id IN (",
+        );
+        {
+            let mut separated = builder.separated(", ");
+            for token_id in token_ids {
+                separated.push_bind(token_id);
+            }
+        }
+        builder.push(")");
+        let rows = builder
+            .build_query_as::<(String, String)>()
+            .fetch_all(&self.pool)
+            .await?;
+        let mut map = HashMap::new();
+        for (token_id, user_id) in rows {
+            map.insert(token_id, user_id);
+        }
+        Ok(map)
     }
 
     async fn get_user_token_secret(

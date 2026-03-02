@@ -36,12 +36,24 @@ function parseRouteFromHash(): ConsoleRoute {
   const hash = window.location.hash || ''
   const tokenMatch = hash.match(/^#\/tokens\/([^/?#]+)/)
   if (tokenMatch) {
-    return { name: 'token', id: decodeURIComponent(tokenMatch[1]) }
+    try {
+      return { name: 'token', id: decodeURIComponent(tokenMatch[1]) }
+    } catch {
+      return { name: 'tokens' }
+    }
   }
   if (hash.startsWith('#/tokens')) {
     return { name: 'tokens' }
   }
   return { name: 'dashboard' }
+}
+
+function errorStatus(err: unknown): number | undefined {
+  if (!err || typeof err !== 'object' || !('status' in err)) {
+    return undefined
+  }
+  const value = (err as { status?: unknown }).status
+  return typeof value === 'number' ? value : undefined
 }
 
 function statusTone(status: string): StatusTone {
@@ -84,13 +96,12 @@ export default function UserConsole(): JSX.Element {
     return () => window.removeEventListener('hashchange', onHash)
   }, [])
 
-  const reloadBase = useCallback(async () => {
-    const controller = new AbortController()
+  const reloadBase = useCallback(async (signal: AbortSignal) => {
     try {
       const [nextProfile, nextDashboard, nextTokens] = await Promise.all([
-        fetchProfile(controller.signal),
-        fetchUserDashboard(controller.signal),
-        fetchUserTokens(controller.signal),
+        fetchProfile(signal),
+        fetchUserDashboard(signal),
+        fetchUserTokens(signal),
       ])
       setProfile(nextProfile)
       if (nextProfile.userLoggedIn === false) {
@@ -103,17 +114,18 @@ export default function UserConsole(): JSX.Element {
     } catch (err) {
       const message = err instanceof Error ? err.message : text.errors.load
       setError(message)
-      if (/401/.test(message)) {
+      if (errorStatus(err) === 401) {
         window.location.href = '/'
       }
     } finally {
       setLoading(false)
     }
-    return () => controller.abort()
   }, [text.errors.load])
 
   useEffect(() => {
-    void reloadBase()
+    const controller = new AbortController()
+    void reloadBase(controller.signal)
+    return () => controller.abort()
   }, [reloadBase])
 
   useEffect(() => {
@@ -137,6 +149,9 @@ export default function UserConsole(): JSX.Element {
         setDetail(null)
         setDetailLogs([])
         setError(err instanceof Error ? err.message : text.errors.detail)
+        if (errorStatus(err) === 401) {
+          window.location.href = '/'
+        }
       })
       .finally(() => setDetailLoading(false))
     return () => controller.abort()

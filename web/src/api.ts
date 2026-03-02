@@ -134,7 +134,11 @@ async function requestJson<T>(input: RequestInfo, init?: RequestInit): Promise<T
   const response = await fetch(input, init)
   if (!response.ok) {
     const message = await response.text().catch(() => response.statusText)
-    throw new Error(message || `Request failed with status ${response.status}`)
+    const err = new Error(message || `Request failed with status ${response.status}`) as Error & {
+      status?: number
+    }
+    err.status = response.status
+    throw err
   }
   return (await response.json()) as T
 }
