@@ -250,6 +250,75 @@ export function fetchUserToken(signal?: AbortSignal): Promise<UserTokenResponse>
   return requestJson('/api/user/token', { signal })
 }
 
+export interface UserDashboard {
+  hourlyAnyUsed: number
+  hourlyAnyLimit: number
+  quotaHourlyUsed: number
+  quotaHourlyLimit: number
+  quotaDailyUsed: number
+  quotaDailyLimit: number
+  quotaMonthlyUsed: number
+  quotaMonthlyLimit: number
+  dailySuccess: number
+  dailyFailure: number
+  monthlySuccess: number
+  lastActivity: number | null
+}
+
+export interface UserTokenSummary {
+  tokenId: string
+  enabled: boolean
+  note: string | null
+  lastUsedAt: number | null
+  hourlyAnyUsed: number
+  hourlyAnyLimit: number
+  quotaHourlyUsed: number
+  quotaHourlyLimit: number
+  quotaDailyUsed: number
+  quotaDailyLimit: number
+  quotaMonthlyUsed: number
+  quotaMonthlyLimit: number
+  dailySuccess: number
+  dailyFailure: number
+  monthlySuccess: number
+}
+
+export function fetchUserDashboard(signal?: AbortSignal): Promise<UserDashboard> {
+  return requestJson('/api/user/dashboard', { signal })
+}
+
+export function fetchUserTokens(signal?: AbortSignal): Promise<UserTokenSummary[]> {
+  return requestJson('/api/user/tokens', { signal })
+}
+
+export function fetchUserTokenDetail(id: string, signal?: AbortSignal): Promise<UserTokenSummary> {
+  const encoded = encodeURIComponent(id)
+  return requestJson(`/api/user/tokens/${encoded}`, { signal })
+}
+
+export function fetchUserTokenSecret(id: string, signal?: AbortSignal): Promise<UserTokenResponse> {
+  const encoded = encodeURIComponent(id)
+  return requestJson(`/api/user/tokens/${encoded}/secret`, { signal })
+}
+
+export async function fetchUserTokenLogs(id: string, limit = 20, signal?: AbortSignal): Promise<PublicTokenLog[]> {
+  const encoded = encodeURIComponent(id)
+  const params = new URLSearchParams({ limit: String(limit) })
+  const url = `/api/user/tokens/${encoded}/logs?${params.toString()}`
+  const data = await requestJson<ServerPublicTokenLog[]>(url, { signal })
+  return data.map((it) => ({
+    id: it.id,
+    method: it.method,
+    path: it.path,
+    query: it.query,
+    http_status: it.httpStatus,
+    mcp_status: it.mcpStatus,
+    result_status: it.resultStatus,
+    error_message: it.errorMessage,
+    created_at: it.createdAt,
+  }))
+}
+
 export interface CreateKeyResponse {
   id: string
 }

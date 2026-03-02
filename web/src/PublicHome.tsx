@@ -388,6 +388,12 @@ function PublicHome(): JSX.Element {
     return () => controller.abort()
   }, [profile?.userLoggedIn, persistToken, userTokenHydrationDone])
 
+  useEffect(() => {
+    if (profile?.userLoggedIn) {
+      window.location.href = '/console'
+    }
+  }, [profile?.userLoggedIn])
+
   const togglePublicLog = useCallback((id: number) => {
     setExpandedPublicLogs((prev) => {
       const copy = new Set(prev)

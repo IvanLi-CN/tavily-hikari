@@ -29,6 +29,7 @@ export default defineConfig({
         server.middlewares.use((req, _res, next) => {
           const url = req.url ?? ''
           if (url === '/admin' || url === '/admin/') req.url = '/admin.html'
+          if (url === '/console' || url === '/console/') req.url = '/console.html'
           if (url === '/login' || url === '/login/') req.url = '/login.html'
           next()
         })
@@ -55,6 +56,7 @@ export default defineConfig({
       input: {
         main: resolve(rootDir, 'index.html'),
         admin: resolve(rootDir, 'admin.html'),
+        console: resolve(rootDir, 'console.html'),
         login: resolve(rootDir, 'login.html'),
       },
     },

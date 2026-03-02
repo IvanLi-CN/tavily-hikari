@@ -9,6 +9,7 @@
 
 |    ID | Title                                                | Status           | Spec                                             | Last       | Notes                                                                                            |
 | ----: | ---------------------------------------------------- | ---------------- | ------------------------------------------------ | ---------- | ------------------------------------------------------------------------------------------------ |
+| 45squ | 账户级配额迁移与登录后用户控制台                     | 进行中（快车道） | `45squ-account-quota-user-console/SPEC.md`       | 2026-03-02 | account quota migration + `/console` + user dashboard/tokens                                     |
 | 3rb68 | PublicHome 未登录无令牌隐藏 Token 面板与令牌访问弹窗 | 进行中（快车道） | `3rb68-public-home-token-access-modal/SPEC.md`   | 2026-03-02 | hero 按钮统一；新增 Storybook 首屏全状态 + 页面级 token 弹窗；补充 dialog 降级兼容与首屏闪烁修复 |
 | k884v | Token usage rollup 幂等修复                          | 已完成           | `k884v-token-usage-rollup-idempotency/SPEC.md`   | 2026-03-02 | normal-flow, logic-only (no historical rebuild)                                                  |
 | v9k2m | Release 版本回退防护与 latest 稳定修复               | 已完成           | `v9k2m-release-version-regression-guard/SPEC.md` | 2026-02-28 | fix semver detection + stable monotonic guard                                                    |

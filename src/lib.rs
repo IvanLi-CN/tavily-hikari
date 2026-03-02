@@ -124,6 +124,7 @@ const META_KEY_TOKEN_USAGE_ROLLUP_TS: &str = "token_usage_rollup_last_ts";
 const META_KEY_TOKEN_USAGE_ROLLUP_LOG_ID_V2: &str = "token_usage_rollup_last_log_id_v2";
 const META_KEY_HEAL_ORPHAN_TOKENS_V1: &str = "heal_orphan_auth_tokens_from_logs_v1";
 const META_KEY_API_KEY_USAGE_BUCKETS_V1_DONE: &str = "api_key_usage_buckets_v1_done";
+const META_KEY_ACCOUNT_QUOTA_BACKFILL_V1: &str = "account_quota_backfill_v1";
 
 fn token_limit_from_env(var: &str, default: i64) -> i64 {
     match std::env::var(var) {
@@ -381,6 +382,32 @@ mod affinity_tests {
 #[derive(Default, Debug)]
 struct CleanupState {
     last_pruned: i64,
+}
+
+#[derive(Debug, Clone)]
+struct AccountQuotaLimits {
+    hourly_any_limit: i64,
+    hourly_limit: i64,
+    daily_limit: i64,
+    monthly_limit: i64,
+}
+
+#[derive(Debug, Clone)]
+struct AccountQuotaSnapshot {
+    hourly_any_used: i64,
+    hourly_any_limit: i64,
+    hourly_used: i64,
+    hourly_limit: i64,
+    daily_used: i64,
+    daily_limit: i64,
+    monthly_used: i64,
+    monthly_limit: i64,
+}
+
+#[derive(Debug, Clone)]
+enum QuotaSubject {
+    Token(String),
+    Account(String),
 }
 
 #[derive(Clone, Debug)]
@@ -1027,6 +1054,71 @@ impl TavilyProxy {
         self.key_store.get_user_token(user_id).await
     }
 
+    /// List tokens bound to the specified user.
+    pub async fn list_user_tokens(&self, user_id: &str) -> Result<Vec<AuthToken>, ProxyError> {
+        let mut tokens = self.key_store.list_user_tokens(user_id).await?;
+        self.populate_token_quota(&mut tokens).await?;
+        Ok(tokens)
+    }
+
+    /// Verify whether a token belongs to the specified user.
+    pub async fn is_user_token_bound(
+        &self,
+        user_id: &str,
+        token_id: &str,
+    ) -> Result<bool, ProxyError> {
+        self.key_store.is_user_token_bound(user_id, token_id).await
+    }
+
+    /// Get a token secret only when the token belongs to the specified user.
+    pub async fn get_user_token_secret(
+        &self,
+        user_id: &str,
+        token_id: &str,
+    ) -> Result<Option<AuthTokenSecret>, ProxyError> {
+        self.key_store
+            .get_user_token_secret(user_id, token_id)
+            .await
+    }
+
+    /// User-level quota and usage summary for dashboard.
+    pub async fn user_dashboard_summary(
+        &self,
+        user_id: &str,
+    ) -> Result<UserDashboardSummary, ProxyError> {
+        let account = self
+            .token_quota
+            .snapshot_for_user(user_id)
+            .await?
+            .unwrap_or(AccountQuotaSnapshot {
+                hourly_any_used: 0,
+                hourly_any_limit: effective_token_hourly_request_limit(),
+                hourly_used: 0,
+                hourly_limit: effective_token_hourly_limit(),
+                daily_used: 0,
+                daily_limit: effective_token_daily_limit(),
+                monthly_used: 0,
+                monthly_limit: effective_token_monthly_limit(),
+            });
+        let (monthly_success, daily_success, daily_failure) =
+            self.key_store.fetch_user_success_failure(user_id).await?;
+        let last_activity = self.key_store.fetch_user_last_activity(user_id).await?;
+        Ok(UserDashboardSummary {
+            hourly_any_used: account.hourly_any_used,
+            hourly_any_limit: account.hourly_any_limit,
+            quota_hourly_used: account.hourly_used,
+            quota_hourly_limit: account.hourly_limit,
+            quota_daily_used: account.daily_used,
+            quota_daily_limit: account.daily_limit,
+            quota_monthly_used: account.monthly_used,
+            quota_monthly_limit: account.monthly_limit,
+            daily_success,
+            daily_failure,
+            monthly_success,
+            last_activity,
+        })
+    }
+
     /// Create persisted user session.
     pub async fn create_user_session(
         &self,
@@ -1130,9 +1222,9 @@ impl TavilyProxy {
         &self,
         token_id: &str,
     ) -> Result<Option<TokenQuotaVerdict>, ProxyError> {
-        let ids = vec![token_id.to_string()];
-        let verdicts = self.token_quota.snapshot_many(&ids).await?;
-        Ok(verdicts.get(token_id).cloned())
+        let now = Utc::now();
+        let verdict = self.token_quota.snapshot_for_token(token_id, now).await?;
+        Ok(Some(verdict))
     }
 
     /// Token logs (page-based pagination)
@@ -1274,49 +1366,194 @@ impl TokenQuota {
         }
     }
 
+    async fn resolve_subject(&self, token_id: &str) -> Result<QuotaSubject, ProxyError> {
+        if let Some(user_id) = self.store.find_user_id_by_token(token_id).await? {
+            Ok(QuotaSubject::Account(user_id))
+        } else {
+            Ok(QuotaSubject::Token(token_id.to_string()))
+        }
+    }
+
     async fn check(&self, token_id: &str) -> Result<TokenQuotaVerdict, ProxyError> {
         let now = Utc::now();
         let now_ts = now.timestamp();
         let minute_bucket = now_ts - (now_ts % SECS_PER_MINUTE);
         let hour_bucket = now_ts - (now_ts % SECS_PER_HOUR);
-        // Increment usage buckets and monthly quota as an approximate, cheap counter
-        // for *business* quota decisions. This path is allowed to drift slightly
-        // from the detailed logs in exchange for lower per-request overhead.
-        self.store
-            .increment_usage_bucket(token_id, minute_bucket, GRANULARITY_MINUTE)
-            .await?;
-        self.store
-            .increment_usage_bucket(token_id, hour_bucket, GRANULARITY_HOUR)
-            .await?;
 
         let hour_window_start = minute_bucket - 59 * SECS_PER_MINUTE;
         let day_window_start = hour_bucket - 23 * SECS_PER_HOUR;
+        let month_start = start_of_month(now).timestamp();
 
+        let verdict = match self.resolve_subject(token_id).await? {
+            QuotaSubject::Account(user_id) => {
+                let limits = self.store.ensure_account_quota_limits(&user_id).await?;
+                self.store
+                    .increment_account_usage_bucket(&user_id, minute_bucket, GRANULARITY_MINUTE)
+                    .await?;
+                self.store
+                    .increment_account_usage_bucket(&user_id, hour_bucket, GRANULARITY_HOUR)
+                    .await?;
+                let hourly_used = self
+                    .store
+                    .sum_account_usage_buckets(&user_id, GRANULARITY_MINUTE, hour_window_start)
+                    .await?;
+                let daily_used = self
+                    .store
+                    .sum_account_usage_buckets(&user_id, GRANULARITY_HOUR, day_window_start)
+                    .await?;
+                let monthly_used = self
+                    .store
+                    .increment_account_monthly_quota(&user_id, month_start)
+                    .await?;
+                TokenQuotaVerdict::new(
+                    hourly_used,
+                    limits.hourly_limit,
+                    daily_used,
+                    limits.daily_limit,
+                    monthly_used,
+                    limits.monthly_limit,
+                )
+            }
+            QuotaSubject::Token(token_id) => {
+                // Increment usage buckets and monthly quota as an approximate, cheap counter
+                // for *business* quota decisions. This path is allowed to drift slightly
+                // from the detailed logs in exchange for lower per-request overhead.
+                self.store
+                    .increment_usage_bucket(&token_id, minute_bucket, GRANULARITY_MINUTE)
+                    .await?;
+                self.store
+                    .increment_usage_bucket(&token_id, hour_bucket, GRANULARITY_HOUR)
+                    .await?;
+
+                let hourly_used = self
+                    .store
+                    .sum_usage_buckets(&token_id, GRANULARITY_MINUTE, hour_window_start)
+                    .await?;
+                let daily_used = self
+                    .store
+                    .sum_usage_buckets(&token_id, GRANULARITY_HOUR, day_window_start)
+                    .await?;
+                let monthly_used = self
+                    .store
+                    .increment_monthly_quota(&token_id, month_start)
+                    .await?;
+
+                TokenQuotaVerdict::new(
+                    hourly_used,
+                    self.hourly_limit,
+                    daily_used,
+                    self.daily_limit,
+                    monthly_used,
+                    self.monthly_limit,
+                )
+            }
+        };
+
+        self.maybe_cleanup(now_ts).await?;
+        Ok(verdict)
+    }
+
+    async fn snapshot_for_token(
+        &self,
+        token_id: &str,
+        now: chrono::DateTime<Utc>,
+    ) -> Result<TokenQuotaVerdict, ProxyError> {
+        let now_ts = now.timestamp();
+        let minute_bucket = now_ts - (now_ts % SECS_PER_MINUTE);
+        let hour_bucket = now_ts - (now_ts % SECS_PER_HOUR);
+        let hour_window_start = minute_bucket - 59 * SECS_PER_MINUTE;
+        let day_window_start = hour_bucket - 23 * SECS_PER_HOUR;
+        let month_start = start_of_month(now).timestamp();
+        match self.resolve_subject(token_id).await? {
+            QuotaSubject::Account(user_id) => {
+                let limits = self.store.ensure_account_quota_limits(&user_id).await?;
+                let hourly_used = self
+                    .store
+                    .sum_account_usage_buckets(&user_id, GRANULARITY_MINUTE, hour_window_start)
+                    .await?;
+                let daily_used = self
+                    .store
+                    .sum_account_usage_buckets(&user_id, GRANULARITY_HOUR, day_window_start)
+                    .await?;
+                let monthly_used = self
+                    .store
+                    .fetch_account_monthly_count(&user_id, month_start)
+                    .await?;
+                Ok(TokenQuotaVerdict::new(
+                    hourly_used,
+                    limits.hourly_limit,
+                    daily_used,
+                    limits.daily_limit,
+                    monthly_used,
+                    limits.monthly_limit,
+                ))
+            }
+            QuotaSubject::Token(token_id) => {
+                let hourly_used = self
+                    .store
+                    .sum_usage_buckets(&token_id, GRANULARITY_MINUTE, hour_window_start)
+                    .await?;
+                let daily_used = self
+                    .store
+                    .sum_usage_buckets(&token_id, GRANULARITY_HOUR, day_window_start)
+                    .await?;
+                let monthly_used = self
+                    .store
+                    .fetch_monthly_count(&token_id, month_start)
+                    .await?;
+                Ok(TokenQuotaVerdict::new(
+                    hourly_used,
+                    self.hourly_limit,
+                    daily_used,
+                    self.daily_limit,
+                    monthly_used,
+                    self.monthly_limit,
+                ))
+            }
+        }
+    }
+
+    async fn snapshot_for_user(
+        &self,
+        user_id: &str,
+    ) -> Result<Option<AccountQuotaSnapshot>, ProxyError> {
+        if !self.store.user_has_token_binding(user_id).await? {
+            return Ok(None);
+        }
+        let now = Utc::now();
+        let now_ts = now.timestamp();
+        let minute_bucket = now_ts - (now_ts % SECS_PER_MINUTE);
+        let hour_bucket = now_ts - (now_ts % SECS_PER_HOUR);
+        let hour_window_start = minute_bucket - 59 * SECS_PER_MINUTE;
+        let day_window_start = hour_bucket - 23 * SECS_PER_HOUR;
+        let month_start = start_of_month(now).timestamp();
+        let limits = self.store.ensure_account_quota_limits(user_id).await?;
+        let hourly_any_used = self
+            .store
+            .sum_account_usage_buckets(user_id, GRANULARITY_REQUEST_MINUTE, hour_window_start)
+            .await?;
         let hourly_used = self
             .store
-            .sum_usage_buckets(token_id, GRANULARITY_MINUTE, hour_window_start)
+            .sum_account_usage_buckets(user_id, GRANULARITY_MINUTE, hour_window_start)
             .await?;
         let daily_used = self
             .store
-            .sum_usage_buckets(token_id, GRANULARITY_HOUR, day_window_start)
+            .sum_account_usage_buckets(user_id, GRANULARITY_HOUR, day_window_start)
             .await?;
-
-        let month_start = start_of_month(now).timestamp();
         let monthly_used = self
             .store
-            .increment_monthly_quota(token_id, month_start)
+            .fetch_account_monthly_count(user_id, month_start)
             .await?;
-
-        self.maybe_cleanup(now_ts).await?;
-
-        Ok(TokenQuotaVerdict::new(
+        Ok(Some(AccountQuotaSnapshot {
+            hourly_any_used,
+            hourly_any_limit: limits.hourly_any_limit,
             hourly_used,
-            self.hourly_limit,
+            hourly_limit: limits.hourly_limit,
             daily_used,
-            self.daily_limit,
+            daily_limit: limits.daily_limit,
             monthly_used,
-            self.monthly_limit,
-        ))
+            monthly_limit: limits.monthly_limit,
+        }))
     }
 
     async fn snapshot_many(
@@ -1328,30 +1565,43 @@ impl TokenQuota {
         }
         let now = Utc::now();
         let now_ts = now.timestamp();
-        let minute_bucket = now_ts - (now_ts % 60);
-        let hour_bucket = now_ts - (now_ts % 3600);
-        let hour_window_start = minute_bucket - 59 * 60;
-        let day_window_start = hour_bucket - 23 * 3600;
-        let hourly_totals = self
-            .store
-            .sum_usage_buckets_bulk(token_ids, GRANULARITY_MINUTE, hour_window_start)
-            .await?;
-        let daily_totals = self
-            .store
-            .sum_usage_buckets_bulk(token_ids, GRANULARITY_HOUR, day_window_start)
-            .await?;
+        let minute_bucket = now_ts - (now_ts % SECS_PER_MINUTE);
+        let hour_bucket = now_ts - (now_ts % SECS_PER_HOUR);
+        let hour_window_start = minute_bucket - 59 * SECS_PER_MINUTE;
+        let day_window_start = hour_bucket - 23 * SECS_PER_HOUR;
         let month_start = start_of_month(now).timestamp();
-        let monthly_totals = self
-            .store
-            .fetch_monthly_counts(token_ids, month_start)
-            .await?;
-        let mut verdicts = HashMap::new();
+
+        let mut token_subjects: Vec<String> = Vec::new();
+        let mut account_subjects: Vec<(String, String)> = Vec::new();
         for token_id in token_ids {
-            let hourly_used = hourly_totals.get(token_id).copied().unwrap_or(0);
-            let daily_used = daily_totals.get(token_id).copied().unwrap_or(0);
-            let monthly_used = monthly_totals.get(token_id).copied().unwrap_or(0);
+            match self.resolve_subject(token_id).await? {
+                QuotaSubject::Token(id) => token_subjects.push(id),
+                QuotaSubject::Account(user_id) => {
+                    account_subjects.push((token_id.clone(), user_id));
+                }
+            }
+        }
+
+        let token_hourly_totals = self
+            .store
+            .sum_usage_buckets_bulk(&token_subjects, GRANULARITY_MINUTE, hour_window_start)
+            .await?;
+        let token_daily_totals = self
+            .store
+            .sum_usage_buckets_bulk(&token_subjects, GRANULARITY_HOUR, day_window_start)
+            .await?;
+        let token_monthly_totals = self
+            .store
+            .fetch_monthly_counts(&token_subjects, month_start)
+            .await?;
+
+        let mut verdicts = HashMap::new();
+        for token_id in token_subjects {
+            let hourly_used = token_hourly_totals.get(&token_id).copied().unwrap_or(0);
+            let daily_used = token_daily_totals.get(&token_id).copied().unwrap_or(0);
+            let monthly_used = token_monthly_totals.get(&token_id).copied().unwrap_or(0);
             verdicts.insert(
-                token_id.clone(),
+                token_id,
                 TokenQuotaVerdict::new(
                     hourly_used,
                     self.hourly_limit,
@@ -1359,6 +1609,32 @@ impl TokenQuota {
                     self.daily_limit,
                     monthly_used,
                     self.monthly_limit,
+                ),
+            );
+        }
+        for (token_id, user_id) in account_subjects {
+            let limits = self.store.ensure_account_quota_limits(&user_id).await?;
+            let hourly_used = self
+                .store
+                .sum_account_usage_buckets(&user_id, GRANULARITY_MINUTE, hour_window_start)
+                .await?;
+            let daily_used = self
+                .store
+                .sum_account_usage_buckets(&user_id, GRANULARITY_HOUR, day_window_start)
+                .await?;
+            let monthly_used = self
+                .store
+                .fetch_account_monthly_count(&user_id, month_start)
+                .await?;
+            verdicts.insert(
+                token_id,
+                TokenQuotaVerdict::new(
+                    hourly_used,
+                    limits.hourly_limit,
+                    daily_used,
+                    limits.daily_limit,
+                    monthly_used,
+                    limits.monthly_limit,
                 ),
             );
         }
@@ -1384,6 +1660,12 @@ impl TokenQuota {
             self.store
                 .delete_old_usage_buckets(GRANULARITY_HOUR, threshold)
                 .await?;
+            self.store
+                .delete_old_account_usage_buckets(GRANULARITY_MINUTE, threshold)
+                .await?;
+            self.store
+                .delete_old_account_usage_buckets(GRANULARITY_HOUR, threshold)
+                .await?;
         }
 
         Ok(())
@@ -1402,24 +1684,32 @@ impl TokenRequestLimit {
     async fn check(&self, token_id: &str) -> Result<TokenHourlyRequestVerdict, ProxyError> {
         let now_ts = Utc::now().timestamp();
         let minute_bucket = now_ts - (now_ts % SECS_PER_MINUTE);
-
-        // Increment per-minute raw request bucket for this token.
-        self.store
-            .increment_usage_bucket(token_id, minute_bucket, GRANULARITY_REQUEST_MINUTE)
-            .await?;
-
         let hour_window_start = minute_bucket - 59 * SECS_PER_MINUTE;
-        let hourly_used = self
-            .store
-            .sum_usage_buckets(token_id, GRANULARITY_REQUEST_MINUTE, hour_window_start)
-            .await?;
+        let verdict = if let Some(user_id) = self.store.find_user_id_by_token(token_id).await? {
+            let limits = self.store.ensure_account_quota_limits(&user_id).await?;
+            self.store
+                .increment_account_usage_bucket(&user_id, minute_bucket, GRANULARITY_REQUEST_MINUTE)
+                .await?;
+            let hourly_used = self
+                .store
+                .sum_account_usage_buckets(&user_id, GRANULARITY_REQUEST_MINUTE, hour_window_start)
+                .await?;
+            TokenHourlyRequestVerdict::new(hourly_used, limits.hourly_any_limit)
+        } else {
+            // Increment per-minute raw request bucket for this token.
+            self.store
+                .increment_usage_bucket(token_id, minute_bucket, GRANULARITY_REQUEST_MINUTE)
+                .await?;
+
+            let hourly_used = self
+                .store
+                .sum_usage_buckets(token_id, GRANULARITY_REQUEST_MINUTE, hour_window_start)
+                .await?;
+            TokenHourlyRequestVerdict::new(hourly_used, self.hourly_limit)
+        };
 
         self.maybe_cleanup(now_ts).await?;
-
-        Ok(TokenHourlyRequestVerdict::new(
-            hourly_used,
-            self.hourly_limit,
-        ))
+        Ok(verdict)
     }
 
     /// Read-only snapshot of hourly raw request usage for a set of tokens.
@@ -1435,18 +1725,27 @@ impl TokenRequestLimit {
         let minute_bucket = now_ts - (now_ts % SECS_PER_MINUTE);
         let hour_window_start = minute_bucket - 59 * SECS_PER_MINUTE;
 
-        let hourly_totals = self
-            .store
-            .sum_usage_buckets_bulk(token_ids, GRANULARITY_REQUEST_MINUTE, hour_window_start)
-            .await?;
-
         let mut map = HashMap::new();
         for token_id in token_ids {
-            let used = hourly_totals.get(token_id).copied().unwrap_or(0);
-            map.insert(
-                token_id.clone(),
-                TokenHourlyRequestVerdict::new(used, self.hourly_limit),
-            );
+            let verdict = if let Some(user_id) = self.store.find_user_id_by_token(token_id).await? {
+                let limits = self.store.ensure_account_quota_limits(&user_id).await?;
+                let used = self
+                    .store
+                    .sum_account_usage_buckets(
+                        &user_id,
+                        GRANULARITY_REQUEST_MINUTE,
+                        hour_window_start,
+                    )
+                    .await?;
+                TokenHourlyRequestVerdict::new(used, limits.hourly_any_limit)
+            } else {
+                let used = self
+                    .store
+                    .sum_usage_buckets(token_id, GRANULARITY_REQUEST_MINUTE, hour_window_start)
+                    .await?;
+                TokenHourlyRequestVerdict::new(used, self.hourly_limit)
+            };
+            map.insert(token_id.clone(), verdict);
         }
         Ok(map)
     }
@@ -1466,6 +1765,9 @@ impl TokenRequestLimit {
             let threshold = now_ts - BUCKET_RETENTION_SECS;
             self.store
                 .delete_old_usage_buckets(GRANULARITY_REQUEST_MINUTE, threshold)
+                .await?;
+            self.store
+                .delete_old_account_usage_buckets(GRANULARITY_REQUEST_MINUTE, threshold)
                 .await?;
         }
 
@@ -1988,6 +2290,58 @@ impl KeyStore {
 
         sqlx::query(
             r#"
+            CREATE TABLE IF NOT EXISTS account_quota_limits (
+                user_id TEXT PRIMARY KEY,
+                hourly_any_limit INTEGER NOT NULL,
+                hourly_limit INTEGER NOT NULL,
+                daily_limit INTEGER NOT NULL,
+                monthly_limit INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS account_usage_buckets (
+                user_id TEXT NOT NULL,
+                bucket_start INTEGER NOT NULL,
+                granularity TEXT NOT NULL,
+                count INTEGER NOT NULL,
+                PRIMARY KEY (user_id, bucket_start, granularity),
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_account_usage_lookup
+               ON account_usage_buckets(user_id, granularity, bucket_start)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS account_monthly_quota (
+                user_id TEXT PRIMARY KEY,
+                month_start INTEGER NOT NULL,
+                month_count INTEGER NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
             CREATE TABLE IF NOT EXISTS token_usage_stats (
                 token_id TEXT NOT NULL,
                 bucket_start INTEGER NOT NULL,
@@ -2078,6 +2432,16 @@ impl KeyStore {
             .is_none()
         {
             self.heal_orphan_auth_tokens_from_logs().await?;
+        }
+
+        if self
+            .get_meta_i64(META_KEY_ACCOUNT_QUOTA_BACKFILL_V1)
+            .await?
+            .is_none()
+        {
+            self.backfill_account_quota_v1().await?;
+            self.set_meta_i64(META_KEY_ACCOUNT_QUOTA_BACKFILL_V1, 1)
+                .await?;
         }
 
         Ok(())
@@ -2314,6 +2678,99 @@ impl KeyStore {
         Ok(())
     }
 
+    async fn backfill_account_quota_v1(&self) -> Result<(), ProxyError> {
+        let now = Utc::now().timestamp();
+        let hourly_any_limit = effective_token_hourly_request_limit();
+        let hourly_limit = effective_token_hourly_limit();
+        let daily_limit = effective_token_daily_limit();
+        let monthly_limit = effective_token_monthly_limit();
+
+        // Ensure every bound account has a default limits row.
+        sqlx::query(
+            r#"
+            INSERT INTO account_quota_limits (
+                user_id,
+                hourly_any_limit,
+                hourly_limit,
+                daily_limit,
+                monthly_limit,
+                created_at,
+                updated_at
+            )
+            SELECT
+                b.user_id,
+                ?,
+                ?,
+                ?,
+                ?,
+                ?,
+                ?
+            FROM user_token_bindings b
+            GROUP BY b.user_id
+            ON CONFLICT(user_id) DO NOTHING
+            "#,
+        )
+        .bind(hourly_any_limit)
+        .bind(hourly_limit)
+        .bind(daily_limit)
+        .bind(monthly_limit)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+
+        // Copy existing token rolling buckets to account scope.
+        sqlx::query(
+            r#"
+            INSERT INTO account_usage_buckets (user_id, bucket_start, granularity, count)
+            SELECT
+                b.user_id,
+                u.bucket_start,
+                u.granularity,
+                SUM(u.count) AS count
+            FROM user_token_bindings b
+            JOIN token_usage_buckets u ON u.token_id = b.token_id
+            GROUP BY b.user_id, u.bucket_start, u.granularity
+            ON CONFLICT(user_id, bucket_start, granularity)
+            DO UPDATE SET count = excluded.count
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Copy monthly counters to account scope. If multiple tokens map to one account,
+        // keep the latest month_start and aggregate counts in that month.
+        sqlx::query(
+            r#"
+            WITH mapped AS (
+                SELECT b.user_id AS user_id, q.month_start AS month_start, q.month_count AS month_count
+                FROM user_token_bindings b
+                JOIN auth_token_quota q ON q.token_id = b.token_id
+            ),
+            latest AS (
+                SELECT user_id, MAX(month_start) AS latest_month_start
+                FROM mapped
+                GROUP BY user_id
+            )
+            INSERT INTO account_monthly_quota (user_id, month_start, month_count)
+            SELECT
+                l.user_id,
+                l.latest_month_start,
+                COALESCE(SUM(CASE WHEN m.month_start = l.latest_month_start THEN m.month_count ELSE 0 END), 0)
+            FROM latest l
+            LEFT JOIN mapped m ON m.user_id = l.user_id
+            GROUP BY l.user_id, l.latest_month_start
+            ON CONFLICT(user_id) DO UPDATE SET
+                month_start = excluded.month_start,
+                month_count = excluded.month_count
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
     async fn increment_usage_bucket(
         &self,
         token_id: &str,
@@ -2336,6 +2793,28 @@ impl KeyStore {
         Ok(())
     }
 
+    async fn increment_account_usage_bucket(
+        &self,
+        user_id: &str,
+        bucket_start: i64,
+        granularity: &str,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            INSERT INTO account_usage_buckets (user_id, bucket_start, granularity, count)
+            VALUES (?, ?, ?, 1)
+            ON CONFLICT(user_id, bucket_start, granularity)
+            DO UPDATE SET count = count + 1
+            "#,
+        )
+        .bind(user_id)
+        .bind(bucket_start)
+        .bind(granularity)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     async fn sum_usage_buckets(
         &self,
         token_id: &str,
@@ -2350,6 +2829,27 @@ impl KeyStore {
             "#,
         )
         .bind(token_id)
+        .bind(granularity)
+        .bind(bucket_start_at_least)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(sum.unwrap_or(0))
+    }
+
+    async fn sum_account_usage_buckets(
+        &self,
+        user_id: &str,
+        granularity: &str,
+        bucket_start_at_least: i64,
+    ) -> Result<i64, ProxyError> {
+        let sum = sqlx::query_scalar::<_, Option<i64>>(
+            r#"
+            SELECT SUM(count)
+            FROM account_usage_buckets
+            WHERE user_id = ? AND granularity = ? AND bucket_start >= ?
+            "#,
+        )
+        .bind(user_id)
         .bind(granularity)
         .bind(bucket_start_at_least)
         .fetch_one(&self.pool)
@@ -2475,6 +2975,60 @@ impl KeyStore {
         Ok(map)
     }
 
+    async fn fetch_monthly_count(
+        &self,
+        token_id: &str,
+        current_month_start: i64,
+    ) -> Result<i64, ProxyError> {
+        let row = sqlx::query_as::<_, (i64, i64)>(
+            "SELECT month_start, month_count FROM auth_token_quota WHERE token_id = ?",
+        )
+        .bind(token_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some((stored_start, stored_count)) = row else {
+            return Ok(0);
+        };
+        if stored_start < current_month_start {
+            sqlx::query(
+                "UPDATE auth_token_quota SET month_start = ?, month_count = 0 WHERE token_id = ?",
+            )
+            .bind(current_month_start)
+            .bind(token_id)
+            .execute(&self.pool)
+            .await?;
+            return Ok(0);
+        }
+        Ok(stored_count)
+    }
+
+    async fn fetch_account_monthly_count(
+        &self,
+        user_id: &str,
+        current_month_start: i64,
+    ) -> Result<i64, ProxyError> {
+        let row = sqlx::query_as::<_, (i64, i64)>(
+            "SELECT month_start, month_count FROM account_monthly_quota WHERE user_id = ?",
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some((stored_start, stored_count)) = row else {
+            return Ok(0);
+        };
+        if stored_start < current_month_start {
+            sqlx::query(
+                "UPDATE account_monthly_quota SET month_start = ?, month_count = 0 WHERE user_id = ?",
+            )
+            .bind(current_month_start)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+            return Ok(0);
+        }
+        Ok(stored_count)
+    }
+
     async fn delete_old_usage_buckets(
         &self,
         granularity: &str,
@@ -2483,6 +3037,24 @@ impl KeyStore {
         sqlx::query(
             r#"
             DELETE FROM token_usage_buckets
+            WHERE granularity = ? AND bucket_start < ?
+            "#,
+        )
+        .bind(granularity)
+        .bind(threshold)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn delete_old_account_usage_buckets(
+        &self,
+        granularity: &str,
+        threshold: i64,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            DELETE FROM account_usage_buckets
             WHERE granularity = ? AND bucket_start < ?
             "#,
         )
@@ -2798,6 +3370,34 @@ impl KeyStore {
         .fetch_one(&self.pool)
         .await?;
 
+        Ok(month_count)
+    }
+
+    async fn increment_account_monthly_quota(
+        &self,
+        user_id: &str,
+        current_month_start: i64,
+    ) -> Result<i64, ProxyError> {
+        let (_month_start, month_count): (i64, i64) = sqlx::query_as(
+            r#"
+            INSERT INTO account_monthly_quota (user_id, month_start, month_count)
+            VALUES (?, ?, 1)
+            ON CONFLICT(user_id) DO UPDATE SET
+                month_start = CASE
+                    WHEN excluded.month_start > account_monthly_quota.month_start THEN excluded.month_start
+                    ELSE account_monthly_quota.month_start
+                END,
+                month_count = CASE
+                    WHEN excluded.month_start > account_monthly_quota.month_start THEN 1
+                    ELSE account_monthly_quota.month_count + 1
+                END
+            RETURNING month_start, month_count
+            "#,
+        )
+        .bind(user_id)
+        .bind(current_month_start)
+        .fetch_one(&self.pool)
+        .await?;
         Ok(month_count)
     }
 
@@ -3896,6 +4496,197 @@ impl KeyStore {
             id: id.to_string(),
             token: Self::compose_full_token(id, &new_secret),
         })
+    }
+
+    async fn list_user_tokens(&self, user_id: &str) -> Result<Vec<AuthToken>, ProxyError> {
+        let rows = sqlx::query_as::<
+            _,
+            (
+                String,
+                i64,
+                Option<String>,
+                Option<String>,
+                i64,
+                i64,
+                Option<i64>,
+            ),
+        >(
+            r#"SELECT t.id, t.enabled, t.note, t.group_name, t.total_requests, t.created_at, t.last_used_at
+               FROM user_token_bindings b
+               JOIN auth_tokens t ON t.id = b.token_id
+               WHERE b.user_id = ? AND t.deleted_at IS NULL
+               ORDER BY t.created_at DESC, t.id DESC"#,
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, enabled, note, group_name, total, created_at, last_used_at)| AuthToken {
+                    id,
+                    enabled: enabled == 1,
+                    note,
+                    group_name,
+                    total_requests: total,
+                    created_at,
+                    last_used_at,
+                    quota: None,
+                    quota_hourly_reset_at: None,
+                    quota_daily_reset_at: None,
+                    quota_monthly_reset_at: None,
+                },
+            )
+            .collect())
+    }
+
+    async fn is_user_token_bound(&self, user_id: &str, token_id: &str) -> Result<bool, ProxyError> {
+        let exists = sqlx::query_scalar::<_, Option<i64>>(
+            r#"SELECT 1
+               FROM user_token_bindings
+               WHERE user_id = ? AND token_id = ?
+               LIMIT 1"#,
+        )
+        .bind(user_id)
+        .bind(token_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(exists.is_some())
+    }
+
+    async fn get_user_token_secret(
+        &self,
+        user_id: &str,
+        token_id: &str,
+    ) -> Result<Option<AuthTokenSecret>, ProxyError> {
+        let row = sqlx::query_as::<_, (String,)>(
+            r#"SELECT t.secret
+               FROM user_token_bindings b
+               JOIN auth_tokens t ON t.id = b.token_id
+               WHERE b.user_id = ? AND b.token_id = ? AND t.deleted_at IS NULL
+               LIMIT 1"#,
+        )
+        .bind(user_id)
+        .bind(token_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|(secret,)| AuthTokenSecret {
+            id: token_id.to_string(),
+            token: Self::compose_full_token(token_id, &secret),
+        }))
+    }
+
+    async fn find_user_id_by_token(&self, token_id: &str) -> Result<Option<String>, ProxyError> {
+        let row = sqlx::query_as::<_, (String,)>(
+            r#"SELECT user_id FROM user_token_bindings WHERE token_id = ? LIMIT 1"#,
+        )
+        .bind(token_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|(user_id,)| user_id))
+    }
+
+    async fn user_has_token_binding(&self, user_id: &str) -> Result<bool, ProxyError> {
+        let row = sqlx::query_scalar::<_, Option<i64>>(
+            r#"SELECT 1 FROM user_token_bindings WHERE user_id = ? LIMIT 1"#,
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.is_some())
+    }
+
+    async fn ensure_account_quota_limits(
+        &self,
+        user_id: &str,
+    ) -> Result<AccountQuotaLimits, ProxyError> {
+        let now = Utc::now().timestamp();
+        sqlx::query(
+            r#"INSERT INTO account_quota_limits (
+                    user_id,
+                    hourly_any_limit,
+                    hourly_limit,
+                    daily_limit,
+                    monthly_limit,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO NOTHING"#,
+        )
+        .bind(user_id)
+        .bind(effective_token_hourly_request_limit())
+        .bind(effective_token_hourly_limit())
+        .bind(effective_token_daily_limit())
+        .bind(effective_token_monthly_limit())
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+
+        let (hourly_any_limit, hourly_limit, daily_limit, monthly_limit) =
+            sqlx::query_as::<_, (i64, i64, i64, i64)>(
+                r#"SELECT hourly_any_limit, hourly_limit, daily_limit, monthly_limit
+                   FROM account_quota_limits
+                   WHERE user_id = ?
+                   LIMIT 1"#,
+            )
+            .bind(user_id)
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(AccountQuotaLimits {
+            hourly_any_limit,
+            hourly_limit,
+            daily_limit,
+            monthly_limit,
+        })
+    }
+
+    async fn fetch_user_success_failure(
+        &self,
+        user_id: &str,
+    ) -> Result<(i64, i64, i64), ProxyError> {
+        let now = Utc::now();
+        let month_start = start_of_month(now).timestamp();
+        let day_start = start_of_day(now).timestamp();
+        let row = sqlx::query(
+            r#"
+            SELECT
+              COALESCE(SUM(CASE WHEN l.result_status = ? AND l.created_at >= ? THEN 1 ELSE 0 END), 0) AS monthly_success,
+              COALESCE(SUM(CASE WHEN l.result_status = ? AND l.created_at >= ? THEN 1 ELSE 0 END), 0) AS daily_success,
+              COALESCE(SUM(CASE WHEN l.result_status = ? AND l.created_at >= ? THEN 1 ELSE 0 END), 0) AS daily_failure
+            FROM auth_token_logs l
+            JOIN user_token_bindings b ON b.token_id = l.token_id
+            WHERE b.user_id = ?
+            "#,
+        )
+        .bind(OUTCOME_SUCCESS)
+        .bind(month_start)
+        .bind(OUTCOME_SUCCESS)
+        .bind(day_start)
+        .bind(OUTCOME_ERROR)
+        .bind(day_start)
+        .bind(user_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok((
+            row.try_get("monthly_success")?,
+            row.try_get("daily_success")?,
+            row.try_get("daily_failure")?,
+        ))
+    }
+
+    async fn fetch_user_last_activity(&self, user_id: &str) -> Result<Option<i64>, ProxyError> {
+        let row = sqlx::query_scalar::<_, Option<i64>>(
+            r#"SELECT MAX(l.created_at)
+               FROM auth_token_logs l
+               JOIN user_token_bindings b ON b.token_id = l.token_id
+               WHERE b.user_id = ?"#,
+        )
+        .bind(user_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row)
     }
 
     async fn insert_oauth_login_state(
@@ -6119,6 +6910,41 @@ pub struct AuthTokenSecret {
     pub token: String, // th-<id>-<secret>
 }
 
+#[derive(Debug, Clone)]
+pub struct UserDashboardSummary {
+    pub hourly_any_used: i64,
+    pub hourly_any_limit: i64,
+    pub quota_hourly_used: i64,
+    pub quota_hourly_limit: i64,
+    pub quota_daily_used: i64,
+    pub quota_daily_limit: i64,
+    pub quota_monthly_used: i64,
+    pub quota_monthly_limit: i64,
+    pub daily_success: i64,
+    pub daily_failure: i64,
+    pub monthly_success: i64,
+    pub last_activity: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct UserTokenSummary {
+    pub token_id: String,
+    pub enabled: bool,
+    pub note: Option<String>,
+    pub last_used_at: Option<i64>,
+    pub hourly_any_used: i64,
+    pub hourly_any_limit: i64,
+    pub quota_hourly_used: i64,
+    pub quota_hourly_limit: i64,
+    pub quota_daily_used: i64,
+    pub quota_daily_limit: i64,
+    pub quota_monthly_used: i64,
+    pub quota_monthly_limit: i64,
+    pub daily_success: i64,
+    pub daily_failure: i64,
+    pub monthly_success: i64,
+}
+
 /// Third-party profile normalized for local account upsert.
 #[derive(Debug, Clone)]
 pub struct OAuthAccountProfile {
@@ -7948,6 +8774,232 @@ mod tests {
             matches!(after, UserTokenLookup::Unavailable),
             "soft-deleted binding should report unavailable"
         );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn bound_token_quota_checks_use_account_counters() {
+        let _guard = env_lock().lock_owned().await;
+        let db_path = temp_db_path("bound-token-account-quota");
+        let db_str = db_path.to_string_lossy().to_string();
+        unsafe {
+            std::env::set_var("TOKEN_HOURLY_LIMIT", "1");
+        }
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        let user = proxy
+            .upsert_oauth_account(&OAuthAccountProfile {
+                provider: "linuxdo".to_string(),
+                provider_user_id: "quota-user".to_string(),
+                username: Some("quota_user".to_string()),
+                name: Some("Quota User".to_string()),
+                avatar_template: None,
+                active: true,
+                trust_level: Some(1),
+                raw_payload_json: None,
+            })
+            .await
+            .expect("upsert user");
+        let token = proxy
+            .ensure_user_token_binding(&user.user_id, Some("linuxdo:quota_user"))
+            .await
+            .expect("bind token");
+
+        let first = proxy
+            .check_token_quota(&token.id)
+            .await
+            .expect("first quota check");
+        assert!(first.allowed, "first request should pass");
+
+        let second = proxy
+            .check_token_quota(&token.id)
+            .await
+            .expect("second quota check");
+        assert!(
+            !second.allowed,
+            "second request should hit account hourly limit"
+        );
+        assert_eq!(second.exceeded_window, Some(QuotaWindow::Hour));
+
+        let account_minute_sum: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(count), 0) FROM account_usage_buckets WHERE user_id = ? AND granularity = ?",
+        )
+        .bind(&user.user_id)
+        .bind(GRANULARITY_MINUTE)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("read account minute buckets");
+        assert_eq!(
+            account_minute_sum, 2,
+            "account buckets should count both checks"
+        );
+
+        let token_minute_sum: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(count), 0) FROM token_usage_buckets WHERE token_id = ? AND granularity = ?",
+        )
+        .bind(&token.id)
+        .bind(GRANULARITY_MINUTE)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("read token minute buckets");
+        assert_eq!(
+            token_minute_sum, 0,
+            "bound token should no longer mutate token-level buckets"
+        );
+
+        unsafe {
+            std::env::remove_var("TOKEN_HOURLY_LIMIT");
+        }
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn account_quota_backfill_is_idempotent() {
+        let db_path = temp_db_path("account-backfill-idempotent");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        let user = proxy
+            .upsert_oauth_account(&OAuthAccountProfile {
+                provider: "linuxdo".to_string(),
+                provider_user_id: "backfill-user".to_string(),
+                username: Some("backfill".to_string()),
+                name: Some("Backfill User".to_string()),
+                avatar_template: None,
+                active: true,
+                trust_level: Some(2),
+                raw_payload_json: None,
+            })
+            .await
+            .expect("upsert user");
+        let token = proxy
+            .ensure_user_token_binding(&user.user_id, Some("linuxdo:backfill"))
+            .await
+            .expect("bind token");
+
+        let month_start = start_of_month(Utc::now()).timestamp();
+        sqlx::query(
+            "INSERT INTO token_usage_buckets (token_id, bucket_start, granularity, count) VALUES (?, ?, ?, ?)",
+        )
+        .bind(&token.id)
+        .bind(month_start)
+        .bind(GRANULARITY_MINUTE)
+        .bind(3_i64)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("seed token minute bucket");
+        sqlx::query(
+            "INSERT INTO token_usage_buckets (token_id, bucket_start, granularity, count) VALUES (?, ?, ?, ?)",
+        )
+        .bind(&token.id)
+        .bind(month_start)
+        .bind(GRANULARITY_HOUR)
+        .bind(5_i64)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("seed token hour bucket");
+        sqlx::query(
+            "INSERT INTO auth_token_quota (token_id, month_start, month_count) VALUES (?, ?, ?)\n             ON CONFLICT(token_id) DO UPDATE SET month_start = excluded.month_start, month_count = excluded.month_count",
+        )
+        .bind(&token.id)
+        .bind(month_start)
+        .bind(7_i64)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("seed token monthly quota");
+
+        sqlx::query("DELETE FROM account_usage_buckets")
+            .execute(&proxy.key_store.pool)
+            .await
+            .expect("clear account buckets");
+        sqlx::query("DELETE FROM account_monthly_quota")
+            .execute(&proxy.key_store.pool)
+            .await
+            .expect("clear account monthly");
+        sqlx::query("DELETE FROM account_quota_limits")
+            .execute(&proxy.key_store.pool)
+            .await
+            .expect("clear account limits");
+        sqlx::query("DELETE FROM meta WHERE key = ?")
+            .bind(META_KEY_ACCOUNT_QUOTA_BACKFILL_V1)
+            .execute(&proxy.key_store.pool)
+            .await
+            .expect("reset backfill meta");
+
+        drop(proxy);
+
+        let proxy_after =
+            TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+                .await
+                .expect("proxy reopened for first backfill");
+
+        let first_account_minute: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(count), 0) FROM account_usage_buckets WHERE user_id = ? AND granularity = ?",
+        )
+        .bind(&user.user_id)
+        .bind(GRANULARITY_MINUTE)
+        .fetch_one(&proxy_after.key_store.pool)
+        .await
+        .expect("read account minute after first backfill");
+        let first_account_hour: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(count), 0) FROM account_usage_buckets WHERE user_id = ? AND granularity = ?",
+        )
+        .bind(&user.user_id)
+        .bind(GRANULARITY_HOUR)
+        .fetch_one(&proxy_after.key_store.pool)
+        .await
+        .expect("read account hour after first backfill");
+        let first_month_count: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(month_count, 0) FROM account_monthly_quota WHERE user_id = ?",
+        )
+        .bind(&user.user_id)
+        .fetch_one(&proxy_after.key_store.pool)
+        .await
+        .expect("read account month after first backfill");
+
+        assert_eq!(first_account_minute, 3);
+        assert_eq!(first_account_hour, 5);
+        assert_eq!(first_month_count, 7);
+
+        drop(proxy_after);
+
+        let proxy_again =
+            TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+                .await
+                .expect("proxy reopened for idempotent check");
+        let second_account_minute: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(count), 0) FROM account_usage_buckets WHERE user_id = ? AND granularity = ?",
+        )
+        .bind(&user.user_id)
+        .bind(GRANULARITY_MINUTE)
+        .fetch_one(&proxy_again.key_store.pool)
+        .await
+        .expect("read account minute after second init");
+        let second_account_hour: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(count), 0) FROM account_usage_buckets WHERE user_id = ? AND granularity = ?",
+        )
+        .bind(&user.user_id)
+        .bind(GRANULARITY_HOUR)
+        .fetch_one(&proxy_again.key_store.pool)
+        .await
+        .expect("read account hour after second init");
+        let second_month_count: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(month_count, 0) FROM account_monthly_quota WHERE user_id = ?",
+        )
+        .bind(&user.user_id)
+        .fetch_one(&proxy_again.key_store.pool)
+        .await
+        .expect("read account month after second init");
+
+        assert_eq!(second_account_minute, first_account_minute);
+        assert_eq!(second_account_hour, first_account_hour);
+        assert_eq!(second_month_count, first_month_count);
 
         let _ = std::fs::remove_file(db_path);
     }

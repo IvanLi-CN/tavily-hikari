@@ -773,7 +773,14 @@ async fn serve_index(
         return Ok(Redirect::temporary("/admin").into_response());
     }
 
-    let _ = headers; // keep parameter for potential future use
+    if state.linuxdo_oauth.is_enabled_and_configured()
+        && resolve_user_session(state.as_ref(), &headers)
+            .await
+            .is_some()
+    {
+        return Ok(Redirect::temporary("/console").into_response());
+    }
+
     load_spa_response(state.as_ref(), "index.html").await
 }
 
@@ -801,6 +808,22 @@ async fn serve_login(
         return Ok(Redirect::temporary("/admin").into_response());
     }
     load_spa_response(state.as_ref(), "login.html").await
+}
+
+async fn serve_console_index(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Response<Body>, StatusCode> {
+    if !state.linuxdo_oauth.is_enabled_and_configured() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    if resolve_user_session(state.as_ref(), &headers)
+        .await
+        .is_none()
+    {
+        return Ok(Redirect::temporary("/").into_response());
+    }
+    load_spa_response(state.as_ref(), "console.html").await
 }
 
 const BASE_404_STYLES: &str = r#"
@@ -3192,7 +3215,7 @@ async fn get_linuxdo_auth(
         .proxy
         .create_oauth_login_state_with_binding(
             "linuxdo",
-            Some("/"),
+            Some("/console"),
             cfg.login_state_ttl_secs,
             Some(&binding_hash),
         )
@@ -3403,7 +3426,7 @@ async fn get_linuxdo_callback(
         user_session_set_cookie(&session.token, cfg.session_max_age_secs, use_secure_cookie)?;
     let clear_binding_cookie = oauth_login_binding_clear_cookie(use_secure_cookie)?;
 
-    let target = redirect_to.unwrap_or_else(|| "/".to_string());
+    let target = redirect_to.unwrap_or_else(|| "/console".to_string());
     let mut response = Redirect::temporary(&target).into_response();
     response.headers_mut().append(SET_COOKIE, cookie);
     response
@@ -3448,6 +3471,331 @@ async fn get_user_token(
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UserDashboardView {
+    hourly_any_used: i64,
+    hourly_any_limit: i64,
+    quota_hourly_used: i64,
+    quota_hourly_limit: i64,
+    quota_daily_used: i64,
+    quota_daily_limit: i64,
+    quota_monthly_used: i64,
+    quota_monthly_limit: i64,
+    daily_success: i64,
+    daily_failure: i64,
+    monthly_success: i64,
+    last_activity: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UserTokenSummaryView {
+    token_id: String,
+    enabled: bool,
+    note: Option<String>,
+    last_used_at: Option<i64>,
+    hourly_any_used: i64,
+    hourly_any_limit: i64,
+    quota_hourly_used: i64,
+    quota_hourly_limit: i64,
+    quota_daily_used: i64,
+    quota_daily_limit: i64,
+    quota_monthly_used: i64,
+    quota_monthly_limit: i64,
+    daily_success: i64,
+    daily_failure: i64,
+    monthly_success: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct UserTokenLogsQuery {
+    limit: Option<usize>,
+}
+
+async fn get_user_dashboard(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<UserDashboardView>, StatusCode> {
+    if !state.linuxdo_oauth.is_enabled_and_configured() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let Some(user_session) = resolve_user_session(state.as_ref(), &headers).await else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+    let summary = state
+        .proxy
+        .user_dashboard_summary(&user_session.user.user_id)
+        .await
+        .map_err(|err| {
+            eprintln!("get user dashboard error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    Ok(Json(UserDashboardView {
+        hourly_any_used: summary.hourly_any_used,
+        hourly_any_limit: summary.hourly_any_limit,
+        quota_hourly_used: summary.quota_hourly_used,
+        quota_hourly_limit: summary.quota_hourly_limit,
+        quota_daily_used: summary.quota_daily_used,
+        quota_daily_limit: summary.quota_daily_limit,
+        quota_monthly_used: summary.quota_monthly_used,
+        quota_monthly_limit: summary.quota_monthly_limit,
+        daily_success: summary.daily_success,
+        daily_failure: summary.daily_failure,
+        monthly_success: summary.monthly_success,
+        last_activity: summary.last_activity,
+    }))
+}
+
+fn user_token_quota_values(token: &AuthToken) -> (i64, i64, i64, i64, i64, i64) {
+    token
+        .quota
+        .as_ref()
+        .map(|q| {
+            (
+                q.hourly_used,
+                q.hourly_limit,
+                q.daily_used,
+                q.daily_limit,
+                q.monthly_used,
+                q.monthly_limit,
+            )
+        })
+        .unwrap_or((
+            0,
+            effective_token_hourly_limit(),
+            0,
+            effective_token_daily_limit(),
+            0,
+            effective_token_monthly_limit(),
+        ))
+}
+
+async fn get_user_tokens(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<UserTokenSummaryView>>, StatusCode> {
+    if !state.linuxdo_oauth.is_enabled_and_configured() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let Some(user_session) = resolve_user_session(state.as_ref(), &headers).await else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+
+    let tokens = state
+        .proxy
+        .list_user_tokens(&user_session.user.user_id)
+        .await
+        .map_err(|err| {
+            eprintln!("list user tokens error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let token_ids: Vec<String> = tokens.iter().map(|t| t.id.clone()).collect();
+    let hourly_any = state
+        .proxy
+        .token_hourly_any_snapshot(&token_ids)
+        .await
+        .map_err(|err| {
+            eprintln!("list user tokens hourly snapshot error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let mut items = Vec::with_capacity(tokens.len());
+    for token in tokens {
+        let (monthly_success, daily_success, daily_failure) = state
+            .proxy
+            .token_success_breakdown(&token.id)
+            .await
+            .map_err(|err| {
+                eprintln!("list user tokens success breakdown error: {err}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        let (
+            quota_hourly_used,
+            quota_hourly_limit,
+            quota_daily_used,
+            quota_daily_limit,
+            quota_monthly_used,
+            quota_monthly_limit,
+        ) = user_token_quota_values(&token);
+        let (hourly_any_used, hourly_any_limit) = hourly_any
+            .get(&token.id)
+            .map(|v| (v.hourly_used, v.hourly_limit))
+            .unwrap_or((0, effective_token_hourly_request_limit()));
+        items.push(UserTokenSummaryView {
+            token_id: token.id,
+            enabled: token.enabled,
+            note: token.note,
+            last_used_at: token.last_used_at,
+            hourly_any_used,
+            hourly_any_limit,
+            quota_hourly_used,
+            quota_hourly_limit,
+            quota_daily_used,
+            quota_daily_limit,
+            quota_monthly_used,
+            quota_monthly_limit,
+            daily_success,
+            daily_failure,
+            monthly_success,
+        });
+    }
+    Ok(Json(items))
+}
+
+async fn get_user_token_detail(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<UserTokenSummaryView>, StatusCode> {
+    if !state.linuxdo_oauth.is_enabled_and_configured() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let Some(user_session) = resolve_user_session(state.as_ref(), &headers).await else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+    let owned = state
+        .proxy
+        .is_user_token_bound(&user_session.user.user_id, &id)
+        .await
+        .map_err(|err| {
+            eprintln!("get user token detail ownership error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    if !owned {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let tokens = state
+        .proxy
+        .list_user_tokens(&user_session.user.user_id)
+        .await
+        .map_err(|err| {
+            eprintln!("get user token detail list error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let Some(token) = tokens.into_iter().find(|t| t.id == id) else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    let (monthly_success, daily_success, daily_failure) = state
+        .proxy
+        .token_success_breakdown(&token.id)
+        .await
+        .map_err(|err| {
+            eprintln!("get user token detail breakdown error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let hourly_any = state
+        .proxy
+        .token_hourly_any_snapshot(std::slice::from_ref(&token.id))
+        .await
+        .map_err(|err| {
+            eprintln!("get user token detail hourly snapshot error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let (hourly_any_used, hourly_any_limit) = hourly_any
+        .get(&token.id)
+        .map(|v| (v.hourly_used, v.hourly_limit))
+        .unwrap_or((0, effective_token_hourly_request_limit()));
+    let (
+        quota_hourly_used,
+        quota_hourly_limit,
+        quota_daily_used,
+        quota_daily_limit,
+        quota_monthly_used,
+        quota_monthly_limit,
+    ) = user_token_quota_values(&token);
+    Ok(Json(UserTokenSummaryView {
+        token_id: token.id,
+        enabled: token.enabled,
+        note: token.note,
+        last_used_at: token.last_used_at,
+        hourly_any_used,
+        hourly_any_limit,
+        quota_hourly_used,
+        quota_hourly_limit,
+        quota_daily_used,
+        quota_daily_limit,
+        quota_monthly_used,
+        quota_monthly_limit,
+        daily_success,
+        daily_failure,
+        monthly_success,
+    }))
+}
+
+async fn get_user_token_secret(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<UserTokenView>, StatusCode> {
+    if !state.linuxdo_oauth.is_enabled_and_configured() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let Some(user_session) = resolve_user_session(state.as_ref(), &headers).await else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+    match state
+        .proxy
+        .get_user_token_secret(&user_session.user.user_id, &id)
+        .await
+    {
+        Ok(Some(token)) => Ok(Json(UserTokenView { token: token.token })),
+        Ok(None) => Err(StatusCode::NOT_FOUND),
+        Err(err) => {
+            eprintln!("get user token secret error: {err}");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+async fn get_user_token_logs(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(q): Query<UserTokenLogsQuery>,
+) -> Result<Json<Vec<PublicTokenLogView>>, StatusCode> {
+    if !state.linuxdo_oauth.is_enabled_and_configured() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let Some(user_session) = resolve_user_session(state.as_ref(), &headers).await else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+    let owned = state
+        .proxy
+        .is_user_token_bound(&user_session.user.user_id, &id)
+        .await
+        .map_err(|err| {
+            eprintln!("get user token logs ownership error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    if !owned {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let limit = q.limit.unwrap_or(20).clamp(1, 20);
+    let items = state
+        .proxy
+        .token_recent_logs(&id, limit, None)
+        .await
+        .map_err(|err| {
+            eprintln!("get user token logs error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let mapped = items
+        .into_iter()
+        .map(PublicTokenLogView::from)
+        .map(|mut v| {
+            if let Some(err) = v.error_message.as_ref() {
+                v.error_message = Some(redact_sensitive(err));
+            }
+            v.path = redact_sensitive(&v.path);
+            if let Some(query) = v.query.as_ref() {
+                v.query = Some(redact_sensitive(query));
+            }
+            v
+        })
+        .collect::<Vec<_>>();
+    Ok(Json(mapped))
 }
 
 fn detect_versions(static_dir: Option<&FsPath>) -> (String, String) {
@@ -4550,6 +4898,11 @@ pub async fn serve(
         .route("/auth/linuxdo/callback", get(get_linuxdo_callback))
         .route("/api/user/logout", post(post_user_logout))
         .route("/api/user/token", get(get_user_token))
+        .route("/api/user/dashboard", get(get_user_dashboard))
+        .route("/api/user/tokens", get(get_user_tokens))
+        .route("/api/user/tokens/:id", get(get_user_token_detail))
+        .route("/api/user/tokens/:id/secret", get(get_user_token_secret))
+        .route("/api/user/tokens/:id/logs", get(get_user_token_logs))
         .route("/api/admin/login", post(post_admin_login))
         .route("/api/admin/logout", post(post_admin_logout))
         .route("/api/tavily/search", post(tavily_http_search))
@@ -4607,6 +4960,9 @@ pub async fn serve(
                 router = router.route("/", get(serve_index));
                 router = router.route("/admin", get(serve_admin_index));
                 router = router.route("/admin/", get(serve_admin_index));
+                router = router.route("/console", get(serve_console_index));
+                router = router.route("/console/", get(serve_console_index));
+                router = router.route("/console.html", get(serve_console_index));
                 router = router.route("/login", get(serve_login));
                 router = router.route("/login/", get(serve_login));
                 router = router.route("/login.html", get(serve_login));
@@ -6482,8 +6838,15 @@ mod tests {
         });
 
         let app = Router::new()
+            .route("/", get(serve_index))
+            .route("/console", get(serve_console_index))
             .route("/api/profile", get(get_profile))
             .route("/api/user/token", get(get_user_token))
+            .route("/api/user/dashboard", get(get_user_dashboard))
+            .route("/api/user/tokens", get(get_user_tokens))
+            .route("/api/user/tokens/:id", get(get_user_token_detail))
+            .route("/api/user/tokens/:id/secret", get(get_user_token_secret))
+            .route("/api/user/tokens/:id/logs", get(get_user_token_logs))
             .with_state(state);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -7222,6 +7585,122 @@ mod tests {
             token_body.get("token").and_then(|value| value.as_str()),
             Some(bound_token.token.as_str())
         );
+
+        let user_cookie = format!("{USER_SESSION_COOKIE_NAME}={}", session.token);
+        let no_redirect = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build no-redirect client");
+        let root_url = format!("http://{}/", addr);
+        let root_resp = no_redirect
+            .get(&root_url)
+            .header(reqwest::header::COOKIE, user_cookie.clone())
+            .send()
+            .await
+            .expect("root request with user session");
+        assert_eq!(root_resp.status(), reqwest::StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(
+            root_resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("/console")
+        );
+
+        let dashboard_url = format!("http://{}/api/user/dashboard", addr);
+        let dashboard_resp = client
+            .get(&dashboard_url)
+            .header(reqwest::header::COOKIE, user_cookie.clone())
+            .send()
+            .await
+            .expect("user dashboard request");
+        assert_eq!(dashboard_resp.status(), reqwest::StatusCode::OK);
+        let dashboard_body: serde_json::Value =
+            dashboard_resp.json().await.expect("user dashboard json");
+        assert_eq!(
+            dashboard_body
+                .get("hourlyAnyLimit")
+                .and_then(|value| value.as_i64()),
+            Some(effective_token_hourly_request_limit())
+        );
+
+        let tokens_url = format!("http://{}/api/user/tokens", addr);
+        let tokens_resp = client
+            .get(&tokens_url)
+            .header(reqwest::header::COOKIE, user_cookie.clone())
+            .send()
+            .await
+            .expect("user tokens request");
+        assert_eq!(tokens_resp.status(), reqwest::StatusCode::OK);
+        let tokens_body: serde_json::Value = tokens_resp.json().await.expect("user tokens json");
+        let items = tokens_body.as_array().expect("tokens response is array");
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items
+                .first()
+                .and_then(|item| item.get("tokenId"))
+                .and_then(|value| value.as_str()),
+            Some(bound_token.id.as_str())
+        );
+
+        let token_detail_url = format!("http://{}/api/user/tokens/{}", addr, bound_token.id);
+        let token_detail_resp = client
+            .get(&token_detail_url)
+            .header(reqwest::header::COOKIE, user_cookie.clone())
+            .send()
+            .await
+            .expect("user token detail request");
+        assert_eq!(token_detail_resp.status(), reqwest::StatusCode::OK);
+
+        let token_secret_url = format!("http://{}/api/user/tokens/{}/secret", addr, bound_token.id);
+        let token_secret_resp = client
+            .get(&token_secret_url)
+            .header(reqwest::header::COOKIE, user_cookie.clone())
+            .send()
+            .await
+            .expect("user token secret request");
+        assert_eq!(token_secret_resp.status(), reqwest::StatusCode::OK);
+        let token_secret_body: serde_json::Value = token_secret_resp
+            .json()
+            .await
+            .expect("user token secret json");
+        assert_eq!(
+            token_secret_body
+                .get("token")
+                .and_then(|value| value.as_str()),
+            Some(bound_token.token.as_str())
+        );
+
+        let token_logs_url = format!(
+            "http://{}/api/user/tokens/{}/logs?limit=20",
+            addr, bound_token.id
+        );
+        let token_logs_resp = client
+            .get(&token_logs_url)
+            .header(reqwest::header::COOKIE, user_cookie.clone())
+            .send()
+            .await
+            .expect("user token logs request");
+        assert_eq!(token_logs_resp.status(), reqwest::StatusCode::OK);
+
+        let forbidden_detail_url = format!("http://{}/api/user/tokens/notmine", addr);
+        let forbidden_detail_resp = client
+            .get(&forbidden_detail_url)
+            .header(reqwest::header::COOKIE, user_cookie.clone())
+            .send()
+            .await
+            .expect("forbidden token detail request");
+        assert_eq!(
+            forbidden_detail_resp.status(),
+            reqwest::StatusCode::NOT_FOUND
+        );
+
+        let unauth_dashboard = client
+            .get(&dashboard_url)
+            .send()
+            .await
+            .expect("unauth dashboard request");
+        assert_eq!(unauth_dashboard.status(), reqwest::StatusCode::UNAUTHORIZED);
 
         let _ = std::fs::remove_file(db_path);
     }
