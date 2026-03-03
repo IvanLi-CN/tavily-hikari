@@ -30,7 +30,7 @@ fi
 
 if [[ "${FOREGROUND:-}" == "1" || "${FOREGROUND:-}" == "true" ]]; then
   echo "Starting frontend dev server in foreground on $HOST:$PORT..."
-  # In foreground mode, stdout/stderr should be captured by the caller (e.g. devctl).
+  # In foreground mode, stdout/stderr are inherited from the current shell.
   exec bun run dev -- --host "$HOST" --port "$PORT"
 else
   echo "Starting frontend dev server on $HOST:$PORT (logging to $LOG_FILE)..."

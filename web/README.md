@@ -17,5 +17,3 @@ bun run storybook
 ```
 
 Open `http://127.0.0.1:56006`.
-
-Long-lived (Codex/agent): use `~/.codex/bin/devctl` (see `AGENTS.md`).

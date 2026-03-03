@@ -35,7 +35,7 @@ if [[ "${DEV_OPEN_ADMIN:-}" == "true" || "${DEV_OPEN_ADMIN:-}" == "1" ]]; then
 fi
 if [[ "${FOREGROUND:-}" == "1" || "${FOREGROUND:-}" == "true" ]]; then
   echo "Starting backend in foreground on $BIND_ADDR:$PORT..."
-  # In foreground mode, stdout/stderr should be captured by the caller (e.g. devctl).
+  # In foreground mode, stdout/stderr are inherited from the current shell.
   exec env RUST_LOG="$RUST_LOG" "${CMD[@]}"
 else
   echo "Starting backend on $BIND_ADDR:$PORT (logging to $LOG_FILE)..."

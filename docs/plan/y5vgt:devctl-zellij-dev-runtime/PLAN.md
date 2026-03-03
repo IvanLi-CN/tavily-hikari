@@ -1,5 +1,8 @@
 # Devctl/Zellij 长驻开发服务对齐
 
+> 历史说明（已弃用，2026-03-03）：
+> 本计划仅保留为历史记录，不再作为当前推荐的运行方式约束。
+
 ## 背景
 
 当前仓库的开发服务长驻方式是 `nohup + PID 文件`（`logs/*.pid` + `logs/*.log`）。该方式可以工作，但不符合我们在 Codex 环境下的“最新方案”：使用 `~/.codex/bin/devctl` 将服务托管到 Zellij session 中，以跨 turn 持久运行，并统一落盘日志到 `<workspace>/.codex/logs/*.log`。

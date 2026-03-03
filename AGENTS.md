@@ -49,33 +49,30 @@
 - Default high ports: backend `58087`, frontend `55173` (increment within high range if needed).
 
 - Backend (Rust):
-  - **Long-lived / persistent (Codex):** use `devctl` (Zellij) so it survives turn boundaries:
-    - `~/.codex/bin/devctl up api -- env FOREGROUND=1 scripts/start-backend-dev.sh`
+  - Start: `env FOREGROUND=1 scripts/start-backend-dev.sh`
   - The script respects env vars like `TAVILY_API_KEYS`, `TAVILY_UPSTREAM`, `DEV_OPEN_ADMIN`.
   - One-off smoke check (foreground): `timeout 120s env FOREGROUND=1 scripts/start-backend-dev.sh` (avoid hand-rolling `cargo run`).
 
 - Frontend (Vite):
-  - **Long-lived / persistent (Codex):** use `devctl` (Zellij):
-    - `~/.codex/bin/devctl up web -- env FOREGROUND=1 scripts/start-frontend-dev.sh`
+  - Start: `env FOREGROUND=1 scripts/start-frontend-dev.sh`
   - `scripts/start-frontend-dev.sh` automatically installs dependencies if `node_modules` is missing.
   - Build for static serving: `cd web && bun run build`, then run backend with `scripts/start-backend-dev.sh` so it picks up `web/dist`.
 
 - Stop services:
-  - Persistent (devctl): `~/.codex/bin/devctl down api` and `~/.codex/bin/devctl down web` (or `~/.codex/bin/devctl down-all`)
+  - Use the process manager or shell session that launched each service.
   - Legacy nohup mode:
     - Backend: `kill $(cat logs/backend.pid)` (the script recreates PID file on next start)
     - Frontend: `kill $(cat logs/frontend.pid)`
 
 - Logs & notes:
-  - Persistent (devctl): `~/.codex/bin/devctl logs api -n 200` and `~/.codex/bin/devctl logs web -n 200`
-  - Legacy nohup mode: `tail -f logs/backend.dev.log` and `tail -f logs/web.dev.log`
+  - Foreground mode logs stream to current stdout/stderr.
+  - Legacy nohup mode logs: `tail -f logs/backend.dev.log` and `tail -f logs/web.dev.log`
   - Ensure `logs/` exists; do not commit log or PID files.
   - Vite dev server proxies to backend when configured in `web/vite.config.ts`.
 
 - Storybook:
   - Start: `cd web && bun install --frozen-lockfile && bun run storybook` → `http://127.0.0.1:56006`
-  - Long-lived: `~/.codex/bin/devctl up storybook -- bash -lc 'cd web && bun run storybook'`
-  - Stop/logs: `~/.codex/bin/devctl down storybook` / `~/.codex/bin/devctl logs storybook -n 200`
+  - Keep it in the current shell for short sessions, or run it under any team-approved background strategy.
 
 - Validation:
   - Keep Playwright/Chrome DevTools sessions open for review; verify `/api/*`, `/mcp`, and SPA routes.
