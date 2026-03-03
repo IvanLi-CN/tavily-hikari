@@ -45,29 +45,26 @@
 
 ## Agent Runtime Conventions (Dev)
 
-- Background, non-blocking: run backend and frontend concurrently without blocking the Agent’s prompt.
 - Default high ports: backend `58087`, frontend `55173` (increment within high range if needed).
+- Prefer foreground execution for development commands; if non-blocking execution is required, the caller manages lifecycle and logging explicitly.
 
 - Backend (Rust):
-  - Start: `env FOREGROUND=1 scripts/start-backend-dev.sh`
+  - Start: `scripts/start-backend-dev.sh`
   - The script respects env vars like `TAVILY_API_KEYS`, `TAVILY_UPSTREAM`, `DEV_OPEN_ADMIN`.
-  - One-off smoke check (foreground): `timeout 120s env FOREGROUND=1 scripts/start-backend-dev.sh` (avoid hand-rolling `cargo run`).
+  - One-off smoke check (foreground): `timeout 120s scripts/start-backend-dev.sh` (avoid hand-rolling `cargo run`).
 
 - Frontend (Vite):
-  - Start: `env FOREGROUND=1 scripts/start-frontend-dev.sh`
+  - Start: `scripts/start-frontend-dev.sh`
   - `scripts/start-frontend-dev.sh` automatically installs dependencies if `node_modules` is missing.
   - Build for static serving: `cd web && bun run build`, then run backend with `scripts/start-backend-dev.sh` so it picks up `web/dist`.
 
 - Stop services:
   - Use the process manager or shell session that launched each service.
-  - Legacy nohup mode:
-    - Backend: `kill $(cat logs/backend.pid)` (the script recreates PID file on next start)
-    - Frontend: `kill $(cat logs/frontend.pid)`
+  - Avoid terminating unrelated sessions; only stop processes you started for this task.
 
 - Logs & notes:
-  - Foreground mode logs stream to current stdout/stderr.
-  - Legacy nohup mode logs: `tail -f logs/backend.dev.log` and `tail -f logs/web.dev.log`
-  - Ensure `logs/` exists; do not commit log or PID files.
+  - Logs stream to current stdout/stderr.
+  - If you need persisted logs, redirect output in the caller command and keep ownership clear.
   - Vite dev server proxies to backend when configured in `web/vite.config.ts`.
 
 - Storybook:

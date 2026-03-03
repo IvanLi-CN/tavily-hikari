@@ -3,20 +3,6 @@ set -euo pipefail
 
 # Resolve repo root relative to this script
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LOG_DIR="$ROOT_DIR/logs"
-PID_FILE="$LOG_DIR/backend.pid"
-LOG_FILE="$LOG_DIR/backend.dev.log"
-
-mkdir -p "$LOG_DIR"
-
-if [[ -f "$PID_FILE" ]]; then
-  EXISTING_PID="$(cat "$PID_FILE" || true)"
-  if [[ -n "$EXISTING_PID" ]] && kill -0 "$EXISTING_PID" 2>/dev/null; then
-    echo "Existing backend process (PID $EXISTING_PID) detected. Stopping it first..."
-    kill "$EXISTING_PID" && sleep 1
-  fi
-  rm -f "$PID_FILE"
-fi
 
 PORT="${PORT:-58087}"
 BIND_ADDR="${BIND_ADDR:-127.0.0.1}"
@@ -33,17 +19,6 @@ fi
 if [[ "${DEV_OPEN_ADMIN:-}" == "true" || "${DEV_OPEN_ADMIN:-}" == "1" ]]; then
   CMD+=(--dev-open-admin)
 fi
-if [[ "${FOREGROUND:-}" == "1" || "${FOREGROUND:-}" == "true" ]]; then
-  echo "Starting backend in foreground on $BIND_ADDR:$PORT..."
-  # In foreground mode, stdout/stderr are inherited from the current shell.
-  exec env RUST_LOG="$RUST_LOG" "${CMD[@]}"
-else
-  echo "Starting backend on $BIND_ADDR:$PORT (logging to $LOG_FILE)..."
-  nohup env RUST_LOG="$RUST_LOG" "${CMD[@]}" >"$LOG_FILE" 2>&1 &
-  BACKEND_PID=$!
-  echo "$BACKEND_PID" > "$PID_FILE"
 
-  popd >/dev/null
-
-  echo "Backend started with PID $BACKEND_PID"
-fi
+echo "Starting backend in foreground on $BIND_ADDR:$PORT..."
+exec env RUST_LOG="$RUST_LOG" "${CMD[@]}"
