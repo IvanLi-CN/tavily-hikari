@@ -92,6 +92,11 @@ pub async fn serve(
         .route("/api/tavily/extract", post(tavily_http_extract))
         .route("/api/tavily/crawl", post(tavily_http_crawl))
         .route("/api/tavily/map", post(tavily_http_map))
+        .route("/api/tavily/research", post(tavily_http_research))
+        .route(
+            "/api/tavily/research/:request_id",
+            get(tavily_http_research_result),
+        )
         .route("/api/tavily/usage", get(tavily_http_usage))
         .route("/api/summary", get(fetch_summary))
         .route("/api/public/metrics", get(get_public_metrics))
@@ -278,4 +283,3 @@ async fn shutdown_signal() {
 
 const BODY_LIMIT: usize = 16 * 1024 * 1024; // 16 MiB 默认限制
 const DEFAULT_LOG_LIMIT: usize = 200;
-

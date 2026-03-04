@@ -11,7 +11,7 @@ mod tests {
     use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
     use std::collections::HashMap;
     use std::path::PathBuf;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
+    use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
     use tavily_hikari::DEFAULT_UPSTREAM;
     use tokio::net::TcpListener;
 
@@ -130,6 +130,10 @@ mod tests {
             "upstream {endpoint} api_key must not be Hikari token"
         );
 
+        assert_upstream_bearer_auth(headers, expected_api_key, endpoint);
+    }
+
+    fn assert_upstream_bearer_auth(headers: &HeaderMap, expected_api_key: &str, endpoint: &str) {
         let authorization = headers
             .get(axum::http::header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
@@ -265,6 +269,171 @@ mod tests {
         addr
     }
 
+    async fn spawn_http_research_mock_asserting_api_key(expected_api_key: String) -> SocketAddr {
+        let app = Router::new().route(
+            "/research",
+            post({
+                move |headers: HeaderMap, Json(body): Json<Value>| {
+                    let expected_api_key = expected_api_key.clone();
+                    async move {
+                        assert_upstream_json_auth(&headers, &body, &expected_api_key, "/research");
+                        (
+                            StatusCode::OK,
+                            Json(serde_json::json!({
+                                "request_id": "mock-research-request",
+                                "status": "pending",
+                            })),
+                        )
+                    }
+                }
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+        addr
+    }
+
+    async fn spawn_http_research_result_mock_asserting_bearer(
+        expected_api_key: String,
+        expected_request_id: String,
+    ) -> SocketAddr {
+        let app = Router::new().route(
+            "/research/:request_id",
+            get({
+                move |headers: HeaderMap, Path(request_id): Path<String>| {
+                    let expected_api_key = expected_api_key.clone();
+                    let expected_request_id = expected_request_id.clone();
+                    async move {
+                        assert_eq!(
+                            request_id, expected_request_id,
+                            "upstream research result path should contain the request id"
+                        );
+                        assert_upstream_bearer_auth(&headers, &expected_api_key, "/research/:request_id");
+                        (
+                            StatusCode::OK,
+                            Json(serde_json::json!({
+                                "request_id": request_id,
+                                "status": "pending",
+                            })),
+                        )
+                    }
+                }
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+        addr
+    }
+
+    async fn spawn_http_research_mock_requiring_same_key_for_result() -> SocketAddr {
+        let request_key_map: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
+        let app = Router::new()
+            .route(
+                "/research",
+                post({
+                    let request_key_map = request_key_map.clone();
+                    move |headers: HeaderMap, Json(body): Json<Value>| {
+                        let request_key_map = request_key_map.clone();
+                        async move {
+                            let api_key = headers
+                                .get(axum::http::header::AUTHORIZATION)
+                                .and_then(|v| v.to_str().ok())
+                                .and_then(|v| v.strip_prefix("Bearer "))
+                                .unwrap_or("")
+                                .to_string();
+                            assert!(
+                                !api_key.is_empty(),
+                                "upstream Authorization for /research should include bearer key"
+                            );
+                            let request_id = body
+                                .get("input")
+                                .and_then(|v| v.as_str())
+                                .map(|v| format!("req-{v}"))
+                                .unwrap_or_else(|| "req-same-key".to_string());
+                            {
+                                let mut guard = request_key_map
+                                    .lock()
+                                    .expect("request key map lock should not be poisoned");
+                                guard.insert(request_id.clone(), api_key);
+                            }
+                            (
+                                StatusCode::OK,
+                                Json(serde_json::json!({
+                                    "request_id": request_id,
+                                    "status": "pending",
+                                })),
+                            )
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/research/:request_id",
+                get({
+                    let request_key_map = request_key_map.clone();
+                    move |headers: HeaderMap, Path(request_id): Path<String>| {
+                        let request_key_map = request_key_map.clone();
+                        async move {
+                            let api_key = headers
+                                .get(axum::http::header::AUTHORIZATION)
+                                .and_then(|v| v.to_str().ok())
+                                .and_then(|v| v.strip_prefix("Bearer "))
+                                .unwrap_or("")
+                                .to_string();
+                            let expected_api_key = {
+                                let guard = request_key_map
+                                    .lock()
+                                    .expect("request key map lock should not be poisoned");
+                                guard.get(&request_id).cloned()
+                            };
+                            match expected_api_key {
+                                Some(expected) if expected == api_key => (
+                                    StatusCode::OK,
+                                    Json(serde_json::json!({
+                                        "request_id": request_id,
+                                        "status": "pending",
+                                    })),
+                                ),
+                                Some(_) => (
+                                    StatusCode::UNAUTHORIZED,
+                                    Json(serde_json::json!({
+                                        "detail": { "error": "Unauthorized: key mismatch." }
+                                    })),
+                                ),
+                                None => (
+                                    StatusCode::NOT_FOUND,
+                                    Json(serde_json::json!({
+                                        "detail": { "error": "Research task not found." }
+                                    })),
+                                ),
+                            }
+                        }
+                    }
+                }),
+            );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+        addr
+    }
+
     async fn spawn_proxy_server(proxy: TavilyProxy, usage_base: String) -> SocketAddr {
         spawn_proxy_server_with_dev(proxy, usage_base, false).await
     }
@@ -292,6 +461,11 @@ mod tests {
             .route("/api/tavily/extract", post(tavily_http_extract))
             .route("/api/tavily/crawl", post(tavily_http_crawl))
             .route("/api/tavily/map", post(tavily_http_map))
+            .route("/api/tavily/research", post(tavily_http_research))
+            .route(
+                "/api/tavily/research/:request_id",
+                get(tavily_http_research_result),
+            )
             .route("/api/tavily/usage", get(tavily_http_usage))
             .with_state(state);
 
@@ -2080,6 +2254,464 @@ mod tests {
         assert!(resp.status().is_success());
         let body: serde_json::Value = resp.json().await.expect("parse json body");
         assert_eq!(body.get("status").and_then(|v| v.as_i64()), Some(200));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn tavily_http_research_replaces_body_api_key_with_tavily_key() {
+        let db_path = temp_db_path("http-research-replace-key");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let expected_api_key = "tvly-http-research-key";
+        let proxy = TavilyProxy::with_endpoint(
+            vec![expected_api_key.to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let access_token = proxy
+            .create_access_token(Some("http-research"))
+            .await
+            .expect("create token");
+
+        let upstream_addr =
+            spawn_http_research_mock_asserting_api_key(expected_api_key.to_string()).await;
+        let usage_base = format!("http://{}", upstream_addr);
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), usage_base).await;
+
+        let client = Client::new();
+        let url = format!("http://{}/api/tavily/research", proxy_addr);
+        let resp = client
+            .post(url)
+            .json(&serde_json::json!({
+                "api_key": access_token.token,
+                "input": "health check",
+                "model": "mini"
+            }))
+            .send()
+            .await
+            .expect("request to proxy succeeds");
+
+        assert!(resp.status().is_success());
+        let body: serde_json::Value = resp.json().await.expect("parse json body");
+        assert_eq!(
+            body.get("request_id").and_then(|v| v.as_str()),
+            Some("mock-research-request")
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn tavily_http_research_result_uses_upstream_bearer_and_request_id_path() {
+        let db_path = temp_db_path("http-research-result");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let expected_api_key = "tvly-http-research-result-key";
+        let proxy = TavilyProxy::with_endpoint(
+            vec![expected_api_key.to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let access_token = proxy
+            .create_access_token(Some("http-research-result"))
+            .await
+            .expect("create token");
+
+        let request_id = "req-test-123";
+        let upstream_addr = spawn_http_research_result_mock_asserting_bearer(
+            expected_api_key.to_string(),
+            request_id.to_string(),
+        )
+        .await;
+        let usage_base = format!("http://{}", upstream_addr);
+
+        let proxy_addr = spawn_proxy_server_with_dev(proxy.clone(), usage_base, true).await;
+
+        let client = Client::new();
+        let url = format!("http://{}/api/tavily/research/{}", proxy_addr, request_id);
+        let resp = client
+            .get(url)
+            .header("Authorization", format!("Bearer {}", access_token.token))
+            .send()
+            .await
+            .expect("request to proxy succeeds");
+
+        assert!(resp.status().is_success());
+        let body: serde_json::Value = resp.json().await.expect("parse json body");
+        assert_eq!(body.get("status").and_then(|v| v.as_str()), Some("pending"));
+        assert_eq!(
+            body.get("request_id").and_then(|v| v.as_str()),
+            Some(request_id)
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn tavily_http_research_result_encodes_request_id_path_segment_for_upstream() {
+        let db_path = temp_db_path("http-research-result-encoded-path");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let expected_api_key = "tvly-http-research-result-encoded-key";
+        let proxy = TavilyProxy::with_endpoint(
+            vec![expected_api_key.to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let access_token = proxy
+            .create_access_token(Some("http-research-result-encoded-path"))
+            .await
+            .expect("create token");
+
+        let request_id = "req/segment";
+        let upstream_addr = spawn_http_research_result_mock_asserting_bearer(
+            expected_api_key.to_string(),
+            request_id.to_string(),
+        )
+        .await;
+        let usage_base = format!("http://{}", upstream_addr);
+        let proxy_addr = spawn_proxy_server_with_dev(proxy.clone(), usage_base, true).await;
+
+        let client = Client::new();
+        let encoded_request_id = urlencoding::encode(request_id);
+        let url = format!(
+            "http://{}/api/tavily/research/{}",
+            proxy_addr, encoded_request_id
+        );
+        let resp = client
+            .get(url)
+            .header("Authorization", format!("Bearer {}", access_token.token))
+            .send()
+            .await
+            .expect("request to proxy succeeds");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: Value = resp.json().await.expect("parse json body");
+        assert_eq!(
+            body.get("request_id").and_then(|v| v.as_str()),
+            Some(request_id)
+        );
+        assert_eq!(body.get("status").and_then(|v| v.as_str()), Some("pending"));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn tavily_http_research_result_reuses_key_selected_by_research_create() {
+        let db_path = temp_db_path("http-research-result-key-affinity");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let proxy = TavilyProxy::with_endpoint(
+            vec![
+                "tvly-http-research-key-a".to_string(),
+                "tvly-http-research-key-b".to_string(),
+            ],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let access_token = proxy
+            .create_access_token(Some("http-research-create"))
+            .await
+            .expect("create token");
+
+        let upstream_addr = spawn_http_research_mock_requiring_same_key_for_result().await;
+        let usage_base = format!("http://{}", upstream_addr);
+        let proxy_addr = spawn_proxy_server_with_dev(proxy.clone(), usage_base, true).await;
+
+        // Ensure the selected key's last_used_at differs from untouched keys (second-level granularity).
+        tokio::time::sleep(Duration::from_millis(1_100)).await;
+
+        let client = Client::new();
+        let create_resp = client
+            .post(format!("http://{}/api/tavily/research", proxy_addr))
+            .json(&serde_json::json!({
+                "api_key": access_token.token,
+                "input": "same-key-check",
+                "model": "mini"
+            }))
+            .send()
+            .await
+            .expect("request to proxy succeeds");
+        assert!(create_resp.status().is_success());
+        let create_body: Value = create_resp.json().await.expect("parse research create response");
+        let request_id = create_body
+            .get("request_id")
+            .and_then(|v| v.as_str())
+            .expect("research create should return request_id");
+
+        let result_resp = client
+            .get(format!(
+                "http://{}/api/tavily/research/{}",
+                proxy_addr, request_id
+            ))
+            .header("Authorization", format!("Bearer {}", access_token.token))
+            .send()
+            .await
+            .expect("request to proxy succeeds");
+        assert_eq!(
+            result_resp.status(),
+            StatusCode::OK,
+            "result query should reuse the same upstream key selected by create step"
+        );
+        let result_body: Value = result_resp.json().await.expect("parse research result response");
+        assert_eq!(
+            result_body.get("request_id").and_then(|v| v.as_str()),
+            Some(request_id)
+        );
+        assert_eq!(
+            result_body.get("status").and_then(|v| v.as_str()),
+            Some("pending")
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn tavily_http_research_result_rejects_request_id_from_other_token() {
+        let db_path = temp_db_path("http-research-result-owner-check");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let proxy = TavilyProxy::with_endpoint(
+            vec![
+                "tvly-http-research-key-owner-a".to_string(),
+                "tvly-http-research-key-owner-b".to_string(),
+            ],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let create_token = proxy
+            .create_access_token(Some("http-research-owner-create"))
+            .await
+            .expect("create token");
+        let other_token = proxy
+            .create_access_token(Some("http-research-owner-other"))
+            .await
+            .expect("create token");
+
+        let upstream_addr = spawn_http_research_mock_requiring_same_key_for_result().await;
+        let usage_base = format!("http://{}", upstream_addr);
+        let proxy_addr = spawn_proxy_server(proxy.clone(), usage_base).await;
+
+        let client = Client::new();
+        let create_resp = client
+            .post(format!("http://{}/api/tavily/research", proxy_addr))
+            .json(&serde_json::json!({
+                "api_key": create_token.token,
+                "input": "owner-check",
+                "model": "mini"
+            }))
+            .send()
+            .await
+            .expect("request to proxy succeeds");
+        assert!(create_resp.status().is_success());
+        let create_body: Value = create_resp.json().await.expect("parse research create response");
+        let request_id = create_body
+            .get("request_id")
+            .and_then(|v| v.as_str())
+            .expect("research create should return request_id");
+        let quota_before = proxy
+            .token_quota_snapshot(&other_token.id)
+            .await
+            .expect("read quota snapshot before owner-mismatch query")
+            .expect("quota snapshot should exist before owner-mismatch query");
+
+        let result_resp = client
+            .get(format!(
+                "http://{}/api/tavily/research/{}",
+                proxy_addr, request_id
+            ))
+            .header("Authorization", format!("Bearer {}", other_token.token))
+            .send()
+            .await
+            .expect("request to proxy succeeds");
+        assert_eq!(result_resp.status(), StatusCode::NOT_FOUND);
+        let body: Value = result_resp.json().await.expect("parse research result response");
+        assert_eq!(
+            body.get("error").and_then(|v| v.as_str()),
+            Some("research_request_not_found")
+        );
+        let quota_after = proxy
+            .token_quota_snapshot(&other_token.id)
+            .await
+            .expect("read quota snapshot after owner-mismatch query")
+            .expect("quota snapshot should exist after owner-mismatch query");
+        assert_eq!(
+            quota_after.hourly_used, quota_before.hourly_used,
+            "owner-mismatch query should not consume hourly business quota"
+        );
+        assert_eq!(
+            quota_after.daily_used, quota_before.daily_used,
+            "owner-mismatch query should not consume daily business quota"
+        );
+        assert_eq!(
+            quota_after.monthly_used, quota_before.monthly_used,
+            "owner-mismatch query should not consume monthly business quota"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn tavily_http_research_result_returns_500_when_owner_lookup_fails() {
+        let db_path = temp_db_path("http-research-result-owner-lookup-fails");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-http-research-owner-lookup-key".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let access_token = proxy
+            .create_access_token(Some("http-research-owner-lookup"))
+            .await
+            .expect("create token");
+
+        let options = SqliteConnectOptions::new()
+            .filename(&db_str)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(5)
+            .connect_with(options)
+            .await
+            .expect("connect to sqlite");
+
+        sqlx::query("DROP TABLE research_requests")
+            .execute(&pool)
+            .await
+            .expect("drop research_requests table");
+
+        let usage_base = "http://127.0.0.1:58088".to_string();
+        let proxy_addr = spawn_proxy_server(proxy.clone(), usage_base).await;
+
+        let client = Client::new();
+        let result_resp = client
+            .get(format!(
+                "http://{}/api/tavily/research/{}",
+                proxy_addr, "req-owner-lookup-fail"
+            ))
+            .header("Authorization", format!("Bearer {}", access_token.token))
+            .send()
+            .await
+            .expect("request to proxy succeeds");
+        assert_eq!(result_resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let row = sqlx::query(
+            r#"
+            SELECT http_status, counts_business_quota, result_status
+            FROM auth_token_logs
+            WHERE token_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(&access_token.id)
+        .fetch_one(&pool)
+        .await
+        .expect("token log row exists");
+        let http_status: Option<i64> = row.try_get("http_status").unwrap();
+        let counts_business_quota: i64 = row.try_get("counts_business_quota").unwrap();
+        let result_status: String = row.try_get("result_status").unwrap();
+
+        assert_eq!(http_status, Some(StatusCode::INTERNAL_SERVER_ERROR.as_u16() as i64));
+        assert_eq!(counts_business_quota, 0);
+        assert_eq!(result_status, "error");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn tavily_http_research_result_survives_proxy_restart_with_persisted_affinity() {
+        let db_path = temp_db_path("http-research-result-restart-affinity");
+        let db_str = db_path.to_string_lossy().to_string();
+        let keys = vec![
+            "tvly-http-research-key-restart-a".to_string(),
+            "tvly-http-research-key-restart-b".to_string(),
+        ];
+
+        let proxy = TavilyProxy::with_endpoint(keys.clone(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        let access_token = proxy
+            .create_access_token(Some("http-research-restart-owner"))
+            .await
+            .expect("create token");
+
+        let upstream_addr = spawn_http_research_mock_requiring_same_key_for_result().await;
+        let usage_base = format!("http://{}", upstream_addr);
+        let proxy_addr = spawn_proxy_server_with_dev(proxy.clone(), usage_base.clone(), true).await;
+
+        let client = Client::new();
+        let create_resp = client
+            .post(format!("http://{}/api/tavily/research", proxy_addr))
+            .json(&serde_json::json!({
+                "api_key": access_token.token,
+                "input": "restart-check",
+                "model": "mini"
+            }))
+            .send()
+            .await
+            .expect("request to proxy succeeds");
+        assert!(create_resp.status().is_success());
+        let create_body: Value = create_resp.json().await.expect("parse research create response");
+        let request_id = create_body
+            .get("request_id")
+            .and_then(|v| v.as_str())
+            .expect("research create should return request_id")
+            .to_string();
+
+        // Recreate proxy from the same SQLite path to simulate a restart.
+        let restarted_proxy = TavilyProxy::with_endpoint(keys, DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("restarted proxy created");
+        let restarted_addr = spawn_proxy_server_with_dev(restarted_proxy, usage_base, true).await;
+
+        let result_resp = client
+            .get(format!(
+                "http://{}/api/tavily/research/{}",
+                restarted_addr, request_id
+            ))
+            .header("Authorization", format!("Bearer {}", access_token.token))
+            .send()
+            .await
+            .expect("request to restarted proxy succeeds");
+        assert_eq!(
+            result_resp.status(),
+            StatusCode::OK,
+            "restarted proxy should load persisted research affinity"
+        );
+        let result_body: Value = result_resp.json().await.expect("parse research result response");
+        assert_eq!(
+            result_body.get("request_id").and_then(|v| v.as_str()),
+            Some(request_id.as_str())
+        );
+        assert_eq!(
+            result_body.get("status").and_then(|v| v.as_str()),
+            Some("pending")
+        );
 
         let _ = std::fs::remove_file(db_path);
     }

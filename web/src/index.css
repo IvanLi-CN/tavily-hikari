@@ -4170,6 +4170,173 @@ tbody .log-details-row:hover {
   min-width: 0;
 }
 
+.user-console-probe-box {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.user-console-probe-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.user-console-probe-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-width: 1px;
+}
+
+.user-console-probe-btn-icon {
+  font-size: 1rem;
+}
+
+.user-console-probe-btn-icon.is-spinning {
+  animation: user-console-probe-spin 1s linear infinite;
+}
+
+@keyframes user-console-probe-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.user-console-probe-btn-idle {
+  background: hsl(var(--card) / 0.9);
+  border-color: hsl(var(--border) / 0.82);
+  color: hsl(var(--foreground));
+}
+
+.user-console-probe-btn-running {
+  background: rgba(37, 99, 235, 0.12);
+  border-color: rgba(37, 99, 235, 0.38);
+  color: #1d4ed8;
+}
+
+.user-console-probe-btn-success {
+  background: rgba(5, 150, 105, 0.14);
+  border-color: rgba(5, 150, 105, 0.38);
+  color: #047857;
+}
+
+.user-console-probe-btn-partial {
+  background: rgba(245, 158, 11, 0.18);
+  border-color: rgba(217, 119, 6, 0.4);
+  color: #b45309;
+}
+
+.user-console-probe-btn-failed {
+  background: rgba(220, 38, 38, 0.14);
+  border-color: rgba(220, 38, 38, 0.4);
+  color: #b91c1c;
+}
+
+.user-console-probe-bubble {
+  border: 1px solid hsl(var(--border) / 0.82);
+  border-radius: 12px;
+  background: hsl(var(--card) / 0.94);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.user-console-probe-bubble-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.user-console-probe-bubble-head strong {
+  font-size: 0.92rem;
+}
+
+.user-console-probe-bubble-head span {
+  font-size: 0.82rem;
+  color: hsl(var(--muted-foreground));
+}
+
+.user-console-probe-step-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.user-console-probe-step {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 1fr) auto minmax(120px, 1fr);
+  gap: 8px;
+  align-items: center;
+  font-size: 0.84rem;
+}
+
+.user-console-probe-step-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: hsl(var(--muted));
+}
+
+.user-console-probe-step-dot-success {
+  background: #10b981;
+}
+
+.user-console-probe-step-dot-failed {
+  background: #ef4444;
+}
+
+.user-console-probe-step-label {
+  color: hsl(var(--foreground));
+}
+
+.user-console-probe-step-status {
+  font-weight: 600;
+}
+
+.user-console-probe-step-status-pending {
+  color: hsl(var(--muted-foreground));
+}
+
+.user-console-probe-step-status-success {
+  color: #059669;
+}
+
+.user-console-probe-step-status-failed {
+  color: #dc2626;
+}
+
+.user-console-probe-step-detail {
+  color: hsl(var(--muted-foreground));
+  text-align: right;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .user-console-probe-step {
+    grid-template-columns: auto minmax(120px, 1fr) auto;
+  }
+
+  .user-console-probe-step-detail {
+    grid-column: 2 / 4;
+    text-align: left;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+  }
+}
+
 .user-console-md-down {
   display: none;
 }

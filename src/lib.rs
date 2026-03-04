@@ -101,6 +101,9 @@ pub const TOKEN_HOURLY_REQUEST_LIMIT: i64 = 500;
 // Soft affinity window for mapping access tokens to API keys (in seconds).
 // Within this window, a token will try to reuse the same API key if it is still active.
 const TOKEN_AFFINITY_TTL_SECS: i64 = 15 * 60;
+// Keep a request_id -> key affinity for Tavily research result polling.
+// This avoids switching keys between POST /research and GET /research/{request_id}.
+const RESEARCH_REQUEST_AFFINITY_TTL_SECS: i64 = 24 * 60 * 60;
 // Hard cap on the number of token→key affinity entries kept in memory to prevent
 // unbounded growth under churny traffic (many distinct tokens).
 const TOKEN_AFFINITY_MAX_ENTRIES: usize = 10_000;
@@ -453,6 +456,8 @@ pub struct TavilyProxy {
     token_quota: TokenQuota,
     token_request_limit: TokenRequestLimit,
     affinity: Arc<Mutex<TokenAffinityState>>,
+    research_request_affinity: Arc<Mutex<TokenAffinityState>>,
+    research_request_owner_affinity: Arc<Mutex<TokenAffinityState>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -517,6 +522,12 @@ impl TavilyProxy {
             token_quota,
             token_request_limit,
             affinity: Arc::new(Mutex::new(TokenAffinityState::new(TOKEN_AFFINITY_TTL_SECS))),
+            research_request_affinity: Arc::new(Mutex::new(TokenAffinityState::new(
+                RESEARCH_REQUEST_AFFINITY_TTL_SECS,
+            ))),
+            research_request_owner_affinity: Arc::new(Mutex::new(TokenAffinityState::new(
+                RESEARCH_REQUEST_AFFINITY_TTL_SECS,
+            ))),
         })
     }
 
@@ -553,6 +564,122 @@ impl TavilyProxy {
             state.record_mapping(token_id, &lease.id, now);
         }
         Ok(lease)
+    }
+
+    async fn acquire_key_for_research_request(
+        &self,
+        auth_token_id: Option<&str>,
+        research_request_id: Option<&str>,
+    ) -> Result<ApiKeyLease, ProxyError> {
+        let now = Utc::now().timestamp();
+
+        if let Some(request_id) = research_request_id {
+            let mut candidate_key_id = {
+                let mut state = self.research_request_affinity.lock().await;
+                state.get_candidate(request_id, now)
+            };
+
+            if candidate_key_id.is_none()
+                && let Some((key_id, owner_token_id)) = self
+                    .key_store
+                    .get_research_request_affinity(request_id, now)
+                    .await?
+            {
+                self.populate_research_request_affinity_caches(
+                    request_id,
+                    &key_id,
+                    &owner_token_id,
+                    now,
+                )
+                .await;
+                candidate_key_id = Some(key_id);
+            }
+
+            if let Some(key_id) = candidate_key_id {
+                if let Some(lease) = self.key_store.try_acquire_specific_key(&key_id).await? {
+                    if let Some(token_id) = auth_token_id {
+                        let mut state = self.affinity.lock().await;
+                        state.record_mapping(token_id, &lease.id, now);
+                    }
+                    return Ok(lease);
+                }
+                let mut state = self.research_request_affinity.lock().await;
+                state.drop_mapping(request_id);
+            }
+        }
+
+        self.acquire_key_for(auth_token_id).await
+    }
+
+    async fn populate_research_request_affinity_caches(
+        &self,
+        request_id: &str,
+        key_id: &str,
+        token_id: &str,
+        now: i64,
+    ) {
+        {
+            let mut state = self.research_request_affinity.lock().await;
+            state.record_mapping(request_id, key_id, now);
+        }
+        let mut owner_state = self.research_request_owner_affinity.lock().await;
+        owner_state.record_mapping(request_id, token_id, now);
+    }
+
+    async fn record_research_request_affinity(
+        &self,
+        request_id: &str,
+        key_id: &str,
+        token_id: &str,
+    ) -> Result<(), ProxyError> {
+        let now = Utc::now().timestamp();
+        self.populate_research_request_affinity_caches(request_id, key_id, token_id, now)
+            .await;
+        self.key_store
+            .save_research_request_affinity(
+                request_id,
+                key_id,
+                token_id,
+                now + RESEARCH_REQUEST_AFFINITY_TTL_SECS,
+            )
+            .await
+    }
+
+    pub async fn is_research_request_owned_by(
+        &self,
+        request_id: &str,
+        token_id: Option<&str>,
+    ) -> Result<bool, ProxyError> {
+        let Some(token_id) = token_id else {
+            return Ok(false);
+        };
+
+        let now = Utc::now().timestamp();
+        if let Some(owner) = {
+            let mut state = self.research_request_owner_affinity.lock().await;
+            state.get_candidate(request_id, now)
+        } {
+            return Ok(owner == token_id);
+        }
+
+        match self
+            .key_store
+            .get_research_request_affinity(request_id, now)
+            .await
+        {
+            Ok(Some((key_id, owner_token_id))) => {
+                self.populate_research_request_affinity_caches(
+                    request_id,
+                    &key_id,
+                    &owner_token_id,
+                    now,
+                )
+                .await;
+                Ok(owner_token_id == token_id)
+            }
+            Ok(None) => Ok(false),
+            Err(err) => Err(err),
+        }
     }
 
     /// 将请求透传到 Tavily upstream 并记录日志。
@@ -741,6 +868,132 @@ impl TavilyProxy {
 
                 let analysis = analyze_http_attempt(status, &body_bytes);
                 let redacted_response_body = redact_api_key_bytes(&body_bytes);
+                if status.is_success()
+                    && upstream_path == "/research"
+                    && let Some(request_id) = extract_research_request_id(&body_bytes)
+                    && let Some(token_id) = auth_token_id
+                {
+                    self.record_research_request_affinity(&request_id, &lease.id, token_id)
+                        .await?;
+                }
+
+                self.key_store
+                    .log_attempt(AttemptLog {
+                        key_id: &lease.id,
+                        auth_token_id,
+                        method,
+                        path: display_path,
+                        query: None,
+                        status: Some(status),
+                        tavily_status_code: analysis.tavily_status_code,
+                        error: None,
+                        request_body: &redacted_request_body,
+                        response_body: &redacted_response_body,
+                        outcome: analysis.status,
+                        forwarded_headers: &sanitized_headers.forwarded,
+                        dropped_headers: &sanitized_headers.dropped,
+                    })
+                    .await?;
+
+                if status.as_u16() == 432 || analysis.mark_exhausted {
+                    let _changed = self.key_store.mark_quota_exhausted(&lease.secret).await?;
+                } else {
+                    self.key_store.restore_active_status(&lease.secret).await?;
+                }
+
+                Ok((
+                    ProxyResponse {
+                        status,
+                        headers,
+                        body: body_bytes,
+                    },
+                    analysis,
+                ))
+            }
+            Err(err) => {
+                log_error(&lease.secret, method, display_path, None, &err);
+                let redacted_empty: Vec<u8> = Vec::new();
+                self.key_store
+                    .log_attempt(AttemptLog {
+                        key_id: &lease.id,
+                        auth_token_id,
+                        method,
+                        path: display_path,
+                        query: None,
+                        status: None,
+                        tavily_status_code: None,
+                        error: Some(&err.to_string()),
+                        request_body: &redacted_request_body,
+                        response_body: &redacted_empty,
+                        outcome: OUTCOME_ERROR,
+                        forwarded_headers: &sanitized_headers.forwarded,
+                        dropped_headers: &sanitized_headers.dropped,
+                    })
+                    .await?;
+                Err(ProxyError::Http(err))
+            }
+        }
+    }
+
+    /// Generic helper to proxy a Tavily HTTP endpoint with no request body
+    /// (for example `GET /research/{request_id}`).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn proxy_http_get_endpoint(
+        &self,
+        usage_base: &str,
+        upstream_path: &str,
+        auth_token_id: Option<&str>,
+        method: &Method,
+        display_path: &str,
+        original_headers: &HeaderMap,
+        inject_upstream_bearer_auth: bool,
+    ) -> Result<(ProxyResponse, AttemptAnalysis), ProxyError> {
+        let research_request_id = extract_research_request_id_from_path(upstream_path);
+        let lease = self
+            .acquire_key_for_research_request(auth_token_id, research_request_id.as_deref())
+            .await?;
+
+        let base = Url::parse(usage_base).map_err(|source| ProxyError::InvalidEndpoint {
+            endpoint: usage_base.to_owned(),
+            source,
+        })?;
+        let origin = origin_from_url(&base);
+
+        let mut url = base.clone();
+        url.set_path(upstream_path);
+
+        let sanitized_headers = sanitize_headers_inner(original_headers, &base, &origin);
+
+        let redacted_request_body: Vec<u8> = Vec::new();
+        let mut builder = self.client.request(method.clone(), url.clone());
+        for (name, value) in sanitized_headers.headers.iter() {
+            // Host/Content-Length are recomputed by reqwest.
+            if name == HOST || name == CONTENT_LENGTH {
+                continue;
+            }
+            builder = builder.header(name, value);
+        }
+        if inject_upstream_bearer_auth {
+            builder = builder.header("Authorization", format!("Bearer {}", lease.secret));
+        }
+
+        let response = builder.send().await;
+
+        match response {
+            Ok(response) => {
+                let status = response.status();
+                let headers = response.headers().clone();
+                let body_bytes = response.bytes().await.map_err(ProxyError::Http)?;
+
+                let analysis = analyze_http_attempt(status, &body_bytes);
+                let redacted_response_body = redact_api_key_bytes(&body_bytes);
+                if status.is_success()
+                    && let Some(request_id) = research_request_id.as_deref()
+                    && let Some(token_id) = auth_token_id
+                {
+                    self.record_research_request_affinity(request_id, &lease.id, token_id)
+                        .await?;
+                }
 
                 self.key_store
                     .log_attempt(AttemptLog {
@@ -2212,6 +2465,30 @@ impl KeyStore {
         .await?;
 
         self.upgrade_auth_tokens_schema().await?;
+
+        // Persist research request ownership/key affinity so result polling survives
+        // process restarts and multi-instance routing.
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS research_requests (
+                request_id TEXT PRIMARY KEY,
+                key_id TEXT NOT NULL,
+                token_id TEXT NOT NULL,
+                expires_at INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_research_requests_expires_at
+               ON research_requests(expires_at)"#,
+        )
+        .execute(&self.pool)
+        .await?;
 
         // User identity model (separated from admin auth):
         // - users: local user records
@@ -4457,6 +4734,84 @@ impl KeyStore {
         }
 
         Ok(None)
+    }
+
+    async fn save_research_request_affinity(
+        &self,
+        request_id: &str,
+        key_id: &str,
+        token_id: &str,
+        expires_at: i64,
+    ) -> Result<(), ProxyError> {
+        let now = Utc::now().timestamp();
+        sqlx::query(
+            r#"
+            INSERT INTO research_requests (
+                request_id,
+                key_id,
+                token_id,
+                expires_at,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(request_id) DO UPDATE SET
+                key_id = excluded.key_id,
+                token_id = excluded.token_id,
+                expires_at = excluded.expires_at,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(request_id)
+        .bind(key_id)
+        .bind(token_id)
+        .bind(expires_at)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+
+        // Opportunistic cleanup to keep this small over time.
+        sqlx::query("DELETE FROM research_requests WHERE expires_at <= ?")
+            .bind(now)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    async fn get_research_request_affinity(
+        &self,
+        request_id: &str,
+        now: i64,
+    ) -> Result<Option<(String, String)>, ProxyError> {
+        let row = sqlx::query_as::<_, (String, String)>(
+            r#"
+            SELECT key_id, token_id
+            FROM research_requests
+            WHERE request_id = ? AND expires_at > ?
+            LIMIT 1
+            "#,
+        )
+        .bind(request_id)
+        .bind(now)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if row.is_none() {
+            sqlx::query(
+                r#"
+                DELETE FROM research_requests
+                WHERE request_id = ? AND expires_at <= ?
+                "#,
+            )
+            .bind(request_id)
+            .bind(now)
+            .execute(&self.pool)
+            .await?;
+        }
+
+        Ok(row)
     }
 
     // ----- Access token helpers -----
@@ -7705,12 +8060,24 @@ fn analyze_attempt(status: StatusCode, body: &[u8]) -> AttemptAnalysis {
 pub fn analyze_http_attempt(status: StatusCode, body: &[u8]) -> AttemptAnalysis {
     let http_code = status.as_u16() as i64;
 
-    let structured = serde_json::from_slice::<Value>(body)
-        .ok()
-        .and_then(|v| extract_status_code(&v));
+    let parsed = serde_json::from_slice::<Value>(body).ok();
+    let structured = parsed.as_ref().and_then(extract_status_code);
+    let structured_outcome = parsed
+        .as_ref()
+        .and_then(extract_status_text)
+        .and_then(classify_status_text);
 
     let effective = structured.unwrap_or(http_code);
-    let mut outcome = classify_status_code(effective);
+    let mut outcome = if let Some(code) = structured {
+        let code_outcome = classify_status_code(code);
+        if matches!(code_outcome, MessageOutcome::Success) {
+            structured_outcome.unwrap_or(code_outcome)
+        } else {
+            code_outcome
+        }
+    } else {
+        structured_outcome.unwrap_or_else(|| classify_status_code(effective))
+    };
 
     // If HTTP status itself is an error, never treat the outcome as success.
     if !status.is_success() && matches!(outcome, MessageOutcome::Success) {
@@ -7929,6 +8296,74 @@ fn extract_status_code(value: &Value) -> Option<i64> {
         && let Some(code) = detail.get("status").and_then(|v| v.as_i64())
     {
         return Some(code);
+    }
+
+    None
+}
+
+fn extract_status_text(value: &Value) -> Option<&str> {
+    if let Some(status) = value.get("status").and_then(|v| v.as_str()) {
+        return Some(status);
+    }
+
+    if let Some(detail) = value.get("detail")
+        && let Some(status) = detail.get("status").and_then(|v| v.as_str())
+    {
+        return Some(status);
+    }
+
+    None
+}
+
+fn extract_research_request_id_from_path(path: &str) -> Option<String> {
+    let encoded_request_id = path.strip_prefix("/research/")?;
+    if encoded_request_id.is_empty() {
+        return None;
+    }
+    urlencoding::decode(encoded_request_id)
+        .map(|decoded| decoded.into_owned())
+        .ok()
+}
+
+fn extract_research_request_id(body: &[u8]) -> Option<String> {
+    let parsed = serde_json::from_slice::<Value>(body).ok()?;
+    let request_id = parsed
+        .get("request_id")
+        .and_then(|v| v.as_str())
+        .or_else(|| parsed.get("requestId").and_then(|v| v.as_str()))?;
+    let trimmed = request_id.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_owned())
+}
+
+fn classify_status_text(status: &str) -> Option<MessageOutcome> {
+    let normalized = status.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    if matches!(
+        normalized.as_str(),
+        "failed" | "failure" | "error" | "errored" | "cancelled" | "canceled"
+    ) {
+        return Some(MessageOutcome::Error);
+    }
+
+    if matches!(
+        normalized.as_str(),
+        "pending"
+            | "processing"
+            | "running"
+            | "in_progress"
+            | "queued"
+            | "completed"
+            | "success"
+            | "succeeded"
+            | "done"
+    ) {
+        return Some(MessageOutcome::Success);
     }
 
     None
@@ -8239,6 +8674,55 @@ mod tests {
         assert_eq!(analysis.status, OUTCOME_ERROR);
         assert!(!analysis.mark_exhausted);
         assert_eq!(analysis.tavily_status_code, Some(500));
+    }
+
+    #[test]
+    fn analyze_http_attempt_treats_failed_status_string_as_error() {
+        let body = br#"{"status":"failed"}"#;
+        let analysis = analyze_http_attempt(StatusCode::OK, body);
+        assert_eq!(analysis.status, OUTCOME_ERROR);
+        assert!(!analysis.mark_exhausted);
+        assert_eq!(analysis.tavily_status_code, Some(200));
+    }
+
+    #[test]
+    fn analyze_http_attempt_treats_pending_status_string_as_success() {
+        let body = br#"{"status":"pending"}"#;
+        let analysis = analyze_http_attempt(StatusCode::OK, body);
+        assert_eq!(analysis.status, OUTCOME_SUCCESS);
+        assert!(!analysis.mark_exhausted);
+        assert_eq!(analysis.tavily_status_code, Some(200));
+    }
+
+    #[test]
+    fn analyze_http_attempt_prioritizes_structured_status_code_for_quota_exhausted() {
+        let body = br#"{"status":432,"detail":{"status":"failed"}}"#;
+        let analysis = analyze_http_attempt(StatusCode::OK, body);
+        assert_eq!(analysis.status, OUTCOME_QUOTA_EXHAUSTED);
+        assert!(analysis.mark_exhausted);
+        assert_eq!(analysis.tavily_status_code, Some(432));
+    }
+
+    #[test]
+    fn extract_research_request_id_accepts_snake_and_camel_case() {
+        let snake = br#"{"request_id":"req-snake"}"#;
+        let camel = br#"{"requestId":"req-camel"}"#;
+        assert_eq!(
+            extract_research_request_id(snake).as_deref(),
+            Some("req-snake")
+        );
+        assert_eq!(
+            extract_research_request_id(camel).as_deref(),
+            Some("req-camel")
+        );
+    }
+
+    #[test]
+    fn extract_research_request_id_from_path_decodes_segment() {
+        assert_eq!(
+            extract_research_request_id_from_path("/research/req%2Fabc").as_deref(),
+            Some("req/abc")
+        );
     }
 
     #[test]

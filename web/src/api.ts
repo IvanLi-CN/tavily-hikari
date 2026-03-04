@@ -143,6 +143,19 @@ async function requestJson<T>(input: RequestInfo, init?: RequestInit): Promise<T
   return (await response.json()) as T
 }
 
+async function requestJsonWithToken<T>(
+  input: RequestInfo,
+  token: string,
+  init?: RequestInit,
+): Promise<T> {
+  const headers = new Headers(init?.headers ?? {})
+  headers.set('Authorization', `Bearer ${token}`)
+  if (init?.body != null && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json')
+  }
+  return requestJson<T>(input, { ...init, headers })
+}
+
 export interface VersionInfo {
   backend: string
   frontend: string
@@ -321,6 +334,97 @@ export async function fetchUserTokenLogs(id: string, limit = 20, signal?: AbortS
     error_message: it.errorMessage,
     created_at: it.createdAt,
   }))
+}
+
+export interface ProbeMcpResponse {
+  result?: unknown
+  error?: unknown
+  [key: string]: unknown
+}
+
+export async function probeMcpPing(token: string): Promise<ProbeMcpResponse> {
+  return requestJsonWithToken<ProbeMcpResponse>('/mcp', token, {
+    method: 'POST',
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 'probe-ping',
+      method: 'ping',
+      params: {},
+    }),
+  })
+}
+
+export async function probeMcpToolsList(token: string): Promise<ProbeMcpResponse> {
+  return requestJsonWithToken<ProbeMcpResponse>('/mcp', token, {
+    method: 'POST',
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 'probe-tools-list',
+      method: 'tools/list',
+      params: {},
+    }),
+  })
+}
+
+export interface TavilyResearchCreateResponse {
+  request_id?: string
+  requestId?: string
+  status?: string
+  [key: string]: unknown
+}
+
+export interface TavilyResearchResultResponse {
+  request_id?: string
+  requestId?: string
+  status?: string
+  [key: string]: unknown
+}
+
+export function probeApiTavilySearch(token: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+  return requestJsonWithToken('/api/tavily/search', token, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function probeApiTavilyExtract(token: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+  return requestJsonWithToken('/api/tavily/extract', token, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function probeApiTavilyCrawl(token: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+  return requestJsonWithToken('/api/tavily/crawl', token, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function probeApiTavilyMap(token: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+  return requestJsonWithToken('/api/tavily/map', token, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function probeApiTavilyResearch(
+  token: string,
+  payload: Record<string, unknown>,
+): Promise<TavilyResearchCreateResponse> {
+  return requestJsonWithToken('/api/tavily/research', token, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function probeApiTavilyResearchResult(
+  token: string,
+  requestId: string,
+): Promise<TavilyResearchResultResponse> {
+  return requestJsonWithToken(`/api/tavily/research/${encodeURIComponent(requestId)}`, token, {
+    method: 'GET',
+  })
 }
 
 export interface CreateKeyResponse {

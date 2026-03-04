@@ -1,10 +1,17 @@
-import { useLayoutEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useState } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
 import type { Profile, UserDashboard, UserTokenSummary } from './api'
 import UserConsole from './UserConsole'
 
-type Scenario = 'dashboard' | 'tokens' | 'tokens-empty' | 'token-detail'
+type Scenario =
+  | 'dashboard'
+  | 'tokens'
+  | 'tokens-empty'
+  | 'token-detail'
+  | 'token-detail-probe-success'
+  | 'token-detail-probe-partial'
+  | 'token-detail-probe-auth-fail'
 
 interface UserConsoleStoryArgs {
   scenario: Scenario
@@ -119,15 +126,40 @@ function jsonResponse(data: unknown, status = 200): Response {
   })
 }
 
+type ProbeMockMode = 'none' | 'success' | 'partial' | 'auth-fail'
+
+function probeModeFromScenario(scenario: Scenario): ProbeMockMode {
+  if (scenario === 'token-detail-probe-success') return 'success'
+  if (scenario === 'token-detail-probe-partial') return 'partial'
+  if (scenario === 'token-detail-probe-auth-fail') return 'auth-fail'
+  return 'none'
+}
+
+function autoProbeTargetFromScenario(scenario: Scenario): 'mcp' | 'api' | null {
+  if (scenario === 'token-detail-probe-success') return 'api'
+  if (scenario === 'token-detail-probe-partial') return 'api'
+  if (scenario === 'token-detail-probe-auth-fail') return 'mcp'
+  return null
+}
+
 function scenarioHash(scenario: Scenario): string {
   if (scenario === 'tokens') return '#/tokens'
   if (scenario === 'tokens-empty') return '#/tokens'
-  if (scenario === 'token-detail') return '#/tokens/a1b2'
+  if (
+    scenario === 'token-detail'
+    || scenario === 'token-detail-probe-success'
+    || scenario === 'token-detail-probe-partial'
+    || scenario === 'token-detail-probe-auth-fail'
+  ) {
+    return '#/tokens/a1b2'
+  }
   return '#/dashboard'
 }
 
 function installUserConsoleFetchMock(scenario: Scenario): () => void {
   const originalFetch = window.fetch.bind(window)
+  const probeMode = probeModeFromScenario(scenario)
+  const researchRequestId = 'rq-story-001'
 
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const request = input instanceof Request
@@ -167,6 +199,59 @@ function installUserConsoleFetchMock(scenario: Scenario): () => void {
       return jsonResponse(tokenDetailSample)
     }
 
+    if (url.pathname === '/mcp') {
+      if (probeMode === 'auth-fail') {
+        return jsonResponse({ error: 'invalid or disabled token' }, 401)
+      }
+      const payload = await request.clone().json().catch(() => ({}))
+      const method = typeof payload?.method === 'string' ? payload.method : ''
+      if (probeMode === 'partial' && method === 'tools/list') {
+        return jsonResponse({ error: { code: -32001, message: 'tools/list unavailable' } })
+      }
+      return jsonResponse({
+        jsonrpc: '2.0',
+        id: payload?.id ?? null,
+        result: {
+          ok: true,
+          method,
+        },
+      })
+    }
+
+    if (url.pathname.startsWith('/api/tavily/')) {
+      if (probeMode === 'auth-fail') {
+        return jsonResponse({ error: 'invalid or disabled token' }, 401)
+      }
+
+      if (url.pathname === '/api/tavily/search') {
+        return jsonResponse({ status: 200, results: [] })
+      }
+      if (url.pathname === '/api/tavily/extract') {
+        return jsonResponse({ status: 200, results: [] })
+      }
+      if (url.pathname === '/api/tavily/crawl') {
+        return jsonResponse({ status: 200, results: [] })
+      }
+      if (url.pathname === '/api/tavily/map') {
+        if (probeMode === 'partial') {
+          return jsonResponse({ error: 'map endpoint timeout' }, 500)
+        }
+        return jsonResponse({ status: 200, results: [] })
+      }
+      if (url.pathname === '/api/tavily/research') {
+        return jsonResponse({
+          request_id: researchRequestId,
+          status: 'pending',
+        })
+      }
+      if (url.pathname === `/api/tavily/research/${researchRequestId}`) {
+        return jsonResponse({
+          request_id: researchRequestId,
+          status: 'pending',
+        })
+      }
+    }
+
     return originalFetch(input, init)
   }
 
@@ -177,6 +262,7 @@ function installUserConsoleFetchMock(scenario: Scenario): () => void {
 
 function UserConsoleStory(args: UserConsoleStoryArgs): JSX.Element {
   const [ready, setReady] = useState(false)
+  const autoProbeTarget = autoProbeTargetFromScenario(args.scenario)
 
   useLayoutEffect(() => {
     const previousHash = window.location.hash
@@ -190,6 +276,16 @@ function UserConsoleStory(args: UserConsoleStoryArgs): JSX.Element {
       setReady(false)
     }
   }, [args.scenario])
+
+  useEffect(() => {
+    if (!ready || !autoProbeTarget) return
+    const timer = window.setTimeout(() => {
+      const selector = `[data-probe-kind="${autoProbeTarget}"]`
+      const button = document.querySelector<HTMLButtonElement>(selector)
+      button?.click()
+    }, 80)
+    return () => window.clearTimeout(timer)
+  }, [autoProbeTarget, ready])
 
   if (!ready) {
     return <div style={{ minHeight: '100vh' }} />
@@ -225,6 +321,24 @@ export const Tokens: Story = {
 export const TokenDetail: Story = {
   args: {
     scenario: 'token-detail',
+  },
+}
+
+export const TokenDetailProbeSuccess: Story = {
+  args: {
+    scenario: 'token-detail-probe-success',
+  },
+}
+
+export const TokenDetailProbePartialFail: Story = {
+  args: {
+    scenario: 'token-detail-probe-partial',
+  },
+}
+
+export const TokenDetailProbeAuthFail: Story = {
+  args: {
+    scenario: 'token-detail-probe-auth-fail',
   },
 }
 
