@@ -3821,10 +3821,10 @@ function AdminDashboard(): JSX.Element {
               <h2>{adminStrings.users.title}</h2>
               <p className="panel-description">{adminStrings.users.description}</p>
             </div>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <div className="users-search-controls">
               <input
                 type="text"
-                className="input input-bordered"
+                className="input input-bordered users-search-input"
                 placeholder={adminStrings.users.searchPlaceholder}
                 value={usersQueryInput}
                 onChange={(event) => setUsersQueryInput(event.target.value)}
@@ -3834,7 +3834,6 @@ function AdminDashboard(): JSX.Element {
                     applyUserSearch()
                   }
                 }}
-                style={{ minWidth: 220 }}
               />
               <button type="button" className="btn btn-outline" onClick={applyUserSearch}>
                 {adminStrings.users.search}

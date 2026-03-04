@@ -1171,14 +1171,13 @@ function UsersPageCanvas(): JSX.Element {
             <h2>{users.title}</h2>
             <p className="panel-description">{users.description}</p>
           </div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <div className="users-search-controls">
             <input
               type="text"
-              className="input input-bordered"
+              className="input input-bordered users-search-input"
               placeholder={users.searchPlaceholder}
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              style={{ minWidth: 220 }}
             />
             <button type="button" className="btn btn-outline">
               {users.search}
