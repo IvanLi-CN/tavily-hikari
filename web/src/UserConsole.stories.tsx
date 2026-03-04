@@ -9,6 +9,7 @@ type Scenario =
   | 'tokens'
   | 'tokens-empty'
   | 'token-detail'
+  | 'token-detail-probe-running'
   | 'token-detail-probe-success'
   | 'token-detail-probe-partial'
   | 'token-detail-probe-auth-fail'
@@ -16,6 +17,8 @@ type Scenario =
 interface UserConsoleStoryArgs {
   scenario: Scenario
 }
+
+const PROBE_STEP_DELAY_MS = 900
 
 const dashboardSample: UserDashboard = {
   hourlyAnyUsed: 126,
@@ -126,9 +129,16 @@ function jsonResponse(data: unknown, status = 200): Response {
   })
 }
 
-type ProbeMockMode = 'none' | 'success' | 'partial' | 'auth-fail'
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms)
+  })
+}
+
+type ProbeMockMode = 'none' | 'running' | 'success' | 'partial' | 'auth-fail'
 
 function probeModeFromScenario(scenario: Scenario): ProbeMockMode {
+  if (scenario === 'token-detail-probe-running') return 'running'
   if (scenario === 'token-detail-probe-success') return 'success'
   if (scenario === 'token-detail-probe-partial') return 'partial'
   if (scenario === 'token-detail-probe-auth-fail') return 'auth-fail'
@@ -136,6 +146,7 @@ function probeModeFromScenario(scenario: Scenario): ProbeMockMode {
 }
 
 function autoProbeTargetFromScenario(scenario: Scenario): 'mcp' | 'api' | null {
+  if (scenario === 'token-detail-probe-running') return 'api'
   if (scenario === 'token-detail-probe-success') return 'api'
   if (scenario === 'token-detail-probe-partial') return 'api'
   if (scenario === 'token-detail-probe-auth-fail') return 'mcp'
@@ -147,6 +158,7 @@ function scenarioHash(scenario: Scenario): string {
   if (scenario === 'tokens-empty') return '#/tokens'
   if (
     scenario === 'token-detail'
+    || scenario === 'token-detail-probe-running'
     || scenario === 'token-detail-probe-success'
     || scenario === 'token-detail-probe-partial'
     || scenario === 'token-detail-probe-auth-fail'
@@ -203,6 +215,9 @@ function installUserConsoleFetchMock(scenario: Scenario): () => void {
       if (probeMode === 'auth-fail') {
         return jsonResponse({ error: 'invalid or disabled token' }, 401)
       }
+      if (probeMode !== 'none') {
+        await sleep(PROBE_STEP_DELAY_MS)
+      }
       const payload = await request.clone().json().catch(() => ({}))
       const method = typeof payload?.method === 'string' ? payload.method : ''
       if (probeMode === 'partial' && method === 'tools/list') {
@@ -222,8 +237,14 @@ function installUserConsoleFetchMock(scenario: Scenario): () => void {
       if (probeMode === 'auth-fail') {
         return jsonResponse({ error: 'invalid or disabled token' }, 401)
       }
+      if (probeMode !== 'none') {
+        await sleep(PROBE_STEP_DELAY_MS)
+      }
 
       if (url.pathname === '/api/tavily/search') {
+        if (probeMode === 'running') {
+          await sleep(60_000)
+        }
         return jsonResponse({ status: 200, results: [] })
       }
       if (url.pathname === '/api/tavily/extract') {
@@ -327,6 +348,12 @@ export const TokenDetail: Story = {
 export const TokenDetailProbeSuccess: Story = {
   args: {
     scenario: 'token-detail-probe-success',
+  },
+}
+
+export const TokenDetailProbeRunning: Story = {
+  args: {
+    scenario: 'token-detail-probe-running',
   },
 }
 
