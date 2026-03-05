@@ -21,6 +21,7 @@ import useUpdateAvailable from './hooks/useUpdateAvailable'
 import RollingNumber from './components/RollingNumber'
 import PublicHomeHeroCard from './components/PublicHomeHeroCard'
 import { useLanguage, useTranslate, type Language } from './i18n'
+import { useResponsiveModes } from './lib/responsive'
 
 type GuideLanguage = 'toml' | 'json' | 'bash'
 
@@ -98,7 +99,8 @@ function PublicHome(): JSX.Element {
   const [activeGuide, setActiveGuide] = useState<GuideKey>('codex')
   const updateBanner = useUpdateAvailable()
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
-  const [isMobileGuide, setIsMobileGuide] = useState(false)
+  const pageRef = useRef<HTMLElement>(null)
+  const { viewportMode, contentMode, isCompactLayout } = useResponsiveModes(pageRef)
   const [recentTokenUsage, setRecentTokenUsage] = useState<TokenMetrics | null>(null)
   const [userTokenHydrationDone, setUserTokenHydrationDone] = useState(false)
 
@@ -224,15 +226,6 @@ function PublicHome(): JSX.Element {
     }
   }, [token])
 
-  // Watch viewport for small-screen guide dropdown
-  useEffect(() => {
-    const mq = window.matchMedia('(max-width: 640px)')
-    const apply = () => setIsMobileGuide(mq.matches)
-    apply()
-    mq.addEventListener('change', apply)
-    return () => mq.removeEventListener('change', apply)
-  }, [])
-
   // Fallback polling: if token metrics未就绪或 SSE 不返回 token 段，定期补一次拉取
   useEffect(() => {
     if (!token || !isFullToken(token)) return
@@ -262,6 +255,7 @@ function PublicHome(): JSX.Element {
   const canUseTokenAccessModal = SUPPORTS_NATIVE_DIALOG
   const showLinuxDoLogin = isLoggedOut
   const hasTokenInfo = token.trim().length > 0
+  const hasValidTokenForLogs = isFullToken(token) && !invalidToken
   const hideTokenPanels = !hasTokenInfo && canUseTokenAccessModal && (loading || isLoggedOut)
   const availableKeys = summary?.active_keys ?? null
   const exhaustedKeys = summary?.exhausted_keys ?? null
@@ -434,7 +428,12 @@ function PublicHome(): JSX.Element {
   }
 
   return (
-    <main className="app-shell public-home">
+    <main
+      ref={pageRef}
+      className={`app-shell public-home viewport-${viewportMode} content-${contentMode}${
+        isCompactLayout ? ' is-compact-layout' : ''
+      }`}
+    >
       {updateBanner.visible && (
         <section className="surface update-banner" role="status" aria-live="polite">
           <div className="update-banner-text">
@@ -623,98 +622,140 @@ function PublicHome(): JSX.Element {
                 <p className="panel-description">{publicStrings.logs.description}</p>
               </div>
             </div>
-            <div className="table-wrapper">
-              {(!isFullToken(token) || invalidToken) ? (
+            {!hasValidTokenForLogs ? (
+              <div className="table-wrapper">
                 <div className="empty-state alert">
                   <p style={{ margin: 0 }}>
                     {publicStrings.logs.empty.noToken}{' '}
                     <span style={{ opacity: 0.9 }}>{publicStrings.logs.empty.hint}</span>
                   </p>
                 </div>
-              ) : publicLogsLoading ? (
+              </div>
+            ) : publicLogsLoading ? (
+              <div className="table-wrapper">
                 <div className="empty-state alert">{publicStrings.logs.empty.loading}</div>
-              ) : publicLogs.length === 0 ? (
+              </div>
+            ) : publicLogs.length === 0 ? (
+              <div className="table-wrapper">
                 <div className="empty-state alert">{publicStrings.logs.empty.none}</div>
-              ) : (
-                <table className="token-detail-table">
-                  <thead>
-                    <tr>
-                      <th>{publicStrings.logs.table.time}</th>
-                      <th>{publicStrings.logs.table.httpStatus}</th>
-                      <th>{publicStrings.logs.table.mcpStatus}</th>
-                      <th>{publicStrings.logs.table.result}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {publicLogs.map((log) => (
-                      <React.Fragment key={log.id}>
-                        <tr>
-                          <td>{formatTimestamp(log.created_at)}</td>
-                          <td>{log.http_status ?? '—'}</td>
-                          <td>{log.mcp_status ?? '—'}</td>
-                          <td>
-                            <button
-                              type="button"
-                              className={`log-result-button${expandedPublicLogs.has(log.id) ? ' log-result-button-active' : ''}`}
-                              onClick={() => togglePublicLog(log.id)}
-                              aria-expanded={expandedPublicLogs.has(log.id)}
-                              aria-controls={`plog-${log.id}`}
-                              aria-label={expandedPublicLogs.has(log.id) ? publicStrings.logs.toggles.hide : publicStrings.logs.toggles.show}
-                              title={expandedPublicLogs.has(log.id) ? publicStrings.logs.toggles.hide : publicStrings.logs.toggles.show}
-                            >
-                              <StatusBadge tone={statusTone(log.result_status)}>
-                                {log.result_status}
-                              </StatusBadge>
-                              <Icon
-                                icon={expandedPublicLogs.has(log.id) ? 'mdi:chevron-up' : 'mdi:chevron-down'}
-                                width={18}
-                                height={18}
-                                className="log-result-icon"
-                              />
-                            </button>
-                          </td>
-                        </tr>
-                        {expandedPublicLogs.has(log.id) && (
-                          <tr className="log-details-row">
-                            <td colSpan={4} id={`plog-${log.id}`}>
-                              <div className="log-details-panel">
-                                <div className="log-details-summary">
-                                  <div>
-                                    <span className="log-details-label">Request</span>
-                                    <span className="log-details-value">{`${log.method} ${log.path}${log.query ? `?${log.query}` : ''}`}</span>
-                                  </div>
-                                  <div>
-                                    <span className="log-details-label">Response</span>
-                                    <span className="log-details-value">{`${publicStrings.logs.table.httpStatus}: ${log.http_status ?? '—'} · ${publicStrings.logs.table.mcpStatus}: ${log.mcp_status ?? '—'}`}</span>
-                                  </div>
-                                  <div>
-                                    <span className="log-details-label">Outcome</span>
-                                    <span className="log-details-value">{log.result_status}</span>
-                                  </div>
-                                  {log.error_message && (
-                                    <div>
-                                      <span className="log-details-label">Error</span>
-                                      <span className="log-details-value">{log.error_message}</span>
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
+              </div>
+            ) : (
+              <>
+                <div className="table-wrapper public-logs-md-up">
+                  <table className="token-detail-table">
+                    <thead>
+                      <tr>
+                        <th>{publicStrings.logs.table.time}</th>
+                        <th>{publicStrings.logs.table.httpStatus}</th>
+                        <th>{publicStrings.logs.table.mcpStatus}</th>
+                        <th>{publicStrings.logs.table.result}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {publicLogs.map((log) => (
+                        <React.Fragment key={log.id}>
+                          <tr>
+                            <td>{formatTimestamp(log.created_at)}</td>
+                            <td>{log.http_status ?? '—'}</td>
+                            <td>{log.mcp_status ?? '—'}</td>
+                            <td>
+                              <button
+                                type="button"
+                                className={`log-result-button${expandedPublicLogs.has(log.id) ? ' log-result-button-active' : ''}`}
+                                onClick={() => togglePublicLog(log.id)}
+                                aria-expanded={expandedPublicLogs.has(log.id)}
+                                aria-controls={`plog-${log.id}`}
+                                aria-label={expandedPublicLogs.has(log.id) ? publicStrings.logs.toggles.hide : publicStrings.logs.toggles.show}
+                                title={expandedPublicLogs.has(log.id) ? publicStrings.logs.toggles.hide : publicStrings.logs.toggles.show}
+                              >
+                                <StatusBadge tone={statusTone(log.result_status)}>
+                                  {log.result_status}
+                                </StatusBadge>
+                                <Icon
+                                  icon={expandedPublicLogs.has(log.id) ? 'mdi:chevron-up' : 'mdi:chevron-down'}
+                                  width={18}
+                                  height={18}
+                                  className="log-result-icon"
+                                />
+                              </button>
                             </td>
                           </tr>
-                        )}
-                      </React.Fragment>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
+                          {expandedPublicLogs.has(log.id) && (
+                            <tr className="log-details-row">
+                              <td colSpan={4} id={`plog-${log.id}`}>
+                                <div className="log-details-panel">
+                                  <div className="log-details-summary">
+                                    <div>
+                                      <span className="log-details-label">Request</span>
+                                      <span className="log-details-value">{`${log.method} ${log.path}${log.query ? `?${log.query}` : ''}`}</span>
+                                    </div>
+                                    <div>
+                                      <span className="log-details-label">Response</span>
+                                      <span className="log-details-value">{`${publicStrings.logs.table.httpStatus}: ${log.http_status ?? '—'} · ${publicStrings.logs.table.mcpStatus}: ${log.mcp_status ?? '—'}`}</span>
+                                    </div>
+                                    <div>
+                                      <span className="log-details-label">Outcome</span>
+                                      <span className="log-details-value">{log.result_status}</span>
+                                    </div>
+                                    {log.error_message && (
+                                      <div>
+                                        <span className="log-details-label">Error</span>
+                                        <span className="log-details-value">{log.error_message}</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="public-log-mobile-list public-logs-md-down">
+                  {publicLogs.map((log) => (
+                    <article key={log.id} className="user-console-mobile-card">
+                      <div className="user-console-mobile-kv">
+                        <span>{publicStrings.logs.table.time}</span>
+                        <strong>{formatTimestamp(log.created_at)}</strong>
+                      </div>
+                      <div className="user-console-mobile-kv">
+                        <span>{publicStrings.logs.table.httpStatus}</span>
+                        <strong>{log.http_status ?? '—'}</strong>
+                      </div>
+                      <div className="user-console-mobile-kv">
+                        <span>{publicStrings.logs.table.mcpStatus}</span>
+                        <strong>{log.mcp_status ?? '—'}</strong>
+                      </div>
+                      <div className="user-console-mobile-kv">
+                        <span>{publicStrings.logs.table.result}</span>
+                        <StatusBadge className="user-console-mobile-status" tone={statusTone(log.result_status)}>
+                          {log.result_status}
+                        </StatusBadge>
+                      </div>
+                      <div className="user-console-mobile-kv">
+                        <span>Request</span>
+                        <strong>{`${log.method} ${log.path}${log.query ? `?${log.query}` : ''}`}</strong>
+                      </div>
+                      {log.error_message && (
+                        <div className="user-console-mobile-kv">
+                          <span>Error</span>
+                          <strong>{log.error_message}</strong>
+                        </div>
+                      )}
+                    </article>
+                  ))}
+                </div>
+              </>
+            )}
           </section>
         </>
       )}
       <section className="surface panel public-home-guide">
         <h2>{publicStrings.guide.title}</h2>
         {/* Mobile: compact dropdown menu with icons */}
-        {isMobileGuide && (
+        {isCompactLayout && (
           <div className="guide-select" aria-label="Client selector (mobile)">
             <MobileGuideDropdown
               active={activeGuide}
@@ -723,7 +764,7 @@ function PublicHome(): JSX.Element {
             />
           </div>
         )}
-        {!isMobileGuide && (
+        {!isCompactLayout && (
         <div className="guide-tabs">
           {guideTabs.map((tab) => (
             <button

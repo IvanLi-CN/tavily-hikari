@@ -263,10 +263,10 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
       <div className="modal-box key-validation-modal-box">
         <div className="flex flex-col h-full">
           {/* Header */}
-          <div className="key-validation-header px-4 sm:px-5 pt-4 pb-3 border-b border-base-200/70">
+          <div className="key-validation-header px-4 md:px-5 pt-4 pb-3 border-b border-base-200/70">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <h3 className="m-0 font-extrabold text-lg sm:text-xl tracking-tight">
+                <h3 className="m-0 font-extrabold text-lg md:text-xl tracking-tight">
                   {validationStrings.title}
                 </h3>
                 <div className="mt-1 text-sm opacity-70 truncate">
@@ -356,7 +356,7 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
           </div>
 
           {/* Body */}
-          <div className="key-validation-modal-body flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-4 sm:px-5 py-3">
+          <div className="key-validation-modal-body flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-4 md:px-5 py-3">
             {props.state ? (
               <>
                 {props.state.importError && (
@@ -371,7 +371,7 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                       <h4 className="font-bold m-0">{importStrings.title}</h4>
                       <span className="badge badge-success badge-outline">{actions.imported}</span>
                     </div>
-                    <div className="mt-2 grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
+                    <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
                       <div>
                         <span className="opacity-70">{keyStrings.batch.report.summary.created}</span>{" "}
                         {formatNumber(props.state.importReport.summary.created)}
@@ -554,7 +554,7 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
           </div>
 
           {/* Footer */}
-          <div className="key-validation-footer px-4 sm:px-5 py-3 border-t border-base-200/70 bg-base-100">
+          <div className="key-validation-footer px-4 md:px-5 py-3 border-t border-base-200/70 bg-base-100">
             {props.exhaustedKeys.length > 0 && (
               <div className="mb-2 text-sm opacity-70 flex items-start gap-2 min-w-0">
                 <span className="flex-shrink-0 mt-0.5">
@@ -574,7 +574,7 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
               </div>
             )}
 
-            <div className="key-validation-footer-actions flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="key-validation-footer-actions flex flex-wrap items-center justify-between gap-2">
               <button
                 type="button"
                 className="btn btn-outline"
@@ -585,7 +585,7 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                 &nbsp;{actions.retryFailed ?? "Retry failed"}
               </button>
 
-              <div className="key-validation-footer-primary flex items-center gap-2 justify-end flex-wrap sm:flex-nowrap flex-shrink-0">
+              <div className="key-validation-footer-primary flex items-center gap-2 justify-end flex-wrap md:flex-nowrap flex-shrink-0">
                 <button type="button" className="btn" onClick={props.onClose}>
                   {actions.close ?? keyStrings.batch.report.close}
                 </button>

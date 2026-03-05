@@ -2697,7 +2697,7 @@ function AdminDashboard(): JSX.Element {
           onFocusChange={setTokenLeaderboardFocus}
         />
         <section className="surface panel token-leaderboard-panel">
-          <div className="table-wrapper jobs-table-wrapper token-leaderboard-wrapper">
+          <div className="table-wrapper jobs-table-wrapper token-leaderboard-wrapper admin-responsive-up">
           {tokenLeaderboardView.length === 0 ? (
             <div className="empty-state alert">
               {tokenLeaderboardLoading ? tokenLeaderboardStrings.empty.loading : tokenLeaderboardStrings.empty.none}
@@ -2762,6 +2762,61 @@ function AdminDashboard(): JSX.Element {
                   ))}
                 </tbody>
               </table>
+            )}
+          </div>
+          <div className="admin-mobile-list admin-responsive-down">
+            {tokenLeaderboardView.length === 0 ? (
+              <div className="empty-state alert">
+                {tokenLeaderboardLoading ? tokenLeaderboardStrings.empty.loading : tokenLeaderboardStrings.empty.none}
+              </div>
+            ) : (
+              tokenLeaderboardView.map((item) => (
+                <article key={item.id} className="admin-mobile-card">
+                  <div className="admin-mobile-kv">
+                    <span>{tokenLeaderboardStrings.table.token}</span>
+                    <strong>
+                      <code>{item.id}</code>
+                    </strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{tokenLeaderboardStrings.table.group}</span>
+                    <strong>{item.group && item.group.trim().length > 0 ? item.group : '—'}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{tokenLeaderboardStrings.table.hourly}</span>
+                    <strong>{`${formatNumber(item.quota_hourly_used)} / ${formatNumber(item.quota_hourly_limit)}`}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{tokenLeaderboardStrings.table.hourlyAny}</span>
+                    <strong>{`${formatNumber(item.hourly_any_used)} / ${formatNumber(item.hourly_any_limit)}`}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{tokenLeaderboardStrings.table.daily}</span>
+                    <strong>{`${formatNumber(item.quota_daily_used)} / ${formatNumber(item.quota_daily_limit)}`}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{tokenLeaderboardStrings.table.today}</span>
+                    <strong>{formatNumber(leaderboardPrimaryValue(item, 'day', primaryMetric))}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{tokenLeaderboardStrings.table.month}</span>
+                    <strong>{formatNumber(leaderboardPrimaryValue(item, 'month', primaryMetric))}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{tokenLeaderboardStrings.table.all}</span>
+                    <strong>{formatNumber(leaderboardPrimaryValue(item, 'all', primaryMetric))}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{tokenLeaderboardStrings.table.lastUsed}</span>
+                    <strong>{`${formatDateOnly(item.last_used_at)} ${formatClockTime(item.last_used_at)}`}</strong>
+                  </div>
+                  <div className="admin-mobile-actions">
+                    <button type="button" className="btn btn-outline btn-sm" onClick={() => navigateToken(item.id)}>
+                      {keyStrings.actions.details}
+                    </button>
+                  </div>
+                </article>
+              ))
             )}
           </div>
           {tokenLeaderboardError && tokenLeaderboardView.length === 0 && (
@@ -3078,7 +3133,7 @@ function AdminDashboard(): JSX.Element {
             </div>
           </div>
         )}
-        <div className="table-wrapper jobs-table-wrapper">
+        <div className="table-wrapper jobs-table-wrapper admin-responsive-up">
           {tokenList.length === 0 ? (
             <div className="empty-state alert">{loading ? tokenStrings.empty.loading : tokenStrings.empty.none}</div>
           ) : (
@@ -3220,6 +3275,90 @@ function AdminDashboard(): JSX.Element {
                 })}
               </tbody>
             </table>
+          )}
+        </div>
+        <div className="admin-mobile-list admin-responsive-down">
+          {tokenList.length === 0 ? (
+            <div className="empty-state alert">{loading ? tokenStrings.empty.loading : tokenStrings.empty.none}</div>
+          ) : (
+            tokenList.map((t) => {
+              const stateKey = copyStateKey('tokens', t.id)
+              const state = copyState.get(stateKey)
+              const shareStateKey = copyStateKey('tokens', `${t.id}:share`)
+              const shareState = copyState.get(shareStateKey)
+              const quotaStateKey = t.quota_state ?? 'normal'
+              const quotaLabel = quotaLabels[quotaStateKey] ?? quotaLabels.normal
+              return (
+                <article key={t.id} className="admin-mobile-card">
+                  <div className="admin-mobile-kv">
+                    <span>{tokenStrings.table.id}</span>
+                    <strong>
+                      <code>{t.id}</code>
+                    </strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{tokenStrings.table.note}</span>
+                    <strong>{t.note || '—'}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{tokenStrings.table.usage}</span>
+                    <strong>{formatNumber(t.total_requests)}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{tokenStrings.table.quota}</span>
+                    <StatusBadge tone={quotaTone(quotaStateKey)} className={`token-quota-pill token-quota-pill-${quotaStateKey}`}>
+                      {quotaLabel}
+                    </StatusBadge>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{tokenStrings.table.lastUsed}</span>
+                    <strong>{formatTimestamp(t.last_used_at)}</strong>
+                  </div>
+                  {isAdmin && (
+                    <div className="admin-mobile-actions">
+                      <button
+                        type="button"
+                        className={`btn btn-outline btn-sm${state === 'copied' ? ' btn-success' : ''}`}
+                        onClick={() => void handleCopyToken(t.id, stateKey)}
+                        disabled={state === 'loading'}
+                      >
+                        {tokenStrings.actions.copy}
+                      </button>
+                      <button
+                        type="button"
+                        className={`btn btn-outline btn-sm${shareState === 'copied' ? ' btn-success' : ''}`}
+                        onClick={() => void handleShareToken(t.id, shareStateKey)}
+                        disabled={shareState === 'loading'}
+                      >
+                        {tokenStrings.actions.share}
+                      </button>
+                      <button type="button" className="btn btn-outline btn-sm" onClick={() => navigateToken(t.id)}>
+                        {keyStrings.actions.details}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-outline btn-sm"
+                        onClick={() => void toggleToken(t.id, t.enabled)}
+                        disabled={togglingId === t.id}
+                      >
+                        {t.enabled ? tokenStrings.actions.disable : tokenStrings.actions.enable}
+                      </button>
+                      <button type="button" className="btn btn-outline btn-sm" onClick={() => openTokenNoteEdit(t.id, t.note)}>
+                        {tokenStrings.actions.edit}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-warning btn-sm"
+                        onClick={() => openTokenDeleteConfirm(t.id)}
+                        disabled={deletingId === t.id}
+                      >
+                        {tokenStrings.actions.delete}
+                      </button>
+                    </div>
+                  )}
+                </article>
+              )
+            })
           )}
         </div>
         {tokensTotal > tokensPerPage && (
@@ -3384,7 +3523,7 @@ function AdminDashboard(): JSX.Element {
 	            </div>
 	          </div>
 	        )}
-	        <div className="table-wrapper jobs-table-wrapper">
+	        <div className="table-wrapper jobs-table-wrapper admin-responsive-up">
 	          {visibleKeys.length === 0 ? (
 	            <div className="empty-state alert">
 	              {loading ? keyStrings.empty.loading : sortedKeys.length === 0 ? keyStrings.empty.none : keyStrings.empty.filtered}
@@ -3510,7 +3649,106 @@ function AdminDashboard(): JSX.Element {
                   )
                 })}
               </tbody>
-            </table>
+	            </table>
+	          )}
+	        </div>
+        <div className="admin-mobile-list admin-responsive-down">
+          {visibleKeys.length === 0 ? (
+            <div className="empty-state alert">
+              {loading ? keyStrings.empty.loading : sortedKeys.length === 0 ? keyStrings.empty.none : keyStrings.empty.filtered}
+            </div>
+          ) : (
+            visibleKeys.map((item) => {
+              const total = item.total_requests || 0
+              const stateKey = copyStateKey('keys', item.id)
+              const state = copyState.get(stateKey)
+              return (
+                <article key={item.id} className="admin-mobile-card">
+                  <div className="admin-mobile-kv">
+                    <span>{keyStrings.table.keyId}</span>
+                    <strong>
+                      <code>{item.id}</code>
+                    </strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{keyStrings.table.status}</span>
+                    <StatusBadge tone={statusTone(item.status)}>
+                      {statusLabel(item.status, adminStrings)}
+                    </StatusBadge>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{keyStrings.table.total}</span>
+                    <strong>{formatNumber(total)}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{keyStrings.table.success}</span>
+                    <strong>{formatNumber(item.success_count)}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{keyStrings.table.errors}</span>
+                    <strong>{formatNumber(item.error_count)}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{keyStrings.table.quotaLeft}</span>
+                    <strong>
+                      {item.quota_remaining != null && item.quota_limit != null
+                        ? `${formatNumber(item.quota_remaining)} / ${formatNumber(item.quota_limit)}`
+                        : '—'}
+                    </strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{keyStrings.table.lastUsed}</span>
+                    <strong>{formatTimestampNoYear(item.last_used_at)}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{keyStrings.table.statusChanged}</span>
+                    <strong>{formatTimestamp(item.status_changed_at)}</strong>
+                  </div>
+                  {isAdmin && (
+                    <div className="admin-mobile-actions">
+                      <button
+                        type="button"
+                        className={`btn btn-outline btn-sm${state === 'copied' ? ' btn-success' : ''}`}
+                        onClick={() => void handleCopySecret(item.id, stateKey)}
+                        disabled={state === 'loading'}
+                      >
+                        {keyStrings.actions.copy}
+                      </button>
+                      {item.status === 'disabled' ? (
+                        <button
+                          type="button"
+                          className="btn btn-outline btn-sm"
+                          onClick={() => void handleToggleDisable(item.id, false)}
+                          disabled={togglingId === item.id}
+                        >
+                          {keyStrings.actions.enable}
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className="btn btn-outline btn-sm"
+                          onClick={() => openDisableConfirm(item.id)}
+                          disabled={togglingId === item.id}
+                        >
+                          {keyStrings.actions.disable}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="btn btn-warning btn-sm"
+                        onClick={() => openDeleteConfirm(item.id)}
+                        disabled={deletingId === item.id}
+                      >
+                        {keyStrings.actions.delete}
+                      </button>
+                      <button type="button" className="btn btn-outline btn-sm" onClick={() => navigateKey(item.id)}>
+                        {keyStrings.actions.details}
+                      </button>
+                    </div>
+                  )}
+                </article>
+              )
+            })
           )}
         </div>
       </section>
@@ -3540,7 +3778,7 @@ function AdminDashboard(): JSX.Element {
             />
           </div>
         </div>
-        <div className="table-wrapper jobs-table-wrapper">
+        <div className="table-wrapper jobs-table-wrapper admin-responsive-up">
           {logs.length === 0 ? (
             <div className="empty-state alert">{loading ? logStrings.empty.loading : logStrings.empty.none}</div>
           ) : (
@@ -3570,6 +3808,50 @@ function AdminDashboard(): JSX.Element {
                 ))}
               </tbody>
             </table>
+          )}
+        </div>
+        <div className="admin-mobile-list admin-responsive-down">
+          {logs.length === 0 ? (
+            <div className="empty-state alert">{loading ? logStrings.empty.loading : logStrings.empty.none}</div>
+          ) : (
+            logs.map((log) => (
+              <article key={log.id} className="admin-mobile-card">
+                <div className="admin-mobile-kv">
+                  <span>{logStrings.table.time}</span>
+                  <strong>{formatTimestamp(log.created_at)}</strong>
+                </div>
+                <div className="admin-mobile-kv">
+                  <span>{logStrings.table.key}</span>
+                  <strong>
+                    <code>{log.key_id ?? '—'}</code>
+                  </strong>
+                </div>
+                <div className="admin-mobile-kv">
+                  <span>{logStrings.table.token}</span>
+                  <strong>
+                    <code>{log.auth_token_id ?? '—'}</code>
+                  </strong>
+                </div>
+                <div className="admin-mobile-kv">
+                  <span>{logStrings.table.httpStatus}</span>
+                  <strong>{log.http_status ?? '—'}</strong>
+                </div>
+                <div className="admin-mobile-kv">
+                  <span>{logStrings.table.mcpStatus}</span>
+                  <strong>{log.mcp_status ?? '—'}</strong>
+                </div>
+                <div className="admin-mobile-kv">
+                  <span>{logStrings.table.result}</span>
+                  <StatusBadge tone={statusTone(log.result_status)}>
+                    {statusLabel(log.result_status, adminStrings)}
+                  </StatusBadge>
+                </div>
+                <div className="admin-mobile-kv">
+                  <span>{logStrings.table.error}</span>
+                  <strong>{formatErrorMessage(log, adminStrings.logs.errors)}</strong>
+                </div>
+              </article>
+            ))
           )}
         </div>
         {hasLogsPagination && (
@@ -3615,7 +3897,7 @@ function AdminDashboard(): JSX.Element {
             />
           </div>
         </div>
-        <div className="table-wrapper jobs-table-wrapper">
+        <div className="table-wrapper jobs-table-wrapper admin-responsive-up">
           {jobs.length === 0 ? (
             <div className="empty-state alert">
               {loading ? jobsStrings.empty.loading : jobsStrings.empty.none}
@@ -3786,6 +4068,54 @@ function AdminDashboard(): JSX.Element {
                 })}
               </tbody>
             </table>
+          )}
+        </div>
+        <div className="admin-mobile-list admin-responsive-down">
+          {jobs.length === 0 ? (
+            <div className="empty-state alert">
+              {loading ? jobsStrings.empty.loading : jobsStrings.empty.none}
+            </div>
+          ) : (
+            jobs.map((j) => {
+              const job: any = j as any
+              const jt = job.job_type ?? job.jobType ?? ''
+              const keyId = job.key_id ?? job.keyId ?? '—'
+              const started: number | null = job.started_at ?? job.startedAt ?? null
+              return (
+                <article key={j.id} className="admin-mobile-card">
+                  <div className="admin-mobile-kv">
+                    <span>{jobsStrings.table.id}</span>
+                    <strong>{j.id}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{jobsStrings.table.type}</span>
+                    <strong>{jobTypeLabel(jt, jobsStrings)}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{jobsStrings.table.key}</span>
+                    <strong>{keyId}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{jobsStrings.table.status}</span>
+                    <StatusBadge tone={statusTone(j.status)} title={String(j.status ?? '')}>
+                      {jobStatusLabel(String(j.status ?? ''))}
+                    </StatusBadge>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{jobsStrings.table.attempt}</span>
+                    <strong>{j.attempt}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{jobsStrings.table.started}</span>
+                    <strong>{started ? formatTimestamp(started) : '—'}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{jobsStrings.table.message}</span>
+                    <strong>{j.message ?? '—'}</strong>
+                  </div>
+                </article>
+              )
+            })
           )}
         </div>
         {jobsTotal > jobsPerPage && (
@@ -4671,7 +5001,7 @@ function KeyDetails({ id, onBack }: { id: string; onBack: () => void }): JSX.Ele
             <p className="panel-description">{keyDetailsStrings.logsDescription}</p>
           </div>
         </div>
-        <div className="table-wrapper">
+        <div className="table-wrapper admin-responsive-up">
           {logs.length === 0 ? (
             <div className="empty-state alert">{loading ? keyDetailsStrings.loading : keyDetailsStrings.logsEmpty}</div>
           ) : (
@@ -4701,6 +5031,38 @@ function KeyDetails({ id, onBack }: { id: string; onBack: () => void }): JSX.Ele
                 ))}
               </tbody>
             </table>
+          )}
+        </div>
+        <div className="admin-mobile-list admin-responsive-down">
+          {logs.length === 0 ? (
+            <div className="empty-state alert">{loading ? keyDetailsStrings.loading : keyDetailsStrings.logsEmpty}</div>
+          ) : (
+            logs.map((log) => (
+              <article key={log.id} className="admin-mobile-card">
+                <div className="admin-mobile-kv">
+                  <span>{logsTableStrings.time}</span>
+                  <strong>{formatTimestamp(log.created_at)}</strong>
+                </div>
+                <div className="admin-mobile-kv">
+                  <span>{logsTableStrings.httpStatus}</span>
+                  <strong>{log.http_status ?? '—'}</strong>
+                </div>
+                <div className="admin-mobile-kv">
+                  <span>{logsTableStrings.mcpStatus}</span>
+                  <strong>{log.mcp_status ?? '—'}</strong>
+                </div>
+                <div className="admin-mobile-kv">
+                  <span>{logsTableStrings.result}</span>
+                  <StatusBadge tone={statusTone(log.result_status)}>
+                    {statusLabel(log.result_status, adminStrings)}
+                  </StatusBadge>
+                </div>
+                <div className="admin-mobile-kv">
+                  <span>{logsTableStrings.error}</span>
+                  <strong>{formatErrorMessage(log, adminStrings.logs.errors)}</strong>
+                </div>
+              </article>
+            ))
           )}
         </div>
       </section>

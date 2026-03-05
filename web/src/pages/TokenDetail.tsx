@@ -5,6 +5,7 @@ import { Bar } from 'react-chartjs-2'
 import { fetchTokenUsageSeries, rotateTokenSecret, type TokenUsageBucket } from '../api'
 import ThemeToggle from '../components/ThemeToggle'
 import { StatusBadge, type StatusTone } from '../components/StatusBadge'
+import { useResponsiveModes } from '../lib/responsive'
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip, Legend)
 
@@ -280,6 +281,8 @@ function dayLabel(bucket: number): string {
 }
 
 export default function TokenDetail({ id, onBack }: { id: string; onBack?: () => void }): JSX.Element {
+  const pageRef = useRef<HTMLDivElement>(null)
+  const { viewportMode, contentMode, isCompactLayout } = useResponsiveModes(pageRef)
   const [info, setInfo] = useState<TokenDetailInfo | null>(null)
   const [summary, setSummary] = useState<TokenSummary | null>(null)
   const [quickStats, setQuickStats] = useState<{
@@ -619,7 +622,12 @@ export default function TokenDetail({ id, onBack }: { id: string; onBack?: () =>
   }
 
   return (
-    <div className="admin-detail-stack">
+    <div
+      ref={pageRef}
+      className={`admin-detail-stack viewport-${viewportMode} content-${contentMode}${
+        isCompactLayout ? ' is-compact-layout' : ''
+      }`}
+    >
       <section className="surface app-header">
         <div className="title-group">
           <h1>Access Token Detail</h1>
@@ -797,7 +805,7 @@ export default function TokenDetail({ id, onBack }: { id: string; onBack?: () =>
             <p className="panel-description">Newest entries first. Live refresh applies to the first page.</p>
           </div>
         </div>
-        <div className="table-wrapper">
+        <div className="table-wrapper token-detail-md-up">
           <table className="token-detail-table">
             <thead>
               <tr>
@@ -853,6 +861,42 @@ export default function TokenDetail({ id, onBack }: { id: string; onBack?: () =>
               )}
             </tbody>
           </table>
+        </div>
+        <div className="token-detail-mobile-list token-detail-md-down">
+          {logs.length === 0 ? (
+            <div className="empty-state alert" style={{ padding: 12 }}>{loading ? 'Loading…' : 'No logs yet.'}</div>
+          ) : (
+            logs.map((log) => (
+              <article key={log.id} className="user-console-mobile-card">
+                <div className="user-console-mobile-kv">
+                  <span>Time</span>
+                  <strong>{formatLogTime(log.created_at, period)}</strong>
+                </div>
+                <div className="user-console-mobile-kv">
+                  <span>Request</span>
+                  <strong>{`${log.method} ${log.path}${log.query ? `?${log.query}` : ''}`}</strong>
+                </div>
+                <div className="user-console-mobile-kv">
+                  <span>HTTP Status</span>
+                  <strong>{log.http_status ?? '—'}</strong>
+                </div>
+                <div className="user-console-mobile-kv">
+                  <span>MCP Status</span>
+                  <strong>{log.mcp_status ?? '—'}</strong>
+                </div>
+                <div className="user-console-mobile-kv">
+                  <span>Result</span>
+                  <StatusBadge className="user-console-mobile-status" tone={statusTone(log.result_status)}>
+                    {statusLabel(log.result_status)}
+                  </StatusBadge>
+                </div>
+                <div className="user-console-mobile-kv">
+                  <span>Error</span>
+                  <strong>{log.error_message ?? '—'}</strong>
+                </div>
+              </article>
+            ))
+          )}
         </div>
         <div className="table-pagination">
           <span>Per page</span>
