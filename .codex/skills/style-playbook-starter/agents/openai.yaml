@@ -1,0 +1,4 @@
+interface:
+  display_name: "Style Playbook Starter"
+  short_description: "Starter workflow for topic skill patch and upgrades"
+  default_prompt: "Use $style-playbook-starter to patch, enhance, and update topic skills in a controlled workflow."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Topic: PR label release"
+  short_description: "Guidance for PR label release"
+  default_prompt: "Use $style-topic-pr-label-release to align this work with Pr Label Release conventions and output concrete implementation choices."
