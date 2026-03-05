@@ -5799,6 +5799,10 @@ tbody .log-details-row:hover {
     margin-top: 0;
   }
 
+  .admin-main-content .admin-shell-content > .panel + .panel {
+    margin-top: 10px;
+  }
+
   .admin-main-content .admin-shell-content > .admin-detail-stack > .surface.app-header {
     margin: 0;
   }
