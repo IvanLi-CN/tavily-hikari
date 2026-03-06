@@ -331,17 +331,26 @@ export const Dashboard: Story = {
   args: {
     scenario: 'dashboard',
   },
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
 }
 
 export const Tokens: Story = {
   args: {
     scenario: 'tokens',
   },
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
 }
 
 export const TokenDetail: Story = {
   args: {
     scenario: 'token-detail',
+  },
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
   },
 }
 
@@ -372,5 +381,8 @@ export const TokenDetailProbeAuthFail: Story = {
 export const TokensEmpty: Story = {
   args: {
     scenario: 'tokens-empty',
+  },
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
   },
 }

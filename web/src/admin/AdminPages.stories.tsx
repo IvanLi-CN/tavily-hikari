@@ -1547,26 +1547,44 @@ type Story = StoryObj<typeof meta>
 
 export const Dashboard: Story = {
   render: () => <DashboardPageCanvas />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
 }
 
 export const Tokens: Story = {
   render: () => <TokensPageCanvas />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
 }
 
 export const ApiKeys: Story = {
   render: () => <KeysPageCanvas />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
 }
 
 export const Requests: Story = {
   render: () => <RequestsPageCanvas />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
 }
 
 export const Jobs: Story = {
   render: () => <JobsPageCanvas />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
 }
 
 export const Users: Story = {
   render: () => <UsersPageCanvas />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
 }
 
 export const UserDetail: Story = {
@@ -1575,8 +1593,14 @@ export const UserDetail: Story = {
 
 export const Alerts: Story = {
   render: () => <AlertsPageCanvas />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
 }
 
 export const ProxySettings: Story = {
   render: () => <ProxySettingsPageCanvas />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
 }

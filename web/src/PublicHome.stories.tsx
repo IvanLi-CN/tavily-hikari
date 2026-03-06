@@ -159,10 +159,16 @@ export const TokenModalOpen: Story = {
   args: {
     showAdminAction: false,
   },
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
 }
 
 export const TokenModalOpenWithAdminAction: Story = {
   args: {
     showAdminAction: true,
+  },
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
   },
 }

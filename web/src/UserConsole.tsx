@@ -27,6 +27,7 @@ import RollingNumber from './components/RollingNumber'
 import { StatusBadge, type StatusTone } from './components/StatusBadge'
 import ThemeToggle from './components/ThemeToggle'
 import { useLanguage, useTranslate, type Language } from './i18n'
+import { useResponsiveModes } from './lib/responsive'
 
 const REPO_URL = 'https://github.com/IvanLi-CN/tavily-hikari'
 const CODEX_DOC_URL = 'https://github.com/openai/codex/blob/main/docs/config.md'
@@ -256,19 +257,13 @@ export default function UserConsole(): JSX.Element {
   const [probeBubbleShift, setProbeBubbleShift] = useState(0)
   const probeBubbleRef = useRef<HTMLDivElement | null>(null)
   const probeRunIdRef = useRef(0)
+  const pageRef = useRef<HTMLElement>(null)
+  const { viewportMode, contentMode, isCompactLayout } = useResponsiveModes(pageRef)
 
   useEffect(() => {
     const onHash = () => setRoute(parseRouteFromHash())
     window.addEventListener('hashchange', onHash)
     return () => window.removeEventListener('hashchange', onHash)
-  }, [])
-
-  useEffect(() => {
-    const mq = window.matchMedia('(max-width: 640px)')
-    const apply = () => setIsMobileGuide(mq.matches)
-    apply()
-    mq.addEventListener('change', apply)
-    return () => mq.removeEventListener('change', apply)
   }, [])
 
   const reloadBase = useCallback(async (signal: AbortSignal) => {
@@ -857,7 +852,12 @@ export default function UserConsole(): JSX.Element {
   }, [text.detail.probe])
 
   return (
-    <main className="app-shell public-home">
+    <main
+      ref={pageRef}
+      className={`app-shell public-home viewport-${viewportMode} content-${contentMode}${
+        isCompactLayout ? ' is-compact-layout' : ''
+      }`}
+    >
       <section className="surface app-header admin-panel-header">
         <div className="admin-panel-header-main">
           <h1>{text.title}</h1>
@@ -1299,12 +1299,12 @@ export default function UserConsole(): JSX.Element {
 
           <section className="surface panel public-home-guide">
             <h2>{publicStrings.guide.title}</h2>
-            {isMobileGuide && (
+            {isCompactLayout && (
               <div className="guide-select" aria-label="Client selector (mobile)">
                 <MobileGuideDropdown active={activeGuide} onChange={setActiveGuide} labels={guideTabs} />
               </div>
             )}
-            {!isMobileGuide && (
+            {!isCompactLayout && (
               <div className="guide-tabs">
                 {guideTabs.map((tab) => (
                   <button

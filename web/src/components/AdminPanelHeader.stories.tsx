@@ -32,6 +32,9 @@ export const Default: Story = {
     refreshingLabel: '刷新中…',
     onRefresh: () => undefined,
   },
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
 }
 
 export const Refreshing: Story = {

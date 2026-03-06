@@ -89,7 +89,7 @@ function ModalHarness(props: { initial: KeysValidationState }): JSX.Element {
 }
 
 const meta = {
-  title: "Components/ApiKeysValidationDialog",
+  title: "Admin/ApiKeysValidationDialog",
   component: ModalHarness,
   parameters: { layout: "fullscreen" },
   render: (args) => <ModalHarness {...args} />,
@@ -128,6 +128,9 @@ export const MixedResults: Story = {
       ],
     },
   },
+  parameters: {
+    viewport: { defaultViewport: "1440-device-desktop" },
+  },
 };
 
 export const CheckingInProgress: Story = {
@@ -146,6 +149,9 @@ export const CheckingInProgress: Story = {
         { api_key: "tvly-PENDING-3", status: "pending", attempts: 0 },
       ],
     },
+  },
+  parameters: {
+    viewport: { defaultViewport: "1440-device-desktop" },
   },
 };
 
@@ -179,6 +185,9 @@ export const PostImportNoRemainingRows: Story = {
         ],
       },
     },
+  },
+  parameters: {
+    viewport: { defaultViewport: "1440-device-desktop" },
   },
 };
 
@@ -220,5 +229,8 @@ export const PostImportWithRemainingRows: Story = {
         ],
       },
     },
+  },
+  parameters: {
+    viewport: { defaultViewport: "1440-device-desktop" },
   },
 };

@@ -65,6 +65,9 @@ export const Default: Story = {
     onPeriodChange: () => undefined,
     onFocusChange: () => undefined,
   },
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
 }
 
 export const Panel: Story = {

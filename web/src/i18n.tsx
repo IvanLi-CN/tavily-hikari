@@ -476,6 +476,7 @@ interface AdminTranslationsShape {
         close: string
         retry: string
         retryFailed: string
+        import: string
         importValid: string
         imported: string
       }
@@ -1226,6 +1227,7 @@ export const translations: Record<Language, TranslationShape> = {
             close: 'Close',
             retry: 'Retry',
             retryFailed: 'Retry failed',
+            import: 'Import',
             importValid: 'Import {count} valid keys',
             imported: 'Imported',
           },
@@ -1959,6 +1961,7 @@ export const translations: Record<Language, TranslationShape> = {
             close: '关闭',
             retry: '重试',
             retryFailed: '重试失败项',
+            import: '导入',
             importValid: '入库 {count} 个可用 key',
             imported: '已入库',
           },
