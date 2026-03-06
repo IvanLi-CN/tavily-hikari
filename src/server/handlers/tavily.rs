@@ -512,6 +512,18 @@ async fn proxy_tavily_http_endpoint(
         tavily_research_min_credits(&options)
     });
 
+    // Serialize billable requests per token within this process so `peek -> upstream -> charge`
+    // cannot be interleaved by concurrent requests from the same token.
+    let _token_billing_guard = if !state.dev_open_admin {
+        if let Some(tid) = auth_token_id.as_deref() {
+            Some(state.proxy.lock_token_billing(tid).await)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     if config.enforce_hourly_any_limit
         && let Some(ref tid) = auth_token_id
         && !state.dev_open_admin

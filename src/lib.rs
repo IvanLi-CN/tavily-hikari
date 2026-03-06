@@ -459,6 +459,10 @@ pub struct TavilyProxy {
     affinity: Arc<Mutex<TokenAffinityState>>,
     research_request_affinity: Arc<Mutex<TokenAffinityState>>,
     research_request_owner_affinity: Arc<Mutex<TokenAffinityState>>,
+    // In-process mutexes to keep quota enforcement and /usage-diff billing consistent under
+    // concurrency. These do NOT provide cross-instance guarantees.
+    token_billing_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+    research_key_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -529,7 +533,36 @@ impl TavilyProxy {
             research_request_owner_affinity: Arc::new(Mutex::new(TokenAffinityState::new(
                 RESEARCH_REQUEST_AFFINITY_TTL_SECS,
             ))),
+            token_billing_locks: Arc::new(Mutex::new(HashMap::new())),
+            research_key_locks: Arc::new(Mutex::new(HashMap::new())),
         })
+    }
+
+    /// Serialize billing/quota checks per token within this process.
+    ///
+    /// This is intentionally in-memory (not DB transactional), and exists to prevent
+    /// concurrent requests from "peeking" the same snapshot and then charging later,
+    /// which can otherwise allow limit bypass under concurrency.
+    pub async fn lock_token_billing(&self, token_id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = {
+            let mut locks = self.token_billing_locks.lock().await;
+            locks
+                .entry(token_id.to_string())
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone()
+        };
+        lock.lock_owned().await
+    }
+
+    async fn lock_research_key_usage(&self, key_id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = {
+            let mut locks = self.research_key_locks.lock().await;
+            locks
+                .entry(key_id.to_string())
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone()
+        };
+        lock.lock_owned().await
     }
 
     async fn acquire_key_for(
@@ -962,6 +995,9 @@ impl TavilyProxy {
         inject_upstream_bearer_auth: bool,
     ) -> Result<(ProxyResponse, AttemptAnalysis, Option<i64>), ProxyError> {
         let lease = self.acquire_key_for(auth_token_id).await?;
+        // Research billing uses /usage diff of a key-scoped counter; protect it from concurrent
+        // research calls sharing the same upstream key, otherwise deltas can be misattributed.
+        let _key_guard = self.lock_research_key_usage(&lease.id).await;
 
         let before_usage = self
             .fetch_research_usage_for_secret(

@@ -208,6 +208,7 @@ async fn proxy_handler(
     let mut mcp_tool_name: Option<String> = None;
     let mut expected_search_credits: Option<i64> = None;
     let mut forwarded_body = body_bytes.clone();
+    let mut lockable_tool = false;
     if path.starts_with("/mcp")
         && let Ok(mut value) = serde_json::from_slice::<Value>(&body_bytes)
         && let Some(map) = value.as_object_mut()
@@ -241,6 +242,7 @@ async fn proxy_handler(
                 tool.as_str(),
                 "tavily-search" | "tavily-extract" | "tavily-crawl" | "tavily-map"
             ) {
+                lockable_tool = true;
                 let args_entry = params
                     .entry("arguments".to_string())
                     .or_insert_with(|| Value::Object(serde_json::Map::new()));
@@ -287,6 +289,17 @@ async fn proxy_handler(
             .strip_prefix("th-")
             .and_then(|rest| rest.split('-').next())
             .map(|s| s.to_string())
+    };
+
+    // Serialize per-token billable tool calls to keep `peek -> upstream -> charge` consistent.
+    let _token_billing_guard = if !state.dev_open_admin
+        && billable_flag
+        && lockable_tool
+        && let Some(tid) = token_id.as_deref()
+    {
+        Some(state.proxy.lock_token_billing(tid).await)
+    } else {
+        None
     };
 
     let mut _quota_verdict: Option<TokenQuotaVerdict> = None;
