@@ -285,14 +285,16 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
               ) : null}
             </div>
           </div>
-          <button
-            type="button"
-            className="btn btn-sm btn-ghost btn-circle"
-            onClick={props.onClose}
-            title={actions.close}
-          >
-            <Icon icon="mdi:close" width={18} height={18} />
-          </button>
+          {!isSmallViewport ? (
+            <button
+              type="button"
+              className="btn btn-sm btn-ghost btn-circle"
+              onClick={props.onClose}
+              title={actions.close}
+            >
+              <Icon icon="mdi:close" width={18} height={18} />
+            </button>
+          ) : null}
         </div>
 
         {props.state ? (
