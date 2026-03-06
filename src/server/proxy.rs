@@ -215,6 +215,7 @@ async fn proxy_handler(
     let mut has_search_mcp_without_id = false;
     let mut expected_search_credits_by_id: HashMap<String, i64> = HashMap::new();
     let mut expected_search_credits_without_id_total: i64 = 0;
+    let mut invalid_mcp_request_message: Option<String> = None;
     if path.starts_with("/mcp") {
         match serde_json::from_slice::<Value>(&body_bytes) {
             Ok(mut value) => {
@@ -243,7 +244,8 @@ async fn proxy_handler(
                                         has_billable_mcp_without_id: &mut bool,
                                         has_search_mcp_without_id: &mut bool,
                                         expected_search_credits_by_id: &mut HashMap<String, i64>,
-                                        expected_search_credits_without_id_total: &mut i64| {
+                                        expected_search_credits_without_id_total: &mut i64,
+                                        invalid_mcp_request_message: &mut Option<String>| {
                     // tools/call is treated as billable by default unless we can prove it's
                     // a non-Tavily tool call (name does not start with `tavily-`).
                     *any_lockable = true;
@@ -266,7 +268,12 @@ async fn proxy_handler(
                             *all_non_billable = false;
 
                             if let Some(id_key) = id_key.as_ref() {
-                                billable_mcp_ids.insert(id_key.clone());
+                                if !billable_mcp_ids.insert(id_key.clone()) {
+                                    invalid_mcp_request_message.get_or_insert_with(|| {
+                                        "duplicate JSON-RPC id in batch for billable tools/call"
+                                            .to_string()
+                                    });
+                                }
                                 if tool == "tavily-search" {
                                     billable_search_mcp_ids.insert(id_key.clone());
                                 }
@@ -311,7 +318,12 @@ async fn proxy_handler(
                             *all_non_billable = false;
 
                             if let Some(id_key) = id_key.as_ref() {
-                                billable_mcp_ids.insert(id_key.clone());
+                                if !billable_mcp_ids.insert(id_key.clone()) {
+                                    invalid_mcp_request_message.get_or_insert_with(|| {
+                                        "duplicate JSON-RPC id in batch for billable tools/call"
+                                            .to_string()
+                                    });
+                                }
                             } else {
                                 *has_billable_mcp_without_id = true;
                             }
@@ -324,7 +336,12 @@ async fn proxy_handler(
                         *all_non_billable = false;
 
                         if let Some(id_key) = id_key.as_ref() {
-                            billable_mcp_ids.insert(id_key.clone());
+                            if !billable_mcp_ids.insert(id_key.clone()) {
+                                invalid_mcp_request_message.get_or_insert_with(|| {
+                                    "duplicate JSON-RPC id in batch for billable tools/call"
+                                        .to_string()
+                                });
+                            }
                         } else {
                             *has_billable_mcp_without_id = true;
                         }
@@ -353,6 +370,7 @@ async fn proxy_handler(
                                 &mut has_search_mcp_without_id,
                                 &mut expected_search_credits_by_id,
                                 &mut expected_search_credits_without_id_total,
+                                &mut invalid_mcp_request_message,
                             );
                         } else if !non_billable {
                             // Unknown object-shaped method: treat as billable (safe default).
@@ -393,6 +411,7 @@ async fn proxy_handler(
                                     &mut has_search_mcp_without_id,
                                     &mut expected_search_credits_by_id,
                                     &mut expected_search_credits_without_id_total,
+                                    &mut invalid_mcp_request_message,
                                 );
                             } else if !non_billable {
                                 any_billable = true;
@@ -459,6 +478,7 @@ async fn proxy_handler(
     let _token_billing_guard = if !state.dev_open_admin
         && billable_flag
         && lockable_tool
+        && invalid_mcp_request_message.is_none()
         && let Some(tid) = token_id.as_deref()
     {
         Some(state.proxy.lock_token_billing(tid).await)
@@ -497,6 +517,44 @@ async fn proxy_handler(
                     return Err(StatusCode::INTERNAL_SERVER_ERROR);
                 }
             }
+        }
+
+        // Reject billable MCP calls that cannot be safely attributed/billed.
+        if billable_flag
+            && invalid_mcp_request_message.is_some()
+            && path.starts_with("/mcp")
+        {
+            let message = invalid_mcp_request_message
+                .clone()
+                .unwrap_or_else(|| "invalid MCP request".to_string());
+
+            if let Some(tid) = token_id.as_deref() {
+                let _ = state
+                    .proxy
+                    .record_token_attempt(
+                        tid,
+                        &method,
+                        &path,
+                        parts.uri.query(),
+                        Some(StatusCode::BAD_REQUEST.as_u16() as i64),
+                        None,
+                        billable_flag,
+                        "error",
+                        Some(&message),
+                    )
+                    .await;
+            }
+
+            let payload = json!({
+                "error": "invalid_request",
+                "message": message,
+            });
+            let resp = Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .header(CONTENT_TYPE, "application/json; charset=utf-8")
+                .body(Body::from(payload.to_string()))
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            return Ok(resp);
         }
 
         // 2) 业务配额（小时 / 日 / 月）只对 MCP 工具调用生效。
@@ -554,11 +612,18 @@ async fn proxy_handler(
                 // because JSON-RPC batches can contain a mix of successes and quota errors. In
                 // that case we only charge credits we can actually observe from `usage.credits`
                 // to avoid guessing partial failures.
+                let allow_empty_body_search_fallback = resp.body.is_empty()
+                    && has_search_mcp_without_id
+                    && expected_search_credits.is_some();
                 if billable_flag
                     && resp.status.is_success()
-                    && matches!(result_status, "success" | "quota_exhausted")
+                    && (matches!(result_status, "success" | "quota_exhausted")
+                        || allow_empty_body_search_fallback)
                 {
-                    let response_has_error = mcp_response_has_any_error(&resp.body);
+                    let mut response_has_error = mcp_response_has_any_error(&resp.body);
+                    if allow_empty_body_search_fallback {
+                        response_has_error = false;
+                    }
                     let credits = if has_billable_mcp_without_id {
                         // Without JSON-RPC ids we cannot reliably separate billable vs non-billable
                         // response items, so we fall back to total extraction (safe default).
