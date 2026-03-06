@@ -9371,6 +9371,64 @@ pub fn extract_usage_credits_total_from_json_bytes(body: &[u8]) -> Option<i64> {
     extract_usage_credits_total_from_sse_bytes(body)
 }
 
+/// Best-effort extraction of `usage.credits` from an MCP response, keyed by JSON-RPC `id`.
+///
+/// This is primarily used by the `/mcp` proxy to avoid accidentally charging credits from
+/// non-Tavily tool calls in a mixed JSON-RPC batch.
+pub fn extract_mcp_usage_credits_by_id_from_bytes(body: &[u8]) -> HashMap<String, i64> {
+    let mut messages: Vec<Value> = Vec::new();
+
+    if let Ok(text) = std::str::from_utf8(body) {
+        messages = extract_sse_json_messages(text);
+        if messages.is_empty()
+            && let Ok(value) = serde_json::from_str::<Value>(text)
+        {
+            match value {
+                Value::Array(items) => messages.extend(items),
+                other => messages.push(other),
+            }
+        }
+    }
+
+    if messages.is_empty()
+        && let Ok(value) = serde_json::from_slice::<Value>(body)
+    {
+        match value {
+            Value::Array(items) => messages.extend(items),
+            other => messages.push(other),
+        }
+    }
+
+    fn ingest(value: &Value, out: &mut HashMap<String, i64>) {
+        match value {
+            Value::Array(items) => {
+                for item in items {
+                    ingest(item, out);
+                }
+            }
+            Value::Object(map) => {
+                let Some(id) = map.get("id").filter(|v| !v.is_null()) else {
+                    return;
+                };
+                let Some(credits) = extract_usage_credits_from_value(value) else {
+                    return;
+                };
+                let key = id.to_string();
+                out.entry(key)
+                    .and_modify(|current| *current = (*current).max(credits))
+                    .or_insert(credits);
+            }
+            _ => {}
+        }
+    }
+
+    let mut out: HashMap<String, i64> = HashMap::new();
+    for message in messages {
+        ingest(&message, &mut out);
+    }
+    out
+}
+
 fn extract_usage_credits_total_from_value(value: &Value) -> Option<i64> {
     match value {
         Value::Array(items) => {
@@ -9667,6 +9725,51 @@ data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"structuredContent\":{\"usage\"
 data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"structuredContent\":{\"usage\":{\"credits\":1}}}}\n\n\
 data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"structuredContent\":{\"usage\":{\"credits\":2}}}}\n\n";
         assert_eq!(extract_usage_credits_total_from_json_bytes(body), Some(3));
+    }
+
+    #[test]
+    fn extract_mcp_usage_credits_by_id_from_bytes_tracks_max_per_id() {
+        let body = br#"
+        [
+          {"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"usage":{"credits":1}}}},
+          {"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"usage":{"credits":2}}}},
+          {"jsonrpc":"2.0","id":"abc","result":{"structuredContent":{"usage":{"credits":"3"}}}},
+          {"jsonrpc":"2.0","id":null,"result":{"structuredContent":{"usage":{"credits":99}}}},
+          {"jsonrpc":"2.0","id":2,"result":{"structuredContent":{"status":200}}}
+        ]
+        "#;
+
+        let credits = extract_mcp_usage_credits_by_id_from_bytes(body);
+
+        let id1 = serde_json::json!(1).to_string();
+        let id_abc = serde_json::json!("abc").to_string();
+        let id2 = serde_json::json!(2).to_string();
+
+        assert_eq!(credits.get(&id1), Some(&2));
+        assert_eq!(credits.get(&id_abc), Some(&3));
+        assert_eq!(
+            credits.get(&id2),
+            None,
+            "missing usage should not create a map entry"
+        );
+        assert!(
+            !credits.values().any(|v| *v == 99),
+            "null ids should be ignored"
+        );
+    }
+
+    #[test]
+    fn extract_mcp_usage_credits_by_id_from_bytes_parses_sse() {
+        let body = b"data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"structuredContent\":{\"usage\":{\"credits\":1}}}}\n\n\
+data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"structuredContent\":{\"usage\":{\"credits\":2}}}}\n\n\
+data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"structuredContent\":{\"usage\":{\"credits\":1}}}}\n\n";
+
+        let credits = extract_mcp_usage_credits_by_id_from_bytes(body);
+
+        let id1 = serde_json::json!(1).to_string();
+        let id2 = serde_json::json!(2).to_string();
+        assert_eq!(credits.get(&id1), Some(&2));
+        assert_eq!(credits.get(&id2), Some(&1));
     }
 
     #[test]

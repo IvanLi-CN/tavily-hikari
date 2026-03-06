@@ -42,8 +42,8 @@ use tavily_hikari::{
     analyze_mcp_attempt, effective_request_logs_gc_at, effective_request_logs_retention_days,
     effective_token_daily_limit, effective_token_hourly_limit,
     effective_token_hourly_request_limit, effective_token_monthly_limit,
-    extract_usage_credits_from_json_bytes, extract_usage_credits_total_from_json_bytes,
-    mcp_response_has_any_error,
+    extract_mcp_usage_credits_by_id_from_bytes, extract_usage_credits_from_json_bytes,
+    extract_usage_credits_total_from_json_bytes, mcp_response_has_any_error,
 };
 use tokio::signal;
 #[cfg(unix)]

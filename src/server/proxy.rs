@@ -209,6 +209,12 @@ async fn proxy_handler(
     let mut expected_search_credits: Option<i64> = None;
     let mut forwarded_body = body_bytes.clone();
     let mut lockable_tool = false;
+    let mut billable_mcp_ids: HashSet<String> = HashSet::new();
+    let mut billable_search_mcp_ids: HashSet<String> = HashSet::new();
+    let mut has_billable_mcp_without_id = false;
+    let mut has_search_mcp_without_id = false;
+    let mut expected_search_credits_by_id: HashMap<String, i64> = HashMap::new();
+    let mut expected_search_credits_without_id_total: i64 = 0;
     if path.starts_with("/mcp") {
         match serde_json::from_slice::<Value>(&body_bytes) {
             Ok(mut value) => {
@@ -227,14 +233,25 @@ async fn proxy_handler(
                 };
 
                 let handle_tool_call = |map: &mut serde_json::Map<String, Value>,
-                                            any_billable: &mut bool,
-                                            any_lockable: &mut bool,
-                                            all_non_billable: &mut bool,
-                                            mutated: &mut bool,
-                                            expected_search_total: &mut i64| {
+                                        any_billable: &mut bool,
+                                        any_lockable: &mut bool,
+                                        all_non_billable: &mut bool,
+                                        mutated: &mut bool,
+                                        expected_search_total: &mut i64,
+                                        billable_mcp_ids: &mut HashSet<String>,
+                                        billable_search_mcp_ids: &mut HashSet<String>,
+                                        has_billable_mcp_without_id: &mut bool,
+                                        has_search_mcp_without_id: &mut bool,
+                                        expected_search_credits_by_id: &mut HashMap<String, i64>,
+                                        expected_search_credits_without_id_total: &mut i64| {
                     // tools/call is treated as billable by default unless we can prove it's
                     // a non-Tavily tool call (name does not start with `tavily-`).
                     *any_lockable = true;
+
+                    let id_key = map
+                        .get("id")
+                        .filter(|v| !v.is_null())
+                        .map(|v| v.to_string());
 
                     if let Some(Value::Object(params)) = map.get_mut("params") {
                         let tool = params
@@ -248,6 +265,18 @@ async fn proxy_handler(
                             *any_billable = true;
                             *all_non_billable = false;
 
+                            if let Some(id_key) = id_key.as_ref() {
+                                billable_mcp_ids.insert(id_key.clone());
+                                if tool == "tavily-search" {
+                                    billable_search_mcp_ids.insert(id_key.clone());
+                                }
+                            } else {
+                                *has_billable_mcp_without_id = true;
+                                if tool == "tavily-search" {
+                                    *has_search_mcp_without_id = true;
+                                }
+                            }
+
                             let args_entry = params
                                 .entry("arguments".to_string())
                                 .or_insert_with(|| Value::Object(serde_json::Map::new()));
@@ -260,14 +289,32 @@ async fn proxy_handler(
                             *mutated = true;
 
                             if tool == "tavily-search" {
-                                *expected_search_total = (*expected_search_total).saturating_add(
-                                    tavily_search_expected_credits(args_entry),
-                                );
+                                let expected = tavily_search_expected_credits(args_entry);
+                                *expected_search_total =
+                                    (*expected_search_total).saturating_add(expected);
+                                if let Some(id_key) = id_key.as_ref() {
+                                    expected_search_credits_by_id
+                                        .entry(id_key.clone())
+                                        .and_modify(|current| {
+                                            *current = (*current).saturating_add(expected)
+                                        })
+                                        .or_insert(expected);
+                                } else {
+                                    *expected_search_credits_without_id_total =
+                                        (*expected_search_credits_without_id_total)
+                                            .saturating_add(expected);
+                                }
                             }
                         } else if tool.is_empty() {
                             // Unknown tool name: billable safe default.
                             *any_billable = true;
                             *all_non_billable = false;
+
+                            if let Some(id_key) = id_key.as_ref() {
+                                billable_mcp_ids.insert(id_key.clone());
+                            } else {
+                                *has_billable_mcp_without_id = true;
+                            }
                         } else {
                             // Proven non-Tavily tool call: do not charge business quota.
                         }
@@ -275,6 +322,12 @@ async fn proxy_handler(
                         // Missing params: billable safe default.
                         *any_billable = true;
                         *all_non_billable = false;
+
+                        if let Some(id_key) = id_key.as_ref() {
+                            billable_mcp_ids.insert(id_key.clone());
+                        } else {
+                            *has_billable_mcp_without_id = true;
+                        }
                     }
                 };
 
@@ -294,6 +347,12 @@ async fn proxy_handler(
                                 &mut all_non_billable,
                                 &mut mutated,
                                 &mut expected_search_total,
+                                &mut billable_mcp_ids,
+                                &mut billable_search_mcp_ids,
+                                &mut has_billable_mcp_without_id,
+                                &mut has_search_mcp_without_id,
+                                &mut expected_search_credits_by_id,
+                                &mut expected_search_credits_without_id_total,
                             );
                         } else if !non_billable {
                             // Unknown object-shaped method: treat as billable (safe default).
@@ -328,6 +387,12 @@ async fn proxy_handler(
                                     &mut all_non_billable,
                                     &mut mutated,
                                     &mut expected_search_total,
+                                    &mut billable_mcp_ids,
+                                    &mut billable_search_mcp_ids,
+                                    &mut has_billable_mcp_without_id,
+                                    &mut has_search_mcp_without_id,
+                                    &mut expected_search_credits_by_id,
+                                    &mut expected_search_credits_without_id_total,
                                 );
                             } else if !non_billable {
                                 any_billable = true;
@@ -494,29 +559,68 @@ async fn proxy_handler(
                     && matches!(result_status, "success" | "quota_exhausted")
                 {
                     let response_has_error = mcp_response_has_any_error(&resp.body);
-                    let credits = match extract_usage_credits_total_from_json_bytes(&resp.body) {
-                        Some(credits) => {
-                            if response_has_error {
-                                credits
-                            } else {
-                                expected_search_credits.map_or(credits, |expected| {
-                                    // Search is predictable: if usage is partially missing in a batch,
-                                    // bill at least the request-derived expected total.
+                    let credits = if has_billable_mcp_without_id {
+                        // Without JSON-RPC ids we cannot reliably separate billable vs non-billable
+                        // response items, so we fall back to total extraction (safe default).
+                        match extract_usage_credits_total_from_json_bytes(&resp.body) {
+                            Some(credits) => {
+                                if response_has_error {
+                                    credits
+                                } else if let Some(expected) = expected_search_credits {
                                     credits.max(expected)
-                                })
+                                } else {
+                                    credits
+                                }
+                            }
+                            None => {
+                                if response_has_error {
+                                    0
+                                } else if let Some(expected) = expected_search_credits {
+                                    expected
+                                } else {
+                                    eprintln!(
+                                        "missing usage.credits for MCP tool response; skipping billing"
+                                    );
+                                    0
+                                }
                             }
                         }
-                        None => {
-                            if response_has_error {
-                                0
-                            } else if let Some(expected) = expected_search_credits {
-                                expected
+                    } else {
+                        let credits_by_id = extract_mcp_usage_credits_by_id_from_bytes(&resp.body);
+                        let mut total = 0i64;
+                        let mut any_usage = false;
+
+                        for id in billable_mcp_ids.iter() {
+                            if let Some(credits) = credits_by_id.get(id) {
+                                total = total.saturating_add(*credits);
+                                any_usage = true;
+                            }
+                        }
+
+                        if response_has_error {
+                            if any_usage {
+                                total
                             } else {
-                                eprintln!(
-                                    "missing usage.credits for MCP tool response; skipping billing"
-                                );
                                 0
                             }
+                        } else {
+                            // Search is predictable: when usage is missing, fall back to the
+                            // request-derived expected credits *per search call*.
+                            for (id, expected) in expected_search_credits_by_id.iter() {
+                                if billable_search_mcp_ids.contains(id)
+                                    && !credits_by_id.contains_key(id)
+                                {
+                                    total = total.saturating_add(*expected);
+                                }
+                            }
+
+                            if has_search_mcp_without_id
+                                && expected_search_credits_without_id_total > 0
+                            {
+                                total = total.saturating_add(expected_search_credits_without_id_total);
+                            }
+
+                            total
                         }
                     };
 
