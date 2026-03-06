@@ -9429,6 +9429,66 @@ pub fn extract_mcp_usage_credits_by_id_from_bytes(body: &[u8]) -> HashMap<String
     out
 }
 
+/// Best-effort extraction of whether an MCP response message contains an error, keyed by JSON-RPC `id`.
+///
+/// Values are `true` when we see any non-success outcome for that id (including quota exhausted).
+/// This is used to scope billing fallbacks (like expected credits) to only the billable calls.
+pub fn extract_mcp_has_error_by_id_from_bytes(body: &[u8]) -> HashMap<String, bool> {
+    let mut messages: Vec<Value> = Vec::new();
+
+    if let Ok(text) = std::str::from_utf8(body) {
+        messages = extract_sse_json_messages(text);
+        if messages.is_empty()
+            && let Ok(value) = serde_json::from_str::<Value>(text)
+        {
+            match value {
+                Value::Array(items) => messages.extend(items),
+                other => messages.push(other),
+            }
+        }
+    }
+
+    if messages.is_empty()
+        && let Ok(value) = serde_json::from_slice::<Value>(body)
+    {
+        match value {
+            Value::Array(items) => messages.extend(items),
+            other => messages.push(other),
+        }
+    }
+
+    fn ingest(value: &Value, out: &mut HashMap<String, bool>) {
+        match value {
+            Value::Array(items) => {
+                for item in items {
+                    ingest(item, out);
+                }
+            }
+            Value::Object(map) => {
+                let Some(id) = map.get("id").filter(|v| !v.is_null()) else {
+                    return;
+                };
+
+                let is_error = analyze_json_message(value)
+                    .map(|(outcome, _code)| outcome != MessageOutcome::Success)
+                    .unwrap_or(true);
+
+                let key = id.to_string();
+                out.entry(key)
+                    .and_modify(|current| *current = *current || is_error)
+                    .or_insert(is_error);
+            }
+            _ => {}
+        }
+    }
+
+    let mut out: HashMap<String, bool> = HashMap::new();
+    for message in messages {
+        ingest(&message, &mut out);
+    }
+    out
+}
+
 fn extract_usage_credits_total_from_value(value: &Value) -> Option<i64> {
     match value {
         Value::Array(items) => {
@@ -9770,6 +9830,36 @@ data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"structuredContent\":{\"usage\"
         let id2 = serde_json::json!(2).to_string();
         assert_eq!(credits.get(&id1), Some(&2));
         assert_eq!(credits.get(&id2), Some(&1));
+    }
+
+    #[test]
+    fn extract_mcp_has_error_by_id_from_bytes_marks_error_and_quota_exhausted() {
+        let body = br#"
+        [
+          {"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"status":200}}},
+          {"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"oops"}},
+          {"jsonrpc":"2.0","id":3,"result":{"structuredContent":{"status":432}}}
+        ]
+        "#;
+
+        let flags = extract_mcp_has_error_by_id_from_bytes(body);
+        let id1 = serde_json::json!(1).to_string();
+        let id2 = serde_json::json!(2).to_string();
+        let id3 = serde_json::json!(3).to_string();
+
+        assert_eq!(flags.get(&id1), Some(&false));
+        assert_eq!(flags.get(&id2), Some(&true));
+        assert_eq!(flags.get(&id3), Some(&true));
+    }
+
+    #[test]
+    fn extract_mcp_has_error_by_id_from_bytes_or_accumulates_across_sse() {
+        let body = b"data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"structuredContent\":{\"status\":200}}}\n\n\
+data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oops\"}}\n\n";
+
+        let flags = extract_mcp_has_error_by_id_from_bytes(body);
+        let id1 = serde_json::json!(1).to_string();
+        assert_eq!(flags.get(&id1), Some(&true));
     }
 
     #[test]

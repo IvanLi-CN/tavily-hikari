@@ -244,8 +244,7 @@ async fn proxy_handler(
                                         has_billable_mcp_without_id: &mut bool,
                                         has_search_mcp_without_id: &mut bool,
                                         expected_search_credits_by_id: &mut HashMap<String, i64>,
-                                        expected_search_credits_without_id_total: &mut i64,
-                                        invalid_mcp_request_message: &mut Option<String>| {
+                                        expected_search_credits_without_id_total: &mut i64| {
                     // tools/call is treated as billable by default unless we can prove it's
                     // a non-Tavily tool call (name does not start with `tavily-`).
                     *any_lockable = true;
@@ -268,12 +267,7 @@ async fn proxy_handler(
                             *all_non_billable = false;
 
                             if let Some(id_key) = id_key.as_ref() {
-                                if !billable_mcp_ids.insert(id_key.clone()) {
-                                    invalid_mcp_request_message.get_or_insert_with(|| {
-                                        "duplicate JSON-RPC id in batch for billable tools/call"
-                                            .to_string()
-                                    });
-                                }
+                                billable_mcp_ids.insert(id_key.clone());
                                 if tool == "tavily-search" {
                                     billable_search_mcp_ids.insert(id_key.clone());
                                 }
@@ -318,12 +312,7 @@ async fn proxy_handler(
                             *all_non_billable = false;
 
                             if let Some(id_key) = id_key.as_ref() {
-                                if !billable_mcp_ids.insert(id_key.clone()) {
-                                    invalid_mcp_request_message.get_or_insert_with(|| {
-                                        "duplicate JSON-RPC id in batch for billable tools/call"
-                                            .to_string()
-                                    });
-                                }
+                                billable_mcp_ids.insert(id_key.clone());
                             } else {
                                 *has_billable_mcp_without_id = true;
                             }
@@ -336,12 +325,7 @@ async fn proxy_handler(
                         *all_non_billable = false;
 
                         if let Some(id_key) = id_key.as_ref() {
-                            if !billable_mcp_ids.insert(id_key.clone()) {
-                                invalid_mcp_request_message.get_or_insert_with(|| {
-                                    "duplicate JSON-RPC id in batch for billable tools/call"
-                                        .to_string()
-                                });
-                            }
+                            billable_mcp_ids.insert(id_key.clone());
                         } else {
                             *has_billable_mcp_without_id = true;
                         }
@@ -370,7 +354,6 @@ async fn proxy_handler(
                                 &mut has_search_mcp_without_id,
                                 &mut expected_search_credits_by_id,
                                 &mut expected_search_credits_without_id_total,
-                                &mut invalid_mcp_request_message,
                             );
                         } else if !non_billable {
                             // Unknown object-shaped method: treat as billable (safe default).
@@ -381,6 +364,7 @@ async fn proxy_handler(
                     Value::Array(ref mut items) => {
                         // JSON-RPC batch: only treat as non-billable if *every* item is provably
                         // a control-plane method or a non-Tavily tool call.
+                        let mut seen_ids: HashSet<String> = HashSet::new();
                         for item in items.iter_mut() {
                             let Some(map) = item.as_object_mut() else {
                                 // Positional/batch junk: billable safe default.
@@ -389,6 +373,17 @@ async fn proxy_handler(
                                 all_non_billable = false;
                                 continue;
                             };
+
+                            if map
+                                .get("id")
+                                .filter(|v| !v.is_null())
+                                .map(|v| v.to_string())
+                                .is_some_and(|id_key| !seen_ids.insert(id_key))
+                            {
+                                invalid_mcp_request_message.get_or_insert_with(|| {
+                                    "duplicate JSON-RPC id in batch".to_string()
+                                });
+                            }
 
                             let method =
                                 map.get("method").and_then(|v| v.as_str()).unwrap_or("");
@@ -411,7 +406,6 @@ async fn proxy_handler(
                                     &mut has_search_mcp_without_id,
                                     &mut expected_search_credits_by_id,
                                     &mut expected_search_credits_without_id_total,
-                                    &mut invalid_mcp_request_message,
                                 );
                             } else if !non_billable {
                                 any_billable = true;
@@ -612,19 +606,19 @@ async fn proxy_handler(
                 // because JSON-RPC batches can contain a mix of successes and quota errors. In
                 // that case we only charge credits we can actually observe from `usage.credits`
                 // to avoid guessing partial failures.
-                let allow_empty_body_search_fallback = resp.body.is_empty()
-                    && has_search_mcp_without_id
-                    && expected_search_credits.is_some();
+                let allow_empty_body_search_fallback =
+                    resp.body.is_empty() && expected_search_credits.is_some();
                 if billable_flag
                     && resp.status.is_success()
                     && (matches!(result_status, "success" | "quota_exhausted")
                         || allow_empty_body_search_fallback)
                 {
-                    let mut response_has_error = mcp_response_has_any_error(&resp.body);
-                    if allow_empty_body_search_fallback {
-                        response_has_error = false;
-                    }
                     let credits = if has_billable_mcp_without_id {
+                        let mut response_has_error = mcp_response_has_any_error(&resp.body);
+                        if allow_empty_body_search_fallback {
+                            response_has_error = false;
+                        }
+
                         // Without JSON-RPC ids we cannot reliably separate billable vs non-billable
                         // response items, so we fall back to total extraction (safe default).
                         match extract_usage_credits_total_from_json_bytes(&resp.body) {
@@ -651,6 +645,15 @@ async fn proxy_handler(
                             }
                         }
                     } else {
+                        let errors_by_id = extract_mcp_has_error_by_id_from_bytes(&resp.body);
+                        let mut billable_has_error = billable_mcp_ids.is_empty()
+                            || billable_mcp_ids
+                                .iter()
+                                .any(|id| *errors_by_id.get(id).unwrap_or(&true));
+                        if allow_empty_body_search_fallback {
+                            billable_has_error = false;
+                        }
+
                         let credits_by_id = extract_mcp_usage_credits_by_id_from_bytes(&resp.body);
                         let mut total = 0i64;
                         let mut any_usage = false;
@@ -662,7 +665,7 @@ async fn proxy_handler(
                             }
                         }
 
-                        if response_has_error {
+                        if billable_has_error {
                             if any_usage {
                                 total
                             } else {
