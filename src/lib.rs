@@ -8932,6 +8932,7 @@ fn analyze_attempt(status: StatusCode, body: &[u8]) -> AttemptAnalysis {
     };
 
     let mut any_success = false;
+    let mut any_error = false;
     let mut detected_code = None;
     let mut messages = extract_sse_json_messages(text);
     if messages.is_empty()
@@ -8959,11 +8960,7 @@ fn analyze_attempt(status: StatusCode, body: &[u8]) -> AttemptAnalysis {
                     };
                 }
                 MessageOutcome::Error => {
-                    return AttemptAnalysis {
-                        status: OUTCOME_ERROR,
-                        mark_exhausted: false,
-                        tavily_status_code: code.or(detected_code),
-                    };
+                    any_error = true;
                 }
                 MessageOutcome::Success => any_success = true,
             }
@@ -8973,6 +8970,14 @@ fn analyze_attempt(status: StatusCode, body: &[u8]) -> AttemptAnalysis {
     if any_success {
         return AttemptAnalysis {
             status: OUTCOME_SUCCESS,
+            mark_exhausted: false,
+            tavily_status_code: detected_code,
+        };
+    }
+
+    if any_error {
+        return AttemptAnalysis {
+            status: OUTCOME_ERROR,
             mark_exhausted: false,
             tavily_status_code: detected_code,
         };

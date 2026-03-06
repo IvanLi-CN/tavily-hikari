@@ -491,14 +491,24 @@ async fn proxy_handler(
                 let mut result_status = analysis.status;
 
                 // Charge credits after a successful billable Tavily tool call.
-                if billable_flag
-                    && result_status == "success"
-                    && resp.status.is_success()
-                {
+                if billable_flag && result_status == "success" && resp.status.is_success() {
+                    let response_has_error = mcp_response_has_any_error(&resp.body);
                     let credits = match extract_usage_credits_total_from_json_bytes(&resp.body) {
-                        Some(credits) => credits,
+                        Some(credits) => {
+                            if response_has_error {
+                                credits
+                            } else {
+                                expected_search_credits.map_or(credits, |expected| {
+                                    // Search is predictable: if usage is partially missing in a batch,
+                                    // bill at least the request-derived expected total.
+                                    credits.max(expected)
+                                })
+                            }
+                        }
                         None => {
-                            if let Some(expected) = expected_search_credits {
+                            if response_has_error {
+                                0
+                            } else if let Some(expected) = expected_search_credits {
                                 expected
                             } else {
                                 eprintln!(
@@ -677,6 +687,66 @@ fn quota_window_stats(verdict: &TokenQuotaVerdict) -> (i64, i64) {
         QuotaWindow::Day => (verdict.daily_limit, verdict.daily_used),
         QuotaWindow::Month => (verdict.monthly_limit, verdict.monthly_used),
     }
+}
+
+fn mcp_response_has_any_error(body: &[u8]) -> bool {
+    let Ok(parsed) = serde_json::from_slice::<Value>(body) else {
+        return false;
+    };
+    match parsed {
+        Value::Array(items) => items.iter().any(mcp_message_has_error),
+        other => mcp_message_has_error(&other),
+    }
+}
+
+fn mcp_message_has_error(message: &Value) -> bool {
+    if message.get("error").is_some_and(|v| !v.is_null()) {
+        return true;
+    }
+
+    let Some(result) = message.get("result") else {
+        return false;
+    };
+
+    // Mirror `analyze_json_message()` heuristics, but only for "is this an error?" decisions.
+    if result.get("error").is_some_and(|v| !v.is_null()) {
+        return true;
+    }
+    if result.get("isError").and_then(|v| v.as_bool()).unwrap_or(false) {
+        return true;
+    }
+
+    if let Some(structured) = result.get("structuredContent") {
+        if let Some(code) = structured.get("status").and_then(|v| v.as_i64()) && code >= 400 {
+            return true;
+        }
+        if let Some(status) = structured.get("status").and_then(|v| v.as_str()) {
+            let normalized = status.trim().to_ascii_lowercase();
+            if matches!(
+                normalized.as_str(),
+                "failed" | "failure" | "error" | "errored" | "cancelled" | "canceled"
+            ) {
+                return true;
+            }
+        }
+        if structured.get("isError").and_then(|v| v.as_bool()).unwrap_or(false) {
+            return true;
+        }
+    }
+
+    if let Some(content) = result.get("content").and_then(|v| v.as_array()) {
+        for item in content {
+            if item
+                .get("type")
+                .and_then(|v| v.as_str())
+                .is_some_and(|v| v.eq_ignore_ascii_case("error"))
+            {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 impl From<ApiKeyMetrics> for ApiKeyView {
