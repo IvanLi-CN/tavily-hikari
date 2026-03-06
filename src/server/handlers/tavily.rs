@@ -679,14 +679,21 @@ async fn proxy_tavily_http_endpoint(
         match result {
             Ok((resp, analysis, usage_delta)) => {
                 let mut billing_error: Option<String> = None;
+                let mut usage_probe_warning: Option<&'static str> = None;
                 if resp.status.is_success()
                     && analysis.status == "success"
                     && let Some(tid) = token_id_for_logs.as_deref()
                 {
-                    let credits = usage_delta.unwrap_or_else(|| {
+                    let credits = if let Some(delta) = usage_delta {
+                        delta
+                    } else {
+                        // /usage probe is best-effort; when unavailable, charge the model minimum
+                        // and attach a warning for auditability.
+                        usage_probe_warning =
+                            Some("research usage diff unavailable; charged minimum credits");
                         eprintln!("research /usage diff unavailable; charging minimum credits");
                         research_min_credits.unwrap_or(4)
-                    });
+                    };
                     if credits > 0
                         && let Err(err) = state.proxy.charge_token_quota(tid, credits).await
                     {
@@ -717,7 +724,7 @@ async fn proxy_tavily_http_endpoint(
                             } else {
                                 analysis.status
                             },
-                            billing_error.as_deref(),
+                            billing_error.as_deref().or(usage_probe_warning),
                         )
                         .await;
                 }

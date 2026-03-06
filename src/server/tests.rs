@@ -4736,6 +4736,41 @@ mod tests {
         assert_eq!(usage_calls.load(Ordering::SeqCst), 2);
         assert_eq!(research_calls.load(Ordering::SeqCst), 1);
 
+        // The fallback should leave an audit trail on the token log entry.
+        let options = SqliteConnectOptions::new()
+            .filename(&db_str)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(5)
+            .connect_with(options)
+            .await
+            .expect("connect to sqlite");
+
+        let row = sqlx::query(
+            r#"
+            SELECT result_status, error_message
+            FROM auth_token_logs
+            WHERE token_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(&access_token.id)
+        .fetch_one(&pool)
+        .await
+        .expect("token log row exists");
+        let result_status: String = row.try_get("result_status").unwrap();
+        let error_message: Option<String> = row.try_get("error_message").unwrap();
+        assert_eq!(result_status, "success");
+        let error_message = error_message.unwrap_or_default();
+        assert!(
+            error_message.contains("usage diff unavailable"),
+            "expected usage diff warning, got: {error_message:?}"
+        );
+
         let _ = std::fs::remove_file(db_path);
     }
 
