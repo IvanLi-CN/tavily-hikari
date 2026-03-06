@@ -679,66 +679,6 @@ fn quota_window_stats(verdict: &TokenQuotaVerdict) -> (i64, i64) {
     }
 }
 
-fn mcp_response_has_any_error(body: &[u8]) -> bool {
-    let Ok(parsed) = serde_json::from_slice::<Value>(body) else {
-        return false;
-    };
-    match parsed {
-        Value::Array(items) => items.iter().any(mcp_message_has_error),
-        other => mcp_message_has_error(&other),
-    }
-}
-
-fn mcp_message_has_error(message: &Value) -> bool {
-    if message.get("error").is_some_and(|v| !v.is_null()) {
-        return true;
-    }
-
-    let Some(result) = message.get("result") else {
-        return false;
-    };
-
-    // Mirror `analyze_json_message()` heuristics, but only for "is this an error?" decisions.
-    if result.get("error").is_some_and(|v| !v.is_null()) {
-        return true;
-    }
-    if result.get("isError").and_then(|v| v.as_bool()).unwrap_or(false) {
-        return true;
-    }
-
-    if let Some(structured) = result.get("structuredContent") {
-        if let Some(code) = structured.get("status").and_then(|v| v.as_i64()) && code >= 400 {
-            return true;
-        }
-        if let Some(status) = structured.get("status").and_then(|v| v.as_str()) {
-            let normalized = status.trim().to_ascii_lowercase();
-            if matches!(
-                normalized.as_str(),
-                "failed" | "failure" | "error" | "errored" | "cancelled" | "canceled"
-            ) {
-                return true;
-            }
-        }
-        if structured.get("isError").and_then(|v| v.as_bool()).unwrap_or(false) {
-            return true;
-        }
-    }
-
-    if let Some(content) = result.get("content").and_then(|v| v.as_array()) {
-        for item in content {
-            if item
-                .get("type")
-                .and_then(|v| v.as_str())
-                .is_some_and(|v| v.eq_ignore_ascii_case("error"))
-            {
-                return true;
-            }
-        }
-    }
-
-    false
-}
-
 impl From<ApiKeyMetrics> for ApiKeyView {
     fn from(metrics: ApiKeyMetrics) -> Self {
         Self {

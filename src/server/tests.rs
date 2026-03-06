@@ -527,6 +527,107 @@ mod tests {
         (addr, hits)
     }
 
+    async fn spawn_mock_mcp_upstream_for_tavily_search_batch_with_detail_error(
+        expected_api_key: String,
+    ) -> (SocketAddr, Arc<AtomicUsize>) {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let app = Router::new().route(
+            "/mcp",
+            any({
+                let hits = hits.clone();
+                move |Query(params): Query<HashMap<String, String>>, Json(body): Json<Value>| {
+                    let expected_api_key = expected_api_key.clone();
+                    let hits = hits.clone();
+                    async move {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        let received = params.get("tavilyApiKey").cloned();
+                        assert_eq!(
+                            received.as_deref(),
+                            Some(expected_api_key.as_str()),
+                            "missing or incorrect tavilyApiKey"
+                        );
+
+                        let items = body
+                            .as_array()
+                            .expect("expected JSON-RPC batch body (array)");
+                        assert_eq!(items.len(), 2, "expected 2-item batch");
+
+                        for item in items {
+                            let map = item
+                                .as_object()
+                                .expect("expected JSON-RPC object item in batch");
+                            assert_eq!(
+                                map.get("method").and_then(|v| v.as_str()),
+                                Some("tools/call"),
+                                "expected MCP tools/call in batch"
+                            );
+                            assert_eq!(
+                                map.get("params")
+                                    .and_then(|p| p.get("name"))
+                                    .and_then(|v| v.as_str()),
+                                Some("tavily-search"),
+                                "expected tavily-search tool call"
+                            );
+                            assert_eq!(
+                                map.get("params")
+                                    .and_then(|p| p.get("arguments"))
+                                    .and_then(|a| a.get("include_usage"))
+                                    .and_then(|v| v.as_bool()),
+                                Some(true),
+                                "proxy should inject include_usage=true"
+                            );
+                        }
+
+                        // 1st item succeeds with usage.credits=2, 2nd item encodes an error via
+                        // structuredContent.detail.status (no top-level structuredContent.status).
+                        let id1 = items[0]
+                            .get("id")
+                            .cloned()
+                            .unwrap_or_else(|| serde_json::json!(1));
+                        let id2 = items[1]
+                            .get("id")
+                            .cloned()
+                            .unwrap_or_else(|| serde_json::json!(2));
+
+                        (
+                            StatusCode::OK,
+                            Json(serde_json::json!([
+                                {
+                                    "jsonrpc": "2.0",
+                                    "id": id1,
+                                    "result": {
+                                        "structuredContent": {
+                                            "status": 200,
+                                            "usage": { "credits": 2 },
+                                        }
+                                    }
+                                },
+                                {
+                                    "jsonrpc": "2.0",
+                                    "id": id2,
+                                    "result": {
+                                        "structuredContent": {
+                                            "detail": { "status": 500 }
+                                        }
+                                    }
+                                }
+                            ])),
+                        )
+                    }
+                }
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+        (addr, hits)
+    }
+
     async fn spawn_mock_mcp_upstream_for_tavily_search_batch_partial_usage(
         expected_api_key: String,
     ) -> (SocketAddr, Arc<AtomicUsize>) {
@@ -6781,6 +6882,67 @@ mod tests {
             .await
             .expect("peek quota");
         assert_eq!(verdict.hourly_used, 1);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_batch_tools_call_tavily_search_does_not_overcharge_when_error_is_in_detail_status() {
+        let db_path = temp_db_path("mcp-batch-search-detail-status-no-overcharge");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let _hourly_business_guard = EnvVarGuard::set("TOKEN_HOURLY_LIMIT", "1000");
+
+        let expected_api_key = "tvly-mcp-batch-search-detail-status-no-overcharge-key";
+        let (upstream_addr, hits) =
+            spawn_mock_mcp_upstream_for_tavily_search_batch_with_detail_error(
+                expected_api_key.to_string(),
+            )
+            .await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy =
+            TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
+        let access_token = proxy
+            .create_access_token(Some("mcp-batch-search-detail-status-no-overcharge"))
+            .await
+            .expect("create access token");
+
+        let proxy_addr =
+            spawn_proxy_server(proxy.clone(), "https://api.tavily.com".to_string()).await;
+        let client = Client::new();
+        let url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, access_token.token
+        );
+
+        // Both items are advanced (expected_total=4), but one fails. We must not fall back to the
+        // expected credits when the response indicates an error via structuredContent.detail.status.
+        let resp = client
+            .post(&url)
+            .json(&serde_json::json!([
+                {
+                    "method": "tools/call",
+                    "params": { "name": "tavily-search", "arguments": { "query": "ok", "search_depth": "advanced" } }
+                },
+                {
+                    "method": "tools/call",
+                    "params": { "name": "tavily-search", "arguments": { "query": "detail-error", "search_depth": "advanced" } }
+                }
+            ]))
+            .send()
+            .await
+            .expect("batch request");
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+        let verdict = proxy
+            .peek_token_quota(&access_token.id)
+            .await
+            .expect("peek quota");
+        assert_eq!(verdict.hourly_used, 2);
 
         let _ = std::fs::remove_file(db_path);
     }

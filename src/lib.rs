@@ -9061,6 +9061,45 @@ pub fn analyze_mcp_attempt(status: StatusCode, body: &[u8]) -> AttemptAnalysis {
     analyze_attempt(status, body)
 }
 
+/// Best-effort detection of whether a Tavily MCP response contains *any* error.
+///
+/// This is used by downstream billing code to avoid over-charging when a JSON-RPC batch
+/// contains partial failures (e.g. some items succeed but others error/quota-exhaust).
+///
+/// Conservative behavior: if we cannot confidently parse the response, treat it as "has error"
+/// so we never apply the "expected credits" billing fallback on ambiguous payloads.
+pub fn mcp_response_has_any_error(body: &[u8]) -> bool {
+    let text = match std::str::from_utf8(body) {
+        Ok(text) => text,
+        Err(_) => return true,
+    };
+
+    let mut messages = extract_sse_json_messages(text);
+    if messages.is_empty()
+        && let Ok(value) = serde_json::from_str::<Value>(text)
+    {
+        match value {
+            Value::Array(items) => messages.extend(items),
+            other => messages.push(other),
+        }
+    }
+
+    if messages.is_empty() {
+        return true;
+    }
+
+    for message in messages {
+        let Some((outcome, _code)) = analyze_json_message(&message) else {
+            return true;
+        };
+        if outcome != MessageOutcome::Success {
+            return true;
+        }
+    }
+
+    false
+}
+
 fn sanitize_headers_inner(
     headers: &HeaderMap,
     upstream: &Url,

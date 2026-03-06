@@ -43,6 +43,7 @@ use tavily_hikari::{
     effective_token_daily_limit, effective_token_hourly_limit,
     effective_token_hourly_request_limit, effective_token_monthly_limit,
     extract_usage_credits_from_json_bytes, extract_usage_credits_total_from_json_bytes,
+    mcp_response_has_any_error,
 };
 use tokio::signal;
 #[cfg(unix)]
