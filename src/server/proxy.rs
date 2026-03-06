@@ -373,7 +373,10 @@ async fn proxy_handler(
                 {
                     if let Ok(text) = std::str::from_utf8(&resp.body) {
                         if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
-                            if let Some(sc) = value
+                            if value.get("error").is_some_and(|v| !v.is_null()) {
+                                // JSON-RPC error (HTTP 200) should not be treated as a successful Tavily call.
+                                result_status = "error";
+                            } else if let Some(sc) = value
                                 .get("result")
                                 .and_then(|v| v.get("structuredContent"))
                                 .and_then(|v| v.get("status"))

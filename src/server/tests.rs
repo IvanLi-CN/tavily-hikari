@@ -198,6 +198,73 @@ mod tests {
         (addr, hits)
     }
 
+    async fn spawn_mock_mcp_upstream_for_tavily_search_error(
+        expected_api_key: String,
+    ) -> (SocketAddr, Arc<AtomicUsize>) {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let app = Router::new().route(
+            "/mcp",
+            any({
+                let hits = hits.clone();
+                move |Query(params): Query<HashMap<String, String>>, Json(body): Json<Value>| {
+                    let expected_api_key = expected_api_key.clone();
+                    let hits = hits.clone();
+                    async move {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        let received = params.get("tavilyApiKey").cloned();
+                        assert_eq!(
+                            received.as_deref(),
+                            Some(expected_api_key.as_str()),
+                            "missing or incorrect tavilyApiKey"
+                        );
+
+                        assert_eq!(
+                            body.get("method").and_then(|v| v.as_str()),
+                            Some("tools/call"),
+                            "expected MCP tools/call"
+                        );
+                        assert_eq!(
+                            body.get("params")
+                                .and_then(|p| p.get("name"))
+                                .and_then(|v| v.as_str()),
+                            Some("tavily-search"),
+                            "expected tavily-search tool call"
+                        );
+                        assert_eq!(
+                            body.get("params")
+                                .and_then(|p| p.get("arguments"))
+                                .and_then(|a| a.get("include_usage"))
+                                .and_then(|v| v.as_bool()),
+                            Some(true),
+                            "proxy should inject include_usage=true"
+                        );
+
+                        (
+                            StatusCode::OK,
+                            Json(serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": body.get("id").cloned().unwrap_or_else(|| serde_json::json!(1)),
+                                "error": {
+                                    "code": -32000,
+                                    "message": "mock jsonrpc error",
+                                }
+                            })),
+                        )
+                    }
+                }
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+        (addr, hits)
+    }
+
     fn assert_upstream_json_auth(
         headers: &HeaderMap,
         body: &Value,
@@ -3857,6 +3924,87 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tavily_http_research_result_does_not_consume_business_quota_when_exhausted() {
+        let db_path = temp_db_path("http-research-result-does-not-charge");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        // Research mini minimum is 4 credits. After create, quota is exhausted, but result retrieval
+        // must still succeed and must not consume more credits.
+        let _hourly_business_guard = EnvVarGuard::set("TOKEN_HOURLY_LIMIT", "4");
+
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-http-research-result-no-charge-key".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let access_token = proxy
+            .create_access_token(Some("http-research-result-no-charge"))
+            .await
+            .expect("create token");
+
+        let upstream_addr = spawn_http_research_mock_requiring_same_key_for_result().await;
+        let usage_base = format!("http://{}", upstream_addr);
+        let proxy_addr = spawn_proxy_server(proxy.clone(), usage_base).await;
+
+        let client = Client::new();
+        let create_resp = client
+            .post(format!("http://{}/api/tavily/research", proxy_addr))
+            .json(&serde_json::json!({
+                "api_key": access_token.token,
+                "input": "no-charge-result",
+                "model": "mini"
+            }))
+            .send()
+            .await
+            .expect("request to proxy succeeds");
+        assert!(create_resp.status().is_success());
+        let create_body: Value = create_resp.json().await.expect("parse research create response");
+        let request_id = create_body
+            .get("request_id")
+            .and_then(|v| v.as_str())
+            .expect("research create should return request_id");
+
+        let quota_before = proxy
+            .peek_token_quota(&access_token.id)
+            .await
+            .expect("peek quota before result query");
+        assert_eq!(quota_before.hourly_used, 4);
+
+        let result_resp = client
+            .get(format!(
+                "http://{}/api/tavily/research/{}",
+                proxy_addr, request_id
+            ))
+            .header("Authorization", format!("Bearer {}", access_token.token))
+            .send()
+            .await
+            .expect("request to proxy succeeds");
+        assert_eq!(result_resp.status(), StatusCode::OK);
+
+        let quota_after = proxy
+            .peek_token_quota(&access_token.id)
+            .await
+            .expect("peek quota after result query");
+        assert_eq!(
+            quota_after.hourly_used, quota_before.hourly_used,
+            "research result retrieval should not consume hourly business quota"
+        );
+        assert_eq!(
+            quota_after.daily_used, quota_before.daily_used,
+            "research result retrieval should not consume daily business quota"
+        );
+        assert_eq!(
+            quota_after.monthly_used, quota_before.monthly_used,
+            "research result retrieval should not consume monthly business quota"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn tavily_http_research_result_rejects_request_id_from_other_token() {
         let db_path = temp_db_path("http-research-result-owner-check");
         let db_str = db_path.to_string_lossy().to_string();
@@ -4290,6 +4438,66 @@ mod tests {
             .expect("second request");
         assert_eq!(second.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_tools_call_tavily_search_jsonrpc_error_does_not_charge_credits() {
+        let db_path = temp_db_path("mcp-tools-call-search-jsonrpc-error");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let _hourly_business_guard = EnvVarGuard::set("TOKEN_HOURLY_LIMIT", "10");
+
+        let expected_api_key = "tvly-mcp-tools-call-search-jsonrpc-error-key";
+        let (upstream_addr, hits) =
+            spawn_mock_mcp_upstream_for_tavily_search_error(expected_api_key.to_string()).await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy =
+            TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
+        let access_token = proxy
+            .create_access_token(Some("mcp-tools-call-search-jsonrpc-error"))
+            .await
+            .expect("create access token");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), upstream.clone()).await;
+        let client = Client::new();
+        let url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, access_token.token
+        );
+
+        let resp = client
+            .post(&url)
+            .json(&serde_json::json!({
+                "method": "tools/call",
+                "params": {
+                    "name": "tavily-search",
+                    "arguments": {
+                        "query": "mcp jsonrpc error",
+                        "search_depth": "advanced"
+                    }
+                }
+            }))
+            .send()
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        let body: Value = resp.json().await.expect("parse json body");
+        assert!(
+            body.get("error").is_some(),
+            "mock upstream should return jsonrpc error"
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+        let verdict = proxy
+            .peek_token_quota(&access_token.id)
+            .await
+            .expect("peek quota");
+        assert_eq!(verdict.hourly_used, 0, "JSON-RPC error must not charge credits");
 
         let _ = std::fs::remove_file(db_path);
     }

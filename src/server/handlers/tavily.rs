@@ -246,7 +246,7 @@ async fn tavily_http_research_result(
                             None,
                             Some(StatusCode::INTERNAL_SERVER_ERROR.as_u16() as i64),
                             None,
-                            true,
+                            false,
                             "error",
                             Some(msg.as_str()),
                         )
@@ -316,59 +316,9 @@ async fn tavily_http_research_result(
         }
     }
 
-    if let Some(ref tid) = auth_token_id
-        && !state.dev_open_admin
-    {
-        match state.proxy.check_token_quota(tid).await {
-            Ok(verdict) => {
-                if !verdict.allowed {
-                    let _ = state
-                        .proxy
-                        .record_token_attempt(
-                            tid,
-                            &method,
-                            &path,
-                            None,
-                            Some(StatusCode::TOO_MANY_REQUESTS.as_u16() as i64),
-                            None,
-                            true,
-                            "quota_exhausted",
-                            Some("daily / hourly limit reached for this token"),
-                        )
-                        .await;
-                    let payload = json!({
-                        "error": "quota_exhausted",
-                        "message": "daily / hourly limit reached for this token",
-                    });
-                    let resp = Response::builder()
-                        .status(StatusCode::TOO_MANY_REQUESTS)
-                        .header(CONTENT_TYPE, "application/json; charset=utf-8")
-                        .body(Body::from(payload.to_string()))
-                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-                    return Ok(resp);
-                }
-            }
-            Err(err) => {
-                eprintln!("quota check failed for {path}: {err}");
-                let msg = err.to_string();
-                let _ = state
-                    .proxy
-                    .record_token_attempt(
-                        tid,
-                        &method,
-                        &path,
-                        None,
-                        Some(StatusCode::INTERNAL_SERVER_ERROR.as_u16() as i64),
-                        None,
-                        true,
-                        "error",
-                        Some(msg.as_str()),
-                    )
-                    .await;
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
-            }
-        }
-    }
+    // NOTE: `GET /api/tavily/research/:request_id` is a *result retrieval* endpoint.
+    // Billing is charged on `POST /api/tavily/research` (via /usage diff), so this endpoint
+    // must not consume business quota nor block due to exhausted credits quota.
 
     let mut headers = clone_headers(&parts.headers);
     headers.remove(axum::http::header::AUTHORIZATION);
@@ -401,7 +351,7 @@ async fn tavily_http_research_result(
                         None,
                         Some(http_code),
                         analysis.tavily_status_code,
-                        true,
+                        false,
                         analysis.status,
                         None,
                     )
@@ -750,7 +700,7 @@ async fn proxy_tavily_http_endpoint(
                             None,
                             None,
                             None,
-                            true,
+                            false,
                             "error",
                             Some(msg.as_str()),
                         )
