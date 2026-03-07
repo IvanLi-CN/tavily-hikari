@@ -79,7 +79,7 @@
 
 ### UI / Storybook
 
-- Update `web/src/UserConsole.stories.tsx` with an admin-visible console scenario.
+- Update `web/src/UserConsole.stories.tsx` with admin-visible dashboard, compact/mobile dashboard, and tokens scenarios.
 
 ### Quality checks
 
@@ -98,4 +98,4 @@
 
 ## 变更记录（Change log）
 
-- 2026-03-07: 完成 `/console` 管理员入口、Storybook 管理员态覆盖与本地构建/浏览器验证。
+- 2026-03-07: 完成 `/console` 管理员入口，并在 review-loop 中补齐链接语义与 dashboard/tokens/mobile Storybook 覆盖。

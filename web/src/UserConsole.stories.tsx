@@ -7,6 +7,7 @@ import UserConsole from './UserConsole'
 type Scenario =
   | 'dashboard'
   | 'dashboard-admin'
+  | 'tokens-admin'
   | 'tokens'
   | 'tokens-empty'
   | 'token-detail'
@@ -173,7 +174,7 @@ function autoProbeTargetFromScenario(scenario: Scenario): 'mcp' | 'api' | null {
 }
 
 function scenarioHash(scenario: Scenario): string {
-  if (scenario === 'tokens') return '#/tokens'
+  if (scenario === 'tokens' || scenario === 'tokens-admin') return '#/tokens'
   if (scenario === 'tokens-empty') return '#/tokens'
   if (
     scenario === 'token-detail'
@@ -192,6 +193,7 @@ function installUserConsoleFetchMock(scenario: Scenario): () => void {
   const originalFetch = window.fetch.bind(window)
   const probeMode = probeModeFromScenario(scenario)
   const researchRequestId = 'rq-story-001'
+  const isAdminScenario = scenario === 'dashboard-admin' || scenario === 'tokens-admin'
 
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const request = input instanceof Request
@@ -200,7 +202,7 @@ function installUserConsoleFetchMock(scenario: Scenario): () => void {
     const url = new URL(request.url, window.location.origin)
 
     if (url.pathname === '/api/profile') {
-      return jsonResponse(scenario === 'dashboard-admin' ? adminProfileSample : profileSample)
+      return jsonResponse(isAdminScenario ? adminProfileSample : profileSample)
     }
 
     if (url.pathname === '/api/user/dashboard') {
@@ -400,6 +402,24 @@ export const Dashboard: Story = {
 export const DashboardAdmin: Story = {
   args: {
     scenario: 'dashboard-admin',
+  },
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+}
+
+export const DashboardAdminMobile: Story = {
+  args: {
+    scenario: 'dashboard-admin',
+  },
+  parameters: {
+    viewport: { defaultViewport: '0390-device-iphone-14' },
+  },
+}
+
+export const TokensAdmin: Story = {
+  args: {
+    scenario: 'tokens-admin',
   },
   parameters: {
     viewport: { defaultViewport: '1440-device-desktop' },

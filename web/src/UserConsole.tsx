@@ -407,9 +407,6 @@ export default function UserConsole(): JSX.Element {
   const anyProbeRunning = mcpProbe.state === 'running' || apiProbe.state === 'running'
   const isAdmin = profile?.isAdmin ?? false
 
-  const goAdmin = useCallback(() => {
-    window.location.href = '/admin'
-  }, [])
 
   const runMcpProbe = useCallback(async () => {
     if (route.name !== 'token' || anyProbeRunning) return
@@ -926,15 +923,11 @@ export default function UserConsole(): JSX.Element {
           </div>
           {isAdmin && (
             <div className="admin-panel-header-actions">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="user-console-admin-entry"
-                onClick={goAdmin}
-              >
-                <Icon icon="mdi:crown-outline" width={16} height={16} aria-hidden="true" />
-                <span>{publicStrings.adminButton}</span>
+              <Button asChild variant="outline" size="sm" className="user-console-admin-entry">
+                <a href="/admin">
+                  <Icon icon="mdi:crown-outline" width={16} height={16} aria-hidden="true" />
+                  <span>{publicStrings.adminButton}</span>
+                </a>
               </Button>
             </div>
           )}
