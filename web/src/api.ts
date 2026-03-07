@@ -1,3 +1,5 @@
+import { requestMcpProbeWithToken } from './lib/mcpProbe'
+
 export interface Summary {
   total_requests: number
   success_count: number
@@ -393,7 +395,7 @@ export interface ProbeMcpResponse {
 }
 
 export async function probeMcpPing(token: string): Promise<ProbeMcpResponse> {
-  return requestJsonWithToken<ProbeMcpResponse>('/mcp', token, {
+  return requestMcpProbeWithToken<ProbeMcpResponse>('/mcp', token, {
     method: 'POST',
     body: JSON.stringify({
       jsonrpc: '2.0',
@@ -405,7 +407,7 @@ export async function probeMcpPing(token: string): Promise<ProbeMcpResponse> {
 }
 
 export async function probeMcpToolsList(token: string): Promise<ProbeMcpResponse> {
-  return requestJsonWithToken<ProbeMcpResponse>('/mcp', token, {
+  return requestMcpProbeWithToken<ProbeMcpResponse>('/mcp', token, {
     method: 'POST',
     body: JSON.stringify({
       jsonrpc: '2.0',

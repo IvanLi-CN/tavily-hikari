@@ -13,6 +13,7 @@ type Scenario =
   | 'token-detail-probe-success'
   | 'token-detail-probe-partial'
   | 'token-detail-probe-auth-fail'
+  | 'token-detail-probe-exhausted'
 
 interface UserConsoleStoryArgs {
   scenario: Scenario
@@ -62,6 +63,16 @@ const tokenDetailSample: UserTokenSummary = {
   dailySuccess: 315,
   dailyFailure: 19,
   monthlySuccess: 3510,
+}
+
+const tokenDetailExhaustedSample: UserTokenSummary = {
+  ...tokenSample,
+  quotaHourlyUsed: 100,
+  quotaHourlyLimit: 100,
+  quotaDailyUsed: 500,
+  quotaDailyLimit: 500,
+  quotaMonthlyUsed: 4188,
+  quotaMonthlyLimit: 5000,
 }
 
 interface ServerPublicTokenLogMock {
@@ -135,13 +146,14 @@ function sleep(ms: number): Promise<void> {
   })
 }
 
-type ProbeMockMode = 'none' | 'running' | 'success' | 'partial' | 'auth-fail'
+type ProbeMockMode = 'none' | 'running' | 'success' | 'partial' | 'auth-fail' | 'exhausted'
 
 function probeModeFromScenario(scenario: Scenario): ProbeMockMode {
   if (scenario === 'token-detail-probe-running') return 'running'
   if (scenario === 'token-detail-probe-success') return 'success'
   if (scenario === 'token-detail-probe-partial') return 'partial'
   if (scenario === 'token-detail-probe-auth-fail') return 'auth-fail'
+  if (scenario === 'token-detail-probe-exhausted') return 'exhausted'
   return 'none'
 }
 
@@ -150,6 +162,7 @@ function autoProbeTargetFromScenario(scenario: Scenario): 'mcp' | 'api' | null {
   if (scenario === 'token-detail-probe-success') return 'api'
   if (scenario === 'token-detail-probe-partial') return 'api'
   if (scenario === 'token-detail-probe-auth-fail') return 'mcp'
+  if (scenario === 'token-detail-probe-exhausted') return 'mcp'
   return null
 }
 
@@ -162,6 +175,7 @@ function scenarioHash(scenario: Scenario): string {
     || scenario === 'token-detail-probe-success'
     || scenario === 'token-detail-probe-partial'
     || scenario === 'token-detail-probe-auth-fail'
+    || scenario === 'token-detail-probe-exhausted'
   ) {
     return '#/tokens/a1b2'
   }
@@ -208,7 +222,7 @@ function installUserConsoleFetchMock(scenario: Scenario): () => void {
         return jsonResponse(tokenLogsSample)
       }
 
-      return jsonResponse(tokenDetailSample)
+      return jsonResponse(probeMode === 'exhausted' ? tokenDetailExhaustedSample : tokenDetailSample)
     }
 
     if (url.pathname === '/mcp') {
@@ -220,9 +234,50 @@ function installUserConsoleFetchMock(scenario: Scenario): () => void {
       }
       const payload = await request.clone().json().catch(() => ({}))
       const method = typeof payload?.method === 'string' ? payload.method : ''
+      const accept = request.headers.get('Accept') ?? ''
+      const acceptsProbeFormats = accept.includes('application/json') && accept.includes('text/event-stream')
+
+      if (probeMode === 'exhausted' && method === 'ping') {
+        return jsonResponse({
+          error: 'quota_exceeded',
+          window: 'day',
+          hourly: { limit: 100, used: 100 },
+          daily: { limit: 500, used: 500 },
+          monthly: { limit: 5000, used: 4188 },
+        }, 429)
+      }
+
+      if (method === 'tools/list' && !acceptsProbeFormats) {
+        return jsonResponse({
+          jsonrpc: '2.0',
+          id: 'server-error',
+          error: {
+            code: -32600,
+            message: 'Not Acceptable: Client must accept both application/json and text/event-stream',
+          },
+        }, 406)
+      }
+
       if (probeMode === 'partial' && method === 'tools/list') {
         return jsonResponse({ error: { code: -32001, message: 'tools/list unavailable' } })
       }
+
+      if (method === 'tools/list') {
+        return new Response(
+          `event: message\ndata: ${JSON.stringify({
+            jsonrpc: '2.0',
+            id: payload?.id ?? null,
+            result: {
+              tools: [{ name: 'tavily_search' }],
+            },
+          })}\n\n`,
+          {
+            status: 200,
+            headers: { 'Content-Type': 'text/event-stream' },
+          },
+        )
+      }
+
       return jsonResponse({
         jsonrpc: '2.0',
         id: payload?.id ?? null,
@@ -375,6 +430,12 @@ export const TokenDetailProbePartialFail: Story = {
 export const TokenDetailProbeAuthFail: Story = {
   args: {
     scenario: 'token-detail-probe-auth-fail',
+  },
+}
+
+export const TokenDetailProbeQuotaBlocked: Story = {
+  args: {
+    scenario: 'token-detail-probe-exhausted',
   },
 }
 

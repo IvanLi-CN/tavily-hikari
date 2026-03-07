@@ -10,7 +10,8 @@
     "storybook": "storybook dev --host 127.0.0.1 --port 56006 --disable-telemetry",
     "storybook:ci": "storybook dev --ci --no-open --host 127.0.0.1 --port 56006 --disable-telemetry",
     "build-storybook": "storybook build --disable-telemetry",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "bun test"
   },
   "dependencies": {
     "@iconify/react": "^4.1.1",

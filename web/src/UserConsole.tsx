@@ -27,6 +27,16 @@ import RollingNumber from './components/RollingNumber'
 import { StatusBadge, type StatusTone } from './components/StatusBadge'
 import ThemeToggle from './components/ThemeToggle'
 import { useLanguage, useTranslate, type Language } from './i18n'
+import {
+  type McpProbeStepState,
+  type ProbeQuotaWindow,
+  McpProbeRequestError,
+  getProbeEnvelopeError,
+  getQuotaExceededWindow,
+  getTokenBusinessQuotaWindow,
+  revalidateBlockedQuotaWindow,
+  resolveMcpProbeButtonState,
+} from './lib/mcpProbe'
 import { useResponsiveModes } from './lib/responsive'
 
 const REPO_URL = 'https://github.com/IvanLi-CN/tavily-hikari'
@@ -71,7 +81,7 @@ type ConsoleRoute =
   | { name: 'token'; id: string }
 
 type ProbeButtonState = 'idle' | 'running' | 'success' | 'partial' | 'failed'
-type ProbeStepStatus = 'running' | 'success' | 'failed'
+type ProbeStepStatus = 'running' | 'success' | 'failed' | 'blocked'
 type ProbeBubbleAnchor = 'mcp' | 'api'
 
 interface ProbeButtonModel {
@@ -84,6 +94,7 @@ interface ProbeBubbleItem {
   id: string
   label: string
   status: ProbeStepStatus
+  detail?: string | null
 }
 
 interface ProbeBubbleModel {
@@ -180,38 +191,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 }
 
 function envelopeError(payload: unknown): string | null {
-  const map = asRecord(payload)
-  if (!map) return null
-  const topError = map.error
-  if (typeof topError === 'string' && topError.trim().length > 0) {
-    return topError
-  }
-  if (topError != null) {
-    if (typeof topError === 'object') {
-      const topErrorObj = asRecord(topError)
-      const message = topErrorObj?.message
-      if (typeof message === 'string' && message.trim().length > 0) {
-        return message
-      }
-    }
-    return 'Request failed'
-  }
-  const detail = asRecord(map.detail)
-  const detailError = detail?.error
-  if (typeof detailError === 'string' && detailError.trim().length > 0) {
-    return detailError
-  }
-  if (detailError != null) {
-    if (typeof detailError === 'object') {
-      const detailErrorObj = asRecord(detailError)
-      const message = detailErrorObj?.message
-      if (typeof message === 'string' && message.trim().length > 0) {
-        return message
-      }
-    }
-    return 'Request failed'
-  }
-  return null
+  return getProbeEnvelopeError(payload)
 }
 
 function getResearchRequestId(payload: unknown): string | null {
@@ -222,6 +202,22 @@ function getResearchRequestId(payload: unknown): string | null {
   const camel = map.requestId
   if (typeof camel === 'string' && camel.trim().length > 0) return camel
   return null
+}
+
+function quotaWindowLabel(
+  probeText: typeof EN.detail.probe,
+  window: ProbeQuotaWindow,
+): string {
+  return probeText.quotaWindows[window]
+}
+
+function quotaBlockedDetail(
+  probeText: typeof EN.detail.probe,
+  window: ProbeQuotaWindow,
+): string {
+  return formatTemplate(probeText.quotaBlocked, {
+    window: quotaWindowLabel(probeText, window),
+  })
 }
 
 function formatTemplate(
@@ -414,11 +410,12 @@ export default function UserConsole(): JSX.Element {
     const runId = probeRunIdRef.current + 1
     probeRunIdRef.current = runId
     const isActiveRun = () => probeRunIdRef.current === runId
+    const probeText = text.detail.probe
 
     const stepDefinitions: McpProbeStepDefinition[] = [
       {
         id: 'mcp-ping',
-        label: text.detail.probe.steps.mcpPing,
+        label: probeText.steps.mcpPing,
         run: async (token: string): Promise<string | null> => {
           const payload = await probeMcpPing(token)
           const error = envelopeError(payload)
@@ -428,7 +425,7 @@ export default function UserConsole(): JSX.Element {
       },
       {
         id: 'mcp-tools-list',
-        label: text.detail.probe.steps.mcpToolsList,
+        label: probeText.steps.mcpToolsList,
         run: async (token: string): Promise<string | null> => {
           const payload = await probeMcpToolsList(token)
           const error = envelopeError(payload)
@@ -464,13 +461,31 @@ export default function UserConsole(): JSX.Element {
           id: stepDefinitions[0].id,
           label: stepDefinitions[0].label,
           status: 'failed',
+          detail: formatTemplate(probeText.preflightFailed, { message: getProbeErrorMessage(err) }),
         }],
       })
       return
     }
 
+    let quotaBlockedWindow = getTokenBusinessQuotaWindow(detail)
+    if (quotaBlockedWindow) {
+      try {
+        const revalidatedQuota = await revalidateBlockedQuotaWindow(detail, async () => {
+          return await fetchUserTokenDetail(route.id)
+        })
+        if (!isActiveRun()) return
+        quotaBlockedWindow = revalidatedQuota.window
+        if (revalidatedQuota.token) {
+          setDetail(revalidatedQuota.token)
+        }
+      } catch {
+        if (!isActiveRun()) return
+      }
+    }
+
     const completedItems: ProbeBubbleItem[] = []
-    let passed = 0
+    const stepStates: McpProbeStepState[] = []
+
     for (let index = 0; index < stepDefinitions.length; index += 1) {
       if (!isActiveRun()) return
       const current = stepDefinitions[index]
@@ -485,21 +500,53 @@ export default function UserConsole(): JSX.Element {
         items: [...completedItems, runningItem],
       })
 
-      try {
-        await current.run(token)
-        if (!isActiveRun()) return
-        passed += 1
+      if (current.id === 'mcp-ping' && quotaBlockedWindow) {
         completedItems.push({
           ...runningItem,
-          status: 'success',
+          status: 'blocked',
+          detail: quotaBlockedDetail(probeText, quotaBlockedWindow),
         })
-      } catch (err) {
-        if (!isActiveRun()) return
-        completedItems.push({
-          ...runningItem,
-          status: 'failed',
-        })
+        stepStates.push('blocked')
+      } else {
+        try {
+          await current.run(token)
+          if (!isActiveRun()) return
+          completedItems.push({
+            ...runningItem,
+            status: 'success',
+          })
+          stepStates.push('success')
+        } catch (err) {
+          if (!isActiveRun()) return
+          const quotaWindow = current.id === 'mcp-ping' && err instanceof McpProbeRequestError
+            ? getQuotaExceededWindow(err.payload)
+            : null
+          if (quotaWindow) {
+            try {
+              const refreshedDetail = await fetchUserTokenDetail(route.id)
+              if (!isActiveRun()) return
+              setDetail(refreshedDetail)
+            } catch {
+              if (!isActiveRun()) return
+            }
+
+            completedItems.push({
+              ...runningItem,
+              status: 'blocked',
+              detail: quotaBlockedDetail(probeText, quotaWindow),
+            })
+            stepStates.push('blocked')
+          } else {
+            completedItems.push({
+              ...runningItem,
+              status: 'failed',
+              detail: getProbeErrorMessage(err),
+            })
+            stepStates.push('failed')
+          }
+        }
       }
+
       setMcpProbe((prev) => ({
         ...prev,
         state: 'running',
@@ -513,19 +560,14 @@ export default function UserConsole(): JSX.Element {
     }
     if (!isActiveRun()) return
 
-    const failed = stepDefinitions.length - passed
-    const finalState: ProbeButtonState = failed === 0
-      ? 'success'
-      : passed === 0
-        ? 'failed'
-        : 'partial'
+    const finalState = resolveMcpProbeButtonState(stepStates)
     setMcpProbe({
       state: finalState,
       completed: stepDefinitions.length,
       total: stepDefinitions.length,
     })
     setProbeBubble({ visible: true, anchor: 'mcp', items: [...completedItems] })
-  }, [anyProbeRunning, route, text.detail.probe])
+  }, [anyProbeRunning, detail, route, text.detail.probe])
 
   const runApiProbe = useCallback(async () => {
     if (route.name !== 'token' || anyProbeRunning) return
@@ -779,6 +821,7 @@ export default function UserConsole(): JSX.Element {
     const icon = (status: ProbeStepStatus): string => {
       if (status === 'success') return 'mdi:check-circle-outline'
       if (status === 'failed') return 'mdi:close-circle-outline'
+      if (status === 'blocked') return 'mdi:alert-circle-outline'
       return 'mdi:loading'
     }
     const textFor = (status: ProbeStepStatus): string => text.detail.probe.stepStatus[status]
@@ -806,7 +849,7 @@ export default function UserConsole(): JSX.Element {
             <li
               key={item.id}
               className="user-console-probe-bubble-item"
-              aria-label={`${probeItemMeta.textFor(item.status)} · ${item.label}`}
+              aria-label={`${probeItemMeta.textFor(item.status)} · ${item.label}${item.detail ? ` · ${item.detail}` : ''}`}
             >
               <Icon
                 icon={probeItemMeta.icon(item.status)}
@@ -815,7 +858,12 @@ export default function UserConsole(): JSX.Element {
                   + `${item.status === 'running' ? 'is-spinning' : ''}`
                 }
               />
-              <strong className="user-console-probe-bubble-item-label">{item.label}</strong>
+              <div className="user-console-probe-bubble-item-copy">
+                <strong className="user-console-probe-bubble-item-label">{item.label}</strong>
+                {item.detail ? (
+                  <span className="user-console-probe-bubble-item-detail">{item.detail}</span>
+                ) : null}
+              </div>
             </li>
           ))}
         </ul>
@@ -1726,6 +1774,13 @@ const EN = {
         running: 'Running',
         success: 'Success',
         failed: 'Failed',
+        blocked: 'Blocked',
+      },
+      quotaBlocked: '{window} quota exhausted, skipping billable MCP ping.',
+      quotaWindows: {
+        hour: 'Hourly',
+        day: 'Daily',
+        month: 'Monthly',
       },
       bubbles: {
         mcpTitle: 'MCP Probe',
@@ -1844,6 +1899,13 @@ const ZH = {
         running: '进行中',
         success: '成功',
         failed: '失败',
+        blocked: '受阻',
+      },
+      quotaBlocked: '{window}配额已耗尽，已跳过会消耗额度的 MCP 连通检测。',
+      quotaWindows: {
+        hour: '小时',
+        day: '日',
+        month: '月',
       },
       bubbles: {
         mcpTitle: 'MCP 检测',
