@@ -6,6 +6,7 @@ import UserConsole from './UserConsole'
 
 type Scenario =
   | 'dashboard'
+  | 'dashboard-admin'
   | 'tokens'
   | 'tokens-empty'
   | 'token-detail'
@@ -133,6 +134,11 @@ const profileSample: Profile = {
   userDisplayName: 'Ivan',
 }
 
+const adminProfileSample: Profile = {
+  ...profileSample,
+  isAdmin: true,
+}
+
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
@@ -194,7 +200,7 @@ function installUserConsoleFetchMock(scenario: Scenario): () => void {
     const url = new URL(request.url, window.location.origin)
 
     if (url.pathname === '/api/profile') {
-      return jsonResponse(profileSample)
+      return jsonResponse(scenario === 'dashboard-admin' ? adminProfileSample : profileSample)
     }
 
     if (url.pathname === '/api/user/dashboard') {
@@ -385,6 +391,15 @@ type Story = StoryObj<typeof meta>
 export const Dashboard: Story = {
   args: {
     scenario: 'dashboard',
+  },
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+}
+
+export const DashboardAdmin: Story = {
+  args: {
+    scenario: 'dashboard-admin',
   },
   parameters: {
     viewport: { defaultViewport: '1440-device-desktop' },

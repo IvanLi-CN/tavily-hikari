@@ -9,6 +9,7 @@
 
 |    ID | Title                                                  | Status           | Spec                                                  | Last       | Notes                                                                                                       |
 | ----: | ------------------------------------------------------ | ---------------- | ----------------------------------------------------- | ---------- | ----------------------------------------------------------------------------------------------------------- |
+| 2uv3g | 用户控制台管理员入口                                   | 已完成           | `2uv3g-user-console-admin-entry/SPEC.md`              | 2026-03-07 | admin-only `/console` entry + Storybook coverage + local validation                                         |
 | bcpru | Web 响应式双设备与 Storybook 断点验收收敛              | 已完成（6/6）    | `bcpru-web-responsive-breakpoint-convergence/SPEC.md` | 2026-03-04 | fast-track: responsive convergence, Storybook coverage, and boundary validation completed                   |
 | vr67d | LinuxDo 登录复用既有 Token + 强制重登录 + 历史误建自愈 | 已完成（快车道） | `vr67d-linuxdo-token-rebind-relogin/SPEC.md`          | 2026-03-05 | hotfix: `/auth/linuxdo` use 303 to avoid POST body leak + fix upstream 405                                  |
 | 6xeyh | 多 Token 绑定保留已分配 token（不做历史回补）          | 进行中（快车道） | `6xeyh-multi-token-binding-preserve/SPEC.md`          | 2026-03-06 | PR #95；共享测试机 E2E 回归通过；review-loop 已完成并按契约保留“最新绑定优先”语义                           |
