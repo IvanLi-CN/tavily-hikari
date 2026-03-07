@@ -26,6 +26,7 @@ import LanguageSwitcher from './components/LanguageSwitcher'
 import RollingNumber from './components/RollingNumber'
 import { StatusBadge, type StatusTone } from './components/StatusBadge'
 import ThemeToggle from './components/ThemeToggle'
+import { Button } from './components/ui/button'
 import { useLanguage, useTranslate, type Language } from './i18n'
 import {
   type McpProbeStepState,
@@ -38,6 +39,7 @@ import {
   resolveMcpProbeButtonState,
 } from './lib/mcpProbe'
 import { useResponsiveModes } from './lib/responsive'
+import { getUserConsoleAdminHref } from './lib/userConsoleAdminEntry'
 
 const REPO_URL = 'https://github.com/IvanLi-CN/tavily-hikari'
 const CODEX_DOC_URL = 'https://github.com/openai/codex/blob/main/docs/config.md'
@@ -404,6 +406,7 @@ export default function UserConsole(): JSX.Element {
   )
 
   const anyProbeRunning = mcpProbe.state === 'running' || apiProbe.state === 'running'
+  const adminHref = getUserConsoleAdminHref(profile)
 
   const runMcpProbe = useCallback(async () => {
     if (route.name !== 'token' || anyProbeRunning) return
@@ -918,6 +921,16 @@ export default function UserConsole(): JSX.Element {
               <LanguageSwitcher />
             </div>
           </div>
+          {adminHref && (
+            <div className="admin-panel-header-actions">
+              <Button asChild variant="outline" size="sm" className="user-console-admin-entry">
+                <a href={adminHref}>
+                  <Icon icon="mdi:crown-outline" width={16} height={16} aria-hidden="true" />
+                  <span>{publicStrings.adminButton}</span>
+                </a>
+              </Button>
+            </div>
+          )}
         </div>
       </section>
 

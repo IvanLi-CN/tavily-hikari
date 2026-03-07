@@ -6,6 +6,9 @@ import UserConsole from './UserConsole'
 
 type Scenario =
   | 'dashboard'
+  | 'dashboard-admin'
+  | 'tokens-admin'
+  | 'token-detail-admin'
   | 'tokens'
   | 'tokens-empty'
   | 'token-detail'
@@ -133,6 +136,11 @@ const profileSample: Profile = {
   userDisplayName: 'Ivan',
 }
 
+const adminProfileSample: Profile = {
+  ...profileSample,
+  isAdmin: true,
+}
+
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
@@ -167,10 +175,11 @@ function autoProbeTargetFromScenario(scenario: Scenario): 'mcp' | 'api' | null {
 }
 
 function scenarioHash(scenario: Scenario): string {
-  if (scenario === 'tokens') return '#/tokens'
+  if (scenario === 'tokens' || scenario === 'tokens-admin') return '#/tokens'
   if (scenario === 'tokens-empty') return '#/tokens'
   if (
-    scenario === 'token-detail'
+    scenario === 'token-detail-admin'
+    || scenario === 'token-detail'
     || scenario === 'token-detail-probe-running'
     || scenario === 'token-detail-probe-success'
     || scenario === 'token-detail-probe-partial'
@@ -186,6 +195,8 @@ function installUserConsoleFetchMock(scenario: Scenario): () => void {
   const originalFetch = window.fetch.bind(window)
   const probeMode = probeModeFromScenario(scenario)
   const researchRequestId = 'rq-story-001'
+  const isAdminScenario =
+    scenario === 'dashboard-admin' || scenario === 'tokens-admin' || scenario === 'token-detail-admin'
 
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const request = input instanceof Request
@@ -194,7 +205,7 @@ function installUserConsoleFetchMock(scenario: Scenario): () => void {
     const url = new URL(request.url, window.location.origin)
 
     if (url.pathname === '/api/profile') {
-      return jsonResponse(profileSample)
+      return jsonResponse(isAdminScenario ? adminProfileSample : profileSample)
     }
 
     if (url.pathname === '/api/user/dashboard') {
@@ -385,6 +396,42 @@ type Story = StoryObj<typeof meta>
 export const Dashboard: Story = {
   args: {
     scenario: 'dashboard',
+  },
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+}
+
+export const DashboardAdmin: Story = {
+  args: {
+    scenario: 'dashboard-admin',
+  },
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+}
+
+export const DashboardAdminMobile: Story = {
+  args: {
+    scenario: 'dashboard-admin',
+  },
+  parameters: {
+    viewport: { defaultViewport: '0390-device-iphone-14' },
+  },
+}
+
+export const TokensAdmin: Story = {
+  args: {
+    scenario: 'tokens-admin',
+  },
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+}
+
+export const TokenDetailAdmin: Story = {
+  args: {
+    scenario: 'token-detail-admin',
   },
   parameters: {
     viewport: { defaultViewport: '1440-device-desktop' },
