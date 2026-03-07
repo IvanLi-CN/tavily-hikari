@@ -156,9 +156,15 @@ export function getQuotaSliderStagePosition(stages: readonly number[], value: nu
   return stages.length - 1
 }
 
+export function clampQuotaSliderStageIndex(stages: readonly number[], index: number): number {
+  if (stages.length === 0) return 0
+  if (!Number.isFinite(index)) return 0
+  return Math.min(stages.length - 1, Math.max(0, Math.round(index)))
+}
+
 export function getQuotaSliderStageValue(stages: readonly number[], index: number): number {
   if (stages.length === 0) return 1
-  const resolvedIndex = Math.min(stages.length - 1, Math.max(0, coerceQuotaInteger(index, 0)))
+  const resolvedIndex = clampQuotaSliderStageIndex(stages, index)
   return stages[resolvedIndex] ?? stages[stages.length - 1] ?? 1
 }
 

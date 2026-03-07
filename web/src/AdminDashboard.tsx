@@ -13,9 +13,10 @@ import DashboardOverview from './admin/DashboardOverview'
 import ModulePlaceholder from './admin/ModulePlaceholder'
 import {
   buildQuotaSliderTrack,
+  clampQuotaSliderStageIndex,
   createQuotaSliderSeed,
-  findNearestQuotaSliderStageIndex,
   formatQuotaDraftInput,
+  getQuotaSliderStagePosition,
   getQuotaSliderStageValue,
   normalizeQuotaDraftInput,
   parseQuotaDraftValue,
@@ -2456,7 +2457,7 @@ function AdminDashboard(): JSX.Element {
                   const sliderSeed = userQuotaSnapshot?.[item.field] ?? createQuotaSliderSeed(item.field, item.used, item.currentLimit)
                   const draftValue = userQuotaDraft?.[item.field] ?? String(sliderSeed.initialLimit)
                   const parsedDraft = parseQuotaDraftValue(draftValue, sliderSeed.initialLimit)
-                  const sliderIndex = findNearestQuotaSliderStageIndex(sliderSeed.stages, parsedDraft)
+                  const sliderPosition = getQuotaSliderStagePosition(sliderSeed.stages, parsedDraft)
                   return (
                     <label className="form-control quota-control" key={item.field}>
                       <span className="label-text">{item.label}</span>
@@ -2467,11 +2468,14 @@ function AdminDashboard(): JSX.Element {
                             name={`${item.field}-slider`}
                             min={0}
                             max={Math.max(0, sliderSeed.stages.length - 1)}
-                            step={1}
+                            step="any"
                             className="range quota-slider"
-                            value={sliderIndex}
+                            value={sliderPosition}
                             onChange={(event) => {
-                              const nextIndex = Number.parseInt(event.target.value, 10)
+                              const nextIndex = clampQuotaSliderStageIndex(
+                                sliderSeed.stages,
+                                Number.parseFloat(event.target.value),
+                              )
                               updateQuotaDraftField(item.field, String(getQuotaSliderStageValue(sliderSeed.stages, nextIndex)))
                             }}
                             style={{ background: buildQuotaSliderTrack(sliderSeed.stages, sliderSeed.used, parsedDraft) }}

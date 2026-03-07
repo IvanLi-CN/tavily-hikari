@@ -21,9 +21,10 @@ import DashboardOverview, { type DashboardMetricCard } from './DashboardOverview
 import ModulePlaceholder from './ModulePlaceholder'
 import {
   buildQuotaSliderTrack,
+  clampQuotaSliderStageIndex,
   createQuotaSliderSeed,
-  findNearestQuotaSliderStageIndex,
   formatQuotaDraftInput,
+  getQuotaSliderStagePosition,
   getQuotaSliderStageValue,
   normalizeQuotaDraftInput,
   parseQuotaDraftValue,
@@ -1355,7 +1356,7 @@ function UserDetailPageCanvas(): JSX.Element {
             const sliderSeed = quotaSnapshot[item.field]
             const draftValue = quotaDraft[item.field]
             const parsedDraft = parseQuotaDraftValue(draftValue, sliderSeed.initialLimit)
-            const sliderIndex = findNearestQuotaSliderStageIndex(sliderSeed.stages, parsedDraft)
+            const sliderPosition = getQuotaSliderStagePosition(sliderSeed.stages, parsedDraft)
             return (
               <label className="form-control quota-control" key={item.field}>
                 <span className="label-text">{item.label}</span>
@@ -1366,13 +1367,16 @@ function UserDetailPageCanvas(): JSX.Element {
                       name={`${item.field}-slider`}
                       min={0}
                       max={Math.max(0, sliderSeed.stages.length - 1)}
-                      step={1}
+                      step="any"
                       className="range quota-slider"
-                      value={sliderIndex}
+                      value={sliderPosition}
                       onChange={(event) => setQuotaDraft((prev) => ({
                         ...prev,
                         [item.field]: String(
-                          getQuotaSliderStageValue(sliderSeed.stages, Number.parseInt(event.target.value, 10)),
+                          getQuotaSliderStageValue(
+                            sliderSeed.stages,
+                            clampQuotaSliderStageIndex(sliderSeed.stages, Number.parseFloat(event.target.value)),
+                          ),
                         ),
                       }))}
                       style={{ background: buildQuotaSliderTrack(sliderSeed.stages, sliderSeed.used, parsedDraft) }}
