@@ -76,6 +76,7 @@
 ### Testing
 
 - Frontend build: `cd web && bun run build`
+- Frontend unit tests: `cd web && bun test`
 
 ### UI / Storybook
 
@@ -89,7 +90,7 @@
 
 - [x] M1: 用户控制台页头增加管理员专属入口
 - [x] M2: Storybook 覆盖管理员可见态与默认隐藏态
-- [x] M3: 本地构建与浏览器验证完成
+- [x] M3: 本地构建、自动化断言与浏览器验证完成
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
@@ -98,4 +99,4 @@
 
 ## 变更记录（Change log）
 
-- 2026-03-07: 完成 `/console` 管理员入口，并在 review-loop 中补齐链接语义与 dashboard/tokens/token-detail/mobile Storybook 覆盖。
+- 2026-03-07: 完成 `/console` 管理员入口，并在 review-loop 中补齐链接语义、dashboard/tokens/token-detail/mobile Storybook 覆盖，以及管理员入口 gating/href 自动化断言。
