@@ -1,5 +1,7 @@
 import { Icon } from '@iconify/react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { addons } from 'storybook/preview-api'
+import { SELECT_STORY } from 'storybook/internal/core-events'
 import { Fragment, type ReactNode, useState } from 'react'
 
 import type {
@@ -34,6 +36,10 @@ import {
 import type { AdminModuleId } from './routes'
 
 const now = 1_762_380_000
+
+function openAdminStory(storyId: string): void {
+  addons.getChannel().emit(SELECT_STORY, { storyId })
+}
 
 const MOCK_TOKENS: AuthToken[] = [
   {
@@ -740,10 +746,14 @@ function TokensPageCanvas(): JSX.Element {
                   <td>
                     <div className="token-owner-block">
                       {token.owner ? (
-                        <>
+                        <button
+                          type="button"
+                          className="link-button token-owner-trigger"
+                          onClick={() => openAdminStory('admin-pages--user-detail')}
+                        >
                           <span className="token-owner-link">{token.owner.displayName || token.owner.userId}</span>
                           {token.owner.username ? <span className="token-owner-secondary">@{token.owner.username}</span> : null}
-                        </>
+                        </button>
                       ) : (
                         <span className="token-owner-empty">{tokenStrings.owner.unbound}</span>
                       )}
