@@ -394,7 +394,14 @@ function UserConsoleStory(args: UserConsoleStoryArgs): JSX.Element {
     return <div style={{ minHeight: '100vh' }} />
   }
 
-  return <UserConsole />
+  const storyKey = [
+    storyState.routeHash,
+    storyState.isAdmin ? 'admin' : 'user',
+    storyState.tokenListEmpty ? 'empty' : 'default',
+    storyState.probeMode,
+  ].join(':')
+
+  return <UserConsole key={storyKey} />
 }
 
 const meta = {
