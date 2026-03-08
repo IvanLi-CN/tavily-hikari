@@ -2,9 +2,9 @@
 
 ## 状态
 
-- Status: 部分完成（4/5）
+- Status: 已完成（快车道）
 - Created: 2026-03-07
-- Last: 2026-03-07
+- Last: 2026-03-08
 
 ## 背景 / 问题陈述
 
@@ -101,7 +101,7 @@
 - [x] M2: UserConsole stories 公开 args 重构为业务语义
 - [x] M3: 条件 controls 与 preset stories 验收命名收敛
 - [x] M4: build + Storybook build 验证通过
-- [ ] M5: fast-track 交付与 review-loop 收敛
+- [x] M5: fast-track 交付与 review-loop 收敛
 
 ## 风险 / 开放问题 / 假设
 
@@ -116,3 +116,4 @@
 - 2026-03-07: 将 UserConsole Storybook 公开 args 收敛为 `consoleView`、`tokenListState`、`tokenDetailPreview`，并把 preset stories 改为业务语义命名。
 - 2026-03-07: 已完成 `cd web && bun run build` 与 `cd web && bun run build-storybook`；静态产物确认 UserConsole stories 不再暴露 `scenario`。
 - 2026-03-07: 新增 `web/src/UserConsole.stories.test.ts`，回归锁定 acceptance-facing args、条件 controls 与旧导出名移除。
+- 2026-03-08: 完成 PR #102 与最新 `main` 的冲突收敛，补跑 Label Gate / CI Pipeline 全部成功，PR 恢复为 `mergeable_state=clean`。
