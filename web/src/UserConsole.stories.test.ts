@@ -6,6 +6,7 @@ describe('UserConsole Storybook acceptance controls', () => {
   it('exposes only acceptance-facing controls', () => {
     expect(meta.args).toEqual({
       consoleView: 'Dashboard',
+      isAdmin: false,
       tokenListState: 'Default List',
       tokenDetailPreview: 'Overview',
     })
@@ -16,6 +17,11 @@ describe('UserConsole Storybook acceptance controls', () => {
       name: 'Console view',
       options: ['Dashboard', 'Tokens', 'Token Detail'],
       control: { type: 'inline-radio' },
+    })
+
+    expect(meta.argTypes?.isAdmin).toMatchObject({
+      name: 'Admin session',
+      control: { type: 'boolean' },
     })
 
     expect(meta.argTypes?.tokenListState).toMatchObject({
@@ -41,10 +47,23 @@ describe('UserConsole Storybook acceptance controls', () => {
   })
 
   it('keeps business-readable preset stories and drops legacy scenario exports', () => {
-    expect(userConsoleStories.Dashboard.args).toMatchObject({ consoleView: 'Dashboard' })
+    expect(userConsoleStories.Dashboard.args).toMatchObject({ consoleView: 'Dashboard', isAdmin: false })
+    expect(userConsoleStories.DashboardAdmin).toMatchObject({
+      name: 'Dashboard Admin',
+      args: { consoleView: 'Dashboard', isAdmin: true },
+    })
+    expect(userConsoleStories.DashboardAdminMobile).toMatchObject({
+      name: 'Dashboard Admin Mobile',
+      args: { consoleView: 'Dashboard', isAdmin: true },
+    })
     expect(userConsoleStories.Tokens.args).toMatchObject({
       consoleView: 'Tokens',
+      isAdmin: false,
       tokenListState: 'Default List',
+    })
+    expect(userConsoleStories.TokensAdmin).toMatchObject({
+      name: 'Tokens Admin',
+      args: { consoleView: 'Tokens', isAdmin: true, tokenListState: 'Default List' },
     })
     expect(userConsoleStories.TokensEmpty).toMatchObject({
       name: 'Tokens Empty',
@@ -52,7 +71,11 @@ describe('UserConsole Storybook acceptance controls', () => {
     })
     expect(userConsoleStories.TokenDetailOverview).toMatchObject({
       name: 'Token Detail Overview',
-      args: { consoleView: 'Token Detail', tokenDetailPreview: 'Overview' },
+      args: { consoleView: 'Token Detail', isAdmin: false, tokenDetailPreview: 'Overview' },
+    })
+    expect(userConsoleStories.TokenDetailAdmin).toMatchObject({
+      name: 'Token Detail Admin',
+      args: { consoleView: 'Token Detail', isAdmin: true, tokenDetailPreview: 'Overview' },
     })
     expect(userConsoleStories.ApiCheckRunning).toMatchObject({
       name: 'API Check Running',

@@ -18,12 +18,14 @@ type ProbeMockMode = 'none' | 'running' | 'success' | 'partial' | 'auth-fail' | 
 
 interface UserConsoleStoryArgs {
   consoleView: ConsoleView
+  isAdmin: boolean
   tokenListState: TokenListState
   tokenDetailPreview: TokenDetailPreview
 }
 
 interface UserConsoleStoryState {
   autoProbeTarget: 'mcp' | 'api' | null
+  isAdmin: boolean
   probeMode: ProbeMockMode
   routeHash: string
   tokenListEmpty: boolean
@@ -144,6 +146,11 @@ const profileSample: Profile = {
   userDisplayName: 'Ivan',
 }
 
+const adminProfileSample: Profile = {
+  ...profileSample,
+  isAdmin: true,
+}
+
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
@@ -191,6 +198,7 @@ function resolveStoryState(args: UserConsoleStoryArgs): UserConsoleStoryState {
     autoProbeTarget: args.consoleView === 'Token Detail'
       ? autoProbeTargetFromPreview(args.tokenDetailPreview)
       : null,
+    isAdmin: args.isAdmin,
     probeMode: args.consoleView === 'Token Detail'
       ? probeModeFromPreview(args.tokenDetailPreview)
       : 'none',
@@ -210,7 +218,7 @@ function installUserConsoleFetchMock(state: UserConsoleStoryState): () => void {
     const url = new URL(request.url, window.location.origin)
 
     if (url.pathname === '/api/profile') {
-      return jsonResponse(profileSample)
+      return jsonResponse(state.isAdmin ? adminProfileSample : profileSample)
     }
 
     if (url.pathname === '/api/user/dashboard') {
@@ -356,7 +364,7 @@ function UserConsoleStory(args: UserConsoleStoryArgs): JSX.Element {
   const [ready, setReady] = useState(false)
   const storyState = useMemo(
     () => resolveStoryState(args),
-    [args.consoleView, args.tokenListState, args.tokenDetailPreview],
+    [args.consoleView, args.isAdmin, args.tokenListState, args.tokenDetailPreview],
   )
 
   useLayoutEffect(() => {
@@ -398,6 +406,7 @@ const meta = {
   },
   args: {
     consoleView: 'Dashboard',
+    isAdmin: false,
     tokenListState: 'Default List',
     tokenDetailPreview: 'Overview',
   },
@@ -407,6 +416,11 @@ const meta = {
       description: 'Pick the main console page to preview.',
       options: ['Dashboard', 'Tokens', 'Token Detail'],
       control: { type: 'inline-radio' },
+    },
+    isAdmin: {
+      name: 'Admin session',
+      description: 'Toggle the console between a regular user session and an admin session.',
+      control: { type: 'boolean' },
     },
     tokenListState: {
       name: 'Token list state',
@@ -440,12 +454,42 @@ type Story = StoryObj<typeof meta>
 export const Dashboard: Story = {
   args: {
     consoleView: 'Dashboard',
+    isAdmin: false,
+  },
+}
+
+export const DashboardAdmin: Story = {
+  name: 'Dashboard Admin',
+  args: {
+    consoleView: 'Dashboard',
+    isAdmin: true,
+  },
+}
+
+export const DashboardAdminMobile: Story = {
+  name: 'Dashboard Admin Mobile',
+  args: {
+    consoleView: 'Dashboard',
+    isAdmin: true,
+  },
+  parameters: {
+    viewport: { defaultViewport: '0390-device-iphone-14' },
   },
 }
 
 export const Tokens: Story = {
   args: {
     consoleView: 'Tokens',
+    isAdmin: false,
+    tokenListState: 'Default List',
+  },
+}
+
+export const TokensAdmin: Story = {
+  name: 'Tokens Admin',
+  args: {
+    consoleView: 'Tokens',
+    isAdmin: true,
     tokenListState: 'Default List',
   },
 }
@@ -454,6 +498,7 @@ export const TokensEmpty: Story = {
   name: 'Tokens Empty',
   args: {
     consoleView: 'Tokens',
+    isAdmin: false,
     tokenListState: 'Empty',
   },
 }
@@ -462,6 +507,16 @@ export const TokenDetailOverview: Story = {
   name: 'Token Detail Overview',
   args: {
     consoleView: 'Token Detail',
+    isAdmin: false,
+    tokenDetailPreview: 'Overview',
+  },
+}
+
+export const TokenDetailAdmin: Story = {
+  name: 'Token Detail Admin',
+  args: {
+    consoleView: 'Token Detail',
+    isAdmin: true,
     tokenDetailPreview: 'Overview',
   },
 }
@@ -470,6 +525,7 @@ export const ApiCheckRunning: Story = {
   name: 'API Check Running',
   args: {
     consoleView: 'Token Detail',
+    isAdmin: false,
     tokenDetailPreview: 'API Check Running',
   },
 }
@@ -478,6 +534,7 @@ export const AllChecksPass: Story = {
   name: 'All Checks Pass',
   args: {
     consoleView: 'Token Detail',
+    isAdmin: false,
     tokenDetailPreview: 'All Checks Pass',
   },
 }
@@ -486,6 +543,7 @@ export const PartialAvailability: Story = {
   name: 'Partial Availability',
   args: {
     consoleView: 'Token Detail',
+    isAdmin: false,
     tokenDetailPreview: 'Partial Availability',
   },
 }
@@ -494,6 +552,7 @@ export const AuthenticationFailed: Story = {
   name: 'Authentication Failed',
   args: {
     consoleView: 'Token Detail',
+    isAdmin: false,
     tokenDetailPreview: 'Authentication Failed',
   },
 }
@@ -502,6 +561,7 @@ export const QuotaBlocked: Story = {
   name: 'Quota Blocked',
   args: {
     consoleView: 'Token Detail',
+    isAdmin: false,
     tokenDetailPreview: 'Quota Blocked',
   },
 }
