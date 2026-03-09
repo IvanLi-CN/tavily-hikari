@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 部分完成（4/5）
+- Status: 已完成
 - Created: 2026-03-09
 - Last: 2026-03-09
 
@@ -89,12 +89,12 @@
 - [x] M2: dashboard/list header 与 leaderboard header 接入统一 CTA
 - [x] M3: token detail / key detail / user detail 顶部区域接入统一 CTA
 - [x] M4: i18n、responsive CSS、stories 与自动化断言补齐
-- [ ] M5: build、浏览器验收、快车道 PR 收敛完成
+- [x] M5: build、浏览器验收、快车道 PR 收敛完成
 
 ## 风险 / 开放问题 / 假设
 
 - 风险：admin 移动端页头高度较紧，新 CTA 若处理不当会挤压 refresh/back 控件。
-- 开放问题：`codex review` 在快车道收敛阶段出现上游 `502 Bad Gateway` 重试，当前尚未拿到最终 review 结论，因此 M5 继续保持 pending。
+- 开放问题：GitHub 未自动为截图 docs 提交触发新的 pull_request workflow；已补跑 `CI Pipeline` workflow_dispatch（run `#372`）并确认通过，当前无剩余代码阻塞。
 - 假设：管理员在 `/admin` 下始终允许直接访问 `/console`，无需再判断是否存在有效用户 session。
 - 假设：固定返回 `/console` 即可满足当前产品诉求，本轮不追踪最近一次用户控制台子路由。
 
@@ -108,5 +108,5 @@
 
 - 2026-03-09: 创建 spec，冻结“页头全局、始终显示、固定跳转 `/console`、不改后端接口”的实现边界。
 - 2026-03-09: 已完成共享 return CTA、admin header/detail 接入、i18n 与 responsive 调整；通过 `cd web && bun test`、`cd web && bun run build`，并在本地浏览器验证 `/admin`、`/admin/tokens/leaderboard`、`/admin/tokens/demo-token`、`/admin/keys/demo-key`、`/admin/users/demo-user` 的入口与 `/console` 跳转。
-- 2026-03-09: PR `#108` 已创建且 GitHub checks 全绿；`codex review` 因多次 `502 Bad Gateway` 重试未返回最终结论，M5 暂维持未完成。
-- 2026-03-09: 补充管理界面与用户控制台落地页截图到 spec 资产，作为 PR 视觉验收证据。
+- 2026-03-09: PR `#108` 已创建；`codex review --base origin/main` 已完成且无高优先级阻塞项，本地 `bun test` / `bun run build` 与浏览器验收通过。
+- 2026-03-09: 补充管理界面与用户控制台落地页截图到 spec 资产，作为 PR 视觉验收证据；GitHub 自动 pull_request checks 未为该 docs 提交生成新 run，已补跑 `CI Pipeline` workflow_dispatch（run `#372`）并通过。
