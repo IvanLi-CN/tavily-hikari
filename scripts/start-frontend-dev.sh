@@ -15,4 +15,4 @@ if [[ ! -d node_modules ]]; then
 fi
 
 echo "Starting frontend dev server in foreground on $HOST:$PORT..."
-exec bun run dev -- --host "$HOST" --port "$PORT"
+exec bun run --bun dev -- --host "$HOST" --port "$PORT"

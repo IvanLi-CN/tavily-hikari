@@ -31,7 +31,7 @@
 
 ### In scope
 
-- `web/package.json`、`web/tailwind.config.cjs`、`web/components.json`
+- `web/package.json`、`web/tailwind.config.ts`、`web/components.json`
 - `web/src/index.css` 全局 token 与兼容组件层
 - `web/src/theme.tsx`、`web/src/components/ThemeToggle.tsx`
 - `web/src/components/ui/*` shadcn 基础组件

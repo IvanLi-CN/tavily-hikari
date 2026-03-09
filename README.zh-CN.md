@@ -39,7 +39,7 @@ Client → Tavily Hikari (Axum) ──┬─> Tavily upstream (/mcp)
 cargo run -- --bind 127.0.0.1 --port 58087
 
 # 2. （可选）启动前端 Dev Server
-cd web && bun install --frozen-lockfile && bun run dev -- --host 127.0.0.1 --port 55173
+cd web && bun install --frozen-lockfile && bun run --bun dev -- --host 127.0.0.1 --port 55173
 
 # 3. 通过管理员接口注册 Tavily key（ForwardAuth 头视部署而定）
 curl -X POST http://127.0.0.1:58087/api/keys \
@@ -223,7 +223,7 @@ export LINUXDO_OAUTH_REDIRECT_URL='https://tavily.ivanli.cc/auth/linuxdo/callbac
 - 构建产物位于 `web/dist`，可由后端直接托管或独立静态站点部署。
 - 通过 React + TanStack Router 实现实时仪表盘：Key 列表、状态筛选、请求日志流式刷新。
 - shadcn/ui（Radix）+ Tailwind 提供组件与深浅色主题，Iconify 提供图标，自带版本号展示（`scripts/write-version.mjs` 会把版本写入构建结果）。
-- 开发期 `bun run dev` 会把 `/api`、`/mcp`、`/health` 请求代理到后端，减少 CORS 与鉴权配置成本。
+- 开发期 `bun run dev`（通过 `web/bunfig.toml` 强制走 Bun runtime）会把 `/api`、`/mcp`、`/health` 请求代理到后端，减少 CORS 与鉴权配置成本。
 
 ## 界面截图
 
@@ -276,8 +276,9 @@ codex mcp list | grep tavily_hikari
 - **Rust**：固定使用 1.91.0（见 `rust-toolchain.toml`）。
   - `cargo fmt` / `cargo clippy -- -D warnings` / `cargo test --locked --all-features`。
   - `cargo run -- --help` 查看完整 CLI。
-- **前端**：使用 Bun（通过 `.bun-version` 固定版本）；推荐 `bun install --frozen-lockfile`；`bun run build` 会串行执行 `tsc -b` 与 `vite build`。
-- **Git Hooks**：运行 `lefthook install` 后，每次提交会自动执行 `cargo fmt`、`cargo clippy`、`bunx dprint fmt` 与 `bunx commitlint --edit`，确保遵循 Conventional Commits（英文）。
+- **前端**：使用 Bun（通过 `.bun-version` 固定版本）；推荐 `bun install --frozen-lockfile`；`bun run build` 会在 Bun runtime 下串行执行 `tsc -b` 与 `vite build`（见 `web/bunfig.toml`）。
+- **Git Hooks**：运行 `lefthook install` 后，每次提交会自动执行 `cargo fmt`、`cargo clippy`、`bunx --bun dprint fmt` 与 `bunx --bun commitlint --edit`，确保遵循 Conventional Commits（英文）。
+- **无 Node 验证**：可运行 `bun run validate:no-node-runtime`，确认在前置失败 `node` shim 的情况下，仓库关键构建与 hook 路径仍可通过。
 - **CI**：`.github/workflows/ci.yml` 负责 lint、测试、PR 构建与集成 smoke。
 - **Label Gate**：`.github/workflows/label-gate.yml` 强制 PR 必须且只能有 1 个 intent label（`type:*`）与 1 个 channel label（`channel:*`）。
 - **Release**：`.github/workflows/release.yml` 在 main CI 通过后触发，负责打 tag / 创建 Release / 推送 GHCR 镜像。

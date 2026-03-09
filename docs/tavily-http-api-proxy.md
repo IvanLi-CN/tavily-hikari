@@ -343,7 +343,7 @@ const result = await client.search("hello from Hikari proxy", {
 
 本仓库提供了一个基于 `@tavily/core` 的端到端烟囱测试脚本：
 
-- 路径：`tests/e2e/tavily_http_node.cjs`
+- 路径：`tests/e2e/tavily_http_smoke.ts`
 - bun 脚本：`bun run test:tavily-http`
 - 运行前需确保：
   - Hikari 后端已启动并监听 `http://127.0.0.1:58087`（`scripts/start-backend-dev.sh`）；

@@ -3,14 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "packageManager": "bun@1.3.9",
+  "packageManager": "bun@1.3.10",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build && bun scripts/write-version.mjs",
-    "storybook": "storybook dev --host 127.0.0.1 --port 56006 --disable-telemetry",
-    "storybook:ci": "storybook dev --ci --no-open --host 127.0.0.1 --port 56006 --disable-telemetry",
-    "build-storybook": "storybook build --disable-telemetry",
-    "preview": "vite preview",
+    "dev": "bun --bun ./node_modules/.bin/vite",
+    "build": "bun --bun ./node_modules/.bin/tsc -b && bun --bun ./node_modules/.bin/vite build && bun ./scripts/write-version.mjs",
+    "storybook": "bun --bun ./node_modules/.bin/storybook dev --host 127.0.0.1 --port 56006 --disable-telemetry",
+    "storybook:ci": "bun --bun ./node_modules/.bin/storybook dev --ci --no-open --host 127.0.0.1 --port 56006 --disable-telemetry",
+    "build-storybook": "bun --bun ./node_modules/.bin/storybook build --disable-telemetry",
+    "preview": "bun --bun ./node_modules/.bin/vite preview",
     "test": "bun test"
   },
   "dependencies": {

@@ -1,0 +1,3 @@
+[run]
+# Force package.json scripts and shebang-based CLIs to execute under Bun.
+bun = true

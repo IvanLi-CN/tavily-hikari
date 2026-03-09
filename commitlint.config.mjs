@@ -1,6 +1,6 @@
 // Commitlint configuration enforcing conventional commits and English-only messages.
 
-module.exports = {
+export default {
   extends: ['@commitlint/config-conventional'],
   plugins: ['commitlint-plugin-function-rules'],
   rules: {
@@ -19,19 +19,19 @@ module.exports = {
       2,
       'always',
       (parsed) => {
-        const { subject } = parsed;
-        if (!subject) return [true];
+        const { subject } = parsed
+        if (!subject) return [true]
 
-        const chineseRegex = /[\u4e00-\u9fff]/;
+        const chineseRegex = /[\u4e00-\u9fff]/
         if (chineseRegex.test(subject)) {
-          return [false, 'Subject must be in English only. Chinese characters are not allowed.'];
+          return [false, 'Subject must be in English only. Chinese characters are not allowed.']
         }
 
         if (/^[A-Z]/.test(subject)) {
-          return [false, 'Subject must not start with uppercase'];
+          return [false, 'Subject must not start with uppercase']
         }
 
-        return [true];
+        return [true]
       },
     ],
     'header-max-length': [2, 'always', 72],
@@ -43,18 +43,18 @@ module.exports = {
       2,
       'always',
       (parsed) => {
-        const { body } = parsed;
-        if (!body) return [true];
+        const { body } = parsed
+        if (!body) return [true]
 
-        const chineseRegex = /[\u4e00-\u9fff]/;
+        const chineseRegex = /[\u4e00-\u9fff]/
         if (chineseRegex.test(body)) {
-          return [false, 'Body must be in English only. Chinese characters are not allowed.'];
+          return [false, 'Body must be in English only. Chinese characters are not allowed.']
         }
 
-        return [true];
+        return [true]
       },
     ],
     'footer-leading-blank': [1, 'always'],
     'footer-max-line-length': [2, 'always', 100],
   },
-};
+}

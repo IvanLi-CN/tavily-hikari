@@ -15,7 +15,7 @@
   - `cargo fmt` — format Rust code; `cargo clippy -- -D warnings` — lint.
   - `cargo test` — run tests (add as you go).
 - Frontend (`web/`)
-  - `bun install --frozen-lockfile` — install deps; `bun run dev` — local dev (Vite).
+  - `bun install --frozen-lockfile` — install deps; `bun run --bun dev` — local dev (Vite under Bun runtime).
   - `bun run build` — build SPA to `web/dist`; `bun run preview` — preview build.
   - `bun run storybook` — run Storybook dev server at `http://127.0.0.1:56006`.
 - Hooks
@@ -25,7 +25,7 @@
 
 - Rust: 2024 edition, rustfmt defaults; modules/files `snake_case`, types `PascalCase`, functions/vars `snake_case`.
 - TypeScript/React: components `PascalCase` in `*.tsx`; hooks `useXxx`.
-- Markdown: formatted by dprint (line width 100). Run `bunx dprint fmt` for changed `.md`.
+- Markdown: formatted by dprint (line width 100). Run `bunx --bun dprint fmt` for changed `.md`.
 
 ## Testing Guidelines
 
@@ -55,7 +55,7 @@
 
 - Frontend (Vite):
   - Start: `scripts/start-frontend-dev.sh`
-  - `scripts/start-frontend-dev.sh` automatically installs dependencies if `node_modules` is missing.
+  - `scripts/start-frontend-dev.sh` automatically installs dependencies if `node_modules` is missing, then starts Vite with `bun run --bun dev`.
   - Build for static serving: `cd web && bun run build`, then run backend with `scripts/start-backend-dev.sh` so it picks up `web/dist`.
 
 - Stop services:
@@ -68,7 +68,7 @@
   - Vite dev server proxies to backend when configured in `web/vite.config.ts`.
 
 - Storybook:
-  - Start: `cd web && bun install --frozen-lockfile && bun run storybook` → `http://127.0.0.1:56006`
+  - Start: `cd web && bun install --frozen-lockfile && bun run storybook` → `http://127.0.0.1:56006` (Storybook CLI forced through Bun runtime by the package script).
   - Keep it in the current shell for short sessions, or run it under any team-approved background strategy.
 
 - Validation:
