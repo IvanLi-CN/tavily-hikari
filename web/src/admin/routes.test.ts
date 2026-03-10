@@ -3,6 +3,7 @@ import { describe, expect, it } from 'bun:test'
 import {
   isSameAdminRoute,
   parseAdminPath,
+  userDetailPath,
   userTagCreatePath,
   userTagEditPath,
   userTagsPath,
@@ -30,6 +31,11 @@ describe('admin user tag routes', () => {
     expect(userTagsPath()).toBe('/admin/users/tags')
     expect(userTagCreatePath()).toBe('/admin/users/tags/new')
     expect(userTagEditPath('linuxdo l2')).toBe('/admin/users/tags/linuxdo%20l2')
+  })
+
+  it('preserves users list filter context when building a user detail path', () => {
+    expect(userDetailPath('usr_alice', 'L2', 'linuxdo_l2')).toBe('/admin/users/usr_alice?q=L2&tagId=linuxdo_l2')
+    expect(userDetailPath('usr_alice')).toBe('/admin/users/usr_alice')
   })
 
   it('compares user tag editor routes by mode and id', () => {

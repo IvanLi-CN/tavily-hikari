@@ -133,8 +133,15 @@ export function tokenLeaderboardPath(): string {
   return `${ADMIN_BASE}/tokens/leaderboard`
 }
 
-export function userDetailPath(id: string): string {
-  return `${ADMIN_BASE}/users/${encodeURIComponent(id)}`
+export function userDetailPath(id: string, query?: string, tagId?: string | null): string {
+  const path = `${ADMIN_BASE}/users/${encodeURIComponent(id)}`
+  const params = new URLSearchParams()
+  const normalizedQuery = query?.trim()
+  const normalizedTagId = tagId?.trim()
+  if (normalizedQuery) params.set('q', normalizedQuery)
+  if (normalizedTagId) params.set('tagId', normalizedTagId)
+  const search = params.toString()
+  return search ? `${path}?${search}` : path
 }
 
 export function userTagsPath(): string {

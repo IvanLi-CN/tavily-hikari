@@ -1541,10 +1541,14 @@ function AdminDashboard(): JSX.Element {
   )
 
   const navigateUser = useCallback(
-    (id: string) => {
+    (id: string, options?: { preserveUsersContext?: boolean }) => {
+      if (options?.preserveUsersContext) {
+        navigateToPath(userDetailPath(id, usersQuery, usersTagFilterId))
+        return
+      }
       navigateToPath(userDetailPath(id))
     },
-    [navigateToPath],
+    [navigateToPath, usersQuery, usersTagFilterId],
   )
 
   const navigateUsersSearch = useCallback(
@@ -3257,7 +3261,11 @@ function AdminDashboard(): JSX.Element {
             <button
               type="button"
               className="btn btn-outline"
-              onClick={() => navigateModule('users')}
+              onClick={() =>
+                navigateToPath(
+                  buildAdminUsersPath(getAdminUsersQueryFromLocation(), getAdminUsersTagFilterFromLocation()),
+                )
+              }
             >
               {usersStrings.detail.back}
             </button>
@@ -5115,7 +5123,7 @@ function AdminDashboard(): JSX.Element {
                           <button
                             type="button"
                             className="link-button"
-                            onClick={() => navigateUser(item.userId)}
+                            onClick={() => navigateUser(item.userId, { preserveUsersContext: true })}
                           >
                             <strong>{item.displayName || item.username || item.userId}</strong>
                           </button>
@@ -5151,7 +5159,7 @@ function AdminDashboard(): JSX.Element {
                             className="btn btn-circle btn-ghost btn-sm"
                             title={usersStrings.actions.view}
                             aria-label={usersStrings.actions.view}
-                            onClick={() => navigateUser(item.userId)}
+                            onClick={() => navigateUser(item.userId, { preserveUsersContext: true })}
                           >
                             <Icon icon="mdi:eye-outline" width={16} height={16} />
                           </button>

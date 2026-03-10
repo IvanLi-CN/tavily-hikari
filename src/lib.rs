@@ -7832,6 +7832,22 @@ impl KeyStore {
         Ok(())
     }
 
+    async fn sync_linuxdo_system_tag_binding_best_effort(
+        &self,
+        user_id: &str,
+        trust_level: Option<i64>,
+    ) {
+        if let Err(err) = self
+            .sync_linuxdo_system_tag_binding(user_id, trust_level)
+            .await
+        {
+            eprintln!(
+                "linuxdo system tag sync error for user {} trust_level {:?}: {}",
+                user_id, trust_level, err
+            );
+        }
+    }
+
     async fn backfill_linuxdo_user_tag_bindings(&self) -> Result<(), ProxyError> {
         let rows = sqlx::query_as::<_, (String, Option<i64>)>(
             r#"SELECT user_id, trust_level
@@ -8711,8 +8727,8 @@ impl KeyStore {
 
             tx.commit().await?;
             if profile.provider == "linuxdo" {
-                self.sync_linuxdo_system_tag_binding(&user_id, profile.trust_level)
-                    .await?;
+                self.sync_linuxdo_system_tag_binding_best_effort(&user_id, profile.trust_level)
+                    .await;
             }
             return Ok(UserIdentity {
                 user_id,
@@ -16532,6 +16548,83 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
         .await
         .expect("read retained linuxdo bindings");
         assert_eq!(retained_keys, vec!["linuxdo_l1".to_string()]);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn linuxdo_oauth_upsert_survives_tag_sync_failures_and_backfill_repairs_binding() {
+        let _guard = env_lock().lock_owned().await;
+        let db_path = temp_db_path("linuxdo-sync-best-effort");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        sqlx::query("DELETE FROM user_tags WHERE system_key LIKE 'linuxdo_l%'")
+            .execute(&proxy.key_store.pool)
+            .await
+            .expect("delete linuxdo system tags");
+
+        let user = proxy
+            .upsert_oauth_account(&OAuthAccountProfile {
+                provider: "linuxdo".to_string(),
+                provider_user_id: "linuxdo-best-effort-user".to_string(),
+                username: Some("linuxdo_best_effort_user".to_string()),
+                name: Some("LinuxDo Best Effort User".to_string()),
+                avatar_template: None,
+                active: true,
+                trust_level: Some(2),
+                raw_payload_json: None,
+            })
+            .await
+            .expect("oauth upsert should succeed even when tag sync fails");
+
+        let oauth_row_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM oauth_accounts WHERE provider = 'linuxdo' AND provider_user_id = ?",
+        )
+        .bind("linuxdo-best-effort-user")
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("count oauth rows");
+        assert_eq!(oauth_row_count, 1);
+
+        let binding_count: i64 = sqlx::query_scalar(
+            r#"SELECT COUNT(*)
+               FROM user_tag_bindings b
+               JOIN user_tags t ON t.id = b.tag_id
+               WHERE b.user_id = ? AND t.system_key LIKE 'linuxdo_l%'"#,
+        )
+        .bind(&user.user_id)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("count linuxdo bindings after failed sync");
+        assert_eq!(binding_count, 0);
+
+        proxy
+            .key_store
+            .seed_linuxdo_system_tags()
+            .await
+            .expect("reseed linuxdo system tags");
+        proxy
+            .key_store
+            .backfill_linuxdo_user_tag_bindings()
+            .await
+            .expect("repair linuxdo bindings");
+
+        let restored_key: String = sqlx::query_scalar(
+            r#"SELECT t.system_key
+               FROM user_tag_bindings b
+               JOIN user_tags t ON t.id = b.tag_id
+               WHERE b.user_id = ? AND t.system_key LIKE 'linuxdo_l%'
+               LIMIT 1"#,
+        )
+        .bind(&user.user_id)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("read restored linuxdo binding");
+        assert_eq!(restored_key, "linuxdo_l2");
 
         let _ = std::fs::remove_file(db_path);
     }
