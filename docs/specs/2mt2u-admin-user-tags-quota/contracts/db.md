@@ -50,6 +50,7 @@
 ### Migration notes（迁移说明）
 
 - 启动时创建新表，并为 `account_quota_limits` 增列 `inherits_defaults`。
+- 一次性 `inherits_defaults` 回填只会把“当前仍等于 env 默认 tuple”的历史行保留为默认跟随；其他 legacy tuple 保守视为自定义基线，避免升级时覆盖管理员手工额度。
 - 初始化时 seed 5 个 LinuxDo 系统标签；重复启动必须幂等。
 - LinuxDo 系统标签默认 delta 直接镜像旧 token 默认额度，自动同步绑定后会按普通 tag delta 参与有效额度叠加。
 - 启动时对现有 LinuxDo 用户做一次回填：将 `trust_level` 映射为单一系统标签绑定。
