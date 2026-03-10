@@ -56,15 +56,15 @@ export function formatQuotaDraftInput(value: string | undefined): string {
 export function parseQuotaDraftValue(value: string | undefined, fallback: number): number {
   const normalized = normalizeQuotaDraftInput(value)
   const parsed = Number.parseInt(normalized ?? '', 10)
-  if (!Number.isFinite(parsed)) return coerceQuotaInteger(fallback, 1)
-  return coerceQuotaInteger(parsed, 1)
+  if (!Number.isFinite(parsed)) return coerceQuotaInteger(fallback, 0)
+  return coerceQuotaInteger(parsed, 0)
 }
 
 export function resolveQuotaSliderStableMax(field: QuotaSliderField, initialLimit: number, used: number): number {
   return Math.max(
     1,
     getQuotaSliderDefaultBaseline(field),
-    coerceQuotaInteger(initialLimit, 1),
+    coerceQuotaInteger(initialLimit, 0),
     coerceQuotaInteger(used, 0),
   )
 }
@@ -93,10 +93,11 @@ export function buildQuotaSliderStages(stableMax: number, extras: number[] = [])
   for (const extra of extras) {
     if (!Number.isFinite(extra)) continue
     const value = Math.trunc(extra)
-    if (value < 1 || value > resolvedMax) continue
+    if (value < 0 || value > resolvedMax) continue
     stages.add(value)
   }
 
+  stages.add(0)
   stages.add(resolvedMax)
 
   return [...stages].sort((left, right) => left - right)
@@ -108,7 +109,7 @@ export function createQuotaSliderSeed(
   initialLimit: number,
 ): QuotaSliderSeed {
   const resolvedUsed = coerceQuotaInteger(used, 0)
-  const resolvedInitialLimit = coerceQuotaInteger(initialLimit, 1)
+  const resolvedInitialLimit = coerceQuotaInteger(initialLimit, 0)
   const stableMax = resolveQuotaSliderStableMax(field, resolvedInitialLimit, resolvedUsed)
   return {
     field,
@@ -122,7 +123,7 @@ export function createQuotaSliderSeed(
 export function findNearestQuotaSliderStageIndex(stages: readonly number[], value: number): number {
   if (stages.length === 0) return 0
 
-  const resolvedValue = coerceQuotaInteger(value, 1)
+  const resolvedValue = coerceQuotaInteger(value, 0)
   let bestIndex = 0
   let bestDistance = Number.POSITIVE_INFINITY
 
@@ -163,9 +164,9 @@ export function clampQuotaSliderStageIndex(stages: readonly number[], index: num
 }
 
 export function getQuotaSliderStageValue(stages: readonly number[], index: number): number {
-  if (stages.length === 0) return 1
+  if (stages.length === 0) return 0
   const resolvedIndex = clampQuotaSliderStageIndex(stages, index)
-  return stages[resolvedIndex] ?? stages[stages.length - 1] ?? 1
+  return stages[resolvedIndex] ?? stages[stages.length - 1] ?? 0
 }
 
 function toQuotaRatioPercent(stages: readonly number[], value: number): number {
