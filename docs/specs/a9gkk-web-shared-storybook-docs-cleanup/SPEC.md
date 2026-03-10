@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 待实现
+- Status: 部分完成（4/5）
 - Created: 2026-03-10
 - Last: 2026-03-10
 
@@ -86,12 +86,13 @@
 
 ## 实现里程碑
 
-- [ ] M1: follow-up spec 与 README 索引落地
-- [ ] M2: Storybook docs addon 与共享 primitives stories 落地
-- [ ] M3: `PublicHomeHeroCard` CTA primitive 收口 + orphan wrapper 持续删除态校验
-- [ ] M4: build / storybook / browser 验证
+- [x] M1: follow-up spec 与 README 索引落地
+- [x] M2: Storybook docs addon 与共享 primitives stories 落地
+- [x] M3: `PublicHomeHeroCard` CTA primitive 收口 + orphan wrapper 持续删除态校验
+- [x] M4: build / storybook / browser 验证
 - [ ] M5: PR / checks / review-loop / spec-sync 收敛
 
 ## 变更记录
 
 - 2026-03-10: 创建规格，冻结本轮共享 Storybook docs 收口、Hero CTA 收口与 orphan wrapper 清理边界。
+- 2026-03-10: 已完成 addon-docs 接入、shared stories、AdminShell docs、Hero CTA primitive 收口，并创建 PR #113 等待远端 checks / review-loop 收敛。

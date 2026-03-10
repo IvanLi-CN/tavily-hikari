@@ -5,7 +5,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 
 const meta = {
   title: 'UI/Select',
-  component: SelectTrigger,
+  component: Select,
   subcomponents: {
     SelectContent,
     SelectItem,
@@ -21,7 +21,7 @@ const meta = {
       },
     },
   },
-} satisfies Meta<typeof SelectTrigger>
+} satisfies Meta<typeof Select>
 
 export default meta
 

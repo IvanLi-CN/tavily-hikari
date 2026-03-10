@@ -52,7 +52,7 @@ function DrawerStory(): JSX.Element {
 
 const meta = {
   title: 'UI/Drawer',
-  component: DrawerContent,
+  component: Drawer,
   subcomponents: {
     DrawerTrigger,
     DrawerHeader,
@@ -71,7 +71,7 @@ const meta = {
       },
     },
   },
-} satisfies Meta<typeof DrawerContent>
+} satisfies Meta<typeof Drawer>
 
 export default meta
 

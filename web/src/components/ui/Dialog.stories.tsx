@@ -54,7 +54,7 @@ function DialogStory(props: {
 
 const meta = {
   title: 'UI/Dialog',
-  component: DialogContent,
+  component: Dialog,
   subcomponents: {
     DialogTrigger,
     DialogHeader,
@@ -72,7 +72,7 @@ const meta = {
       },
     },
   },
-} satisfies Meta<typeof DialogContent>
+} satisfies Meta<typeof Dialog>
 
 export default meta
 
