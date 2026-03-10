@@ -152,6 +152,8 @@ const META_KEY_TOKEN_USAGE_ROLLUP_LOG_ID_V2: &str = "token_usage_rollup_last_log
 const META_KEY_HEAL_ORPHAN_TOKENS_V1: &str = "heal_orphan_auth_tokens_from_logs_v1";
 const META_KEY_API_KEY_USAGE_BUCKETS_V1_DONE: &str = "api_key_usage_buckets_v1_done";
 const META_KEY_ACCOUNT_QUOTA_BACKFILL_V1: &str = "account_quota_backfill_v1";
+const META_KEY_ACCOUNT_QUOTA_INHERITS_DEFAULTS_BACKFILL_V1: &str =
+    "account_quota_inherits_defaults_backfill_v1";
 const META_KEY_FORCE_USER_RELOGIN_V1: &str = "force_user_relogin_v1";
 const META_KEY_LINUXDO_SYSTEM_TAG_DEFAULTS_V1: &str = "linuxdo_system_tag_defaults_v1";
 // Cutover marker for switching business quota counters from "requests" to "credits".
@@ -4324,6 +4326,18 @@ impl KeyStore {
                 .await?;
         }
         if self
+            .get_meta_i64(META_KEY_ACCOUNT_QUOTA_INHERITS_DEFAULTS_BACKFILL_V1)
+            .await?
+            .is_none()
+        {
+            self.backfill_account_quota_inherits_defaults_v1().await?;
+            self.set_meta_i64(
+                META_KEY_ACCOUNT_QUOTA_INHERITS_DEFAULTS_BACKFILL_V1,
+                Utc::now().timestamp(),
+            )
+            .await?;
+        }
+        if self
             .get_meta_i64(META_KEY_FORCE_USER_RELOGIN_V1)
             .await?
             .is_none()
@@ -7205,6 +7219,28 @@ impl KeyStore {
         .execute(&self.pool)
         .await?;
         Ok(true)
+    }
+
+    async fn backfill_account_quota_inherits_defaults_v1(&self) -> Result<(), ProxyError> {
+        let defaults = AccountQuotaLimits::defaults();
+        sqlx::query(
+            r#"UPDATE account_quota_limits
+               SET inherits_defaults = CASE
+                   WHEN hourly_any_limit = ?
+                    AND hourly_limit = ?
+                    AND daily_limit = ?
+                    AND monthly_limit = ?
+                   THEN 1
+                   ELSE 0
+               END"#,
+        )
+        .bind(defaults.hourly_any_limit)
+        .bind(defaults.hourly_limit)
+        .bind(defaults.daily_limit)
+        .bind(defaults.monthly_limit)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     async fn sync_account_quota_limits_with_defaults(&self) -> Result<(), ProxyError> {
@@ -15796,6 +15832,104 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
         .expect("read retained linuxdo bindings");
         assert_eq!(retained_keys, vec!["linuxdo_l1".to_string()]);
 
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn legacy_custom_account_quota_limits_are_reclassified_before_default_resync() {
+        let _guard = env_lock().lock_owned().await;
+        let db_path = temp_db_path("account-limit-legacy-custom");
+        let db_str = db_path.to_string_lossy().to_string();
+        let env_keys = [
+            "TOKEN_HOURLY_REQUEST_LIMIT",
+            "TOKEN_HOURLY_LIMIT",
+            "TOKEN_DAILY_LIMIT",
+            "TOKEN_MONTHLY_LIMIT",
+        ];
+        let previous: Vec<Option<String>> =
+            env_keys.iter().map(|key| std::env::var(key).ok()).collect();
+
+        unsafe {
+            std::env::set_var("TOKEN_HOURLY_REQUEST_LIMIT", "11");
+            std::env::set_var("TOKEN_HOURLY_LIMIT", "12");
+            std::env::set_var("TOKEN_DAILY_LIMIT", "13");
+            std::env::set_var("TOKEN_MONTHLY_LIMIT", "14");
+        }
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        let user = proxy
+            .upsert_oauth_account(&OAuthAccountProfile {
+                provider: "linuxdo".to_string(),
+                provider_user_id: "legacy-custom-user".to_string(),
+                username: Some("legacy_custom_user".to_string()),
+                name: Some("Legacy Custom User".to_string()),
+                avatar_template: None,
+                active: true,
+                trust_level: Some(2),
+                raw_payload_json: None,
+            })
+            .await
+            .expect("upsert user");
+        proxy
+            .ensure_user_token_binding(&user.user_id, Some("linuxdo:legacy_custom_user"))
+            .await
+            .expect("bind token");
+        proxy
+            .user_dashboard_summary(&user.user_id)
+            .await
+            .expect("seed account quota row");
+        sqlx::query(
+            r#"UPDATE account_quota_limits
+               SET hourly_any_limit = 101,
+                   hourly_limit = 102,
+                   daily_limit = 103,
+                   monthly_limit = 104,
+                   inherits_defaults = 1
+               WHERE user_id = ?"#,
+        )
+        .bind(&user.user_id)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("simulate legacy custom quota row");
+        sqlx::query("DELETE FROM meta WHERE key = ?")
+            .bind(META_KEY_ACCOUNT_QUOTA_INHERITS_DEFAULTS_BACKFILL_V1)
+            .execute(&proxy.key_store.pool)
+            .await
+            .expect("clear inherits defaults backfill marker");
+
+        drop(proxy);
+
+        unsafe {
+            std::env::set_var("TOKEN_HOURLY_REQUEST_LIMIT", "21");
+            std::env::set_var("TOKEN_HOURLY_LIMIT", "22");
+            std::env::set_var("TOKEN_DAILY_LIMIT", "23");
+            std::env::set_var("TOKEN_MONTHLY_LIMIT", "24");
+        }
+
+        let proxy_after =
+            TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+                .await
+                .expect("proxy reopened");
+        let limits: (i64, i64, i64, i64, i64) = sqlx::query_as(
+            "SELECT hourly_any_limit, hourly_limit, daily_limit, monthly_limit, inherits_defaults FROM account_quota_limits WHERE user_id = ?",
+        )
+        .bind(&user.user_id)
+        .fetch_one(&proxy_after.key_store.pool)
+        .await
+        .expect("read persisted legacy custom limits");
+        assert_eq!(limits, (101, 102, 103, 104, 0));
+
+        unsafe {
+            for (key, old_value) in env_keys.iter().zip(previous.into_iter()) {
+                if let Some(value) = old_value {
+                    std::env::set_var(key, value);
+                } else {
+                    std::env::remove_var(key);
+                }
+            }
+        }
         let _ = std::fs::remove_file(db_path);
     }
 

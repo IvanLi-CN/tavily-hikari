@@ -38,6 +38,7 @@ import {
   tokenDetailPath,
   tokenLeaderboardPath,
   userDetailPath,
+  userTagCreatePath,
   userTagEditPath,
   userTagsPath,
 } from './admin/routes'
@@ -1549,10 +1550,8 @@ function AdminDashboard(): JSX.Element {
     setActiveUserTagEditorId(NEW_USER_TAG_CARD_ID)
     setUserTagCatalogDraft({ ...EMPTY_USER_TAG_FORM })
     setTagCatalogError(null)
-    if (route.name === 'user-tag-editor') {
-      navigateToPath(userTagsPath())
-    }
-  }, [navigateToPath, route])
+    navigateToPath(userTagCreatePath())
+  }, [navigateToPath])
 
   const navigateUserTagEdit = useCallback(
     (id: string) => {
@@ -1562,11 +1561,9 @@ function AdminDashboard(): JSX.Element {
         setUserTagCatalogDraft(createUserTagFormState(editingTag))
         setTagCatalogError(null)
       }
-      if (route.name === 'user-tag-editor') {
-        navigateToPath(userTagEditPath(id))
-      }
+      navigateToPath(userTagEditPath(id))
     },
-    [navigateToPath, route, tagCatalog],
+    [navigateToPath, tagCatalog],
   )
 
   const navigateTokenLeaderboard = useCallback(() => {
@@ -2377,10 +2374,10 @@ function AdminDashboard(): JSX.Element {
       monthlyLimit: Number.parseInt(userQuotaDraft.monthlyLimit, 10),
     }
     if (
-      !Number.isFinite(payload.hourlyAnyLimit) || payload.hourlyAnyLimit <= 0
-      || !Number.isFinite(payload.hourlyLimit) || payload.hourlyLimit <= 0
-      || !Number.isFinite(payload.dailyLimit) || payload.dailyLimit <= 0
-      || !Number.isFinite(payload.monthlyLimit) || payload.monthlyLimit <= 0
+      !Number.isFinite(payload.hourlyAnyLimit) || payload.hourlyAnyLimit < 0
+      || !Number.isFinite(payload.hourlyLimit) || payload.hourlyLimit < 0
+      || !Number.isFinite(payload.dailyLimit) || payload.dailyLimit < 0
+      || !Number.isFinite(payload.monthlyLimit) || payload.monthlyLimit < 0
     ) {
       setUserQuotaError(adminStrings.users.quota.invalid)
       return
