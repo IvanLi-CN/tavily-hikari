@@ -1341,7 +1341,7 @@ export default function UserConsole(): JSX.Element {
                               <strong>{log.http_status ?? '—'}</strong>
                             </span>
                             <span className="user-console-log-transport-item">
-                              <em>M</em>
+                              <em>T</em>
                               <strong>{log.mcp_status ?? '—'}</strong>
                             </span>
                           </div>
@@ -1876,7 +1876,7 @@ const EN = {
       path: 'Path',
       time: 'Time',
       http: 'HTTP',
-      mcp: 'MCP',
+      mcp: 'Tavily',
       result: 'Result',
       error: 'Error',
     },
@@ -2006,7 +2006,7 @@ const ZH = {
       path: '路径',
       time: '时间',
       http: 'HTTP',
-      mcp: 'MCP',
+      mcp: 'Tavily',
       result: '结果',
       error: '错误',
     },

@@ -62,6 +62,7 @@ interface TokenLog {
   query: string | null
   http_status: number | null
   mcp_status: number | null
+  business_credits: number | null
   result_status: string
   error_message: string | null
   created_at: number
@@ -909,7 +910,8 @@ export default function TokenDetail({
             <TableRow>
               <TableHead>Time</TableHead>
               <TableHead>HTTP Status</TableHead>
-              <TableHead>MCP Status</TableHead>
+              <TableHead>Tavily Status</TableHead>
+              <TableHead>Charged Credits</TableHead>
               <TableHead>Result</TableHead>
               <TableHead>Error</TableHead>
             </TableRow>
@@ -921,6 +923,7 @@ export default function TokenDetail({
                   <TableCell>{formatLogTime(l.created_at, period)}</TableCell>
                   <TableCell>{l.http_status ?? '—'}</TableCell>
                   <TableCell>{l.mcp_status ?? '—'}</TableCell>
+                  <TableCell>{formatChargedCredits(l.business_credits)}</TableCell>
                   <TableCell>
                     <Button
                       type="button"
@@ -946,7 +949,7 @@ export default function TokenDetail({
                 </TableRow>
                 {expandedLogs.has(l.id) && (
                   <TableRow className="log-details-row">
-                    <TableCell colSpan={5} id={`token-log-details-${l.id}`}>
+                    <TableCell colSpan={6} id={`token-log-details-${l.id}`}>
                       <TokenLogDetails log={l} period={period} />
                     </TableCell>
                   </TableRow>
@@ -955,7 +958,7 @@ export default function TokenDetail({
             ))}
             {logs.length === 0 && (
               <TableRow>
-                <TableCell colSpan={5} style={{ padding: 12 }}>
+                <TableCell colSpan={6} style={{ padding: 12 }}>
                   <div className="empty-state alert" style={{ padding: 12 }}>{loading ? 'Loading…' : 'No logs yet.'}</div>
                 </TableCell>
               </TableRow>
@@ -981,8 +984,12 @@ export default function TokenDetail({
                   <strong>{log.http_status ?? '—'}</strong>
                 </div>
                 <div className="user-console-mobile-kv">
-                  <span>MCP Status</span>
+                  <span>Tavily Status</span>
                   <strong>{log.mcp_status ?? '—'}</strong>
+                </div>
+                <div className="user-console-mobile-kv">
+                  <span>Charged Credits</span>
+                  <strong>{formatChargedCredits(log.business_credits)}</strong>
                 </div>
                 <div className="user-console-mobile-kv">
                   <span>Result</span>
@@ -1072,12 +1079,16 @@ function InfoCard({ label, value }: { label: string; value: ReactNode }) {
   )
 }
 
+function formatChargedCredits(value: number | null): string {
+  return value != null ? String(value) : '—'
+}
+
 function TokenLogDetails({ log, period }: { log: TokenLog; period: Period }) {
   const query = log.query ? `?${log.query}` : ''
   const requestLine = `${log.method} ${log.path}${query}`
   const errorText = (log.error_message ?? '').trim() || 'No error reported.'
   const httpStatus = log.http_status != null ? `HTTP ${log.http_status}` : 'HTTP —'
-  const mcpStatus = log.mcp_status != null ? `MCP ${log.mcp_status}` : 'MCP —'
+  const tavilyStatus = log.mcp_status != null ? `Tavily ${log.mcp_status}` : 'Tavily —'
 
   return (
     <div className="log-details-panel">
@@ -1088,7 +1099,11 @@ function TokenLogDetails({ log, period }: { log: TokenLog; period: Period }) {
         </div>
         <div>
           <span className="log-details-label">Status</span>
-          <span className="log-details-value">{`${httpStatus} · ${mcpStatus}`}</span>
+          <span className="log-details-value">{`${httpStatus} · ${tavilyStatus}`}</span>
+        </div>
+        <div>
+          <span className="log-details-label">Charged Credits</span>
+          <span className="log-details-value">{formatChargedCredits(log.business_credits)}</span>
         </div>
         <div>
           <span className="log-details-label">Outcome</span>

@@ -69,6 +69,7 @@ const logsMock = Array.from({ length: 8 }, (_, idx) => ({
   query: null,
   http_status: idx % 4 === 0 ? 429 : 200,
   mcp_status: idx % 4 === 0 ? -1 : 0,
+  business_credits: idx % 3 === 0 ? null : idx + 1,
   result_status: idx % 4 === 0 ? "quota_exhausted" : "success",
   error_message: idx % 4 === 0 ? "quota exhausted" : null,
   created_at: 1_762_390_010 - idx * 420,

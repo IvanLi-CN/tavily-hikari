@@ -2717,28 +2717,31 @@ table {
 .token-detail-table th:nth-child(2),
 .token-detail-table td:nth-child(2),
 .token-detail-table th:nth-child(3),
-.token-detail-table td:nth-child(3) {
-  min-width: 7ch;
-  text-align: center;
-}
+.token-detail-table td:nth-child(3),
 .token-detail-table th:nth-child(4),
 .token-detail-table td:nth-child(4) {
-  text-align: right;
+  min-width: 8ch;
+  text-align: center;
 }
-.token-detail-table td:nth-child(4) .status-badge {
+.token-detail-table th:nth-child(5),
+.token-detail-table td:nth-child(5) {
+  text-align: right;
+  min-width: 12ch;
+}
+.token-detail-table td:nth-child(5) .status-badge {
   white-space: nowrap;
   display: inline-flex;
 }
 
 /* 让“Result”列的按钮组整体靠右，箭头不会拥挤 */
-.token-detail-table td:nth-child(4) .log-result-button {
+.token-detail-table td:nth-child(5) .log-result-button {
   width: 100%;
   justify-content: flex-end;
 }
-.token-detail-table th:nth-child(5),
-.token-detail-table td:nth-child(5) {
-  min-width: 20ch;
-  max-width: 36ch;
+.token-detail-table th:nth-child(6),
+.token-detail-table td:nth-child(6) {
+  min-width: 18ch;
+  max-width: 32ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -4055,7 +4058,7 @@ tbody tr:hover {
 }
 
 .log-details-summary > div {
-  min-width: 180px;
+  min-width: 150px;
   display: flex;
   flex-direction: column;
   gap: 2px;

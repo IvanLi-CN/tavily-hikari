@@ -2855,6 +2855,9 @@ mod tests {
         let app = Router::new()
             .route("/api/tokens", get(list_tokens))
             .route("/api/tokens/:id", get(get_token_detail))
+            .route("/api/tokens/:id/logs", get(get_token_logs))
+            .route("/api/tokens/:id/logs/page", get(get_token_logs_page))
+            .route("/api/tokens/:id/events", get(sse_token))
             .with_state(state);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -4606,6 +4609,118 @@ mod tests {
             unbound_detail.get("owner").is_some_and(|value| value.is_null()),
             "unbound token detail owner should be null"
         );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn admin_token_log_views_include_business_credits() {
+        let db_path = temp_db_path("admin-token-log-business-credits");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        let token = proxy
+            .create_access_token(Some("admin-token-log-business-credits"))
+            .await
+            .expect("create token");
+
+        proxy
+            .record_token_attempt(
+                &token.id,
+                &Method::POST,
+                "/mcp",
+                None,
+                Some(200),
+                Some(0),
+                false,
+                "success",
+                None,
+            )
+            .await
+            .expect("record legacy log without credits");
+
+        proxy
+            .record_pending_billing_attempt(
+                &token.id,
+                &Method::POST,
+                "/mcp",
+                None,
+                Some(200),
+                Some(0),
+                true,
+                "success",
+                None,
+                4,
+            )
+            .await
+            .expect("record pending billing log");
+
+        let addr = spawn_admin_tokens_server(proxy, true).await;
+        let client = Client::new();
+
+        let logs_resp = client
+            .get(format!("http://{}/api/tokens/{}/logs?limit=20", addr, token.id))
+            .send()
+            .await
+            .expect("logs request");
+        assert_eq!(logs_resp.status(), reqwest::StatusCode::OK);
+        let logs_body: serde_json::Value = logs_resp.json().await.expect("logs json");
+        let logs = logs_body.as_array().expect("logs array");
+        assert_eq!(logs.len(), 2);
+        assert_eq!(logs[0].get("business_credits").and_then(|value| value.as_i64()), Some(4));
+        assert!(logs[1].get("business_credits").is_some_and(|value| value.is_null()));
+
+        let page_resp = client
+            .get(format!(
+                "http://{}/api/tokens/{}/logs/page?page=1&per_page=20&since=0",
+                addr, token.id
+            ))
+            .send()
+            .await
+            .expect("logs page request");
+        assert_eq!(page_resp.status(), reqwest::StatusCode::OK);
+        let page_body: serde_json::Value = page_resp.json().await.expect("logs page json");
+        let items = page_body
+            .get("items")
+            .and_then(|value| value.as_array())
+            .expect("logs page items");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].get("business_credits").and_then(|value| value.as_i64()), Some(4));
+        assert!(items[1].get("business_credits").is_some_and(|value| value.is_null()));
+
+        let mut events_resp = client
+            .get(format!("http://{}/api/tokens/{}/events", addr, token.id))
+            .send()
+            .await
+            .expect("events request");
+        assert_eq!(events_resp.status(), reqwest::StatusCode::OK);
+        let first_chunk = events_resp
+            .chunk()
+            .await
+            .expect("read first event chunk")
+            .expect("snapshot chunk exists");
+        let first_text = String::from_utf8(first_chunk.to_vec()).expect("snapshot chunk utf8");
+        let snapshot_line = first_text
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .expect("snapshot data line");
+        let snapshot_json: serde_json::Value =
+            serde_json::from_str(snapshot_line).expect("snapshot payload json");
+        let snapshot_logs = snapshot_json
+            .get("logs")
+            .and_then(|value| value.as_array())
+            .expect("snapshot logs array");
+        assert_eq!(snapshot_logs.len(), 2);
+        assert_eq!(
+            snapshot_logs[0]
+                .get("business_credits")
+                .and_then(|value| value.as_i64()),
+            Some(4)
+        );
+        assert!(snapshot_logs[1]
+            .get("business_credits")
+            .is_some_and(|value| value.is_null()));
 
         let _ = std::fs::remove_file(db_path);
     }

@@ -8049,12 +8049,13 @@ impl KeyStore {
                 Option<String>,
                 Option<i64>,
                 Option<i64>,
+                Option<i64>,
                 String,
                 Option<String>,
                 i64,
             )>(
                 r#"
-                SELECT id, method, path, query, http_status, mcp_status, result_status, error_message, created_at
+                SELECT id, method, path, query, http_status, mcp_status, business_credits, result_status, error_message, created_at
                 FROM auth_token_logs
                 WHERE token_id = ? AND id < ?
                 ORDER BY created_at DESC, id DESC
@@ -8074,12 +8075,13 @@ impl KeyStore {
                 Option<String>,
                 Option<i64>,
                 Option<i64>,
+                Option<i64>,
                 String,
                 Option<String>,
                 i64,
             )>(
                 r#"
-                SELECT id, method, path, query, http_status, mcp_status, result_status, error_message, created_at
+                SELECT id, method, path, query, http_status, mcp_status, business_credits, result_status, error_message, created_at
                 FROM auth_token_logs
                 WHERE token_id = ?
                 ORDER BY created_at DESC, id DESC
@@ -8102,6 +8104,7 @@ impl KeyStore {
                     query,
                     http_status,
                     mcp_status,
+                    business_credits,
                     result_status,
                     error_message,
                     created_at,
@@ -8112,6 +8115,7 @@ impl KeyStore {
                     query,
                     http_status,
                     mcp_status,
+                    business_credits,
                     result_status,
                     error_message,
                     created_at,
@@ -8228,12 +8232,13 @@ impl KeyStore {
                 Option<String>,
                 Option<i64>,
                 Option<i64>,
+                Option<i64>,
                 String,
                 Option<String>,
                 i64,
             )>(
                 r#"
-            SELECT id, method, path, query, http_status, mcp_status, result_status, error_message, created_at
+            SELECT id, method, path, query, http_status, mcp_status, business_credits, result_status, error_message, created_at
             FROM auth_token_logs
             WHERE token_id = ? AND created_at >= ? AND created_at < ?
             ORDER BY created_at DESC, id DESC
@@ -8255,12 +8260,13 @@ impl KeyStore {
             Option<String>,
             Option<i64>,
             Option<i64>,
+            Option<i64>,
             String,
             Option<String>,
             i64,
         )>(
             r#"
-            SELECT id, method, path, query, http_status, mcp_status, result_status, error_message, created_at
+            SELECT id, method, path, query, http_status, mcp_status, business_credits, result_status, error_message, created_at
             FROM auth_token_logs
             WHERE token_id = ? AND created_at >= ?
             ORDER BY created_at DESC, id DESC
@@ -8285,6 +8291,7 @@ impl KeyStore {
                     query,
                     http_status,
                     mcp_status,
+                    business_credits,
                     result_status,
                     error_message,
                     created_at,
@@ -8295,6 +8302,7 @@ impl KeyStore {
                     query,
                     http_status,
                     mcp_status,
+                    business_credits,
                     result_status,
                     error_message,
                     created_at,
@@ -9822,6 +9830,7 @@ pub struct TokenLogRecord {
     pub query: Option<String>,
     pub http_status: Option<i64>,
     pub mcp_status: Option<i64>,
+    pub business_credits: Option<i64>,
     pub result_status: String,
     pub error_message: Option<String>,
     pub created_at: i64,
