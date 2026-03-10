@@ -14,6 +14,7 @@ import type {
   RequestLog,
 } from '../api'
 import AdminPanelHeader from '../components/AdminPanelHeader'
+import QuotaRangeField from '../components/QuotaRangeField'
 import { StatusBadge, type StatusTone } from '../components/StatusBadge'
 import SegmentedTabs from '../components/ui/SegmentedTabs'
 import { useTranslate, type AdminTranslations } from '../i18n'
@@ -1402,53 +1403,41 @@ function UserDetailPageCanvas(): JSX.Element {
             const parsedDraft = parseQuotaDraftValue(draftValue, sliderSeed.initialLimit)
             const sliderPosition = getQuotaSliderStagePosition(sliderSeed.stages, parsedDraft)
             return (
-              <label className="form-control quota-control" key={item.field}>
-                <span className="label-text">{item.label}</span>
-                <div className="quota-control-row">
-                  <div className="quota-slider-wrap">
-                    <input
-                      type="range"
-                      name={`${item.field}-slider`}
-                      min={0}
-                      max={Math.max(0, sliderSeed.stages.length - 1)}
-                      step="any"
-                      className="range quota-slider"
-                      value={sliderPosition}
-                      onChange={(event) => setQuotaDraft((prev) => ({
-                        ...prev,
-                        [item.field]: String(
-                          getQuotaSliderStageValue(
-                            sliderSeed.stages,
-                            clampQuotaSliderStageIndex(sliderSeed.stages, Number.parseFloat(event.target.value)),
-                          ),
-                        ),
-                      }))}
-                      style={{ background: buildQuotaSliderTrack(sliderSeed.stages, sliderSeed.used, parsedDraft) }}
-                      aria-label={item.label}
-                    />
-                    <span className="panel-description">
-                      {formatNumber(sliderSeed.used)} / {formatNumber(parsedDraft)}
-                    </span>
-                  </div>
-                  <input
-                    type="text"
-                    name={item.field}
-                    inputMode="numeric"
-                    autoComplete="off"
-                    className="input input-bordered quota-input"
-                    value={formatQuotaDraftInput(draftValue)}
-                    onChange={(event) => {
-                      const normalizedValue = normalizeQuotaDraftInput(event.target.value)
-                      if (normalizedValue == null) return
-                      setQuotaDraft((prev) => ({
-                        ...prev,
-                        [item.field]: normalizedValue,
-                      }))
-                    }}
-                    aria-label={`${item.label} input`}
-                  />
-                </div>
-              </label>
+              <QuotaRangeField
+                key={item.field}
+                label={item.label}
+                sliderName={`${item.field}-slider`}
+                sliderMin={0}
+                sliderMax={Math.max(0, sliderSeed.stages.length - 1)}
+                sliderValue={sliderPosition}
+                sliderAriaLabel={item.label}
+                helperText={
+                  <>
+                    {formatNumber(sliderSeed.used)} / {formatNumber(parsedDraft)}
+                  </>
+                }
+                sliderStyle={{ background: buildQuotaSliderTrack(sliderSeed.stages, sliderSeed.used, parsedDraft) }}
+                onSliderChange={(nextValue) => setQuotaDraft((prev) => ({
+                  ...prev,
+                  [item.field]: String(
+                    getQuotaSliderStageValue(
+                      sliderSeed.stages,
+                      clampQuotaSliderStageIndex(sliderSeed.stages, nextValue),
+                    ),
+                  ),
+                }))}
+                inputName={item.field}
+                inputValue={formatQuotaDraftInput(draftValue)}
+                inputAriaLabel={`${item.label} input`}
+                onInputChange={(nextValue) => {
+                  const normalizedValue = normalizeQuotaDraftInput(nextValue)
+                  if (normalizedValue == null) return
+                  setQuotaDraft((prev) => ({
+                    ...prev,
+                    [item.field]: normalizedValue,
+                  }))
+                }}
+              />
             )
           })}
         </div>

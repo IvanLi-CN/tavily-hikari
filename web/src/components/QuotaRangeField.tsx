@@ -57,7 +57,8 @@ export default function QuotaRangeField({
           name={inputName}
           inputMode="numeric"
           autoComplete="off"
-          className="quota-input"
+          size={10}
+          className="quota-input shrink-0"
           value={inputValue}
           onChange={(event) => onInputChange(event.target.value)}
           aria-label={inputAriaLabel}
