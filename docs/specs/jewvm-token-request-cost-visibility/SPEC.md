@@ -81,6 +81,7 @@
 契约约束：
 
 - `business_credits` 为 `integer | null`。
+- 仅当底层日志 `billing_state = charged` 时才透出 `business_credits`；待补扣、重试中或未入账记录统一返回 `null`。
 - `business_credits = null` 时前端展示 `—`，不得自行推算。
 - `mcp_status` 字段名保持不变；前端只改 label，不改 wire format。
 
@@ -94,10 +95,10 @@
 - Given 管理员打开 `/admin/tokens/:id`
   When 请求记录表格渲染完成
   Then 桌面表头顺序为 `Time / HTTP Status / Tavily Status / Charged Credits / Result / Error`。
-- Given 某条 token log 的 `business_credits = 7`
+- Given 某条 token log 的 `billing_state = charged` 且 `business_credits = 7`
   When 该行出现在首屏 SSE 刷新或分页接口返回中
   Then `Charged Credits` 显示 `7`，且移动卡片与展开详情看到同样的值。
-- Given 某条 token log 的 `business_credits = null`
+- Given 某条 token log 尚未完成入账、处于待补扣/重试中，或 `business_credits = null`
   When 页面渲染日志
   Then 展示 `—`，不显示 `0`，也不从 `result_status` 或响应体反推。
 - Given 管理端或用户控制台已有日志视图展示 `mcp_status`
