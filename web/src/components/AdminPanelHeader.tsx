@@ -1,5 +1,6 @@
 import { Icon } from '@iconify/react'
 
+import AdminReturnToConsoleLink from './AdminReturnToConsoleLink'
 import LanguageSwitcher from './LanguageSwitcher'
 import ThemeToggle from './ThemeToggle'
 import { Button } from './ui/button'
@@ -14,6 +15,8 @@ interface AdminPanelHeaderProps {
   isRefreshing: boolean
   refreshLabel: string
   refreshingLabel: string
+  userConsoleLabel?: string
+  userConsoleHref?: string
   onRefresh: () => void
 }
 
@@ -46,6 +49,14 @@ export default function AdminPanelHeader(props: AdminPanelHeaderProps): JSX.Elem
               <span className="admin-panel-header-time-label">{props.updatedPrefix}</span>
               <span className="admin-panel-header-time-value">{props.updatedTime}</span>
             </span>
+          )}
+
+          {props.userConsoleLabel && (
+            <AdminReturnToConsoleLink
+              label={props.userConsoleLabel}
+              href={props.userConsoleHref}
+              className="admin-return-link--header"
+            />
           )}
 
           <Button type="button" variant="outline" size="sm" className="admin-panel-refresh-button" onClick={props.onRefresh} disabled={props.isRefreshing}>

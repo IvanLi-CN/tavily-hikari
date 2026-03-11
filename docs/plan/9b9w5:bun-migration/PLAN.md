@@ -9,7 +9,7 @@
 
 - root + `web/` 使用 Bun 安装依赖并执行脚本（`bun install` / `bun run` / `bunx`）。
 - CI / release workflows 使用 Bun（不再依赖 `actions/setup-node` + `npm ci`）。
-- 固定 bun 版本为 `1.3.9`（通过 `.bun-version`）。
+- 固定 bun 版本为 `1.3.10`（通过 `.bun-version`）。
 
 ## 非目标
 

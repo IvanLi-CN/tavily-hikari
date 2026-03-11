@@ -15,7 +15,7 @@
  */
 
 /* eslint-disable @typescript-eslint/no-var-requires */
-const { tavily } = require("@tavily/core");
+import { tavily } from "@tavily/core";
 
 async function main() {
   const baseUrl =
@@ -141,6 +141,6 @@ async function main() {
   console.log("E2E Tavily HTTP proxy test passed.");
 }
 
-if (require.main === module) {
-  main();
+if (import.meta.main) {
+  await main();
 }

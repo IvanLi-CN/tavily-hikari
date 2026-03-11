@@ -1,13 +1,13 @@
 import { useState } from 'react'
-import { Icon } from '@iconify/react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
 import PublicHomeHeroCard from './components/PublicHomeHeroCard'
 import LanguageSwitcher from './components/LanguageSwitcher'
 import ThemeToggle from './components/ThemeToggle'
+import TokenSecretField from './components/TokenSecretField'
+import { Button } from './components/ui/button'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from './components/ui/dialog'
 import { useTranslate } from './i18n'
-
-const ICONIFY_ENDPOINT = 'https://api.iconify.design'
 
 type CopyState = 'idle' | 'copied' | 'error'
 
@@ -17,6 +17,7 @@ interface PublicHomeStoryArgs {
 
 function PublicHomeTokenModalStory(args: PublicHomeStoryArgs): JSX.Element {
   const strings = useTranslate().public
+  const [open, setOpen] = useState(true)
   const [tokenDraft, setTokenDraft] = useState('')
   const [tokenVisible, setTokenVisible] = useState(false)
   const [copyState, setCopyState] = useState<CopyState>('idle')
@@ -54,75 +55,41 @@ function PublicHomeTokenModalStory(args: PublicHomeStoryArgs): JSX.Element {
           </>
         )}
       />
-      <dialog open className="modal token-access-modal">
-        <div className="modal-box">
-          <h3 className="font-bold text-lg" style={{ marginTop: 0 }}>
-            {strings.tokenAccess.dialog.title}
-          </h3>
-          <p className="opacity-80" style={{ marginTop: 8 }}>
-            {strings.tokenAccess.dialog.description}
-          </p>
-          <div className="token-input-wrapper" style={{ marginTop: 14 }}>
-            <label htmlFor="story-token-input" className="token-label">
-              {strings.accessToken.label}
-            </label>
-            <div className="token-input-row">
-              <div className="token-input-shell">
-                <input
-                  id="story-token-input"
-                  name="story-token-input"
-                  className={`token-input${tokenVisible ? '' : ' masked'}`}
-                  type="text"
-                  value={tokenDraft}
-                  onChange={(event) => setTokenDraft(event.target.value)}
-                  placeholder={strings.accessToken.placeholder}
-                  autoComplete="off"
-                />
-                <button
-                  type="button"
-                  className="token-visibility-button"
-                  onClick={() => setTokenVisible((prev) => !prev)}
-                  aria-label={tokenVisible ? strings.accessToken.toggle.hide : strings.accessToken.toggle.show}
-                >
-                  <img
-                    src={`${ICONIFY_ENDPOINT}/mdi/${tokenVisible ? 'eye-off-outline' : 'eye-outline'}.svg?color=%236b7280`}
-                    alt={strings.accessToken.toggle.iconAlt}
-                  />
-                </button>
-              </div>
-              <button
-                type="button"
-                className={`btn token-copy-button${
-                  copyState === 'copied'
-                    ? ' btn-success'
-                    : copyState === 'error'
-                      ? ' btn-warning'
-                      : ' btn-outline'
-                }`}
-                onClick={() => void copyToken()}
-                disabled={tokenDraft.trim().length === 0}
-              >
-                <Icon
-                  icon={
-                    copyState === 'copied'
-                      ? 'mdi:check'
-                      : copyState === 'error'
-                        ? 'mdi:alert-circle-outline'
-                        : 'mdi:content-copy'
-                  }
-                  aria-hidden="true"
-                  className="token-copy-icon"
-                />
-                <span>
-                  {copyState === 'copied'
-                    ? strings.copyToken.copied
-                    : copyState === 'error'
-                      ? strings.copyToken.error
-                      : strings.copyToken.copy}
-                </span>
-              </button>
-            </div>
-          </div>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="token-access-modal max-w-xl">
+          <DialogHeader>
+            <DialogTitle>{strings.tokenAccess.dialog.title}</DialogTitle>
+            <DialogDescription>{strings.tokenAccess.dialog.description}</DialogDescription>
+          </DialogHeader>
+          <TokenSecretField
+            inputId="story-token-input"
+            name="story-token-input"
+            label={strings.accessToken.label}
+            value={tokenDraft}
+            visible={tokenVisible}
+            copyState={copyState}
+            onValueChange={setTokenDraft}
+            onToggleVisibility={() => setTokenVisible((prev) => !prev)}
+            onCopy={() => void copyToken()}
+            placeholder={strings.accessToken.placeholder}
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            aria-autocomplete="none"
+            inputMode="text"
+            data-1p-ignore="true"
+            data-lpignore="true"
+            data-form-type="other"
+            visibilityShowLabel={strings.accessToken.toggle.show}
+            visibilityHideLabel={strings.accessToken.toggle.hide}
+            visibilityIconAlt={strings.accessToken.toggle.iconAlt}
+            copyAriaLabel={strings.copyToken.iconAlt}
+            copyLabel={strings.copyToken.copy}
+            copiedLabel={strings.copyToken.copied}
+            copyErrorLabel={strings.copyToken.error}
+            copyDisabled={tokenDraft.trim().length === 0}
+          />
           <p className="opacity-80" style={{ marginTop: 14, marginBottom: 0 }}>
             {strings.tokenAccess.dialog.loginHint}{' '}
             <a href="/auth/linuxdo" className="link">
@@ -130,15 +97,15 @@ function PublicHomeTokenModalStory(args: PublicHomeStoryArgs): JSX.Element {
             </a>
           </p>
           <div className="modal-action">
-            <button type="button" className="btn">
+            <Button type="button" variant="outline" onClick={() => setOpen(false)}>
               {strings.tokenAccess.dialog.actions.cancel}
-            </button>
-            <button type="button" className="btn btn-primary" disabled={tokenDraft.trim().length === 0}>
+            </Button>
+            <Button type="button" disabled={tokenDraft.trim().length === 0}>
               {strings.tokenAccess.dialog.actions.confirm}
-            </button>
+            </Button>
           </div>
-        </div>
-      </dialog>
+        </DialogContent>
+      </Dialog>
     </main>
   )
 }

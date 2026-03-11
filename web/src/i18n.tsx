@@ -170,6 +170,7 @@ interface AdminTranslationsShape {
     updatedPrefix: string
     refreshNow: string
     refreshing: string
+    returnToConsole: string
   }
   nav: {
     dashboard: string
@@ -961,7 +962,7 @@ export const translations: Record<Language, TranslationShape> = {
         table: {
           time: 'Time',
           httpStatus: 'HTTP',
-          mcpStatus: 'MCP',
+          mcpStatus: 'Tavily',
           result: 'Result',
         },
         toggles: {
@@ -1015,6 +1016,7 @@ export const translations: Record<Language, TranslationShape> = {
         updatedPrefix: 'Updated',
         refreshNow: 'Refresh Now',
         refreshing: 'Refreshing…',
+        returnToConsole: 'Back to User Console',
       },
       nav: {
         dashboard: 'Dashboard',
@@ -1531,7 +1533,7 @@ export const translations: Record<Language, TranslationShape> = {
           token: 'Token',
           time: 'Time',
           httpStatus: 'HTTP Status',
-          mcpStatus: 'MCP Status',
+          mcpStatus: 'Tavily Status',
           result: 'Result',
           error: 'Error',
         },
@@ -1542,9 +1544,9 @@ export const translations: Record<Language, TranslationShape> = {
         errors: {
           quotaExhausted: 'Quota exhausted',
           quotaExhaustedHttp: 'Quota exhausted (HTTP {http})',
-          requestFailedHttpMcp: 'Request failed (HTTP {http}, MCP {mcp})',
+          requestFailedHttpMcp: 'Request failed (HTTP {http}, Tavily {mcp})',
           requestFailedHttp: 'Request failed (HTTP {http})',
-          requestFailedMcp: 'Request failed (MCP {mcp})',
+          requestFailedMcp: 'Request failed (Tavily {mcp})',
           requestFailedGeneric: 'Request failed',
           httpStatus: 'HTTP {http}',
           none: '—',
@@ -1794,7 +1796,7 @@ export const translations: Record<Language, TranslationShape> = {
         table: {
           time: '时间',
           httpStatus: 'HTTP',
-          mcpStatus: 'MCP',
+          mcpStatus: 'Tavily',
           result: '结果',
         },
         toggles: {
@@ -1848,6 +1850,7 @@ export const translations: Record<Language, TranslationShape> = {
         updatedPrefix: '更新于',
         refreshNow: '立即刷新',
         refreshing: '刷新中…',
+        returnToConsole: '返回用户控制台',
       },
       nav: {
         dashboard: '仪表盘',
@@ -2364,7 +2367,7 @@ export const translations: Record<Language, TranslationShape> = {
           token: 'Token',
           time: '时间',
           httpStatus: 'HTTP 状态码',
-          mcpStatus: 'MCP 状态码',
+          mcpStatus: 'Tavily 状态',
           result: '结果',
           error: '错误',
         },
@@ -2375,9 +2378,9 @@ export const translations: Record<Language, TranslationShape> = {
         errors: {
           quotaExhausted: '额度耗尽',
           quotaExhaustedHttp: '额度耗尽（HTTP {http}）',
-          requestFailedHttpMcp: '请求失败（HTTP {http}，MCP {mcp}）',
+          requestFailedHttpMcp: '请求失败（HTTP {http}，Tavily {mcp}）',
           requestFailedHttp: '请求失败（HTTP {http}）',
-          requestFailedMcp: '请求失败（MCP {mcp}）',
+          requestFailedMcp: '请求失败（Tavily {mcp}）',
           requestFailedGeneric: '请求失败',
           httpStatus: 'HTTP {http}',
           none: '—',

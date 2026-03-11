@@ -16,6 +16,7 @@ import type {
   RequestLog,
 } from '../api'
 import AdminPanelHeader from '../components/AdminPanelHeader'
+import QuotaRangeField from '../components/QuotaRangeField'
 import { StatusBadge, type StatusTone } from '../components/StatusBadge'
 import SegmentedTabs from '../components/ui/SegmentedTabs'
 import { Button } from '../components/ui/button'
@@ -1067,6 +1068,8 @@ function AdminPageFrame({ activeModule, children }: AdminPageFrameProps): JSX.El
         isRefreshing={false}
         refreshLabel={admin.header.refreshNow}
         refreshingLabel={admin.header.refreshing}
+        userConsoleLabel={admin.header.returnToConsole}
+        userConsoleHref="/console"
         onRefresh={() => {}}
       />
       {children}
@@ -2029,50 +2032,41 @@ function UserDetailPageCanvas(): JSX.Element {
             const parsedDraft = parseQuotaDraftValue(draftValue, sliderSeed.initialLimit)
             const sliderPosition = getQuotaSliderStagePosition(sliderSeed.stages, parsedDraft)
             return (
-              <label className="form-control quota-control" key={item.field}>
-                <span className="label-text">{item.label}</span>
-                <div className="quota-control-row">
-                  <div className="quota-slider-wrap">
-                    <input
-                      type="range"
-                      name={`${item.field}-slider`}
-                      min={0}
-                      max={Math.max(0, sliderSeed.stages.length - 1)}
-                      step="any"
-                      className="range quota-slider"
-                      value={sliderPosition}
-                      onChange={(event) => setQuotaDraft((prev) => ({
-                        ...prev,
-                        [item.field]: String(
-                          getQuotaSliderStageValue(
-                            sliderSeed.stages,
-                            clampQuotaSliderStageIndex(sliderSeed.stages, Number.parseFloat(event.target.value)),
-                          ),
-                        ),
-                      }))}
-                      style={{ background: buildQuotaSliderTrack(sliderSeed.stages, sliderSeed.used, parsedDraft) }}
-                      aria-label={item.label}
-                    />
-                    <div className="panel-description">{formatQuotaUsagePair(item.used, item.currentLimit)}</div>
-                  </div>
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    pattern="[0-9]*"
-                    className="input input-bordered quota-input"
-                    value={draftValue}
-                    onChange={(event) => setQuotaDraft((prev) => ({
-                      ...prev,
-                      [item.field]: normalizeQuotaDraftInput(event.target.value),
-                    }))}
-                    onBlur={(event) => setQuotaDraft((prev) => ({
-                      ...prev,
-                      [item.field]: formatQuotaDraftInput(event.target.value),
-                    }))}
-                  />
-                </div>
-              </label>
-            )
+              <QuotaRangeField
+                key={item.field}
+                label={item.label}
+                sliderName={`${item.field}-slider`}
+                sliderMin={0}
+                sliderMax={Math.max(0, sliderSeed.stages.length - 1)}
+                sliderValue={sliderPosition}
+                sliderAriaLabel={item.label}
+                helperText={
+                  <>
+                    {formatNumber(sliderSeed.used)} / {formatNumber(parsedDraft)}
+                  </>
+                }
+                sliderStyle={{ background: buildQuotaSliderTrack(sliderSeed.stages, sliderSeed.used, parsedDraft) }}
+                onSliderChange={(nextValue) => setQuotaDraft((prev) => ({
+                  ...prev,
+                  [item.field]: String(
+                    getQuotaSliderStageValue(
+                      sliderSeed.stages,
+                      clampQuotaSliderStageIndex(sliderSeed.stages, nextValue),
+                    ),
+                  ),
+                }))}
+                inputName={item.field}
+                inputValue={formatQuotaDraftInput(draftValue)}
+                inputAriaLabel={`${item.label} input`}
+                onInputChange={(nextValue) => {
+                  const normalizedValue = normalizeQuotaDraftInput(nextValue)
+                  if (normalizedValue == null) return
+                  setQuotaDraft((prev) => ({
+                    ...prev,
+                    [item.field]: normalizedValue,
+                  }))
+                }}
+              />            )
           })}
         </div>
       </section>

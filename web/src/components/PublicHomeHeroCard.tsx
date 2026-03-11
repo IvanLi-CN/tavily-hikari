@@ -4,6 +4,7 @@ import { Icon } from '@iconify/react'
 import type { PublicMetrics } from '../api'
 import type { Translations } from '../i18n'
 import RollingNumber from './RollingNumber'
+import { Button } from './ui/button'
 
 export interface PublicHomeHeroCardProps {
   publicStrings: Translations['public']
@@ -23,6 +24,9 @@ export interface PublicHomeHeroCardProps {
   onAdminActionClick?: () => void
 }
 
+const heroSecondaryButtonClassName =
+  'h-auto rounded-full border-foreground/20 bg-card/95 px-4 py-[0.72rem] text-foreground no-underline shadow-[0_10px_20px_-18px_hsl(var(--foreground)/0.5)] hover:-translate-y-[1px] hover:border-primary/50 hover:bg-card hover:text-foreground'
+
 function PublicHomeHeroCard({
   publicStrings,
   loading,
@@ -41,6 +45,12 @@ function PublicHomeHeroCard({
   onAdminActionClick,
 }: PublicHomeHeroCardProps): JSX.Element {
   const shouldShowActions = showLinuxDoLogin || showTokenAccessButton || showAdminAction
+  const linuxDoContent = (
+    <>
+      <img src="/linuxdo-logo.svg" alt={publicStrings.linuxDoLogin.logoAlt} width={20} height={20} />
+      <span>{publicStrings.linuxDoLogin.button}</span>
+    </>
+  )
 
   return (
     <section className="surface public-home-hero">
@@ -76,33 +86,43 @@ function PublicHomeHeroCard({
           {showLinuxDoLogin && (
             onLinuxDoLogin
               ? (
-                  <button
+                  <Button
                     type="button"
-                    className="linuxdo-login-button"
+                    variant="outline"
+                    className={`linuxdo-login-button ${heroSecondaryButtonClassName}`}
                     aria-label={publicStrings.linuxDoLogin.button}
                     onClick={onLinuxDoLogin}
                   >
-                    <img src="/linuxdo-logo.svg" alt={publicStrings.linuxDoLogin.logoAlt} width={20} height={20} />
-                    <span>{publicStrings.linuxDoLogin.button}</span>
-                  </button>
+                    {linuxDoContent}
+                  </Button>
                 )
               : (
-                  <a href={linuxDoHref} className="linuxdo-login-button" aria-label={publicStrings.linuxDoLogin.button}>
-                    <img src="/linuxdo-logo.svg" alt={publicStrings.linuxDoLogin.logoAlt} width={20} height={20} />
-                    <span>{publicStrings.linuxDoLogin.button}</span>
-                  </a>
+                  <Button asChild variant="outline" className={`linuxdo-login-button ${heroSecondaryButtonClassName}`}>
+                    <a href={linuxDoHref} aria-label={publicStrings.linuxDoLogin.button}>
+                      {linuxDoContent}
+                    </a>
+                  </Button>
                 )
           )}
           {showTokenAccessButton && (
-            <button type="button" className="token-access-button" onClick={onTokenAccessClick}>
+            <Button
+              type="button"
+              variant="outline"
+              className={`token-access-button ${heroSecondaryButtonClassName}`}
+              onClick={onTokenAccessClick}
+            >
               <Icon icon="mdi:key-outline" aria-hidden="true" className="token-access-icon" />
               <span>{publicStrings.tokenAccess.button}</span>
-            </button>
+            </Button>
           )}
           {showAdminAction && (
-            <button type="button" className="btn btn-primary public-home-admin-button" onClick={onAdminActionClick}>
+            <Button
+              type="button"
+              className="public-home-admin-button h-auto rounded-full px-4 py-[0.72rem]"
+              onClick={onAdminActionClick}
+            >
               {adminActionLabel}
-            </button>
+            </Button>
           )}
         </div>
       )}

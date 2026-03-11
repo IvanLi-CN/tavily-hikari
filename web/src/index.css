@@ -521,9 +521,10 @@
   }
 
   .quota-control-row {
-    display: flex;
-    align-items: flex-start;
-    gap: 12px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) clamp(9.5rem, 20vw, 12rem);
+    align-items: center;
+    gap: 14px;
   }
 
   .quota-slider-wrap {
@@ -531,13 +532,13 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 0.35rem;
+    gap: 0.45rem;
     padding-top: 0.35rem;
   }
 
   .quota-input {
-    width: 156px;
-    min-width: 156px;
+    width: 100%;
+    min-width: 0;
     text-align: right;
     font-size: 1.08rem;
     font-weight: 600;
@@ -553,6 +554,15 @@
   @media (max-width: 920px) {
     .quota-grid {
       grid-template-columns: 1fr;
+    }
+
+    .quota-control-row {
+      grid-template-columns: 1fr;
+      align-items: flex-start;
+    }
+
+    .quota-input {
+      width: 100%;
     }
   }
 
@@ -1050,40 +1060,6 @@
   margin-top: 24px;
 }
 
-.linuxdo-login-button,
-.token-access-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  padding: 0.72rem 1.05rem;
-  border-radius: 999px;
-  border: 1px solid hsl(var(--foreground) / 0.18);
-  background: hsl(var(--primary-foreground));
-  color: hsl(var(--foreground));
-  text-decoration: none;
-  font-weight: 600;
-  line-height: 1;
-  box-shadow: 0 1px 2px hsl(var(--border) / 0.82);
-  transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
-}
-
-.token-access-button {
-  appearance: none;
-  cursor: pointer;
-  /* `font: inherit` resets weight/line-height, so re-apply to match the anchor. */
-  font: inherit;
-  font-weight: 600;
-  line-height: 1;
-}
-
-.public-home-admin-button {
-  border-radius: 999px;
-  height: auto;
-  min-height: 42px;
-  padding: 0.72rem 1.05rem;
-  line-height: 1;
-}
-
 .token-access-icon {
   width: 20px;
   height: 20px;
@@ -1094,19 +1070,6 @@
   width: 20px;
   height: 20px;
   border-radius: 50%;
-}
-
-.linuxdo-login-button:hover,
-.token-access-button:hover {
-  border-color: hsl(var(--foreground) / 0.32);
-  box-shadow: 0 6px 14px hsl(var(--border) / 0.96);
-  transform: translateY(-1px);
-}
-
-.linuxdo-login-button:active,
-.token-access-button:active {
-  transform: translateY(0);
-  box-shadow: 0 2px 6px hsl(var(--border) / 0.96);
 }
 
 .hero-metrics {
@@ -1233,7 +1196,9 @@
   top: 50%;
   right: 12px;
   transform: translateY(-50%);
-  border: none;
+  min-width: 32px;
+  width: 32px;
+  height: 32px;
   background: transparent;
   padding: 4px;
   display: inline-flex;
@@ -1242,7 +1207,7 @@
   cursor: pointer;
 }
 
-.token-visibility-button img {
+.token-visibility-button :where(img, svg) {
   width: 22px;
   height: 22px;
 }
@@ -1255,7 +1220,8 @@
   justify-content: center;
 }
 
-.token-copy-button.btn-outline {
+.token-copy-button:not([data-copy-state]),
+.token-copy-button[data-copy-state="loading"] {
   border-color: hsl(var(--primary) / 0.34);
   background:
     linear-gradient(180deg, hsl(var(--primary) / 0.14) 0%, hsl(var(--primary) / 0.08) 100%),
@@ -1266,7 +1232,8 @@
     inset 0 1px 0 hsl(var(--background) / 0.82);
 }
 
-.token-copy-button.btn-outline:hover {
+.token-copy-button:not([data-copy-state]):hover,
+.token-copy-button[data-copy-state="loading"]:hover {
   border-color: hsl(var(--primary) / 0.54);
   background:
     linear-gradient(180deg, hsl(var(--primary) / 0.2) 0%, hsl(var(--primary) / 0.12) 100%),
@@ -1282,6 +1249,11 @@
   height: 16px;
   color: currentColor;
   opacity: 1;
+}
+
+.token-copy-button-success,
+.token-copy-button-warning {
+  min-width: 132px;
 }
 
 /* Token access modal: let the token input row expand to the full modal width. */
@@ -1884,6 +1856,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 10px;
 }
 
@@ -1968,6 +1941,62 @@
 
 .admin-panel-refresh-button .icon-spin {
   animation-duration: 0.8s;
+}
+
+.admin-return-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 2.1rem;
+  padding: 0 0.82rem;
+  border-radius: 10px;
+  border: 1px solid hsl(var(--secondary) / 0.28);
+  background:
+    linear-gradient(180deg, hsl(var(--secondary) / 0.16) 0%, hsl(var(--secondary) / 0.08) 100%),
+    hsl(var(--card) / 0.9);
+  color: hsl(var(--foreground) / 0.86);
+  text-decoration: none;
+  font-size: 0.84rem;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  box-shadow: inset 0 1px 0 hsl(var(--background) / 0.84);
+  transition:
+    transform 0.18s ease,
+    border-color 0.18s ease,
+    background-color 0.18s ease,
+    color 0.18s ease;
+}
+
+.admin-return-link:hover {
+  border-color: hsl(var(--secondary) / 0.44);
+  background:
+    linear-gradient(180deg, hsl(var(--secondary) / 0.24) 0%, hsl(var(--secondary) / 0.14) 100%),
+    hsl(var(--card) / 0.95);
+  color: hsl(var(--foreground));
+  transform: translateY(-1px);
+}
+
+.admin-return-link svg {
+  color: currentColor;
+  flex-shrink: 0;
+}
+
+.admin-return-link--header {
+  align-self: flex-start;
+}
+
+.admin-inline-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.token-detail-controls {
+  justify-content: flex-end;
 }
 
 .token-usage-header {
@@ -2664,62 +2693,6 @@ button:disabled {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.token-owner-block {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-}
-.token-owner-block-compact {
-  align-items: flex-end;
-  text-align: right;
-}
-.token-owner-link {
-  display: inline-block;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 600;
-}
-
-.token-owner-trigger {
-  display: flex;
-  max-width: 100%;
-  min-width: 0;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  text-align: left;
-}
-.token-owner-trigger .token-owner-link {
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-.token-owner-trigger-compact {
-  align-items: flex-end;
-  text-align: right;
-}
-.token-owner-trigger:hover .token-owner-link,
-.token-owner-trigger:hover .token-owner-secondary,
-.token-owner-trigger:focus-visible .token-owner-link,
-.token-owner-trigger:focus-visible .token-owner-secondary {
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-.token-owner-secondary {
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 0.82rem;
-  color: hsl(var(--muted-foreground));
-}
-.token-owner-empty {
-  color: hsl(var(--muted-foreground));
-  font-weight: 500;
-}
 .token-metric-card {
   gap: 10px;
 }
@@ -2754,28 +2727,31 @@ table {
 .token-detail-table th:nth-child(2),
 .token-detail-table td:nth-child(2),
 .token-detail-table th:nth-child(3),
-.token-detail-table td:nth-child(3) {
-  min-width: 7ch;
-  text-align: center;
-}
+.token-detail-table td:nth-child(3),
 .token-detail-table th:nth-child(4),
 .token-detail-table td:nth-child(4) {
-  text-align: right;
+  min-width: 8ch;
+  text-align: center;
 }
-.token-detail-table td:nth-child(4) .status-badge {
+.token-detail-table th:nth-child(5),
+.token-detail-table td:nth-child(5) {
+  text-align: right;
+  min-width: 12ch;
+}
+.token-detail-table td:nth-child(5) .status-badge {
   white-space: nowrap;
   display: inline-flex;
 }
 
 /* 让“Result”列的按钮组整体靠右，箭头不会拥挤 */
-.token-detail-table td:nth-child(4) .log-result-button {
+.token-detail-table td:nth-child(5) .log-result-button {
   width: 100%;
   justify-content: flex-end;
 }
-.token-detail-table th:nth-child(5),
-.token-detail-table td:nth-child(5) {
-  min-width: 20ch;
-  max-width: 36ch;
+.token-detail-table th:nth-child(6),
+.token-detail-table td:nth-child(6) {
+  min-width: 18ch;
+  max-width: 32ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2917,7 +2893,7 @@ table {
   place-items: start center;
 }
 .key-validation-modal .modal-box,
-.key-validation-modal .key-validation-modal-box {
+.key-validation-modal.key-validation-modal-box {
   width: min(calc(100vw - 2rem), 1120px);
   max-width: min(calc(100vw - 2rem), 1120px);
   height: auto;
@@ -2927,7 +2903,7 @@ table {
   border-radius: 20px;
 }
 
-.key-validation-modal .key-validation-modal-box > .flex {
+.key-validation-modal.key-validation-modal-box > .flex {
   max-height: inherit;
   min-height: 0;
 }
@@ -3178,13 +3154,13 @@ table {
   flex-shrink: 0;
 }
 
-.key-validation-footer-actions .btn {
+.key-validation-footer-actions button {
   white-space: nowrap;
   min-height: 46px;
   line-height: 1.2;
 }
 
-.key-validation-footer-primary .btn {
+.key-validation-footer-primary > button {
   min-width: 0;
 }
 
@@ -3271,7 +3247,7 @@ table {
   }
 
   .key-validation-modal .modal-box,
-  .key-validation-modal .key-validation-modal-box {
+  .key-validation-modal.key-validation-modal-box {
     width: 100%;
     max-width: 100%;
     height: 100%;
@@ -3296,7 +3272,7 @@ table {
     gap: 8px;
   }
 
-  .key-validation-footer-actions > .btn.btn-outline {
+  .key-validation-retry-button {
     flex: 0 0 auto;
     padding-inline: 0.68rem;
   }
@@ -3310,18 +3286,18 @@ table {
     align-items: stretch;
   }
 
-  .key-validation-footer-primary .btn {
+  .key-validation-footer-primary > button {
     width: 100%;
     justify-content: center;
     padding-inline: 0.75rem;
   }
 
-  .key-validation-footer-primary .btn.btn-primary {
+  .key-validation-import-button {
     min-width: 0;
     overflow: visible;
   }
 
-  .key-validation-footer-primary .btn.btn-primary .key-validation-import-count-badge {
+  .key-validation-import-button .key-validation-import-count-badge {
     top: -6px;
     right: -6px;
   }
@@ -3348,8 +3324,13 @@ table {
 .table-pagination span {
   font-size: 0.92rem;
 }
-.table-pagination select {
+.table-pagination select,
+.table-pagination .table-pagination-select {
   min-width: 90px;
+}
+
+.table-pagination .table-pagination-button {
+  min-width: 88px;
 }
 
 thead {
@@ -3436,53 +3417,24 @@ tbody tr:hover {
   text-overflow: ellipsis;
 }
 
-
-.token-id-cell {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  flex-wrap: wrap;
-  white-space: normal;
-}
-
-.token-id-link {
-  display: inline-flex;
-  align-items: center;
-  min-width: 0;
-}
-
-.token-id-code {
-  display: inline-block;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.token-id-cell .status-badge,
-.token-id-cell .token-status-slot {
-  flex-shrink: 0;
-}
-
 .tokens-table th:nth-child(1),
 .tokens-table td:nth-child(1) {
   width: 10%;
 }
 
-.tokens-table th:nth-child(4),
-.tokens-table td:nth-child(4) {
+.tokens-table th:nth-child(3),
+.tokens-table td:nth-child(3) {
   width: 12ch;
 }
 
-.tokens-table th:nth-child(6),
-.tokens-table td:nth-child(6) {
+.tokens-table th:nth-child(5),
+.tokens-table td:nth-child(5) {
   width: 21ch;
 }
 
 /* Token table: keep the actions column wide enough for icon buttons */
-.tokens-table th:nth-child(7),
-.tokens-table td:nth-child(7) {
+.tokens-table th:nth-child(6),
+.tokens-table td:nth-child(6) {
   width: 182px;
 }
 
@@ -3497,7 +3449,7 @@ tbody tr:hover {
   gap: 2px;
 }
 
-.tokens-table .token-action-button.btn-circle {
+.tokens-table .token-action-button {
   width: 1.75rem;
   min-width: 1.75rem;
   height: 1.75rem;
@@ -4160,7 +4112,7 @@ tbody tr:hover {
   flex-wrap: wrap;
 }
 
-.user-console-tokens-table .table-actions .btn {
+.user-console-tokens-table .table-actions button {
   white-space: nowrap;
 }
 
@@ -4565,7 +4517,7 @@ tbody tr:hover {
 }
 
 .log-details-summary > div {
-  min-width: 180px;
+  min-width: 150px;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -4760,38 +4712,6 @@ tbody .log-details-row:hover {
   margin-top: -12px;
 }
 
-.console-unavailable-state {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.console-unavailable-icon {
-  width: 44px;
-  height: 44px;
-  border-radius: 14px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: hsl(var(--warning) / 0.14);
-  color: hsl(var(--warning));
-}
-
-.console-unavailable-copy h2 {
-  margin: 0;
-}
-
-.console-unavailable-copy p {
-  margin: 8px 0 0;
-  max-width: 60ch;
-  color: hsl(var(--muted-foreground));
-}
-
-.console-unavailable-actions {
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
 .link-button {
   background: none;
   border: none;
@@ -4973,7 +4893,7 @@ tbody .log-details-row:hover {
   .token-usage-header-utility {
     width: 100%;
     display: grid;
-    grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
     align-items: center;
     gap: 8px;
   }
@@ -5166,6 +5086,18 @@ tbody .log-details-row:hover {
   background: rgba(37, 99, 235, 0.08);
 }
 
+.user-console-probe-hint-bubble,
+.user-console-probe-bubble {
+  --user-console-probe-surface: hsl(var(--popover) / 0.98);
+  --user-console-probe-border: hsl(var(--border) / 0.94);
+  --user-console-probe-shadow: 0 14px 30px rgba(15, 23, 42, 0.2);
+}
+
+.dark .user-console-probe-hint-bubble,
+.dark .user-console-probe-bubble {
+  --user-console-probe-shadow: 0 18px 38px rgba(2, 6, 23, 0.5);
+}
+
 .user-console-probe-hint-bubble {
   position: absolute;
   left: 50%;
@@ -5173,11 +5105,11 @@ tbody .log-details-row:hover {
   transform: translateX(-50%) translateY(2px);
   min-width: 210px;
   max-width: min(320px, calc(100vw - 48px));
-  border: 1px solid rgba(37, 99, 235, 0.22);
+  border: 1px solid var(--user-console-probe-border);
   border-radius: 12px;
-  background: #ffffff;
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14);
-  color: hsl(var(--foreground) / 0.82);
+  background: var(--user-console-probe-surface);
+  box-shadow: var(--user-console-probe-shadow);
+  color: hsl(var(--popover-foreground) / 0.82);
   font-size: 0.78rem;
   font-weight: 500;
   line-height: 1.36;
@@ -5195,9 +5127,9 @@ tbody .log-details-row:hover {
   bottom: -6px;
   width: 10px;
   height: 10px;
-  border-right: 1px solid rgba(37, 99, 235, 0.22);
-  border-bottom: 1px solid rgba(37, 99, 235, 0.22);
-  background: #ffffff;
+  border-right: 1px solid var(--user-console-probe-border);
+  border-bottom: 1px solid var(--user-console-probe-border);
+  background: var(--user-console-probe-surface);
   transform: translateX(-50%) rotate(45deg);
 }
 
@@ -5279,10 +5211,10 @@ tbody .log-details-row:hover {
   z-index: 8;
   min-width: 220px;
   max-width: min(360px, calc(100vw - 28px));
-  border: 1px solid rgba(37, 99, 235, 0.22);
+  border: 1px solid var(--user-console-probe-border);
   border-radius: 14px;
-  background: #ffffff;
-  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.14);
+  background: var(--user-console-probe-surface);
+  box-shadow: var(--user-console-probe-shadow);
   padding: 10px 12px;
   display: flex;
   flex-direction: column;
@@ -5305,10 +5237,10 @@ tbody .log-details-row:hover {
   bottom: -7px;
   width: 12px;
   height: 12px;
-  background: #ffffff;
-  border-right: 1px solid rgba(148, 163, 184, 0.64);
-  border-bottom: 1px solid rgba(148, 163, 184, 0.64);
-  box-shadow: 3px 3px 8px rgba(15, 23, 42, 0.08);
+  background: var(--user-console-probe-surface);
+  border-right: 1px solid var(--user-console-probe-border);
+  border-bottom: 1px solid var(--user-console-probe-border);
+  box-shadow: 3px 3px 8px rgba(15, 23, 42, 0.14);
   transform: rotate(45deg);
 }
 
@@ -5372,13 +5304,13 @@ tbody .log-details-row:hover {
 }
 
 .user-console-probe-bubble-item-label {
-  color: hsl(var(--foreground) / 0.9);
+  color: hsl(var(--popover-foreground) / 0.92);
   font-weight: 500;
   line-height: 1.32;
 }
 
 .user-console-probe-bubble-item-detail {
-  color: hsl(var(--foreground) / 0.68);
+  color: hsl(var(--popover-foreground) / 0.7);
   font-size: 0.76rem;
   line-height: 1.35;
 }
@@ -5881,6 +5813,21 @@ tbody .log-details-row:hover {
   background: hsl(var(--primary) / 0.24);
 }
 
+.dark .admin-return-link {
+  border-color: hsl(var(--secondary) / 0.42);
+  background:
+    linear-gradient(180deg, hsl(var(--secondary) / 0.22) 0%, hsl(var(--secondary) / 0.12) 100%),
+    hsl(var(--card) / 0.88);
+  color: hsl(var(--foreground) / 0.9);
+}
+
+.dark .admin-return-link:hover {
+  border-color: hsl(var(--secondary) / 0.6);
+  background:
+    linear-gradient(180deg, hsl(var(--secondary) / 0.3) 0%, hsl(var(--secondary) / 0.18) 100%),
+    hsl(var(--card) / 0.92);
+}
+
 .dark .token-usage-header .theme-toggle-trigger {
   background: hsl(var(--card) / 0.88);
   border-color: hsl(var(--border) / 0.9);
@@ -6168,20 +6115,6 @@ tbody .log-details-row:hover {
   .guide-tab:hover {
     border-color: hsl(var(--primary) / 0.4);
     color: hsl(var(--foreground));
-  }
-
-  .linuxdo-login-button,
-  .token-access-button {
-    border: 1px solid hsl(var(--border));
-    background: hsl(var(--card) / 0.95);
-    color: hsl(var(--foreground));
-    box-shadow: 0 10px 20px -18px hsl(var(--foreground) / 0.5);
-  }
-
-  .linuxdo-login-button:hover,
-  .token-access-button:hover {
-    border-color: hsl(var(--primary) / 0.5);
-    box-shadow: 0 14px 26px -20px hsl(var(--primary) / 0.45);
   }
 
   .table-wrapper {
@@ -6519,7 +6452,8 @@ tbody .log-details-row:hover {
   .admin-main-content .admin-shell-content > .admin-panel-header .user-badge,
   .admin-main-content .admin-shell-content > .admin-panel-header .theme-toggle-label,
   .admin-main-content .admin-shell-content > .admin-panel-header .language-switcher-trigger > svg:last-child,
-  .admin-main-content .admin-shell-content > .admin-panel-header .admin-panel-refresh-button span {
+  .admin-main-content .admin-shell-content > .admin-panel-header .admin-panel-refresh-button span,
+  .admin-main-content .admin-shell-content > .admin-panel-header .admin-return-link span {
     display: none;
   }
 
@@ -6530,7 +6464,8 @@ tbody .log-details-row:hover {
 
   .admin-main-content .admin-shell-content > .admin-panel-header .theme-toggle-trigger,
   .admin-main-content .admin-shell-content > .admin-panel-header .language-switcher-trigger,
-  .admin-main-content .admin-shell-content > .admin-panel-header .admin-panel-refresh-button {
+  .admin-main-content .admin-shell-content > .admin-panel-header .admin-panel-refresh-button,
+  .admin-main-content .admin-shell-content > .admin-panel-header .admin-return-link {
     min-height: 32px;
     height: 32px;
     min-width: 32px;
@@ -6595,19 +6530,41 @@ tbody .log-details-row:hover {
 
   .admin-main-content .admin-shell-content > .token-usage-header .token-usage-back-button span,
   .admin-main-content .admin-shell-content > .token-usage-header .token-usage-refresh-button span,
-  .admin-main-content .admin-shell-content > .token-usage-header .theme-toggle-label {
+  .admin-main-content .admin-shell-content > .token-usage-header .theme-toggle-label,
+  .admin-main-content .admin-shell-content > .token-usage-header .admin-return-link span {
     display: none;
   }
 
   .admin-main-content .admin-shell-content > .token-usage-header .token-usage-back-button,
   .admin-main-content .admin-shell-content > .token-usage-header .token-usage-refresh-button,
-  .admin-main-content .admin-shell-content > .token-usage-header .theme-toggle-trigger {
+  .admin-main-content .admin-shell-content > .token-usage-header .theme-toggle-trigger,
+  .admin-main-content .admin-shell-content > .token-usage-header .admin-return-link {
     min-height: 32px;
     height: 32px;
     min-width: 32px;
     padding-inline: 0.5rem;
     justify-content: center;
     border-radius: 9px;
+  }
+
+  .app-header .admin-return-link span,
+  .panel-header .admin-return-link span {
+    display: none;
+  }
+
+  .app-header .admin-return-link,
+  .panel-header .admin-return-link {
+    min-height: 32px;
+    height: 32px;
+    min-width: 32px;
+    padding-inline: 0.5rem;
+    justify-content: center;
+    border-radius: 9px;
+  }
+
+  .admin-inline-actions {
+    width: 100%;
+    justify-content: flex-start;
   }
 }
 
@@ -6671,7 +6628,8 @@ tbody .log-details-row:hover {
 
   .admin-main-content .admin-shell-content > .admin-panel-header .theme-toggle-trigger,
   .admin-main-content .admin-shell-content > .admin-panel-header .language-switcher-trigger,
-  .admin-main-content .admin-shell-content > .admin-panel-header .admin-panel-refresh-button {
+  .admin-main-content .admin-shell-content > .admin-panel-header .admin-panel-refresh-button,
+  .admin-main-content .admin-shell-content > .admin-panel-header .admin-return-link {
     min-width: 30px;
     min-height: 30px;
     height: 30px;
@@ -6687,7 +6645,8 @@ tbody .log-details-row:hover {
 
   .admin-main-content .admin-shell-content > .token-usage-header .token-usage-back-button,
   .admin-main-content .admin-shell-content > .token-usage-header .token-usage-refresh-button,
-  .admin-main-content .admin-shell-content > .token-usage-header .theme-toggle-trigger {
+  .admin-main-content .admin-shell-content > .token-usage-header .theme-toggle-trigger,
+  .admin-main-content .admin-shell-content > .token-usage-header .admin-return-link {
     min-width: 30px;
     min-height: 30px;
     height: 30px;

@@ -20,6 +20,15 @@ import ThemeToggle from './components/ThemeToggle'
 import useUpdateAvailable from './hooks/useUpdateAvailable'
 import RollingNumber from './components/RollingNumber'
 import PublicHomeHeroCard from './components/PublicHomeHeroCard'
+import TokenSecretField from './components/TokenSecretField'
+import { Button } from './components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from './components/ui/dialog'
 import { useLanguage, useTranslate, type Language } from './i18n'
 import { useResponsiveModes } from './lib/responsive'
 
@@ -50,9 +59,6 @@ const REPO_URL = 'https://github.com/IvanLi-CN/tavily-hikari'
 const ICONIFY_ENDPOINT = 'https://api.iconify.design'
 const STORAGE_LAST_TOKEN = 'tavily-hikari-last-token'
 const STORAGE_TOKEN_MAP = 'tavily-hikari-token-map'
-const SUPPORTS_NATIVE_DIALOG =
-  typeof HTMLDialogElement !== 'undefined' &&
-  typeof HTMLDialogElement.prototype.showModal === 'function'
 // Keep in sync with backend constants in src/lib.rs
 const TOKEN_HOURLY_LIMIT = 100
 const TOKEN_DAILY_LIMIT = 500
@@ -85,7 +91,7 @@ function PublicHome(): JSX.Element {
   const [token, setToken] = useState('')
   const [tokenDraft, setTokenDraft] = useState('')
   const [tokenVisible, setTokenVisible] = useState(false)
-  const tokenAccessDialogRef = useRef<HTMLDialogElement>(null)
+  const [isTokenAccessDialogOpen, setIsTokenAccessDialogOpen] = useState(false)
   const [metrics, setMetrics] = useState<PublicMetrics | null>(null)
   const [tokenMetrics, setTokenMetrics] = useState<TokenMetrics | null>(null)
   const [publicLogs, setPublicLogs] = useState<PublicTokenLog[]>([])
@@ -252,11 +258,10 @@ function PublicHome(): JSX.Element {
   const isAdmin = profile?.isAdmin ?? false
   const builtinAuthEnabled = profile?.builtinAuthEnabled ?? false
   const isLoggedOut = profile?.userLoggedIn === false
-  const canUseTokenAccessModal = SUPPORTS_NATIVE_DIALOG
   const showLinuxDoLogin = isLoggedOut
   const hasTokenInfo = token.trim().length > 0
   const hasValidTokenForLogs = isFullToken(token) && !invalidToken
-  const hideTokenPanels = !hasTokenInfo && canUseTokenAccessModal && (loading || isLoggedOut)
+  const hideTokenPanels = !hasTokenInfo && (loading || isLoggedOut)
   const availableKeys = summary?.active_keys ?? null
   const exhaustedKeys = summary?.exhausted_keys ?? null
   const totalKeys = availableKeys != null && exhaustedKeys != null ? availableKeys + exhaustedKeys : null
@@ -350,18 +355,15 @@ function PublicHome(): JSX.Element {
   }, [])
 
   const openTokenAccessDialog = useCallback(() => {
-    if (!canUseTokenAccessModal) return
     setTokenDraft(token)
     // Ensure the modal starts masked and doesn't leak into the main input after confirm.
     setTokenVisible(false)
     setCopyState('idle')
-    const dialog = tokenAccessDialogRef.current
-    if (!dialog) return
-    if (!dialog.open) dialog.showModal()
-  }, [canUseTokenAccessModal, token])
+    setIsTokenAccessDialogOpen(true)
+  }, [token])
 
   const closeTokenAccessDialog = useCallback(() => {
-    tokenAccessDialogRef.current?.close()
+    setIsTokenAccessDialogOpen(false)
     setTokenVisible(false)
     setCopyState('idle')
   }, [])
@@ -370,7 +372,7 @@ function PublicHome(): JSX.Element {
     const next = tokenDraft.trim()
     if (!isFullToken(next)) return
     persistToken(next)
-    tokenAccessDialogRef.current?.close()
+    setIsTokenAccessDialogOpen(false)
     setTokenVisible(false)
     setCopyState('idle')
   }, [persistToken, tokenDraft])
@@ -446,12 +448,12 @@ function PublicHome(): JSX.Element {
             </span>
           </div>
           <div className="update-banner-actions">
-            <button type="button" className="btn btn-primary" onClick={updateBanner.reload}>
+            <Button type="button" onClick={updateBanner.reload}>
               {publicStrings.updateBanner.refresh}
-            </button>
-            <button type="button" className="btn btn-ghost" onClick={updateBanner.dismiss}>
+            </Button>
+            <Button type="button" variant="ghost" onClick={updateBanner.dismiss}>
               {publicStrings.updateBanner.dismiss}
-            </button>
+            </Button>
           </div>
         </section>
       )}
@@ -526,92 +528,35 @@ function PublicHome(): JSX.Element {
                 </div>
               </div>
               <div className="access-token-box">
-                <label htmlFor="access-token" className="token-label">
-                  {publicStrings.accessToken.label}
-                </label>
-                <div className="token-input-row">
-                  <div className="token-input-shell">
-                    <input
-                      id="access-token"
-                      name="not-a-login-field"
-                      className={`token-input${tokenVisible ? '' : ' masked'}`}
-                      // Always use text input to avoid triggering password managers
-                      type="text"
-                      value={token}
-                      onChange={(event) => {
-                        const value = event.target.value
-                        setToken(value)
-                      }}
-                      onBlur={(event) => {
-                        const next = event.target.value
-                        persistToken(next)
-                        if (isFullToken(next)) {
-                          fetchTokenMetrics(next)
-                            .then((tm) => {
-                              setTokenMetrics(tm)
-                              setRecentTokenUsage(tm)
-                            })
-                            .catch(() => {
-                              setTokenMetrics(null)
-                              setRecentTokenUsage(null)
-                            })
-                        }
-                      }}
-                      placeholder={publicStrings.accessToken.placeholder}
-                      autoComplete="off"
-                      autoCorrect="off"
-                      autoCapitalize="off"
-                      spellCheck={false}
-                      aria-autocomplete="none"
-                      inputMode="text"
-                      data-1p-ignore="true"
-                      data-lpignore="true"
-                      data-form-type="other"
-                    />
-                    <button
-                      type="button"
-                      className="token-visibility-button"
-                      onClick={() => setTokenVisible((prev) => !prev)}
-                      aria-label={tokenVisible ? publicStrings.accessToken.toggle.hide : publicStrings.accessToken.toggle.show}
-                    >
-                      <img
-                        src={`${ICONIFY_ENDPOINT}/mdi/${tokenVisible ? 'eye-off-outline' : 'eye-outline'}.svg?color=%236b7280`}
-                        alt={publicStrings.accessToken.toggle.iconAlt}
-                      />
-                    </button>
-                  </div>
-                  <button
-                    type="button"
-                    className={`btn token-copy-button${
-                      copyState === 'copied'
-                        ? ' btn-success'
-                        : copyState === 'error'
-                          ? ' btn-warning'
-                          : ' btn-outline'
-                    }`}
-                    onClick={() => void handleCopyToken(token)}
-                    aria-label={publicStrings.copyToken.iconAlt}
-                  >
-                    <Icon
-                      icon={
-                        copyState === 'copied'
-                          ? 'mdi:check'
-                          : copyState === 'error'
-                            ? 'mdi:alert-circle-outline'
-                            : 'mdi:content-copy'
-                      }
-                      aria-hidden="true"
-                      className="token-copy-icon"
-                    />
-                    <span>
-                      {copyState === 'copied'
-                        ? publicStrings.copyToken.copied
-                        : copyState === 'error'
-                          ? publicStrings.copyToken.error
-                          : publicStrings.copyToken.copy}
-                    </span>
-                  </button>
-                </div>
+                <TokenSecretField
+                  inputId="access-token"
+                  name="not-a-login-field"
+                  value={token}
+                  visible={tokenVisible}
+                  copyState={copyState}
+                  onValueChange={setToken}
+                  onBlur={(event) => persistToken(event.target.value)}
+                  onToggleVisibility={() => setTokenVisible((prev) => !prev)}
+                  onCopy={() => handleCopyToken(token)}
+                  label={publicStrings.accessToken.label}
+                  placeholder={publicStrings.accessToken.placeholder}
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                  aria-autocomplete="none"
+                  inputMode="text"
+                  data-1p-ignore="true"
+                  data-lpignore="true"
+                  data-form-type="other"
+                  visibilityShowLabel={publicStrings.accessToken.toggle.show}
+                  visibilityHideLabel={publicStrings.accessToken.toggle.hide}
+                  visibilityIconAlt={publicStrings.accessToken.toggle.iconAlt}
+                  copyAriaLabel={publicStrings.copyToken.iconAlt}
+                  copyLabel={publicStrings.copyToken.copy}
+                  copiedLabel={publicStrings.copyToken.copied}
+                  copyErrorLabel={publicStrings.copyToken.error}
+                />
               </div>
             </div>
           </section>
@@ -825,129 +770,73 @@ function PublicHome(): JSX.Element {
           )}
         </div>
       </footer>
-      {canUseTokenAccessModal && (
-        <dialog
-          ref={tokenAccessDialogRef}
-          className="modal token-access-modal"
-          onClick={(event) => {
-            // Close when clicking on the backdrop (not inside the modal box).
-            if (event.target === event.currentTarget) closeTokenAccessDialog()
-          }}
-          onClose={() => {
-            // Dialog can also be closed via ESC; keep sensitive states reset.
-            setTokenVisible(false)
-            setCopyState('idle')
-          }}
-        >
-          <div className="modal-box">
-            <h3 className="font-bold text-lg" style={{ marginTop: 0 }}>
-              {publicStrings.tokenAccess.dialog.title}
-            </h3>
-            <p className="opacity-80" style={{ marginTop: 8 }}>
-              {publicStrings.tokenAccess.dialog.description}
-            </p>
-            <div className="token-input-wrapper" style={{ marginTop: 14 }}>
-              <label htmlFor="access-token-modal" className="token-label">
-                {publicStrings.accessToken.label}
-              </label>
-              <div className="token-input-row">
-                <div className="token-input-shell">
-                  <input
-                    id="access-token-modal"
-                    name="not-a-login-field"
-                    className={`token-input${tokenVisible ? '' : ' masked'}`}
-                    // Always use text input to avoid triggering password managers
-                    type="text"
-                    value={tokenDraft}
-                    onChange={(event) => setTokenDraft(event.target.value)}
-                    placeholder={publicStrings.accessToken.placeholder}
-                    autoComplete="off"
-                    autoCorrect="off"
-                    autoCapitalize="off"
-                    spellCheck={false}
-                    aria-autocomplete="none"
-                    inputMode="text"
-                    data-1p-ignore="true"
-                    data-lpignore="true"
-                    data-form-type="other"
-                  />
-                  <button
-                    type="button"
-                    className="token-visibility-button"
-                    onClick={() => setTokenVisible((prev) => !prev)}
-                    aria-label={tokenVisible ? publicStrings.accessToken.toggle.hide : publicStrings.accessToken.toggle.show}
-                  >
-                    <img
-                      src={`${ICONIFY_ENDPOINT}/mdi/${tokenVisible ? 'eye-off-outline' : 'eye-outline'}.svg?color=%236b7280`}
-                      alt={publicStrings.accessToken.toggle.iconAlt}
-                    />
-                  </button>
-                </div>
-                <button
-                  type="button"
-                  className={`btn token-copy-button${
-                    copyState === 'copied'
-                      ? ' btn-success'
-                      : copyState === 'error'
-                        ? ' btn-warning'
-                        : ' btn-outline'
-                  }`}
-                  onClick={() => void handleCopyToken(tokenDraft.trim())}
-                  aria-label={publicStrings.copyToken.iconAlt}
-                  disabled={tokenDraft.trim().length === 0}
-                >
-                  <Icon
-                    icon={
-                      copyState === 'copied'
-                        ? 'mdi:check'
-                        : copyState === 'error'
-                          ? 'mdi:alert-circle-outline'
-                          : 'mdi:content-copy'
-                    }
-                    aria-hidden="true"
-                    className="token-copy-icon"
-                  />
-                  <span>
-                    {copyState === 'copied'
-                      ? publicStrings.copyToken.copied
-                      : copyState === 'error'
-                        ? publicStrings.copyToken.error
-                        : publicStrings.copyToken.copy}
-                  </span>
-                </button>
-              </div>
-            </div>
-            <p className="opacity-80" style={{ marginTop: 14, marginBottom: 0 }}>
-              {publicStrings.tokenAccess.dialog.loginHint}{' '}
-              <a
-                href="/auth/linuxdo"
-                className="link"
-                onClick={(event) => {
-                  event.preventDefault()
-                  startLinuxDoLogin(tokenDraft)
-                }}
-              >
-                {publicStrings.linuxDoLogin.button}
-              </a>
-            </p>
-            <div className="modal-action">
-              <form method="dialog" onSubmit={(e) => e.preventDefault()} style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <button type="button" className="btn" onClick={closeTokenAccessDialog}>
-                  {publicStrings.tokenAccess.dialog.actions.cancel}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  onClick={confirmTokenAccessDialog}
-                  disabled={!isFullToken(tokenDraft.trim())}
-                >
-                  {publicStrings.tokenAccess.dialog.actions.confirm}
-                </button>
-              </form>
-            </div>
+      <Dialog
+        open={isTokenAccessDialogOpen}
+        onOpenChange={(open) => {
+          if (open) {
+            setIsTokenAccessDialogOpen(true)
+            return
+          }
+          closeTokenAccessDialog()
+        }}
+      >
+        <DialogContent className="token-access-modal max-w-xl">
+          <DialogHeader>
+            <DialogTitle>{publicStrings.tokenAccess.dialog.title}</DialogTitle>
+            <DialogDescription>{publicStrings.tokenAccess.dialog.description}</DialogDescription>
+          </DialogHeader>
+          <TokenSecretField
+            inputId="access-token-modal"
+            name="not-a-login-field"
+            value={tokenDraft}
+            visible={tokenVisible}
+            copyState={copyState}
+            onValueChange={setTokenDraft}
+            onToggleVisibility={() => setTokenVisible((prev) => !prev)}
+            onCopy={() => handleCopyToken(tokenDraft.trim())}
+            label={publicStrings.accessToken.label}
+            placeholder={publicStrings.accessToken.placeholder}
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            aria-autocomplete="none"
+            inputMode="text"
+            data-1p-ignore="true"
+            data-lpignore="true"
+            data-form-type="other"
+            visibilityShowLabel={publicStrings.accessToken.toggle.show}
+            visibilityHideLabel={publicStrings.accessToken.toggle.hide}
+            visibilityIconAlt={publicStrings.accessToken.toggle.iconAlt}
+            copyAriaLabel={publicStrings.copyToken.iconAlt}
+            copyLabel={publicStrings.copyToken.copy}
+            copiedLabel={publicStrings.copyToken.copied}
+            copyErrorLabel={publicStrings.copyToken.error}
+            copyDisabled={tokenDraft.trim().length === 0}
+          />
+          <p className="opacity-80" style={{ marginTop: 14, marginBottom: 0 }}>
+            {publicStrings.tokenAccess.dialog.loginHint}{' '}
+            <a
+              href="/auth/linuxdo"
+              className="link"
+              onClick={(event) => {
+                event.preventDefault()
+                startLinuxDoLogin(tokenDraft)
+              }}
+            >
+              {publicStrings.linuxDoLogin.button}
+            </a>
+          </p>
+          <div className="modal-action">
+            <Button type="button" variant="outline" onClick={closeTokenAccessDialog}>
+              {publicStrings.tokenAccess.dialog.actions.cancel}
+            </Button>
+            <Button type="button" onClick={confirmTokenAccessDialog} disabled={!isFullToken(tokenDraft.trim())}>
+              {publicStrings.tokenAccess.dialog.actions.confirm}
+            </Button>
           </div>
-        </dialog>
-      )}
+        </DialogContent>
+      </Dialog>
     </main>
   )
 }
@@ -982,13 +871,13 @@ function MobileGuideDropdown({
   const current = labels.find((l) => l.id === active)
   return (
     <div className="dropdown w-full">
-      <div tabIndex={0} role="button" className="btn btn-outline w-full justify-between btn-sm md:btn-md">
+      <Button type="button" variant="outline" size="sm" className="w-full justify-between md:h-10" tabIndex={0}>
         <span className="inline-flex items-center gap-2">
           <img src={icon(active)} alt="client" width={18} height={18} />
           {current?.label ?? active}
         </span>
         <img src={`${ICONIFY_ENDPOINT}/mdi/chevron-down.svg?color=%23647589`} alt="open" width={16} height={16} />
-      </div>
+      </Button>
       <ul tabIndex={0} className="menu dropdown-content bg-base-100 rounded-box z-[1] w-60 p-2 shadow mt-2">
         {labels.map((tab) => (
           <li key={tab.id}>

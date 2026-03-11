@@ -4,7 +4,7 @@
 
 - Status: 已完成（fast-track）
 - Created: 2026-03-02
-- Last: 2026-03-07
+- Last: 2026-03-09
 
 ## 背景 / 问题陈述
 
@@ -101,12 +101,15 @@
 
 ## Visual Evidence (PR)
 
-Storybook `User Console/UserConsole/Quota Blocked`: proves quota-blocked `ping` is shown as blocked while `tools/list` still succeeds and the UI settles on `MCP Partial`.
+Storybook `User Console/UserConsole/Token Detail Overview`: verifies the MCP probe bubble now uses the same popover-surface tokens in both dark and light themes instead of a hard-coded white balloon.
 
-![Quota-blocked MCP partial in Storybook](./assets/token-detail-probe-quota-blocked.png)
+![Token detail probe bubble in dark theme](./assets/token-detail-probe-bubble-dark.png)
+
+![Token detail probe bubble in light theme](./assets/token-detail-probe-bubble-light.png)
 
 ## 变更记录
 
+- 2026-03-09: 修复 Token Detail 探测气泡的暗色主题表面配色，并补充 Storybook 暗色/浅色双截图作为最新验收依据。
 - 2026-03-07: 补充 Storybook 视觉证据，固定 `Quota Blocked` 场景截图到 spec 资产，用于 PR 合并前验收。
 - 2026-03-06: 修复用户控制台 MCP 探测合同：浏览器 probe 显式发送双 Accept，兼容 SSE `tools/list`（含通知夹杂场景）并拒绝格式损坏的 2xx 成功体，同时在 token 配额耗尽时前置标记为受阻而非误报全失败，并在缓存配额可能过期时先复核最新 detail。
 - 2026-03-02: 初始化规格，冻结范围、接口与验收口径。

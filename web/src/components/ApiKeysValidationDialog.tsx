@@ -4,7 +4,20 @@ import { Icon } from "@iconify/react";
 import { useTranslate } from "../i18n";
 import { useViewportMode } from "../lib/responsive";
 import { StatusBadge, type StatusTone } from "./StatusBadge";
+import { Button } from "./ui/button";
+import {
+  Dialog,
+  DialogContent,
+} from "./ui/dialog";
 import { Drawer, DrawerContent } from "./ui/drawer";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "./ui/table";
 import type { AddApiKeysBatchResponse } from "../api";
 
 export type KeyValidationStatus =
@@ -154,12 +167,11 @@ function filterKeyForStatus(status: KeyValidationStatus): ValidationFilterKey {
 }
 
 export interface ApiKeysValidationDialogProps {
-  dialogRef: React.RefObject<HTMLDialogElement>;
+  open: boolean;
   state: KeysValidationState | null;
   counts: KeysValidationCounts;
   validKeys: string[];
   exhaustedKeys: string[];
-  forceOpen?: boolean;
   onClose: () => void;
   onRetryFailed: () => void;
   onRetryOne: (apiKey: string) => void;
@@ -242,7 +254,6 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
   );
   const importButtonLabel = isSmallViewport ? (actions.import ?? "Import") : importVerboseLabel;
   const retryFailedLabel = isSmallViewport ? (actions.retry ?? "Retry") : (actions.retryFailed ?? "Retry failed");
-  const isOpen = !!props.forceOpen || !!props.state;
   const handleOpenChange = React.useCallback((open: boolean) => {
     if (!open) props.onClose();
   }, [props.onClose]);
@@ -286,14 +297,16 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
             </div>
           </div>
           {!isSmallViewport ? (
-            <button
+            <Button
               type="button"
-              className="btn btn-sm btn-ghost btn-circle"
+              variant="ghost"
+              size="icon"
+              className="key-validation-close-button h-9 w-9 rounded-full"
               onClick={props.onClose}
               title={actions.close}
             >
               <Icon icon="mdi:close" width={18} height={18} />
-            </button>
+            </Button>
           ) : null}
         </div>
 
@@ -329,37 +342,41 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                 const isActive = activeFilter === segment.key;
                 const isDimmed = !!activeFilter && activeFilter !== segment.key;
                 return (
-                  <button
-                    type="button"
-                    key={segment.key}
-                    className={`key-validation-segment-stat ${segment.toneClass}${hasRate ? " has-rate" : ""}${
-                      isActive ? " is-active" : ""
-                    }${isDimmed ? " is-dimmed" : ""}`}
-                    {...(hasRate ? { tabIndex: 0 } : {})}
-                    onClick={() => setActiveFilter((prev) => (prev === segment.key ? null : segment.key))}
-                    aria-pressed={isActive}
-                  >
-                    <span className="key-validation-segment-dot" />
-                    {segment.label}:{" "}
-                    <span className="font-mono tabular-nums">{formatNumber(segment.count)}</span>
-                    {hasRate ? (
-                      <span className="key-validation-stat-bubble">{rate}%</span>
-                    ) : null}
-                  </button>
+<Button
+  type="button"
+  variant="ghost"
+  size="sm"
+  key={segment.key}
+  className={`key-validation-segment-stat ${segment.toneClass}${hasRate ? " has-rate" : ""}${
+    isActive ? " is-active" : ""
+  }${isDimmed ? " is-dimmed" : ""}`}
+  {...(hasRate ? { tabIndex: 0 } : {})}
+  onClick={() => setActiveFilter((prev) => (prev === segment.key ? null : segment.key))}
+  aria-pressed={isActive}
+>
+  <span className="key-validation-segment-dot" />
+  {segment.label}:{" "}
+  <span className="font-mono tabular-nums">{formatNumber(segment.count)}</span>
+  {hasRate ? (
+    <span className="key-validation-stat-bubble">{rate}%</span>
+  ) : null}
+</Button>
                 );
               })}
-              <button
-                type="button"
-                className={`key-validation-segment-stat is-duplicate${
-                  activeFilter === "duplicate" ? " is-active" : ""
-                }${activeFilter && activeFilter !== "duplicate" ? " is-dimmed" : ""}`}
-                onClick={() => setActiveFilter((prev) => (prev === "duplicate" ? null : "duplicate"))}
-                aria-pressed={activeFilter === "duplicate"}
-              >
-                <span className="key-validation-segment-dot" />
-                {statuses.duplicate_in_input ?? "Duplicate"}:{" "}
-                <span className="font-mono tabular-nums">{formatNumber(props.counts.duplicate)}</span>
-              </button>
+<Button
+  type="button"
+  variant="ghost"
+  size="sm"
+  className={`key-validation-segment-stat is-duplicate${
+    activeFilter === "duplicate" ? " is-active" : ""
+  }${activeFilter && activeFilter !== "duplicate" ? " is-dimmed" : ""}`}
+  onClick={() => setActiveFilter((prev) => (prev === "duplicate" ? null : "duplicate"))}
+  aria-pressed={activeFilter === "duplicate"}
+>
+  <span className="key-validation-segment-dot" />
+  {statuses.duplicate_in_input ?? "Duplicate"}:{" "}
+  <span className="font-mono tabular-nums">{formatNumber(props.counts.duplicate)}</span>
+</Button>
             </div>
           </div>
         ) : null}
@@ -428,15 +445,17 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                           <code className="block font-mono text-xs break-all whitespace-normal bg-base-200/50 px-2 py-1 rounded-lg max-w-full">
                             {row.api_key}
                           </code>
-                          <button
+                          <Button
                             type="button"
-                            className="btn btn-ghost btn-xs btn-square"
+                            variant="ghost"
+                            size="xs"
+                            className="key-validation-row-retry-button h-7 w-7 px-0"
                             onClick={() => props.onRetryOne(row.api_key)}
                             disabled={!canRetry}
                             aria-label={actions.retry ?? "Retry"}
                           >
                             <Icon icon="mdi:refresh" width={16} height={16} />
-                          </button>
+                          </Button>
                         </div>
 
                         <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -464,30 +483,30 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
             {/* >= md: table layout (fixed columns) */}
             <div className="key-validation-table-shell hidden md:block rounded-xl border border-base-200 bg-base-100 overflow-hidden">
               <div className="key-validation-table-scroll">
-                <table className="table table-sm table-zebra table-fixed w-full key-validation-table">
+                <Table className="table-fixed w-full key-validation-table text-sm">
                   <colgroup>
                     <col style={{ width: "52%" }} />
                     <col style={{ width: "26%" }} />
                     <col style={{ width: "14%" }} />
                     <col style={{ width: "8%" }} />
                   </colgroup>
-                  <thead>
-                    <tr>
-                      <th className="whitespace-nowrap">{tableStrings.apiKey ?? "API Key"}</th>
-                      <th className="whitespace-nowrap">{tableStrings.result ?? "Result"}</th>
-                      <th className="whitespace-nowrap text-right">{tableStrings.quota ?? "Quota"}</th>
-                      <th className="whitespace-nowrap text-right px-2">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="whitespace-nowrap">{tableStrings.apiKey ?? "API Key"}</TableHead>
+                      <TableHead className="whitespace-nowrap">{tableStrings.result ?? "Result"}</TableHead>
+                      <TableHead className="whitespace-nowrap text-right">{tableStrings.quota ?? "Quota"}</TableHead>
+                      <TableHead className="whitespace-nowrap px-2 text-right">
                         {tableStrings.actions ?? "Actions"}
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
+                      </TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
                     {filteredRows.length === 0 ? (
-                      <tr>
-                        <td colSpan={4} className="py-4 text-center opacity-70">
+                      <TableRow>
+                        <TableCell colSpan={4} className="py-4 text-center opacity-70">
                           {validationStrings.emptyFiltered}
-                        </td>
-                      </tr>
+                        </TableCell>
+                      </TableRow>
                     ) : (
                       filteredRows.map((row, index) => {
                         const canRetry =
@@ -502,13 +521,13 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                             : "—";
                         const label = statuses[row.status] ?? row.status;
                         return (
-                          <tr key={`${row.api_key}-${index}`}>
-                            <td className="max-w-0">
+                          <TableRow key={`${row.api_key}-${index}`}>
+                            <TableCell className="max-w-0">
                               <code className="block font-mono text-xs break-all whitespace-normal bg-base-200/50 px-2 py-1 rounded-lg max-w-full">
                                 {row.api_key}
                               </code>
-                            </td>
-                            <td className="max-w-0">
+                            </TableCell>
+                            <TableCell className="max-w-0">
                               {row.detail ? (
                                 <details className="key-validation-detail-disclosure min-w-0 max-w-full">
                                   <summary className="cursor-pointer list-none inline-flex items-center gap-2 flex-wrap">
@@ -534,27 +553,29 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                                   {label}
                                 </StatusBadge>
                               )}
-                            </td>
-                            <td className="text-right font-mono text-xs tabular-nums opacity-70 whitespace-nowrap">
+                            </TableCell>
+                            <TableCell className="text-right font-mono text-xs tabular-nums opacity-70 whitespace-nowrap">
                               {quotaLabel}
-                            </td>
-                            <td className="text-right px-2">
-                              <button
+                            </TableCell>
+                            <TableCell className="px-2 text-right">
+                              <Button
                                 type="button"
-                                className="btn btn-ghost btn-xs btn-square"
+                                variant="ghost"
+                                size="xs"
+                                className="key-validation-row-retry-button h-7 w-7 px-0"
                                 onClick={() => props.onRetryOne(row.api_key)}
                                 disabled={!canRetry}
                                 aria-label={actions.retry ?? "Retry"}
                               >
                                 <Icon icon="mdi:refresh" width={16} height={16} />
-                              </button>
-                            </td>
-                          </tr>
+                              </Button>
+                            </TableCell>
+                          </TableRow>
                         );
                       })
                     )}
-                  </tbody>
-                </table>
+                  </TableBody>
+                </Table>
               </div>
             </div>
           </>
@@ -585,23 +606,23 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
         )}
 
         <div className="key-validation-footer-actions flex flex-wrap items-center justify-between gap-2">
-          <button
+          <Button
             type="button"
-            className="btn btn-outline"
+            variant="outline"
             onClick={props.onRetryFailed}
             disabled={!canRetryFailed}
           >
             <Icon icon="mdi:refresh" width={18} height={18} />
             &nbsp;{retryFailedLabel}
-          </button>
+          </Button>
 
           <div className="key-validation-footer-primary flex items-center gap-2 justify-end flex-wrap md:flex-nowrap flex-shrink-0">
-            <button type="button" className="btn" onClick={props.onClose}>
+            <Button type="button" variant="secondary" onClick={props.onClose}>
               {actions.close ?? keyStrings.batch.report.close}
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
-              className="btn btn-primary key-validation-import-button"
+              className="key-validation-import-button"
               onClick={props.onImportValid}
               disabled={!canImport}
               aria-label={importVerboseLabel}
@@ -617,7 +638,7 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                   {props.validKeys.length}
                 </span>
               ) : null}
-            </button>
+            </Button>
           </div>
         </div>
       </div>
@@ -626,7 +647,7 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
 
   if (isSmallViewport) {
     return (
-      <Drawer open={isOpen} onOpenChange={handleOpenChange} shouldScaleBackground={false}>
+      <Drawer open={props.open} onOpenChange={handleOpenChange} shouldScaleBackground={false}>
         <DrawerContent className="key-validation-drawer-content">
           {content}
         </DrawerContent>
@@ -635,14 +656,10 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
   }
 
   return (
-    <dialog
-      id="keys_validation_modal"
-      ref={props.dialogRef}
-      className="modal key-validation-modal"
-      onClose={props.onClose}
-      {...(props.forceOpen ? { open: true } : {})}
-    >
-      <div className="modal-box key-validation-modal-box">{content}</div>
-    </dialog>
+    <Dialog open={props.open} onOpenChange={handleOpenChange}>
+      <DialogContent className="key-validation-modal key-validation-modal-box max-w-5xl gap-0 p-0 sm:max-h-[min(calc(100dvh-4rem),calc(100vh-4rem))] [&>button]:hidden">
+        {content}
+      </DialogContent>
+    </Dialog>
   );
 }

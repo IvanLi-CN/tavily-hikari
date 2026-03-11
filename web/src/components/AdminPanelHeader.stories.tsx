@@ -3,7 +3,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import AdminPanelHeader from './AdminPanelHeader'
 
 const meta = {
-  title: 'Admin/AdminPanelHeader',
+  title: 'Admin/Components/AdminPanelHeader',
   component: AdminPanelHeader,
   parameters: {
     layout: 'padded',
@@ -30,6 +30,8 @@ export const Default: Story = {
     isRefreshing: false,
     refreshLabel: '立即刷新',
     refreshingLabel: '刷新中…',
+    userConsoleLabel: '返回用户控制台',
+    userConsoleHref: '/console',
     onRefresh: () => undefined,
   },
   parameters: {

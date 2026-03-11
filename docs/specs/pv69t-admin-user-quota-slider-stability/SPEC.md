@@ -118,6 +118,19 @@
 - 风险：手填超范围值时，滑块 thumb 需要明确采用“末端饱和”而非隐式改值，避免视觉与保存值不一致的误解。
 - 假设：服务端返回的用户详情字段继续完整提供 `used` 与 `limit`，无需额外 API 字段。
 
+## Visual Evidence (PR)
+
+- source_type: storybook_canvas
+  story_id_or_title: admin-pages--user-detail
+  state: default
+  target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  evidence_note: 聚焦用户详情页的配额设置面板，确认每行采用“滑块优先占宽 + 固定宽数字输入列”的共享生产组件布局，避免输入框反向挤压滑块可用宽度。
+  image:
+  ![Admin 用户详情配额布局验收截图](./assets/admin-user-quota-layout-proof.png)
+
 ## 变更记录（Change log）
 
 - 2026-03-06: 创建 follow-up spec，收敛稳定上限与指数档位滑块方案。
@@ -126,3 +139,4 @@
 - 2026-03-07: 修正配额滑块颜色条与 thumb 脱节问题，轨道改为按指数档位位置插值，确保 Storybook 与真实 admin 页面视觉对齐。
 - 2026-03-07: 将前段档位收敛为整数梯度：`10-100` 每 `10` 一档，之后切换为整数 nice-number 档位，避免前段过细。
 - 2026-03-07: 配额输入框改为千分符格式化展示与解析，并提升字号/字重以增强可读性。
+- 2026-03-10: 补充用户详情配额区域验收截图到 spec 资产，固化“滑块优先占宽、输入框可容纳 `1,000,000`”的视觉证据。

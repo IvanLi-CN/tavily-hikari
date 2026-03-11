@@ -19,7 +19,7 @@ const focusOptions = [
 ] as const
 
 const meta = {
-  title: 'Admin/TokenUsageHeader',
+  title: 'Admin/Components/TokenUsageHeader',
   component: TokenUsageHeader,
   parameters: {
     layout: 'padded',
@@ -55,6 +55,8 @@ export const Default: Story = {
     backLabel: '返回总览',
     refreshLabel: '立即刷新',
     refreshingLabel: '刷新中…',
+    userConsoleLabel: '返回用户控制台',
+    userConsoleHref: '/console',
     isRefreshing: false,
     period: 'day',
     focus: 'usage',

@@ -211,6 +211,7 @@ struct TokenLogView {
     query: Option<String>,
     http_status: Option<i64>,
     mcp_status: Option<i64>,
+    business_credits: Option<i64>,
     result_status: String,
     error_message: Option<String>,
     created_at: i64,
@@ -225,6 +226,7 @@ impl From<TokenLogRecord> for TokenLogView {
             query: r.query,
             http_status: r.http_status,
             mcp_status: r.mcp_status,
+            business_credits: r.business_credits,
             result_status: r.result_status,
             error_message: r.error_message,
             created_at: r.created_at,
@@ -760,4 +762,3 @@ async fn get_token_leaderboard(
 
     Ok(Json(items))
 }
-

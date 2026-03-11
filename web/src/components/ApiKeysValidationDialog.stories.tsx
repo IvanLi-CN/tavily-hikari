@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react";
 
 import {
@@ -10,21 +10,13 @@ import {
 } from "./ApiKeysValidationDialog";
 
 function ModalHarness(props: { initial: KeysValidationState }): JSX.Element {
-  const dialogRef = useRef<HTMLDialogElement>(null!);
+  const [open, setOpen] = useState(true);
   const [state, setState] = useState<KeysValidationState>(props.initial);
 
-  // Storybook runs inside an iframe. Using showModal() gives us the proper modal
-  // backdrop behavior across browsers; fall back to `open` when needed.
   useEffect(() => {
-    const el = dialogRef.current;
-    if (!el) return;
-    if (el.open) return;
-    try {
-      el.showModal();
-    } catch {
-      el.setAttribute("open", "");
-    }
-  }, []);
+    setOpen(true);
+    setState(props.initial);
+  }, [props.initial]);
 
   const counts = useMemo(() => computeValidationCounts(state), [state]);
   const validKeys = useMemo(() => computeValidKeys(state), [state]);
@@ -32,13 +24,13 @@ function ModalHarness(props: { initial: KeysValidationState }): JSX.Element {
 
   return (
     <ApiKeysValidationDialog
-      dialogRef={dialogRef}
+      open={open}
       state={state}
       counts={counts}
       validKeys={validKeys}
       exhaustedKeys={exhaustedKeys}
       onClose={() => {
-        if (dialogRef.current?.open) dialogRef.current.close();
+        setOpen(false);
       }}
       onRetryFailed={() => {
         // Fake retry: convert failures to ok to showcase the UI.
@@ -89,7 +81,7 @@ function ModalHarness(props: { initial: KeysValidationState }): JSX.Element {
 }
 
 const meta = {
-  title: "Admin/ApiKeysValidationDialog",
+  title: "Admin/Components/ApiKeysValidationDialog",
   component: ModalHarness,
   parameters: { layout: "fullscreen" },
   render: (args) => <ModalHarness {...args} />,

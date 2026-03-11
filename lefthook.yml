@@ -3,7 +3,7 @@ pre-commit:
   commands:
     format-markdown:
       files: git diff --cached --name-only --diff-filter=ACMR -- '*.md'
-      run: bunx dprint fmt {files}
+      run: bunx --bun dprint fmt {files}
       stage_fixed: true
     fmt:
       glob: "**/*.rs"
@@ -16,4 +16,4 @@ pre-commit:
 commit-msg:
   commands:
     commitlint:
-      run: bunx commitlint --edit {1}
+      run: bunx --bun commitlint --edit {1}

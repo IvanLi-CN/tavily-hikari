@@ -1341,7 +1341,7 @@ export default function UserConsole(): JSX.Element {
                               <strong>{log.http_status ?? '—'}</strong>
                             </span>
                             <span className="user-console-log-transport-item">
-                              <em>M</em>
+                              <em>T</em>
                               <strong>{log.mcp_status ?? '—'}</strong>
                             </span>
                           </div>
@@ -1872,11 +1872,11 @@ const EN = {
     guideDescription: 'Use the same MCP configuration as the public homepage.',
     table: {
       request: 'Request',
-      transport: 'HTTP / MCP',
+      transport: 'HTTP / Tavily',
       path: 'Path',
       time: 'Time',
       http: 'HTTP',
-      mcp: 'MCP',
+      mcp: 'Tavily',
       result: 'Result',
       error: 'Error',
     },
@@ -2002,11 +2002,11 @@ const ZH = {
     guideDescription: '沿用首页的 MCP 配置方式即可接入。',
     table: {
       request: '请求',
-      transport: 'HTTP / MCP',
+      transport: 'HTTP / Tavily',
       path: '路径',
       time: '时间',
       http: 'HTTP',
-      mcp: 'MCP',
+      mcp: 'Tavily',
       result: '结果',
       error: '错误',
     },

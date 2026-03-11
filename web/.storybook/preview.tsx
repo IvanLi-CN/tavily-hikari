@@ -77,6 +77,7 @@ const viewportOptions = {
 }
 
 const preview: Preview = {
+  tags: ['autodocs'],
   parameters: {
     viewport: {
       options: viewportOptions,

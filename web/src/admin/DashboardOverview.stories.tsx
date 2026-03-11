@@ -3,7 +3,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import DashboardOverview from './DashboardOverview'
 
 const meta = {
-  title: 'Admin/DashboardOverview',
+  title: 'Admin/Components/DashboardOverview',
   component: DashboardOverview,
   decorators: [
     (Story) => (

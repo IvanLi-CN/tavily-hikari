@@ -2,6 +2,7 @@ import { Icon } from '@iconify/react'
 import { type PropsWithChildren, useEffect, useRef, useState } from 'react'
 import { ADMIN_SIDEBAR_STACK_MAX, useResponsiveModes } from '../lib/responsive'
 
+import AdminNavButton from './AdminNavButton'
 import type { AdminModuleId } from './routes'
 
 export interface AdminNavItem {
@@ -108,16 +109,14 @@ export default function AdminShell({
             {navItems.map((item) => {
               const active = item.module === activeModule
               return (
-                <button
+                <AdminNavButton
                   key={item.module}
-                  type="button"
-                  className={`admin-nav-item${active ? ' admin-nav-item-active' : ''}`}
+                  icon={item.icon}
+                  active={active}
                   onClick={() => onSelectModule(item.module)}
-                  aria-current={active ? 'page' : undefined}
                 >
-                  <Icon icon={item.icon} width={18} height={18} aria-hidden="true" />
                   <span>{item.label}</span>
-                </button>
+                </AdminNavButton>
               )
             })}
           </nav>

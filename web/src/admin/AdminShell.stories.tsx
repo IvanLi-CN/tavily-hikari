@@ -108,6 +108,8 @@ function PanelHeaderLayoutStory(): JSX.Element {
         isRefreshing={false}
         refreshLabel="Refresh Now"
         refreshingLabel="Refreshing"
+        userConsoleLabel="Back to User Console"
+        userConsoleHref="/console"
         onRefresh={() => undefined}
       />
       <LayoutBody title="Scheduled Jobs" description="Responsive layout fixture for shell and header verification." />
@@ -134,6 +136,8 @@ function TokenUsageLayoutStory(): JSX.Element {
         backLabel="Back"
         refreshLabel="Refresh Now"
         refreshingLabel="Refreshing"
+        userConsoleLabel="Back to User Console"
+        userConsoleHref="/console"
         isRefreshing={false}
         period={period}
         focus={focus}
@@ -158,11 +162,25 @@ function TokenUsageLayoutStory(): JSX.Element {
 }
 
 const meta = {
-  title: 'Admin/Layout',
+  title: 'Admin/AdminShell',
   parameters: {
     layout: 'fullscreen',
+    docs: {
+      description: {
+        component:
+          'Admin shell primitive that owns skip-link, responsive sidebar, stacked mobile menu, and the main content frame used by admin pages.',
+      },
+    },
   },
-} satisfies Meta
+  component: AdminShell,
+  tags: ['autodocs'],
+  args: {
+    activeModule: 'dashboard',
+    navItems: NAV_ITEMS,
+    skipToContentLabel: 'Skip to main content',
+    onSelectModule: () => undefined,
+  },
+} satisfies Meta<typeof AdminShell>
 
 export default meta
 

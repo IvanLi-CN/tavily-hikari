@@ -41,7 +41,7 @@ Client → Tavily Hikari (Axum) ──┬─> Tavily upstream (/mcp)
 cargo run -- --bind 127.0.0.1 --port 58087
 
 # Optional: start SPA dev server
-cd web && bun install --frozen-lockfile && bun run dev -- --host 127.0.0.1 --port 55173
+cd web && bun install --frozen-lockfile && bun run --bun dev -- --host 127.0.0.1 --port 55173
 
 # Register Tavily keys via admin API (ForwardAuth headers depend on your setup)
 curl -X POST http://127.0.0.1:58087/api/keys \
@@ -218,7 +218,7 @@ export LINUXDO_OAUTH_REDIRECT_URL='https://tavily.ivanli.cc/auth/linuxdo/callbac
 - Displays live key table, request log stream, and admin-only actions (copy real key, restore, delete).
 - Admin routes are path-based (`/admin/dashboard`, `/admin/tokens/:id`, `/admin/keys/:id`); legacy hash routes are removed.
 - `scripts/write-version.mjs` stamps the build version into the UI during CI releases.
-- `bun run dev` proxies `/api`, `/mcp`, and `/health` to the backend to avoid CORS hassle during development.
+- `bun run dev` (forced through Bun runtime via `web/bunfig.toml`) proxies `/api`, `/mcp`, and `/health` to the backend to avoid CORS hassle during development.
 
 ## Screenshots
 
@@ -270,8 +270,9 @@ codex mcp list | grep tavily_hikari
 
 - Rust toolchain pinned to 1.91.0 via `rust-toolchain.toml`.
 - Common commands: `cargo fmt`, `cargo clippy -- -D warnings`, `cargo test --locked --all-features`, `cargo run -- --help`.
-- Frontend (Bun, pinned via `.bun-version`): `bun install --frozen-lockfile`, `bun run dev`, `bun run build` (runs `tsc -b` + `vite build`).
-- Hooks: run `lefthook install` to enable automatic `cargo fmt`, `cargo clippy`, `bunx dprint fmt`, and `bunx commitlint --edit` on every commit.
+- Frontend (Bun, pinned via `.bun-version`): `bun install --frozen-lockfile`, `bun run dev`, `bun run build` (uses Bun-forced `tsc -b` + `vite build`; see `web/bunfig.toml`).
+- Hooks: run `lefthook install` to enable automatic `cargo fmt`, `cargo clippy`, `bunx --bun dprint fmt`, and `bunx --bun commitlint --edit` on every commit.
+- No-node proof: run `bun run validate:no-node-runtime` to verify the repo build/hook paths still pass when a failing `node` shim is prepended to `PATH`.
 - CI: `.github/workflows/ci.yml` runs lint/tests/build.
 - Release: `.github/workflows/release.yml` runs after main CI succeeds and publishes tags, GitHub Releases, and GHCR images.
 

@@ -1,5 +1,6 @@
 import { Icon } from '@iconify/react'
 
+import AdminReturnToConsoleLink from './AdminReturnToConsoleLink'
 import ThemeToggle from './ThemeToggle'
 import { Button } from './ui/button'
 import SegmentedTabs, { type SegmentedTabsOption } from './ui/SegmentedTabs'
@@ -14,6 +15,8 @@ interface TokenUsageHeaderProps {
   backLabel: string
   refreshLabel: string
   refreshingLabel: string
+  userConsoleLabel?: string
+  userConsoleHref?: string
   isRefreshing: boolean
   period: TokenLeaderboardPeriod
   focus: TokenLeaderboardFocus
@@ -63,6 +66,13 @@ export default function TokenUsageHeader(props: TokenUsageHeaderProps): JSX.Elem
 
           <div className="token-usage-header-utility">
             <ThemeToggle />
+            {props.userConsoleLabel && (
+              <AdminReturnToConsoleLink
+                label={props.userConsoleLabel}
+                href={props.userConsoleHref}
+                className="admin-return-link--header"
+              />
+            )}
             <Button type="button" variant="ghost" size="sm" className="token-usage-back-button" onClick={props.onBack}>
               <Icon icon="mdi:arrow-left" width={16} height={16} />
               <span>{props.backLabel}</span>
