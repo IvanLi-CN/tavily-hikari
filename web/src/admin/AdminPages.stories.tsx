@@ -1431,6 +1431,7 @@ function KeysPageCanvas({
   const keyDetailsStrings = admin.keyDetails
   const [selectedGroups, setSelectedGroups] = useState<string[]>([])
   const [selectedStatuses, setSelectedStatuses] = useState<string[]>([])
+  const [quarantineDetailExpanded, setQuarantineDetailExpanded] = useState(false)
   const groupOptions = Array.from(
     keys.reduce((map, item) => {
       const key = (item.group ?? '').trim()
@@ -1463,6 +1464,7 @@ function KeysPageCanvas({
     return groupMatched && statusMatched
   })
   const selectedKey = selectedKeyId ? filteredKeys.find((item) => item.id === selectedKeyId) ?? null : null
+  const quarantineDetailId = `story-key-quarantine-detail-${selectedKey?.id ?? 'unknown'}`
   const groupSummary = summarizeFilterSelection(
     keyStrings.groups.label,
     groupOptions.filter((option) => selectedGroups.includes(option.value)).map((option) => option.label),
@@ -1708,11 +1710,34 @@ function KeysPageCanvas({
             <span>{keyDetailsStrings.quarantine.createdAt}</span>
             <strong>{formatTimestamp(selectedKey.quarantine.createdAt)}</strong>
           </div>
-          <div style={{ marginTop: 12 }}>
-            <div className="panel-description" style={{ marginBottom: 4 }}>
-              {keyDetailsStrings.quarantine.detail}
+          <div className="quarantine-detail-block">
+            <div className="quarantine-detail-header">
+              <div className="panel-description">{keyDetailsStrings.quarantine.detail}</div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="quarantine-detail-toggle"
+                aria-expanded={quarantineDetailExpanded}
+                aria-controls={quarantineDetailId}
+                onClick={() => setQuarantineDetailExpanded((current) => !current)}
+              >
+                <Icon
+                  icon={quarantineDetailExpanded ? 'mdi:chevron-up' : 'mdi:chevron-down'}
+                  width={18}
+                  height={18}
+                  aria-hidden="true"
+                />
+                {quarantineDetailExpanded
+                  ? keyDetailsStrings.quarantine.hideDetail
+                  : keyDetailsStrings.quarantine.showDetail}
+              </Button>
             </div>
-            <pre className="log-details-pre">{selectedKey.quarantine.reasonDetail}</pre>
+            {quarantineDetailExpanded ? (
+              <pre id={quarantineDetailId} className="log-details-pre">
+                {selectedKey.quarantine.reasonDetail}
+              </pre>
+            ) : null}
           </div>
         </section>
       ) : null}

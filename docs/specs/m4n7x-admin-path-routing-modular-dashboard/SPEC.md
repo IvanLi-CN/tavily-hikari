@@ -67,6 +67,7 @@
 - `/admin` 可稳定进入 dashboard。
 - Dashboard 首页至少覆盖全局指标、趋势、风险、近期动作四层信息。
 - Tokens/API Keys/Requests/Jobs 核心交互行为与重构前保持一致。
+- API Keys 详情页的 quarantine 原始详情默认折叠；展开后长文本仅在详情块内部换行/滚动，不得把页面整体撑宽。
 
 ## 非功能性验收 / 质量门槛
 
@@ -91,4 +92,5 @@ Admin / API Keys 页面当前成果图：
 
 ## 变更记录（Change log）
 
+- 2026-03-13: 补充 API Keys 详情页 quarantine 原始详情的收口约束：默认折叠，展开后也不得因长文本导致页面横向溢出。
 - 2026-03-13: 补充 `Admin / API Keys` 页面成果截图到 spec 资产，固定当前双行表头、分组/状态筛选与布局收口效果。

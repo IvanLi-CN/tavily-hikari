@@ -789,6 +789,8 @@ interface AdminTranslationsShape {
       source: string
       reason: string
       detail: string
+      showDetail: string
+      hideDetail: string
       createdAt: string
       clearAction: string
       clearing: string
@@ -1695,6 +1697,8 @@ export const translations: Record<Language, TranslationShape> = {
           source: 'Source',
           reason: 'Reason',
           detail: 'Detail',
+          showDetail: 'Show raw detail',
+          hideDetail: 'Hide raw detail',
           createdAt: 'Quarantined at',
           clearAction: 'Clear quarantine',
           clearing: 'Clearing…',
@@ -2560,6 +2564,8 @@ export const translations: Record<Language, TranslationShape> = {
           source: '来源',
           reason: '原因摘要',
           detail: '原始详情',
+          showDetail: '展开原始详情',
+          hideDetail: '收起原始详情',
           createdAt: '隔离时间',
           clearAction: '解除隔离',
           clearing: '解除中…',

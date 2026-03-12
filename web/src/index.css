@@ -5017,6 +5017,46 @@ tbody tr:hover {
   word-break: break-word;
 }
 
+.log-details-pre {
+  margin: 0;
+  padding: 12px;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  background: hsl(var(--muted) / 0.58);
+  border-radius: 10px;
+  max-height: 220px;
+  overflow: auto;
+  font-family: 'JetBrains Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-size: 0.82rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.quarantine-detail-block {
+  margin-top: 12px;
+  min-width: 0;
+}
+
+.quarantine-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.quarantine-detail-header .panel-description {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+
+.quarantine-detail-toggle {
+  margin-left: auto;
+}
+
 .log-details-headers {
   display: flex;
   flex-wrap: wrap;
