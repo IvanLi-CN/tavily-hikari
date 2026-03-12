@@ -215,13 +215,13 @@ fn default_forward_proxy_insert_direct() -> bool {
 async fn get_settings(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<SettingsResponse>, StatusCode> {
+) -> Result<Json<SettingsResponse>, (StatusCode, String)> {
     if !is_admin_request(state.as_ref(), &headers) {
-        return Err(StatusCode::FORBIDDEN);
+        return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     let forward_proxy = state.proxy.get_forward_proxy_settings().await.map_err(|err| {
         eprintln!("get settings error: {err}");
-        StatusCode::INTERNAL_SERVER_ERROR
+        (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
     })?;
     Ok(Json(SettingsResponse {
         forward_proxy: Some(forward_proxy),
@@ -232,9 +232,9 @@ async fn put_forward_proxy_settings(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(payload): Json<ForwardProxySettingsUpdatePayload>,
-) -> Result<Json<tavily_hikari::ForwardProxySettingsResponse>, StatusCode> {
+) -> Result<Json<tavily_hikari::ForwardProxySettingsResponse>, (StatusCode, String)> {
     if !is_admin_request(state.as_ref(), &headers) {
-        return Err(StatusCode::FORBIDDEN);
+        return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     let settings = tavily_hikari::ForwardProxySettings {
         proxy_urls: payload.proxy_urls,
@@ -250,7 +250,7 @@ async fn put_forward_proxy_settings(
         .map(Json)
         .map_err(|err| {
             eprintln!("update forward proxy settings error: {err}");
-            StatusCode::INTERNAL_SERVER_ERROR
+            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
         })
 }
 
@@ -313,9 +313,9 @@ async fn post_forward_proxy_candidate_validation(
 async fn get_forward_proxy_live_stats(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<tavily_hikari::ForwardProxyLiveStatsResponse>, StatusCode> {
+) -> Result<Json<tavily_hikari::ForwardProxyLiveStatsResponse>, (StatusCode, String)> {
     if !is_admin_request(state.as_ref(), &headers) {
-        return Err(StatusCode::FORBIDDEN);
+        return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
     state
         .proxy
@@ -324,7 +324,7 @@ async fn get_forward_proxy_live_stats(
         .map(Json)
         .map_err(|err| {
             eprintln!("get forward proxy live stats error: {err}");
-            StatusCode::INTERNAL_SERVER_ERROR
+            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
         })
 }
 

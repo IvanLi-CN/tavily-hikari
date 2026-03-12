@@ -1076,7 +1076,9 @@ impl TavilyProxy {
     }
 
     async fn initialize_forward_proxy_runtime(&mut self) -> Result<(), ProxyError> {
-        self.refresh_forward_proxy_subscriptions().await?;
+        if let Err(err) = self.refresh_forward_proxy_subscriptions().await {
+            eprintln!("forward-proxy startup subscription refresh error: {err}");
+        }
         let manager = self.forward_proxy.lock().await;
         forward_proxy::sync_manager_runtime_to_store(&self.key_store, &manager).await
     }
@@ -1104,18 +1106,29 @@ impl TavilyProxy {
             let manager = self.forward_proxy.lock().await;
             manager.clone()
         };
+        let previous_subscription_urls = previous_manager
+            .endpoints
+            .iter()
+            .filter(|endpoint| endpoint.source == forward_proxy::FORWARD_PROXY_SOURCE_SUBSCRIPTION)
+            .filter_map(|endpoint| endpoint.raw_url.clone())
+            .collect::<Vec<_>>();
+        forward_proxy::save_forward_proxy_settings(&self.key_store.pool, normalized.clone())
+            .await?;
         {
             let mut manager = self.forward_proxy.lock().await;
             manager.apply_settings(normalized.clone());
         }
         if let Err(err) = self.refresh_forward_proxy_subscriptions().await {
-            let mut manager = self.forward_proxy.lock().await;
-            *manager = previous_manager;
-            let mut xray = self.xray_supervisor.lock().await;
-            xray.sync_endpoints(&mut manager.endpoints).await?;
-            return Err(err);
+            eprintln!("forward-proxy subscription refresh after settings update error: {err}");
+            if normalized.subscription_urls == previous_manager.settings.subscription_urls
+                && !previous_subscription_urls.is_empty()
+            {
+                let mut manager = self.forward_proxy.lock().await;
+                manager.apply_subscription_urls(previous_subscription_urls);
+                let mut xray = self.xray_supervisor.lock().await;
+                xray.sync_endpoints(&mut manager.endpoints).await?;
+            }
         }
-        forward_proxy::save_forward_proxy_settings(&self.key_store.pool, normalized).await?;
         let mut targets = {
             let manager = self.forward_proxy.lock().await;
             manager
@@ -1374,21 +1387,33 @@ impl TavilyProxy {
         };
 
         let mut subscription_urls = Vec::new();
-        for subscription_url in settings.subscription_urls {
-            let urls = forward_proxy::fetch_subscription_proxy_urls(
+        let mut fetched_any_subscription = false;
+        for subscription_url in &settings.subscription_urls {
+            match forward_proxy::fetch_subscription_proxy_urls(
                 &self.forward_proxy_clients.direct_client(),
-                &subscription_url,
+                subscription_url,
                 Duration::from_secs(
                     forward_proxy::FORWARD_PROXY_SUBSCRIPTION_VALIDATION_TIMEOUT_SECS,
                 ),
             )
             .await
-            .map_err(|err| {
-                ProxyError::Other(format!(
-                    "failed to refresh forward proxy subscription {subscription_url}: {err}"
-                ))
-            })?;
-            subscription_urls.extend(urls);
+            {
+                Ok(urls) => {
+                    fetched_any_subscription = true;
+                    subscription_urls.extend(urls);
+                }
+                Err(err) => {
+                    eprintln!(
+                        "failed to refresh forward proxy subscription {subscription_url}: {err}"
+                    );
+                }
+            }
+        }
+
+        if !settings.subscription_urls.is_empty() && !fetched_any_subscription {
+            return Err(ProxyError::Other(
+                "all forward proxy subscriptions failed to refresh".to_string(),
+            ));
         }
 
         let mut manager = self.forward_proxy.lock().await;

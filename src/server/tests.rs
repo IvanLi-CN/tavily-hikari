@@ -10643,7 +10643,7 @@ mod tests {
             .send()
             .await
             .expect("refresh settings");
-        assert_eq!(failed.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(failed.status(), StatusCode::OK);
 
         let stats = client
             .get(format!("http://{addr}/api/stats/forward-proxy"))
@@ -10662,6 +10662,63 @@ mod tests {
             "previously refreshed subscription node should remain active",
         );
         assert!(nodes.iter().all(|node| node["key"].as_str() != Some("__direct__")));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn admin_forward_proxy_settings_save_succeeds_when_subscription_refresh_fails() {
+        let db_path = temp_db_path("admin-forward-proxy-subscription-save");
+        let db_str = db_path.to_string_lossy().to_string();
+        let upstream_addr = spawn_forward_proxy_probe_upstream().await;
+        let subscription_state = Arc::new(Mutex::new((StatusCode::INTERNAL_SERVER_ERROR, "boom".to_string())));
+        let subscription_addr =
+            spawn_mutable_forward_proxy_subscription_server(subscription_state.clone()).await;
+        let upstream = format!("http://{}/mcp", upstream_addr);
+        let usage_base = format!("http://{}", upstream_addr);
+        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+            .await
+            .expect("create proxy");
+        let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
+
+        let client = Client::new();
+        let response = client
+            .put(format!("http://{addr}/api/settings/forward-proxy"))
+            .json(&serde_json::json!({
+                "proxyUrls": [],
+                "subscriptionUrls": [format!("http://{}/subscription", subscription_addr)],
+                "subscriptionUpdateIntervalSecs": 3600,
+                "insertDirect": true,
+            }))
+            .send()
+            .await
+            .expect("save settings");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .json::<serde_json::Value>()
+            .await
+            .expect("decode response");
+        assert_eq!(
+            body["subscriptionUrls"].as_array().map(|values| values.len()),
+            Some(1),
+            "subscription setting should still persist",
+        );
+
+        let stats = client
+            .get(format!("http://{addr}/api/stats/forward-proxy"))
+            .send()
+            .await
+            .expect("get stats");
+        assert_eq!(stats.status(), StatusCode::OK);
+        let stats_body = stats
+            .json::<serde_json::Value>()
+            .await
+            .expect("decode stats");
+        let nodes = stats_body["nodes"].as_array().expect("stats nodes");
+        assert!(
+            nodes.iter().any(|node| node["key"].as_str() == Some("__direct__")),
+            "direct fallback should remain available while subscription refresh is down",
+        );
 
         let _ = std::fs::remove_file(db_path);
     }
