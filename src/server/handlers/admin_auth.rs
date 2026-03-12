@@ -356,11 +356,15 @@ async fn get_admin_registration_settings(
 async fn patch_admin_registration_settings(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(payload): Json<UpdateAdminRegistrationSettingsRequest>,
+    payload: Result<Json<UpdateAdminRegistrationSettingsRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<AdminRegistrationSettingsView>, StatusCode> {
     if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
+    let Json(payload) = payload.map_err(|err| {
+        eprintln!("patch admin registration settings payload error: {err}");
+        StatusCode::BAD_REQUEST
+    })?;
     let allow_registration = state
         .proxy
         .set_allow_registration(payload.allow_registration)

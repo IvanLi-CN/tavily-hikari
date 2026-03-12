@@ -42,6 +42,19 @@ fn parse_full_token_id(token: &str) -> Option<String> {
     Some(id.to_string())
 }
 
+fn registration_paused_redirect_target(state: &AppState) -> &'static str {
+    let Some(dir) = state.static_dir.as_ref() else {
+        return "/api/profile";
+    };
+    if dir.join("registration-paused.html").is_file() {
+        "/registration-paused"
+    } else if dir.join("index.html").is_file() {
+        "/"
+    } else {
+        "/api/profile"
+    }
+}
+
 async fn start_linuxdo_auth(
     state: Arc<AppState>,
     headers: HeaderMap,
@@ -257,7 +270,8 @@ async fn get_linuxdo_callback(
             })?;
         if !existing_account {
             let clear_binding_cookie = oauth_login_binding_clear_cookie(use_secure_cookie)?;
-            let mut response = Redirect::temporary("/registration-paused").into_response();
+            let target = registration_paused_redirect_target(state.as_ref());
+            let mut response = Redirect::temporary(target).into_response();
             response
                 .headers_mut()
                 .append(SET_COOKIE, clear_binding_cookie);
