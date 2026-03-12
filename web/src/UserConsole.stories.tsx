@@ -375,7 +375,7 @@ function UserConsoleStory(args: UserConsoleStoryArgs): JSX.Element {
   const [ready, setReady] = useState(false)
   const storyState = useMemo(
     () => resolveStoryState(args),
-    [args.consoleView, args.isAdmin, args.landingFocus, args.tokenListState, args.tokenDetailPreview],
+    [args.consoleView, args.isAdmin, args.landingFocus, args.tokenListState, args.tokenDetailPreview, args.routeHashOverride],
   )
 
   useLayoutEffect(() => {
