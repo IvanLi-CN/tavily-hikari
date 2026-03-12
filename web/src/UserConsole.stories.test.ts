@@ -35,6 +35,7 @@ describe('UserConsole Storybook acceptance controls', () => {
       name: 'Token detail preview',
       options: [
         'Overview',
+        'Token Revealed',
         'API Check Running',
         'All Checks Pass',
         'Partial Availability',
@@ -72,6 +73,10 @@ describe('UserConsole Storybook acceptance controls', () => {
     expect(userConsoleStories.TokenDetailOverview).toMatchObject({
       name: 'Token Detail Overview',
       args: { consoleView: 'Token Detail', isAdmin: false, tokenDetailPreview: 'Overview' },
+    })
+    expect(userConsoleStories.TokenRevealed).toMatchObject({
+      name: 'Token Revealed',
+      args: { consoleView: 'Token Detail', isAdmin: false, tokenDetailPreview: 'Token Revealed' },
     })
     expect(userConsoleStories.TokenDetailAdmin).toMatchObject({
       name: 'Token Detail Admin',

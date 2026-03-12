@@ -1212,6 +1212,14 @@
   height: 22px;
 }
 
+.token-visibility-icon {
+  color: hsl(var(--muted-foreground));
+}
+
+.token-visibility-icon.is-spinning {
+  animation: icon-spin 1s linear infinite;
+}
+
 .token-copy-button {
   display: inline-flex;
   align-items: center;
@@ -5119,6 +5127,20 @@ tbody .log-details-row:hover {
 .user-console-token-box .token-input {
   width: 100%;
   min-width: 0;
+}
+
+.user-console-token-status,
+.user-console-token-error {
+  margin: -2px 0 0;
+  font-size: 0.92rem;
+}
+
+.user-console-token-status {
+  color: hsl(var(--muted-foreground));
+}
+
+.user-console-token-error {
+  color: hsl(var(--destructive));
 }
 
 .user-console-probe-box {

@@ -12,6 +12,8 @@ interface TokenSecretFieldProps extends Omit<InputHTMLAttributes<HTMLInputElemen
   label: string
   value: string
   visible: boolean
+  hiddenDisplayValue?: string
+  visibilityBusy?: boolean
   copyState: TokenSecretCopyState
   onValueChange: (value: string) => void
   onToggleVisibility: () => void
@@ -36,6 +38,8 @@ export default function TokenSecretField({
   label,
   value,
   visible,
+  hiddenDisplayValue,
+  visibilityBusy = false,
   copyState,
   onValueChange,
   onToggleVisibility,
@@ -58,6 +62,7 @@ export default function TokenSecretField({
   ...inputProps
 }: TokenSecretFieldProps): JSX.Element {
   const copyVariant = copyState === 'copied' ? 'success' : copyState === 'error' ? 'warning' : 'outline'
+  const displayValue = !visible && hiddenDisplayValue != null ? hiddenDisplayValue : value
   const copyStateClassName =
     copyState === 'copied'
       ? 'token-copy-button-success'
@@ -71,6 +76,8 @@ export default function TokenSecretField({
         ? 'mdi:alert-circle-outline'
         : 'mdi:content-copy'
   const copyText = copyState === 'copied' ? copiedLabel : copyState === 'error' ? copyErrorLabel : copyLabel
+  const visibilityIcon = visibilityBusy ? 'mdi:loading' : visible ? 'mdi:eye-off-outline' : 'mdi:eye-outline'
+  const shouldMaskValue = !visible && hiddenDisplayValue == null
 
   return (
     <div className={cn('token-input-wrapper', wrapperClassName)}>
@@ -82,9 +89,9 @@ export default function TokenSecretField({
           <Input
             {...inputProps}
             id={inputId}
-            className={cn('token-input', !visible && 'masked', inputClassName, className)}
+            className={cn('token-input', shouldMaskValue && 'masked', inputClassName, className)}
             type="text"
-            value={value}
+            value={displayValue}
             onChange={(event) => onValueChange(event.target.value)}
             onBlur={onBlur}
           />
@@ -95,11 +102,15 @@ export default function TokenSecretField({
             className="token-visibility-button h-8 w-8 rounded-md p-1 shadow-none"
             onClick={onToggleVisibility}
             aria-label={visible ? visibilityHideLabel : visibilityShowLabel}
+            aria-busy={visibilityBusy ? 'true' : undefined}
+            disabled={visibilityBusy}
           >
-            <img
-              src={`https://api.iconify.design/mdi/${visible ? 'eye-off-outline' : 'eye-outline'}.svg?color=%236b7280`}
-              alt={visibilityIconAlt}
+            <Icon
+              icon={visibilityIcon}
+              aria-hidden="true"
+              className={cn('token-visibility-icon', visibilityBusy && 'is-spinning')}
             />
+            <span className="sr-only">{visibilityIconAlt}</span>
           </Button>
         </div>
         <Button
