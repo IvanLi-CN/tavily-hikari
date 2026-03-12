@@ -13,6 +13,7 @@ interface AdminPanelHeaderProps {
   updatedPrefix: string
   updatedTime: string | null
   isRefreshing: boolean
+  refreshDisabled?: boolean
   refreshLabel: string
   refreshingLabel: string
   userConsoleLabel?: string
@@ -59,7 +60,14 @@ export default function AdminPanelHeader(props: AdminPanelHeaderProps): JSX.Elem
             />
           )}
 
-          <Button type="button" variant="outline" size="sm" className="admin-panel-refresh-button" onClick={props.onRefresh} disabled={props.isRefreshing}>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="admin-panel-refresh-button"
+            onClick={props.onRefresh}
+            disabled={props.isRefreshing || props.refreshDisabled}
+          >
             <Icon
               icon={props.isRefreshing ? 'mdi:loading' : 'mdi:refresh'}
               width={16}

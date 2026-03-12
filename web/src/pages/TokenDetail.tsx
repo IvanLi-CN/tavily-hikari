@@ -605,7 +605,7 @@ export default function TokenDetail({
     const logsController = new AbortController()
     detailAbortRef.current = detailController
     logsAbortRef.current = logsController
-    const nextQueryKey = `${id}:${period}:${sinceIso}:${untilIso}:${perPage}`
+    const nextQueryKey = `${id}:${period}:${sinceIso}:${untilIso}`
     setSummaryLoadState(getBlockingLoadState(summaryQueryKeyRef.current != null))
     setLogsLoadState(getBlockingLoadState(logsQueryKeyRef.current != null))
     setSummary(null)
@@ -635,7 +635,7 @@ export default function TokenDetail({
         setSummaryLoadState('ready')
         setLogsLoadState('ready')
         summaryQueryKeyRef.current = nextQueryKey
-        logsQueryKeyRef.current = `${nextQueryKey}:page=1`
+        logsQueryKeyRef.current = `${nextQueryKey}:page=1:perPage=${logsRes.per_page ?? logsRes.perPage ?? perPage}`
         void loadQuickStats()
       } catch (e) {
         if ((e as Error).name === 'AbortError') return
@@ -649,7 +649,7 @@ export default function TokenDetail({
       detailController.abort()
       logsController.abort()
     }
-  }, [id, period, sinceIso, untilIso, perPage, refreshQuickUsage, refreshSnapshotUsage])
+  }, [id, period, sinceIso, untilIso, refreshQuickUsage, refreshSnapshotUsage])
 
   // SSE for live updates (refresh first page upon snapshot)
   useEffect(() => {
@@ -734,10 +734,37 @@ export default function TokenDetail({
       setTotal(data.total)
       setExpandedLogs(new Set())
       setLogsLoadState('ready')
-      logsQueryKeyRef.current = `${id}:${period}:${sinceIso}:${untilIso}:${perPage}:page=${data.page}`
+      logsQueryKeyRef.current = `${id}:${period}:${sinceIso}:${untilIso}:page=${data.page}:perPage=${data.per_page ?? data.perPage ?? perPage}`
     } catch (e) {
       if ((e as Error).name === 'AbortError') return
       setError(e instanceof Error ? e.message : 'Failed to load page')
+      setLogsLoadState('error')
+    }
+  }
+
+  const changePerPage = async (nextPerPage: number) => {
+    logsAbortRef.current?.abort()
+    const controller = new AbortController()
+    logsAbortRef.current = controller
+    setLogsLoadState(getBlockingLoadState(logsQueryKeyRef.current != null))
+    setLogs([])
+    setPerPage(nextPerPage)
+    setPage(1)
+    setExpandedLogs(new Set())
+    setError(null)
+    try {
+      const data = await getJson(`/api/tokens/${encodeURIComponent(id)}/logs/page?page=1&per_page=${nextPerPage}&since=${encodeURIComponent(sinceIso)}&until=${encodeURIComponent(untilIso)}`, controller.signal)
+      if (controller.signal.aborted) return
+      setLogs(data.items)
+      setPage(1)
+      setPerPage(data.per_page ?? data.perPage ?? nextPerPage)
+      setTotal(data.total)
+      setExpandedLogs(new Set())
+      setLogsLoadState('ready')
+      logsQueryKeyRef.current = `${id}:${period}:${sinceIso}:${untilIso}:page=1:perPage=${data.per_page ?? data.perPage ?? nextPerPage}`
+    } catch (e) {
+      if ((e as Error).name === 'AbortError') return
+      setError(e instanceof Error ? e.message : 'Failed to load page size')
       setLogsLoadState('error')
     }
   }
@@ -1113,9 +1140,7 @@ export default function TokenDetail({
           totalPages={totalPages}
           perPage={perPage}
           onPerPageChange={(value) => {
-            setPerPage(value)
-            setPage(1)
-            setExpandedLogs(new Set())
+            void changePerPage(value)
           }}
           disabled={logsBlocking}
           previousDisabled={page <= 1}

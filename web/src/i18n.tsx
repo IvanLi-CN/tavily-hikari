@@ -175,6 +175,7 @@ interface AdminTranslationsShape {
   loadingStates: {
     switching: string
     refreshing: string
+    error: string
   }
   nav: {
     dashboard: string
@@ -1025,6 +1026,7 @@ export const translations: Record<Language, TranslationShape> = {
       loadingStates: {
         switching: 'Updating results…',
         refreshing: 'Refreshing current results…',
+        error: 'Failed to load the current results.',
       },
       nav: {
         dashboard: 'Dashboard',
@@ -1863,6 +1865,7 @@ export const translations: Record<Language, TranslationShape> = {
       loadingStates: {
         switching: '正在切换当前结果…',
         refreshing: '正在刷新当前结果…',
+        error: '当前结果加载失败。',
       },
       nav: {
         dashboard: '仪表盘',

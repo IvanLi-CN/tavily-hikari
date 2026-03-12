@@ -11,6 +11,7 @@ interface AdminTableShellProps {
   tableClassName?: string
   loadState?: QueryLoadState
   loadingLabel?: ReactNode
+  errorLabel?: ReactNode
   minHeight?: number | string
   skeletonRows?: number
 }
@@ -21,6 +22,7 @@ export default function AdminTableShell({
   tableClassName,
   loadState = 'ready',
   loadingLabel,
+  errorLabel,
   minHeight,
   skeletonRows,
 }: AdminTableShellProps): JSX.Element {
@@ -29,6 +31,7 @@ export default function AdminTableShell({
       className={cn('table-wrapper', className)}
       loadState={loadState}
       loadingLabel={loadingLabel}
+      errorLabel={errorLabel}
       minHeight={minHeight}
       skeletonRows={skeletonRows}
     >

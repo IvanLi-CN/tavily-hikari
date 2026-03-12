@@ -9,6 +9,7 @@ interface AdminLoadingRegionProps {
   className?: string
   loadState?: QueryLoadState
   loadingLabel?: ReactNode
+  errorLabel?: ReactNode
   minHeight?: number | string
   skeletonRows?: number
 }
@@ -18,11 +19,13 @@ export default function AdminLoadingRegion({
   className,
   loadState = 'ready',
   loadingLabel = 'Loading…',
+  errorLabel,
   minHeight = 220,
   skeletonRows = 4,
 }: AdminLoadingRegionProps): JSX.Element {
   const blocking = isBlockingLoadState(loadState)
   const refreshing = isRefreshingLoadState(loadState)
+  const errored = loadState === 'error'
   const ariaBusy = blocking || refreshing
 
   return (
@@ -47,6 +50,10 @@ export default function AdminLoadingRegion({
             ))}
           </div>
           <div className="admin-loading-region-label">{loadingLabel}</div>
+        </div>
+      ) : errored && errorLabel ? (
+        <div className="admin-loading-region-error empty-state alert" role="alert">
+          {errorLabel}
         </div>
       ) : (
         <>

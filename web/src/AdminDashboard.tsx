@@ -674,6 +674,7 @@ function AdminDashboard(): JSX.Element {
   const [logsPage, setLogsPage] = useState(1)
   const [logResultFilter, setLogResultFilter] = useState<'all' | 'success' | 'error' | 'quota_exhausted'>('all')
   const [requestsLoadState, setRequestsLoadState] = useState<QueryLoadState>('initial_loading')
+  const [requestsError, setRequestsError] = useState<string | null>(null)
   const [jobs, setJobs] = useState<JobLogView[]>([])
   const [dashboardJobs, setDashboardJobs] = useState<JobLogView[]>([])
   const [jobFilter, setJobFilter] = useState<'all' | 'quota' | 'usage' | 'logs'>('all')
@@ -681,6 +682,7 @@ function AdminDashboard(): JSX.Element {
   const jobsPerPage = 10
   const [jobsTotal, setJobsTotal] = useState(0)
   const [jobsLoadState, setJobsLoadState] = useState<QueryLoadState>('initial_loading')
+  const [jobsError, setJobsError] = useState<string | null>(null)
   const [users, setUsers] = useState<AdminUserSummary[]>([])
   const [usersTotal, setUsersTotal] = useState(0)
   const [usersPage, setUsersPage] = useState(1)
@@ -688,6 +690,7 @@ function AdminDashboard(): JSX.Element {
   const [usersQuery, setUsersQuery] = useState('')
   const [usersTagFilterId, setUsersTagFilterId] = useState<string | null>(null)
   const [usersLoadState, setUsersLoadState] = useState<QueryLoadState>('initial_loading')
+  const [usersError, setUsersError] = useState<string | null>(null)
   const [selectedUserDetail, setSelectedUserDetail] = useState<AdminUserDetail | null>(null)
   const [userDetailLoading, setUserDetailLoading] = useState(false)
   const [userQuotaSnapshot, setUserQuotaSnapshot] = useState<UserQuotaSnapshot | null>(null)
@@ -1305,6 +1308,7 @@ function AdminDashboard(): JSX.Element {
     const resultParam =
       logResultFilter === 'all' ? undefined : (logResultFilter as 'success' | 'error' | 'quota_exhausted')
     setRequestsLoadState(getBlockingLoadState(requestsLoadedRef.current))
+    setRequestsError(null)
     setLogs([])
     setLogsTotal(0)
     setExpandedLogs(new Set())
@@ -1322,6 +1326,7 @@ function AdminDashboard(): JSX.Element {
         console.error(err)
         setLogs([])
         setLogsTotal(0)
+        setRequestsError(err instanceof Error ? err.message : loadingStateStrings.error)
         setRequestsLoadState('error')
       })
       .finally(() => {
@@ -1338,6 +1343,7 @@ function AdminDashboard(): JSX.Element {
   useEffect(() => {
     const request = beginManagedRequest(jobsAbortRef)
     setJobsLoadState(getBlockingLoadState(jobsLoadedRef.current))
+    setJobsError(null)
     setJobs([])
     setJobsTotal(0)
     setExpandedJobs(new Set())
@@ -1354,6 +1360,7 @@ function AdminDashboard(): JSX.Element {
         if (!request.signal.aborted) {
           setJobs([])
           setJobsTotal(0)
+          setJobsError(loadingStateStrings.error)
           setJobsLoadState('error')
         }
       })
@@ -1389,6 +1396,7 @@ function AdminDashboard(): JSX.Element {
     setUsersLoadState(
       sameQueryRefresh ? getRefreshingLoadState(true) : getBlockingLoadState(usersLoadedRef.current),
     )
+    setUsersError(null)
     if (!sameQueryRefresh) {
       setUsers([])
       setUsersTotal(0)
@@ -1407,6 +1415,7 @@ function AdminDashboard(): JSX.Element {
         console.error(err)
         setUsers([])
         setUsersTotal(0)
+        setUsersError(err instanceof Error ? err.message : loadingStateStrings.error)
         setUsersLoadState('error')
       })
       .finally(() => {
@@ -1744,6 +1753,7 @@ function AdminDashboard(): JSX.Element {
     if (route.name === 'module' && route.module === 'requests') {
       const request = beginManagedRequest(requestsAbortRef, controller.signal)
       setRequestsLoadState(getRefreshingLoadState(requestsLoadedRef.current))
+      setRequestsError(null)
       tasks.push(
         fetchRequestLogs(
           logsPage,
@@ -1760,6 +1770,7 @@ function AdminDashboard(): JSX.Element {
           .catch((err) => {
             if (request.signal.aborted) return
             console.error(err)
+            setRequestsError(err instanceof Error ? err.message : loadingStateStrings.error)
             setRequestsLoadState('error')
           })
           .finally(() => {
@@ -1770,6 +1781,7 @@ function AdminDashboard(): JSX.Element {
     if (route.name === 'module' && route.module === 'jobs') {
       const request = beginManagedRequest(jobsAbortRef, controller.signal)
       setJobsLoadState(getRefreshingLoadState(jobsLoadedRef.current))
+      setJobsError(null)
       tasks.push(
         fetchJobs(jobsPage, jobsPerPage, jobFilter, request.signal).then((result) => {
           if (request.signal.aborted) return
@@ -1779,6 +1791,7 @@ function AdminDashboard(): JSX.Element {
         }).catch((err) => {
           if (request.signal.aborted) return
           console.error(err)
+          setJobsError(err instanceof Error ? err.message : loadingStateStrings.error)
           setJobsLoadState('error')
         }).finally(() => {
           request.cleanup()
@@ -1788,6 +1801,7 @@ function AdminDashboard(): JSX.Element {
     if ((route.name === 'module' && route.module === 'users') || route.name === 'user') {
       const request = beginManagedRequest(usersAbortRef, controller.signal)
       setUsersLoadState(getRefreshingLoadState(usersLoadedRef.current))
+      setUsersError(null)
       tasks.push(
         fetchAdminUsers(usersPage, USERS_PER_PAGE, usersQuery, usersTagFilterId, request.signal).then((result) => {
           if (request.signal.aborted) return
@@ -1797,6 +1811,7 @@ function AdminDashboard(): JSX.Element {
         }).catch((err) => {
           if (request.signal.aborted) return
           console.error(err)
+          setUsersError(err instanceof Error ? err.message : loadingStateStrings.error)
           setUsersLoadState('error')
         }).finally(() => {
           request.cleanup()
@@ -2159,6 +2174,12 @@ function AdminDashboard(): JSX.Element {
   const usersRefreshing = isRefreshingLoadState(usersLoadState)
   const tokenLeaderboardBlocking = isBlockingLoadState(tokenLeaderboardLoadState)
   const tokenLeaderboardRefreshing = isRefreshingLoadState(tokenLeaderboardLoadState)
+  const activeModuleBlocking =
+    (route.name === 'module' && route.module === 'tokens' && tokensBlocking)
+    || (route.name === 'module' && route.module === 'requests' && requestsBlocking)
+    || (route.name === 'module' && route.module === 'jobs' && jobsBlocking)
+    || ((route.name === 'module' && route.module === 'users') || route.name === 'user') && usersBlocking
+    || (route.name === 'token-usage' && tokenLeaderboardBlocking)
 
   const displayName = profile?.displayName ?? null
 
@@ -4316,6 +4337,7 @@ function AdminDashboard(): JSX.Element {
         updatedPrefix={headerStrings.updatedPrefix}
         updatedTime={lastUpdated ? timeOnlyFormatter.format(lastUpdated) : null}
         isRefreshing={loading}
+        refreshDisabled={activeModuleBlocking}
         refreshLabel={headerStrings.refreshNow}
         refreshingLabel={headerStrings.refreshing}
         userConsoleLabel={headerStrings.returnToConsole}
@@ -5172,6 +5194,7 @@ function AdminDashboard(): JSX.Element {
           tableClassName="admin-logs-table"
           loadState={requestsLoadState}
           loadingLabel={requestsRefreshing ? loadingStateStrings.refreshing : logStrings.empty.loading}
+          errorLabel={requestsError ?? loadingStateStrings.error}
           minHeight={320}
         >
           {logs.length === 0 ? (
@@ -5215,6 +5238,7 @@ function AdminDashboard(): JSX.Element {
           className="admin-mobile-list admin-responsive-down"
           loadState={requestsLoadState}
           loadingLabel={requestsRefreshing ? loadingStateStrings.refreshing : logStrings.empty.loading}
+          errorLabel={requestsError ?? loadingStateStrings.error}
           minHeight={240}
         >
           {logs.length === 0 ? (
@@ -5304,6 +5328,7 @@ function AdminDashboard(): JSX.Element {
           tableClassName="jobs-table jobs-module-table"
           loadState={jobsLoadState}
           loadingLabel={jobsRefreshing ? loadingStateStrings.refreshing : jobsStrings.empty.loading}
+          errorLabel={jobsError ?? loadingStateStrings.error}
           minHeight={320}
         >
           {jobs.length === 0 ? (
@@ -5486,6 +5511,7 @@ function AdminDashboard(): JSX.Element {
           className="admin-mobile-list admin-responsive-down"
           loadState={jobsLoadState}
           loadingLabel={jobsRefreshing ? loadingStateStrings.refreshing : jobsStrings.empty.loading}
+          errorLabel={jobsError ?? loadingStateStrings.error}
           minHeight={240}
         >
           {jobs.length === 0 ? (
@@ -5596,6 +5622,7 @@ function AdminDashboard(): JSX.Element {
               tableClassName="jobs-table admin-users-table admin-users-list-table"
               loadState={usersLoadState}
               loadingLabel={usersRefreshing ? loadingStateStrings.refreshing : usersStrings.empty.loading}
+              errorLabel={usersError ?? loadingStateStrings.error}
               minHeight={360}
             >
               {users.length === 0 ? (
@@ -5685,6 +5712,7 @@ function AdminDashboard(): JSX.Element {
               className="admin-mobile-list admin-responsive-down"
               loadState={usersLoadState}
               loadingLabel={usersRefreshing ? loadingStateStrings.refreshing : usersStrings.empty.loading}
+              errorLabel={usersError ?? loadingStateStrings.error}
               minHeight={260}
             >
               {users.length === 0 ? (
