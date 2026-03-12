@@ -5116,8 +5116,34 @@ mod tests {
             .await
             .expect("record legacy log without credits");
 
+        proxy
+            .record_token_attempt(
+                &token.id,
+                &Method::POST,
+                "/api/tavily/search",
+                None,
+                Some(200),
+                Some(200),
+                true,
+                "success",
+                None,
+            )
+            .await
+            .expect("record api search log");
+
+        let mcp_search_kind = classify_token_request_kind(
+            "/mcp",
+            Some(
+                br#"{
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": { "name": "tavily-search" }
+                }"#,
+            ),
+        );
         let charged_log_id = proxy
-            .record_pending_billing_attempt(
+            .record_pending_billing_attempt_with_kind(
                 &token.id,
                 &Method::POST,
                 "/mcp",
@@ -5128,6 +5154,7 @@ mod tests {
                 "success",
                 None,
                 4,
+                &mcp_search_kind,
             )
             .await
             .expect("record pending billing log");
@@ -5150,9 +5177,28 @@ mod tests {
         assert_eq!(logs_resp.status(), reqwest::StatusCode::OK);
         let logs_body: serde_json::Value = logs_resp.json().await.expect("logs json");
         let logs = logs_body.as_array().expect("logs array");
-        assert_eq!(logs.len(), 2);
-        assert_eq!(logs[0].get("business_credits").and_then(|value| value.as_i64()), Some(4));
-        assert!(logs[1].get("business_credits").is_some_and(|value| value.is_null()));
+        assert_eq!(logs.len(), 3);
+        let charged_log = logs
+            .iter()
+            .find(|value| {
+                value
+                    .get("request_kind_key")
+                    .and_then(|kind| kind.as_str())
+                    .is_some_and(|kind| kind == "mcp:search")
+            })
+            .expect("mcp search log");
+        assert_eq!(
+            charged_log
+                .get("business_credits")
+                .and_then(|value| value.as_i64()),
+            Some(4)
+        );
+        assert_eq!(
+            charged_log
+                .get("request_kind_label")
+                .and_then(|value| value.as_str()),
+            Some("MCP | search")
+        );
 
         let page_resp = client
             .get(format!(
@@ -5168,9 +5214,70 @@ mod tests {
             .get("items")
             .and_then(|value| value.as_array())
             .expect("logs page items");
-        assert_eq!(items.len(), 2);
-        assert_eq!(items[0].get("business_credits").and_then(|value| value.as_i64()), Some(4));
-        assert!(items[1].get("business_credits").is_some_and(|value| value.is_null()));
+        assert_eq!(items.len(), 3);
+        assert_eq!(
+            page_body
+                .get("request_kind_options")
+                .and_then(|value| value.as_array())
+                .map(|values| values.len()),
+            Some(3)
+        );
+        let page_search_log = items
+            .iter()
+            .find(|value| {
+                value
+                    .get("request_kind_key")
+                    .and_then(|kind| kind.as_str())
+                    .is_some_and(|kind| kind == "mcp:search")
+            })
+            .expect("paged mcp search log");
+        assert_eq!(
+            page_search_log
+                .get("business_credits")
+                .and_then(|value| value.as_i64()),
+            Some(4)
+        );
+        assert_eq!(
+            page_search_log
+                .get("request_kind_label")
+                .and_then(|value| value.as_str()),
+            Some("MCP | search")
+        );
+
+        let filtered_page_resp = client
+            .get(format!(
+                "http://{}/api/tokens/{}/logs/page?page=1&per_page=20&since=0&request_kind=api%3Asearch&request_kind=mcp%3Asearch",
+                addr, token.id
+            ))
+            .send()
+            .await
+            .expect("filtered logs page request");
+        assert_eq!(filtered_page_resp.status(), reqwest::StatusCode::OK);
+        let filtered_page_body: serde_json::Value = filtered_page_resp
+            .json()
+            .await
+            .expect("filtered logs page json");
+        let filtered_items = filtered_page_body
+            .get("items")
+            .and_then(|value| value.as_array())
+            .expect("filtered logs page items");
+        assert_eq!(filtered_items.len(), 2);
+        let filtered_keys = filtered_items
+            .iter()
+            .filter_map(|value| {
+                value
+                    .get("request_kind_key")
+                    .and_then(|kind| kind.as_str())
+                    .map(str::to_string)
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            filtered_keys,
+            std::collections::BTreeSet::from([
+                "api:search".to_string(),
+                "mcp:search".to_string(),
+            ])
+        );
 
         let mut events_resp = client
             .get(format!("http://{}/api/tokens/{}/events", addr, token.id))
@@ -5205,16 +5312,28 @@ mod tests {
             .get("logs")
             .and_then(|value| value.as_array())
             .expect("snapshot logs array");
-        assert_eq!(snapshot_logs.len(), 2);
+        assert_eq!(snapshot_logs.len(), 3);
+        let snapshot_search_log = snapshot_logs
+            .iter()
+            .find(|value| {
+                value
+                    .get("request_kind_key")
+                    .and_then(|kind| kind.as_str())
+                    .is_some_and(|kind| kind == "mcp:search")
+            })
+            .expect("snapshot mcp search log");
         assert_eq!(
-            snapshot_logs[0]
+            snapshot_search_log
                 .get("business_credits")
                 .and_then(|value| value.as_i64()),
             Some(4)
         );
-        assert!(snapshot_logs[1]
-            .get("business_credits")
-            .is_some_and(|value| value.is_null()));
+        assert_eq!(
+            snapshot_search_log
+                .get("request_kind_label")
+                .and_then(|value| value.as_str()),
+            Some("MCP | search")
+        );
         drop(events_resp);
 
         let _ = std::fs::remove_file(db_path);

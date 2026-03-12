@@ -20,7 +20,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::{
     Router,
     body::{self, Body},
-    extract::{Form, Path, Query, State},
+    extract::{Form, Path, Query, RawQuery, State},
     http::{HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode},
     response::{Json, Redirect},
     routing::{any, delete, get, patch, post},
@@ -38,8 +38,9 @@ use std::time::{Duration, Instant};
 use tavily_hikari::{
     ApiKeyMetrics, AuthToken, OAuthAccountProfile, PendingBillingSettleOutcome, ProxyError,
     ProxyRequest, ProxyResponse, ProxySummary, RequestLogRecord, TavilyProxy, TokenHourlyBucket,
-    TokenHourlyRequestVerdict, TokenLogRecord, TokenQuotaVerdict, TokenSummary, TokenUsageBucket,
-    UserTokenLookup, analyze_mcp_attempt, effective_request_logs_gc_at,
+    TokenHourlyRequestVerdict, TokenLogRecord, TokenQuotaVerdict, TokenRequestKindOption,
+    TokenSummary, TokenUsageBucket, UserTokenLookup, analyze_mcp_attempt,
+    classify_token_request_kind, effective_request_logs_gc_at,
     effective_request_logs_retention_days, effective_token_daily_limit,
     effective_token_hourly_limit, effective_token_hourly_request_limit,
     effective_token_monthly_limit, extract_mcp_has_error_by_id_from_bytes,

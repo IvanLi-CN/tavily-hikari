@@ -62,18 +62,107 @@ const metricsMock = {
   last_activity: 1_762_390_010,
 };
 
-const logsMock = Array.from({ length: 8 }, (_, idx) => ({
-  id: 3000 + idx,
-  method: "POST",
-  path: "/mcp",
-  query: null,
-  http_status: idx % 4 === 0 ? 429 : 200,
-  mcp_status: idx % 4 === 0 ? -1 : 0,
-  business_credits: idx % 3 === 0 ? null : idx + 1,
-  result_status: idx % 4 === 0 ? "quota_exhausted" : "success",
-  error_message: idx % 4 === 0 ? "quota exhausted" : null,
-  created_at: 1_762_390_010 - idx * 420,
-}));
+const logsMock = [
+  {
+    id: 3000,
+    method: "POST",
+    path: "/api/tavily/search",
+    query: null,
+    http_status: 200,
+    mcp_status: 200,
+    business_credits: 2,
+    request_kind_key: "api:search",
+    request_kind_label: "API | search",
+    request_kind_detail: null,
+    result_status: "success",
+    error_message: null,
+    created_at: 1_762_390_010,
+  },
+  {
+    id: 2999,
+    method: "POST",
+    path: "/mcp",
+    query: null,
+    http_status: 200,
+    mcp_status: 200,
+    business_credits: 2,
+    request_kind_key: "mcp:search",
+    request_kind_label: "MCP | search",
+    request_kind_detail: null,
+    result_status: "success",
+    error_message: null,
+    created_at: 1_762_389_590,
+  },
+  {
+    id: 2998,
+    method: "POST",
+    path: "/mcp",
+    query: null,
+    http_status: 200,
+    mcp_status: 200,
+    business_credits: 3,
+    request_kind_key: "mcp:batch",
+    request_kind_label: "MCP | batch",
+    request_kind_detail: "search, extract",
+    result_status: "success",
+    error_message: null,
+    created_at: 1_762_389_170,
+  },
+  {
+    id: 2997,
+    method: "POST",
+    path: "/mcp",
+    query: null,
+    http_status: 200,
+    mcp_status: 200,
+    business_credits: null,
+    request_kind_key: "mcp:tool:acme-lookup",
+    request_kind_label: "MCP | acme-lookup",
+    request_kind_detail: null,
+    result_status: "success",
+    error_message: null,
+    created_at: 1_762_388_750,
+  },
+  {
+    id: 2996,
+    method: "GET",
+    path: "/api/tavily/research/req_42",
+    query: null,
+    http_status: 404,
+    mcp_status: 404,
+    business_credits: null,
+    request_kind_key: "api:research-result",
+    request_kind_label: "API | research result",
+    request_kind_detail: null,
+    result_status: "error",
+    error_message: "research request not found",
+    created_at: 1_762_388_330,
+  },
+  {
+    id: 2995,
+    method: "POST",
+    path: "/mcp",
+    query: null,
+    http_status: 429,
+    mcp_status: -1,
+    business_credits: null,
+    request_kind_key: "mcp:raw:/mcp",
+    request_kind_label: "MCP | /mcp",
+    request_kind_detail: null,
+    result_status: "quota_exhausted",
+    error_message: "quota exhausted",
+    created_at: 1_762_387_910,
+  },
+];
+
+const requestKindOptionsMock = [
+  { key: "api:search", label: "API | search" },
+  { key: "api:research-result", label: "API | research result" },
+  { key: "mcp:search", label: "MCP | search" },
+  { key: "mcp:batch", label: "MCP | batch" },
+  { key: "mcp:tool:acme-lookup", label: "MCP | acme-lookup" },
+  { key: "mcp:raw:/mcp", label: "MCP | /mcp" },
+];
 
 const usageSeriesMock = Array.from({ length: 16 }, (_, idx) => ({
   bucket_start: 1_762_360_000 + idx * 3600,
@@ -111,11 +200,19 @@ function installFetchMock(detailOverride = tokenDetailMock): () => void {
     if (url.pathname === `/api/tokens/${activeTokenId}/logs/page`) {
       const perPage = Number(url.searchParams.get("per_page") ?? "20");
       const page = Number(url.searchParams.get("page") ?? "1");
+      const selectedRequestKinds = url.searchParams.getAll("request_kind");
+      const filteredLogs = selectedRequestKinds.length === 0
+        ? logsMock
+        : logsMock.filter((log) =>
+            selectedRequestKinds.includes(log.request_kind_key),
+          );
+      const start = Math.max(0, (page - 1) * perPage);
       return jsonResponse({
-        items: logsMock.slice(0, perPage),
+        items: filteredLogs.slice(start, start + perPage),
         page,
         per_page: perPage,
-        total: logsMock.length,
+        total: filteredLogs.length,
+        request_kind_options: requestKindOptionsMock,
       });
     }
 

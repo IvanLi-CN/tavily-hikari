@@ -212,6 +212,9 @@ struct TokenLogView {
     http_status: Option<i64>,
     mcp_status: Option<i64>,
     business_credits: Option<i64>,
+    request_kind_key: String,
+    request_kind_label: String,
+    request_kind_detail: Option<String>,
     result_status: String,
     error_message: Option<String>,
     created_at: i64,
@@ -227,9 +230,27 @@ impl From<TokenLogRecord> for TokenLogView {
             http_status: r.http_status,
             mcp_status: r.mcp_status,
             business_credits: r.business_credits,
+            request_kind_key: r.request_kind_key,
+            request_kind_label: r.request_kind_label,
+            request_kind_detail: r.request_kind_detail,
             result_status: r.result_status,
             error_message: r.error_message,
             created_at: r.created_at,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct TokenRequestKindOptionView {
+    key: String,
+    label: String,
+}
+
+impl From<TokenRequestKindOption> for TokenRequestKindOptionView {
+    fn from(value: TokenRequestKindOption) -> Self {
+        Self {
+            key: value.key,
+            label: value.label,
         }
     }
 }
@@ -414,6 +435,7 @@ struct TokenLogsPageView {
     page: usize,
     per_page: usize,
     total: i64,
+    request_kind_options: Vec<TokenRequestKindOptionView>,
 }
 
 #[derive(Debug, Serialize)]
@@ -470,6 +492,7 @@ async fn get_token_logs_page(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     headers: HeaderMap,
+    RawQuery(raw_query): RawQuery,
     Query(q): Query<TokenLogsPageQuery>,
 ) -> Result<Json<TokenLogsPageView>, StatusCode> {
     if !is_admin_request(state.as_ref(), &headers) {
@@ -490,9 +513,29 @@ async fn get_token_logs_page(
     if until <= since {
         return Err(StatusCode::BAD_REQUEST);
     }
+    let request_kinds = raw_query
+        .as_deref()
+        .map(|query| {
+            form_urlencoded::parse(query.as_bytes())
+                .filter_map(|(key, value)| {
+                    if key == "request_kind" {
+                        let trimmed = value.trim();
+                        (!trimmed.is_empty()).then(|| trimmed.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let request_kind_options = state
+        .proxy
+        .token_log_request_kind_options(&id, since, Some(until))
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     state
         .proxy
-        .token_logs_page(&id, page, per_page, since, Some(until))
+        .token_logs_page(&id, page, per_page, since, Some(until), &request_kinds)
         .await
         .map(|(items, total)| {
             let mapped: Vec<TokenLogView> = items
@@ -510,6 +553,10 @@ async fn get_token_logs_page(
                 page,
                 per_page,
                 total,
+                request_kind_options: request_kind_options
+                    .into_iter()
+                    .map(TokenRequestKindOptionView::from)
+                    .collect(),
             })
         })
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)

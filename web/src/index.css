@@ -2572,6 +2572,14 @@ button:disabled {
     text-align: left;
     margin: 0;
   }
+  .token-request-records-actions {
+    width: 100%;
+    align-items: stretch;
+    margin-left: 0;
+  }
+  .token-request-kind-trigger {
+    width: 100%;
+  }
   .token-groups-container {
     flex-direction: column;
     align-items: flex-start;
@@ -2618,6 +2626,78 @@ button:disabled {
   margin: 0;
   color: hsl(var(--muted-foreground));
   font-size: 0.92rem;
+}
+
+.token-request-records-header {
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.token-request-records-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-end;
+  margin-left: auto;
+}
+
+.token-request-filter-label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: hsl(var(--muted-foreground));
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.token-request-kind-trigger {
+  min-width: min(100%, 320px);
+  justify-content: flex-start;
+  gap: 10px;
+  padding-inline: 12px;
+}
+
+.token-request-kind-trigger-content {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.token-request-kind-trigger-label {
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: hsl(var(--muted-foreground));
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.token-request-kind-trigger-summary {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.token-request-kind-count {
+  display: inline-flex;
+  min-width: 2.2rem;
+  justify-content: center;
+  align-items: center;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: hsl(var(--muted) / 0.68);
+  color: hsl(var(--foreground) / 0.82);
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1.8;
+}
+
+.token-request-kind-menu {
+  max-height: min(24rem, 70vh);
+  overflow-y: auto;
 }
 
 /* Key/value information grid for compact readable summary */
@@ -2725,37 +2805,49 @@ table {
   width: 18ch;
 }
 .token-detail-table th:nth-child(2),
-.token-detail-table td:nth-child(2),
+.token-detail-table td:nth-child(2) {
+  min-width: 18ch;
+  max-width: 22ch;
+}
 .token-detail-table th:nth-child(3),
 .token-detail-table td:nth-child(3),
 .token-detail-table th:nth-child(4),
-.token-detail-table td:nth-child(4) {
+.token-detail-table td:nth-child(4),
+.token-detail-table th:nth-child(5),
+.token-detail-table td:nth-child(5) {
   min-width: 8ch;
   text-align: center;
 }
-.token-detail-table th:nth-child(5),
-.token-detail-table td:nth-child(5) {
+.token-detail-table th:nth-child(6),
+.token-detail-table td:nth-child(6) {
   text-align: right;
   min-width: 12ch;
 }
-.token-detail-table td:nth-child(5) .status-badge {
+.token-detail-table td:nth-child(6) .status-badge {
   white-space: nowrap;
   display: inline-flex;
 }
 
 /* 让“Result”列的按钮组整体靠右，箭头不会拥挤 */
-.token-detail-table td:nth-child(5) .log-result-button {
+.token-detail-table td:nth-child(6) .log-result-button {
   width: 100%;
   justify-content: flex-end;
 }
-.token-detail-table th:nth-child(6),
-.token-detail-table td:nth-child(6) {
+.token-detail-table th:nth-child(7),
+.token-detail-table td:nth-child(7) {
   min-width: 18ch;
   max-width: 32ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: hsl(var(--muted-foreground));
+}
+.token-detail-table td:nth-child(2) {
+  font-family: 'JetBrains Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-size: 0.82rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Admin Recent Requests table: prioritize in-cell fitting over horizontal scroll */
