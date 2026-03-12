@@ -294,13 +294,16 @@ function PublicHome(): JSX.Element {
   }, [isTokenAccessDialogOpen])
 
   const handleCopyToken = useCallback(async (value: string) => {
-    const result = await copyText(value, { preferExecCommand: true })
+    const normalizedValue = value.trim()
+    const result = await copyText(normalizedValue, { preferExecCommand: true })
     if (result.ok) {
       setCopyState('copied')
       window.setTimeout(() => setCopyState('idle'), 2500)
       return
     }
-    if (value.trim().length > 0) {
+    if (normalizedValue.length > 0) {
+      setToken(normalizedValue)
+      setTokenDraft(normalizedValue)
       setTokenVisible(true)
       focusManualTokenField()
     }

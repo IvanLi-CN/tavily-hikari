@@ -71,6 +71,7 @@ import { extractTvlyDevApiKeysFromText } from './lib/api-key-extract'
 import { ADMIN_USER_CONSOLE_HREF } from './lib/adminUserConsoleEntry'
 import {
   copyText,
+  isCopyIntentKey,
   selectAllReadonlyText,
   type CopyTextOptions,
 } from './lib/clipboard'
@@ -754,6 +755,7 @@ function AdminDashboard(): JSX.Element {
   const tokenSecretCacheRef = useRef<Map<string, string>>(new Map())
   const tokenSecretRequestCacheRef = useRef<Map<string, Promise<string>>>(new Map())
   const tokenSecretVersionRef = useRef<Map<string, number>>(new Map())
+  const secretWarmTimerRef = useRef<Map<string, number>>(new Map())
   const tokenGroupsListRef = useRef<HTMLDivElement | null>(null)
   const keyGroupsListRef = useRef<HTMLDivElement | null>(null)
   const [copyState, setCopyState] = useState<Map<string, 'loading' | 'copied'>>(() => new Map())
@@ -884,6 +886,14 @@ function AdminDashboard(): JSX.Element {
     })
     return () => window.cancelAnimationFrame(frame)
   }, [manualCopyDialog])
+
+  useEffect(() => {
+    return () => {
+      for (const timer of secretWarmTimerRef.current.values()) {
+        window.clearTimeout(timer)
+      }
+    }
+  }, [])
 
   const clearKeysBatchAutoCollapseTimer = useCallback(() => {
     if (keysBatchAutoCollapseTimerRef.current != null) {
@@ -1117,6 +1127,35 @@ function AdminDashboard(): JSX.Element {
     tokenSecretRequestCacheRef.current.set(id, request)
     return await request
   }, [])
+
+  const cancelSecretWarm = useCallback((key: string) => {
+    const timer = secretWarmTimerRef.current.get(key)
+    if (timer != null) {
+      window.clearTimeout(timer)
+      secretWarmTimerRef.current.delete(key)
+    }
+  }, [])
+
+  const warmTokenSecret = useCallback((id: string) => {
+    cancelSecretWarm(`token:${id}`)
+    if (tokenSecretCacheRef.current.has(id) || tokenSecretRequestCacheRef.current.has(id)) return
+    void resolveTokenSecret(id).catch(() => undefined)
+  }, [cancelSecretWarm, resolveTokenSecret])
+
+  const warmApiKeySecret = useCallback((id: string) => {
+    cancelSecretWarm(`key:${id}`)
+    if (secretCacheRef.current.has(id) || secretRequestCacheRef.current.has(id)) return
+    void resolveApiKeySecret(id).catch(() => undefined)
+  }, [cancelSecretWarm, resolveApiKeySecret])
+
+  const scheduleSecretWarm = useCallback((key: string, warmup: () => void) => {
+    cancelSecretWarm(key)
+    const timer = window.setTimeout(() => {
+      secretWarmTimerRef.current.delete(key)
+      warmup()
+    }, 120)
+    secretWarmTimerRef.current.set(key, timer)
+  }, [cancelSecretWarm])
 
   const handleTokenSecretRotated = useCallback((id: string, token: string) => {
     tokenSecretVersionRef.current.set(id, (tokenSecretVersionRef.current.get(id) ?? 0) + 1)
@@ -4768,6 +4807,12 @@ function AdminDashboard(): JSX.Element {
   className="token-action-button shadow-none"
   title={tokenStrings.actions.copy}
   aria-label={tokenStrings.actions.copy}
+  onPointerEnter={() => scheduleSecretWarm(`token:${t.id}`, () => warmTokenSecret(t.id))}
+  onPointerLeave={() => cancelSecretWarm(`token:${t.id}`)}
+  onFocus={() => scheduleSecretWarm(`token:${t.id}`, () => warmTokenSecret(t.id))}
+  onBlur={() => cancelSecretWarm(`token:${t.id}`)}
+  onPointerDown={() => warmTokenSecret(t.id)}
+  onKeyDown={(event) => { if (!isCopyIntentKey(event.key)) return; warmTokenSecret(t.id) }}
   onClick={(event) => void handleCopyToken(t.id, stateKey, event.currentTarget)}
   disabled={state === 'loading'}
 >
@@ -4780,6 +4825,12 @@ function AdminDashboard(): JSX.Element {
   className="token-action-button shadow-none"
   title={tokenStrings.actions.share}
   aria-label={tokenStrings.actions.share}
+  onPointerEnter={() => scheduleSecretWarm(`token:${t.id}`, () => warmTokenSecret(t.id))}
+  onPointerLeave={() => cancelSecretWarm(`token:${t.id}`)}
+  onFocus={() => scheduleSecretWarm(`token:${t.id}`, () => warmTokenSecret(t.id))}
+  onBlur={() => cancelSecretWarm(`token:${t.id}`)}
+  onPointerDown={() => warmTokenSecret(t.id)}
+  onKeyDown={(event) => { if (!isCopyIntentKey(event.key)) return; warmTokenSecret(t.id) }}
   onClick={(event) => void handleShareToken(t.id, shareStateKey, event.currentTarget)}
   disabled={shareState === 'loading'}
 >
@@ -4898,6 +4949,12 @@ function AdminDashboard(): JSX.Element {
   type="button"
   variant={state === 'copied' ? 'success' : 'outline'}
   size="sm"
+  onPointerEnter={() => scheduleSecretWarm(`token:${t.id}`, () => warmTokenSecret(t.id))}
+  onPointerLeave={() => cancelSecretWarm(`token:${t.id}`)}
+  onFocus={() => scheduleSecretWarm(`token:${t.id}`, () => warmTokenSecret(t.id))}
+  onBlur={() => cancelSecretWarm(`token:${t.id}`)}
+  onPointerDown={() => warmTokenSecret(t.id)}
+  onKeyDown={(event) => { if (!isCopyIntentKey(event.key)) return; warmTokenSecret(t.id) }}
   onClick={(event) => void handleCopyToken(t.id, stateKey, event.currentTarget)}
   disabled={state === 'loading'}
 >
@@ -4907,6 +4964,12 @@ function AdminDashboard(): JSX.Element {
   type="button"
   variant={shareState === 'copied' ? 'success' : 'outline'}
   size="sm"
+  onPointerEnter={() => scheduleSecretWarm(`token:${t.id}`, () => warmTokenSecret(t.id))}
+  onPointerLeave={() => cancelSecretWarm(`token:${t.id}`)}
+  onFocus={() => scheduleSecretWarm(`token:${t.id}`, () => warmTokenSecret(t.id))}
+  onBlur={() => cancelSecretWarm(`token:${t.id}`)}
+  onPointerDown={() => warmTokenSecret(t.id)}
+  onKeyDown={(event) => { if (!isCopyIntentKey(event.key)) return; warmTokenSecret(t.id) }}
   onClick={(event) => void handleShareToken(t.id, shareStateKey, event.currentTarget)}
   disabled={shareState === 'loading'}
 >
@@ -5153,6 +5216,12 @@ function AdminDashboard(): JSX.Element {
   className="h-8 w-8 rounded-full p-0 shadow-none"
   title={keyStrings.actions.copy}
   aria-label={keyStrings.actions.copy}
+  onPointerEnter={() => scheduleSecretWarm(`key:${item.id}`, () => warmApiKeySecret(item.id))}
+  onPointerLeave={() => cancelSecretWarm(`key:${item.id}`)}
+  onFocus={() => scheduleSecretWarm(`key:${item.id}`, () => warmApiKeySecret(item.id))}
+  onBlur={() => cancelSecretWarm(`key:${item.id}`)}
+  onPointerDown={() => warmApiKeySecret(item.id)}
+  onKeyDown={(event) => { if (!isCopyIntentKey(event.key)) return; warmApiKeySecret(item.id) }}
   onClick={(event) => void handleCopySecret(item.id, stateKey, event.currentTarget)}
   disabled={state === 'loading'}
 >
@@ -5302,6 +5371,12 @@ function AdminDashboard(): JSX.Element {
   type="button"
   variant={state === 'copied' ? 'success' : 'outline'}
   size="sm"
+  onPointerEnter={() => scheduleSecretWarm(`key:${item.id}`, () => warmApiKeySecret(item.id))}
+  onPointerLeave={() => cancelSecretWarm(`key:${item.id}`)}
+  onFocus={() => scheduleSecretWarm(`key:${item.id}`, () => warmApiKeySecret(item.id))}
+  onBlur={() => cancelSecretWarm(`key:${item.id}`)}
+  onPointerDown={() => warmApiKeySecret(item.id)}
+  onKeyDown={(event) => { if (!isCopyIntentKey(event.key)) return; warmApiKeySecret(item.id) }}
   onClick={(event) => void handleCopySecret(item.id, stateKey, event.currentTarget)}
   disabled={state === 'loading'}
 >

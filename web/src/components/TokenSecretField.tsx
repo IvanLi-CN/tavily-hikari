@@ -20,6 +20,7 @@ interface TokenSecretFieldProps extends Omit<InputHTMLAttributes<HTMLInputElemen
   onToggleVisibility: () => void
   onCopy: (anchorEl: HTMLButtonElement) => void | Promise<void>
   onCopyIntent?: () => void | Promise<void>
+  onCopyIntentCancel?: () => void
   visibilityShowLabel: string
   visibilityHideLabel: string
   visibilityIconAlt: string
@@ -48,6 +49,7 @@ export default function TokenSecretField({
   onToggleVisibility,
   onCopy,
   onCopyIntent,
+  onCopyIntentCancel,
   visibilityShowLabel,
   visibilityHideLabel,
   visibilityIconAlt,
@@ -130,6 +132,10 @@ export default function TokenSecretField({
           type="button"
           variant={copyVariant}
           className={cn('token-copy-button', copyStateClassName, copyButtonClassName)}
+          onPointerEnter={() => void onCopyIntent?.()}
+          onPointerLeave={() => onCopyIntentCancel?.()}
+          onFocus={() => void onCopyIntent?.()}
+          onBlur={() => onCopyIntentCancel?.()}
           onPointerDown={() => void onCopyIntent?.()}
           onKeyDown={handleCopyIntentKeyDown}
           onClick={(event) => void onCopy(event.currentTarget)}
