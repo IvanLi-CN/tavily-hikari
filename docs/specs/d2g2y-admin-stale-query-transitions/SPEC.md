@@ -101,6 +101,12 @@
 - `2026-03-12`：`cd web && bun run build-storybook` 通过。
 - `2026-03-12`：在本地 dev server 上通过浏览器注入 4s `fetch` 延迟，验证 requests / jobs / users / leaderboard / token detail / key detail 的 query-switch 期间均进入局部 blocking loading，并禁用相关控件；tokens 列表与其余列表共享同一 loading primitive 与分页禁用合同。
 
+## Visual Evidence (PR)
+
+![请求日志切换筛选时的局部 loading](./assets/admin-requests-switch-loading.png)
+
+![密钥详情切换时间范围时的局部 loading](./assets/admin-key-detail-switch-loading.png)
+
 ## 里程碑
 
 - [x] M1: 规格冻结与受影响界面盘点
