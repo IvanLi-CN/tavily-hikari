@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 部分完成（4/5）
+- Status: 已完成（5/5）
 - Created: 2026-03-12
 - Last: 2026-03-12
 
@@ -113,4 +113,4 @@
 - [x] M2: 共享 query load state 与 loading region primitive 落地
 - [x] M3: admin 列表 / 排行页接入 `switch_loading` / `refreshing`
 - [x] M4: token detail / key detail 接入 stale-safe 过渡 + Storybook / tests 更新
-- [ ] M5: fast-track 远端交付（browser 回归、PR、checks、review-loop）
+- [x] M5: fast-track 远端交付（browser 回归、PR、checks、review-loop）
