@@ -7136,6 +7136,8 @@ function KeyDetails({ id, onBack }: { id: string; onBack: () => void }): JSX.Ele
   const detailBlocking = isBlockingLoadState(detailLoadState)
   const detailRefreshing = isRefreshingLoadState(detailLoadState)
   const detailLoadingLabel = detailRefreshing ? loadingStateStrings.refreshing : loadingStateStrings.switching
+  const quarantineRawDetail = detail?.quarantine?.reasonDetail?.trim() ?? ''
+  const hasQuarantineRawDetail = quarantineRawDetail.length > 0
 
   return (
     <div className="admin-detail-stack">
@@ -7219,35 +7221,40 @@ function KeyDetails({ id, onBack }: { id: string; onBack: () => void }): JSX.Ele
             <span>{keyDetailsStrings.quarantine.createdAt}</span>
             <strong>{formatTimestamp(detail.quarantine.createdAt)}</strong>
           </div>
-          <div className="quarantine-detail-block">
-            <div className="quarantine-detail-header">
-              <div className="panel-description">{keyDetailsStrings.quarantine.detail}</div>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="quarantine-detail-toggle"
-                aria-expanded={quarantineDetailExpanded}
-                aria-controls={quarantineDetailId}
-                onClick={() => setQuarantineDetailExpanded((current) => !current)}
+          {hasQuarantineRawDetail && (
+            <div className="quarantine-detail-block">
+              <div className="quarantine-detail-header">
+                <div className="panel-description">{keyDetailsStrings.quarantine.detail}</div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="quarantine-detail-toggle"
+                  aria-expanded={quarantineDetailExpanded}
+                  aria-controls={quarantineDetailId}
+                  onClick={() => setQuarantineDetailExpanded((current) => !current)}
+                >
+                  <Icon
+                    icon={quarantineDetailExpanded ? 'mdi:chevron-up' : 'mdi:chevron-down'}
+                    width={18}
+                    height={18}
+                    aria-hidden="true"
+                  />
+                  {quarantineDetailExpanded
+                    ? keyDetailsStrings.quarantine.hideDetail
+                    : keyDetailsStrings.quarantine.showDetail}
+                </Button>
+              </div>
+              <pre
+                id={quarantineDetailId}
+                className="log-details-pre"
+                hidden={!quarantineDetailExpanded}
+                aria-hidden={!quarantineDetailExpanded}
               >
-                <Icon
-                  icon={quarantineDetailExpanded ? 'mdi:chevron-up' : 'mdi:chevron-down'}
-                  width={18}
-                  height={18}
-                  aria-hidden="true"
-                />
-                {quarantineDetailExpanded
-                  ? keyDetailsStrings.quarantine.hideDetail
-                  : keyDetailsStrings.quarantine.showDetail}
-              </Button>
-            </div>
-            {quarantineDetailExpanded && (
-              <pre id={quarantineDetailId} className="log-details-pre">
-                {detail.quarantine.reasonDetail || detail.quarantine.reasonSummary || keyStrings.quarantine.noReason}
+                {quarantineRawDetail}
               </pre>
-            )}
-          </div>
+            </div>
+          )}
         </section>
       )}
 

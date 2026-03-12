@@ -1470,6 +1470,8 @@ function KeysPageCanvas({
   })
   const selectedKey = selectedKeyId ? filteredKeys.find((item) => item.id === selectedKeyId) ?? null : null
   const quarantineDetailId = `story-key-quarantine-detail-${selectedKey?.id ?? 'unknown'}`
+  const quarantineRawDetail = selectedKey?.quarantine?.reasonDetail?.trim() ?? ''
+  const hasQuarantineRawDetail = quarantineRawDetail.length > 0
   const groupSummary = summarizeFilterSelection(
     keyStrings.groups.label,
     groupOptions.filter((option) => selectedGroups.includes(option.value)).map((option) => option.label),
@@ -1715,35 +1717,40 @@ function KeysPageCanvas({
             <span>{keyDetailsStrings.quarantine.createdAt}</span>
             <strong>{formatTimestamp(selectedKey.quarantine.createdAt)}</strong>
           </div>
-          <div className="quarantine-detail-block">
-            <div className="quarantine-detail-header">
-              <div className="panel-description">{keyDetailsStrings.quarantine.detail}</div>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="quarantine-detail-toggle"
-                aria-expanded={quarantineDetailExpanded}
-                aria-controls={quarantineDetailId}
-                onClick={() => setQuarantineDetailExpanded((current) => !current)}
+          {hasQuarantineRawDetail ? (
+            <div className="quarantine-detail-block">
+              <div className="quarantine-detail-header">
+                <div className="panel-description">{keyDetailsStrings.quarantine.detail}</div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="quarantine-detail-toggle"
+                  aria-expanded={quarantineDetailExpanded}
+                  aria-controls={quarantineDetailId}
+                  onClick={() => setQuarantineDetailExpanded((current) => !current)}
+                >
+                  <Icon
+                    icon={quarantineDetailExpanded ? 'mdi:chevron-up' : 'mdi:chevron-down'}
+                    width={18}
+                    height={18}
+                    aria-hidden="true"
+                  />
+                  {quarantineDetailExpanded
+                    ? keyDetailsStrings.quarantine.hideDetail
+                    : keyDetailsStrings.quarantine.showDetail}
+                </Button>
+              </div>
+              <pre
+                id={quarantineDetailId}
+                className="log-details-pre"
+                hidden={!quarantineDetailExpanded}
+                aria-hidden={!quarantineDetailExpanded}
               >
-                <Icon
-                  icon={quarantineDetailExpanded ? 'mdi:chevron-up' : 'mdi:chevron-down'}
-                  width={18}
-                  height={18}
-                  aria-hidden="true"
-                />
-                {quarantineDetailExpanded
-                  ? keyDetailsStrings.quarantine.hideDetail
-                  : keyDetailsStrings.quarantine.showDetail}
-              </Button>
-            </div>
-            {quarantineDetailExpanded ? (
-              <pre id={quarantineDetailId} className="log-details-pre">
-                {selectedKey.quarantine.reasonDetail}
+                {quarantineRawDetail}
               </pre>
-            ) : null}
-          </div>
+            </div>
+          ) : null}
         </section>
       ) : null}
     </AdminPageFrame>
