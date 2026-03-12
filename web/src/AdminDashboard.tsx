@@ -139,7 +139,6 @@ const KEYS_BATCH_AUTO_COLLAPSE_DELAY_MS = Math.max(0, KEYS_BATCH_AUTO_COLLAPSE_T
 const API_KEYS_IMPORT_CHUNK_SIZE = 1000
 const DASHBOARD_TOKENS_PAGE_SIZE = 100
 const DASHBOARD_TOKENS_MAX_PAGES = 10
-const SECRET_COPY_PREFETCH_LIMIT = 12
 const USER_TAG_DISPLAY_LIMIT = 3
 const NEW_USER_TAG_CARD_ID = '__new__'
 
@@ -748,6 +747,7 @@ function AdminDashboard(): JSX.Element {
   const secretRequestCacheRef = useRef<Map<string, Promise<string>>>(new Map())
   const tokenSecretCacheRef = useRef<Map<string, string>>(new Map())
   const tokenSecretRequestCacheRef = useRef<Map<string, Promise<string>>>(new Map())
+  const tokenSecretVersionRef = useRef<Map<string, number>>(new Map())
   const tokenGroupsListRef = useRef<HTMLDivElement | null>(null)
   const keyGroupsListRef = useRef<HTMLDivElement | null>(null)
   const [copyState, setCopyState] = useState<Map<string, 'loading' | 'copied'>>(() => new Map())
@@ -1083,17 +1083,29 @@ function AdminDashboard(): JSX.Element {
       return await pending
     }
 
-    const request = fetchTokenSecret(id, signal)
+    const requestVersion = tokenSecretVersionRef.current.get(id) ?? 0
+    let request: Promise<string>
+    request = fetchTokenSecret(id, signal)
       .then((result) => {
-        tokenSecretCacheRef.current.set(id, result.token)
+        if ((tokenSecretVersionRef.current.get(id) ?? 0) === requestVersion) {
+          tokenSecretCacheRef.current.set(id, result.token)
+        }
         return result.token
       })
       .finally(() => {
-        tokenSecretRequestCacheRef.current.delete(id)
+        if (tokenSecretRequestCacheRef.current.get(id) === request) {
+          tokenSecretRequestCacheRef.current.delete(id)
+        }
       })
 
     tokenSecretRequestCacheRef.current.set(id, request)
     return await request
+  }, [])
+
+  const handleTokenSecretRotated = useCallback((id: string, token: string) => {
+    tokenSecretVersionRef.current.set(id, (tokenSecretVersionRef.current.get(id) ?? 0) + 1)
+    tokenSecretRequestCacheRef.current.delete(id)
+    tokenSecretCacheRef.current.set(id, token)
   }, [])
 
   const beginManagedRequest = useCallback(
@@ -2045,34 +2057,6 @@ function AdminDashboard(): JSX.Element {
     }
     return sortedKeys
   }, [selectedKeyGroupName, selectedKeyUngrouped, sortedKeys])
-
-  useEffect(() => {
-    if (!isAdmin) return
-
-    const controller = new AbortController()
-    for (const item of tokens) {
-      if (tokenSecretCacheRef.current.has(item.id) || tokenSecretRequestCacheRef.current.has(item.id)) {
-        continue
-      }
-      void resolveTokenSecret(item.id, controller.signal).catch(() => undefined)
-    }
-
-    return () => controller.abort()
-  }, [isAdmin, resolveTokenSecret, tokens])
-
-  useEffect(() => {
-    if (!isAdmin) return
-
-    const controller = new AbortController()
-    for (const item of visibleKeys.slice(0, SECRET_COPY_PREFETCH_LIMIT)) {
-      if (secretCacheRef.current.has(item.id) || secretRequestCacheRef.current.has(item.id)) {
-        continue
-      }
-      void resolveApiKeySecret(item.id, controller.signal).catch(() => undefined)
-    }
-
-    return () => controller.abort()
-  }, [isAdmin, resolveApiKeySecret, visibleKeys])
 
   // Detect whether the collapsed key groups row overflows horizontally.
   // If everything fits in a single line, we hide the "more" toggle button.
@@ -3636,7 +3620,13 @@ function AdminDashboard(): JSX.Element {
         skipToContentLabel={adminStrings.accessibility.skipToContent}
         onSelectModule={navigateModule}
       >
-        <TokenDetail key={route.id} id={route.id} onBack={() => navigateModule('tokens')} onOpenUser={navigateUser} />
+        <TokenDetail
+          key={route.id}
+          id={route.id}
+          onBack={() => navigateModule('tokens')}
+          onOpenUser={navigateUser}
+          onSecretRotated={handleTokenSecretRotated}
+        />
       </AdminShell>
     )
   }

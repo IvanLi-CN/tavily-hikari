@@ -181,6 +181,8 @@
   - `http://127.0.0.1:55174/console#/tokens/a1b2`：窄屏下 detail 复制失败后 bubble 仍保持在视口内，点击/聚焦会再次全选。
   - `http://127.0.0.1:58089/admin/tokens`：新建 token、复制完整 token、复制分享链接在失败时均弹出手动复制气泡。
   - `http://127.0.0.1:58089/admin/tokens/m87I`：rotate secret 失败时复用现有对话框，展示只读 textarea 并自动全选，不额外弹 bubble。
+  - `http://127.0.0.1:58089/admin/tokens`：列表初次加载仅请求 `summary/profile/tokens/...` 等基础数据，不再自动拉取 `/api/tokens/:id/secret` 或 `/api/keys/:id/secret`；hover 到复制按钮后才按需触发 secret 请求。
+  - `http://127.0.0.1:58089/admin/tokens/m87I -> /admin/tokens`：rotate 后返回列表，强制复制失败时手动复制气泡展示的分享链接已经带上最新 token `th-m87I-210OK5iEU2T5lM7X1nVZYwJ5`，未读到旧 cache。
 
 ## 资产晋升（Asset promotion）
 
@@ -198,7 +200,8 @@
 - 把复制兼容性下沉到共享 helper，避免每个页面各自判断浏览器能力。
 - 把“最终失败后的手动复制恢复”下沉到共享气泡组件，统一定位、关闭行为和只读编辑框交互。
 - 页面层只负责声明：当前入口是否已有可见原文，以及失败时应该展示的原文内容与锚点。
-- 对隐藏 secret 的按钮独占入口，页面层可以通过 secret cache 预热把 legacy fallback 尽量保留在同步点击栈里；若仍需异步取 secret，则最终以手动复制恢复 UI 兜底。
+- 对隐藏 secret 的按钮独占入口，仅保留 hover/focus 触发的按需 warm-up，把 legacy fallback 尽量保留在同步点击栈里；禁止在列表初次加载时批量预取 secret。
+- admin token rotate 成功后必须同步更新父级 secret cache，避免返回列表后复制/分享仍命中旧值。
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
@@ -213,6 +216,7 @@
 - 2026-03-12: 修复 `ManualCopyBubble` 首次打开时因定位前短路渲染而不显示的问题，改为先挂载再定位，未完成定位前仅隐藏且禁用指针事件。
 - 2026-03-12: 为 `execCommand` fallback 补充 iOS / iPadOS 选区兼容分支，并在 PublicHome 复制失败时自动 reveal 当前 token，确保“原文可见入口”仍可手动复制。
 - 2026-03-12: 补齐复制 review 收口：同步优先的 legacy fallback 选项、UserConsole/Admin secret cache 预热、复制成功时自动关闭旧气泡，以及 PublicHome / rotated token 失败后的自动重新选中。
+- 2026-03-12: 收紧 secret 生命周期：移除 UserConsole/Admin 列表初载时的全量 secret 预取，仅保留 hover/focus 按需 warm-up；同时在 admin rotate token 后回写父级 secret cache，避免后续复制/分享读到旧 token。
 
 ## 参考（References）
 

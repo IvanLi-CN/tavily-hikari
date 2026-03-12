@@ -444,24 +444,10 @@ export default function UserConsole(): JSX.Element {
     return await request
   }, [route, tokenSecretTokenId, tokenSecretValue])
 
-  useEffect(() => {
+  const warmTokenSecret = useCallback((tokenId: string) => {
     if (consoleAvailability !== 'enabled') return
-
-    const controller = new AbortController()
-    const tokenIds = new Set(tokens.map((item) => item.tokenId))
-    if (route.name === 'token') {
-      tokenIds.add(route.id)
-    }
-
-    for (const tokenId of tokenIds) {
-      if (tokenSecretCacheRef.current.has(tokenId) || tokenSecretRequestRef.current.has(tokenId)) {
-        continue
-      }
-      void resolveTokenSecret(tokenId, controller.signal).catch(() => undefined)
-    }
-
-    return () => controller.abort()
-  }, [consoleAvailability, resolveTokenSecret, route, tokens])
+    void resolveTokenSecret(tokenId).catch(() => undefined)
+  }, [consoleAvailability, resolveTokenSecret])
 
   const copyToken = useCallback(async (tokenId: string, anchorEl?: HTMLElement | null) => {
     setManualCopyBubble(null)
@@ -1304,6 +1290,8 @@ export default function UserConsole(): JSX.Element {
                               <button
                                 type="button"
                                 className={`btn btn-outline btn-sm ${state === 'copied' ? 'btn-success' : state === 'error' ? 'btn-warning' : ''}`}
+                                onPointerEnter={() => warmTokenSecret(item.tokenId)}
+                                onFocus={() => warmTokenSecret(item.tokenId)}
                                 onClick={(event) => void copyToken(item.tokenId, event.currentTarget)}
                               >
                                 {state === 'copied' ? text.tokens.copied : state === 'error' ? text.tokens.copyFailed : text.tokens.copy}
@@ -1366,6 +1354,8 @@ export default function UserConsole(): JSX.Element {
                         <button
                           type="button"
                           className={`btn btn-outline btn-sm ${state === 'copied' ? 'btn-success' : state === 'error' ? 'btn-warning' : ''}`}
+                          onPointerEnter={() => warmTokenSecret(item.tokenId)}
+                          onFocus={() => warmTokenSecret(item.tokenId)}
                           onClick={(event) => void copyToken(item.tokenId, event.currentTarget)}
                         >
                           {state === 'copied' ? text.tokens.copied : state === 'error' ? text.tokens.copyFailed : text.tokens.copy}
@@ -1448,6 +1438,7 @@ export default function UserConsole(): JSX.Element {
               copyState={detailTokenCopyState}
               onValueChange={() => undefined}
               onToggleVisibility={() => void toggleTokenSecretVisibility()}
+              onCopyIntent={() => warmTokenSecret(route.id)}
               onCopy={(anchorEl) => copyToken(route.id, anchorEl)}
               label={text.detail.tokenLabel}
               visibilityShowLabel={text.detail.tokenSecret.show}

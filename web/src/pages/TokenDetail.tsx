@@ -347,10 +347,12 @@ export default function TokenDetail({
   id,
   onBack,
   onOpenUser,
+  onSecretRotated,
 }: {
   id: string
   onBack?: () => void
   onOpenUser?: (userId: string) => void
+  onSecretRotated?: (id: string, token: string) => void
 }): JSX.Element {
   const translations = useTranslate()
   const tokenStrings = translations.admin.tokens
@@ -799,6 +801,7 @@ export default function TokenDetail({
       setRotating(true)
       const res = await rotateTokenSecret(id)
       setRotatedToken(res.token)
+      onSecretRotated?.(id, res.token)
       const copyResult = await copyText(res.token, { allowExecCommand: false })
       setRotatedCopyState(copyResult.ok ? 'copied' : 'error')
       setIsRotateDialogOpen(false)
@@ -809,7 +812,7 @@ export default function TokenDetail({
     } finally {
       setRotating(false)
     }
-  }, [id])
+  }, [id, onSecretRotated])
 
   const handleCopyRotatedToken = useCallback(async () => {
     if (!rotatedToken) return
