@@ -30,7 +30,7 @@ import { StatusBadge, type StatusTone } from './components/StatusBadge'
 import ThemeToggle from './components/ThemeToggle'
 import { Button } from './components/ui/button'
 import { useLanguage, useTranslate, type Language } from './i18n'
-import { copyText, isCopyIntentKey, selectAllReadonlyText } from './lib/clipboard'
+import { copyText, isCopyIntentKey, selectAllReadonlyText, shouldPrewarmSecretCopy } from './lib/clipboard'
 import {
   type McpProbeStepState,
   type ProbeQuotaWindow,
@@ -259,6 +259,7 @@ export default function UserConsole(): JSX.Element {
   const tokenSecretCacheRef = useRef<Map<string, string>>(new Map())
   const tokenSecretCacheTimerRef = useRef<Map<string, number>>(new Map())
   const tokenSecretWarmTimerRef = useRef<Map<string, number>>(new Map())
+  const tokenSecretWarmAbortRef = useRef<Map<string, AbortController>>(new Map())
   const tokenSecretRequestRef = useRef<Map<string, Promise<string>>>(new Map())
   const probeRunIdRef = useRef(0)
   const tokenSecretRunIdRef = useRef(0)
@@ -391,8 +392,12 @@ export default function UserConsole(): JSX.Element {
     for (const timer of tokenSecretCacheTimerRef.current.values()) {
       window.clearTimeout(timer)
     }
+    for (const controller of tokenSecretWarmAbortRef.current.values()) {
+      controller.abort()
+    }
     tokenSecretWarmTimerRef.current.clear()
     tokenSecretCacheTimerRef.current.clear()
+    tokenSecretWarmAbortRef.current.clear()
     tokenSecretCacheRef.current.clear()
   }, [consoleAvailability, route.name === 'token' ? route.id : route.name])
 
@@ -403,6 +408,9 @@ export default function UserConsole(): JSX.Element {
       }
       for (const timer of tokenSecretCacheTimerRef.current.values()) {
         window.clearTimeout(timer)
+      }
+      for (const controller of tokenSecretWarmAbortRef.current.values()) {
+        controller.abort()
       }
     }
   }, [])
@@ -463,6 +471,11 @@ export default function UserConsole(): JSX.Element {
       window.clearTimeout(timer)
       tokenSecretWarmTimerRef.current.delete(tokenId)
     }
+    const controller = tokenSecretWarmAbortRef.current.get(tokenId)
+    if (controller) {
+      controller.abort()
+      tokenSecretWarmAbortRef.current.delete(tokenId)
+    }
   }, [])
 
   const resolveTokenSecret = useCallback(async (tokenId: string, signal?: AbortSignal) => {
@@ -495,15 +508,29 @@ export default function UserConsole(): JSX.Element {
     return await request
   }, [cacheTokenSecret, route, tokenSecretTokenId, tokenSecretValue])
 
+  const shouldPrewarmTokenCopy = useMemo(() => shouldPrewarmSecretCopy(), [])
+
   const warmTokenSecret = useCallback((tokenId: string) => {
-    if (consoleAvailability !== 'enabled') return
+    if (consoleAvailability !== 'enabled' || !shouldPrewarmTokenCopy) return
     cancelWarmTokenSecret(tokenId)
     if (tokenSecretCacheRef.current.has(tokenId) || tokenSecretRequestRef.current.has(tokenId)) return
-    void resolveTokenSecret(tokenId).catch(() => undefined)
-  }, [cancelWarmTokenSecret, consoleAvailability, resolveTokenSecret])
+    const controller = new AbortController()
+    tokenSecretWarmAbortRef.current.set(tokenId, controller)
+    void fetchUserTokenSecret(tokenId, controller.signal)
+      .then(({ token }) => {
+        if (tokenSecretWarmAbortRef.current.get(tokenId) !== controller) return
+        cacheTokenSecret(tokenId, token)
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (tokenSecretWarmAbortRef.current.get(tokenId) === controller) {
+          tokenSecretWarmAbortRef.current.delete(tokenId)
+        }
+      })
+  }, [cacheTokenSecret, cancelWarmTokenSecret, consoleAvailability, shouldPrewarmTokenCopy])
 
   const scheduleWarmTokenSecret = useCallback((tokenId: string) => {
-    if (consoleAvailability !== 'enabled') return
+    if (consoleAvailability !== 'enabled' || !shouldPrewarmTokenCopy) return
     if (tokenSecretCacheRef.current.has(tokenId) || tokenSecretRequestRef.current.has(tokenId)) return
     cancelWarmTokenSecret(tokenId)
     const timer = window.setTimeout(() => {
@@ -511,7 +538,7 @@ export default function UserConsole(): JSX.Element {
       void warmTokenSecret(tokenId)
     }, USER_CONSOLE_SECRET_PREWARM_DELAY_MS)
     tokenSecretWarmTimerRef.current.set(tokenId, timer)
-  }, [cancelWarmTokenSecret, consoleAvailability, warmTokenSecret])
+  }, [cancelWarmTokenSecret, consoleAvailability, shouldPrewarmTokenCopy, warmTokenSecret])
 
   const revealDetailTokenForManualCopy = useCallback((tokenId: string, token: string) => {
     if (route.name !== 'token' || route.id !== tokenId) return false
@@ -528,6 +555,7 @@ export default function UserConsole(): JSX.Element {
 
   const copyToken = useCallback(async (tokenId: string, anchorEl?: HTMLElement | null) => {
     setManualCopyBubble(null)
+    cancelWarmTokenSecret(tokenId)
     try {
       const inlineToken =
         route.name === 'token' && route.id === tokenId && tokenSecretTokenId === tokenId && tokenSecretValue != null
@@ -557,7 +585,7 @@ export default function UserConsole(): JSX.Element {
     window.setTimeout(() => {
       setCopyState((prev) => ({ ...prev, [tokenId]: 'idle' }))
     }, 1800)
-  }, [clearCachedTokenSecret, resolveTokenSecret, revealDetailTokenForManualCopy, route, tokenSecretTokenId, tokenSecretValue])
+  }, [cancelWarmTokenSecret, clearCachedTokenSecret, resolveTokenSecret, revealDetailTokenForManualCopy, route, tokenSecretTokenId, tokenSecretValue])
 
   const toggleTokenSecretVisibility = useCallback(async () => {
     if (route.name !== 'token') return
