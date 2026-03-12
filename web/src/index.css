@@ -7182,6 +7182,16 @@ tbody .log-details-row:hover {
   gap: 1rem;
 }
 
+.forward-proxy-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.forward-proxy-stack > .panel {
+  margin-top: 0;
+}
+
 .forward-proxy-summary-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));

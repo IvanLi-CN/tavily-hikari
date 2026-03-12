@@ -611,7 +611,7 @@ export default function ForwardProxySettingsModule({
   ]
 
   return (
-    <>
+    <div className="forward-proxy-stack">
       <Card className="surface panel">
         <CardHeader className="forward-proxy-panel-header">
           <div className="forward-proxy-panel-heading">
@@ -998,6 +998,6 @@ export default function ForwardProxySettingsModule({
         </CardContent>
       </Card>
 
-    </>
+    </div>
   )
 }
