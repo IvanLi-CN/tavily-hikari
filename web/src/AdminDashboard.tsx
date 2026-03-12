@@ -817,7 +817,7 @@ function AdminDashboard(): JSX.Element {
   const [usersTagFilterId, setUsersTagFilterId] = useState<string | null>(null)
   const [usersLoadState, setUsersLoadState] = useState<QueryLoadState>('initial_loading')
   const [usersError, setUsersError] = useState<string | null>(null)
-  const [allowRegistration, setAllowRegistration] = useState(true)
+  const [allowRegistration, setAllowRegistration] = useState<boolean | null>(null)
   const [registrationSettingsLoaded, setRegistrationSettingsLoaded] = useState(false)
   const [registrationSettingsLoading, setRegistrationSettingsLoading] = useState(false)
   const [registrationSettingsSaving, setRegistrationSettingsSaving] = useState(false)
@@ -1828,10 +1828,12 @@ function AdminDashboard(): JSX.Element {
       .then((settings) => {
         if (controller.signal.aborted) return
         setAllowRegistration(settings.allowRegistration)
+        setRegistrationSettingsLoaded(true)
       })
       .catch((err) => {
         if (controller.signal.aborted) return
         console.error(err)
+        setAllowRegistration(null)
         setRegistrationSettingsError(
           err instanceof Error ? err.message : adminStrings.users.registration.loadFailed,
         )
@@ -1839,7 +1841,6 @@ function AdminDashboard(): JSX.Element {
       .finally(() => {
         if (!controller.signal.aborted) {
           setRegistrationSettingsLoading(false)
-          setRegistrationSettingsLoaded(true)
         }
       })
 
@@ -3004,7 +3005,7 @@ function AdminDashboard(): JSX.Element {
   }
 
   const toggleAllowRegistration = async () => {
-    if (registrationSettingsSaving || registrationSettingsLoading) return
+    if (registrationSettingsSaving || registrationSettingsLoading || allowRegistration === null) return
     const previous = allowRegistration
     const next = !previous
     setAllowRegistration(next)
@@ -3562,6 +3563,8 @@ function AdminDashboard(): JSX.Element {
     ? usersStrings.registration.description
     : registrationSettingsSaving
       ? usersStrings.registration.saving
+      : allowRegistration === null
+        ? usersStrings.registration.unavailable
       : allowRegistration
         ? usersStrings.registration.enabled
         : usersStrings.registration.disabled
@@ -6296,8 +6299,22 @@ function AdminDashboard(): JSX.Element {
                       }}
                     >
                       <div className="text-sm font-semibold">{usersStrings.registration.title}</div>
-                      <Badge variant={registrationSettingsError ? 'destructive' : allowRegistration ? 'success' : 'warning'}>
-                        {allowRegistration ? usersStrings.status.enabled : usersStrings.status.disabled}
+                      <Badge
+                        variant={
+                          registrationSettingsError
+                            ? 'destructive'
+                            : allowRegistration === null
+                              ? 'secondary'
+                              : allowRegistration
+                                ? 'success'
+                                : 'warning'
+                        }
+                      >
+                        {allowRegistration === null
+                          ? usersStrings.status.unknown
+                          : allowRegistration
+                            ? usersStrings.status.enabled
+                            : usersStrings.status.disabled}
                       </Badge>
                     </div>
                     {registrationInlineStatus && (
@@ -6312,8 +6329,8 @@ function AdminDashboard(): JSX.Element {
                     )}
                   </div>
                   <Switch
-                    disabled={registrationSettingsLoading || registrationSettingsSaving}
-                    checked={allowRegistration}
+                    disabled={registrationSettingsLoading || registrationSettingsSaving || allowRegistration === null}
+                    checked={allowRegistration ?? false}
                     aria-label={usersStrings.registration.title}
                     onCheckedChange={() => void toggleAllowRegistration()}
                     style={{ flex: '0 0 auto' }}

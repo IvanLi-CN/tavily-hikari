@@ -3941,6 +3941,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn registration_paused_route_falls_back_to_index_when_dedicated_spa_is_missing() {
+        let db_path = temp_db_path("registration-paused-route-fallback");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("create proxy");
+        let static_dir = temp_static_dir("registration-paused-fallback");
+        std::fs::remove_file(static_dir.join("registration-paused.html"))
+            .expect("remove dedicated registration paused spa");
+        let state = Arc::new(AppState {
+            proxy,
+            static_dir: Some(static_dir),
+            forward_auth: ForwardAuthConfig::new(None, None, None, None),
+            forward_auth_enabled: false,
+            builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            linuxdo_oauth: linuxdo_oauth_options_for_test(),
+            dev_open_admin: false,
+            usage_base: "http://127.0.0.1:58088".to_string(),
+        });
+
+        let app = Router::new()
+            .route("/registration-paused", get(serve_registration_paused_index))
+            .with_state(state);
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .expect("serve app");
+        });
+
+        let client = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build no-redirect client");
+
+        let resp = client
+            .get(format!("http://{}/registration-paused", addr))
+            .send()
+            .await
+            .expect("registration paused request");
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        let html = resp.text().await.expect("registration paused html");
+        assert!(html.contains("<title>index</title>"));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn post_linuxdo_auth_persists_preferred_token_id_in_oauth_state() {
         let db_path = temp_db_path("linuxdo-auth-post-preferred-token");
         let db_str = db_path.to_string_lossy().to_string();

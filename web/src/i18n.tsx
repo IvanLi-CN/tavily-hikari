@@ -260,6 +260,7 @@ interface AdminTranslationsShape {
       description: string
       enabled: string
       disabled: string
+      unavailable: string
       saving: string
       loadFailed: string
       saveFailed: string
@@ -290,6 +291,7 @@ interface AdminTranslationsShape {
       inactive: string
       enabled: string
       disabled: string
+      unknown: string
     }
     actions: {
       view: string
@@ -1159,6 +1161,7 @@ export const translations: Record<Language, TranslationShape> = {
           description: 'Applies to first-time Linux DO sign-ins.',
           enabled: 'New sign-ins enabled.',
           disabled: 'New sign-ins paused.',
+          unavailable: 'Registration policy unavailable.',
           saving: 'Saving…',
           loadFailed: 'Failed to load registration policy.',
           saveFailed: 'Failed to save registration policy.',
@@ -1189,6 +1192,7 @@ export const translations: Record<Language, TranslationShape> = {
           inactive: 'Inactive',
           enabled: 'Enabled',
           disabled: 'Disabled',
+          unknown: 'Unknown',
         },
         actions: {
           view: 'Open details',
@@ -2046,6 +2050,7 @@ export const translations: Record<Language, TranslationShape> = {
           description: '作用于首次 Linux DO 登录。',
           enabled: '已允许新用户登录。',
           disabled: '已暂停新用户登录。',
+          unavailable: '注册策略不可用。',
           saving: '保存中…',
           loadFailed: '加载注册策略失败。',
           saveFailed: '保存注册策略失败。',
@@ -2076,6 +2081,7 @@ export const translations: Record<Language, TranslationShape> = {
           inactive: '未激活',
           enabled: '启用',
           disabled: '禁用',
+          unknown: '未知',
         },
         actions: {
           view: '查看详情',
