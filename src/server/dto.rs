@@ -57,6 +57,7 @@ struct JobLogView {
     id: i64,
     job_type: String,
     key_id: Option<String>,
+    key_group: Option<String>,
     status: String,
     attempt: i64,
     message: Option<String>,

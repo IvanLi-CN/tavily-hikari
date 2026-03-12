@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, mock } from 'bun:test'
 
-import { bindAdminUserTag, fetchAdminUsers, fetchAdminUserTags, updateAdminUserQuota } from './api'
+import { bindAdminUserTag, fetchAdminUsers, fetchAdminUserTags, fetchJobs, updateAdminUserQuota } from './api'
 
 const originalFetch = globalThis.fetch
 
@@ -106,5 +106,50 @@ describe('admin user tag api helpers', () => {
         monthlyLimit: 600000,
       }),
     )
+  })
+
+  it('normalizes jobs responses to the snake_case shape used by the admin UI', async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            items: [
+              {
+                id: 37696,
+                jobType: 'quota_sync',
+                keyId: '7QZ5',
+                keyGroup: 'ops',
+                status: 'error',
+                attempt: 1,
+                message: 'usage_http 401',
+                startedAt: 1_773_344_460,
+                finishedAt: 1_773_344_470,
+              },
+            ],
+            total: 1,
+            page: 1,
+            perPage: 10,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    )
+    globalThis.fetch = fetchMock as typeof fetch
+
+    const jobs = await fetchJobs()
+
+    expect(jobs.page).toBe(1)
+    expect(jobs.perPage).toBe(10)
+    expect(jobs.items[0]).toEqual({
+      id: 37696,
+      job_type: 'quota_sync',
+      key_id: '7QZ5',
+      key_group: 'ops',
+      status: 'error',
+      attempt: 1,
+      message: 'usage_http 401',
+      started_at: 1_773_344_460,
+      finished_at: 1_773_344_470,
+    })
   })
 })

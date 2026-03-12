@@ -16,6 +16,7 @@ import type {
   RequestLog,
 } from '../api'
 import AdminPanelHeader from '../components/AdminPanelHeader'
+import JobKeyLink from '../components/JobKeyLink'
 import QuotaRangeField from '../components/QuotaRangeField'
 import { StatusBadge, type StatusTone } from '../components/StatusBadge'
 import SegmentedTabs from '../components/ui/SegmentedTabs'
@@ -443,6 +444,7 @@ const MOCK_JOBS: JobLogView[] = [
     id: 610,
     job_type: 'quota_sync',
     key_id: 'MZli',
+    key_group: 'ops',
     status: 'success',
     attempt: 1,
     message: 'Synced 125 keys',
@@ -453,6 +455,7 @@ const MOCK_JOBS: JobLogView[] = [
     id: 609,
     job_type: 'token_usage_rollup',
     key_id: 'U2vK',
+    key_group: null,
     status: 'running',
     attempt: 1,
     message: 'Aggregating daily partitions',
@@ -463,6 +466,7 @@ const MOCK_JOBS: JobLogView[] = [
     id: 608,
     job_type: 'quota_sync',
     key_id: 'asR8',
+    key_group: 'batch',
     status: 'error',
     attempt: 3,
     message: 'Provider rejected usage API: HTTP 403',
@@ -473,6 +477,7 @@ const MOCK_JOBS: JobLogView[] = [
     id: 607,
     job_type: 'auth_token_logs_gc',
     key_id: null,
+    key_group: null,
     status: 'success',
     attempt: 1,
     message: 'Pruned 1,260 old log rows',
@@ -1892,6 +1897,7 @@ function RequestsPageCanvas(): JSX.Element {
 function JobsPageCanvas(): JSX.Element {
   const admin = useTranslate().admin
   const jobsStrings = admin.jobs
+  const keyStrings = admin.keys
   const [expandedJobs, setExpandedJobs] = useState<Set<number>>(() => new Set([608]))
 
   const toggleJob = (id: number) => {
@@ -1954,7 +1960,14 @@ function JobsPageCanvas(): JSX.Element {
                     <tr>
                       <td>{job.id}</td>
                       <td>{jobTypeText}</td>
-                      <td>{job.key_id ? <code>{job.key_id}</code> : '—'}</td>
+                      <td>
+                        <JobKeyLink
+                          keyId={job.key_id}
+                          keyGroup={job.key_group}
+                          ungroupedLabel={keyStrings.groups.ungrouped}
+                          detailLabel={keyStrings.actions.details}
+                        />
+                      </td>
                       <td>
                         <StatusBadge tone={keyStatusTone(job.status)}>{admin.statuses[job.status] ?? job.status}</StatusBadge>
                       </td>
@@ -1995,6 +2008,17 @@ function JobsPageCanvas(): JSX.Element {
                               <div>
                                 <div className="log-details-label">{jobsStrings.table.type}</div>
                                 <div className="log-details-value">{jobTypeDetail}</div>
+                              </div>
+                              <div>
+                                <div className="log-details-label">{jobsStrings.table.key}</div>
+                                <div className="log-details-value">
+                                  <JobKeyLink
+                                    keyId={job.key_id}
+                                    keyGroup={job.key_group}
+                                    ungroupedLabel={keyStrings.groups.ungrouped}
+                                    detailLabel={keyStrings.actions.details}
+                                  />
+                                </div>
                               </div>
                               <div>
                                 <div className="log-details-label">{jobsStrings.table.status}</div>

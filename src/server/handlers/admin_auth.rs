@@ -38,6 +38,7 @@ async fn list_jobs(
                     id: j.id,
                     job_type: j.job_type,
                     key_id: j.key_id,
+                    key_group: j.key_group,
                     status: j.status,
                     attempt: j.attempt,
                     message: j.message,

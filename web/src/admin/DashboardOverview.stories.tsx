@@ -104,8 +104,8 @@ export const Default: Story = {
       { id: 2, key_id: 'MZli', auth_token_id: '9vsN', method: 'POST', path: '/mcp', query: null, http_status: 429, mcp_status: -1, result_status: 'quota_exhausted', created_at: 2, error_message: 'quota', request_body: null, response_body: null, forwarded_headers: [], dropped_headers: [] },
     ],
     jobs: [
-      { id: 1, job_type: 'quota_sync', key_id: 'MZli', status: 'error', attempt: 2, message: 'rate limit', started_at: 1, finished_at: 2 },
-      { id: 2, job_type: 'quota_sync', key_id: 'MZli', status: 'success', attempt: 1, message: null, started_at: 3, finished_at: 4 },
+      { id: 1, job_type: 'quota_sync', key_id: 'MZli', key_group: 'ops', status: 'error', attempt: 2, message: 'rate limit', started_at: 1, finished_at: 2 },
+      { id: 2, job_type: 'quota_sync', key_id: 'MZli', key_group: 'ops', status: 'success', attempt: 1, message: null, started_at: 3, finished_at: 4 },
     ],
     onOpenModule: () => {},
     onOpenToken: () => {},
@@ -180,7 +180,7 @@ export const QuarantineState: Story = {
       { id: 1, key_id: 'Qn8R', auth_token_id: '9vsN', method: 'POST', path: '/mcp', query: null, http_status: 401, mcp_status: -1, result_status: 'error', created_at: 1, error_message: 'account deactivated', request_body: null, response_body: null, forwarded_headers: [], dropped_headers: [] },
     ],
     jobs: [
-      { id: 1, job_type: 'quota_sync', key_id: 'Qn8R', status: 'error', attempt: 1, message: 'account deactivated', started_at: 1, finished_at: 2 },
+      { id: 1, job_type: 'quota_sync', key_id: 'Qn8R', key_group: 'ops', status: 'error', attempt: 1, message: 'account deactivated', started_at: 1, finished_at: 2 },
     ],
     onOpenModule: () => {},
     onOpenToken: () => {},

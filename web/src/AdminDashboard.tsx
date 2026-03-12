@@ -4,6 +4,7 @@ import AdminTablePagination from './components/AdminTablePagination'
 import AdminLoadingRegion from './components/AdminLoadingRegion'
 import AdminTableShell from './components/AdminTableShell'
 import { ApiKeysValidationDialog } from './components/ApiKeysValidationDialog'
+import JobKeyLink from './components/JobKeyLink'
 import ManualCopyBubble from './components/ManualCopyBubble'
 import QuotaRangeField from './components/QuotaRangeField'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
@@ -5942,13 +5943,13 @@ function AdminDashboard(): JSX.Element {
               </thead>
               <tbody>
                 {jobs.map((j) => {
-                  const job: any = j as any
-                  const jt = job.job_type ?? job.jobType ?? ''
+                  const jt = j.job_type
                   const jobTypeLabelText = jobTypeLabel(jt, jobsStrings)
                   const jobStatusText = jobStatusLabel(String(j.status ?? ''))
-                  const keyId = job.key_id ?? job.keyId ?? '—'
-                  const started: number | null = job.started_at ?? job.startedAt ?? null
-                  const finished: number | null = job.finished_at ?? job.finishedAt ?? null
+                  const keyId = j.key_id
+                  const keyGroup = j.key_group
+                  const started: number | null = j.started_at ?? null
+                  const finished: number | null = j.finished_at ?? null
                   const startedTimeLabel = formatTimestamp(started)
                   const startedDetail =
                     started != null
@@ -5976,41 +5977,49 @@ function AdminDashboard(): JSX.Element {
 
                   rows.push(
                     <tr key={j.id}>
-                        <td>{j.id}</td>
-                        <td>{jobTypeLabelText}</td>
-                        <td>{keyId ?? '—'}</td>
-                        <td>
-                          <StatusBadge tone={statusTone(j.status)} title={String(j.status ?? '')}>
-                            {jobStatusText}
-                          </StatusBadge>
-                        </td>
-                        <td>{j.attempt}</td>
-                        <td>{started ? startedTimeLabel : '—'}</td>
-                        <td>
-                          {jobMessage ? (
-                            <button
-                              type="button"
-                              className={`jobs-message-button${isExpanded ? ' jobs-message-button-active' : ''}`}
-                              onClick={() => toggleJobExpansion(j.id)}
-                              aria-expanded={isExpanded}
-                              aria-controls={`job-details-${j.id}`}
-                              aria-label={messageLabel}
-                              title={jobMessage}
-                            >
-                              <span className="jobs-message-text">{jobMessage}</span>
-                              <Icon
-                                icon={isExpanded ? 'mdi:chevron-up' : 'mdi:chevron-down'}
-                                width={16}
-                                height={16}
-                                className="jobs-message-icon"
-                                aria-hidden="true"
-                              />
-                            </button>
-                          ) : (
-                            '—'
-                          )}
-                        </td>
-                      </tr>,
+                      <td>{j.id}</td>
+                      <td>{jobTypeLabelText}</td>
+                      <td>
+                        <JobKeyLink
+                          keyId={keyId}
+                          keyGroup={keyGroup}
+                          ungroupedLabel={keyStrings.groups.ungrouped}
+                          detailLabel={keyStrings.actions.details}
+                          onOpenKey={navigateKey}
+                        />
+                      </td>
+                      <td>
+                        <StatusBadge tone={statusTone(j.status)} title={String(j.status ?? '')}>
+                          {jobStatusText}
+                        </StatusBadge>
+                      </td>
+                      <td>{j.attempt}</td>
+                      <td>{started ? startedTimeLabel : '—'}</td>
+                      <td className="jobs-message-cell">
+                        {jobMessage ? (
+                          <button
+                            type="button"
+                            className={`jobs-message-button${isExpanded ? ' jobs-message-button-active' : ''}`}
+                            onClick={() => toggleJobExpansion(j.id)}
+                            aria-expanded={isExpanded}
+                            aria-controls={`job-details-${j.id}`}
+                            aria-label={messageLabel}
+                            title={jobMessage}
+                          >
+                            <span className="jobs-message-text">{jobMessage}</span>
+                            <Icon
+                              icon={isExpanded ? 'mdi:chevron-up' : 'mdi:chevron-down'}
+                              width={16}
+                              height={16}
+                              className="jobs-message-icon"
+                              aria-hidden="true"
+                            />
+                          </button>
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+                    </tr>,
                   )
 
                   if (isExpanded) {
@@ -6044,7 +6053,15 @@ function AdminDashboard(): JSX.Element {
                               </div>
                               <div>
                                 <div className="log-details-label">{jobsStrings.table.key}</div>
-                                <div className="log-details-value">{keyId ?? '—'}</div>
+                                <div className="log-details-value">
+                                  <JobKeyLink
+                                    keyId={keyId}
+                                    keyGroup={keyGroup}
+                                    ungroupedLabel={keyStrings.groups.ungrouped}
+                                    detailLabel={keyStrings.actions.details}
+                                    onOpenKey={navigateKey}
+                                  />
+                                </div>
                               </div>
                               <div>
                                 <div className="log-details-label">{jobsStrings.table.status}</div>
@@ -6106,10 +6123,8 @@ function AdminDashboard(): JSX.Element {
             <div className="empty-state alert">{jobsStrings.empty.none}</div>
           ) : (
             jobs.map((j) => {
-              const job: any = j as any
-              const jt = job.job_type ?? job.jobType ?? ''
-              const keyId = job.key_id ?? job.keyId ?? '—'
-              const started: number | null = job.started_at ?? job.startedAt ?? null
+              const jt = j.job_type
+              const started: number | null = j.started_at ?? null
               return (
                 <article key={j.id} className="admin-mobile-card">
                   <div className="admin-mobile-kv">
@@ -6122,7 +6137,16 @@ function AdminDashboard(): JSX.Element {
                   </div>
                   <div className="admin-mobile-kv">
                     <span>{jobsStrings.table.key}</span>
-                    <strong>{keyId}</strong>
+                    <strong>
+                      <JobKeyLink
+                        keyId={j.key_id}
+                        keyGroup={j.key_group}
+                        ungroupedLabel={keyStrings.groups.ungrouped}
+                        detailLabel={keyStrings.actions.details}
+                        onOpenKey={navigateKey}
+                        showBubble={false}
+                      />
+                    </strong>
                   </div>
                   <div className="admin-mobile-kv">
                     <span>{jobsStrings.table.status}</span>

@@ -11616,9 +11616,19 @@ impl KeyStore {
     async fn list_recent_jobs(&self, limit: usize) -> Result<Vec<JobLog>, ProxyError> {
         let limit = limit.clamp(1, 500) as i64;
         let rows = sqlx::query(
-            r#"SELECT id, job_type, key_id, status, attempt, message, started_at, finished_at
-                FROM scheduled_jobs
-                ORDER BY started_at DESC, id DESC
+            r#"SELECT
+                    j.id,
+                    j.job_type,
+                    j.key_id,
+                    k.group_name AS key_group,
+                    j.status,
+                    j.attempt,
+                    j.message,
+                    j.started_at,
+                    j.finished_at
+                FROM scheduled_jobs j
+                LEFT JOIN api_keys k ON k.id = j.key_id
+                ORDER BY j.started_at DESC, j.id DESC
                 LIMIT ?"#,
         )
         .bind(limit)
@@ -11631,6 +11641,7 @@ impl KeyStore {
                     id: row.try_get("id")?,
                     job_type: row.try_get("job_type")?,
                     key_id: row.try_get::<Option<String>, _>("key_id")?,
+                    key_group: row.try_get::<Option<String>, _>("key_group")?,
                     status: row.try_get("status")?,
                     attempt: row.try_get("attempt")?,
                     message: row.try_get::<Option<String>, _>("message")?,
@@ -11653,23 +11664,40 @@ impl KeyStore {
         let offset = ((page - 1) as i64).saturating_mul(per_page);
 
         let where_clause = match group {
+            "quota" => "WHERE j.job_type = 'quota_sync' OR j.job_type = 'quota_sync/manual'",
+            "usage" => "WHERE j.job_type = 'token_usage_rollup'",
+            "logs" => "WHERE j.job_type = 'auth_token_logs_gc' OR j.job_type = 'request_logs_gc'",
+            _ => "",
+        };
+
+        let count_where_clause = match group {
             "quota" => "WHERE job_type = 'quota_sync' OR job_type = 'quota_sync/manual'",
             "usage" => "WHERE job_type = 'token_usage_rollup'",
             "logs" => "WHERE job_type = 'auth_token_logs_gc' OR job_type = 'request_logs_gc'",
             _ => "",
         };
 
-        let count_query = format!("SELECT COUNT(*) FROM scheduled_jobs {}", where_clause);
+        let count_query = format!("SELECT COUNT(*) FROM scheduled_jobs {}", count_where_clause);
         let total: i64 = sqlx::query_scalar(&count_query)
             .fetch_one(&self.pool)
             .await?;
 
         let select_query = format!(
             r#"
-            SELECT id, job_type, key_id, status, attempt, message, started_at, finished_at
-            FROM scheduled_jobs
+            SELECT
+                j.id,
+                j.job_type,
+                j.key_id,
+                k.group_name AS key_group,
+                j.status,
+                j.attempt,
+                j.message,
+                j.started_at,
+                j.finished_at
+            FROM scheduled_jobs j
+            LEFT JOIN api_keys k ON k.id = j.key_id
             {}
-            ORDER BY started_at DESC, id DESC
+            ORDER BY j.started_at DESC, j.id DESC
             LIMIT ? OFFSET ?
             "#,
             where_clause
@@ -11688,6 +11716,7 @@ impl KeyStore {
                     id: row.try_get("id")?,
                     job_type: row.try_get("job_type")?,
                     key_id: row.try_get::<Option<String>, _>("key_id")?,
+                    key_group: row.try_get::<Option<String>, _>("key_group")?,
                     status: row.try_get("status")?,
                     attempt: row.try_get("attempt")?,
                     message: row.try_get::<Option<String>, _>("message")?,
@@ -12133,6 +12162,7 @@ pub struct JobLog {
     pub id: i64,
     pub job_type: String,
     pub key_id: Option<String>,
+    pub key_group: Option<String>,
     pub status: String,
     pub attempt: i64,
     pub message: Option<String>,
@@ -19373,6 +19403,78 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
             .await
             .expect("business quota verdict after unbind");
         assert!(quota_after_unbind.allowed);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn list_recent_jobs_paginated_includes_key_group() {
+        let db_path = temp_db_path("jobs-list-key-group");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        let grouped_key_id = proxy
+            .add_or_undelete_key_in_group("tvly-jobs-grouped", Some("ops"))
+            .await
+            .expect("create grouped key");
+        let ungrouped_key_id = proxy
+            .add_or_undelete_key_in_group("tvly-jobs-ungrouped", None)
+            .await
+            .expect("create ungrouped key");
+
+        let grouped_job_id = proxy
+            .scheduled_job_start("quota_sync", Some(&grouped_key_id), 1)
+            .await
+            .expect("start grouped job");
+        proxy
+            .scheduled_job_finish(grouped_job_id, "error", Some("usage_http 401"))
+            .await
+            .expect("finish grouped job");
+
+        let ungrouped_job_id = proxy
+            .scheduled_job_start("quota_sync", Some(&ungrouped_key_id), 1)
+            .await
+            .expect("start ungrouped job");
+        proxy
+            .scheduled_job_finish(ungrouped_job_id, "success", Some("limit=100 remaining=99"))
+            .await
+            .expect("finish ungrouped job");
+
+        let cleanup_job_id = proxy
+            .scheduled_job_start("auth_token_logs_gc", None, 1)
+            .await
+            .expect("start cleanup job");
+        proxy
+            .scheduled_job_finish(cleanup_job_id, "success", Some("pruned=10"))
+            .await
+            .expect("finish cleanup job");
+
+        let (items, total) = proxy
+            .list_recent_jobs_paginated("all", 1, 10)
+            .await
+            .expect("list jobs");
+
+        assert_eq!(total, 3);
+
+        let grouped_job = items
+            .iter()
+            .find(|item| item.key_id.as_deref() == Some(grouped_key_id.as_str()))
+            .expect("grouped job present");
+        assert_eq!(grouped_job.key_group.as_deref(), Some("ops"));
+
+        let ungrouped_job = items
+            .iter()
+            .find(|item| item.key_id.as_deref() == Some(ungrouped_key_id.as_str()))
+            .expect("ungrouped job present");
+        assert_eq!(ungrouped_job.key_group, None);
+
+        let cleanup_job = items
+            .iter()
+            .find(|item| item.key_id.is_none())
+            .expect("cleanup job present");
+        assert_eq!(cleanup_job.key_group, None);
 
         let _ = std::fs::remove_file(db_path);
     }

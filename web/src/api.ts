@@ -267,11 +267,24 @@ export interface JobLogView {
   id: number
   job_type: string
   key_id: string | null
+  key_group: string | null
   status: string
   attempt: number
   message: string | null
   started_at: number
   finished_at: number | null
+}
+
+interface ServerJobLogView {
+  id: number
+  jobType: string
+  keyId: string | null
+  keyGroup: string | null
+  status: string
+  attempt: number
+  message: string | null
+  startedAt: number
+  finishedAt: number | null
 }
 
 export type JobGroup = 'all' | 'quota' | 'usage' | 'logs'
@@ -759,7 +772,22 @@ export function fetchJobs(
   if (group !== 'all') {
     params.set('group', group)
   }
-  return requestJson(`/api/jobs?${params.toString()}`, { signal })
+  return requestJson<Paginated<ServerJobLogView>>(`/api/jobs?${params.toString()}`, { signal }).then((data) => ({
+    total: data.total,
+    page: data.page,
+    perPage: data.perPage,
+    items: data.items.map((item) => ({
+      id: item.id,
+      job_type: item.jobType,
+      key_id: item.keyId,
+      key_group: item.keyGroup,
+      status: item.status,
+      attempt: item.attempt,
+      message: item.message,
+      started_at: item.startedAt,
+      finished_at: item.finishedAt,
+    })),
+  }))
 }
 
 export function fetchAdminUsers(

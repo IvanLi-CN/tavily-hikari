@@ -4901,6 +4901,42 @@ tbody tr:hover {
   white-space: normal;
 }
 
+.jobs-key-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 12px;
+  border-radius: 999px;
+  background: hsl(var(--accent) / 0.14);
+  color: hsl(var(--foreground));
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-size: 0.95rem;
+  line-height: 1.2;
+  text-decoration: none;
+  transition: background-color 0.15s ease, color 0.15s ease, transform 0.15s ease;
+}
+
+.jobs-key-link:hover {
+  background: hsl(var(--accent) / 0.24);
+  color: hsl(var(--foreground));
+  transform: translateY(-1px);
+}
+
+.jobs-key-link:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+.jobs-key-link code {
+  color: inherit;
+}
+
+.jobs-key-tooltip[data-tip]::after {
+  max-width: min(18rem, calc(100vw - 2rem));
+  white-space: normal;
+  text-align: center;
+}
+
 /* Job type detail pill with hover bubble showing raw code */
 .job-type-pill {
   position: relative;
