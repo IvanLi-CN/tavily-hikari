@@ -465,18 +465,28 @@ export default function UserConsole(): JSX.Element {
     tokenSecretCacheTimerRef.current.set(tokenId, timer)
   }, [clearCachedTokenSecret])
 
-  const cancelWarmTokenSecret = useCallback((tokenId: string) => {
+  const clearWarmTokenSecretTimer = useCallback((tokenId: string) => {
     const timer = tokenSecretWarmTimerRef.current.get(tokenId)
     if (timer != null) {
       window.clearTimeout(timer)
       tokenSecretWarmTimerRef.current.delete(tokenId)
     }
+  }, [])
+
+  const cancelWarmTokenSecret = useCallback((tokenId: string) => {
+    clearWarmTokenSecretTimer(tokenId)
     const controller = tokenSecretWarmAbortRef.current.get(tokenId)
     if (controller) {
       controller.abort()
       tokenSecretWarmAbortRef.current.delete(tokenId)
+      tokenSecretRequestRef.current.delete(tokenId)
     }
-  }, [])
+  }, [clearWarmTokenSecretTimer])
+
+  const commitWarmTokenSecret = useCallback((tokenId: string) => {
+    clearWarmTokenSecretTimer(tokenId)
+    tokenSecretWarmAbortRef.current.delete(tokenId)
+  }, [clearWarmTokenSecretTimer])
 
   const resolveTokenSecret = useCallback(async (tokenId: string, signal?: AbortSignal) => {
     const revealedToken =
@@ -512,12 +522,12 @@ export default function UserConsole(): JSX.Element {
 
   const warmTokenSecret = useCallback((tokenId: string) => {
     if (consoleAvailability !== 'enabled' || !shouldPrewarmTokenCopy) return
-    cancelWarmTokenSecret(tokenId)
+    clearWarmTokenSecretTimer(tokenId)
     if (tokenSecretCacheRef.current.has(tokenId) || tokenSecretRequestRef.current.has(tokenId)) return
     const controller = new AbortController()
     tokenSecretWarmAbortRef.current.set(tokenId, controller)
-    void fetchUserTokenSecret(tokenId, controller.signal)
-      .then(({ token }) => {
+    void resolveTokenSecret(tokenId, controller.signal)
+      .then((token) => {
         if (tokenSecretWarmAbortRef.current.get(tokenId) !== controller) return
         cacheTokenSecret(tokenId, token)
       })
@@ -527,18 +537,18 @@ export default function UserConsole(): JSX.Element {
           tokenSecretWarmAbortRef.current.delete(tokenId)
         }
       })
-  }, [cacheTokenSecret, cancelWarmTokenSecret, consoleAvailability, shouldPrewarmTokenCopy])
+  }, [cacheTokenSecret, clearWarmTokenSecretTimer, consoleAvailability, resolveTokenSecret, shouldPrewarmTokenCopy])
 
   const scheduleWarmTokenSecret = useCallback((tokenId: string) => {
     if (consoleAvailability !== 'enabled' || !shouldPrewarmTokenCopy) return
     if (tokenSecretCacheRef.current.has(tokenId) || tokenSecretRequestRef.current.has(tokenId)) return
-    cancelWarmTokenSecret(tokenId)
+    clearWarmTokenSecretTimer(tokenId)
     const timer = window.setTimeout(() => {
       tokenSecretWarmTimerRef.current.delete(tokenId)
       void warmTokenSecret(tokenId)
     }, USER_CONSOLE_SECRET_PREWARM_DELAY_MS)
     tokenSecretWarmTimerRef.current.set(tokenId, timer)
-  }, [cancelWarmTokenSecret, consoleAvailability, shouldPrewarmTokenCopy, warmTokenSecret])
+  }, [clearWarmTokenSecretTimer, consoleAvailability, shouldPrewarmTokenCopy, warmTokenSecret])
 
   const revealDetailTokenForManualCopy = useCallback((tokenId: string, token: string) => {
     if (route.name !== 'token' || route.id !== tokenId) return false
@@ -555,7 +565,7 @@ export default function UserConsole(): JSX.Element {
 
   const copyToken = useCallback(async (tokenId: string, anchorEl?: HTMLElement | null) => {
     setManualCopyBubble(null)
-    cancelWarmTokenSecret(tokenId)
+    commitWarmTokenSecret(tokenId)
     try {
       const inlineToken =
         route.name === 'token' && route.id === tokenId && tokenSecretTokenId === tokenId && tokenSecretValue != null
@@ -585,7 +595,7 @@ export default function UserConsole(): JSX.Element {
     window.setTimeout(() => {
       setCopyState((prev) => ({ ...prev, [tokenId]: 'idle' }))
     }, 1800)
-  }, [cancelWarmTokenSecret, clearCachedTokenSecret, resolveTokenSecret, revealDetailTokenForManualCopy, route, tokenSecretTokenId, tokenSecretValue])
+  }, [clearCachedTokenSecret, commitWarmTokenSecret, resolveTokenSecret, revealDetailTokenForManualCopy, route, tokenSecretTokenId, tokenSecretValue])
 
   const toggleTokenSecretVisibility = useCallback(async () => {
     if (route.name !== 'token') return

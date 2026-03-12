@@ -1135,32 +1135,57 @@ function AdminDashboard(): JSX.Element {
 
   const shouldPrewarmAdminSecretCopy = useMemo(() => shouldPrewarmSecretCopy(), [])
 
-  const cancelSecretWarm = useCallback((key: string) => {
+  const clearSecretWarmTimer = useCallback((key: string) => {
     const timer = secretWarmTimerRef.current.get(key)
     if (timer != null) {
       window.clearTimeout(timer)
       secretWarmTimerRef.current.delete(key)
     }
+  }, [])
+
+  const dropSecretWarmRequest = useCallback((key: string) => {
+    const separatorIndex = key.indexOf(':')
+    if (separatorIndex < 0) return
+    const scope = key.slice(0, separatorIndex)
+    const id = key.slice(separatorIndex + 1)
+    if (!id) return
+    if (scope === 'token') {
+      tokenSecretRequestCacheRef.current.delete(id)
+      return
+    }
+    if (scope === 'key') {
+      secretRequestCacheRef.current.delete(id)
+    }
+  }, [])
+
+  const cancelSecretWarm = useCallback((key: string) => {
+    clearSecretWarmTimer(key)
     const controller = secretWarmAbortRef.current.get(key)
     if (controller) {
       controller.abort()
       secretWarmAbortRef.current.delete(key)
+      dropSecretWarmRequest(key)
     }
-  }, [])
+  }, [clearSecretWarmTimer, dropSecretWarmRequest])
+
+  const commitSecretWarm = useCallback((key: string) => {
+    clearSecretWarmTimer(key)
+    secretWarmAbortRef.current.delete(key)
+  }, [clearSecretWarmTimer])
 
   const warmTokenSecret = useCallback((id: string) => {
     if (!shouldPrewarmAdminSecretCopy) return
-    cancelSecretWarm(`token:${id}`)
+    const key = `token:${id}`
+    clearSecretWarmTimer(key)
     if (tokenSecretCacheRef.current.has(id) || tokenSecretRequestCacheRef.current.has(id)) return
     const controller = new AbortController()
-    const key = `token:${id}`
     const requestVersion = tokenSecretVersionRef.current.get(id) ?? 0
     secretWarmAbortRef.current.set(key, controller)
-    void fetchTokenSecret(id, controller.signal)
-      .then((result) => {
+    void resolveTokenSecret(id, controller.signal)
+      .then((token) => {
         if (secretWarmAbortRef.current.get(key) !== controller) return
         if ((tokenSecretVersionRef.current.get(id) ?? 0) === requestVersion) {
-          tokenSecretCacheRef.current.set(id, result.token)
+          tokenSecretCacheRef.current.set(id, token)
         }
       })
       .catch(() => undefined)
@@ -1169,19 +1194,19 @@ function AdminDashboard(): JSX.Element {
           secretWarmAbortRef.current.delete(key)
         }
       })
-  }, [cancelSecretWarm, shouldPrewarmAdminSecretCopy])
+  }, [clearSecretWarmTimer, resolveTokenSecret, shouldPrewarmAdminSecretCopy])
 
   const warmApiKeySecret = useCallback((id: string) => {
     if (!shouldPrewarmAdminSecretCopy) return
-    cancelSecretWarm(`key:${id}`)
+    const key = `key:${id}`
+    clearSecretWarmTimer(key)
     if (secretCacheRef.current.has(id) || secretRequestCacheRef.current.has(id)) return
     const controller = new AbortController()
-    const key = `key:${id}`
     secretWarmAbortRef.current.set(key, controller)
-    void fetchApiKeySecret(id, controller.signal)
-      .then((result) => {
+    void resolveApiKeySecret(id, controller.signal)
+      .then((secret) => {
         if (secretWarmAbortRef.current.get(key) !== controller) return
-        secretCacheRef.current.set(id, result.api_key)
+        secretCacheRef.current.set(id, secret)
       })
       .catch(() => undefined)
       .finally(() => {
@@ -1189,17 +1214,17 @@ function AdminDashboard(): JSX.Element {
           secretWarmAbortRef.current.delete(key)
         }
       })
-  }, [cancelSecretWarm, shouldPrewarmAdminSecretCopy])
+  }, [clearSecretWarmTimer, resolveApiKeySecret, shouldPrewarmAdminSecretCopy])
 
   const scheduleSecretWarm = useCallback((key: string, warmup: () => void) => {
     if (!shouldPrewarmAdminSecretCopy) return
-    cancelSecretWarm(key)
+    clearSecretWarmTimer(key)
     const timer = window.setTimeout(() => {
       secretWarmTimerRef.current.delete(key)
       warmup()
     }, 120)
     secretWarmTimerRef.current.set(key, timer)
-  }, [cancelSecretWarm, shouldPrewarmAdminSecretCopy])
+  }, [clearSecretWarmTimer, shouldPrewarmAdminSecretCopy])
 
   const handleTokenSecretRotated = useCallback((id: string, token: string) => {
     tokenSecretVersionRef.current.set(id, (tokenSecretVersionRef.current.get(id) ?? 0) + 1)
@@ -1261,7 +1286,7 @@ function AdminDashboard(): JSX.Element {
   const handleCopySecret = useCallback(
     async (id: string, stateKey: string, anchorEl?: HTMLElement | null) => {
       setManualCopyBubble(null)
-      cancelSecretWarm(`key:${id}`)
+      commitSecretWarm(`key:${id}`)
       updateCopyState(stateKey, 'loading')
       try {
         const hasCachedSecret = secretCacheRef.current.has(id)
@@ -1299,7 +1324,7 @@ function AdminDashboard(): JSX.Element {
       openManualCopyBubble,
       resolveApiKeySecret,
       setError,
-      cancelSecretWarm,
+      commitSecretWarm,
       updateCopyState,
     ],
   )
@@ -3077,7 +3102,7 @@ function AdminDashboard(): JSX.Element {
 
   const handleCopyToken = async (id: string, stateKey: string, anchorEl?: HTMLElement | null) => {
     setManualCopyBubble(null)
-    cancelSecretWarm(`token:${id}`)
+    commitSecretWarm(`token:${id}`)
     updateCopyState(stateKey, 'loading')
     try {
       const hasCachedToken = tokenSecretCacheRef.current.has(id)
@@ -3111,7 +3136,7 @@ function AdminDashboard(): JSX.Element {
 
   const handleShareToken = async (id: string, stateKey: string, anchorEl?: HTMLElement | null) => {
     setManualCopyBubble(null)
-    cancelSecretWarm(`token:${id}`)
+    commitSecretWarm(`token:${id}`)
     updateCopyState(stateKey, 'loading')
     try {
       const hasCachedToken = tokenSecretCacheRef.current.has(id)
