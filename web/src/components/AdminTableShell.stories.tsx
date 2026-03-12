@@ -53,3 +53,17 @@ export default meta
 type Story = StoryObj<typeof meta>
 
 export const Default: Story = {}
+
+export const SwitchLoading: Story = {
+  args: {
+    loadState: 'switch_loading',
+    loadingLabel: 'Updating request records…',
+  },
+}
+
+export const Refreshing: Story = {
+  args: {
+    loadState: 'refreshing',
+    loadingLabel: 'Refreshing current rows…',
+  },
+}

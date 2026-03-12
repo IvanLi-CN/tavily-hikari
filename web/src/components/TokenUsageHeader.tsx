@@ -23,6 +23,7 @@ interface TokenUsageHeaderProps {
   periodOptions: ReadonlyArray<SegmentedTabsOption<TokenLeaderboardPeriod>>
   focusOptions: ReadonlyArray<SegmentedTabsOption<TokenLeaderboardFocus>>
   visualPreset?: TokenUsageHeaderVisualPreset
+  controlsDisabled?: boolean
   onBack: () => void
   onRefresh: () => void
   onPeriodChange: (value: TokenLeaderboardPeriod) => void
@@ -31,6 +32,7 @@ interface TokenUsageHeaderProps {
 
 export default function TokenUsageHeader(props: TokenUsageHeaderProps): JSX.Element {
   const visualPreset = props.visualPreset ?? 'panel'
+  const controlsDisabled = props.controlsDisabled ?? false
   const activePeriodLabel = props.periodOptions.find((option) => option.value === props.period)?.label
   const activeFocusLabel = props.focusOptions.find((option) => option.value === props.focus)?.label
 
@@ -83,7 +85,7 @@ export default function TokenUsageHeader(props: TokenUsageHeaderProps): JSX.Elem
               size="sm"
               className="token-usage-refresh-button"
               onClick={props.onRefresh}
-              disabled={props.isRefreshing}
+              disabled={props.isRefreshing || controlsDisabled}
             >
               <Icon
                 icon={props.isRefreshing ? 'mdi:loading' : 'mdi:refresh'}
@@ -104,6 +106,7 @@ export default function TokenUsageHeader(props: TokenUsageHeaderProps): JSX.Elem
           onChange={props.onPeriodChange}
           options={props.periodOptions}
           ariaLabel={props.title}
+          disabled={controlsDisabled}
         />
         <SegmentedTabs<'usage' | 'errors' | 'other'>
           className="token-usage-segmented"
@@ -111,6 +114,7 @@ export default function TokenUsageHeader(props: TokenUsageHeaderProps): JSX.Elem
           onChange={props.onFocusChange}
           options={props.focusOptions}
           ariaLabel={props.subtitle}
+          disabled={controlsDisabled}
         />
       </div>
     </section>

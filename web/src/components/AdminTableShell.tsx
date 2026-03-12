@@ -1,18 +1,38 @@
 import type { ReactNode } from 'react'
 
+import type { QueryLoadState } from '../admin/queryLoadState'
 import { cn } from '../lib/utils'
+import AdminLoadingRegion from './AdminLoadingRegion'
 import { Table } from './ui/table'
 
 interface AdminTableShellProps {
   children: ReactNode
   className?: string
   tableClassName?: string
+  loadState?: QueryLoadState
+  loadingLabel?: ReactNode
+  minHeight?: number | string
+  skeletonRows?: number
 }
 
-export default function AdminTableShell({ children, className, tableClassName }: AdminTableShellProps): JSX.Element {
+export default function AdminTableShell({
+  children,
+  className,
+  tableClassName,
+  loadState = 'ready',
+  loadingLabel,
+  minHeight,
+  skeletonRows,
+}: AdminTableShellProps): JSX.Element {
   return (
-    <div className={cn('table-wrapper', className)}>
+    <AdminLoadingRegion
+      className={cn('table-wrapper', className)}
+      loadState={loadState}
+      loadingLabel={loadingLabel}
+      minHeight={minHeight}
+      skeletonRows={skeletonRows}
+    >
       <Table className={tableClassName}>{children}</Table>
-    </div>
+    </AdminLoadingRegion>
   )
 }

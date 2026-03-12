@@ -16,6 +16,7 @@ interface SegmentedTabsProps<T extends string = string> {
   options: ReadonlyArray<SegmentedTabsOption<T>>
   ariaLabel: string
   className?: string
+  disabled?: boolean
 }
 
 function labelToPlainText(node: React.ReactNode): string {
@@ -33,6 +34,7 @@ export default function SegmentedTabs<T extends string = string>({
   options,
   ariaLabel,
   className,
+  disabled = false,
 }: SegmentedTabsProps<T>): JSX.Element {
   const viewportMode = useViewportMode()
 
@@ -42,13 +44,13 @@ export default function SegmentedTabs<T extends string = string>({
 
     return (
       <div className={cn('segmented-tabs segmented-tabs-mobile', className)}>
-        <Select value={value} onValueChange={(next) => onChange(next as T)}>
-          <SelectTrigger aria-label={ariaLabel} className="segmented-tabs-select-trigger">
+        <Select value={value} onValueChange={(next) => onChange(next as T)} disabled={disabled}>
+          <SelectTrigger aria-label={ariaLabel} className="segmented-tabs-select-trigger" disabled={disabled}>
             <SelectValue>{selectedLabel || value}</SelectValue>
           </SelectTrigger>
           <SelectContent align="start" className="segmented-tabs-select-content">
             {options.map((option) => (
-              <SelectItem key={option.value} value={option.value} disabled={option.disabled}>
+              <SelectItem key={option.value} value={option.value} disabled={disabled || option.disabled}>
                 {option.label}
               </SelectItem>
             ))}
@@ -70,7 +72,7 @@ export default function SegmentedTabs<T extends string = string>({
             aria-checked={active}
             className={cn('segmented-tab', active && 'is-active')}
             onClick={() => onChange(option.value)}
-            disabled={option.disabled}
+            disabled={disabled || option.disabled}
           >
             {option.label}
           </button>

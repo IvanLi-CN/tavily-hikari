@@ -6,6 +6,7 @@ import { SELECT_STORY } from "storybook/internal/core-events";
 import TokenDetail from "./TokenDetail";
 
 const tokenId = "a1b2";
+type StoryMode = "default" | "initial_loading" | "switch_loading" | "refreshing";
 
 interface StoryTokenDetail {
   id: string;
@@ -62,7 +63,7 @@ const metricsMock = {
   last_activity: 1_762_390_010,
 };
 
-const logsMock = Array.from({ length: 8 }, (_, idx) => ({
+const logsMock = Array.from({ length: 24 }, (_, idx) => ({
   id: 3000 + idx,
   method: "POST",
   path: "/mcp",
@@ -73,6 +74,12 @@ const logsMock = Array.from({ length: 8 }, (_, idx) => ({
   result_status: idx % 4 === 0 ? "quota_exhausted" : "success",
   error_message: idx % 4 === 0 ? "quota exhausted" : null,
   created_at: 1_762_390_010 - idx * 420,
+}));
+
+const logsPageTwoMock = logsMock.map((item, idx) => ({
+  ...item,
+  id: 4000 + idx,
+  created_at: item.created_at - 10_000,
 }));
 
 const usageSeriesMock = Array.from({ length: 16 }, (_, idx) => ({
@@ -89,9 +96,37 @@ function jsonResponse(data: unknown, status = 200): Response {
   });
 }
 
-function installFetchMock(detailOverride = tokenDetailMock): () => void {
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+type MockEventSourceShape = EventSource & {
+  dispatchEvent(event: Event): boolean;
+};
+
+const activeEventSources = new Set<MockEventSourceShape>();
+
+function buildLogPage(
+  source: typeof logsMock,
+  page: number,
+  perPage: number,
+): { items: typeof logsMock; page: number; per_page: number; total: number } {
+  const start = (page - 1) * perPage;
+  return {
+    items: source.slice(start, start + perPage),
+    page,
+    per_page: perPage,
+    total: source.length,
+  };
+}
+
+function installFetchMock(
+  detailOverride = tokenDetailMock,
+  mode: StoryMode = "default",
+): () => void {
   const originalFetch = window.fetch.bind(window);
   const activeTokenId = detailOverride.id;
+  let initialLogsResolved = false;
 
   window.fetch = async (
     input: RequestInfo | URL,
@@ -101,22 +136,33 @@ function installFetchMock(detailOverride = tokenDetailMock): () => void {
     const url = new URL(request.url, window.location.origin);
 
     if (url.pathname === `/api/tokens/${activeTokenId}`) {
+      if (mode === "initial_loading") {
+        await wait(4_000);
+      }
       return jsonResponse(detailOverride);
     }
 
     if (url.pathname === `/api/tokens/${activeTokenId}/metrics`) {
+      if (mode === "initial_loading") {
+        await wait(4_000);
+      }
       return jsonResponse(metricsMock);
     }
 
     if (url.pathname === `/api/tokens/${activeTokenId}/logs/page`) {
       const perPage = Number(url.searchParams.get("per_page") ?? "20");
       const page = Number(url.searchParams.get("page") ?? "1");
-      return jsonResponse({
-        items: logsMock.slice(0, perPage),
-        page,
-        per_page: perPage,
-        total: logsMock.length,
-      });
+      if (mode === "initial_loading") {
+        await wait(4_000);
+      } else if (mode === "switch_loading" && page === 2) {
+        await wait(4_000);
+      } else if (mode === "refreshing" && page === 1 && initialLogsResolved) {
+        await wait(4_000);
+      }
+      initialLogsResolved = true;
+      return jsonResponse(
+        buildLogPage(page === 2 ? logsPageTwoMock : logsMock, page, perPage),
+      );
     }
 
     if (url.pathname === `/api/tokens/${activeTokenId}/metrics/usage-series`) {
@@ -159,6 +205,7 @@ function installEventSourceMock(): () => void {
 
     constructor(url: string) {
       this.url = url;
+      activeEventSources.add(this as unknown as MockEventSourceShape);
       window.setTimeout(() => {
         this.onopen?.call(this as unknown as EventSource, new Event("open"));
       }, 0);
@@ -196,6 +243,7 @@ function installEventSourceMock(): () => void {
 
     close(): void {
       this.readyState = MockEventSource.CLOSED;
+      activeEventSources.delete(this as unknown as MockEventSourceShape);
     }
   }
 
@@ -207,19 +255,30 @@ function installEventSourceMock(): () => void {
   };
 }
 
+function emitSnapshotRefresh(): void {
+  const event = new MessageEvent("snapshot", {
+    data: JSON.stringify({ summary: metricsMock, logs: logsMock.slice(0, 20) }),
+  });
+  activeEventSources.forEach((source) => {
+    source.dispatchEvent(event);
+  });
+}
+
 function openStoryInManager(storyId: string): void {
   addons.getChannel().emit(SELECT_STORY, { storyId });
 }
 
 function TokenDetailStoryCanvas({
   detail = tokenDetailMock,
+  mode = "default",
 }: {
   detail?: StoryTokenDetail;
+  mode?: StoryMode;
 }): JSX.Element {
   const [ready, setReady] = useState(false);
 
   useLayoutEffect(() => {
-    const cleanupFetch = installFetchMock(detail);
+    const cleanupFetch = installFetchMock(detail, mode);
     const cleanupEventSource = installEventSourceMock();
     setReady(true);
 
@@ -228,7 +287,28 @@ function TokenDetailStoryCanvas({
       cleanupEventSource();
       setReady(false);
     };
-  }, [detail]);
+  }, [detail, mode]);
+
+  useLayoutEffect(() => {
+    if (!ready) return;
+
+    if (mode === "switch_loading") {
+      const timer = window.setTimeout(() => {
+        const nextButton = document.querySelectorAll<HTMLButtonElement>(
+          ".table-pagination-button",
+        )[1];
+        nextButton?.click();
+      }, 600);
+      return () => window.clearTimeout(timer);
+    }
+
+    if (mode === "refreshing") {
+      const timer = window.setTimeout(() => {
+        emitSnapshotRefresh();
+      }, 600);
+      return () => window.clearTimeout(timer);
+    }
+  }, [mode, ready]);
 
   if (!ready) {
     return <div style={{ minHeight: "100vh" }} />;
@@ -259,14 +339,35 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {
-  args: { detail: tokenDetailMock },
+  args: { detail: tokenDetailMock, mode: "default" },
   parameters: {
     viewport: { defaultViewport: "1440-device-desktop" },
   },
 };
 
 export const Unbound: Story = {
-  args: { detail: tokenDetailUnboundMock },
+  args: { detail: tokenDetailUnboundMock, mode: "default" },
+  parameters: {
+    viewport: { defaultViewport: "1440-device-desktop" },
+  },
+};
+
+export const InitialLoading: Story = {
+  args: { detail: tokenDetailMock, mode: "initial_loading" },
+  parameters: {
+    viewport: { defaultViewport: "1440-device-desktop" },
+  },
+};
+
+export const SwitchLoading: Story = {
+  args: { detail: tokenDetailMock, mode: "switch_loading" },
+  parameters: {
+    viewport: { defaultViewport: "1440-device-desktop" },
+  },
+};
+
+export const Refreshing: Story = {
+  args: { detail: tokenDetailMock, mode: "refreshing" },
   parameters: {
     viewport: { defaultViewport: "1440-device-desktop" },
   },

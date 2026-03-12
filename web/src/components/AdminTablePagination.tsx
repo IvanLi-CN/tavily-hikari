@@ -15,6 +15,7 @@ interface AdminTablePaginationProps {
   nextLabel?: string
   previousDisabled?: boolean
   nextDisabled?: boolean
+  disabled?: boolean
   onPrevious: () => void | Promise<void>
   onNext: () => void | Promise<void>
   onPerPageChange?: (value: number) => void | Promise<void>
@@ -32,6 +33,7 @@ export default function AdminTablePagination({
   nextLabel = 'Next',
   previousDisabled = false,
   nextDisabled = false,
+  disabled = false,
   onPrevious,
   onNext,
   onPerPageChange,
@@ -40,8 +42,8 @@ export default function AdminTablePagination({
     <div className="table-pagination">
       <span>{perPageLabel}</span>
       {typeof perPage === 'number' && onPerPageChange ? (
-        <Select value={String(perPage)} onValueChange={(value) => onPerPageChange(Number(value))}>
-          <SelectTrigger aria-label={perPageAriaLabel} className="table-pagination-select w-[96px]">
+        <Select value={String(perPage)} onValueChange={(value) => onPerPageChange(Number(value))} disabled={disabled}>
+          <SelectTrigger aria-label={perPageAriaLabel} className="table-pagination-select w-[96px]" disabled={disabled}>
             <SelectValue />
           </SelectTrigger>
           <SelectContent align="start">
@@ -59,7 +61,7 @@ export default function AdminTablePagination({
         size="sm"
         className="table-pagination-button"
         onClick={() => void onPrevious()}
-        disabled={previousDisabled}
+        disabled={disabled || previousDisabled}
       >
         {previousLabel}
       </Button>
@@ -70,7 +72,7 @@ export default function AdminTablePagination({
         size="sm"
         className="table-pagination-button"
         onClick={() => void onNext()}
-        disabled={nextDisabled}
+        disabled={disabled || nextDisabled}
       >
         {nextLabel}
       </Button>
