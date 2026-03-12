@@ -601,9 +601,10 @@ export default function TokenDetail({
   useEffect(() => {
     detailAbortRef.current?.abort()
     logsAbortRef.current?.abort()
-    const controller = new AbortController()
-    detailAbortRef.current = controller
-    logsAbortRef.current = controller
+    const detailController = new AbortController()
+    const logsController = new AbortController()
+    detailAbortRef.current = detailController
+    logsAbortRef.current = logsController
     const nextQueryKey = `${id}:${period}:${sinceIso}:${untilIso}:${perPage}`
     setSummaryLoadState(getBlockingLoadState(summaryQueryKeyRef.current != null))
     setLogsLoadState(getBlockingLoadState(logsQueryKeyRef.current != null))
@@ -615,12 +616,14 @@ export default function TokenDetail({
     setError(null)
     const run = async () => {
       try {
-        const [detailRes, summaryRes, logsRes] = await Promise.all([
-          getJson(`/api/tokens/${encodeURIComponent(id)}`, controller.signal),
-          getJson(`/api/tokens/${encodeURIComponent(id)}/metrics?period=${period}&since=${encodeURIComponent(sinceIso)}&until=${encodeURIComponent(untilIso)}`, controller.signal),
-          getJson(`/api/tokens/${encodeURIComponent(id)}/logs/page?page=1&per_page=${perPage}&since=${encodeURIComponent(sinceIso)}&until=${encodeURIComponent(untilIso)}`, controller.signal),
+        const [[detailRes, summaryRes], logsRes] = await Promise.all([
+          Promise.all([
+            getJson(`/api/tokens/${encodeURIComponent(id)}`, detailController.signal),
+            getJson(`/api/tokens/${encodeURIComponent(id)}/metrics?period=${period}&since=${encodeURIComponent(sinceIso)}&until=${encodeURIComponent(untilIso)}`, detailController.signal),
+          ]),
+          getJson(`/api/tokens/${encodeURIComponent(id)}/logs/page?page=1&per_page=${perPage}&since=${encodeURIComponent(sinceIso)}&until=${encodeURIComponent(untilIso)}`, logsController.signal),
         ])
-        if (controller.signal.aborted) return
+        if (detailController.signal.aborted || logsController.signal.aborted) return
         setInfo(detailRes)
         setSummary(summaryRes)
         setLogs(logsRes.items)
@@ -642,7 +645,10 @@ export default function TokenDetail({
       }
     }
     void run()
-    return () => controller.abort()
+    return () => {
+      detailController.abort()
+      logsController.abort()
+    }
   }, [id, period, sinceIso, untilIso, perPage, refreshQuickUsage, refreshSnapshotUsage])
 
   // SSE for live updates (refresh first page upon snapshot)

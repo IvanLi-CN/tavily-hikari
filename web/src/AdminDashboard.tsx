@@ -721,6 +721,10 @@ function AdminDashboard(): JSX.Element {
   const jobsLoadedRef = useRef(false)
   const usersLoadedRef = useRef(false)
   const usersQueryKeyRef = useRef<string | null>(null)
+  const baseDataAbortRef = useRef<AbortController | null>(null)
+  const requestsAbortRef = useRef<AbortController | null>(null)
+  const jobsAbortRef = useRef<AbortController | null>(null)
+  const usersAbortRef = useRef<AbortController | null>(null)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
   const [version, setVersion] = useState<{ backend: string; frontend: string } | null>(null)
   const [profile, setProfile] = useState<Profile | null>(null)
@@ -1007,6 +1011,35 @@ function AdminDashboard(): JSX.Element {
     return secret
   }, [])
 
+  const beginManagedRequest = useCallback(
+    (ref: { current: AbortController | null }, upstreamSignal?: AbortSignal) => {
+      ref.current?.abort()
+      const controller = new AbortController()
+      ref.current = controller
+      const forwardAbort = () => controller.abort()
+      if (upstreamSignal) {
+        if (upstreamSignal.aborted) {
+          controller.abort()
+        } else {
+          upstreamSignal.addEventListener('abort', forwardAbort, { once: true })
+        }
+      }
+      return {
+        signal: controller.signal,
+        abort: () => controller.abort(),
+        cleanup: () => {
+          if (upstreamSignal) {
+            upstreamSignal.removeEventListener('abort', forwardAbort)
+          }
+          if (ref.current === controller) {
+            ref.current = null
+          }
+        },
+      }
+    },
+    [],
+  )
+
   const loadAllTokensForDashboard = useCallback(async (
     signal?: AbortSignal,
   ): Promise<{ items: AuthToken[]; truncated: boolean }> => {
@@ -1062,6 +1095,7 @@ function AdminDashboard(): JSX.Element {
       reason?: 'initial' | 'switch' | 'refresh'
       showGlobalLoading?: boolean
     } = {}) => {
+      const request = beginManagedRequest(baseDataAbortRef, signal)
       setTokensLoadState(
         reason === 'refresh'
           ? getRefreshingLoadState(baseDataLoadedRef.current)
@@ -1073,15 +1107,15 @@ function AdminDashboard(): JSX.Element {
       }
       try {
         const [summaryData, keyData, ver, profileData, tokenData, tokenGroupsData] = await Promise.all([
-          fetchSummary(signal),
-          fetchApiKeys(signal),
-          fetchVersion(signal).catch(() => null),
-          fetchProfile(signal).catch(() => null),
+          fetchSummary(request.signal),
+          fetchApiKeys(request.signal),
+          fetchVersion(request.signal).catch(() => null),
+          fetchProfile(request.signal).catch(() => null),
           fetchTokens(
             tokensPage,
             tokensPerPage,
             { group: selectedTokenGroupName, ungrouped: selectedTokenUngrouped },
-            signal,
+            request.signal,
           ).catch(
             () =>
               ({
@@ -1091,10 +1125,10 @@ function AdminDashboard(): JSX.Element {
                 perPage: tokensPerPage,
               }) as Paginated<AuthToken>,
           ),
-          fetchTokenGroups(signal).catch(() => [] as TokenGroup[]),
+          fetchTokenGroups(request.signal).catch(() => [] as TokenGroup[]),
         ])
 
-        if (signal?.aborted) {
+        if (request.signal.aborted) {
           return
         }
 
@@ -1116,12 +1150,13 @@ function AdminDashboard(): JSX.Element {
         setError(err instanceof Error ? err.message : 'Unexpected error occurred')
         setTokensLoadState('error')
       } finally {
-        if (showGlobalLoading && !(signal?.aborted ?? false)) {
+        if (showGlobalLoading && !request.signal.aborted) {
           setLoading(false)
         }
+        request.cleanup()
       }
     },
-    [tokensPage, selectedTokenGroupName, selectedTokenUngrouped],
+    [beginManagedRequest, tokensPage, selectedTokenGroupName, selectedTokenUngrouped],
   )
 
   const loadDashboardOverview = useCallback(
@@ -1266,7 +1301,7 @@ function AdminDashboard(): JSX.Element {
 
   // Logs list: backend pagination & result filter
   useEffect(() => {
-    const controller = new AbortController()
+    const request = beginManagedRequest(requestsAbortRef)
     const resultParam =
       logResultFilter === 'all' ? undefined : (logResultFilter as 'success' | 'error' | 'quota_exhausted')
     setRequestsLoadState(getBlockingLoadState(requestsLoadedRef.current))
@@ -1274,35 +1309,41 @@ function AdminDashboard(): JSX.Element {
     setLogsTotal(0)
     setExpandedLogs(new Set())
 
-    fetchRequestLogs(logsPage, LOGS_PER_PAGE, resultParam, controller.signal)
+    fetchRequestLogs(logsPage, LOGS_PER_PAGE, resultParam, request.signal)
       .then((result) => {
-        if (controller.signal.aborted) return
+        if (request.signal.aborted) return
         setLogs(result.items)
         setLogsTotal(result.total)
         setRequestsLoadState('ready')
         requestsLoadedRef.current = true
       })
       .catch((err) => {
-        if (controller.signal.aborted) return
+        if (request.signal.aborted) return
         console.error(err)
         setLogs([])
         setLogsTotal(0)
         setRequestsLoadState('error')
       })
+      .finally(() => {
+        request.cleanup()
+      })
 
-    return () => controller.abort()
-  }, [logsPage, logResultFilter])
+    return () => {
+      request.abort()
+      request.cleanup()
+    }
+  }, [beginManagedRequest, logsPage, logResultFilter])
 
   // Jobs list: refetch when filter or page changes
   useEffect(() => {
-    const controller = new AbortController()
+    const request = beginManagedRequest(jobsAbortRef)
     setJobsLoadState(getBlockingLoadState(jobsLoadedRef.current))
     setJobs([])
     setJobsTotal(0)
     setExpandedJobs(new Set())
-    fetchJobs(jobsPage, jobsPerPage, jobFilter, controller.signal)
+    fetchJobs(jobsPage, jobsPerPage, jobFilter, request.signal)
       .then((result) => {
-        if (!controller.signal.aborted) {
+        if (!request.signal.aborted) {
           setJobs(result.items)
           setJobsTotal(result.total)
           setJobsLoadState('ready')
@@ -1310,14 +1351,20 @@ function AdminDashboard(): JSX.Element {
         }
       })
       .catch(() => {
-        if (!controller.signal.aborted) {
+        if (!request.signal.aborted) {
           setJobs([])
           setJobsTotal(0)
           setJobsLoadState('error')
         }
       })
-    return () => controller.abort()
-  }, [jobFilter, jobsPage])
+      .finally(() => {
+        request.cleanup()
+      })
+    return () => {
+      request.abort()
+      request.cleanup()
+    }
+  }, [beginManagedRequest, jobFilter, jobsPage])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -1336,7 +1383,7 @@ function AdminDashboard(): JSX.Element {
       (route.name === 'module' && route.module === 'users') || route.name === 'user'
     if (!usersRouteActive) return
 
-    const controller = new AbortController()
+    const request = beginManagedRequest(usersAbortRef)
     const nextQueryKey = `${usersPage}:${usersQuery}:${usersTagFilterId ?? ''}`
     const sameQueryRefresh = usersLoadedRef.current && usersQueryKeyRef.current === nextQueryKey
     setUsersLoadState(
@@ -1346,9 +1393,9 @@ function AdminDashboard(): JSX.Element {
       setUsers([])
       setUsersTotal(0)
     }
-    fetchAdminUsers(usersPage, USERS_PER_PAGE, usersQuery, usersTagFilterId, controller.signal)
+    fetchAdminUsers(usersPage, USERS_PER_PAGE, usersQuery, usersTagFilterId, request.signal)
       .then((result) => {
-        if (controller.signal.aborted) return
+        if (request.signal.aborted) return
         setUsers(result.items)
         setUsersTotal(result.total)
         setUsersLoadState('ready')
@@ -1356,15 +1403,21 @@ function AdminDashboard(): JSX.Element {
         usersQueryKeyRef.current = nextQueryKey
       })
       .catch((err) => {
-        if (controller.signal.aborted) return
+        if (request.signal.aborted) return
         console.error(err)
         setUsers([])
         setUsersTotal(0)
         setUsersLoadState('error')
       })
+      .finally(() => {
+        request.cleanup()
+      })
 
-    return () => controller.abort()
-  }, [route, usersPage, usersQuery, usersTagFilterId])
+    return () => {
+      request.abort()
+      request.cleanup()
+    }
+  }, [beginManagedRequest, route, usersPage, usersQuery, usersTagFilterId])
 
   useEffect(() => {
     const userTagRouteActive =
@@ -1689,54 +1742,64 @@ function AdminDashboard(): JSX.Element {
     setTokenLeaderboardNonce((value) => value + 1)
     const tasks: Array<Promise<unknown>> = [loadData({ signal: controller.signal, reason: 'refresh', showGlobalLoading: true })]
     if (route.name === 'module' && route.module === 'requests') {
+      const request = beginManagedRequest(requestsAbortRef, controller.signal)
       setRequestsLoadState(getRefreshingLoadState(requestsLoadedRef.current))
       tasks.push(
         fetchRequestLogs(
           logsPage,
           LOGS_PER_PAGE,
           logResultFilter === 'all' ? undefined : (logResultFilter as 'success' | 'error' | 'quota_exhausted'),
-          controller.signal,
+          request.signal,
         )
           .then((result) => {
-            if (controller.signal.aborted) return
+            if (request.signal.aborted) return
             setLogs(result.items)
             setLogsTotal(result.total)
             setRequestsLoadState('ready')
           })
           .catch((err) => {
-            if (controller.signal.aborted) return
+            if (request.signal.aborted) return
             console.error(err)
             setRequestsLoadState('error')
+          })
+          .finally(() => {
+            request.cleanup()
           }),
       )
     }
     if (route.name === 'module' && route.module === 'jobs') {
+      const request = beginManagedRequest(jobsAbortRef, controller.signal)
       setJobsLoadState(getRefreshingLoadState(jobsLoadedRef.current))
       tasks.push(
-        fetchJobs(jobsPage, jobsPerPage, jobFilter, controller.signal).then((result) => {
-          if (controller.signal.aborted) return
+        fetchJobs(jobsPage, jobsPerPage, jobFilter, request.signal).then((result) => {
+          if (request.signal.aborted) return
           setJobs(result.items)
           setJobsTotal(result.total)
           setJobsLoadState('ready')
         }).catch((err) => {
-          if (controller.signal.aborted) return
+          if (request.signal.aborted) return
           console.error(err)
           setJobsLoadState('error')
+        }).finally(() => {
+          request.cleanup()
         }),
       )
     }
     if ((route.name === 'module' && route.module === 'users') || route.name === 'user') {
+      const request = beginManagedRequest(usersAbortRef, controller.signal)
       setUsersLoadState(getRefreshingLoadState(usersLoadedRef.current))
       tasks.push(
-        fetchAdminUsers(usersPage, USERS_PER_PAGE, usersQuery, usersTagFilterId, controller.signal).then((result) => {
-          if (controller.signal.aborted) return
+        fetchAdminUsers(usersPage, USERS_PER_PAGE, usersQuery, usersTagFilterId, request.signal).then((result) => {
+          if (request.signal.aborted) return
           setUsers(result.items)
           setUsersTotal(result.total)
           setUsersLoadState('ready')
         }).catch((err) => {
-          if (controller.signal.aborted) return
+          if (request.signal.aborted) return
           console.error(err)
           setUsersLoadState('error')
+        }).finally(() => {
+          request.cleanup()
         }),
       )
     }
