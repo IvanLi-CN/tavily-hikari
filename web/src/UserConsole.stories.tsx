@@ -417,6 +417,7 @@ function UserConsoleStory(args: UserConsoleStoryArgs): JSX.Element {
 
 const meta = {
   title: 'User Console/UserConsole',
+  excludeStories: ['__testables'],
   parameters: {
     controls: { expanded: true },
     layout: 'fullscreen',
