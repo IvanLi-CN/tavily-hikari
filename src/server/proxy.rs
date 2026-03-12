@@ -207,6 +207,7 @@ async fn proxy_handler(
     let body_bytes = body::to_bytes(body, BODY_LIMIT)
         .await
         .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let request_kind = classify_token_request_kind(&path, Some(body_bytes.as_ref()));
 
     // Billing plan (1:1 upstream credits):
     // - Non-business whitelist methods are ignored by business quota.
@@ -554,7 +555,7 @@ async fn proxy_handler(
                         let message = build_request_limit_error_message(&verdict);
                         let _ = state
                             .proxy
-                            .record_token_attempt(
+                            .record_token_attempt_with_kind(
                                 tid,
                                 &method,
                                 &path,
@@ -564,6 +565,7 @@ async fn proxy_handler(
                                 false,
                                 "quota_exhausted",
                                 Some(&message),
+                                &request_kind,
                             )
                             .await;
                         let response = request_limit_exceeded_response(&verdict)?;
@@ -589,7 +591,7 @@ async fn proxy_handler(
             if let Some(tid) = token_id.as_deref() {
                 let _ = state
                     .proxy
-                    .record_token_attempt(
+                    .record_token_attempt_with_kind(
                         tid,
                         &method,
                         &path,
@@ -599,6 +601,7 @@ async fn proxy_handler(
                         billable_flag,
                         "error",
                         Some(&message),
+                        &request_kind,
                     )
                     .await;
             }
@@ -634,7 +637,7 @@ async fn proxy_handler(
                             let message = build_quota_error_message(&verdict, reserved_billable_credits);
                             let _ = state
                                 .proxy
-                                .record_token_attempt(
+                                .record_token_attempt_with_kind(
                                     tid,
                                     &method,
                                     &path,
@@ -644,6 +647,7 @@ async fn proxy_handler(
                                     true,
                                     "quota_exhausted",
                                     Some(&message),
+                                    &request_kind,
                                 )
                                 .await;
                             let response = quota_exceeded_response(&verdict, reserved_billable_credits)?;
@@ -752,7 +756,7 @@ async fn proxy_handler(
                         match if let Some(subject) = billing_subject.as_deref() {
                             state
                                 .proxy
-                                .record_pending_billing_attempt_for_subject(
+                                .record_pending_billing_attempt_for_subject_with_kind(
                                     tid,
                                     &method,
                                     &path,
@@ -764,12 +768,13 @@ async fn proxy_handler(
                                     None,
                                     credits,
                                     subject,
+                                    &request_kind,
                                 )
                                 .await
                         } else {
                             state
                                 .proxy
-                                .record_pending_billing_attempt(
+                                .record_pending_billing_attempt_with_kind(
                                     tid,
                                     &method,
                                     &path,
@@ -780,6 +785,7 @@ async fn proxy_handler(
                                     result_status,
                                     None,
                                     credits,
+                                    &request_kind,
                                 )
                                 .await
                         }
@@ -842,7 +848,7 @@ async fn proxy_handler(
                     let http_code = resp.status.as_u16() as i64;
                     let _ = state
                         .proxy
-                        .record_token_attempt(
+                        .record_token_attempt_with_kind(
                             tid,
                             &method,
                             &path,
@@ -852,6 +858,7 @@ async fn proxy_handler(
                             billable_flag,
                             result_status,
                             billing_error.as_deref(),
+                            &request_kind,
                         )
                         .await;
                 }
@@ -866,7 +873,7 @@ async fn proxy_handler(
                 let err_str = err.to_string();
                 let _ = state
                     .proxy
-                    .record_token_attempt(
+                    .record_token_attempt_with_kind(
                         tid,
                         &method,
                         &path,
@@ -876,6 +883,7 @@ async fn proxy_handler(
                         billable_flag,
                         "error",
                         Some(err_str.as_str()),
+                        &request_kind,
                     )
                     .await;
             }

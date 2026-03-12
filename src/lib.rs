@@ -1,6 +1,6 @@
 use std::{
     cmp::min,
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::{
         Arc, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering},
@@ -159,6 +159,8 @@ const META_KEY_ACCOUNT_QUOTA_INHERITS_DEFAULTS_BACKFILL_V1: &str =
 const META_KEY_FORCE_USER_RELOGIN_V1: &str = "force_user_relogin_v1";
 const META_KEY_LINUXDO_SYSTEM_TAG_DEFAULTS_V1: &str = "linuxdo_system_tag_defaults_v1";
 const META_KEY_LINUXDO_SYSTEM_TAG_DEFAULTS_TUPLE_V1: &str = "linuxdo_system_tag_defaults_tuple_v1";
+const META_KEY_AUTH_TOKEN_LOG_REQUEST_KIND_BACKFILL_V1: &str =
+    "auth_token_log_request_kind_backfill_v1";
 // Cutover marker for switching business quota counters from "requests" to "credits".
 // We cannot retroactively convert legacy request counts into credits, so we reset the
 // lightweight counters once and start charging by upstream credits going forward.
@@ -2503,6 +2505,36 @@ impl TavilyProxy {
         result_status: &str,
         error_message: Option<&str>,
     ) -> Result<(), ProxyError> {
+        let request_kind = classify_token_request_kind(path, None);
+        self.record_token_attempt_with_kind(
+            token_id,
+            method,
+            path,
+            query,
+            http_status,
+            mcp_status,
+            counts_business_quota,
+            result_status,
+            error_message,
+            &request_kind,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_token_attempt_with_kind(
+        &self,
+        token_id: &str,
+        method: &Method,
+        path: &str,
+        query: Option<&str>,
+        http_status: Option<i64>,
+        mcp_status: Option<i64>,
+        counts_business_quota: bool,
+        result_status: &str,
+        error_message: Option<&str>,
+        request_kind: &TokenRequestKind,
+    ) -> Result<(), ProxyError> {
         self.key_store
             .insert_token_log(
                 token_id,
@@ -2514,6 +2546,7 @@ impl TavilyProxy {
                 counts_business_quota,
                 result_status,
                 error_message,
+                request_kind,
             )
             .await
     }
@@ -2534,8 +2567,40 @@ impl TavilyProxy {
         error_message: Option<&str>,
         business_credits: i64,
     ) -> Result<i64, ProxyError> {
+        let request_kind = classify_token_request_kind(path, None);
+        self.record_pending_billing_attempt_with_kind(
+            token_id,
+            method,
+            path,
+            query,
+            http_status,
+            mcp_status,
+            counts_business_quota,
+            result_status,
+            error_message,
+            business_credits,
+            &request_kind,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_pending_billing_attempt_with_kind(
+        &self,
+        token_id: &str,
+        method: &Method,
+        path: &str,
+        query: Option<&str>,
+        http_status: Option<i64>,
+        mcp_status: Option<i64>,
+        counts_business_quota: bool,
+        result_status: &str,
+        error_message: Option<&str>,
+        business_credits: i64,
+        request_kind: &TokenRequestKind,
+    ) -> Result<i64, ProxyError> {
         let billing_subject = self.billing_subject_for_token(token_id).await?;
-        self.record_pending_billing_attempt_for_subject(
+        self.record_pending_billing_attempt_for_subject_with_kind(
             token_id,
             method,
             path,
@@ -2547,6 +2612,7 @@ impl TavilyProxy {
             error_message,
             business_credits,
             &billing_subject,
+            request_kind,
         )
         .await
     }
@@ -2566,6 +2632,40 @@ impl TavilyProxy {
         business_credits: i64,
         billing_subject: &str,
     ) -> Result<i64, ProxyError> {
+        let request_kind = classify_token_request_kind(path, None);
+        self.record_pending_billing_attempt_for_subject_with_kind(
+            token_id,
+            method,
+            path,
+            query,
+            http_status,
+            mcp_status,
+            counts_business_quota,
+            result_status,
+            error_message,
+            business_credits,
+            billing_subject,
+            &request_kind,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_pending_billing_attempt_for_subject_with_kind(
+        &self,
+        token_id: &str,
+        method: &Method,
+        path: &str,
+        query: Option<&str>,
+        http_status: Option<i64>,
+        mcp_status: Option<i64>,
+        counts_business_quota: bool,
+        result_status: &str,
+        error_message: Option<&str>,
+        business_credits: i64,
+        billing_subject: &str,
+        request_kind: &TokenRequestKind,
+    ) -> Result<i64, ProxyError> {
         self.key_store
             .insert_token_log_pending_billing(
                 token_id,
@@ -2579,6 +2679,7 @@ impl TavilyProxy {
                 error_message,
                 business_credits,
                 billing_subject,
+                request_kind,
             )
             .await
     }
@@ -2712,9 +2813,21 @@ impl TavilyProxy {
         per_page: usize,
         since: i64,
         until: Option<i64>,
+        request_kinds: &[String],
     ) -> Result<(Vec<TokenLogRecord>, i64), ProxyError> {
         self.key_store
-            .fetch_token_logs_page(token_id, page, per_page, since, until)
+            .fetch_token_logs_page(token_id, page, per_page, since, until, request_kinds)
+            .await
+    }
+
+    pub async fn token_log_request_kind_options(
+        &self,
+        token_id: &str,
+        since: i64,
+        until: Option<i64>,
+    ) -> Result<Vec<TokenRequestKindOption>, ProxyError> {
+        self.key_store
+            .fetch_token_log_request_kind_options(token_id, since, until)
             .await
     }
 
@@ -4028,6 +4141,9 @@ impl KeyStore {
                 query TEXT,
                 http_status INTEGER,
                 mcp_status INTEGER,
+                request_kind_key TEXT,
+                request_kind_label TEXT,
+                request_kind_detail TEXT,
                 result_status TEXT NOT NULL,
                 error_message TEXT,
                 counts_business_quota INTEGER NOT NULL DEFAULT 1,
@@ -4057,6 +4173,37 @@ impl KeyStore {
                 .await?;
         }
 
+        let mut request_kind_schema_changed = false;
+        if !self
+            .table_column_exists("auth_token_logs", "request_kind_key")
+            .await?
+        {
+            sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN request_kind_key TEXT")
+                .execute(&self.pool)
+                .await?;
+            request_kind_schema_changed = true;
+        }
+
+        if !self
+            .table_column_exists("auth_token_logs", "request_kind_label")
+            .await?
+        {
+            sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN request_kind_label TEXT")
+                .execute(&self.pool)
+                .await?;
+            request_kind_schema_changed = true;
+        }
+
+        if !self
+            .table_column_exists("auth_token_logs", "request_kind_detail")
+            .await?
+        {
+            sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN request_kind_detail TEXT")
+                .execute(&self.pool)
+                .await?;
+            request_kind_schema_changed = true;
+        }
+
         // Upgrade: add counts_business_quota column if missing
         if !self
             .table_column_exists("auth_token_logs", "counts_business_quota")
@@ -4072,6 +4219,13 @@ impl KeyStore {
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_token_logs_billable_id
                ON auth_token_logs(counts_business_quota, id)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_token_logs_token_request_kind_time
+               ON auth_token_logs(token_id, request_kind_key, created_at DESC, id DESC)"#,
         )
         .execute(&self.pool)
         .await?;
@@ -4337,6 +4491,17 @@ impl KeyStore {
         )
         .execute(&self.pool)
         .await?;
+
+        if request_kind_schema_changed
+            || self
+                .get_meta_i64(META_KEY_AUTH_TOKEN_LOG_REQUEST_KIND_BACKFILL_V1)
+                .await?
+                .is_none()
+        {
+            self.backfill_auth_token_log_request_kinds().await?;
+            self.set_meta_i64(META_KEY_AUTH_TOKEN_LOG_REQUEST_KIND_BACKFILL_V1, 1)
+                .await?;
+        }
 
         // Backfill API key usage buckets exactly once. This enables safe request_logs retention
         // without changing the meaning of cumulative statistics.
@@ -5665,6 +5830,7 @@ impl KeyStore {
                 .execute(&self.pool)
                 .await?;
         }
+
         if !self.auth_tokens_column_exists("note").await? {
             sqlx::query("ALTER TABLE auth_tokens ADD COLUMN note TEXT")
                 .execute(&self.pool)
@@ -9248,6 +9414,25 @@ impl KeyStore {
     }
 
     // ----- Token usage logs & metrics -----
+    async fn backfill_auth_token_log_request_kinds(&self) -> Result<(), ProxyError> {
+        let fallback_key_sql = token_request_kind_fallback_key_sql();
+        let fallback_label_sql = token_request_kind_fallback_label_sql();
+        let needs_fallback_sql = token_request_kind_needs_fallback_sql();
+        // Normalize legacy rows once at startup so read paths can filter directly on stored request kind columns.
+        let query = format!(
+            r#"
+            UPDATE auth_token_logs
+            SET
+                request_kind_key = {fallback_key_sql},
+                request_kind_label = {fallback_label_sql}
+            WHERE {needs_fallback_sql}
+            "#,
+        );
+        sqlx::query(query.as_str()).execute(&self.pool).await?;
+
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn insert_token_log(
         &self,
@@ -9260,14 +9445,17 @@ impl KeyStore {
         counts_business_quota: bool,
         result_status: &str,
         error_message: Option<&str>,
+        request_kind: &TokenRequestKind,
     ) -> Result<(), ProxyError> {
         let created_at = Utc::now().timestamp();
         let counts_business_quota = if counts_business_quota { 1i64 } else { 0i64 };
         sqlx::query(
             r#"
             INSERT INTO auth_token_logs (
-                token_id, method, path, query, http_status, mcp_status, result_status, error_message, counts_business_quota, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                token_id, method, path, query, http_status, mcp_status,
+                request_kind_key, request_kind_label, request_kind_detail,
+                result_status, error_message, counts_business_quota, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(token_id)
@@ -9276,6 +9464,9 @@ impl KeyStore {
         .bind(query)
         .bind(http_status)
         .bind(mcp_status)
+        .bind(&request_kind.key)
+        .bind(&request_kind.label)
+        .bind(request_kind.detail.as_deref())
         .bind(result_status)
         .bind(error_message)
         .bind(counts_business_quota)
@@ -9308,6 +9499,7 @@ impl KeyStore {
         error_message: Option<&str>,
         business_credits: i64,
         billing_subject: &str,
+        request_kind: &TokenRequestKind,
     ) -> Result<i64, ProxyError> {
         let created_at = Utc::now().timestamp();
         let counts_business_quota = if counts_business_quota { 1i64 } else { 0i64 };
@@ -9320,6 +9512,9 @@ impl KeyStore {
                 query,
                 http_status,
                 mcp_status,
+                request_kind_key,
+                request_kind_label,
+                request_kind_detail,
                 result_status,
                 error_message,
                 counts_business_quota,
@@ -9327,7 +9522,7 @@ impl KeyStore {
                 billing_subject,
                 billing_state,
                 created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
             "#,
         )
@@ -9337,6 +9532,9 @@ impl KeyStore {
         .bind(query)
         .bind(http_status)
         .bind(mcp_status)
+        .bind(&request_kind.key)
+        .bind(&request_kind.label)
+        .bind(request_kind.detail.as_deref())
         .bind(result_status)
         .bind(error_message)
         .bind(counts_business_quota)
@@ -9727,25 +9925,27 @@ impl KeyStore {
         before_id: Option<i64>,
     ) -> Result<Vec<TokenLogRecord>, ProxyError> {
         let limit = limit.clamp(1, 500) as i64;
+        type TokenLogRow = (
+            i64,
+            String,
+            String,
+            Option<String>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            String,
+            Option<String>,
+            i64,
+        );
         let rows = if let Some(bid) = before_id {
-            sqlx::query_as::<
-                _,
-                (
-                    i64,
-                    String,
-                    String,
-                    Option<String>,
-                    Option<i64>,
-                    Option<i64>,
-                    Option<i64>,
-                    String,
-                    Option<String>,
-                    i64,
-                ),
-            >(
+            sqlx::query_as::<_, TokenLogRow>(
                 r#"
                 SELECT id, method, path, query, http_status, mcp_status,
                        CASE WHEN billing_state = 'charged' THEN business_credits ELSE NULL END,
+                       request_kind_key, request_kind_label, request_kind_detail,
                        result_status, error_message, created_at
                 FROM auth_token_logs
                 WHERE token_id = ? AND id < ?
@@ -9759,24 +9959,11 @@ impl KeyStore {
             .fetch_all(&self.pool)
             .await?
         } else {
-            sqlx::query_as::<
-                _,
-                (
-                    i64,
-                    String,
-                    String,
-                    Option<String>,
-                    Option<i64>,
-                    Option<i64>,
-                    Option<i64>,
-                    String,
-                    Option<String>,
-                    i64,
-                ),
-            >(
+            sqlx::query_as::<_, TokenLogRow>(
                 r#"
                 SELECT id, method, path, query, http_status, mcp_status,
                        CASE WHEN billing_state = 'charged' THEN business_credits ELSE NULL END,
+                       request_kind_key, request_kind_label, request_kind_detail,
                        result_status, error_message, created_at
                 FROM auth_token_logs
                 WHERE token_id = ?
@@ -9801,20 +9988,36 @@ impl KeyStore {
                     http_status,
                     mcp_status,
                     business_credits,
+                    request_kind_key,
+                    request_kind_label,
+                    request_kind_detail,
                     result_status,
                     error_message,
                     created_at,
-                )| TokenLogRecord {
-                    id,
-                    method,
-                    path,
-                    query,
-                    http_status,
-                    mcp_status,
-                    business_credits,
-                    result_status,
-                    error_message,
-                    created_at,
+                )| {
+                    let request_kind = finalize_token_request_kind(
+                        method.as_str(),
+                        path.as_str(),
+                        query.as_deref(),
+                        request_kind_key,
+                        request_kind_label,
+                        request_kind_detail,
+                    );
+                    TokenLogRecord {
+                        id,
+                        method,
+                        path,
+                        query,
+                        http_status,
+                        mcp_status,
+                        business_credits,
+                        request_kind_key: request_kind.key,
+                        request_kind_label: request_kind.label,
+                        request_kind_detail: request_kind.detail,
+                        result_status,
+                        error_message,
+                        created_at,
+                    }
                 },
             )
             .collect())
@@ -9896,96 +10099,122 @@ impl KeyStore {
         per_page: usize,
         since: i64,
         until: Option<i64>,
+        request_kinds: &[String],
     ) -> Result<(Vec<TokenLogRecord>, i64), ProxyError> {
         let per_page = per_page.clamp(1, 200) as i64;
         let page = page.max(1) as i64;
         let offset = (page - 1) * per_page;
+        type TokenLogRow = (
+            i64,
+            String,
+            String,
+            Option<String>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            String,
+            Option<String>,
+            i64,
+        );
+        let filtered_request_kinds: Vec<&str> = request_kinds
+            .iter()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .collect();
+        let needs_fallback_sql = token_request_kind_needs_fallback_sql();
+        let fallback_key_sql = token_request_kind_fallback_key_sql();
 
-        let total: i64 = if let Some(until) = until {
-            sqlx::query_scalar(
-                "SELECT COUNT(*) FROM auth_token_logs WHERE token_id = ? AND created_at >= ? AND created_at < ?",
-            )
-            .bind(token_id)
-            .bind(since)
-            .bind(until)
+        let mut total_query =
+            QueryBuilder::<Sqlite>::new("SELECT COUNT(*) FROM auth_token_logs WHERE token_id = ");
+        total_query.push_bind(token_id);
+        total_query.push(" AND created_at >= ");
+        total_query.push_bind(since);
+        if let Some(until) = until {
+            total_query.push(" AND created_at < ");
+            total_query.push_bind(until);
+        }
+        if !filtered_request_kinds.is_empty() {
+            total_query.push(" AND (request_kind_key IN (");
+            {
+                let mut separated = total_query.separated(", ");
+                for kind in &filtered_request_kinds {
+                    separated.push_bind(kind);
+                }
+                separated.push_unseparated(")");
+            }
+            total_query.push(" OR (");
+            total_query.push(needs_fallback_sql);
+            total_query.push(" AND ");
+            total_query.push(fallback_key_sql);
+            total_query.push(" IN (");
+            {
+                let mut separated = total_query.separated(", ");
+                for kind in &filtered_request_kinds {
+                    separated.push_bind(kind);
+                }
+                separated.push_unseparated(")");
+            }
+            total_query.push("))");
+        }
+        let total: i64 = total_query
+            .build_query_scalar()
             .fetch_one(&self.pool)
-            .await?
-        } else {
-            sqlx::query_scalar(
-                "SELECT COUNT(*) FROM auth_token_logs WHERE token_id = ? AND created_at >= ?",
-            )
-            .bind(token_id)
-            .bind(since)
-            .fetch_one(&self.pool)
-            .await?
-        };
+            .await?;
 
-        let rows = if let Some(until) = until {
-            sqlx::query_as::<
-                _,
-                (
-                    i64,
-                    String,
-                    String,
-                    Option<String>,
-                    Option<i64>,
-                    Option<i64>,
-                    Option<i64>,
-                    String,
-                    Option<String>,
-                    i64,
-                ),
-            >(
-                r#"
+        let mut rows_query = QueryBuilder::<Sqlite>::new(
+            r#"
             SELECT id, method, path, query, http_status, mcp_status,
                    CASE WHEN billing_state = 'charged' THEN business_credits ELSE NULL END,
+                   request_kind_key,
+                   request_kind_label,
+                   request_kind_detail,
                    result_status, error_message, created_at
             FROM auth_token_logs
-            WHERE token_id = ? AND created_at >= ? AND created_at < ?
-            ORDER BY created_at DESC, id DESC
-            LIMIT ? OFFSET ?
-            "#,
-            )
-            .bind(token_id)
-            .bind(since)
-            .bind(until)
-            .bind(per_page)
-            .bind(offset)
+            WHERE token_id =
+            "#
+            .to_string(),
+        );
+        rows_query.push_bind(token_id);
+        rows_query.push(" AND created_at >= ");
+        rows_query.push_bind(since);
+        if let Some(until) = until {
+            rows_query.push(" AND created_at < ");
+            rows_query.push_bind(until);
+        }
+        if !filtered_request_kinds.is_empty() {
+            rows_query.push(" AND (request_kind_key IN (");
+            {
+                let mut separated = rows_query.separated(", ");
+                for kind in &filtered_request_kinds {
+                    separated.push_bind(kind);
+                }
+                separated.push_unseparated(")");
+            }
+            rows_query.push(" OR (");
+            rows_query.push(needs_fallback_sql);
+            rows_query.push(" AND ");
+            rows_query.push(fallback_key_sql);
+            rows_query.push(" IN (");
+            {
+                let mut separated = rows_query.separated(", ");
+                for kind in &filtered_request_kinds {
+                    separated.push_bind(kind);
+                }
+                separated.push_unseparated(")");
+            }
+            rows_query.push("))");
+        }
+        rows_query.push(" ORDER BY created_at DESC, id DESC LIMIT ");
+        rows_query.push_bind(per_page);
+        rows_query.push(" OFFSET ");
+        rows_query.push_bind(offset);
+        let rows = rows_query
+            .build_query_as::<TokenLogRow>()
             .fetch_all(&self.pool)
-            .await?
-        } else {
-            sqlx::query_as::<
-                _,
-                (
-                    i64,
-                    String,
-                    String,
-                    Option<String>,
-                    Option<i64>,
-                    Option<i64>,
-                    Option<i64>,
-                    String,
-                    Option<String>,
-                    i64,
-                ),
-            >(
-                r#"
-            SELECT id, method, path, query, http_status, mcp_status,
-                   CASE WHEN billing_state = 'charged' THEN business_credits ELSE NULL END,
-                   result_status, error_message, created_at
-            FROM auth_token_logs
-            WHERE token_id = ? AND created_at >= ?
-            ORDER BY created_at DESC, id DESC
-            LIMIT ? OFFSET ?
-            "#,
-            )
-            .bind(token_id)
-            .bind(since)
-            .bind(per_page)
-            .bind(offset)
-            .fetch_all(&self.pool)
-            .await?
-        };
+            .await?;
 
         let items = rows
             .into_iter()
@@ -9998,25 +10227,147 @@ impl KeyStore {
                     http_status,
                     mcp_status,
                     business_credits,
+                    request_kind_key,
+                    request_kind_label,
+                    request_kind_detail,
                     result_status,
                     error_message,
                     created_at,
-                )| TokenLogRecord {
-                    id,
-                    method,
-                    path,
-                    query,
-                    http_status,
-                    mcp_status,
-                    business_credits,
-                    result_status,
-                    error_message,
-                    created_at,
+                )| {
+                    let request_kind = finalize_token_request_kind(
+                        method.as_str(),
+                        path.as_str(),
+                        query.as_deref(),
+                        request_kind_key,
+                        request_kind_label,
+                        request_kind_detail,
+                    );
+                    TokenLogRecord {
+                        id,
+                        method,
+                        path,
+                        query,
+                        http_status,
+                        mcp_status,
+                        business_credits,
+                        request_kind_key: request_kind.key,
+                        request_kind_label: request_kind.label,
+                        request_kind_detail: request_kind.detail,
+                        result_status,
+                        error_message,
+                        created_at,
+                    }
                 },
             )
             .collect();
 
         Ok((items, total))
+    }
+
+    pub async fn fetch_token_log_request_kind_options(
+        &self,
+        token_id: &str,
+        since: i64,
+        until: Option<i64>,
+    ) -> Result<Vec<TokenRequestKindOption>, ProxyError> {
+        let fallback_key_sql = token_request_kind_fallback_key_sql();
+        let fallback_label_sql = token_request_kind_fallback_label_sql();
+        let needs_fallback_sql = token_request_kind_needs_fallback_sql();
+        let mut stored_query = QueryBuilder::<Sqlite>::new(
+            r#"
+            SELECT DISTINCT request_kind_key, request_kind_label
+            FROM auth_token_logs
+            WHERE token_id =
+            "#,
+        );
+        stored_query.push_bind(token_id);
+        stored_query.push(" AND created_at >= ");
+        stored_query.push_bind(since);
+        if let Some(until) = until {
+            stored_query.push(" AND created_at < ");
+            stored_query.push_bind(until);
+        }
+        stored_query.push(
+            r#"
+              AND request_kind_key IS NOT NULL
+              AND TRIM(request_kind_key) <> ''
+              AND request_kind_label IS NOT NULL
+              AND TRIM(request_kind_label) <> ''
+              AND NOT (
+            "#,
+        );
+        stored_query.push(token_request_kind_needs_fallback_sql());
+        stored_query.push(")");
+
+        let options = stored_query
+            .build_query_as::<(String, String)>()
+            .fetch_all(&self.pool)
+            .await?;
+
+        let legacy_fallback_query = if until.is_some() {
+            format!(
+                r#"
+                SELECT DISTINCT
+                    {fallback_key_sql} AS request_kind_key,
+                    {fallback_label_sql} AS request_kind_label
+                FROM auth_token_logs
+                WHERE token_id = ?
+                  AND created_at >= ?
+                  AND created_at < ?
+                  AND {needs_fallback_sql}
+                "#
+            )
+        } else {
+            format!(
+                r#"
+                SELECT DISTINCT
+                    {fallback_key_sql} AS request_kind_key,
+                    {fallback_label_sql} AS request_kind_label
+                FROM auth_token_logs
+                WHERE token_id = ?
+                  AND created_at >= ?
+                  AND {needs_fallback_sql}
+                "#
+            )
+        };
+        let legacy_options = if let Some(until) = until {
+            sqlx::query_as::<_, (String, String)>(legacy_fallback_query.as_str())
+                .bind(token_id)
+                .bind(since)
+                .bind(until)
+                .fetch_all(&self.pool)
+                .await?
+        } else {
+            sqlx::query_as::<_, (String, String)>(legacy_fallback_query.as_str())
+                .bind(token_id)
+                .bind(since)
+                .fetch_all(&self.pool)
+                .await?
+        };
+        let mut options_by_key = BTreeMap::<String, String>::new();
+        for (key, label) in options.into_iter().chain(legacy_options.into_iter()) {
+            match options_by_key.get_mut(&key) {
+                Some(current_label) if prefer_request_kind_label(current_label, &label) => {
+                    *current_label = label;
+                }
+                Some(_) => {}
+                None => {
+                    options_by_key.insert(key, label);
+                }
+            }
+        }
+
+        let mut normalized_options = options_by_key
+            .into_iter()
+            .map(|(key, label)| TokenRequestKindOption { key, label })
+            .collect::<Vec<_>>();
+        normalized_options.sort_by(|left, right| {
+            left.label
+                .cmp(&right.label)
+                .then_with(|| left.key.cmp(&right.key))
+        });
+
+        Ok(normalized_options)
     }
 
     pub async fn fetch_token_hourly_breakdown(
@@ -11606,6 +11957,32 @@ pub struct OAuthLoginStatePayload {
     pub bind_token_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenRequestKind {
+    pub key: String,
+    pub label: String,
+    pub detail: Option<String>,
+}
+
+impl TokenRequestKind {
+    fn new(key: impl Into<String>, label: impl Into<String>, detail: Option<String>) -> Self {
+        Self {
+            key: key.into(),
+            label: label.into(),
+            detail: detail.and_then(|value| {
+                let trimmed = value.trim();
+                (!trimmed.is_empty()).then(|| trimmed.to_string())
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenRequestKindOption {
+    pub key: String,
+    pub label: String,
+}
+
 /// Per-token log for detail UI
 #[derive(Debug, Clone)]
 pub struct TokenLogRecord {
@@ -11616,6 +11993,9 @@ pub struct TokenLogRecord {
     pub http_status: Option<i64>,
     pub mcp_status: Option<i64>,
     pub business_credits: Option<i64>,
+    pub request_kind_key: String,
+    pub request_kind_label: String,
+    pub request_kind_detail: Option<String>,
     pub result_status: String,
     pub error_message: Option<String>,
     pub created_at: i64,
@@ -12247,6 +12627,302 @@ fn extract_research_request_id(body: &[u8]) -> Option<String> {
     Some(trimmed.to_owned())
 }
 
+fn request_kind_key(protocol: &str, value: &str) -> String {
+    format!("{protocol}:{value}")
+}
+
+fn request_kind_label(protocol: &str, value: &str) -> String {
+    format!("{protocol} | {value}")
+}
+
+fn build_api_request_kind_named(key: &str, label: &str) -> TokenRequestKind {
+    TokenRequestKind::new(
+        request_kind_key("api", key),
+        request_kind_label("API", label),
+        None,
+    )
+}
+
+fn build_api_request_kind(value: &str) -> TokenRequestKind {
+    build_api_request_kind_named(value, value)
+}
+
+fn build_mcp_request_kind_named(key: &str, label: &str) -> TokenRequestKind {
+    TokenRequestKind::new(
+        request_kind_key("mcp", key),
+        request_kind_label("MCP", label),
+        None,
+    )
+}
+
+fn build_mcp_request_kind(value: &str) -> TokenRequestKind {
+    build_mcp_request_kind_named(value, value)
+}
+
+fn build_mcp_request_kind_with_detail(
+    key: &str,
+    label: &str,
+    detail: Option<String>,
+) -> TokenRequestKind {
+    TokenRequestKind::new(
+        request_kind_key("mcp", key),
+        request_kind_label("MCP", label),
+        detail,
+    )
+}
+
+fn raw_mcp_request_kind(path: &str) -> TokenRequestKind {
+    build_mcp_request_kind_named(&format!("raw:{path}"), path)
+}
+
+fn normalize_tavily_tool_name(tool: &str) -> Option<String> {
+    let normalized = tool.trim().to_ascii_lowercase().replace('_', "-");
+    let mapped = match normalized.as_str() {
+        "tavily-search" => "search",
+        "tavily-extract" => "extract",
+        "tavily-crawl" => "crawl",
+        "tavily-map" => "map",
+        "tavily-research" => "research",
+        _ => return None,
+    };
+    Some(mapped.to_string())
+}
+
+fn normalize_request_kind_slug(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut normalized = String::with_capacity(trimmed.len());
+    let mut previous_was_separator = false;
+    for ch in trimmed.chars() {
+        if ch.is_ascii_alphanumeric() {
+            normalized.push(ch.to_ascii_lowercase());
+            previous_was_separator = false;
+            continue;
+        }
+
+        if !previous_was_separator {
+            normalized.push('-');
+            previous_was_separator = true;
+        }
+    }
+
+    let slug = normalized.trim_matches('-');
+    if slug.is_empty() {
+        return None;
+    }
+
+    Some(slug.to_string())
+}
+
+fn request_kind_label_penalty(label: &str) -> (usize, usize, usize, String) {
+    let display = label.split('|').nth(1).unwrap_or(label).trim();
+    let underscore_count = display.chars().filter(|ch| *ch == '_').count();
+    let dash_count = display.chars().filter(|ch| *ch == '-').count();
+    let lowercase_only = usize::from(
+        display.chars().any(|ch| ch.is_ascii_alphabetic())
+            && !display.chars().any(|ch| ch.is_ascii_uppercase()),
+    );
+    (
+        underscore_count,
+        dash_count,
+        lowercase_only,
+        display.to_string(),
+    )
+}
+
+fn prefer_request_kind_label(current: &str, candidate: &str) -> bool {
+    request_kind_label_penalty(candidate) < request_kind_label_penalty(current)
+}
+
+fn classify_mcp_request_kind_from_message(value: &Value) -> Option<TokenRequestKind> {
+    let method = value
+        .get("method")
+        .and_then(|raw| raw.as_str())
+        .map(str::trim)
+        .filter(|raw| !raw.is_empty())?;
+
+    if matches!(method, "initialize" | "ping" | "tools/list")
+        || method.starts_with("resources/")
+        || method.starts_with("prompts/")
+        || method.starts_with("notifications/")
+    {
+        return Some(build_mcp_request_kind(method));
+    }
+
+    if method == "tools/call" {
+        let tool = value
+            .get("params")
+            .and_then(|params| params.get("name"))
+            .and_then(|raw| raw.as_str())
+            .map(str::trim)
+            .filter(|raw| !raw.is_empty());
+        return match tool {
+            Some(tool) => match normalize_tavily_tool_name(tool) {
+                Some(kind) => Some(build_mcp_request_kind(&kind)),
+                None => {
+                    let key = normalize_request_kind_slug(tool)
+                        .map(|slug| format!("tool:{slug}"))
+                        .unwrap_or_else(|| "tools/call".to_string());
+                    Some(build_mcp_request_kind_named(&key, tool))
+                }
+            },
+            None => Some(build_mcp_request_kind("tools/call")),
+        };
+    }
+
+    Some(build_mcp_request_kind(method))
+}
+
+fn classify_mcp_request_kind(path: &str, body: Option<&[u8]>) -> TokenRequestKind {
+    let Some(body) = body else {
+        return raw_mcp_request_kind(path);
+    };
+    if body.is_empty() {
+        return raw_mcp_request_kind(path);
+    }
+
+    let parsed = match serde_json::from_slice::<Value>(body) {
+        Ok(value) => value,
+        Err(_) => return raw_mcp_request_kind(path),
+    };
+
+    match parsed {
+        Value::Array(items) => {
+            let mut kinds: Vec<TokenRequestKind> = items
+                .iter()
+                .filter_map(classify_mcp_request_kind_from_message)
+                .collect();
+            if kinds.is_empty() {
+                return raw_mcp_request_kind(path);
+            }
+            let first_key = kinds[0].key.clone();
+            if kinds.iter().all(|kind| kind.key == first_key) {
+                return kinds.remove(0);
+            }
+            let mut labels: Vec<String> = Vec::new();
+            for kind in kinds {
+                if let Some(label) = kind.label.strip_prefix("MCP | ")
+                    && !labels.iter().any(|item| item == label)
+                {
+                    labels.push(label.to_string());
+                }
+            }
+            build_mcp_request_kind_with_detail(
+                "batch",
+                "batch",
+                (!labels.is_empty()).then(|| labels.join(", ")),
+            )
+        }
+        Value::Object(_) => classify_mcp_request_kind_from_message(&parsed)
+            .unwrap_or_else(|| raw_mcp_request_kind(path)),
+        _ => raw_mcp_request_kind(path),
+    }
+}
+
+pub fn classify_token_request_kind(path: &str, body: Option<&[u8]>) -> TokenRequestKind {
+    match path {
+        "/api/tavily/search" => build_api_request_kind("search"),
+        "/api/tavily/extract" => build_api_request_kind("extract"),
+        "/api/tavily/crawl" => build_api_request_kind("crawl"),
+        "/api/tavily/map" => build_api_request_kind("map"),
+        "/api/tavily/research" => build_api_request_kind("research"),
+        "/api/tavily/usage" => build_api_request_kind("usage"),
+        _ if path.starts_with("/api/tavily/research/") => {
+            build_api_request_kind_named("research-result", "research result")
+        }
+        _ if path.starts_with("/mcp") => classify_mcp_request_kind(path, body),
+        _ => build_api_request_kind_named(&format!("raw:{path}"), path),
+    }
+}
+
+fn token_request_kind_fallback_key_sql() -> &'static str {
+    r#"
+    CASE
+        WHEN path = '/api/tavily/search' THEN 'api:search'
+        WHEN path = '/api/tavily/extract' THEN 'api:extract'
+        WHEN path = '/api/tavily/crawl' THEN 'api:crawl'
+        WHEN path = '/api/tavily/map' THEN 'api:map'
+        WHEN path = '/api/tavily/research' THEN 'api:research'
+        WHEN path = '/api/tavily/usage' THEN 'api:usage'
+        WHEN path LIKE '/api/tavily/research/%' THEN 'api:research-result'
+        WHEN path LIKE '/mcp%' THEN 'mcp:raw:' || path
+        ELSE 'api:raw:' || path
+    END
+    "#
+}
+
+fn token_request_kind_fallback_label_sql() -> &'static str {
+    r#"
+    CASE
+        WHEN path = '/api/tavily/search' THEN 'API | search'
+        WHEN path = '/api/tavily/extract' THEN 'API | extract'
+        WHEN path = '/api/tavily/crawl' THEN 'API | crawl'
+        WHEN path = '/api/tavily/map' THEN 'API | map'
+        WHEN path = '/api/tavily/research' THEN 'API | research'
+        WHEN path = '/api/tavily/usage' THEN 'API | usage'
+        WHEN path LIKE '/api/tavily/research/%' THEN 'API | research result'
+        WHEN path LIKE '/mcp%' THEN 'MCP | ' || path
+        ELSE 'API | ' || path
+    END
+    "#
+}
+
+fn token_request_kind_needs_fallback_sql() -> &'static str {
+    r#"
+    request_kind_key IS NULL
+    OR TRIM(request_kind_key) = ''
+    OR request_kind_label IS NULL
+    OR TRIM(request_kind_label) = ''
+    OR (
+        path LIKE '/mcp/%'
+        AND (
+            request_kind_key = 'mcp:raw:/mcp'
+            OR request_kind_label = 'MCP | /mcp'
+        )
+    )
+    "#
+}
+
+fn derive_token_request_kind_fallback(
+    _method: &str,
+    path: &str,
+    _query: Option<&str>,
+) -> TokenRequestKind {
+    classify_token_request_kind(path, None)
+}
+
+fn is_stale_root_mcp_raw_request_kind(path: &str, key: &str, label: &str) -> bool {
+    path.starts_with("/mcp/") && (key.trim() == "mcp:raw:/mcp" || label.trim() == "MCP | /mcp")
+}
+
+fn finalize_token_request_kind(
+    method: &str,
+    path: &str,
+    query: Option<&str>,
+    key: Option<String>,
+    label: Option<String>,
+    detail: Option<String>,
+) -> TokenRequestKind {
+    match (
+        key.and_then(|value| {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        }),
+        label.and_then(|value| {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        }),
+    ) {
+        (Some(key), Some(label)) if !is_stale_root_mcp_raw_request_kind(path, &key, &label) => {
+            TokenRequestKind::new(key, label, detail)
+        }
+        _ => derive_token_request_kind_fallback(method, path, query),
+    }
+}
+
 /// Best-effort extraction of Tavily `usage.credits` from an upstream JSON response body.
 ///
 /// - Returns `None` when the body isn't JSON or the field is missing.
@@ -12807,6 +13483,123 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
     }
 
     #[test]
+    fn classify_token_request_kind_maps_http_routes_and_raw_paths() {
+        assert_eq!(
+            classify_token_request_kind("/api/tavily/search", None),
+            TokenRequestKind::new("api:search", "API | search", None)
+        );
+        assert_eq!(
+            classify_token_request_kind("/api/tavily/research/req_123", None),
+            TokenRequestKind::new("api:research-result", "API | research result", None)
+        );
+        assert_eq!(
+            classify_token_request_kind("/api/custom/raw", None),
+            TokenRequestKind::new("api:raw:/api/custom/raw", "API | /api/custom/raw", None)
+        );
+        assert_eq!(
+            classify_token_request_kind("/mcp/sse", None),
+            TokenRequestKind::new("mcp:raw:/mcp/sse", "MCP | /mcp/sse", None)
+        );
+    }
+
+    #[test]
+    fn classify_token_request_kind_maps_mcp_control_plane_and_tools() {
+        let search_body = br#"{
+          "jsonrpc": "2.0",
+          "id": 1,
+          "method": "tools/call",
+          "params": {
+            "name": "tavily-search"
+          }
+        }"#;
+        assert_eq!(
+            classify_token_request_kind("/mcp", Some(search_body)),
+            TokenRequestKind::new("mcp:search", "MCP | search", None)
+        );
+
+        let tool_body = br#"{
+          "jsonrpc": "2.0",
+          "id": 2,
+          "method": "tools/call",
+          "params": {
+            "name": "Acme Lookup"
+          }
+        }"#;
+        assert_eq!(
+            classify_token_request_kind("/mcp", Some(tool_body)),
+            TokenRequestKind::new("mcp:tool:acme-lookup", "MCP | Acme Lookup", None)
+        );
+
+        let tool_variant_body = br#"{
+          "jsonrpc": "2.0",
+          "id": 3,
+          "method": "tools/call",
+          "params": {
+            "name": "  acme_lookup  "
+          }
+        }"#;
+        assert_eq!(
+            classify_token_request_kind("/mcp", Some(tool_variant_body)),
+            TokenRequestKind::new("mcp:tool:acme-lookup", "MCP | acme_lookup", None)
+        );
+
+        let init_body = br#"{
+          "jsonrpc": "2.0",
+          "id": 4,
+          "method": "initialize"
+        }"#;
+        assert_eq!(
+            classify_token_request_kind("/mcp", Some(init_body)),
+            TokenRequestKind::new("mcp:initialize", "MCP | initialize", None)
+        );
+    }
+
+    #[test]
+    fn classify_token_request_kind_maps_mcp_mixed_batch_to_batch_with_detail() {
+        let mixed_batch = br#"[
+          {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": "tavily-search" }
+          },
+          {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": { "name": "tavily-extract" }
+          }
+        ]"#;
+        assert_eq!(
+            classify_token_request_kind("/mcp", Some(mixed_batch)),
+            TokenRequestKind::new(
+                "mcp:batch",
+                "MCP | batch",
+                Some("search, extract".to_string())
+            )
+        );
+
+        let same_batch = br#"[
+          {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": "tavily-search" }
+          },
+          {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": { "name": "tavily_search" }
+          }
+        ]"#;
+        assert_eq!(
+            classify_token_request_kind("/mcp", Some(same_batch)),
+            TokenRequestKind::new("mcp:search", "MCP | search", None)
+        );
+    }
+
+    #[test]
     fn request_logs_env_settings_enforce_minimums_and_defaults() {
         let lock = env_lock();
         let _guard = lock.blocking_lock();
@@ -12901,6 +13694,97 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
     fn temp_db_path(prefix: &str) -> PathBuf {
         let file = format!("{}-{}.db", prefix, nanoid!(8));
         std::env::temp_dir().join(file)
+    }
+
+    #[tokio::test]
+    async fn token_log_filters_and_options_use_backfilled_request_kind_columns() {
+        let db_path = temp_db_path("token-log-request-kind-backfill");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        let token = proxy
+            .create_access_token(Some("request-kind-backfill"))
+            .await
+            .expect("token created");
+
+        let stale_kind = TokenRequestKind::new("mcp:raw:/mcp", "MCP | /mcp", None);
+        proxy
+            .record_token_attempt_with_kind(
+                &token.id,
+                &Method::POST,
+                "/mcp/sse",
+                None,
+                Some(200),
+                Some(200),
+                false,
+                OUTCOME_SUCCESS,
+                None,
+                &stale_kind,
+            )
+            .await
+            .expect("record stale request kind row");
+
+        drop(proxy);
+
+        let repaired = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy reopened");
+
+        let filters = vec!["mcp:raw:/mcp/sse".to_string()];
+        let (logs, total) = repaired
+            .token_logs_page(&token.id, 1, 20, 0, None, &filters)
+            .await
+            .expect("query filtered token logs");
+        assert_eq!(total, 1);
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].request_kind_key, "mcp:raw:/mcp/sse");
+        assert_eq!(logs[0].request_kind_label, "MCP | /mcp/sse");
+
+        let options = repaired
+            .token_log_request_kind_options(&token.id, 0, None)
+            .await
+            .expect("query request kind options");
+        assert_eq!(options.len(), 1);
+        assert_eq!(options[0].key, "mcp:raw:/mcp/sse");
+        assert_eq!(options[0].label, "MCP | /mcp/sse");
+
+        sqlx::query(
+            r#"
+            UPDATE auth_token_logs
+            SET request_kind_key = 'mcp:tool:acme-lookup',
+                request_kind_label = 'MCP | Acme Lookup'
+            WHERE token_id = ?
+            "#,
+        )
+        .bind(&token.id)
+        .execute(&repaired.key_store.pool)
+        .await
+        .expect("stamp stored request kind");
+        sqlx::query(
+            r#"
+            INSERT INTO auth_token_logs (
+                token_id, method, path, query, http_status, mcp_status, request_kind_key,
+                request_kind_label, result_status, error_message, created_at, counts_business_quota
+            ) VALUES (?, 'POST', '/mcp', NULL, 200, 200, 'mcp:tool:acme-lookup', 'MCP | acme_lookup', 'success', NULL, ?, 1)
+            "#,
+        )
+        .bind(&token.id)
+        .bind(Utc::now().timestamp())
+        .execute(&repaired.key_store.pool)
+        .await
+        .expect("insert mismatched duplicate option row");
+
+        let canonicalized_options = repaired
+            .token_log_request_kind_options(&token.id, 0, None)
+            .await
+            .expect("query canonicalized request kind options");
+        assert_eq!(canonicalized_options.len(), 1);
+        assert_eq!(canonicalized_options[0].key, "mcp:tool:acme-lookup");
+        assert_eq!(canonicalized_options[0].label, "MCP | Acme Lookup");
+
+        let _ = std::fs::remove_file(db_path);
     }
 
     #[tokio::test]

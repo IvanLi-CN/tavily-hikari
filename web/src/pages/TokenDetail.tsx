@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Icon } from '@iconify/react'
 import { Chart as ChartJS, BarElement, CategoryScale, Legend, LinearScale, Tooltip, type ChartOptions } from 'chart.js'
 import { Bar } from 'react-chartjs-2'
@@ -8,6 +8,7 @@ import AdminLoadingRegion from '../components/AdminLoadingRegion'
 import AdminReturnToConsoleLink from '../components/AdminReturnToConsoleLink'
 import AdminTablePagination from '../components/AdminTablePagination'
 import AdminTableShell from '../components/AdminTableShell'
+import RequestKindBadge from '../components/RequestKindBadge'
 import ThemeToggle from '../components/ThemeToggle'
 import { StatusBadge, type StatusTone } from '../components/StatusBadge'
 import { Button } from '../components/ui/button'
@@ -18,12 +19,30 @@ import {
   DialogHeader,
   DialogTitle,
 } from '../components/ui/dialog'
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '../components/ui/dropdown-menu'
 import { Input } from '../components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select'
 import { TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table'
 import { useTranslate } from '../i18n'
 import { ADMIN_USER_CONSOLE_HREF } from '../lib/adminUserConsoleEntry'
 import { useResponsiveModes } from '../lib/responsive'
+import {
+  buildVisibleRequestKindOptions,
+  buildTokenLogsPagePath,
+  mergeRequestKindLabels,
+  summarizeSelectedRequestKinds,
+  toggleRequestKindSelection,
+  type TokenLogRequestKindOption,
+  uniqueSelectedRequestKinds,
+} from '../tokenLogRequestKinds'
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip, Legend)
 
@@ -65,9 +84,21 @@ interface TokenLog {
   http_status: number | null
   mcp_status: number | null
   business_credits: number | null
+  request_kind_key: string
+  request_kind_label: string
+  request_kind_detail: string | null
   result_status: string
   error_message: string | null
   created_at: number
+}
+
+interface TokenLogsPageResponse {
+  items: TokenLog[]
+  page: number
+  per_page?: number
+  perPage?: number
+  total: number
+  request_kind_options: TokenLogRequestKindOption[]
 }
 
 interface UsageBar {
@@ -369,6 +400,9 @@ export default function TokenDetail({
   const [page, setPage] = useState(1)
   const [perPage, setPerPage] = useState(20)
   const [total, setTotal] = useState(0)
+  const [requestKindOptions, setRequestKindOptions] = useState<TokenLogRequestKindOption[]>([])
+  const [requestKindLabelsByKey, setRequestKindLabelsByKey] = useState<Record<string, string>>({})
+  const [selectedRequestKinds, setSelectedRequestKinds] = useState<string[]>([])
   const [summaryLoadState, setSummaryLoadState] = useState<QueryLoadState>('initial_loading')
   const [logsLoadState, setLogsLoadState] = useState<QueryLoadState>('initial_loading')
   const [quickUsage, setQuickUsage] = useState<UsageBar[]>([])
@@ -386,12 +420,17 @@ export default function TokenDetail({
   const [rotating, setRotating] = useState(false)
   const [rotatedToken, setRotatedToken] = useState<string | null>(null)
   const [sseConnected, setSseConnected] = useState(false)
+  const [logsContentMinHeight, setLogsContentMinHeight] = useState(320)
+  const perPageRef = useRef(20)
+  const logsContentRef = useRef<HTMLDivElement | null>(null)
   const quickUsageAbortRef = useRef<AbortController | null>(null)
   const snapshotUsageAbortRef = useRef<AbortController | null>(null)
   const detailAbortRef = useRef<AbortController | null>(null)
   const logsAbortRef = useRef<AbortController | null>(null)
+  const requestKindOptionsAbortRef = useRef<AbortController | null>(null)
   const summaryQueryKeyRef = useRef<string | null>(null)
   const logsQueryKeyRef = useRef<string | null>(null)
+  const logsQueryBaseKeyRef = useRef<string>('')
 
   useEffect(() => {
     setInfo(null)
@@ -400,16 +439,24 @@ export default function TokenDetail({
     setLogs([])
     setPage(1)
     setTotal(0)
+    setRequestKindOptions([])
+    setRequestKindLabelsByKey({})
+    setSelectedRequestKinds([])
     setWarning(null)
     setQuickUsage([])
     setQuickUsageLoading(true)
     setSnapshotUsage([])
     setSnapshotUsageLoading(true)
+    setLogsContentMinHeight(320)
     setSummaryLoadState('initial_loading')
     setLogsLoadState('initial_loading')
     summaryQueryKeyRef.current = null
     logsQueryKeyRef.current = null
   }, [id])
+
+  useEffect(() => {
+    perPageRef.current = perPage
+  }, [perPage])
 
   const { sinceIso, untilIso } = useMemo(() => {
     const start = computeStartDate(period, debouncedSinceInput)
@@ -427,6 +474,51 @@ export default function TokenDetail({
 
   const periodSelectId = `token-period-select-${id}`
   const sinceInputId = `token-since-input-${id}`
+  const selectedRequestKindsNormalized = useMemo(
+    () => uniqueSelectedRequestKinds(selectedRequestKinds),
+    [selectedRequestKinds],
+  )
+  const visibleRequestKindOptions = useMemo(
+    () =>
+      buildVisibleRequestKindOptions(
+        selectedRequestKindsNormalized,
+        requestKindOptions,
+        requestKindLabelsByKey,
+      ),
+    [requestKindLabelsByKey, requestKindOptions, selectedRequestKindsNormalized],
+  )
+  const requestKindSummary = useMemo(
+    () => summarizeSelectedRequestKinds(selectedRequestKindsNormalized, visibleRequestKindOptions),
+    [selectedRequestKindsNormalized, visibleRequestKindOptions],
+  )
+  const requestKindTriggerSummary = useMemo(() => {
+    if (selectedRequestKindsNormalized.length === 0) return 'All request types'
+    if (selectedRequestKindsNormalized.length <= 2) return requestKindSummary
+    return 'Request types'
+  }, [requestKindSummary, selectedRequestKindsNormalized.length])
+  const summaryQueryBaseKey = useMemo(
+    () => `${id}:${period}:${sinceIso}:${untilIso}`,
+    [id, period, sinceIso, untilIso],
+  )
+  const logsQueryBaseKey = useMemo(
+    () => `${summaryQueryBaseKey}:requestKinds=${selectedRequestKindsNormalized.join(',')}`,
+    [selectedRequestKindsNormalized, summaryQueryBaseKey],
+  )
+
+  useEffect(() => {
+    const preservedHeight = Math.max(320, logsContentRef.current?.offsetHeight ?? 0)
+    setLogsContentMinHeight(preservedHeight)
+  }, [logsQueryBaseKey, page, perPage])
+
+  useEffect(() => {
+    logsQueryBaseKeyRef.current = logsQueryBaseKey
+  }, [logsQueryBaseKey])
+
+  useLayoutEffect(() => {
+    if (logsBlocking) return
+    const nextHeight = Math.max(320, logsContentRef.current?.offsetHeight ?? 0)
+    setLogsContentMinHeight(nextHeight)
+  }, [logsBlocking, logs, expandedLogs, viewportMode, contentMode, isCompactLayout])
 
   const applyStartInput = (raw: string, nextPeriod: Period = period, opts?: { suppressWarning?: boolean }) => {
     const sanitized = sanitizeInput(nextPeriod, raw || defaultInputValue(nextPeriod))
@@ -500,6 +592,27 @@ export default function TokenDetail({
       throw new Error(body || 'Failed to parse response JSON')
     }
   }
+
+  const buildLogsPageUrl = useCallback(
+    (nextPage: number, nextPerPage = perPageRef.current) =>
+      buildTokenLogsPagePath({
+        tokenId: id,
+        page: nextPage,
+        perPage: nextPerPage,
+        sinceIso,
+        untilIso,
+        requestKinds: selectedRequestKindsNormalized,
+      }),
+    [id, selectedRequestKindsNormalized, sinceIso, untilIso],
+  )
+
+  const syncRequestKindState = useCallback(
+    (nextOptions: TokenLogRequestKindOption[], nextLogs: TokenLog[] = []) => {
+      setRequestKindOptions(nextOptions)
+      setRequestKindLabelsByKey((prev) => mergeRequestKindLabels(prev, nextOptions, nextLogs))
+    },
+    [],
+  )
 
   async function loadQuickStats() {
     const now = new Date()
@@ -595,20 +708,50 @@ export default function TokenDetail({
   useEffect(() => () => {
     detailAbortRef.current?.abort()
     logsAbortRef.current?.abort()
+    requestKindOptionsAbortRef.current?.abort()
   }, [])
 
-  // initial load (details + metrics + first page logs)
+  // load detail + summary when the time window changes
   useEffect(() => {
     detailAbortRef.current?.abort()
-    logsAbortRef.current?.abort()
     const detailController = new AbortController()
-    const logsController = new AbortController()
     detailAbortRef.current = detailController
-    logsAbortRef.current = logsController
-    const nextQueryKey = `${id}:${period}:${sinceIso}:${untilIso}`
+    const nextQueryKey = summaryQueryBaseKey
     setSummaryLoadState(getBlockingLoadState(summaryQueryKeyRef.current != null))
-    setLogsLoadState(getBlockingLoadState(logsQueryKeyRef.current != null))
     setSummary(null)
+    setError(null)
+    const run = async () => {
+      try {
+        const [detailRes, summaryRes] = await Promise.all([
+          getJson(`/api/tokens/${encodeURIComponent(id)}`, detailController.signal),
+          getJson(`/api/tokens/${encodeURIComponent(id)}/metrics?period=${period}&since=${encodeURIComponent(sinceIso)}&until=${encodeURIComponent(untilIso)}`, detailController.signal),
+        ])
+        if (detailController.signal.aborted) return
+        setInfo(detailRes)
+        setSummary(summaryRes)
+        setError(null)
+        setSummaryLoadState('ready')
+        summaryQueryKeyRef.current = nextQueryKey
+        void loadQuickStats()
+      } catch (e) {
+        if ((e as Error).name === 'AbortError') return
+        setError(e instanceof Error ? e.message : 'Failed to load token details')
+        setSummaryLoadState('error')
+      }
+    }
+    void run()
+    return () => {
+      detailController.abort()
+    }
+  }, [id, period, sinceIso, summaryQueryBaseKey, untilIso])
+
+  // load first-page logs when the time window or request-type filter changes
+  useEffect(() => {
+    logsAbortRef.current?.abort()
+    requestKindOptionsAbortRef.current?.abort()
+    const logsController = new AbortController()
+    logsAbortRef.current = logsController
+    setLogsLoadState(getBlockingLoadState(logsQueryKeyRef.current != null))
     setLogs([])
     setPage(1)
     setTotal(0)
@@ -616,40 +759,29 @@ export default function TokenDetail({
     setError(null)
     const run = async () => {
       try {
-        const [[detailRes, summaryRes], logsRes] = await Promise.all([
-          Promise.all([
-            getJson(`/api/tokens/${encodeURIComponent(id)}`, detailController.signal),
-            getJson(`/api/tokens/${encodeURIComponent(id)}/metrics?period=${period}&since=${encodeURIComponent(sinceIso)}&until=${encodeURIComponent(untilIso)}`, detailController.signal),
-          ]),
-          getJson(`/api/tokens/${encodeURIComponent(id)}/logs/page?page=1&per_page=${perPage}&since=${encodeURIComponent(sinceIso)}&until=${encodeURIComponent(untilIso)}`, logsController.signal),
-        ])
-        if (detailController.signal.aborted || logsController.signal.aborted) return
-        setInfo(detailRes)
-        setSummary(summaryRes)
+        const logsRes = await getJson<TokenLogsPageResponse>(buildLogsPageUrl(1), logsController.signal)
+        if (logsController.signal.aborted) return
+        const resolvedPerPage = logsRes.per_page ?? logsRes.perPage ?? perPageRef.current
         setLogs(logsRes.items)
         setPage(1)
-        setPerPage(logsRes.per_page ?? logsRes.perPage ?? perPage)
+        setPerPage(resolvedPerPage)
         setTotal(logsRes.total)
+        syncRequestKindState(logsRes.request_kind_options ?? [], logsRes.items)
         setExpandedLogs(new Set())
         setError(null)
-        setSummaryLoadState('ready')
         setLogsLoadState('ready')
-        summaryQueryKeyRef.current = nextQueryKey
-        logsQueryKeyRef.current = `${nextQueryKey}:page=1:perPage=${logsRes.per_page ?? logsRes.perPage ?? perPage}`
-        void loadQuickStats()
+        logsQueryKeyRef.current = `${logsQueryBaseKey}:page=1:perPage=${resolvedPerPage}`
       } catch (e) {
         if ((e as Error).name === 'AbortError') return
-        setError(e instanceof Error ? e.message : 'Failed to load token details')
-        setSummaryLoadState('error')
+        setError(e instanceof Error ? e.message : 'Failed to load request records')
         setLogsLoadState('error')
       }
     }
     void run()
     return () => {
-      detailController.abort()
       logsController.abort()
     }
-  }, [id, period, sinceIso, untilIso, refreshQuickUsage, refreshSnapshotUsage])
+  }, [buildLogsPageUrl, logsQueryBaseKey, syncRequestKindState])
 
   // SSE for live updates (refresh first page upon snapshot)
   useEffect(() => {
@@ -664,22 +796,41 @@ export default function TokenDetail({
     const refreshLogs = async () => {
       if (page !== 1) return
       logsAbortRef.current?.abort()
+      requestKindOptionsAbortRef.current?.abort()
       const controller = new AbortController()
       logsAbortRef.current = controller
       setLogsLoadState(getRefreshingLoadState(logsQueryKeyRef.current != null))
       try {
-        const data = await getJson(`/api/tokens/${encodeURIComponent(id)}/logs/page?page=1&per_page=${perPage}&since=${encodeURIComponent(sinceIso)}&until=${encodeURIComponent(untilIso)}`, controller.signal)
+        const data = await getJson<TokenLogsPageResponse>(buildLogsPageUrl(1), controller.signal)
         if (controller.signal.aborted) return
+        const resolvedPerPage = data.per_page ?? data.perPage ?? perPageRef.current
         setLogs(data.items)
         setTotal(data.total)
-        setPerPage(data.per_page ?? data.perPage ?? perPage)
+        setPerPage(resolvedPerPage)
+        syncRequestKindState(data.request_kind_options ?? [], data.items)
         setPage(1)
         setExpandedLogs(new Set())
         setLogsLoadState('ready')
+        logsQueryKeyRef.current = `${logsQueryBaseKey}:page=1:perPage=${resolvedPerPage}`
       } catch {
         if (!controller.signal.aborted) {
           setLogsLoadState('error')
         }
+        // ignore
+      }
+    }
+    const refreshRequestKindOptions = async () => {
+      requestKindOptionsAbortRef.current?.abort()
+      const controller = new AbortController()
+      requestKindOptionsAbortRef.current = controller
+      const requestQueryBaseKey = logsQueryBaseKeyRef.current
+      try {
+        const data = await getJson<TokenLogsPageResponse>(buildLogsPageUrl(1), controller.signal)
+        if (controller.signal.aborted || logsQueryBaseKeyRef.current !== requestQueryBaseKey) return
+        setTotal(data.total)
+        setPerPage(data.per_page ?? data.perPage ?? perPageRef.current)
+        syncRequestKindState(data.request_kind_options ?? [], data.items)
+      } catch {
         // ignore
       }
     }
@@ -697,7 +848,11 @@ export default function TokenDetail({
           setSummaryLoadState('ready')
         }
         void refreshDetail()
-        void refreshLogs()
+        if (page === 1) {
+          void refreshLogs()
+        } else {
+          void refreshRequestKindOptions()
+        }
         void loadQuickStats()
         refreshQuickUsage()
         refreshSnapshotUsage()
@@ -709,15 +864,17 @@ export default function TokenDetail({
     es.onopen = () => setSseConnected(true)
     es.onerror = () => { setSseConnected(false) }
     return () => { try { es.close() } catch {} setSseConnected(false) }
-  }, [id, page, perPage, period, sinceIso, untilIso, debouncedSinceInput, refreshQuickUsage, refreshSnapshotUsage])
+  }, [buildLogsPageUrl, debouncedSinceInput, id, logsQueryBaseKey, page, period, refreshQuickUsage, refreshSnapshotUsage, sinceIso, syncRequestKindState, untilIso])
 
   useEffect(() => {
     ;(window as typeof window & { __TOKEN_PERIOD__?: Period }).__TOKEN_PERIOD__ = period
   }, [period])
 
-  const goToPage = async (next: number) => {
-    const p = Math.max(1, Math.min(next, Math.max(1, Math.ceil(total / perPage) || 1)))
+  const goToPage = async (next: number, nextPerPage = perPage) => {
+    const pageCount = Math.max(1, Math.ceil(total / nextPerPage) || 1)
+    const p = Math.max(1, Math.min(next, pageCount))
     logsAbortRef.current?.abort()
+    requestKindOptionsAbortRef.current?.abort()
     const controller = new AbortController()
     logsAbortRef.current = controller
     setLogsLoadState(getBlockingLoadState(logsQueryKeyRef.current != null))
@@ -726,15 +883,17 @@ export default function TokenDetail({
     setExpandedLogs(new Set())
     setError(null)
     try {
-      const data = await getJson(`/api/tokens/${encodeURIComponent(id)}/logs/page?page=${p}&per_page=${perPage}&since=${encodeURIComponent(sinceIso)}&until=${encodeURIComponent(untilIso)}`, controller.signal)
+      const data = await getJson<TokenLogsPageResponse>(buildLogsPageUrl(p, nextPerPage), controller.signal)
       if (controller.signal.aborted) return
+      const resolvedPerPage = data.per_page ?? data.perPage ?? nextPerPage
       setLogs(data.items)
       setPage(data.page)
-      setPerPage(data.per_page ?? data.perPage ?? perPage)
+      setPerPage(resolvedPerPage)
       setTotal(data.total)
+      syncRequestKindState(data.request_kind_options ?? [], data.items)
       setExpandedLogs(new Set())
       setLogsLoadState('ready')
-      logsQueryKeyRef.current = `${id}:${period}:${sinceIso}:${untilIso}:page=${data.page}:perPage=${data.per_page ?? data.perPage ?? perPage}`
+      logsQueryKeyRef.current = `${logsQueryBaseKey}:page=${data.page}:perPage=${resolvedPerPage}`
     } catch (e) {
       if ((e as Error).name === 'AbortError') return
       setError(e instanceof Error ? e.message : 'Failed to load page')
@@ -744,6 +903,7 @@ export default function TokenDetail({
 
   const changePerPage = async (nextPerPage: number) => {
     logsAbortRef.current?.abort()
+    requestKindOptionsAbortRef.current?.abort()
     const controller = new AbortController()
     logsAbortRef.current = controller
     setLogsLoadState(getBlockingLoadState(logsQueryKeyRef.current != null))
@@ -753,21 +913,35 @@ export default function TokenDetail({
     setExpandedLogs(new Set())
     setError(null)
     try {
-      const data = await getJson(`/api/tokens/${encodeURIComponent(id)}/logs/page?page=1&per_page=${nextPerPage}&since=${encodeURIComponent(sinceIso)}&until=${encodeURIComponent(untilIso)}`, controller.signal)
+      const data = await getJson<TokenLogsPageResponse>(buildLogsPageUrl(1, nextPerPage), controller.signal)
       if (controller.signal.aborted) return
+      const resolvedPerPage = data.per_page ?? data.perPage ?? nextPerPage
       setLogs(data.items)
       setPage(1)
-      setPerPage(data.per_page ?? data.perPage ?? nextPerPage)
+      setPerPage(resolvedPerPage)
       setTotal(data.total)
+      syncRequestKindState(data.request_kind_options ?? [], data.items)
       setExpandedLogs(new Set())
       setLogsLoadState('ready')
-      logsQueryKeyRef.current = `${id}:${period}:${sinceIso}:${untilIso}:page=1:perPage=${data.per_page ?? data.perPage ?? nextPerPage}`
+      logsQueryKeyRef.current = `${logsQueryBaseKey}:page=1:perPage=${resolvedPerPage}`
     } catch (e) {
       if ((e as Error).name === 'AbortError') return
       setError(e instanceof Error ? e.message : 'Failed to load page size')
       setLogsLoadState('error')
     }
   }
+
+  const handleToggleRequestKind = useCallback((key: string) => {
+    setSelectedRequestKinds((prev) => toggleRequestKindSelection(prev, key))
+    setPage(1)
+    setExpandedLogs(new Set())
+  }, [])
+
+  const handleClearRequestKinds = useCallback(() => {
+    setSelectedRequestKinds([])
+    setPage(1)
+    setExpandedLogs(new Set())
+  }, [])
 
   const totalPages = Math.max(1, Math.ceil(total / perPage) || 1)
   const toggleLog = (logId: number) => {
@@ -1018,123 +1192,197 @@ export default function TokenDetail({
       </section>
 
       <section className="surface panel">
-        <div className="panel-header">
+        <div className="panel-header token-request-records-header">
           <div>
             <h2>Request Records</h2>
             <p className="panel-description">Newest entries first. Live refresh applies to the first page.</p>
           </div>
-        </div>
-        <AdminTableShell
-          className="token-detail-md-up"
-          tableClassName="token-detail-table"
-          loadState={logsLoadState}
-          loadingLabel={logsRefreshing ? loadingStateStrings.refreshing : loadingStateStrings.switching}
-          minHeight={320}
-        >
-          <TableHeader>
-            <TableRow>
-              <TableHead>Time</TableHead>
-              <TableHead>HTTP Status</TableHead>
-              <TableHead>Tavily Status</TableHead>
-              <TableHead>Charged Credits</TableHead>
-              <TableHead>Result</TableHead>
-              <TableHead>Error</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {logs.map((l) => (
-              <Fragment key={l.id}>
-                <TableRow>
-                  <TableCell>{formatLogTime(l.created_at, period)}</TableCell>
-                  <TableCell>{l.http_status ?? '—'}</TableCell>
-                  <TableCell>{l.mcp_status ?? '—'}</TableCell>
-                  <TableCell>{formatChargedCredits(l.business_credits)}</TableCell>
-                  <TableCell>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      className={`log-result-button${expandedLogs.has(l.id) ? ' log-result-button-active' : ''}`}
-                      onClick={() => toggleLog(l.id)}
-                      aria-expanded={expandedLogs.has(l.id)}
-                      aria-controls={`token-log-details-${l.id}`}
+          <div className="token-request-records-actions">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="token-request-kind-trigger"
+                  aria-label={`Filter request types: ${requestKindSummary}`}
+                >
+                  <Icon icon="mdi:filter-variant" width={16} height={16} aria-hidden="true" />
+                  <span className="token-request-kind-trigger-content">
+                    <span className="token-request-kind-trigger-summary">{requestKindTriggerSummary}</span>
+                  </span>
+                  {selectedRequestKindsNormalized.length > 0 ? (
+                    <span className="token-request-kind-count">{selectedRequestKindsNormalized.length}</span>
+                  ) : null}
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="token-request-kind-menu w-72">
+                <DropdownMenuLabel>Filter request types</DropdownMenuLabel>
+                <DropdownMenuItem
+                  className="cursor-pointer"
+                  disabled={selectedRequestKindsNormalized.length === 0}
+                  onSelect={(event) => {
+                    event.preventDefault()
+                    handleClearRequestKinds()
+                  }}
+                >
+                  Show all request types
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                {visibleRequestKindOptions.length === 0 ? (
+                  <DropdownMenuItem disabled>No request types in this window</DropdownMenuItem>
+                ) : (
+                  visibleRequestKindOptions.map((option) => (
+                    <DropdownMenuCheckboxItem
+                      key={option.key}
+                      className="cursor-pointer"
+                      checked={selectedRequestKindsNormalized.includes(option.key)}
+                      onSelect={(event) => event.preventDefault()}
+                      onCheckedChange={() => handleToggleRequestKind(option.key)}
                     >
-                      <StatusBadge tone={statusTone(l.result_status)}>
-                        {statusLabel(l.result_status)}
-                      </StatusBadge>
-                      <Icon
-                        icon={expandedLogs.has(l.id) ? 'mdi:chevron-up' : 'mdi:chevron-down'}
-                        width={18}
-                        height={18}
-                        className="log-result-icon"
-                        aria-hidden="true"
-                      />
-                    </Button>
-                  </TableCell>
-                  <TableCell>{l.error_message ?? '—'}</TableCell>
-                </TableRow>
-                {expandedLogs.has(l.id) && (
-                  <TableRow className="log-details-row">
-                    <TableCell colSpan={6} id={`token-log-details-${l.id}`}>
-                      <TokenLogDetails log={l} period={period} />
-                    </TableCell>
-                  </TableRow>
+                      <RequestKindBadge requestKindKey={option.key} requestKindLabel={option.label} size="sm" />
+                    </DropdownMenuCheckboxItem>
+                  ))
                 )}
-              </Fragment>
-            ))}
-            {logs.length === 0 && (
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
+        <div ref={logsContentRef} style={{ minHeight: logsContentMinHeight }}>
+          <AdminTableShell
+            className="token-detail-md-up"
+            tableClassName="token-detail-table"
+            loadState={logsLoadState}
+            loadingLabel={logsRefreshing ? loadingStateStrings.refreshing : loadingStateStrings.switching}
+            minHeight={logsContentMinHeight}
+          >
+            <TableHeader>
               <TableRow>
-                <TableCell colSpan={6} style={{ padding: 12 }}>
-                  <div className="empty-state alert" style={{ padding: 12 }}>No logs yet.</div>
-                </TableCell>
+                <TableHead>Time</TableHead>
+                <TableHead>Request Type</TableHead>
+                <TableHead>HTTP Status</TableHead>
+                <TableHead>Tavily Status</TableHead>
+                <TableHead>Charged Credits</TableHead>
+                <TableHead>Result</TableHead>
+                <TableHead>Error</TableHead>
               </TableRow>
+            </TableHeader>
+            <TableBody>
+              {logs.map((l) => (
+                <Fragment key={l.id}>
+                  <TableRow>
+                    <TableCell>{formatLogTime(l.created_at, period)}</TableCell>
+                    <TableCell>
+                      <RequestKindBadge
+                        requestKindKey={l.request_kind_key}
+                        requestKindLabel={l.request_kind_label}
+                        size="sm"
+                      />
+                    </TableCell>
+                    <TableCell>{l.http_status ?? '—'}</TableCell>
+                    <TableCell>{l.mcp_status ?? '—'}</TableCell>
+                    <TableCell>{formatChargedCredits(l.business_credits)}</TableCell>
+                    <TableCell>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        className={`log-result-button${expandedLogs.has(l.id) ? ' log-result-button-active' : ''}`}
+                        onClick={() => toggleLog(l.id)}
+                        aria-expanded={expandedLogs.has(l.id)}
+                        aria-controls={`token-log-details-${l.id}`}
+                      >
+                        <StatusBadge tone={statusTone(l.result_status)}>
+                          {statusLabel(l.result_status)}
+                        </StatusBadge>
+                        <Icon
+                          icon={expandedLogs.has(l.id) ? 'mdi:chevron-up' : 'mdi:chevron-down'}
+                          width={18}
+                          height={18}
+                          className="log-result-icon"
+                          aria-hidden="true"
+                        />
+                      </Button>
+                    </TableCell>
+                    <TableCell>{l.error_message ?? '—'}</TableCell>
+                  </TableRow>
+                  {expandedLogs.has(l.id) && (
+                    <TableRow className="log-details-row">
+                      <TableCell colSpan={7} id={`token-log-details-${l.id}`}>
+                        <TokenLogDetails log={l} period={period} />
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </Fragment>
+              ))}
+              {logs.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={7} style={{ padding: 12 }}>
+                    <div className="empty-state alert" style={{ padding: 12 }}>No logs yet.</div>
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </AdminTableShell>
+          <AdminLoadingRegion
+            className="token-detail-mobile-list token-detail-md-down"
+            loadState={logsLoadState}
+            loadingLabel={logsRefreshing ? loadingStateStrings.refreshing : loadingStateStrings.switching}
+            minHeight={Math.max(240, logsContentMinHeight)}
+          >
+            {logs.length === 0 ? (
+              <div className="empty-state alert" style={{ padding: 12 }}>No logs yet.</div>
+            ) : (
+              logs.map((log) => (
+                <article key={log.id} className="user-console-mobile-card">
+                  <div className="user-console-mobile-kv">
+                    <span>Time</span>
+                    <strong>{formatLogTime(log.created_at, period)}</strong>
+                  </div>
+                  <div className="user-console-mobile-kv">
+                    <span>Request</span>
+                    <strong>{`${log.method} ${log.path}${log.query ? `?${log.query}` : ''}`}</strong>
+                  </div>
+                  <div className="user-console-mobile-kv">
+                    <span>Request Type</span>
+                    <RequestKindBadge
+                      requestKindKey={log.request_kind_key}
+                      requestKindLabel={log.request_kind_label}
+                      size="sm"
+                      className="user-console-mobile-request-kind"
+                    />
+                  </div>
+                  {log.request_kind_detail ? (
+                    <div className="user-console-mobile-kv user-console-mobile-kv--stacked">
+                      <span>Request Type Detail</span>
+                      <strong className="user-console-mobile-detail">{log.request_kind_detail}</strong>
+                    </div>
+                  ) : null}
+                  <div className="user-console-mobile-kv">
+                    <span>HTTP Status</span>
+                    <strong>{log.http_status ?? '—'}</strong>
+                  </div>
+                  <div className="user-console-mobile-kv">
+                    <span>Tavily Status</span>
+                    <strong>{log.mcp_status ?? '—'}</strong>
+                  </div>
+                  <div className="user-console-mobile-kv">
+                    <span>Charged Credits</span>
+                    <strong>{formatChargedCredits(log.business_credits)}</strong>
+                  </div>
+                  <div className="user-console-mobile-kv">
+                    <span>Result</span>
+                    <StatusBadge className="user-console-mobile-status" tone={statusTone(log.result_status)}>
+                      {statusLabel(log.result_status)}
+                    </StatusBadge>
+                  </div>
+                  <div className="user-console-mobile-kv">
+                    <span>Error</span>
+                    <strong>{log.error_message ?? '—'}</strong>
+                  </div>
+                </article>
+              ))
             )}
-          </TableBody>
-        </AdminTableShell>
-        <AdminLoadingRegion
-          className="token-detail-mobile-list token-detail-md-down"
-          loadState={logsLoadState}
-          loadingLabel={logsRefreshing ? loadingStateStrings.refreshing : loadingStateStrings.switching}
-          minHeight={240}
-        >
-          {logs.length === 0 ? (
-            <div className="empty-state alert" style={{ padding: 12 }}>No logs yet.</div>
-          ) : (
-            logs.map((log) => (
-              <article key={log.id} className="user-console-mobile-card">
-                <div className="user-console-mobile-kv">
-                  <span>Time</span>
-                  <strong>{formatLogTime(log.created_at, period)}</strong>
-                </div>
-                <div className="user-console-mobile-kv">
-                  <span>Request</span>
-                  <strong>{`${log.method} ${log.path}${log.query ? `?${log.query}` : ''}`}</strong>
-                </div>
-                <div className="user-console-mobile-kv">
-                  <span>HTTP Status</span>
-                  <strong>{log.http_status ?? '—'}</strong>
-                </div>
-                <div className="user-console-mobile-kv">
-                  <span>Tavily Status</span>
-                  <strong>{log.mcp_status ?? '—'}</strong>
-                </div>
-                <div className="user-console-mobile-kv">
-                  <span>Charged Credits</span>
-                  <strong>{formatChargedCredits(log.business_credits)}</strong>
-                </div>
-                <div className="user-console-mobile-kv">
-                  <span>Result</span>
-                  <StatusBadge className="user-console-mobile-status" tone={statusTone(log.result_status)}>
-                    {statusLabel(log.result_status)}
-                  </StatusBadge>
-                </div>
-                <div className="user-console-mobile-kv">
-                  <span>Error</span>
-                  <strong>{log.error_message ?? '—'}</strong>
-                </div>
-              </article>
-            ))
-          )}
-        </AdminLoadingRegion>
+          </AdminLoadingRegion>
+        </div>
         <AdminTablePagination
           page={page}
           totalPages={totalPages}
@@ -1213,9 +1461,13 @@ function formatChargedCredits(value: number | null): string {
   return value != null ? String(value) : '—'
 }
 
-function TokenLogDetails({ log, period }: { log: TokenLog; period: Period }) {
+function formatRequestLine(log: TokenLog): string {
   const query = log.query ? `?${log.query}` : ''
-  const requestLine = `${log.method} ${log.path}${query}`
+  return `${log.method} ${log.path}${query}`
+}
+
+function TokenLogDetails({ log, period }: { log: TokenLog; period: Period }) {
+  const requestLine = formatRequestLine(log)
   const errorText = (log.error_message ?? '').trim() || 'No error reported.'
   const httpStatus = log.http_status != null ? `HTTP ${log.http_status}` : 'HTTP —'
   const tavilyStatus = log.mcp_status != null ? `Tavily ${log.mcp_status}` : 'Tavily —'
@@ -1236,6 +1488,16 @@ function TokenLogDetails({ log, period }: { log: TokenLog; period: Period }) {
           <span className="log-details-value">{formatChargedCredits(log.business_credits)}</span>
         </div>
         <div>
+          <span className="log-details-label">Request Type</span>
+          <span className="log-details-value">
+            <RequestKindBadge
+              requestKindKey={log.request_kind_key}
+              requestKindLabel={log.request_kind_label}
+              size="sm"
+            />
+          </span>
+        </div>
+        <div>
           <span className="log-details-label">Outcome</span>
           <span className="log-details-value">{statusLabel(log.result_status)}</span>
         </div>
@@ -1245,6 +1507,12 @@ function TokenLogDetails({ log, period }: { log: TokenLog; period: Period }) {
           <header>Request</header>
           <pre>{requestLine}</pre>
         </div>
+        {log.request_kind_detail ? (
+          <div className="log-details-section">
+            <header>Request Type Detail</header>
+            <pre>{log.request_kind_detail}</pre>
+          </div>
+        ) : null}
         <div className="log-details-section">
           <header>Error Message</header>
           <pre>{errorText}</pre>

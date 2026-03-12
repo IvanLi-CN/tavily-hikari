@@ -2588,6 +2588,14 @@ button:disabled {
     text-align: left;
     margin: 0;
   }
+  .token-request-records-actions {
+    width: 100%;
+    align-items: stretch;
+    margin-left: 0;
+  }
+  .token-request-kind-trigger {
+    width: 100%;
+  }
   .token-groups-container {
     flex-direction: column;
     align-items: flex-start;
@@ -2634,6 +2642,339 @@ button:disabled {
   margin: 0;
   color: hsl(var(--muted-foreground));
   font-size: 0.92rem;
+}
+
+.token-request-records-header {
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.token-request-records-actions {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  margin-left: auto;
+}
+
+.token-request-kind-trigger {
+  min-width: min(100%, 248px);
+  justify-content: flex-start;
+  gap: 10px;
+  padding-inline: 12px;
+  min-height: 46px;
+}
+
+.token-request-kind-trigger-content {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  align-items: flex-start;
+}
+
+.token-request-kind-trigger-summary {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+}
+
+.token-request-kind-count {
+  display: inline-flex;
+  min-width: 1.9rem;
+  justify-content: center;
+  align-items: center;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: hsl(var(--muted) / 0.68);
+  color: hsl(var(--foreground) / 0.82);
+  font-size: 0.76rem;
+  font-weight: 700;
+  line-height: 1.7;
+}
+
+.token-request-kind-menu {
+  max-height: min(24rem, 70vh);
+  overflow-y: auto;
+}
+
+.request-kind-badge {
+  --request-kind-ink: hsl(221 30% 28%);
+  --request-kind-border: hsl(218 24% 78% / 0.88);
+  --request-kind-bg-start: hsl(210 33% 97%);
+  --request-kind-bg-end: hsl(214 28% 92%);
+  --request-kind-chip: hsl(0 0% 100% / 0.72);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.42rem;
+  max-width: 100%;
+  min-width: 0;
+  padding: 0.34rem 0.72rem;
+  border-color: var(--request-kind-border);
+  background: linear-gradient(135deg, var(--request-kind-bg-start), var(--request-kind-bg-end));
+  color: var(--request-kind-ink);
+  box-shadow:
+    inset 0 1px 0 hsl(0 0% 100% / 0.28),
+    0 14px 30px -24px var(--request-kind-border);
+  font-family: inherit;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+.request-kind-badge--sm {
+  gap: 0.35rem;
+  padding: 0.26rem 0.56rem;
+  font-size: 0.72rem;
+}
+
+.request-kind-badge--md {
+  font-size: 0.8rem;
+}
+
+.request-kind-badge__source {
+  flex: 0 0 auto;
+  padding: 0.16rem 0.42rem;
+  border-radius: 999px;
+  background: var(--request-kind-chip);
+  font-size: 0.68em;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.request-kind-badge__separator {
+  flex: 0 0 auto;
+  opacity: 0.45;
+  font-weight: 700;
+}
+
+.request-kind-badge__detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+}
+
+.request-kind-badge--neutral {
+  --request-kind-ink: hsl(221 30% 28%);
+  --request-kind-border: hsl(218 24% 78% / 0.88);
+  --request-kind-bg-start: hsl(210 33% 97%);
+  --request-kind-bg-end: hsl(214 28% 92%);
+}
+
+.request-kind-badge--api {
+  --request-kind-ink: hsl(214 74% 34%);
+  --request-kind-border: hsl(214 88% 56% / 0.28);
+  --request-kind-bg-start: hsl(212 100% 97%);
+  --request-kind-bg-end: hsl(210 100% 92%);
+}
+
+.request-kind-badge--api-search {
+  --request-kind-ink: hsl(214 84% 34%);
+  --request-kind-border: hsl(214 88% 56% / 0.34);
+  --request-kind-bg-start: hsl(212 100% 97%);
+  --request-kind-bg-end: hsl(208 100% 91%);
+}
+
+.request-kind-badge--api-extract {
+  --request-kind-ink: hsl(184 84% 28%);
+  --request-kind-border: hsl(184 86% 45% / 0.34);
+  --request-kind-bg-start: hsl(180 100% 96%);
+  --request-kind-bg-end: hsl(185 90% 90%);
+}
+
+.request-kind-badge--api-crawl {
+  --request-kind-ink: hsl(28 88% 35%);
+  --request-kind-border: hsl(34 96% 54% / 0.34);
+  --request-kind-bg-start: hsl(44 100% 96%);
+  --request-kind-bg-end: hsl(38 100% 90%);
+}
+
+.request-kind-badge--api-map {
+  --request-kind-ink: hsl(148 74% 28%);
+  --request-kind-border: hsl(152 66% 44% / 0.32);
+  --request-kind-bg-start: hsl(148 70% 95%);
+  --request-kind-bg-end: hsl(152 72% 89%);
+}
+
+.request-kind-badge--api-research {
+  --request-kind-ink: hsl(334 76% 34%);
+  --request-kind-border: hsl(334 84% 56% / 0.3);
+  --request-kind-bg-start: hsl(332 100% 97%);
+  --request-kind-bg-end: hsl(338 100% 93%);
+}
+
+.request-kind-badge--api-research-result {
+  --request-kind-ink: hsl(349 74% 36%);
+  --request-kind-border: hsl(350 84% 58% / 0.32);
+  --request-kind-bg-start: hsl(350 100% 97%);
+  --request-kind-bg-end: hsl(352 100% 93%);
+}
+
+.request-kind-badge--api-usage {
+  --request-kind-ink: hsl(223 28% 34%);
+  --request-kind-border: hsl(223 24% 56% / 0.3);
+  --request-kind-bg-start: hsl(220 24% 96%);
+  --request-kind-bg-end: hsl(220 24% 91%);
+}
+
+.request-kind-badge--api-raw {
+  --request-kind-ink: hsl(236 52% 38%);
+  --request-kind-border: hsl(236 64% 60% / 0.28);
+  --request-kind-bg-start: hsl(238 100% 97%);
+  --request-kind-bg-end: hsl(236 100% 93%);
+}
+
+.request-kind-badge--mcp {
+  --request-kind-ink: hsl(197 82% 31%);
+  --request-kind-border: hsl(195 90% 49% / 0.28);
+  --request-kind-bg-start: hsl(191 100% 96%);
+  --request-kind-bg-end: hsl(191 94% 91%);
+}
+
+.request-kind-badge--mcp-search {
+  --request-kind-ink: hsl(197 92% 29%);
+  --request-kind-border: hsl(195 94% 49% / 0.34);
+  --request-kind-bg-start: hsl(191 100% 96%);
+  --request-kind-bg-end: hsl(190 100% 90%);
+}
+
+.request-kind-badge--mcp-batch {
+  --request-kind-ink: hsl(18 88% 35%);
+  --request-kind-border: hsl(22 92% 58% / 0.34);
+  --request-kind-bg-start: hsl(20 100% 96%);
+  --request-kind-bg-end: hsl(28 100% 91%);
+}
+
+.request-kind-badge--mcp-tool {
+  --request-kind-ink: hsl(92 70% 26%);
+  --request-kind-border: hsl(92 60% 44% / 0.34);
+  --request-kind-bg-start: hsl(88 100% 96%);
+  --request-kind-bg-end: hsl(94 82% 90%);
+}
+
+.request-kind-badge--mcp-system {
+  --request-kind-ink: hsl(255 54% 38%);
+  --request-kind-border: hsl(254 70% 62% / 0.32);
+  --request-kind-bg-start: hsl(252 100% 97%);
+  --request-kind-bg-end: hsl(255 100% 94%);
+}
+
+.request-kind-badge--mcp-raw {
+  --request-kind-ink: hsl(210 22% 33%);
+  --request-kind-border: hsl(214 18% 63% / 0.32);
+  --request-kind-bg-start: hsl(210 20% 96%);
+  --request-kind-bg-end: hsl(214 18% 91%);
+}
+
+.dark .request-kind-badge {
+  --request-kind-ink: hsl(210 40% 92%);
+  --request-kind-border: hsl(217 20% 42% / 0.78);
+  --request-kind-bg-start: hsl(219 24% 24% / 0.96);
+  --request-kind-bg-end: hsl(219 22% 18% / 0.98);
+  --request-kind-chip: hsl(0 0% 100% / 0.12);
+  box-shadow:
+    inset 0 1px 0 hsl(0 0% 100% / 0.08),
+    0 18px 34px -28px hsl(0 0% 0% / 0.7);
+}
+
+.dark .request-kind-badge--api,
+.dark .request-kind-badge--api-search {
+  --request-kind-ink: hsl(208 100% 84%);
+  --request-kind-border: hsl(210 94% 68% / 0.44);
+  --request-kind-bg-start: hsl(214 80% 20% / 0.96);
+  --request-kind-bg-end: hsl(210 72% 16% / 0.98);
+}
+
+.dark .request-kind-badge--api-extract {
+  --request-kind-ink: hsl(183 88% 79%);
+  --request-kind-border: hsl(184 78% 58% / 0.42);
+  --request-kind-bg-start: hsl(183 78% 18% / 0.96);
+  --request-kind-bg-end: hsl(186 68% 14% / 0.98);
+}
+
+.dark .request-kind-badge--api-crawl {
+  --request-kind-ink: hsl(42 100% 78%);
+  --request-kind-border: hsl(38 96% 60% / 0.44);
+  --request-kind-bg-start: hsl(32 76% 19% / 0.96);
+  --request-kind-bg-end: hsl(28 72% 15% / 0.98);
+}
+
+.dark .request-kind-badge--api-map {
+  --request-kind-ink: hsl(151 72% 78%);
+  --request-kind-border: hsl(151 62% 56% / 0.44);
+  --request-kind-bg-start: hsl(151 62% 18% / 0.96);
+  --request-kind-bg-end: hsl(153 56% 14% / 0.98);
+}
+
+.dark .request-kind-badge--api-research {
+  --request-kind-ink: hsl(334 92% 84%);
+  --request-kind-border: hsl(333 82% 66% / 0.42);
+  --request-kind-bg-start: hsl(330 66% 19% / 0.96);
+  --request-kind-bg-end: hsl(336 60% 15% / 0.98);
+}
+
+.dark .request-kind-badge--api-research-result {
+  --request-kind-ink: hsl(352 94% 84%);
+  --request-kind-border: hsl(352 84% 68% / 0.42);
+  --request-kind-bg-start: hsl(352 68% 20% / 0.96);
+  --request-kind-bg-end: hsl(355 62% 16% / 0.98);
+}
+
+.dark .request-kind-badge--api-usage {
+  --request-kind-ink: hsl(214 34% 83%);
+  --request-kind-border: hsl(216 28% 62% / 0.4);
+  --request-kind-bg-start: hsl(219 24% 21% / 0.96);
+  --request-kind-bg-end: hsl(220 20% 17% / 0.98);
+}
+
+.dark .request-kind-badge--api-raw {
+  --request-kind-ink: hsl(236 96% 85%);
+  --request-kind-border: hsl(236 80% 70% / 0.4);
+  --request-kind-bg-start: hsl(238 54% 21% / 0.96);
+  --request-kind-bg-end: hsl(239 48% 17% / 0.98);
+}
+
+.dark .request-kind-badge--mcp,
+.dark .request-kind-badge--mcp-search {
+  --request-kind-ink: hsl(191 100% 82%);
+  --request-kind-border: hsl(191 88% 62% / 0.44);
+  --request-kind-bg-start: hsl(192 74% 19% / 0.96);
+  --request-kind-bg-end: hsl(194 66% 15% / 0.98);
+}
+
+.dark .request-kind-badge--mcp-batch {
+  --request-kind-ink: hsl(25 100% 80%);
+  --request-kind-border: hsl(25 92% 63% / 0.42);
+  --request-kind-bg-start: hsl(24 72% 20% / 0.96);
+  --request-kind-bg-end: hsl(22 66% 16% / 0.98);
+}
+
+.dark .request-kind-badge--mcp-tool {
+  --request-kind-ink: hsl(94 80% 80%);
+  --request-kind-border: hsl(94 64% 58% / 0.42);
+  --request-kind-bg-start: hsl(96 62% 18% / 0.96);
+  --request-kind-bg-end: hsl(100 56% 14% / 0.98);
+}
+
+.dark .request-kind-badge--mcp-system {
+  --request-kind-ink: hsl(254 100% 86%);
+  --request-kind-border: hsl(252 86% 70% / 0.42);
+  --request-kind-bg-start: hsl(252 56% 21% / 0.96);
+  --request-kind-bg-end: hsl(255 48% 17% / 0.98);
+}
+
+.dark .request-kind-badge--mcp-raw {
+  --request-kind-ink: hsl(212 28% 84%);
+  --request-kind-border: hsl(214 22% 60% / 0.38);
+  --request-kind-bg-start: hsl(214 22% 21% / 0.96);
+  --request-kind-bg-end: hsl(216 18% 17% / 0.98);
+}
+
+.token-request-kind-menu .request-kind-badge {
+  max-width: calc(100% - 0.25rem);
 }
 
 /* Key/value information grid for compact readable summary */
@@ -2816,37 +3157,53 @@ table {
   width: 18ch;
 }
 .token-detail-table th:nth-child(2),
-.token-detail-table td:nth-child(2),
+.token-detail-table td:nth-child(2) {
+  min-width: 18ch;
+  max-width: 22ch;
+}
 .token-detail-table th:nth-child(3),
 .token-detail-table td:nth-child(3),
 .token-detail-table th:nth-child(4),
-.token-detail-table td:nth-child(4) {
+.token-detail-table td:nth-child(4),
+.token-detail-table th:nth-child(5),
+.token-detail-table td:nth-child(5) {
   min-width: 8ch;
   text-align: center;
 }
-.token-detail-table th:nth-child(5),
-.token-detail-table td:nth-child(5) {
+.token-detail-table th:nth-child(6),
+.token-detail-table td:nth-child(6) {
   text-align: right;
   min-width: 12ch;
 }
-.token-detail-table td:nth-child(5) .status-badge {
+.token-detail-table td:nth-child(6) .status-badge {
   white-space: nowrap;
   display: inline-flex;
 }
 
 /* 让“Result”列的按钮组整体靠右，箭头不会拥挤 */
-.token-detail-table td:nth-child(5) .log-result-button {
+.token-detail-table td:nth-child(6) .log-result-button {
   width: 100%;
   justify-content: flex-end;
 }
-.token-detail-table th:nth-child(6),
-.token-detail-table td:nth-child(6) {
+.token-detail-table th:nth-child(7),
+.token-detail-table td:nth-child(7) {
   min-width: 18ch;
   max-width: 32ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: hsl(var(--muted-foreground));
+}
+.token-detail-table td:nth-child(2) {
+  font-family: 'JetBrains Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-size: 0.82rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.token-detail-table td:nth-child(2) .request-kind-badge {
+  max-width: 100%;
 }
 
 /* Admin Recent Requests table: prioritize in-cell fitting over horizontal scroll */
@@ -4628,6 +4985,11 @@ tbody tr:hover {
   word-break: break-all;
 }
 
+.log-details-value .request-kind-badge {
+  max-width: 100%;
+  vertical-align: middle;
+}
+
 .log-details-body {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -5574,6 +5936,11 @@ tbody .log-details-row:hover {
   font-size: 0.9rem;
 }
 
+.user-console-mobile-kv--stacked {
+  align-items: flex-start;
+  flex-direction: column;
+}
+
 .user-console-mobile-kv span {
   color: hsl(var(--muted-foreground));
 }
@@ -5585,6 +5952,19 @@ tbody .log-details-row:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.user-console-mobile-request-kind {
+  margin-left: auto;
+  max-width: min(72%, 18rem);
+}
+
+.user-console-mobile-detail {
+  width: 100%;
+  text-align: left;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
 }
 
 .user-console-mobile-status {

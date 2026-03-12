@@ -4,14 +4,23 @@ import { INITIAL_VIEWPORTS } from 'storybook/viewport'
 
 import '../src/index.css'
 import { LanguageProvider, type Language, useLanguage } from '../src/i18n'
-import { ThemeProvider } from '../src/theme'
+import { ThemeProvider, type ThemeMode, useTheme } from '../src/theme'
 
-function SyncGlobals(props: { language: Language; children: React.ReactNode }): JSX.Element {
+function SyncGlobals(props: {
+  language: Language
+  themeMode: ThemeMode
+  children: React.ReactNode
+}): JSX.Element {
   const { language, setLanguage } = useLanguage()
+  const { mode, setMode } = useTheme()
 
   useEffect(() => {
     if (props.language !== language) setLanguage(props.language)
   }, [props.language, language, setLanguage])
+
+  useEffect(() => {
+    if (props.themeMode !== mode) setMode(props.themeMode)
+  }, [props.themeMode, mode, setMode])
 
   return <>{props.children}</>
 }
@@ -97,14 +106,29 @@ const preview: Preview = {
         dynamicTitle: true,
       },
     },
+    themeMode: {
+      name: 'Theme',
+      description: 'UI theme',
+      defaultValue: 'dark',
+      toolbar: {
+        icon: 'mirror',
+        items: [
+          { value: 'light', title: 'Light' },
+          { value: 'dark', title: 'Dark' },
+          { value: 'system', title: 'System' },
+        ],
+        dynamicTitle: true,
+      },
+    },
   },
   decorators: [
     (Story, context) => {
       const language = (context.globals.language ?? 'en') as Language
+      const themeMode = (context.globals.themeMode ?? 'dark') as ThemeMode
       return (
         <LanguageProvider>
           <ThemeProvider>
-            <SyncGlobals language={language}>
+            <SyncGlobals language={language} themeMode={themeMode}>
               <Story />
             </SyncGlobals>
           </ThemeProvider>
