@@ -178,7 +178,7 @@
 - 2026-03-12: Chrome DevTools 手工冒烟
   - `http://127.0.0.1:55174/#a1b2`：可见原文入口在双路径复制失败后不重复弹 bubble，但会自动 reveal 并选中当前 token，便于立即手动复制。
   - `http://127.0.0.1:55174/console#/tokens`：列表复制失败后弹出手动复制气泡，输入框默认聚焦且全选；同一按钮下次复制成功后旧气泡会自动关闭。
-  - `http://127.0.0.1:55174/console#/tokens/a1b2`：窄屏下 detail 复制失败后 bubble 仍保持在视口内，点击/聚焦会再次全选。
+  - `http://127.0.0.1:55174/console#/tokens/a1b2`：detail 页由于复制按钮旁已有 Token 字段，复制失败时不再弹额外气泡，而是直接 reveal 并选中现有只读字段，便于手动复制。
   - `http://127.0.0.1:58089/admin/tokens`：新建 token、复制完整 token、复制分享链接在失败时均弹出手动复制气泡。
   - `http://127.0.0.1:58089/admin/tokens/m87I`：rotate secret 失败时复用现有对话框，展示只读 textarea 并自动全选，不额外弹 bubble。
   - `http://127.0.0.1:58089/admin/tokens`：列表初次加载仅请求 `summary/profile/tokens/...` 等基础数据，不再自动拉取 `/api/tokens/:id/secret` 或 `/api/keys/:id/secret`；hover 到复制按钮后才按需触发 secret 请求。
@@ -217,6 +217,7 @@
 - 2026-03-12: 为 `execCommand` fallback 补充 iOS / iPadOS 选区兼容分支，并在 PublicHome 复制失败时自动 reveal 当前 token，确保“原文可见入口”仍可手动复制。
 - 2026-03-12: 补齐复制 review 收口：同步优先的 legacy fallback 选项、UserConsole/Admin secret cache 预热、复制成功时自动关闭旧气泡，以及 PublicHome / rotated token 失败后的自动重新选中。
 - 2026-03-12: 收紧 secret 生命周期：移除 UserConsole/Admin 列表初载时的全量 secret 预取，仅保留 hover/focus 按需 warm-up；同时在 admin rotate token 后回写父级 secret cache，避免后续复制/分享读到旧 token。
+- 2026-03-12: 修正 UserConsole detail 失败恢复策略：由于复制按钮旁已有 Token 字段，失败时改为直接 reveal + select 现有字段，不再额外弹手动复制气泡。
 
 ## 参考（References）
 

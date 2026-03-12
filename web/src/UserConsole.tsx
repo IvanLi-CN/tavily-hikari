@@ -30,7 +30,7 @@ import { StatusBadge, type StatusTone } from './components/StatusBadge'
 import ThemeToggle from './components/ThemeToggle'
 import { Button } from './components/ui/button'
 import { useLanguage, useTranslate, type Language } from './i18n'
-import { copyText } from './lib/clipboard'
+import { copyText, selectAllReadonlyText } from './lib/clipboard'
 import {
   type McpProbeStepState,
   type ProbeQuotaWindow,
@@ -262,6 +262,7 @@ export default function UserConsole(): JSX.Element {
   const dashboardSectionRef = useRef<HTMLElement | null>(null)
   const tokensSectionRef = useRef<HTMLElement | null>(null)
   const detailHeadingRef = useRef<HTMLHeadingElement | null>(null)
+  const detailTokenFieldRef = useRef<HTMLInputElement | null>(null)
   const historyTraversalRef = useRef(false)
   const landingScrollBehaviorRef = useRef<ScrollBehavior>('auto')
   const shouldScrollLandingSectionRef = useRef(route.name === 'landing' && route.section !== null)
@@ -449,6 +450,19 @@ export default function UserConsole(): JSX.Element {
     void resolveTokenSecret(tokenId).catch(() => undefined)
   }, [consoleAvailability, resolveTokenSecret])
 
+  const revealDetailTokenForManualCopy = useCallback((tokenId: string, token: string) => {
+    if (route.name !== 'token' || route.id !== tokenId) return false
+    setTokenSecretTokenId(tokenId)
+    setTokenSecretValue(token)
+    setTokenSecretVisible(true)
+    setTokenSecretLoading(false)
+    setTokenSecretError(null)
+    window.requestAnimationFrame(() => {
+      selectAllReadonlyText(detailTokenFieldRef.current)
+    })
+    return true
+  }, [route])
+
   const copyToken = useCallback(async (tokenId: string, anchorEl?: HTMLElement | null) => {
     setManualCopyBubble(null)
     try {
@@ -458,7 +472,7 @@ export default function UserConsole(): JSX.Element {
       const token = await resolveTokenSecret(tokenId)
       const result = await copyText(token, hasCachedToken ? { preferExecCommand: true } : { allowExecCommand: false })
       if (!result.ok) {
-        if (anchorEl) {
+        if (!revealDetailTokenForManualCopy(tokenId, token) && anchorEl) {
           setManualCopyBubble({ anchorEl, value: token })
         }
         setCopyState((prev) => ({ ...prev, [tokenId]: 'error' }))
@@ -475,7 +489,7 @@ export default function UserConsole(): JSX.Element {
     window.setTimeout(() => {
       setCopyState((prev) => ({ ...prev, [tokenId]: 'idle' }))
     }, 1800)
-  }, [resolveTokenSecret, route, tokenSecretTokenId, tokenSecretValue])
+  }, [resolveTokenSecret, revealDetailTokenForManualCopy, route, tokenSecretTokenId, tokenSecretValue])
 
   const toggleTokenSecretVisibility = useCallback(async () => {
     if (route.name !== 'token') return
@@ -1431,6 +1445,7 @@ export default function UserConsole(): JSX.Element {
 
             <TokenSecretField
               inputId={`user-console-token-${route.id}`}
+              inputRef={detailTokenFieldRef}
               value={detailTokenValue}
               visible={detailTokenVisible}
               hiddenDisplayValue={tokenLabel(route.id)}
