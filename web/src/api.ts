@@ -7,6 +7,7 @@ export interface Summary {
   quota_exhausted_count: number
   active_keys: number
   exhausted_keys: number
+  quarantined_keys: number
   last_activity: number | null
   total_quota_limit: number
   total_quota_remaining: number
@@ -69,6 +70,14 @@ interface ServerPublicTokenLog {
   createdAt: number
 }
 
+export interface ApiKeyQuarantine {
+  source: string
+  reasonCode: string
+  reasonSummary: string
+  reasonDetail: string
+  createdAt: number
+}
+
 export interface ApiKeyStats {
   id: string
   status: string
@@ -83,6 +92,7 @@ export interface ApiKeyStats {
   success_count: number
   error_count: number
   quota_exhausted_count: number
+  quarantine: ApiKeyQuarantine | null
 }
 
 export interface RequestLog {
@@ -637,6 +647,16 @@ export async function setKeyStatus(id: string, status: KeyAdminStatus): Promise<
   })
   if (!res.ok) {
     throw new Error(`Failed to update key status: ${res.status}`)
+  }
+}
+
+export async function clearApiKeyQuarantine(id: string): Promise<void> {
+  const encoded = encodeURIComponent(id)
+  const res = await fetch(`/api/keys/${encoded}/quarantine`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) {
+    throw new Error(`Failed to clear key quarantine: ${res.status}`)
   }
 }
 

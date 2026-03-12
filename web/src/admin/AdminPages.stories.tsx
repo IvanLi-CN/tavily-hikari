@@ -166,6 +166,7 @@ const MOCK_KEYS: ApiKeyStats[] = [
     success_count: 19_102,
     error_count: 631,
     quota_exhausted_count: 107,
+    quarantine: null,
   },
   {
     id: 'asR8',
@@ -181,6 +182,7 @@ const MOCK_KEYS: ApiKeyStats[] = [
     success_count: 14_299,
     error_count: 1_142,
     quota_exhausted_count: 672,
+    quarantine: null,
   },
   {
     id: 'U2vK',
@@ -196,6 +198,7 @@ const MOCK_KEYS: ApiKeyStats[] = [
     success_count: 28_211,
     error_count: 541,
     quota_exhausted_count: 149,
+    quarantine: null,
   },
   {
     id: 'c7Pk',
@@ -211,6 +214,7 @@ const MOCK_KEYS: ApiKeyStats[] = [
     success_count: 570,
     error_count: 29,
     quota_exhausted_count: 0,
+    quarantine: null,
   },
   {
     id: 'J1nW',
@@ -226,6 +230,7 @@ const MOCK_KEYS: ApiKeyStats[] = [
     success_count: 8_672,
     error_count: 419,
     quota_exhausted_count: 129,
+    quarantine: null,
   },
 ]
 

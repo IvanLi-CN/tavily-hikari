@@ -105,6 +105,7 @@ pub async fn serve(
         .route("/api/keys/validate", post(post_validate_api_keys))
         .route("/api/keys/batch", post(create_api_keys_batch))
         .route("/api/keys/:id", get(get_api_key_detail))
+        .route("/api/keys/:id/quarantine", delete(delete_api_key_quarantine))
         .route("/api/keys/:id/sync-usage", post(post_sync_key_usage))
         .route("/api/keys/:id/secret", get(get_api_key_secret))
         .route("/api/keys/:id", delete(delete_api_key))

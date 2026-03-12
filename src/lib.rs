@@ -30,6 +30,7 @@ pub const DEFAULT_UPSTREAM: &str = "https://mcp.tavily.com/mcp";
 const STATUS_ACTIVE: &str = "active";
 const STATUS_EXHAUSTED: &str = "exhausted";
 const STATUS_DISABLED: &str = "disabled";
+const QUARANTINE_REASON_DETAIL_MAX_LEN: usize = 1024;
 
 const OUTCOME_SUCCESS: &str = "success";
 const OUTCOME_ERROR: &str = "error";
@@ -1306,6 +1307,57 @@ impl TavilyProxy {
         }
     }
 
+    async fn reconcile_key_health(
+        &self,
+        lease: &ApiKeyLease,
+        source: &str,
+        analysis: &AttemptAnalysis,
+    ) -> Result<(), ProxyError> {
+        match &analysis.key_health_action {
+            KeyHealthAction::None => self.key_store.restore_active_status(&lease.secret).await,
+            KeyHealthAction::MarkExhausted => {
+                let _changed = self.key_store.mark_quota_exhausted(&lease.secret).await?;
+                Ok(())
+            }
+            KeyHealthAction::Quarantine(decision) => {
+                self.key_store
+                    .quarantine_key_by_id(
+                        &lease.id,
+                        source,
+                        &decision.reason_code,
+                        &decision.reason_summary,
+                        &decision.reason_detail,
+                    )
+                    .await
+            }
+        }
+    }
+
+    async fn maybe_quarantine_usage_error(
+        &self,
+        lease: &ApiKeyLease,
+        source: &str,
+        err: &ProxyError,
+    ) -> Result<(), ProxyError> {
+        let ProxyError::UsageHttp { status, body } = err else {
+            return Ok(());
+        };
+        let Some(decision) =
+            classify_quarantine_reason(Some(status.as_u16() as i64), body.as_bytes())
+        else {
+            return Ok(());
+        };
+        self.key_store
+            .quarantine_key_by_id(
+                &lease.id,
+                source,
+                &decision.reason_code,
+                &decision.reason_summary,
+                &decision.reason_detail,
+            )
+            .await
+    }
+
     /// 将请求透传到 Tavily upstream 并记录日志。
     pub async fn proxy_request(&self, request: ProxyRequest) -> Result<ProxyResponse, ProxyError> {
         let lease = self
@@ -1375,11 +1427,8 @@ impl TavilyProxy {
                     })
                     .await?;
 
-                if status.as_u16() == 432 || outcome.mark_exhausted {
-                    let _changed = self.key_store.mark_quota_exhausted(&lease.secret).await?;
-                } else {
-                    self.key_store.restore_active_status(&lease.secret).await?;
-                }
+                self.reconcile_key_health(&lease, request.path.as_str(), &outcome)
+                    .await?;
 
                 Ok(ProxyResponse {
                     status,
@@ -1527,11 +1576,8 @@ impl TavilyProxy {
                     })
                     .await?;
 
-                if status.as_u16() == 432 || analysis.mark_exhausted {
-                    let _changed = self.key_store.mark_quota_exhausted(&lease.secret).await?;
-                } else {
-                    self.key_store.restore_active_status(&lease.secret).await?;
-                }
+                self.reconcile_key_health(&lease, display_path, &analysis)
+                    .await?;
 
                 Ok((
                     ProxyResponse {
@@ -1589,9 +1635,17 @@ impl TavilyProxy {
         // research calls sharing the same upstream key, otherwise deltas can be misattributed.
         let _key_guard = self.lock_research_key_usage(&lease.id).await?;
 
-        let before_usage = self
+        let before_usage = match self
             .fetch_research_usage_for_secret_with_retries(&lease.secret, usage_base)
-            .await?;
+            .await
+        {
+            Ok(usage) => usage,
+            Err(err) => {
+                self.maybe_quarantine_usage_error(&lease, "/api/tavily/research#usage", &err)
+                    .await?;
+                return Err(err);
+            }
+        };
 
         let base = Url::parse(usage_base).map_err(|source| ProxyError::InvalidEndpoint {
             endpoint: usage_base.to_owned(),
@@ -1674,16 +1728,24 @@ impl TavilyProxy {
                     })
                     .await?;
 
-                if status.as_u16() == 432 || analysis.mark_exhausted {
-                    let _changed = self.key_store.mark_quota_exhausted(&lease.secret).await?;
-                } else {
-                    self.key_store.restore_active_status(&lease.secret).await?;
-                }
+                self.reconcile_key_health(&lease, display_path, &analysis)
+                    .await?;
 
-                let after_usage = self
+                let after_usage = match self
                     .fetch_research_usage_for_secret_with_retries(&lease.secret, usage_base)
                     .await
-                    .ok();
+                {
+                    Ok(usage) => Some(usage),
+                    Err(err) => {
+                        self.maybe_quarantine_usage_error(
+                            &lease,
+                            "/api/tavily/research#usage",
+                            &err,
+                        )
+                        .await?;
+                        None
+                    }
+                };
                 let delta = match after_usage {
                     Some(after) if after >= before_usage => Some(after - before_usage),
                     _ => None,
@@ -1802,11 +1864,8 @@ impl TavilyProxy {
                     })
                     .await?;
 
-                if status.as_u16() == 432 || analysis.mark_exhausted {
-                    let _changed = self.key_store.mark_quota_exhausted(&lease.secret).await?;
-                } else {
-                    self.key_store.restore_active_status(&lease.secret).await?;
-                }
+                self.reconcile_key_health(&lease, display_path, &analysis)
+                    .await?;
 
                 Ok((
                     ProxyResponse {
@@ -2912,6 +2971,11 @@ impl TavilyProxy {
         self.key_store.enable_key_by_id(key_id).await
     }
 
+    /// Admin: clear the active quarantine record for a key.
+    pub async fn clear_key_quarantine_by_id(&self, key_id: &str) -> Result<(), ProxyError> {
+        self.key_store.clear_key_quarantine_by_id(key_id).await
+    }
+
     /// 获取整体运行情况汇总。
     pub async fn summary(&self) -> Result<ProxySummary, ProxyError> {
         self.key_store.fetch_summary().await
@@ -3880,6 +3944,7 @@ impl KeyStore {
         .await?;
 
         self.upgrade_api_keys_schema().await?;
+        self.ensure_api_key_quarantines_schema().await?;
 
         sqlx::query(
             r#"
@@ -5996,6 +6061,40 @@ impl KeyStore {
         Ok(())
     }
 
+    async fn ensure_api_key_quarantines_schema(&self) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS api_key_quarantines (
+                id TEXT PRIMARY KEY,
+                key_id TEXT NOT NULL,
+                source TEXT NOT NULL,
+                reason_code TEXT NOT NULL,
+                reason_summary TEXT NOT NULL,
+                reason_detail TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                cleared_at INTEGER,
+                FOREIGN KEY (key_id) REFERENCES api_keys(id)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_api_key_quarantines_active ON api_key_quarantines(key_id) WHERE cleared_at IS NULL",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_api_key_quarantines_key_created ON api_key_quarantines(key_id, created_at DESC)",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
     async fn ensure_api_key_ids(&self) -> Result<(), ProxyError> {
         if !self.api_keys_column_exists("id").await? {
             sqlx::query("ALTER TABLE api_keys ADD COLUMN id TEXT")
@@ -6340,9 +6439,26 @@ impl KeyStore {
             .and_then(normalize_timestamp)
             .filter(|ts| *ts >= since_bucket_start);
 
-        let (active_keys, exhausted_keys) = match status.as_deref() {
-            Some(STATUS_EXHAUSTED) => (0, 1),
-            _ => (1, 0),
+        let quarantined = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT 1
+            FROM api_key_quarantines
+            WHERE key_id = ? AND cleared_at IS NULL
+            LIMIT 1
+            "#,
+        )
+        .bind(key_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .is_some();
+
+        let (active_keys, exhausted_keys, quarantined_keys) = if quarantined {
+            (0, 0, 1)
+        } else {
+            match status.as_deref() {
+                Some(STATUS_EXHAUSTED) => (0, 1, 0),
+                _ => (1, 0, 0),
+            }
         };
 
         Ok(ProxySummary {
@@ -6352,6 +6468,7 @@ impl KeyStore {
             quota_exhausted_count: totals_row.try_get("quota_exhausted_count")?,
             active_keys,
             exhausted_keys,
+            quarantined_keys,
             last_activity,
             total_quota_limit: 0,
             total_quota_remaining: 0,
@@ -6550,6 +6667,11 @@ impl KeyStore {
             SELECT id, api_key
             FROM api_keys
             WHERE status = ? AND deleted_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM api_key_quarantines q
+                  WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
+              )
             ORDER BY last_used_at ASC, id ASC
             LIMIT 1
             "#,
@@ -6570,6 +6692,11 @@ impl KeyStore {
             SELECT id, api_key
             FROM api_keys
             WHERE status = ? AND deleted_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM api_key_quarantines q
+                  WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
+              )
             ORDER BY
                 CASE WHEN status_changed_at IS NULL THEN 1 ELSE 0 END ASC,
                 status_changed_at ASC,
@@ -6604,6 +6731,11 @@ impl KeyStore {
             SELECT id, api_key
             FROM api_keys
             WHERE id = ? AND status = ? AND deleted_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM api_key_quarantines q
+                  WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
+              )
             LIMIT 1
             "#,
         )
@@ -10595,6 +10727,85 @@ impl KeyStore {
         Ok(())
     }
 
+    async fn quarantine_key_by_id(
+        &self,
+        key_id: &str,
+        source: &str,
+        reason_code: &str,
+        reason_summary: &str,
+        reason_detail: &str,
+    ) -> Result<(), ProxyError> {
+        let now = Utc::now().timestamp();
+        let active_exists = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT 1
+            FROM api_key_quarantines
+            WHERE key_id = ? AND cleared_at IS NULL
+            LIMIT 1
+            "#,
+        )
+        .bind(key_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .is_some();
+
+        if active_exists {
+            sqlx::query(
+                r#"
+                UPDATE api_key_quarantines
+                SET source = ?, reason_code = ?, reason_summary = ?, reason_detail = ?, created_at = ?
+                WHERE key_id = ? AND cleared_at IS NULL
+                "#,
+            )
+            .bind(source)
+            .bind(reason_code)
+            .bind(reason_summary)
+            .bind(reason_detail)
+            .bind(now)
+            .bind(key_id)
+            .execute(&self.pool)
+            .await?;
+            return Ok(());
+        }
+
+        let quarantine_id = nanoid!(12);
+        sqlx::query(
+            r#"
+            INSERT INTO api_key_quarantines (
+                id, key_id, source, reason_code, reason_summary, reason_detail, created_at, cleared_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+            "#,
+        )
+        .bind(quarantine_id)
+        .bind(key_id)
+        .bind(source)
+        .bind(reason_code)
+        .bind(reason_summary)
+        .bind(reason_detail)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn clear_key_quarantine_by_id(&self, key_id: &str) -> Result<(), ProxyError> {
+        let now = Utc::now().timestamp();
+        sqlx::query(
+            r#"
+            UPDATE api_key_quarantines
+            SET cleared_at = ?
+            WHERE key_id = ? AND cleared_at IS NULL
+            "#,
+        )
+        .bind(now)
+        .bind(key_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     // Admin ops: add/undelete key by secret
     async fn add_or_undelete_key(&self, api_key: &str) -> Result<String, ProxyError> {
         self.add_or_undelete_key_in_group(api_key, None).await
@@ -10913,6 +11124,11 @@ impl KeyStore {
                 ak.quota_limit,
                 ak.quota_remaining,
                 ak.quota_synced_at,
+                aq.source AS quarantine_source,
+                aq.reason_code AS quarantine_reason_code,
+                aq.reason_summary AS quarantine_reason_summary,
+                aq.reason_detail AS quarantine_reason_detail,
+                aq.created_at AS quarantine_created_at,
                 COALESCE(stats.total_requests, 0) AS total_requests,
                 COALESCE(stats.success_count, 0) AS success_count,
                 COALESCE(stats.error_count, 0) AS error_count,
@@ -10930,6 +11146,8 @@ impl KeyStore {
                 GROUP BY api_key_id
             ) AS stats
             ON stats.api_key_id = ak.id
+            LEFT JOIN api_key_quarantines aq
+            ON aq.key_id = ak.id AND aq.cleared_at IS NULL
             WHERE ak.deleted_at IS NULL
             ORDER BY ak.status ASC, ak.last_used_at ASC, ak.id ASC
             "#,
@@ -10953,6 +11171,14 @@ impl KeyStore {
                 let success_count: i64 = row.try_get("success_count")?;
                 let error_count: i64 = row.try_get("error_count")?;
                 let quota_exhausted_count: i64 = row.try_get("quota_exhausted_count")?;
+                let quarantine_source: Option<String> = row.try_get("quarantine_source")?;
+                let quarantine_reason_code: Option<String> =
+                    row.try_get("quarantine_reason_code")?;
+                let quarantine_reason_summary: Option<String> =
+                    row.try_get("quarantine_reason_summary")?;
+                let quarantine_reason_detail: Option<String> =
+                    row.try_get("quarantine_reason_detail")?;
+                let quarantine_created_at: Option<i64> = row.try_get("quarantine_created_at")?;
 
                 Ok(ApiKeyMetrics {
                     id,
@@ -10975,6 +11201,13 @@ impl KeyStore {
                     success_count,
                     error_count,
                     quota_exhausted_count,
+                    quarantine: quarantine_source.map(|source| ApiKeyQuarantine {
+                        source,
+                        reason_code: quarantine_reason_code.unwrap_or_default(),
+                        reason_summary: quarantine_reason_summary.unwrap_or_default(),
+                        reason_detail: quarantine_reason_detail.unwrap_or_default(),
+                        created_at: quarantine_created_at.unwrap_or_default(),
+                    }),
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -11408,10 +11641,13 @@ impl KeyStore {
         let key_counts_row = sqlx::query(
             r#"
             SELECT
-                COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0) AS active_keys,
-                COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0) AS exhausted_keys
-            FROM api_keys
-            WHERE deleted_at IS NULL
+                COALESCE(SUM(CASE WHEN ak.status = ? AND aq.key_id IS NULL THEN 1 ELSE 0 END), 0) AS active_keys,
+                COALESCE(SUM(CASE WHEN ak.status = ? AND aq.key_id IS NULL THEN 1 ELSE 0 END), 0) AS exhausted_keys,
+                COALESCE(SUM(CASE WHEN aq.key_id IS NOT NULL THEN 1 ELSE 0 END), 0) AS quarantined_keys
+            FROM api_keys ak
+            LEFT JOIN api_key_quarantines aq
+              ON aq.key_id = ak.id AND aq.cleared_at IS NULL
+            WHERE ak.deleted_at IS NULL
             "#,
         )
         .bind(STATUS_ACTIVE)
@@ -11445,6 +11681,7 @@ impl KeyStore {
             quota_exhausted_count: totals_row.try_get("quota_exhausted_count")?,
             active_keys: key_counts_row.try_get("active_keys")?,
             exhausted_keys: key_counts_row.try_get("exhausted_keys")?,
+            quarantined_keys: key_counts_row.try_get("quarantined_keys")?,
             last_activity,
             total_quota_limit: quotas_row.try_get("total_quota_limit")?,
             total_quota_remaining: quotas_row.try_get("total_quota_remaining")?,
@@ -11715,6 +11952,16 @@ pub struct ApiKeyMetrics {
     pub success_count: i64,
     pub error_count: i64,
     pub quota_exhausted_count: i64,
+    pub quarantine: Option<ApiKeyQuarantine>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiKeyQuarantine {
+    pub source: String,
+    pub reason_code: String,
+    pub reason_summary: String,
+    pub reason_detail: String,
+    pub created_at: i64,
 }
 
 /// 单条请求日志记录的关键信息。
@@ -11746,6 +11993,7 @@ pub struct ProxySummary {
     pub quota_exhausted_count: i64,
     pub active_keys: i64,
     pub exhausted_keys: i64,
+    pub quarantined_keys: i64,
     pub last_activity: Option<i64>,
     pub total_quota_limit: i64,
     pub total_quota_remaining: i64,
@@ -12163,11 +12411,25 @@ fn log_error(key: &str, method: &Method, path: &str, query: Option<&str>, err: &
     eprintln!("[{key_preview}] {method} {full_path} !! {err}");
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuarantineDecision {
+    pub reason_code: String,
+    pub reason_summary: String,
+    pub reason_detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyHealthAction {
+    None,
+    MarkExhausted,
+    Quarantine(QuarantineDecision),
+}
+
+#[derive(Debug, Clone)]
 pub struct AttemptAnalysis {
     pub status: &'static str,
-    pub mark_exhausted: bool,
     pub tavily_status_code: Option<i64>,
+    pub key_health_action: KeyHealthAction,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12181,8 +12443,10 @@ fn analyze_attempt(status: StatusCode, body: &[u8]) -> AttemptAnalysis {
     if !status.is_success() {
         return AttemptAnalysis {
             status: OUTCOME_ERROR,
-            mark_exhausted: false,
             tavily_status_code: Some(status.as_u16() as i64),
+            key_health_action: classify_quarantine_reason(Some(status.as_u16() as i64), body)
+                .map(KeyHealthAction::Quarantine)
+                .unwrap_or(KeyHealthAction::None),
         };
     }
 
@@ -12191,8 +12455,8 @@ fn analyze_attempt(status: StatusCode, body: &[u8]) -> AttemptAnalysis {
         Err(_) => {
             return AttemptAnalysis {
                 status: OUTCOME_UNKNOWN,
-                mark_exhausted: false,
                 tavily_status_code: None,
+                key_health_action: KeyHealthAction::None,
             };
         }
     };
@@ -12221,8 +12485,8 @@ fn analyze_attempt(status: StatusCode, body: &[u8]) -> AttemptAnalysis {
                 MessageOutcome::QuotaExhausted => {
                     return AttemptAnalysis {
                         status: OUTCOME_QUOTA_EXHAUSTED,
-                        mark_exhausted: true,
                         tavily_status_code: code.or(detected_code),
+                        key_health_action: KeyHealthAction::MarkExhausted,
                     };
                 }
                 MessageOutcome::Error => {
@@ -12236,23 +12500,25 @@ fn analyze_attempt(status: StatusCode, body: &[u8]) -> AttemptAnalysis {
     if any_error {
         return AttemptAnalysis {
             status: OUTCOME_ERROR,
-            mark_exhausted: false,
             tavily_status_code: detected_code,
+            key_health_action: classify_quarantine_reason(detected_code, body)
+                .map(KeyHealthAction::Quarantine)
+                .unwrap_or(KeyHealthAction::None),
         };
     }
 
     if any_success {
         return AttemptAnalysis {
             status: OUTCOME_SUCCESS,
-            mark_exhausted: false,
             tavily_status_code: detected_code,
+            key_health_action: KeyHealthAction::None,
         };
     }
 
     AttemptAnalysis {
         status: OUTCOME_UNKNOWN,
-        mark_exhausted: false,
         tavily_status_code: detected_code,
+        key_health_action: KeyHealthAction::None,
     }
 }
 
@@ -12289,16 +12555,21 @@ pub fn analyze_http_attempt(status: StatusCode, body: &[u8]) -> AttemptAnalysis 
         };
     }
 
-    let (status_str, mark_exhausted) = match outcome {
-        MessageOutcome::Success => (OUTCOME_SUCCESS, false),
-        MessageOutcome::Error => (OUTCOME_ERROR, false),
-        MessageOutcome::QuotaExhausted => (OUTCOME_QUOTA_EXHAUSTED, true),
+    let (status_str, key_health_action) = match outcome {
+        MessageOutcome::Success => (OUTCOME_SUCCESS, KeyHealthAction::None),
+        MessageOutcome::Error => (
+            OUTCOME_ERROR,
+            classify_quarantine_reason(Some(effective), body)
+                .map(KeyHealthAction::Quarantine)
+                .unwrap_or(KeyHealthAction::None),
+        ),
+        MessageOutcome::QuotaExhausted => (OUTCOME_QUOTA_EXHAUSTED, KeyHealthAction::MarkExhausted),
     };
 
     AttemptAnalysis {
         status: status_str,
-        mark_exhausted,
         tavily_status_code: Some(effective),
+        key_health_action,
     }
 }
 
@@ -12588,6 +12859,64 @@ fn extract_status_code(value: &Value) -> Option<i64> {
     }
 
     None
+}
+
+fn classify_quarantine_reason(status_code: Option<i64>, body: &[u8]) -> Option<QuarantineDecision> {
+    let code = status_code?;
+    if code != 401 && code != 403 {
+        return None;
+    }
+
+    let raw = String::from_utf8_lossy(body);
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let normalized = trimmed.to_ascii_lowercase();
+    let (reason_code, reason_summary) = if normalized.contains("deactivated") {
+        (
+            "account_deactivated",
+            format!("Tavily account deactivated (HTTP {code})"),
+        )
+    } else if normalized.contains("revoked") {
+        ("key_revoked", format!("Tavily key revoked (HTTP {code})"))
+    } else if normalized.contains("invalid api key")
+        || normalized.contains("invalid key")
+        || normalized.contains("invalid_token")
+    {
+        (
+            "invalid_api_key",
+            format!("Tavily rejected the API key as invalid (HTTP {code})"),
+        )
+    } else if normalized.contains("unauthorized") || normalized.contains("not authorized") {
+        (
+            "unauthorized",
+            format!("Tavily rejected the API key as unauthorized (HTTP {code})"),
+        )
+    } else if normalized.contains("forbidden") {
+        (
+            "forbidden",
+            format!("Tavily rejected the API key as forbidden (HTTP {code})"),
+        )
+    } else {
+        return None;
+    };
+
+    Some(QuarantineDecision {
+        reason_code: reason_code.to_string(),
+        reason_summary,
+        reason_detail: truncate_text(trimmed, QUARANTINE_REASON_DETAIL_MAX_LEN),
+    })
+}
+
+fn truncate_text(input: &str, max_chars: usize) -> String {
+    if input.chars().count() <= max_chars {
+        return input.to_string();
+    }
+    let mut truncated = input.chars().take(max_chars).collect::<String>();
+    truncated.push('…');
+    truncated
 }
 
 fn extract_status_text(value: &Value) -> Option<&str> {
@@ -13325,7 +13654,10 @@ fn redact_api_key_bytes(bytes: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{Json, Router, routing::post};
+    use axum::{
+        Json, Router,
+        routing::{get, post},
+    };
     use std::path::PathBuf;
     use std::sync::{Arc, OnceLock};
     use tokio::net::TcpListener;
@@ -13478,7 +13810,7 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
 
         let analysis = analyze_mcp_attempt(StatusCode::OK, body);
         assert_eq!(analysis.status, OUTCOME_ERROR);
-        assert!(!analysis.mark_exhausted);
+        assert_eq!(analysis.key_health_action, KeyHealthAction::None);
         assert_eq!(analysis.tavily_status_code, Some(200));
     }
 
@@ -13857,7 +14189,7 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
         let body = br#"{"query":"test","results":[]}"#;
         let analysis = analyze_http_attempt(StatusCode::OK, body);
         assert_eq!(analysis.status, OUTCOME_SUCCESS);
-        assert!(!analysis.mark_exhausted);
+        assert_eq!(analysis.key_health_action, KeyHealthAction::None);
         assert_eq!(analysis.tavily_status_code, Some(200));
     }
 
@@ -13866,7 +14198,7 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
         let body = br#"{"status":432,"error":"quota_exhausted"}"#;
         let analysis = analyze_http_attempt(StatusCode::OK, body);
         assert_eq!(analysis.status, OUTCOME_QUOTA_EXHAUSTED);
-        assert!(analysis.mark_exhausted);
+        assert_eq!(analysis.key_health_action, KeyHealthAction::MarkExhausted);
         assert_eq!(analysis.tavily_status_code, Some(432));
     }
 
@@ -13875,7 +14207,7 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
         let body = br#"{"error":"upstream failed"}"#;
         let analysis = analyze_http_attempt(StatusCode::INTERNAL_SERVER_ERROR, body);
         assert_eq!(analysis.status, OUTCOME_ERROR);
-        assert!(!analysis.mark_exhausted);
+        assert_eq!(analysis.key_health_action, KeyHealthAction::None);
         assert_eq!(analysis.tavily_status_code, Some(500));
     }
 
@@ -13884,7 +14216,7 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
         let body = br#"{"status":"failed"}"#;
         let analysis = analyze_http_attempt(StatusCode::OK, body);
         assert_eq!(analysis.status, OUTCOME_ERROR);
-        assert!(!analysis.mark_exhausted);
+        assert_eq!(analysis.key_health_action, KeyHealthAction::None);
         assert_eq!(analysis.tavily_status_code, Some(200));
     }
 
@@ -13893,7 +14225,7 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
         let body = br#"{"status":"pending"}"#;
         let analysis = analyze_http_attempt(StatusCode::OK, body);
         assert_eq!(analysis.status, OUTCOME_SUCCESS);
-        assert!(!analysis.mark_exhausted);
+        assert_eq!(analysis.key_health_action, KeyHealthAction::None);
         assert_eq!(analysis.tavily_status_code, Some(200));
     }
 
@@ -13902,8 +14234,23 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
         let body = br#"{"status":432,"detail":{"status":"failed"}}"#;
         let analysis = analyze_http_attempt(StatusCode::OK, body);
         assert_eq!(analysis.status, OUTCOME_QUOTA_EXHAUSTED);
-        assert!(analysis.mark_exhausted);
+        assert_eq!(analysis.key_health_action, KeyHealthAction::MarkExhausted);
         assert_eq!(analysis.tavily_status_code, Some(432));
+    }
+
+    #[test]
+    fn analyze_http_attempt_marks_401_deactivated_as_quarantine() {
+        let body = br#"{"detail":{"error":"The account associated with this API key has been deactivated."}}"#;
+        let analysis = analyze_http_attempt(StatusCode::UNAUTHORIZED, body);
+        assert_eq!(analysis.status, OUTCOME_ERROR);
+        match analysis.key_health_action {
+            KeyHealthAction::Quarantine(decision) => {
+                assert_eq!(decision.reason_code, "account_deactivated");
+                assert!(decision.reason_summary.contains("HTTP 401"));
+            }
+            other => panic!("expected quarantine action, got {other:?}"),
+        }
+        assert_eq!(analysis.tavily_status_code, Some(401));
     }
 
     #[test]
@@ -13997,7 +14344,7 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
             .expect("proxy search succeeded");
 
         assert_eq!(analysis.status, OUTCOME_QUOTA_EXHAUSTED);
-        assert!(analysis.mark_exhausted);
+        assert_eq!(analysis.key_health_action, KeyHealthAction::MarkExhausted);
         assert_eq!(analysis.tavily_status_code, Some(432));
 
         // Verify that the key is marked exhausted in the database.
@@ -14086,6 +14433,303 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
             )
             .await
             .expect("proxy request succeeds");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn proxy_http_json_endpoint_quarantines_key_on_401_deactivated() {
+        let db_path = temp_db_path("http-json-quarantine-401");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let expected_api_key = "tvly-http-quarantine-key";
+        let proxy = TavilyProxy::with_endpoint(
+            vec![expected_api_key.to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let app = Router::new().route(
+            "/search",
+            post(|| async {
+                (
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({
+                        "detail": {
+                            "error": "The account associated with this API key has been deactivated."
+                        }
+                    })),
+                )
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+
+        let usage_base = format!("http://{}", addr);
+        let headers = HeaderMap::new();
+        let options = serde_json::json!({ "query": "test" });
+
+        let (_resp, analysis) = proxy
+            .proxy_http_search(
+                &usage_base,
+                Some("tok1"),
+                &Method::POST,
+                "/api/tavily/search",
+                options,
+                &headers,
+            )
+            .await
+            .expect("proxy search succeeded");
+
+        assert_eq!(analysis.status, OUTCOME_ERROR);
+        match analysis.key_health_action {
+            KeyHealthAction::Quarantine(ref decision) => {
+                assert_eq!(decision.reason_code, "account_deactivated");
+            }
+            ref other => panic!("expected quarantine action, got {other:?}"),
+        }
+
+        let store = proxy.key_store.clone();
+        let (status,): (String,) = sqlx::query_as("SELECT status FROM api_keys WHERE api_key = ?")
+            .bind(expected_api_key)
+            .fetch_one(&store.pool)
+            .await
+            .expect("key row exists");
+        assert_eq!(status, STATUS_ACTIVE);
+
+        let quarantine_row = sqlx::query(
+            r#"SELECT source, reason_code, cleared_at FROM api_key_quarantines
+               WHERE key_id = (SELECT id FROM api_keys WHERE api_key = ?) AND cleared_at IS NULL"#,
+        )
+        .bind(expected_api_key)
+        .fetch_one(&store.pool)
+        .await
+        .expect("quarantine row exists");
+        let source: String = quarantine_row.try_get("source").expect("source");
+        let reason_code: String = quarantine_row.try_get("reason_code").expect("reason_code");
+        let cleared_at: Option<i64> = quarantine_row.try_get("cleared_at").expect("cleared_at");
+        assert_eq!(source, "/api/tavily/search");
+        assert_eq!(reason_code, "account_deactivated");
+        assert!(cleared_at.is_none());
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn proxy_request_quarantines_key_on_mcp_unauthorized() {
+        let db_path = temp_db_path("mcp-quarantine-401");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let app = Router::new().route(
+            "/mcp",
+            post(|| async {
+                (
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "error": {
+                            "message": "Unauthorized: invalid api key"
+                        },
+                        "id": 1
+                    })),
+                )
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+
+        let expected_api_key = "tvly-mcp-quarantine-key";
+        let upstream = format!("http://{addr}/mcp");
+        let proxy =
+            TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
+
+        let request = ProxyRequest {
+            method: Method::POST,
+            path: "/mcp".to_string(),
+            query: None,
+            headers: HeaderMap::new(),
+            body: Bytes::from_static(br#"{"jsonrpc":"2.0","id":1,"method":"tools/call"}"#),
+            auth_token_id: Some("tok1".to_string()),
+        };
+
+        let response = proxy.proxy_request(request).await.expect("proxy response");
+        assert_eq!(response.status, StatusCode::UNAUTHORIZED);
+
+        let store = proxy.key_store.clone();
+        let quarantine_count: i64 = sqlx::query_scalar(
+            r#"SELECT COUNT(*) FROM api_key_quarantines
+               WHERE key_id = (SELECT id FROM api_keys WHERE api_key = ?) AND cleared_at IS NULL"#,
+        )
+        .bind(expected_api_key)
+        .fetch_one(&store.pool)
+        .await
+        .expect("count quarantine rows");
+        assert_eq!(quarantine_count, 1);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn quarantined_keys_are_excluded_until_admin_clears_them() {
+        let db_path = temp_db_path("quarantine-acquire");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let proxy = TavilyProxy::with_endpoint(
+            vec![
+                "tvly-quarantine-a".to_string(),
+                "tvly-quarantine-b".to_string(),
+            ],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let rows = sqlx::query_as::<_, (String, String)>(
+            "SELECT id, api_key FROM api_keys ORDER BY api_key ASC",
+        )
+        .fetch_all(&proxy.key_store.pool)
+        .await
+        .expect("fetch keys");
+        let (first_id, _first_secret) = rows
+            .into_iter()
+            .find(|(_, secret)| secret == "tvly-quarantine-a")
+            .expect("first key exists");
+
+        assert!(
+            proxy
+                .key_store
+                .try_acquire_specific_key(&first_id)
+                .await
+                .expect("acquire specific before quarantine")
+                .is_some()
+        );
+
+        proxy
+            .key_store
+            .quarantine_key_by_id(
+                &first_id,
+                "/api/tavily/search",
+                "account_deactivated",
+                "Tavily account deactivated (HTTP 401)",
+                "deactivated",
+            )
+            .await
+            .expect("quarantine key");
+
+        assert!(
+            proxy
+                .key_store
+                .try_acquire_specific_key(&first_id)
+                .await
+                .expect("acquire specific after quarantine")
+                .is_none()
+        );
+
+        let summary = proxy.summary().await.expect("summary");
+        assert_eq!(summary.active_keys, 1);
+        assert_eq!(summary.quarantined_keys, 1);
+
+        proxy
+            .clear_key_quarantine_by_id(&first_id)
+            .await
+            .expect("clear quarantine");
+
+        assert!(
+            proxy
+                .key_store
+                .try_acquire_specific_key(&first_id)
+                .await
+                .expect("acquire specific after clear")
+                .is_some()
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn research_usage_probe_401_quarantines_key() {
+        let db_path = temp_db_path("research-usage-quarantine");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let expected_api_key = "tvly-research-quarantine-key";
+        let proxy = TavilyProxy::with_endpoint(
+            vec![expected_api_key.to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let app = Router::new().route(
+            "/usage",
+            get(|| async {
+                (
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({
+                        "error": "invalid api key",
+                    })),
+                )
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+
+        let usage_base = format!("http://{}", addr);
+        let headers = HeaderMap::new();
+        let options = serde_json::json!({ "query": "test research" });
+
+        let err = proxy
+            .proxy_http_research_with_usage_diff(
+                &usage_base,
+                Some("tok1"),
+                &Method::POST,
+                "/api/tavily/research",
+                options,
+                &headers,
+                false,
+            )
+            .await
+            .expect_err("research should fail when usage probe is unauthorized");
+
+        match err {
+            ProxyError::UsageHttp { status, .. } => {
+                assert_eq!(status, StatusCode::UNAUTHORIZED);
+            }
+            other => panic!("expected usage http error, got {other:?}"),
+        }
+
+        let quarantine_count: i64 = sqlx::query_scalar(
+            r#"SELECT COUNT(*) FROM api_key_quarantines
+               WHERE key_id = (SELECT id FROM api_keys WHERE api_key = ?) AND cleared_at IS NULL"#,
+        )
+        .bind(expected_api_key)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("count quarantine rows");
+        assert_eq!(quarantine_count, 1);
 
         let _ = std::fs::remove_file(db_path);
     }

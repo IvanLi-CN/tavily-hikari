@@ -1020,6 +1020,13 @@ impl From<ApiKeyMetrics> for ApiKeyView {
             success_count: metrics.success_count,
             error_count: metrics.error_count,
             quota_exhausted_count: metrics.quota_exhausted_count,
+            quarantine: metrics.quarantine.map(|quarantine| ApiKeyQuarantineView {
+                source: quarantine.source,
+                reason_code: quarantine.reason_code,
+                reason_summary: quarantine.reason_summary,
+                reason_detail: quarantine.reason_detail,
+                created_at: quarantine.created_at,
+            }),
         }
     }
 }
@@ -1063,6 +1070,7 @@ impl From<ProxySummary> for SummaryView {
             quota_exhausted_count: summary.quota_exhausted_count,
             active_keys: summary.active_keys,
             exhausted_keys: summary.exhausted_keys,
+            quarantined_keys: summary.quarantined_keys,
             last_activity: summary.last_activity,
             total_quota_limit: summary.total_quota_limit,
             total_quota_remaining: summary.total_quota_remaining,

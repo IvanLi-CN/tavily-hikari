@@ -77,6 +77,7 @@ import {
   type ValidateKeyResult,
   deleteApiKey,
   setKeyStatus,
+  clearApiKeyQuarantine,
   fetchProfile,
   fetchRequestLogs,
   fetchSummary,
@@ -1867,14 +1868,23 @@ function AdminDashboard(): JSX.Element {
       {
         id: 'keys',
         label: metricsStrings.labels.keys,
-        value: `${formatNumber(summary.active_keys)} / ${formatNumber(summary.active_keys + summary.exhausted_keys)}`,
+        value: formatNumber(summary.active_keys),
+        subtitle: metricsStrings.subtitles.keysAvailability
+          .replace('{active}', formatNumber(summary.active_keys))
+          .replace('{quarantined}', formatNumber(summary.quarantined_keys))
+          .replace('{exhausted}', formatNumber(summary.exhausted_keys)),
+      },
+      {
+        id: 'quarantined',
+        label: metricsStrings.labels.quarantined,
+        value: formatNumber(summary.quarantined_keys),
         subtitle:
-          summary.exhausted_keys === 0
+          summary.quarantined_keys === 0
             ? metricsStrings.subtitles.keysAll
-            : metricsStrings.subtitles.keysExhausted.replace('{count}', formatNumber(summary.exhausted_keys)),
+            : keyStrings.quarantine.badge,
       },
     ]
-  }, [summary, metricsStrings])
+  }, [keyStrings.quarantine.badge, metricsStrings, summary])
 
   const dedupedKeys = useMemo(() => {
     const map = new Map<string, ApiKeyStats>()
@@ -4979,6 +4989,11 @@ function AdminDashboard(): JSX.Element {
                         <StatusBadge tone={statusTone(item.status)}>
                           {statusLabel(item.status, adminStrings)}
                         </StatusBadge>
+                        {item.quarantine && (
+                          <div className="panel-description" style={{ marginTop: 4 }}>
+                            {keyStrings.quarantine.badge}: {item.quarantine.reasonSummary || keyStrings.quarantine.noReason}
+                          </div>
+                        )}
                       </td>
                       <td>{formatNumber(total)}</td>
                       <td>{formatNumber(item.success_count)}</td>
@@ -5078,9 +5093,16 @@ function AdminDashboard(): JSX.Element {
                   </div>
                   <div className="admin-mobile-kv">
                     <span>{keyStrings.table.status}</span>
-                    <StatusBadge tone={statusTone(item.status)}>
-                      {statusLabel(item.status, adminStrings)}
-                    </StatusBadge>
+                    <div>
+                      <StatusBadge tone={statusTone(item.status)}>
+                        {statusLabel(item.status, adminStrings)}
+                      </StatusBadge>
+                      {item.quarantine && (
+                        <div className="panel-description" style={{ marginTop: 4 }}>
+                          {keyStrings.quarantine.badge}: {item.quarantine.reasonSummary || keyStrings.quarantine.noReason}
+                        </div>
+                      )}
+                    </div>
                   </div>
                   <div className="admin-mobile-kv">
                     <span>{keyStrings.table.total}</span>
@@ -6330,6 +6352,7 @@ function LogDetails({ log, strings }: { log: RequestLog; strings: AdminTranslati
 function KeyDetails({ id, onBack }: { id: string; onBack: () => void }): JSX.Element {
   const translations = useTranslate()
   const adminStrings = translations.admin
+  const keyStrings = adminStrings.keys
   const keyDetailsStrings = adminStrings.keyDetails
   const logsTableStrings = adminStrings.logs.table
   const loadingStateStrings = adminStrings.loadingStates
@@ -6341,6 +6364,7 @@ function KeyDetails({ id, onBack }: { id: string; onBack: () => void }): JSX.Ele
   const [detailLoadState, setDetailLoadState] = useState<QueryLoadState>('initial_loading')
   const [error, setError] = useState<string | null>(null)
   const [syncState, setSyncState] = useState<'idle' | 'syncing' | 'success'>('idle')
+  const [quarantineState, setQuarantineState] = useState<'idle' | 'clearing'>('idle')
   const syncInFlightRef = useRef(false)
   const syncFeedbackTimerRef = useRef<number | null>(null)
   const loadAbortRef = useRef<AbortController | null>(null)
@@ -6438,6 +6462,21 @@ function KeyDetails({ id, onBack }: { id: string; onBack: () => void }): JSX.Ele
     }
   }, [adminStrings.errors.syncUsage, id, load])
 
+  const clearQuarantine = useCallback(async () => {
+    if (quarantineState === 'clearing') return
+    try {
+      setQuarantineState('clearing')
+      setError(null)
+      await clearApiKeyQuarantine(id)
+      await load('refresh')
+    } catch (err) {
+      console.error(err)
+      setError(err instanceof Error ? err.message : adminStrings.errors.clearQuarantine)
+    } finally {
+      setQuarantineState('idle')
+    }
+  }, [adminStrings.errors.clearQuarantine, id, load, quarantineState])
+
   const metricCards = useMemo(() => {
     if (!summary) return []
     const total = summary.total_requests
@@ -6499,6 +6538,50 @@ function KeyDetails({ id, onBack }: { id: string; onBack: () => void }): JSX.Ele
       </section>
 
       {error && <div className="surface error-banner" style={{ marginTop: 8, marginBottom: 0 }}>{error}</div>}
+
+      {detail?.quarantine && (
+        <section className="surface panel">
+          <div className="panel-header">
+            <div>
+              <h2>{keyDetailsStrings.quarantine.title}</h2>
+              <p className="panel-description">{keyDetailsStrings.quarantine.description}</p>
+            </div>
+            <Button
+              type="button"
+              variant="warning"
+              onClick={() => void clearQuarantine()}
+              disabled={quarantineState === 'clearing'}
+              aria-busy={quarantineState === 'clearing'}
+            >
+              <Icon
+                icon={quarantineState === 'clearing' ? 'mdi:loading' : 'mdi:shield-check-outline'}
+                width={18}
+                height={18}
+                className={quarantineState === 'clearing' ? 'icon-spin' : undefined}
+              />
+              {quarantineState === 'clearing'
+                ? keyDetailsStrings.quarantine.clearing
+                : keyDetailsStrings.quarantine.clearAction}
+            </Button>
+          </div>
+          <div className="admin-mobile-kv">
+            <span>{keyDetailsStrings.quarantine.source}</span>
+            <strong>{detail.quarantine.source}</strong>
+          </div>
+          <div className="admin-mobile-kv">
+            <span>{keyDetailsStrings.quarantine.reason}</span>
+            <strong>{detail.quarantine.reasonSummary || keyStrings.quarantine.noReason}</strong>
+          </div>
+          <div className="admin-mobile-kv">
+            <span>{keyDetailsStrings.quarantine.createdAt}</span>
+            <strong>{formatTimestamp(detail.quarantine.createdAt)}</strong>
+          </div>
+          <div style={{ marginTop: 12 }}>
+            <div className="panel-description" style={{ marginBottom: 4 }}>{keyDetailsStrings.quarantine.detail}</div>
+            <pre className="log-details-pre">{detail.quarantine.reasonDetail}</pre>
+          </div>
+        </section>
+      )}
 
       <section className="surface panel">
         <div className="panel-header">

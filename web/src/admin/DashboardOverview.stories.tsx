@@ -96,6 +96,7 @@ export const Default: Story = {
         success_count: 88,
         error_count: 23,
         quota_exhausted_count: 11,
+        quarantine: null,
       },
     ],
     logs: [
