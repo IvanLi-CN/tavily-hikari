@@ -246,6 +246,7 @@ export default function UserConsole(): JSX.Element {
   const dashboardSectionRef = useRef<HTMLElement | null>(null)
   const tokensSectionRef = useRef<HTMLElement | null>(null)
   const detailHeadingRef = useRef<HTMLHeadingElement | null>(null)
+  const landingScrollBehaviorRef = useRef<ScrollBehavior>('auto')
   const { viewportMode, contentMode, isCompactLayout } = useResponsiveModes(pageRef)
 
   useEffect(() => {
@@ -417,18 +418,22 @@ export default function UserConsole(): JSX.Element {
 
   const landingSection = route.name === 'landing' && route.section === 'tokens' ? 'tokens' : 'dashboard'
 
-  const scrollToLandingSection = useCallback((section: UserConsoleLandingSection) => {
+  const scrollToLandingSection = useCallback((section: UserConsoleLandingSection, behavior: ScrollBehavior = 'auto') => {
     const target = section === 'dashboard' ? dashboardSectionRef.current : tokensSectionRef.current
     if (!target) return
-    const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
-    target.scrollIntoView({ behavior, block: 'start' })
+    const finalBehavior = behavior === 'smooth' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      ? 'auto'
+      : behavior
+    target.scrollIntoView({ behavior: finalBehavior, block: 'start' })
   }, [])
 
   useEffect(() => {
     if (consoleUnavailable || route.name !== 'landing' || !route.section) return
     const section = route.section
+    const behavior = landingScrollBehaviorRef.current
     const frame = window.requestAnimationFrame(() => {
-      scrollToLandingSection(section)
+      scrollToLandingSection(section, behavior)
+      landingScrollBehaviorRef.current = 'auto'
     })
     return () => window.cancelAnimationFrame(frame)
   }, [consoleUnavailable, route, scrollToLandingSection])
@@ -920,13 +925,15 @@ export default function UserConsole(): JSX.Element {
     )
   }
 
-  const goDashboard = () => {
+  const goDashboard = (behavior: ScrollBehavior = 'auto') => {
+    landingScrollBehaviorRef.current = behavior
     navigateToRoute({ name: 'landing', section: 'dashboard' })
   }
   const goHome = () => {
     window.location.href = '/'
   }
-  const goTokens = () => {
+  const goTokens = (behavior: ScrollBehavior = 'auto') => {
+    landingScrollBehaviorRef.current = behavior
     navigateToRoute({ name: 'landing', section: 'tokens' })
   }
   const goTokenDetail = (tokenId: string) => {
@@ -1001,10 +1008,10 @@ export default function UserConsole(): JSX.Element {
             value={landingSection}
             onChange={(section) => {
               if (section === 'dashboard') {
-                goDashboard()
+                goDashboard('smooth')
                 return
               }
-              goTokens()
+              goTokens('smooth')
             }}
             options={landingNavOptions}
             ariaLabel={text.landing.navAria}
@@ -1257,7 +1264,7 @@ export default function UserConsole(): JSX.Element {
                 <h2 ref={detailHeadingRef} tabIndex={-1}>{text.detail.title} <code>{route.id}</code></h2>
                 <p className="panel-description">{text.detail.subtitle}</p>
               </div>
-              <button type="button" className="btn btn-outline" onClick={goTokens}>{text.detail.back}</button>
+              <button type="button" className="btn btn-outline" onClick={() => goTokens()}>{text.detail.back}</button>
             </header>
 
             <div className="access-stats">
