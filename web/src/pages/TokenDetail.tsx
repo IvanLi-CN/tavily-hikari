@@ -489,6 +489,11 @@ export default function TokenDetail({
     () => summarizeSelectedRequestKinds(selectedRequestKindsNormalized, visibleRequestKindOptions),
     [selectedRequestKindsNormalized, visibleRequestKindOptions],
   )
+  const requestKindTriggerSummary = useMemo(() => {
+    if (selectedRequestKindsNormalized.length === 0) return 'All request types'
+    if (selectedRequestKindsNormalized.length <= 2) return requestKindSummary
+    return 'Request types'
+  }, [requestKindSummary, selectedRequestKindsNormalized.length])
   const summaryQueryBaseKey = useMemo(
     () => `${id}:${period}:${sinceIso}:${untilIso}`,
     [id, period, sinceIso, untilIso],
@@ -1176,18 +1181,21 @@ export default function TokenDetail({
             <p className="panel-description">Newest entries first. Live refresh applies to the first page.</p>
           </div>
           <div className="token-request-records-actions">
-            <span className="token-request-filter-label">Request Type</span>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button type="button" variant="outline" className="token-request-kind-trigger">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="token-request-kind-trigger"
+                  aria-label={`Filter request types: ${requestKindSummary}`}
+                >
                   <Icon icon="mdi:filter-variant" width={16} height={16} aria-hidden="true" />
                   <span className="token-request-kind-trigger-content">
-                    <span className="token-request-kind-trigger-label">Request Type</span>
-                    <span className="token-request-kind-trigger-summary">{requestKindSummary}</span>
+                    <span className="token-request-kind-trigger-summary">{requestKindTriggerSummary}</span>
                   </span>
-                  <span className="token-request-kind-count">
-                    {selectedRequestKindsNormalized.length > 0 ? selectedRequestKindsNormalized.length : 'All'}
-                  </span>
+                  {selectedRequestKindsNormalized.length > 0 ? (
+                    <span className="token-request-kind-count">{selectedRequestKindsNormalized.length}</span>
+                  ) : null}
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="token-request-kind-menu w-72">
