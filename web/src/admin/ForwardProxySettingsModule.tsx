@@ -655,178 +655,6 @@ export default function ForwardProxySettingsModule({
       <Card className="surface panel">
         <CardHeader className="forward-proxy-panel-header">
           <div className="forward-proxy-panel-heading">
-            <CardTitle>{strings.config.title}</CardTitle>
-            <CardDescription className="panel-description">{strings.config.description}</CardDescription>
-          </div>
-          <div className="forward-proxy-toolbar">
-            <Button type="button" variant="outline" onClick={onValidateSubscriptions} disabled={validatingSubscriptions}>
-              {validatingSubscriptions ? strings.actions.validatingSubscriptions : strings.actions.validateSubscriptions}
-            </Button>
-            <Button type="button" variant="outline" onClick={onValidateManual} disabled={validatingManual}>
-              {validatingManual ? strings.actions.validatingManual : strings.actions.validateManual}
-            </Button>
-          </div>
-        </CardHeader>
-        <CardContent className="forward-proxy-panel-content">
-          {saveError && (
-            <div className="alert alert-error" role="alert">
-              {saveError}
-            </div>
-          )}
-          {settingsError && (
-            <div className="alert alert-error" role="alert">
-              {settingsError}
-            </div>
-          )}
-
-          <AdminLoadingRegion
-            loadState={settingsLoadState}
-            loadingLabel={strings.config.loading}
-            errorLabel={settingsError || undefined}
-            minHeight={220}
-          >
-            <div className="forward-proxy-config-grid">
-              <Card className="forward-proxy-editor-card">
-                <CardHeader className="forward-proxy-editor-head">
-                  <div>
-                    <CardTitle className="text-base">{strings.config.subscriptionsTitle}</CardTitle>
-                    <CardDescription className="panel-description">
-                      {strings.config.subscriptionsDescription}
-                    </CardDescription>
-                  </div>
-                  <Badge variant="info">{strings.sources.subscription}</Badge>
-                </CardHeader>
-                <CardContent className="forward-proxy-editor-card-content">
-                  <Textarea
-                    id="forward-proxy-subscription-urls"
-                    name="subscriptionUrls"
-                    rows={8}
-                    value={draft.subscriptionUrlsText}
-                    onChange={(event) => onSubscriptionUrlsTextChange(event.target.value)}
-                    placeholder={strings.config.subscriptionsPlaceholder}
-                    className="forward-proxy-textarea"
-                  />
-                </CardContent>
-              </Card>
-
-              <Card className="forward-proxy-editor-card">
-                <CardHeader className="forward-proxy-editor-head">
-                  <div>
-                    <CardTitle className="text-base">{strings.config.manualTitle}</CardTitle>
-                    <CardDescription className="panel-description">{strings.config.manualDescription}</CardDescription>
-                  </div>
-                  <Badge variant="outline">{strings.sources.manual}</Badge>
-                </CardHeader>
-                <CardContent className="forward-proxy-editor-card-content">
-                  <Textarea
-                    id="forward-proxy-manual-urls"
-                    name="proxyUrls"
-                    rows={8}
-                    value={draft.proxyUrlsText}
-                    onChange={(event) => onProxyUrlsTextChange(event.target.value)}
-                    placeholder={strings.config.manualPlaceholder}
-                    className="forward-proxy-textarea"
-                  />
-                </CardContent>
-              </Card>
-            </div>
-
-            <div className="forward-proxy-form-footer">
-              <Card className="forward-proxy-field-card">
-                <CardContent className="forward-proxy-field-card-content">
-                  <label className="forward-proxy-field">
-                    <span className="forward-proxy-field-label">{strings.config.subscriptionIntervalLabel}</span>
-                    <Input
-                      id="forward-proxy-subscription-interval"
-                      name="subscriptionUpdateIntervalSecs"
-                      type="number"
-                      inputMode="numeric"
-                      min={60}
-                      step={60}
-                      value={draft.subscriptionUpdateIntervalSecs}
-                      onChange={(event) => onIntervalChange(event.target.value)}
-                    />
-                    <span className="panel-description">{strings.config.subscriptionIntervalHint}</span>
-                  </label>
-                </CardContent>
-              </Card>
-
-              <Card className="forward-proxy-checkbox-card">
-                <CardContent className="forward-proxy-checkbox-card-content">
-                  <label className="forward-proxy-checkbox" htmlFor="forward-proxy-insert-direct">
-                    <input
-                      id="forward-proxy-insert-direct"
-                      type="checkbox"
-                      checked={draft.insertDirect}
-                      onChange={(event) => onInsertDirectChange(event.target.checked)}
-                    />
-                    <div>
-                      <strong>{strings.config.insertDirectLabel}</strong>
-                      <p className="panel-description">{strings.config.insertDirectHint}</p>
-                    </div>
-                  </label>
-                </CardContent>
-              </Card>
-            </div>
-          </AdminLoadingRegion>
-        </CardContent>
-      </Card>
-
-      <Card className="surface panel">
-        <CardHeader className="forward-proxy-panel-header">
-          <div className="forward-proxy-panel-heading">
-            <CardTitle>{strings.validation.title}</CardTitle>
-            <CardDescription className="panel-description">{strings.validation.description}</CardDescription>
-          </div>
-        </CardHeader>
-        <CardContent className="forward-proxy-panel-content">
-          {validationError && (
-            <div className="alert alert-error" role="alert">
-              {validationError}
-            </div>
-          )}
-
-          {validationEntries.length === 0 ? (
-            <div className="empty-state alert">{strings.validation.empty}</div>
-          ) : (
-            <div className="forward-proxy-validation-grid">
-              {validationEntries.map((entry) => {
-                const resultTone = entry.result.ok ? 'success' : 'destructive'
-                return (
-                  <Card className="forward-proxy-validation-card" key={entry.id}>
-                    <CardContent className="forward-proxy-validation-card-content">
-                      <div className="forward-proxy-validation-head">
-                        <Badge variant={resultTone}>
-                          {entry.result.ok ? strings.validation.ok : strings.validation.failed}
-                        </Badge>
-                        <Badge variant="outline">
-                          {entry.kind === 'subscriptionUrl'
-                            ? strings.validation.subscriptionKind
-                            : strings.validation.proxyKind}
-                        </Badge>
-                      </div>
-                      <code className="forward-proxy-code-block">{entry.result.normalizedValue ?? entry.value}</code>
-                      <p className="forward-proxy-validation-message">{entry.result.message}</p>
-                      <div className="forward-proxy-validation-meta">
-                        <span>
-                          {strings.validation.discoveredNodes}: {formatNumber(entry.result.discoveredNodes ?? 0)}
-                        </span>
-                        <span>
-                          {strings.validation.latency}: {formatLatency(entry.result.latencyMs)}
-                        </span>
-                      </div>
-                    </CardContent>
-                  </Card>
-                )
-              })}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card className="surface panel">
-        <CardHeader className="forward-proxy-panel-header">
-          <div className="forward-proxy-panel-heading">
             <CardTitle>{strings.nodes.title}</CardTitle>
             <CardDescription className="panel-description">{strings.nodes.description}</CardDescription>
           </div>
@@ -998,6 +826,178 @@ export default function ForwardProxySettingsModule({
           </AdminLoadingRegion>
         </CardContent>
       </Card>
+      <Card className="surface panel">
+        <CardHeader className="forward-proxy-panel-header">
+          <div className="forward-proxy-panel-heading">
+            <CardTitle>{strings.config.title}</CardTitle>
+            <CardDescription className="panel-description">{strings.config.description}</CardDescription>
+          </div>
+          <div className="forward-proxy-toolbar">
+            <Button type="button" variant="outline" onClick={onValidateSubscriptions} disabled={validatingSubscriptions}>
+              {validatingSubscriptions ? strings.actions.validatingSubscriptions : strings.actions.validateSubscriptions}
+            </Button>
+            <Button type="button" variant="outline" onClick={onValidateManual} disabled={validatingManual}>
+              {validatingManual ? strings.actions.validatingManual : strings.actions.validateManual}
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="forward-proxy-panel-content">
+          {saveError && (
+            <div className="alert alert-error" role="alert">
+              {saveError}
+            </div>
+          )}
+          {settingsError && (
+            <div className="alert alert-error" role="alert">
+              {settingsError}
+            </div>
+          )}
+
+          <AdminLoadingRegion
+            loadState={settingsLoadState}
+            loadingLabel={strings.config.loading}
+            errorLabel={settingsError || undefined}
+            minHeight={220}
+          >
+            <div className="forward-proxy-config-grid">
+              <Card className="forward-proxy-editor-card">
+                <CardHeader className="forward-proxy-editor-head">
+                  <div>
+                    <CardTitle className="text-base">{strings.config.subscriptionsTitle}</CardTitle>
+                    <CardDescription className="panel-description">
+                      {strings.config.subscriptionsDescription}
+                    </CardDescription>
+                  </div>
+                  <Badge variant="info">{strings.sources.subscription}</Badge>
+                </CardHeader>
+                <CardContent className="forward-proxy-editor-card-content">
+                  <Textarea
+                    id="forward-proxy-subscription-urls"
+                    name="subscriptionUrls"
+                    rows={8}
+                    value={draft.subscriptionUrlsText}
+                    onChange={(event) => onSubscriptionUrlsTextChange(event.target.value)}
+                    placeholder={strings.config.subscriptionsPlaceholder}
+                    className="forward-proxy-textarea"
+                  />
+                </CardContent>
+              </Card>
+
+              <Card className="forward-proxy-editor-card">
+                <CardHeader className="forward-proxy-editor-head">
+                  <div>
+                    <CardTitle className="text-base">{strings.config.manualTitle}</CardTitle>
+                    <CardDescription className="panel-description">{strings.config.manualDescription}</CardDescription>
+                  </div>
+                  <Badge variant="outline">{strings.sources.manual}</Badge>
+                </CardHeader>
+                <CardContent className="forward-proxy-editor-card-content">
+                  <Textarea
+                    id="forward-proxy-manual-urls"
+                    name="proxyUrls"
+                    rows={8}
+                    value={draft.proxyUrlsText}
+                    onChange={(event) => onProxyUrlsTextChange(event.target.value)}
+                    placeholder={strings.config.manualPlaceholder}
+                    className="forward-proxy-textarea"
+                  />
+                </CardContent>
+              </Card>
+            </div>
+
+            <div className="forward-proxy-form-footer">
+              <Card className="forward-proxy-field-card">
+                <CardContent className="forward-proxy-field-card-content">
+                  <label className="forward-proxy-field">
+                    <span className="forward-proxy-field-label">{strings.config.subscriptionIntervalLabel}</span>
+                    <Input
+                      id="forward-proxy-subscription-interval"
+                      name="subscriptionUpdateIntervalSecs"
+                      type="number"
+                      inputMode="numeric"
+                      min={60}
+                      step={60}
+                      value={draft.subscriptionUpdateIntervalSecs}
+                      onChange={(event) => onIntervalChange(event.target.value)}
+                    />
+                    <span className="panel-description">{strings.config.subscriptionIntervalHint}</span>
+                  </label>
+                </CardContent>
+              </Card>
+
+              <Card className="forward-proxy-checkbox-card">
+                <CardContent className="forward-proxy-checkbox-card-content">
+                  <label className="forward-proxy-checkbox" htmlFor="forward-proxy-insert-direct">
+                    <input
+                      id="forward-proxy-insert-direct"
+                      type="checkbox"
+                      checked={draft.insertDirect}
+                      onChange={(event) => onInsertDirectChange(event.target.checked)}
+                    />
+                    <div>
+                      <strong>{strings.config.insertDirectLabel}</strong>
+                      <p className="panel-description">{strings.config.insertDirectHint}</p>
+                    </div>
+                  </label>
+                </CardContent>
+              </Card>
+            </div>
+          </AdminLoadingRegion>
+        </CardContent>
+      </Card>
+
+      <Card className="surface panel">
+        <CardHeader className="forward-proxy-panel-header">
+          <div className="forward-proxy-panel-heading">
+            <CardTitle>{strings.validation.title}</CardTitle>
+            <CardDescription className="panel-description">{strings.validation.description}</CardDescription>
+          </div>
+        </CardHeader>
+        <CardContent className="forward-proxy-panel-content">
+          {validationError && (
+            <div className="alert alert-error" role="alert">
+              {validationError}
+            </div>
+          )}
+
+          {validationEntries.length === 0 ? (
+            <div className="empty-state alert">{strings.validation.empty}</div>
+          ) : (
+            <div className="forward-proxy-validation-grid">
+              {validationEntries.map((entry) => {
+                const resultTone = entry.result.ok ? 'success' : 'destructive'
+                return (
+                  <Card className="forward-proxy-validation-card" key={entry.id}>
+                    <CardContent className="forward-proxy-validation-card-content">
+                      <div className="forward-proxy-validation-head">
+                        <Badge variant={resultTone}>
+                          {entry.result.ok ? strings.validation.ok : strings.validation.failed}
+                        </Badge>
+                        <Badge variant="outline">
+                          {entry.kind === 'subscriptionUrl'
+                            ? strings.validation.subscriptionKind
+                            : strings.validation.proxyKind}
+                        </Badge>
+                      </div>
+                      <code className="forward-proxy-code-block">{entry.result.normalizedValue ?? entry.value}</code>
+                      <p className="forward-proxy-validation-message">{entry.result.message}</p>
+                      <div className="forward-proxy-validation-meta">
+                        <span>
+                          {strings.validation.discoveredNodes}: {formatNumber(entry.result.discoveredNodes ?? 0)}
+                        </span>
+                        <span>
+                          {strings.validation.latency}: {formatLatency(entry.result.latencyMs)}
+                        </span>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
     </>
   )
 }
