@@ -156,6 +156,7 @@ const KEYS_BATCH_CLOSE_ANIMATION_MS = 200
 const KEYS_BATCH_AUTO_COLLAPSE_TOTAL_MS = 500
 const KEYS_BATCH_AUTO_COLLAPSE_DELAY_MS = Math.max(0, KEYS_BATCH_AUTO_COLLAPSE_TOTAL_MS - KEYS_BATCH_CLOSE_ANIMATION_MS)
 const API_KEYS_IMPORT_CHUNK_SIZE = 1000
+const DASHBOARD_EXHAUSTED_KEYS_PAGE_SIZE = 5
 const DASHBOARD_TOKENS_PAGE_SIZE = 100
 const DASHBOARD_TOKENS_MAX_PAGES = 10
 const USER_TAG_DISPLAY_LIMIT = 3
@@ -1424,6 +1425,19 @@ function AdminDashboard(): JSX.Element {
     return { items, truncated }
   }, [])
 
+  const loadExhaustedKeysForDashboard = useCallback(
+    async (signal?: AbortSignal): Promise<ApiKeyStats[]> => {
+      const result = await fetchApiKeys(
+        1,
+        DASHBOARD_EXHAUSTED_KEYS_PAGE_SIZE,
+        { statuses: ['exhausted'] },
+        signal,
+      )
+      return result.items
+    },
+    [],
+  )
+
   const handleCopySecret = useCallback(
     async (id: string, stateKey: string, anchorEl?: HTMLElement | null) => {
       setManualCopyBubble(null)
@@ -1545,10 +1559,11 @@ function AdminDashboard(): JSX.Element {
   const loadDashboardOverview = useCallback(
     async (signal?: AbortSignal) => {
       try {
-        const [dashboardTokenSnapshot, dashboardLogsData, dashboardJobsData] = await Promise.all([
+        const [dashboardTokenSnapshot, dashboardKeysData, dashboardLogsData, dashboardJobsData] = await Promise.all([
           loadAllTokensForDashboard(signal)
             .then((value) => ({ kind: 'ok' as const, ...value }))
             .catch(() => ({ kind: 'error' as const })),
+          loadExhaustedKeysForDashboard(signal).catch(() => [] as ApiKeyStats[]),
           fetchRequestLogs(1, DASHBOARD_RECENT_LOGS_PER_PAGE, undefined, signal).catch(
             () =>
               ({
@@ -1580,6 +1595,7 @@ function AdminDashboard(): JSX.Element {
           setDashboardTokens([])
           setDashboardTokenCoverage('error')
         }
+        setDashboardKeys(dashboardKeysData)
         setDashboardLogs(dashboardLogsData.items)
         setDashboardJobs(dashboardJobsData.items)
       } catch (err) {
@@ -1588,6 +1604,7 @@ function AdminDashboard(): JSX.Element {
         }
         setDashboardTokens([])
         setDashboardTokenCoverage('error')
+        setDashboardKeys([])
         setDashboardLogs([])
         setDashboardJobs([])
       } finally {
@@ -1596,7 +1613,7 @@ function AdminDashboard(): JSX.Element {
         }
       }
     },
-    [loadAllTokensForDashboard],
+    [loadAllTokensForDashboard, loadExhaustedKeysForDashboard],
   )
 
   useEffect(() => {
@@ -2323,6 +2340,54 @@ function AdminDashboard(): JSX.Element {
         }).finally(() => {
           request.cleanup()
         }),
+      )
+    }
+    if (route.name === 'module' && route.module === 'keys') {
+      const request = beginManagedRequest(keysAbortRef, controller.signal)
+      const nextQueryKey = `${keysPage}:${keysPerPage}:${selectedKeyGroups.join('\u0000')}:${selectedKeyStatuses.join('\u0000')}`
+      setKeysLoadState(getRefreshingLoadState(keysLoadedRef.current))
+      setKeysError(null)
+      tasks.push(
+        fetchApiKeys(
+          keysPage,
+          keysPerPage,
+          {
+            groups: selectedKeyGroups,
+            statuses: selectedKeyStatuses,
+          },
+          request.signal,
+        )
+          .then((result) => {
+            if (request.signal.aborted) return
+            setKeys(result.items)
+            setKeysTotal(result.total)
+            setKeysPage(result.page)
+            setKeysPerPage(result.perPage)
+            setKeyGroupFacets(result.facets.groups)
+            setKeyStatusFacets(result.facets.statuses)
+            setKeysLoadState('ready')
+            keysLoadedRef.current = true
+            keysQueryKeyRef.current = nextQueryKey
+            const normalizedLocation = buildAdminKeysPath({
+              page: result.page,
+              perPage: result.perPage,
+              groups: selectedKeyGroups,
+              statuses: selectedKeyStatuses,
+            })
+            const currentLocation = `${window.location.pathname}${window.location.search}`
+            if (currentLocation !== normalizedLocation) {
+              window.history.replaceState(null, '', normalizedLocation)
+            }
+          })
+          .catch((err) => {
+            if (request.signal.aborted) return
+            console.error(err)
+            setKeysError(err instanceof Error ? err.message : loadingStateStrings.error)
+            setKeysLoadState('error')
+          })
+          .finally(() => {
+            request.cleanup()
+          }),
       )
     }
     if (route.name === 'module' && route.module === 'dashboard') {

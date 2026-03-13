@@ -4681,6 +4681,53 @@ mod tests {
             Some(beta_disabled_id.as_str())
         );
 
+        let filtered_group_counts = filtered_body
+            .get("facets")
+            .and_then(|value| value.get("groups"))
+            .and_then(|value| value.as_array())
+            .expect("filtered group facets")
+            .iter()
+            .map(|value| {
+                (
+                    value
+                        .get("value")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default(),
+                    value
+                        .get("count")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or_default(),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(filtered_group_counts.get("team-a").copied(), Some(1));
+        assert_eq!(filtered_group_counts.get("team-b").copied(), Some(1));
+        assert_eq!(filtered_group_counts.len(), 2);
+
+        let filtered_status_counts = filtered_body
+            .get("facets")
+            .and_then(|value| value.get("statuses"))
+            .and_then(|value| value.as_array())
+            .expect("filtered status facets")
+            .iter()
+            .map(|value| {
+                (
+                    value
+                        .get("value")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default(),
+                    value
+                        .get("count")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or_default(),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(filtered_status_counts.get("active").copied(), Some(2));
+        assert_eq!(filtered_status_counts.get("disabled").copied(), Some(1));
+        assert_eq!(filtered_status_counts.get("quarantined").copied(), Some(1));
+        assert_eq!(filtered_status_counts.len(), 3);
+
         let ungrouped_resp = client
             .get(format!(
                 "http://{}/api/keys?page=1&per_page=10&group=&status=exhausted",

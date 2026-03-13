@@ -11305,6 +11305,52 @@ impl KeyStore {
         builder.push(")");
     }
 
+    async fn fetch_api_key_group_facets(
+        &self,
+        statuses: &[String],
+    ) -> Result<Vec<ApiKeyFacetCount>, ProxyError> {
+        let mut builder = QueryBuilder::<Sqlite>::new(
+            "SELECT TRIM(COALESCE(ak.group_name, '')) AS value, COUNT(*) AS count",
+        );
+        builder.push(Self::api_key_metrics_from_clause());
+        Self::push_api_key_status_filters(&mut builder, statuses);
+        builder.push(" GROUP BY value ORDER BY value ASC");
+
+        let rows = builder.build().fetch_all(&self.pool).await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(ApiKeyFacetCount {
+                    value: row.try_get("value")?,
+                    count: row.try_get("count")?,
+                })
+            })
+            .collect::<Result<Vec<_>, sqlx::Error>>()
+            .map_err(ProxyError::from)
+    }
+
+    async fn fetch_api_key_status_facets(
+        &self,
+        groups: &[String],
+    ) -> Result<Vec<ApiKeyFacetCount>, ProxyError> {
+        let mut builder = QueryBuilder::<Sqlite>::new(
+            "SELECT CASE WHEN aq.key_id IS NOT NULL THEN 'quarantined' ELSE ak.status END AS value, COUNT(*) AS count",
+        );
+        builder.push(Self::api_key_metrics_from_clause());
+        Self::push_api_key_group_filters(&mut builder, groups);
+        builder.push(" GROUP BY value ORDER BY value ASC");
+
+        let rows = builder.build().fetch_all(&self.pool).await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(ApiKeyFacetCount {
+                    value: row.try_get("value")?,
+                    count: row.try_get("count")?,
+                })
+            })
+            .collect::<Result<Vec<_>, sqlx::Error>>()
+            .map_err(ProxyError::from)
+    }
+
     async fn fetch_api_key_metrics(
         &self,
         include_quarantine_detail: bool,
@@ -11360,31 +11406,8 @@ impl KeyStore {
             .map(Self::map_api_key_metrics_row)
             .collect::<Result<Vec<_>, _>>()?;
 
-        let facet_rows = sqlx::query(
-            r#"
-            SELECT
-                TRIM(COALESCE(ak.group_name, '')) AS group_name,
-                CASE
-                    WHEN aq.key_id IS NOT NULL THEN 'quarantined'
-                    ELSE ak.status
-                END AS badge_status
-            FROM api_keys ak
-            LEFT JOIN api_key_quarantines aq
-            ON aq.key_id = ak.id AND aq.cleared_at IS NULL
-            WHERE ak.deleted_at IS NULL
-            "#,
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        let mut group_counts = BTreeMap::<String, i64>::new();
-        let mut status_counts = BTreeMap::<String, i64>::new();
-        for row in facet_rows {
-            let group_name: String = row.try_get("group_name")?;
-            let badge_status: String = row.try_get("badge_status")?;
-            *group_counts.entry(group_name).or_default() += 1;
-            *status_counts.entry(badge_status).or_default() += 1;
-        }
+        let group_counts = self.fetch_api_key_group_facets(&statuses).await?;
+        let status_counts = self.fetch_api_key_status_facets(&groups).await?;
 
         Ok(PaginatedApiKeyMetrics {
             items,
@@ -11392,14 +11415,8 @@ impl KeyStore {
             page,
             per_page,
             facets: ApiKeyListFacets {
-                groups: group_counts
-                    .into_iter()
-                    .map(|(value, count)| ApiKeyFacetCount { value, count })
-                    .collect(),
-                statuses: status_counts
-                    .into_iter()
-                    .map(|(value, count)| ApiKeyFacetCount { value, count })
-                    .collect(),
+                groups: group_counts,
+                statuses: status_counts,
             },
         })
     }
