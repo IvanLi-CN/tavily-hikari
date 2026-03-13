@@ -841,10 +841,21 @@ export default function ForwardProxySettingsModule({
             <CardTitle>{strings.title}</CardTitle>
             <CardDescription className="panel-description">{strings.description}</CardDescription>
           </div>
-          <div className="forward-proxy-toolbar">
-            <Button type="button" variant="outline" onClick={onRefresh}>
-              {strings.actions.refresh}
-            </Button>
+          <div className="forward-proxy-panel-meta">
+            <div className="forward-proxy-toolbar">
+              <Button type="button" variant="outline" onClick={onRefresh}>
+                {strings.actions.refresh}
+              </Button>
+            </div>
+            <div className="forward-proxy-range-row">
+              <Badge variant="outline">{strings.summary.range}</Badge>
+              <span className="panel-description">{formatTimeRange(stats?.rangeStart, stats?.rangeEnd)}</span>
+              {savedAt != null && (
+                <span className="panel-description">
+                  {strings.summary.savedAt.replace('{time}', dateTimeFormatter.format(new Date(savedAt)))}
+                </span>
+              )}
+            </div>
           </div>
         </CardHeader>
         <CardContent className="forward-proxy-panel-content">
@@ -858,16 +869,6 @@ export default function ForwardProxySettingsModule({
                 </CardContent>
               </Card>
             ))}
-          </div>
-
-          <div className="forward-proxy-range-row">
-            <Badge variant="outline">{strings.summary.range}</Badge>
-            <span className="panel-description">{formatTimeRange(stats?.rangeStart, stats?.rangeEnd)}</span>
-            {savedAt != null && (
-              <span className="panel-description">
-                {strings.summary.savedAt.replace('{time}', dateTimeFormatter.format(new Date(savedAt)))}
-              </span>
-            )}
           </div>
         </CardContent>
       </Card>

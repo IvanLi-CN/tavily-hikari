@@ -7176,6 +7176,14 @@ tbody .log-details-row:hover {
   gap: 0.35rem;
 }
 
+.forward-proxy-panel-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.75rem;
+  margin-left: auto;
+}
+
 .forward-proxy-panel-content {
   display: flex;
   flex-direction: column;
@@ -7231,6 +7239,7 @@ tbody .log-details-row:hover {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 0.75rem;
 }
 
@@ -7519,6 +7528,14 @@ tbody .log-details-row:hover {
   }
 
   .forward-proxy-panel-header,
+  .forward-proxy-panel-meta {
+    align-items: stretch;
+  }
+
+  .forward-proxy-range-row {
+    justify-content: flex-start;
+  }
+
   .forward-proxy-editor-head,
   .forward-proxy-node-mobile-title-row,
   .forward-proxy-node-cell-title-row {
