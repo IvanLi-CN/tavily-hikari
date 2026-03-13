@@ -2352,24 +2352,24 @@ button:disabled {
     'today'
     'month'
     'status';
-  gap: 16px;
-  padding: 20px 24px 28px;
+  gap: 14px;
+  padding: 18px 20px 22px;
 }
 
 .dashboard-summary-block {
   min-width: 0;
-  border-radius: 22px;
+  border-radius: 18px;
   border: 1px solid hsl(var(--border) / 0.75);
   background:
     linear-gradient(180deg, hsl(var(--card) / 0.96), hsl(var(--card) / 0.88)),
     hsl(var(--card) / 0.92);
   box-shadow:
     inset 0 1px 0 hsl(var(--background) / 0.08),
-    0 20px 36px rgb(15 23 42 / 0.08);
-  padding: 18px;
+    0 16px 28px rgb(15 23 42 / 0.07);
+  padding: 16px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
 }
 
 .dashboard-summary-block-primary {
@@ -2390,12 +2390,12 @@ button:disabled {
 
 .dashboard-summary-header h2 {
   margin: 0;
-  font-size: 1.08rem;
+  font-size: 1rem;
 }
 
 .dashboard-summary-metrics {
   display: grid;
-  gap: 12px;
+  gap: 10px;
 }
 
 .dashboard-summary-metrics-primary {
@@ -2417,8 +2417,8 @@ button:disabled {
 }
 
 .dashboard-summary-card-compact {
-  min-height: 96px;
-  padding: 16px 18px;
+  min-height: 88px;
+  padding: 14px 16px;
 }
 
 .metric-delta {
@@ -2474,17 +2474,24 @@ button:disabled {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .dashboard-summary-block-secondary .dashboard-summary-metrics-compact {
+  .dashboard-summary-metrics-compact {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dashboard-summary-block-status .dashboard-summary-card:last-child {
+    grid-column: 1 / -1;
   }
 }
 
 @media (min-width: 1200px) {
   .dashboard-summary-layout {
-    grid-template-columns: minmax(0, 1.55fr) minmax(300px, 1fr);
-    grid-template-areas:
-      'today month'
-      'today status';
+    grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr) minmax(0, 0.95fr);
+    grid-template-areas: 'today month status';
+    align-items: start;
+  }
+
+  .dashboard-summary-block {
+    height: 100%;
   }
 }
 
