@@ -9228,7 +9228,6 @@ impl KeyStore {
 
         for _ in 0..4 {
             let mut tx = self.pool.begin().await?;
-            let mut created_new_user = false;
 
             let existing = sqlx::query_as::<_, (String,)>(
                 r#"SELECT user_id
@@ -9286,7 +9285,6 @@ impl KeyStore {
                         "failed to allocate unique local user id".to_string(),
                     ));
                 };
-                created_new_user = true;
 
                 let zero_base = AccountQuotaLimits::zero_base();
                 sqlx::query(
@@ -9377,13 +9375,8 @@ impl KeyStore {
             .execute(&mut *tx)
             .await?;
 
-            if profile.provider == "linuxdo" && created_new_user {
-                self.sync_linuxdo_system_tag_binding_in_tx(&mut tx, &user_id, profile.trust_level)
-                    .await?;
-            }
-
             tx.commit().await?;
-            if profile.provider == "linuxdo" && !created_new_user {
+            if profile.provider == "linuxdo" {
                 self.sync_linuxdo_system_tag_binding_best_effort(&user_id, profile.trust_level)
                     .await;
             }
