@@ -149,6 +149,7 @@ const profileSample: Profile = {
   isAdmin: false,
   forwardAuthEnabled: true,
   builtinAuthEnabled: true,
+  allowRegistration: true,
   userLoggedIn: true,
   userProvider: 'linuxdo',
   userDisplayName: 'Ivan',

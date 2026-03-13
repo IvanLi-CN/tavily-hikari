@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, it, mock } from 'bun:test'
 
-import { bindAdminUserTag, fetchAdminUsers, fetchAdminUserTags, fetchJobs, updateAdminUserQuota } from './api'
+import {
+  bindAdminUserTag,
+  fetchAdminRegistrationSettings,
+  fetchAdminUsers,
+  fetchAdminUserTags,
+  fetchJobs,
+  updateAdminRegistrationSettings,
+  updateAdminUserQuota,
+} from './api'
 
 const originalFetch = globalThis.fetch
 
@@ -106,6 +114,45 @@ describe('admin user tag api helpers', () => {
         monthlyLimit: 600000,
       }),
     )
+  })
+
+  it('reads admin registration settings from the dedicated endpoint', async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ allowRegistration: false }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    )
+    globalThis.fetch = fetchMock as typeof fetch
+
+    const settings = await fetchAdminRegistrationSettings()
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/admin/registration')
+    expect(settings).toEqual({ allowRegistration: false })
+  })
+
+  it('patches admin registration settings through the dedicated endpoint', async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ allowRegistration: true }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    )
+    globalThis.fetch = fetchMock as typeof fetch
+
+    const settings = await updateAdminRegistrationSettings(true)
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [input, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(input).toBe('/api/admin/registration')
+    expect(init.method).toBe('PATCH')
+    expect(init.body).toBe(JSON.stringify({ allowRegistration: true }))
+    expect(settings).toEqual({ allowRegistration: true })
   })
 
   it('normalizes jobs responses to the snake_case shape used by the admin UI', async () => {

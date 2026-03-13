@@ -294,6 +294,7 @@ export interface Profile {
   isAdmin: boolean
   forwardAuthEnabled: boolean
   builtinAuthEnabled: boolean
+  allowRegistration: boolean
   userLoggedIn?: boolean
   userProvider?: 'linuxdo' | null
   userDisplayName?: string | null
@@ -301,6 +302,26 @@ export interface Profile {
 
 export function fetchProfile(signal?: AbortSignal): Promise<Profile> {
   return requestJson('/api/profile', { signal })
+}
+
+export interface AdminRegistrationSettings {
+  allowRegistration: boolean
+}
+
+export function fetchAdminRegistrationSettings(
+  signal?: AbortSignal,
+): Promise<AdminRegistrationSettings> {
+  return requestJson('/api/admin/registration', { signal })
+}
+
+export function updateAdminRegistrationSettings(
+  allowRegistration: boolean,
+): Promise<AdminRegistrationSettings> {
+  return requestJson('/api/admin/registration', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ allowRegistration }),
+  })
 }
 
 export interface AdminQuotaLimitSet {

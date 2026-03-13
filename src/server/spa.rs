@@ -73,6 +73,15 @@ async fn serve_login(
     load_spa_response(state.as_ref(), "login.html").await
 }
 
+async fn serve_registration_paused_index(
+    State(state): State<Arc<AppState>>,
+) -> Result<Response<Body>, StatusCode> {
+    if !spa_file_exists(state.as_ref(), "registration-paused.html").await {
+        return load_spa_response(state.as_ref(), "index.html").await;
+    }
+    load_spa_response(state.as_ref(), "registration-paused.html").await
+}
+
 async fn serve_console_index(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -305,4 +314,3 @@ fn build_404_landing_inline(css_content: Option<&str>, original: String) -> Stri
         script
     )
 }
-

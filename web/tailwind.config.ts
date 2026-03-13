@@ -2,7 +2,7 @@ import type { Config } from 'tailwindcss'
 
 const config = {
   darkMode: ['class'],
-  content: ['./index.html', './admin.html', './login.html', './src/**/*.{ts,tsx}'],
+  content: ['./index.html', './admin.html', './login.html', './registration-paused.html', './src/**/*.{ts,tsx}'],
   theme: {
     container: {
       center: true,

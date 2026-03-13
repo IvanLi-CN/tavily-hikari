@@ -33,6 +33,7 @@ import {
 import { Input } from '../components/ui/input'
 import { Card } from '../components/ui/card'
 import { Badge } from '../components/ui/badge'
+import { Switch } from '../components/ui/switch'
 import { LanguageProvider, useTranslate, type AdminTranslations } from '../i18n'
 
 import AdminShell, { type AdminNavItem } from './AdminShell'
@@ -2069,6 +2070,7 @@ function UsersPageCanvas(): JSX.Element {
   const admin = useTranslate().admin
   const users = admin.users
   const [query, setQuery] = useState('')
+  const [allowRegistration, setAllowRegistration] = useState(true)
   const normalizedQuery = query.trim().toLowerCase()
   const filteredUsers = MOCK_USERS.filter((item) => {
     if (!normalizedQuery) return true
@@ -2123,6 +2125,36 @@ function UsersPageCanvas(): JSX.Element {
           <div>
             <h2>{users.title}</h2>
             <p className="panel-description">{users.description}</p>
+          </div>
+          <div
+            className="rounded-xl border border-border/60 bg-background/55 px-4 py-3 shadow-sm backdrop-blur"
+            style={{
+              display: 'flex',
+              minWidth: 260,
+              maxWidth: 380,
+              flex: '1 1 300px',
+              alignItems: 'flex-start',
+              justifyContent: 'space-between',
+              gap: 12,
+            }}
+          >
+            <div style={{ minWidth: 0, flex: '1 1 auto' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <div className="text-sm font-semibold">{users.registration.title}</div>
+                <Badge variant={allowRegistration ? 'success' : 'warning'}>
+                  {allowRegistration ? users.status.enabled : users.status.disabled}
+                </Badge>
+              </div>
+              <p className="text-xs font-medium" role="status" aria-live="polite" style={{ margin: '6px 0 0' }}>
+                {allowRegistration ? users.registration.enabled : users.registration.disabled}
+              </p>
+            </div>
+            <Switch
+              checked={allowRegistration}
+              aria-label={users.registration.title}
+              onCheckedChange={() => setAllowRegistration((current) => !current)}
+              style={{ flex: '0 0 auto' }}
+            />
           </div>
           <div className="users-search-controls">
             <input

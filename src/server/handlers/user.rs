@@ -242,6 +242,28 @@ async fn get_linuxdo_callback(
         .and_then(json_value_to_string)
         .filter(|v| !v.is_empty())
         .ok_or(StatusCode::UNAUTHORIZED)?;
+    let allow_registration = state.proxy.allow_registration().await.map_err(|err| {
+        eprintln!("read allow registration during linuxdo callback error: {err}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    if !allow_registration {
+        let existing_account = state
+            .proxy
+            .oauth_account_exists("linuxdo", &provider_user_id)
+            .await
+            .map_err(|err| {
+                eprintln!("query linuxdo oauth account existence error: {err}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        if !existing_account {
+            let clear_binding_cookie = oauth_login_binding_clear_cookie(use_secure_cookie)?;
+            let mut response = Redirect::temporary("/registration-paused").into_response();
+            response
+                .headers_mut()
+                .append(SET_COOKIE, clear_binding_cookie);
+            return Ok(response);
+        }
+    }
     let username = user_json
         .get("username")
         .and_then(|v| v.as_str())

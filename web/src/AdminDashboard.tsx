@@ -35,6 +35,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import SegmentedTabs from './components/ui/SegmentedTabs'
 import { Card } from './components/ui/card'
 import { Badge } from './components/ui/badge'
+import { Switch } from './components/ui/switch'
 import { Table } from './components/ui/table'
 import { Textarea } from './components/ui/textarea'
 import TokenUsageHeader from './components/TokenUsageHeader'
@@ -128,7 +129,9 @@ import {
   type TokenGroup,
   fetchAdminUsers,
   fetchAdminUserDetail,
+  fetchAdminRegistrationSettings,
   updateAdminUserQuota,
+  updateAdminRegistrationSettings,
   fetchAdminUserTags,
   createAdminUserTag,
   updateAdminUserTag,
@@ -814,6 +817,11 @@ function AdminDashboard(): JSX.Element {
   const [usersTagFilterId, setUsersTagFilterId] = useState<string | null>(null)
   const [usersLoadState, setUsersLoadState] = useState<QueryLoadState>('initial_loading')
   const [usersError, setUsersError] = useState<string | null>(null)
+  const [allowRegistration, setAllowRegistration] = useState<boolean | null>(null)
+  const [registrationSettingsLoaded, setRegistrationSettingsLoaded] = useState(false)
+  const [registrationSettingsLoading, setRegistrationSettingsLoading] = useState(false)
+  const [registrationSettingsSaving, setRegistrationSettingsSaving] = useState(false)
+  const [registrationSettingsError, setRegistrationSettingsError] = useState<string | null>(null)
   const [selectedUserDetail, setSelectedUserDetail] = useState<AdminUserDetail | null>(null)
   const [userDetailLoading, setUserDetailLoading] = useState(false)
   const [userQuotaSnapshot, setUserQuotaSnapshot] = useState<UserQuotaSnapshot | null>(null)
@@ -1804,6 +1812,40 @@ function AdminDashboard(): JSX.Element {
 
     return () => controller.abort()
   }, [route, adminStrings.users.catalog.loadFailed])
+
+  useEffect(() => {
+    const usersRouteActive =
+      (route.name === 'module' && route.module === 'users')
+      || route.name === 'user'
+      || route.name === 'user-tags'
+      || route.name === 'user-tag-editor'
+    if (!usersRouteActive) return
+
+    const controller = new AbortController()
+    setRegistrationSettingsLoading(true)
+    setRegistrationSettingsError(null)
+    fetchAdminRegistrationSettings(controller.signal)
+      .then((settings) => {
+        if (controller.signal.aborted) return
+        setAllowRegistration(settings.allowRegistration)
+        setRegistrationSettingsLoaded(true)
+      })
+      .catch((err) => {
+        if (controller.signal.aborted) return
+        console.error(err)
+        setAllowRegistration(null)
+        setRegistrationSettingsError(
+          err instanceof Error ? err.message : adminStrings.users.registration.loadFailed,
+        )
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setRegistrationSettingsLoading(false)
+        }
+      })
+
+    return () => controller.abort()
+  }, [route, adminStrings.users.registration.loadFailed])
 
   useEffect(() => {
     if (!(route.name === 'module' && route.module === 'users')) return
@@ -2962,6 +3004,27 @@ function AdminDashboard(): JSX.Element {
     navigateUsersSearch('', { tagId: null, page: 1 })
   }
 
+  const toggleAllowRegistration = async () => {
+    if (registrationSettingsSaving || registrationSettingsLoading || allowRegistration === null) return
+    const previous = allowRegistration
+    const next = !previous
+    setAllowRegistration(next)
+    setRegistrationSettingsSaving(true)
+    setRegistrationSettingsError(null)
+    try {
+      const result = await updateAdminRegistrationSettings(next)
+      setAllowRegistration(result.allowRegistration)
+    } catch (err) {
+      console.error(err)
+      setAllowRegistration(previous)
+      setRegistrationSettingsError(
+        err instanceof Error ? err.message : adminStrings.users.registration.saveFailed,
+      )
+    } finally {
+      setRegistrationSettingsSaving(false)
+    }
+  }
+
   const refreshUsersList = async () => {
     const pagedUsers = await fetchAdminUsers(usersPage, USERS_PER_PAGE, usersQuery, usersTagFilterId)
     setUsers(pagedUsers.items)
@@ -3496,6 +3559,17 @@ function AdminDashboard(): JSX.Element {
           ? 'users'
           : 'tokens'
   const usersStrings = adminStrings.users
+  const registrationStatusText = registrationSettingsLoading && !registrationSettingsLoaded
+    ? usersStrings.registration.description
+    : registrationSettingsSaving
+      ? usersStrings.registration.saving
+      : allowRegistration === null
+        ? usersStrings.registration.unavailable
+      : allowRegistration
+        ? usersStrings.registration.enabled
+        : usersStrings.registration.disabled
+
+  const registrationInlineStatus = registrationSettingsError ?? (registrationSettingsSaving ? registrationStatusText : null)
   const sortedTagCatalog = useMemo(
     () => [...tagCatalog].sort((left, right) => right.userCount - left.userCount || left.displayName.localeCompare(right.displayName)),
     [tagCatalog],
@@ -6198,36 +6272,102 @@ function AdminDashboard(): JSX.Element {
 
           <section className="surface panel">
             <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
-              <div>
+              <div style={{ flex: '1 1 340px', minWidth: 260 }}>
                 <h2>{usersStrings.title}</h2>
                 <p className="panel-description">{usersStrings.description}</p>
               </div>
-              <div className="users-search-controls">
-                <Input
-                  type="text"
-                  name="users-search"
-                  className="users-search-input"
-                  placeholder={usersStrings.searchPlaceholder}
-                  value={usersQueryInput}
-                  disabled={usersBlocking}
-                  onChange={(event) => setUsersQueryInput(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') {
-                      event.preventDefault()
-                      applyUserSearch()
-                    }
+              <div style={{ display: 'flex', flex: '1 1 520px', flexWrap: 'wrap', gap: 12, justifyContent: 'flex-end' }}>
+                <div
+                  className="rounded-xl border border-border/60 bg-background/55 px-4 py-3 shadow-sm backdrop-blur"
+                  style={{
+                    display: 'flex',
+                    minWidth: 260,
+                    maxWidth: 380,
+                    flex: '1 1 300px',
+                    alignItems: 'flex-start',
+                    justifyContent: 'space-between',
+                    gap: 12,
                   }}
-                />
-                <Button type="button" variant="outline" onClick={applyUserSearch} disabled={usersBlocking}>
-                  {usersStrings.search}
-                </Button>
-                {(usersQueryInput.length > 0 || usersQuery.length > 0 || usersTagFilterId != null) && (
-                  <Button type="button" variant="ghost" onClick={resetUserSearch} disabled={usersBlocking}>
-                    {usersStrings.clear}
+                >
+                  <div style={{ minWidth: 0, flex: '1 1 auto' }}>
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        flexWrap: 'wrap',
+                      }}
+                    >
+                      <div className="text-sm font-semibold">{usersStrings.registration.title}</div>
+                      <Badge
+                        variant={
+                          registrationSettingsError
+                            ? 'destructive'
+                            : allowRegistration === null
+                              ? 'secondary'
+                              : allowRegistration
+                                ? 'success'
+                                : 'warning'
+                        }
+                      >
+                        {allowRegistration === null
+                          ? usersStrings.status.unknown
+                          : allowRegistration
+                            ? usersStrings.status.enabled
+                            : usersStrings.status.disabled}
+                      </Badge>
+                    </div>
+                    {registrationInlineStatus && (
+                      <p
+                        className="text-xs font-medium"
+                        role="status"
+                        aria-live="polite"
+                        style={{ margin: '6px 0 0', color: registrationSettingsError ? 'hsl(var(--destructive))' : undefined }}
+                      >
+                        {registrationInlineStatus}
+                      </p>
+                    )}
+                  </div>
+                  <Switch
+                    disabled={registrationSettingsLoading || registrationSettingsSaving || allowRegistration === null}
+                    checked={allowRegistration ?? false}
+                    aria-label={usersStrings.registration.title}
+                    onCheckedChange={() => void toggleAllowRegistration()}
+                    style={{ flex: '0 0 auto' }}
+                  />
+                </div>
+                <div className="users-search-controls">
+                  <Input
+                    type="text"
+                    name="users-search"
+                    className="users-search-input"
+                    placeholder={usersStrings.searchPlaceholder}
+                    value={usersQueryInput}
+                    disabled={usersBlocking}
+                    onChange={(event) => setUsersQueryInput(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault()
+                        applyUserSearch()
+                      }
+                    }}
+                  />
+                  <Button type="button" variant="outline" onClick={applyUserSearch} disabled={usersBlocking}>
+                    {usersStrings.search}
                   </Button>
-                )}
+                  {(usersQueryInput.length > 0 || usersQuery.length > 0 || usersTagFilterId != null) && (
+                    <Button type="button" variant="ghost" onClick={resetUserSearch} disabled={usersBlocking}>
+                      {usersStrings.clear}
+                    </Button>
+                  )}
+                </div>
               </div>
             </div>
+            {registrationSettingsError && (
+              <div className="surface error-banner" style={{ marginBottom: 12 }}>
+                {registrationSettingsError}
+              </div>
+            )}
 
             <AdminTableShell
               className="jobs-table-wrapper"

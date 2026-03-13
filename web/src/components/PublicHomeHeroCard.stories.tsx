@@ -48,6 +48,7 @@ const baseArgs: HeroStoryArgs = {
   availableKeys: 7,
   totalKeys: 12,
   showLinuxDoLogin: false,
+  showRegistrationPausedNotice: false,
   showTokenAccessButton: false,
   showAdminAction: false,
   adminActionLabel: LOGIN_LABEL,
@@ -69,6 +70,16 @@ export const LoggedOutNoToken: Story = {
   args: {
     ...baseArgs,
     showLinuxDoLogin: true,
+    showTokenAccessButton: true,
+    showAdminAction: false,
+  },
+}
+
+export const LoggedOutRegistrationPaused: Story = {
+  args: {
+    ...baseArgs,
+    showLinuxDoLogin: true,
+    showRegistrationPausedNotice: true,
     showTokenAccessButton: true,
     showAdminAction: false,
   },

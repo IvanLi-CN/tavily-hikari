@@ -158,6 +158,7 @@ const META_KEY_ACCOUNT_QUOTA_BACKFILL_V1: &str = "account_quota_backfill_v1";
 const META_KEY_ACCOUNT_QUOTA_INHERITS_DEFAULTS_BACKFILL_V1: &str =
     "account_quota_inherits_defaults_backfill_v1";
 const META_KEY_FORCE_USER_RELOGIN_V1: &str = "force_user_relogin_v1";
+const META_KEY_ALLOW_REGISTRATION_V1: &str = "allow_registration_v1";
 const META_KEY_LINUXDO_SYSTEM_TAG_DEFAULTS_V1: &str = "linuxdo_system_tag_defaults_v1";
 const META_KEY_LINUXDO_SYSTEM_TAG_DEFAULTS_TUPLE_V1: &str = "linuxdo_system_tag_defaults_tuple_v1";
 const META_KEY_AUTH_TOKEN_LOG_REQUEST_KIND_BACKFILL_V1: &str =
@@ -2224,6 +2225,27 @@ impl TavilyProxy {
         profile: &OAuthAccountProfile,
     ) -> Result<UserIdentity, ProxyError> {
         self.key_store.upsert_oauth_account(profile).await
+    }
+
+    /// Check whether a third-party account already exists locally.
+    pub async fn oauth_account_exists(
+        &self,
+        provider: &str,
+        provider_user_id: &str,
+    ) -> Result<bool, ProxyError> {
+        self.key_store
+            .oauth_account_exists(provider, provider_user_id)
+            .await
+    }
+
+    /// Read whether first-time third-party registration is enabled.
+    pub async fn allow_registration(&self) -> Result<bool, ProxyError> {
+        self.key_store.allow_registration().await
+    }
+
+    /// Persist whether first-time third-party registration is enabled.
+    pub async fn set_allow_registration(&self, allow: bool) -> Result<bool, ProxyError> {
+        self.key_store.set_allow_registration(allow).await
     }
 
     /// Ensure one-to-one user token binding exists, creating a token only when missing.
@@ -8116,6 +8138,20 @@ impl KeyStore {
         .await
     }
 
+    async fn allow_registration(&self) -> Result<bool, ProxyError> {
+        Ok(self
+            .get_meta_i64(META_KEY_ALLOW_REGISTRATION_V1)
+            .await?
+            .unwrap_or(1)
+            != 0)
+    }
+
+    async fn set_allow_registration(&self, allow: bool) -> Result<bool, ProxyError> {
+        self.set_meta_i64(META_KEY_ALLOW_REGISTRATION_V1, if allow { 1 } else { 0 })
+            .await?;
+        Ok(allow)
+    }
+
     async fn sync_linuxdo_system_tag_default_deltas_with_env(&self) -> Result<(), ProxyError> {
         let current = linuxdo_system_tag_default_deltas();
         let previous = match self.get_linuxdo_system_tag_default_deltas_meta().await? {
@@ -9162,6 +9198,24 @@ impl KeyStore {
         Err(ProxyError::Other(
             "failed to upsert oauth account after retries".to_string(),
         ))
+    }
+
+    async fn oauth_account_exists(
+        &self,
+        provider: &str,
+        provider_user_id: &str,
+    ) -> Result<bool, ProxyError> {
+        let row = sqlx::query_scalar::<_, i64>(
+            r#"SELECT 1
+               FROM oauth_accounts
+               WHERE provider = ? AND provider_user_id = ?
+               LIMIT 1"#,
+        )
+        .bind(provider)
+        .bind(provider_user_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.is_some())
     }
 
     async fn ensure_user_token_binding(

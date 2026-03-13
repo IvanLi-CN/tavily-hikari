@@ -4,7 +4,7 @@ mod tests {
     use axum::Router;
     use axum::extract::{Json, Query};
     use axum::http::Method;
-    use axum::routing::{any, get, post};
+    use axum::routing::{any, get, patch, post};
     use nanoid::nanoid;
     use reqwest::Client;
     use sqlx::Row;
@@ -83,6 +83,11 @@ mod tests {
             "<!doctype html><title>login</title>",
         )
         .expect("write login");
+        std::fs::write(
+            dir.join("registration-paused.html"),
+            "<!doctype html><title>registration-paused</title>",
+        )
+        .expect("write registration paused");
         dir
     }
 
@@ -2788,6 +2793,7 @@ mod tests {
         let app = Router::new()
             .route("/", get(serve_index))
             .route("/console", get(serve_console_index))
+            .route("/registration-paused", get(serve_registration_paused_index))
             .route("/auth/linuxdo", get(get_linuxdo_auth).post(post_linuxdo_auth))
             .route("/auth/linuxdo/callback", get(get_linuxdo_callback))
             .route("/api/profile", get(get_profile))
@@ -2827,6 +2833,11 @@ mod tests {
         });
 
         let app = Router::new()
+            .route("/api/admin/registration", get(get_admin_registration_settings))
+            .route(
+                "/api/admin/registration",
+                patch(patch_admin_registration_settings),
+            )
             .route("/api/user-tags", get(list_user_tags))
             .route("/api/user-tags", post(create_user_tag))
             .route("/api/user-tags/:tag_id", patch(update_user_tag))
@@ -3834,6 +3845,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn profile_exposes_allow_registration_setting() {
+        let db_path = temp_db_path("linuxdo-profile-allow-registration");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        proxy
+            .set_allow_registration(false)
+            .await
+            .expect("disable registration");
+
+        let addr = spawn_user_oauth_server(proxy).await;
+        let profile_resp = Client::new()
+            .get(format!("http://{}/api/profile", addr))
+            .send()
+            .await
+            .expect("profile request");
+        assert_eq!(profile_resp.status(), reqwest::StatusCode::OK);
+        let profile_body: serde_json::Value = profile_resp.json().await.expect("profile json");
+        assert_eq!(
+            profile_body.get("allowRegistration"),
+            Some(&serde_json::Value::Bool(false))
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn console_route_serves_spa_when_user_oauth_is_disabled() {
         let db_path = temp_db_path("console-route-disabled");
         let db_str = db_path.to_string_lossy().to_string();
@@ -3871,6 +3910,83 @@ mod tests {
             .await
             .expect("dashboard request");
         assert_eq!(dashboard_resp.status(), reqwest::StatusCode::NOT_FOUND);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn registration_paused_route_serves_dedicated_spa() {
+        let db_path = temp_db_path("registration-paused-route");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("create proxy");
+
+        let addr = spawn_user_oauth_server(proxy).await;
+        let client = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build no-redirect client");
+
+        let resp = client
+            .get(format!("http://{}/registration-paused", addr))
+            .send()
+            .await
+            .expect("registration paused request");
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        let html = resp.text().await.expect("registration paused html");
+        assert!(html.contains("<title>registration-paused</title>"));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn registration_paused_route_falls_back_to_index_when_dedicated_spa_is_missing() {
+        let db_path = temp_db_path("registration-paused-route-fallback");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("create proxy");
+        let static_dir = temp_static_dir("registration-paused-fallback");
+        std::fs::remove_file(static_dir.join("registration-paused.html"))
+            .expect("remove dedicated registration paused spa");
+        let state = Arc::new(AppState {
+            proxy,
+            static_dir: Some(static_dir),
+            forward_auth: ForwardAuthConfig::new(None, None, None, None),
+            forward_auth_enabled: false,
+            builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            linuxdo_oauth: linuxdo_oauth_options_for_test(),
+            dev_open_admin: false,
+            usage_base: "http://127.0.0.1:58088".to_string(),
+        });
+
+        let app = Router::new()
+            .route("/registration-paused", get(serve_registration_paused_index))
+            .with_state(state);
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .expect("serve app");
+        });
+
+        let client = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build no-redirect client");
+
+        let resp = client
+            .get(format!("http://{}/registration-paused", addr))
+            .send()
+            .await
+            .expect("registration paused request");
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        let html = resp.text().await.expect("registration paused html");
+        assert!(html.contains("<title>index</title>"));
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -4171,6 +4287,311 @@ mod tests {
         assert!(
             deleted_at.is_none(),
             "mistaken token should stay non-deleted"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn linuxdo_callback_redirects_first_time_user_when_registration_is_disabled() {
+        let db_path = temp_db_path("linuxdo-callback-registration-paused-new-user");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        proxy
+            .set_allow_registration(false)
+            .await
+            .expect("disable registration");
+
+        let oauth_upstream = spawn_linuxdo_oauth_mock_server(
+            "linuxdo-new-user",
+            "linuxdo_new_user",
+            "LinuxDO New User",
+        )
+        .await;
+        let mut oauth_options = linuxdo_oauth_options_for_test();
+        oauth_options.authorize_url = format!("http://{oauth_upstream}/oauth2/authorize");
+        oauth_options.token_url = format!("http://{oauth_upstream}/oauth2/token");
+        oauth_options.userinfo_url = format!("http://{oauth_upstream}/api/user");
+
+        let addr = spawn_user_oauth_server_with_options(proxy, oauth_options).await;
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build no-redirect client");
+
+        let auth_resp = client
+            .get(format!("http://{}/auth/linuxdo", addr))
+            .send()
+            .await
+            .expect("start linuxdo auth");
+        assert_eq!(auth_resp.status(), reqwest::StatusCode::SEE_OTHER);
+
+        let location = auth_resp
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .expect("auth redirect location");
+        let state = reqwest::Url::parse(location)
+            .expect("parse redirect url")
+            .query_pairs()
+            .find_map(|(k, v)| (k == "state").then(|| v.into_owned()))
+            .expect("oauth state");
+        let binding_cookie = find_cookie_pair(auth_resp.headers(), OAUTH_LOGIN_BINDING_COOKIE_NAME)
+            .expect("oauth binding cookie");
+
+        let callback_resp = client
+            .get(format!(
+                "http://{}/auth/linuxdo/callback?code=e2e-code&state={state}",
+                addr
+            ))
+            .header(reqwest::header::COOKIE, binding_cookie)
+            .send()
+            .await
+            .expect("oauth callback");
+        assert_eq!(
+            callback_resp.status(),
+            reqwest::StatusCode::TEMPORARY_REDIRECT
+        );
+        assert_eq!(
+            callback_resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("/registration-paused")
+        );
+        let clear_binding_cookie =
+            find_cookie_pair(callback_resp.headers(), OAUTH_LOGIN_BINDING_COOKIE_NAME)
+                .expect("cleared binding cookie");
+        assert!(
+            clear_binding_cookie.ends_with('='),
+            "expected oauth binding cookie to be cleared"
+        );
+
+        let options = SqliteConnectOptions::new()
+            .filename(&db_str)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open db pool");
+        let oauth_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM oauth_accounts")
+            .fetch_one(&pool)
+            .await
+            .expect("count oauth accounts");
+        let session_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM user_sessions")
+            .fetch_one(&pool)
+            .await
+            .expect("count user sessions");
+        let binding_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM user_token_bindings")
+            .fetch_one(&pool)
+            .await
+            .expect("count token bindings");
+        assert_eq!(oauth_count, 0);
+        assert_eq!(session_count, 0);
+        assert_eq!(binding_count, 0);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn linuxdo_callback_keeps_paused_route_when_registration_page_is_missing() {
+        let db_path = temp_db_path("linuxdo-callback-registration-paused-fallback");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        proxy
+            .set_allow_registration(false)
+            .await
+            .expect("disable registration");
+
+        let oauth_upstream = spawn_linuxdo_oauth_mock_server(
+            "linuxdo-new-user-fallback",
+            "linuxdo_new_user_fallback",
+            "LinuxDO New User Fallback",
+        )
+        .await;
+        let mut oauth_options = linuxdo_oauth_options_for_test();
+        oauth_options.authorize_url = format!("http://{oauth_upstream}/oauth2/authorize");
+        oauth_options.token_url = format!("http://{oauth_upstream}/oauth2/token");
+        oauth_options.userinfo_url = format!("http://{oauth_upstream}/api/user");
+
+        let static_dir = temp_static_dir("linuxdo-user-oauth-fallback");
+        std::fs::remove_file(static_dir.join("registration-paused.html"))
+            .expect("remove dedicated paused page");
+        let state = Arc::new(AppState {
+            proxy,
+            static_dir: Some(static_dir),
+            forward_auth: ForwardAuthConfig::new(None, None, None, None),
+            forward_auth_enabled: false,
+            builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            linuxdo_oauth: oauth_options,
+            dev_open_admin: false,
+            usage_base: "http://127.0.0.1:58088".to_string(),
+        });
+
+        let app = Router::new()
+            .route("/", get(serve_index))
+            .route("/auth/linuxdo", get(get_linuxdo_auth).post(post_linuxdo_auth))
+            .route("/auth/linuxdo/callback", get(get_linuxdo_callback))
+            .route("/api/profile", get(get_profile))
+            .with_state(state);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build no-redirect client");
+
+        let auth_resp = client
+            .get(format!("http://{}/auth/linuxdo", addr))
+            .send()
+            .await
+            .expect("start linuxdo auth");
+        assert_eq!(auth_resp.status(), reqwest::StatusCode::SEE_OTHER);
+
+        let location = auth_resp
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .expect("auth redirect location");
+        let state = reqwest::Url::parse(location)
+            .expect("parse redirect url")
+            .query_pairs()
+            .find_map(|(k, v)| (k == "state").then(|| v.into_owned()))
+            .expect("oauth state");
+        let binding_cookie = find_cookie_pair(auth_resp.headers(), OAUTH_LOGIN_BINDING_COOKIE_NAME)
+            .expect("oauth binding cookie");
+
+        let callback_resp = client
+            .get(format!(
+                "http://{}/auth/linuxdo/callback?code=e2e-code&state={state}",
+                addr
+            ))
+            .header(reqwest::header::COOKIE, binding_cookie)
+            .send()
+            .await
+            .expect("oauth callback");
+        assert_eq!(
+            callback_resp.status(),
+            reqwest::StatusCode::TEMPORARY_REDIRECT
+        );
+        assert_eq!(
+            callback_resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("/registration-paused")
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn linuxdo_callback_allows_existing_user_when_registration_is_disabled() {
+        let db_path = temp_db_path("linuxdo-callback-registration-paused-existing-user");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        let user = proxy
+            .upsert_oauth_account(&OAuthAccountProfile {
+                provider: "linuxdo".to_string(),
+                provider_user_id: "linuxdo-existing-user".to_string(),
+                username: Some("linuxdo_existing".to_string()),
+                name: Some("LinuxDO Existing".to_string()),
+                avatar_template: None,
+                active: true,
+                trust_level: Some(2),
+                raw_payload_json: None,
+            })
+            .await
+            .expect("seed existing user");
+        proxy
+            .ensure_user_token_binding(&user.user_id, Some("linuxdo:linuxdo_existing"))
+            .await
+            .expect("seed token binding");
+        proxy
+            .set_allow_registration(false)
+            .await
+            .expect("disable registration");
+
+        let oauth_upstream = spawn_linuxdo_oauth_mock_server(
+            "linuxdo-existing-user",
+            "linuxdo_existing",
+            "LinuxDO Existing",
+        )
+        .await;
+        let mut oauth_options = linuxdo_oauth_options_for_test();
+        oauth_options.authorize_url = format!("http://{oauth_upstream}/oauth2/authorize");
+        oauth_options.token_url = format!("http://{oauth_upstream}/oauth2/token");
+        oauth_options.userinfo_url = format!("http://{oauth_upstream}/api/user");
+
+        let addr = spawn_user_oauth_server_with_options(proxy, oauth_options).await;
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build no-redirect client");
+
+        let auth_resp = client
+            .get(format!("http://{}/auth/linuxdo", addr))
+            .send()
+            .await
+            .expect("start linuxdo auth");
+        assert_eq!(auth_resp.status(), reqwest::StatusCode::SEE_OTHER);
+
+        let location = auth_resp
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .expect("auth redirect location");
+        let state = reqwest::Url::parse(location)
+            .expect("parse redirect url")
+            .query_pairs()
+            .find_map(|(k, v)| (k == "state").then(|| v.into_owned()))
+            .expect("oauth state");
+        let binding_cookie = find_cookie_pair(auth_resp.headers(), OAUTH_LOGIN_BINDING_COOKIE_NAME)
+            .expect("oauth binding cookie");
+
+        let callback_resp = client
+            .get(format!(
+                "http://{}/auth/linuxdo/callback?code=e2e-code&state={state}",
+                addr
+            ))
+            .header(reqwest::header::COOKIE, binding_cookie)
+            .send()
+            .await
+            .expect("oauth callback");
+        assert_eq!(
+            callback_resp.status(),
+            reqwest::StatusCode::TEMPORARY_REDIRECT
+        );
+        assert_eq!(
+            callback_resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("/console")
+        );
+        let user_cookie = find_cookie_pair(callback_resp.headers(), USER_SESSION_COOKIE_NAME)
+            .expect("user session cookie");
+        assert!(
+            user_cookie.starts_with(&format!("{USER_SESSION_COOKIE_NAME}=")),
+            "expected existing user login to create a user session"
         );
 
         let _ = std::fs::remove_file(db_path);
@@ -5726,6 +6147,89 @@ mod tests {
             .await
             .expect("patch users unauth request");
         assert_eq!(patch_resp.status(), reqwest::StatusCode::FORBIDDEN);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn admin_registration_settings_require_admin_and_persist() {
+        let db_path = temp_db_path("admin-registration-settings");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        let unauth_addr = spawn_admin_users_server(proxy.clone(), false).await;
+        let client = Client::new();
+        let get_resp = client
+            .get(format!("http://{}/api/admin/registration", unauth_addr))
+            .send()
+            .await
+            .expect("get admin registration unauth request");
+        assert_eq!(get_resp.status(), reqwest::StatusCode::FORBIDDEN);
+
+        let patch_resp = client
+            .patch(format!("http://{}/api/admin/registration", unauth_addr))
+            .json(&serde_json::json!({ "allowRegistration": false }))
+            .send()
+            .await
+            .expect("patch admin registration unauth request");
+        assert_eq!(patch_resp.status(), reqwest::StatusCode::FORBIDDEN);
+
+        let invalid_unauth_resp = client
+            .patch(format!("http://{}/api/admin/registration", unauth_addr))
+            .body("not-json")
+            .send()
+            .await
+            .expect("patch admin registration invalid unauth request");
+        assert_eq!(invalid_unauth_resp.status(), reqwest::StatusCode::FORBIDDEN);
+
+        let admin_addr = spawn_admin_users_server(proxy, true).await;
+        let initial_resp = client
+            .get(format!("http://{}/api/admin/registration", admin_addr))
+            .send()
+            .await
+            .expect("get admin registration request");
+        assert_eq!(initial_resp.status(), reqwest::StatusCode::OK);
+        let initial_body: serde_json::Value = initial_resp.json().await.expect("initial json");
+        assert_eq!(
+            initial_body.get("allowRegistration"),
+            Some(&serde_json::Value::Bool(true))
+        );
+
+        let updated_resp = client
+            .patch(format!("http://{}/api/admin/registration", admin_addr))
+            .json(&serde_json::json!({ "allowRegistration": false }))
+            .send()
+            .await
+            .expect("patch admin registration request");
+        assert_eq!(updated_resp.status(), reqwest::StatusCode::OK);
+        let updated_body: serde_json::Value = updated_resp.json().await.expect("updated json");
+        assert_eq!(
+            updated_body.get("allowRegistration"),
+            Some(&serde_json::Value::Bool(false))
+        );
+
+        let persisted_resp = client
+            .get(format!("http://{}/api/admin/registration", admin_addr))
+            .send()
+            .await
+            .expect("get persisted registration request");
+        assert_eq!(persisted_resp.status(), reqwest::StatusCode::OK);
+        let persisted_body: serde_json::Value =
+            persisted_resp.json().await.expect("persisted json");
+        assert_eq!(
+            persisted_body.get("allowRegistration"),
+            Some(&serde_json::Value::Bool(false))
+        );
+
+        let invalid_admin_resp = client
+            .patch(format!("http://{}/api/admin/registration", admin_addr))
+            .body("not-json")
+            .send()
+            .await
+            .expect("patch admin registration invalid admin request");
+        assert_eq!(invalid_admin_resp.status(), reqwest::StatusCode::BAD_REQUEST);
 
         let _ = std::fs::remove_file(db_path);
     }

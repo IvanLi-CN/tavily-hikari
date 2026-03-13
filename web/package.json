@@ -19,6 +19,7 @@
     "@radix-ui/react-dropdown-menu": "^2.1.15",
     "@radix-ui/react-select": "^2.2.6",
     "@radix-ui/react-slot": "^1.2.3",
+    "@radix-ui/react-switch": "^1.2.6",
     "@tanstack/react-router": "^1.76.3",
     "chart.js": "^4.5.1",
     "class-variance-authority": "^0.7.1",

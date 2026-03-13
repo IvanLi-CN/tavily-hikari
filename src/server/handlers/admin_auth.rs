@@ -201,6 +201,7 @@ struct ProfileView {
     is_admin: bool,
     forward_auth_enabled: bool,
     builtin_auth_enabled: bool,
+    allow_registration: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     user_logged_in: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -216,6 +217,18 @@ struct ForwardAuthDebugView {
     user_header: Option<String>,
     admin_value: Option<String>,
     nickname_header: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminRegistrationSettingsView {
+    allow_registration: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateAdminRegistrationSettingsRequest {
+    allow_registration: bool,
 }
 
 async fn get_forward_auth_debug(
@@ -256,6 +269,10 @@ async fn get_profile(
     headers: HeaderMap,
 ) -> Result<Json<ProfileView>, StatusCode> {
     let config = &state.forward_auth;
+    let allow_registration = state.proxy.allow_registration().await.map_err(|err| {
+        eprintln!("get allow registration setting error: {err}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     let forward_auth_enabled = state.forward_auth_enabled && config.is_enabled();
     let builtin_auth_enabled = state.builtin_admin.is_enabled();
@@ -266,6 +283,7 @@ async fn get_profile(
             is_admin: true,
             forward_auth_enabled,
             builtin_auth_enabled,
+            allow_registration,
             user_logged_in: None,
             user_provider: None,
             user_display_name: None,
@@ -314,10 +332,48 @@ async fn get_profile(
         is_admin,
         forward_auth_enabled,
         builtin_auth_enabled,
+        allow_registration,
         user_logged_in,
         user_provider,
         user_display_name,
     }))
+}
+
+async fn get_admin_registration_settings(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<AdminRegistrationSettingsView>, StatusCode> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let allow_registration = state.proxy.allow_registration().await.map_err(|err| {
+        eprintln!("get admin registration settings error: {err}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    Ok(Json(AdminRegistrationSettingsView { allow_registration }))
+}
+
+async fn patch_admin_registration_settings(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    payload: Result<Json<UpdateAdminRegistrationSettingsRequest>, axum::extract::rejection::JsonRejection>,
+) -> Result<Json<AdminRegistrationSettingsView>, StatusCode> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let Json(payload) = payload.map_err(|err| {
+        eprintln!("patch admin registration settings payload error: {err}");
+        StatusCode::BAD_REQUEST
+    })?;
+    let allow_registration = state
+        .proxy
+        .set_allow_registration(payload.allow_registration)
+        .await
+        .map_err(|err| {
+            eprintln!("patch admin registration settings error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    Ok(Json(AdminRegistrationSettingsView { allow_registration }))
 }
 
 #[derive(Debug, Deserialize)]
