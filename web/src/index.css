@@ -7468,6 +7468,10 @@ tbody .log-details-row:hover {
   vertical-align: top;
 }
 
+.forward-proxy-table-head-nowrap {
+  white-space: nowrap;
+}
+
 .forward-proxy-table-row {
   transition: background-color 0.16s ease;
 }

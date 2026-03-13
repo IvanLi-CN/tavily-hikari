@@ -1003,12 +1003,19 @@ export default function ForwardProxySettingsModule({
                       <TableRow className="hover:bg-transparent">
                         <TableHead className="w-[30%]">{strings.nodes.table.node}</TableHead>
                         {WINDOW_KEYS.map((windowDefinition, index) => (
-                          <TableHead className={getWindowColumnClassName(index)} key={`head-${windowDefinition.key}`}>
+                          <TableHead
+                            className={`${getWindowColumnClassName(index)} forward-proxy-table-head-nowrap`}
+                            key={`head-${windowDefinition.key}`}
+                          >
                             {strings.windows[windowDefinition.translationKey]}
                           </TableHead>
                         ))}
-                        <TableHead className="w-[18%]">{strings.nodes.table.activity24h}</TableHead>
-                        <TableHead className="w-[18%]">{strings.nodes.table.weight24h}</TableHead>
+                        <TableHead className="w-[18%] forward-proxy-table-head-nowrap">
+                          {strings.nodes.table.activity24h}
+                        </TableHead>
+                        <TableHead className="w-[18%] forward-proxy-table-head-nowrap">
+                          {strings.nodes.table.weight24h}
+                        </TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody className="divide-y divide-border/65 [&_tr:last-child]:border-0">
