@@ -5225,13 +5225,12 @@ mod tests {
                     tag.get("tagId").and_then(|value| value.as_str()) != Some(custom_tag_id.as_str())
                 }))
         );
-        assert!(
+        assert_eq!(
             detail_after
                 .get("effectiveQuota")
                 .and_then(|value| value.get("monthlyLimit"))
-                .and_then(|value| value.as_i64())
-                .unwrap_or_default()
-                > 0
+                .and_then(|value| value.as_i64()),
+            Some(0)
         );
 
         let _ = std::fs::remove_file(db_path);

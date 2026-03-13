@@ -9,6 +9,7 @@
 
 |    ID | Title                                                  | Status           | Spec                                                       | Last       | Notes                                                                                                                  |
 | ----: | ------------------------------------------------------ | ---------------- | ---------------------------------------------------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------- |
+| 7vp6f | 新用户基础额度归零，仅靠标签发放额度                   | 已完成（快车道） | `7vp6f-new-user-zero-base-quota/SPEC.md`                   | 2026-03-13 | follow-up of `2mt2u` / `45squ`; new accounts default to zero base quota while historical accounts keep current rows    |
 | tz3ce | Admin Jobs Key 跳转与分组气泡                          | 部分完成（3/4）  | `tz3ce-admin-jobs-key-navigation-bubbles/SPEC.md`          | 2026-03-13 | jobs API 已返回 `keyGroup`，桌面/移动端交互已落地；待补浏览器 MCP 复核与完整 review-loop 收口                          |
 | swe8k | Web 全站复制兼容统一收口                               | 已完成（快车道） | `swe8k-web-copy-fallback-unification/SPEC.md`              | 2026-03-12 | helper/component、Storybook 证据与 review 收口已完成；PR #121 待合并与分支回收                                         |
 | 2m7yv | 用户控制台 Token 明文切换按钮                          | 已完成（快车道） | `2m7yv-user-console-token-secret-visibility/SPEC.md`       | 2026-03-12 | PR #120; checks green; review-loop clear                                                                               |

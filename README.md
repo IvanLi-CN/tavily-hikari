@@ -206,6 +206,10 @@ export LINUXDO_OAUTH_REDIRECT_URL='https://tavily.ivanli.cc/auth/linuxdo/callbac
   - First Linux DO login automatically creates and binds one Hikari access token.
   - Later logins reuse the same binding; no extra token is created.
   - If the bound token is disabled/deleted, `/api/user/token` returns an error (`404` or `409`) and does not auto-regenerate.
+- Quota policy:
+  - New user accounts no longer receive built-in base quota on first login.
+  - Effective quota for new accounts comes from system/user tags only.
+  - A newly created account without any quota-granting tags stays at `0/0/0/0` until an admin assigns tags or sets a custom base quota.
 - New endpoints:
   - `GET /auth/linuxdo`
   - `GET /auth/linuxdo/callback`

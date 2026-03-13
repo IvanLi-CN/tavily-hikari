@@ -212,6 +212,10 @@ export LINUXDO_OAUTH_REDIRECT_URL='https://tavily.ivanli.cc/auth/linuxdo/callbac
   - 首次 Linux DO 登录会自动创建并绑定 1 个 Hikari 访问令牌。
   - 后续登录复用同一绑定，不重复创建。
   - 若绑定 token 被禁用或删除，`/api/user/token` 会返回错误（`404` 或 `409`），不会自动重建。
+- 额度策略：
+  - 新用户首次登录时不再自动获得内置基础额度。
+  - 新账户的有效额度只来自系统标签或用户标签。
+  - 若新建账户没有任何发放额度的标签，则会保持 `0/0/0/0`，直到管理员补充标签或手动设置基础额度。
 - 新增接口：
   - `GET /auth/linuxdo`
   - `GET /auth/linuxdo/callback`
