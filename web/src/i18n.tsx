@@ -569,6 +569,7 @@ interface AdminTranslationsShape {
         quota: string
         keys: string
         quarantined: string
+        exhausted: string
         remaining: string
       }
       subtitles: {
@@ -1123,11 +1124,11 @@ export const translations: Record<Language, TranslationShape> = {
         loading: 'Loading dashboard data…',
         summaryUnavailable: 'Unable to load the summary windows right now.',
         todayTitle: 'Today',
-        todayDescription: 'Core request signals up to now, each compared against yesterday.',
+        todayDescription: 'Core request signals up to now, directly compared with yesterday.',
         monthTitle: 'This Month',
-        monthDescription: 'Month-to-date request totals without daily comparison noise.',
+        monthDescription: 'Month-to-date request totals in one compact view.',
         currentStatusTitle: 'Current Site Status',
-        currentStatusDescription: 'Live pool health and quota posture at this moment.',
+        currentStatusDescription: 'Live quota, active keys, and pool health right now.',
         deltaFromYesterday: 'vs yesterday',
         deltaNoBaseline: 'No yesterday baseline',
         asOfNow: 'Up to now',
@@ -1493,6 +1494,7 @@ export const translations: Record<Language, TranslationShape> = {
           quota: 'Quota Exhausted',
           keys: 'Active Keys',
           quarantined: 'Quarantined',
+          exhausted: 'Exhausted',
           remaining: 'Remaining',
         },
         subtitles: {
@@ -2030,11 +2032,11 @@ export const translations: Record<Language, TranslationShape> = {
         loading: '正在加载仪表盘数据…',
         summaryUnavailable: '暂时无法加载期间摘要。',
         todayTitle: '今日',
-        todayDescription: '截至当前时刻的核心请求信号，并直接对比昨日。',
+        todayDescription: '截至当前的核心请求指标，直接对比昨日。',
         monthTitle: '本月',
-        monthDescription: '查看本月累计请求表现，不混入昨日对比噪音。',
+        monthDescription: '用紧凑视图查看本月累计请求表现。',
         currentStatusTitle: '站点当前状态',
-        currentStatusDescription: '此刻的密钥池健康度与额度余量快照。',
+        currentStatusDescription: '查看此刻的额度、活跃密钥与池状态。',
         deltaFromYesterday: '较昨日',
         deltaNoBaseline: '昨日无基线',
         asOfNow: '截至当前',
@@ -2400,6 +2402,7 @@ export const translations: Record<Language, TranslationShape> = {
           quota: '额度耗尽',
           keys: '活跃密钥',
           quarantined: '隔离中',
+          exhausted: '已耗尽',
           remaining: '剩余可用',
         },
         subtitles: {

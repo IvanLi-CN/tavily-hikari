@@ -24,11 +24,11 @@ const strings = {
   loading: 'Loading dashboard data…',
   summaryUnavailable: 'Unable to load the summary windows right now.',
   todayTitle: 'Today',
-  todayDescription: 'Core request signals up to now, each compared against yesterday.',
+  todayDescription: 'Core request signals up to now, directly compared with yesterday.',
   monthTitle: 'This Month',
-  monthDescription: 'Month-to-date request totals without daily comparison noise.',
+  monthDescription: 'Month-to-date request totals in one compact view.',
   currentStatusTitle: 'Current Site Status',
-  currentStatusDescription: 'Live pool health and quota posture at this moment.',
+  currentStatusDescription: 'Live quota, active keys, and pool health right now.',
   deltaFromYesterday: 'vs yesterday',
   deltaNoBaseline: 'No yesterday baseline',
   asOfNow: 'Up to now',
@@ -96,8 +96,9 @@ const monthMetrics = [
 
 const statusMetrics = [
   { id: 'remaining', label: 'Remaining', value: '14,255 / 20,000', subtitle: 'Current snapshot · 71.3%' },
-  { id: 'keys', label: 'Active Keys', value: '31', subtitle: '31 active · 0 quarantined · 59 exhausted' },
+  { id: 'keys', label: 'Active Keys', value: '31', subtitle: 'Current snapshot' },
   { id: 'quarantined', label: 'Quarantined', value: '0', subtitle: 'All keys available' },
+  { id: 'exhausted', label: 'Exhausted', value: '59', subtitle: '59 exhausted' },
 ]
 
 export const Default: Story = {
@@ -170,8 +171,9 @@ export const QuarantineState: Story = {
     ...Default.args,
     statusMetrics: [
       { id: 'remaining', label: 'Remaining', value: '3,120 / 4,000', subtitle: 'Current snapshot · 78.0%' },
-      { id: 'keys', label: 'Active Keys', value: '5', subtitle: '5 active · 1 quarantined · 1 exhausted' },
+      { id: 'keys', label: 'Active Keys', value: '5', subtitle: 'Current snapshot' },
       { id: 'quarantined', label: 'Quarantined', value: '1', subtitle: 'Needs manual review' },
+      { id: 'exhausted', label: 'Exhausted', value: '1', subtitle: '1 exhausted' },
     ],
     keys: [
       {

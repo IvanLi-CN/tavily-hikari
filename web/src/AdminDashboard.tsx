@@ -2584,10 +2584,7 @@ function AdminDashboard(): JSX.Element {
         id: 'keys',
         label: metricsStrings.labels.keys,
         value: formatNumber(summary.active_keys),
-        subtitle: metricsStrings.subtitles.keysAvailability
-          .replace('{active}', formatNumber(summary.active_keys))
-          .replace('{quarantined}', formatNumber(summary.quarantined_keys))
-          .replace('{exhausted}', formatNumber(summary.exhausted_keys)),
+        subtitle: adminStrings.dashboard.currentSnapshot,
       },
       {
         id: 'quarantined',
@@ -2597,6 +2594,15 @@ function AdminDashboard(): JSX.Element {
           summary.quarantined_keys === 0
             ? metricsStrings.subtitles.keysAll
             : keyStrings.quarantine.badge,
+      },
+      {
+        id: 'exhausted',
+        label: metricsStrings.labels.exhausted,
+        value: formatNumber(summary.exhausted_keys),
+        subtitle:
+          summary.exhausted_keys === 0
+            ? metricsStrings.subtitles.keysAll
+            : metricsStrings.subtitles.keysExhausted.replace('{count}', formatNumber(summary.exhausted_keys)),
       },
     ]
   }, [adminStrings.dashboard.currentSnapshot, keyStrings.quarantine.badge, metricsStrings, summary])

@@ -1302,16 +1302,19 @@ function DashboardPageCanvas(): JSX.Element {
       id: 'keys',
       label: admin.metrics.labels.keys,
       value: formatNumber(activeKeys),
-      subtitle: admin.metrics.subtitles.keysAvailability
-        .replace('{active}', formatNumber(activeKeys))
-        .replace('{quarantined}', '0')
-        .replace('{exhausted}', formatNumber(exhaustedKeys)),
+      subtitle: admin.dashboard.currentSnapshot,
     },
     {
       id: 'quarantined',
       label: admin.metrics.labels.quarantined,
       value: '0',
       subtitle: admin.metrics.subtitles.keysAll,
+    },
+    {
+      id: 'exhausted',
+      label: admin.metrics.labels.exhausted,
+      value: formatNumber(exhaustedKeys),
+      subtitle: admin.metrics.subtitles.keysExhausted.replace('{count}', formatNumber(exhaustedKeys)),
     },
   ]
 

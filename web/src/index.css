@@ -2388,14 +2388,28 @@ button:disabled {
   grid-area: status;
 }
 
+.dashboard-summary-header {
+  min-height: 68px;
+}
+
 .dashboard-summary-header h2 {
   margin: 0;
   font-size: 1rem;
 }
 
+.dashboard-summary-header .panel-description {
+  margin-top: 6px;
+  min-height: 2.8em;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 .dashboard-summary-metrics {
   display: grid;
   gap: 10px;
+  align-content: start;
 }
 
 .dashboard-summary-metrics-primary {
@@ -2408,6 +2422,7 @@ button:disabled {
 
 .dashboard-summary-card {
   min-width: 0;
+  min-height: 124px;
 }
 
 .dashboard-summary-card .metric-value {
@@ -2416,9 +2431,17 @@ button:disabled {
   text-overflow: ellipsis;
 }
 
+.dashboard-summary-card .metric-subtitle {
+  min-height: 2.5em;
+}
+
 .dashboard-summary-card-compact {
-  min-height: 88px;
+  min-height: 112px;
   padding: 14px 16px;
+}
+
+.dashboard-summary-card-compact .metric-value {
+  font-size: 1.7rem;
 }
 
 .metric-delta {
@@ -2477,17 +2500,13 @@ button:disabled {
   .dashboard-summary-metrics-compact {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-
-  .dashboard-summary-block-status .dashboard-summary-card:last-child {
-    grid-column: 1 / -1;
-  }
 }
 
 @media (min-width: 1200px) {
   .dashboard-summary-layout {
-    grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr) minmax(0, 0.95fr);
+    grid-template-columns: minmax(0, 1.16fr) minmax(0, 1fr) minmax(0, 1fr);
     grid-template-areas: 'today month status';
-    align-items: start;
+    align-items: stretch;
   }
 
   .dashboard-summary-block {
