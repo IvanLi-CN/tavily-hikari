@@ -513,7 +513,7 @@ function RequestTrendCell({
   }
 
   return (
-    <div className="flex h-11 items-end gap-px py-0.5">
+    <div className="flex h-10 items-end gap-px">
       {buckets.map((bucket) => {
         const total = bucket.successCount + bucket.failureCount
         const heights = buildVisibleBarHeights(bucket.successCount, bucket.failureCount, scaleMax, 40)
