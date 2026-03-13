@@ -937,23 +937,22 @@ export default function ForwardProxySettingsModule({
                         <CardHeader className="forward-proxy-node-mobile-header">
                           <div className="forward-proxy-node-mobile-title-row">
                             <CardTitle className="text-base">{node.displayName}</CardTitle>
+                          </div>
+                          <div className="forward-proxy-node-chip-row">
                             <Badge variant={node.source === 'subscription' ? 'info' : node.source === 'manual' ? 'outline' : 'neutral'}>
                               {getSourceLabel(strings, node.source)}
                             </Badge>
                             <Badge variant={stateBadge.variant}>{stateBadge.label}</Badge>
+                            <span className="forward-proxy-node-chip-text">
+                              {strings.nodes.primary}: <strong>{formatNumber(node.primaryAssignmentCount)}</strong>
+                            </span>
+                            <span className="forward-proxy-node-chip-text">
+                              {strings.nodes.secondary}: <strong>{formatNumber(node.secondaryAssignmentCount)}</strong>
+                            </span>
                           </div>
                         </CardHeader>
                         <CardContent className="forward-proxy-node-mobile-content">
                           <div className="forward-proxy-node-mobile-grid">
-                            <div className="forward-proxy-node-mobile-block">
-                              <span className="forward-proxy-node-metric-label">{strings.nodes.table.assignments}</span>
-                              <span>
-                                {strings.nodes.primary}: <strong>{formatNumber(node.primaryAssignmentCount)}</strong>
-                              </span>
-                              <span>
-                                {strings.nodes.secondary}: <strong>{formatNumber(node.secondaryAssignmentCount)}</strong>
-                              </span>
-                            </div>
                             <div className="forward-proxy-node-mobile-block">
                               <span className="forward-proxy-node-metric-label">{strings.nodes.table.activity24h}</span>
                               <span>
@@ -1027,16 +1026,16 @@ export default function ForwardProxySettingsModule({
                               <div className="forward-proxy-node-cell-main min-w-0">
                                 <div className="forward-proxy-node-cell-title-row">
                                   <strong className="truncate text-sm">{node.displayName}</strong>
+                                </div>
+                                <div className="forward-proxy-node-chip-row">
                                   <Badge variant={node.source === 'subscription' ? 'info' : node.source === 'manual' ? 'outline' : 'neutral'}>
                                     {getSourceLabel(strings, node.source)}
                                   </Badge>
                                   <Badge variant={stateBadge.variant}>{stateBadge.label}</Badge>
-                                </div>
-                                <div className="forward-proxy-node-cell-meta">
-                                  <span>
+                                  <span className="forward-proxy-node-chip-text">
                                     {strings.nodes.primary}: <strong>{formatNumber(node.primaryAssignmentCount)}</strong>
                                   </span>
-                                  <span>
+                                  <span className="forward-proxy-node-chip-text">
                                     {strings.nodes.secondary}: <strong>{formatNumber(node.secondaryAssignmentCount)}</strong>
                                   </span>
                                 </div>

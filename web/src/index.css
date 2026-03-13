@@ -7430,6 +7430,20 @@ tbody .log-details-row:hover {
   flex-wrap: wrap;
 }
 
+.forward-proxy-node-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem 0.75rem;
+  min-width: 0;
+}
+
+.forward-proxy-node-chip-text {
+  font-size: 0.78rem;
+  color: hsl(var(--muted-foreground));
+  white-space: nowrap;
+}
+
 .forward-proxy-node-mobile-content {
   display: flex;
   flex-direction: column;
@@ -7498,14 +7512,6 @@ tbody .log-details-row:hover {
   gap: 0.45rem;
 }
 
-.forward-proxy-node-cell-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.6rem;
-  font-size: 0.78rem;
-  color: hsl(var(--muted-foreground));
-}
-
 .forward-proxy-node-status-detail {
   font-size: 0.75rem;
   color: hsl(var(--muted-foreground));
@@ -7552,9 +7558,12 @@ tbody .log-details-row:hover {
 @media (max-width: 960px) {
   .forward-proxy-config-grid,
   .forward-proxy-form-footer,
-  .forward-proxy-node-mobile-grid,
   .forward-proxy-window-grid {
     grid-template-columns: 1fr;
+  }
+
+  .forward-proxy-node-mobile-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .forward-proxy-panel-header,
