@@ -13,6 +13,19 @@ export interface Summary {
   total_quota_remaining: number
 }
 
+export interface SummaryWindowMetrics {
+  total_requests: number
+  success_count: number
+  error_count: number
+  quota_exhausted_count: number
+}
+
+export interface SummaryWindowsResponse {
+  today: SummaryWindowMetrics
+  yesterday: SummaryWindowMetrics
+  month: SummaryWindowMetrics
+}
+
 export interface PublicMetrics {
   monthlySuccess: number
   dailySuccess: number
@@ -208,6 +221,10 @@ export function fetchVersion(signal?: AbortSignal): Promise<VersionInfo> {
 
 export function fetchSummary(signal?: AbortSignal): Promise<Summary> {
   return requestJson('/api/summary', { signal })
+}
+
+export function fetchSummaryWindows(signal?: AbortSignal): Promise<SummaryWindowsResponse> {
+  return requestJson('/api/summary/windows', { signal })
 }
 
 export function fetchPublicMetrics(signal?: AbortSignal): Promise<PublicMetrics> {

@@ -9,7 +9,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use chrono::{Datelike, Local, TimeZone, Utc};
+use chrono::{Datelike, Duration as ChronoDuration, Local, TimeZone, Utc};
 use futures_util::TryStreamExt;
 use nanoid::nanoid;
 use rand::Rng;
@@ -3059,6 +3059,33 @@ impl TavilyProxy {
     /// 获取整体运行情况汇总。
     pub async fn summary(&self) -> Result<ProxySummary, ProxyError> {
         self.key_store.fetch_summary().await
+    }
+
+    /// Admin dashboard period summary windows based on server-local day/month boundaries.
+    pub async fn summary_windows(&self) -> Result<SummaryWindows, ProxyError> {
+        let now = Local::now();
+        let today_start = start_of_local_day_utc_ts(now);
+        let yesterday_start = start_of_local_day_utc_ts(now - ChronoDuration::days(1));
+        let month_start = start_of_local_month_utc_ts(now);
+
+        let today = self
+            .key_store
+            .fetch_summary_window(today_start, None)
+            .await?;
+        let yesterday = self
+            .key_store
+            .fetch_summary_window(yesterday_start, Some(today_start))
+            .await?;
+        let month = self
+            .key_store
+            .fetch_summary_window(month_start, None)
+            .await?;
+
+        Ok(SummaryWindows {
+            today,
+            yesterday,
+            month,
+        })
     }
 
     /// Public metrics: successful requests today and this month.
@@ -12272,6 +12299,38 @@ impl KeyStore {
         })
     }
 
+    async fn fetch_summary_window(
+        &self,
+        since: i64,
+        until: Option<i64>,
+    ) -> Result<SummaryWindowMetrics, ProxyError> {
+        let totals_row = sqlx::query(
+            r#"
+            SELECT
+                COALESCE(SUM(total_requests), 0) AS total_requests,
+                COALESCE(SUM(success_count), 0) AS success_count,
+                COALESCE(SUM(error_count), 0) AS error_count,
+                COALESCE(SUM(quota_exhausted_count), 0) AS quota_exhausted_count
+            FROM api_key_usage_buckets
+            WHERE bucket_secs = 86400
+              AND bucket_start >= ?
+              AND (? IS NULL OR bucket_start < ?)
+            "#,
+        )
+        .bind(since)
+        .bind(until)
+        .bind(until)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(SummaryWindowMetrics {
+            total_requests: totals_row.try_get("total_requests")?,
+            success_count: totals_row.try_get("success_count")?,
+            error_count: totals_row.try_get("error_count")?,
+            quota_exhausted_count: totals_row.try_get("quota_exhausted_count")?,
+        })
+    }
+
     async fn fetch_success_breakdown(
         &self,
         month_since: i64,
@@ -12602,6 +12661,21 @@ pub struct ProxySummary {
     pub last_activity: Option<i64>,
     pub total_quota_limit: i64,
     pub total_quota_remaining: i64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SummaryWindowMetrics {
+    pub total_requests: i64,
+    pub success_count: i64,
+    pub error_count: i64,
+    pub quota_exhausted_count: i64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SummaryWindows {
+    pub today: SummaryWindowMetrics,
+    pub yesterday: SummaryWindowMetrics,
+    pub month: SummaryWindowMetrics,
 }
 
 /// Successful request counters for public metrics.
@@ -15644,6 +15718,141 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
         let summary = proxy.summary().await.expect("summary");
         assert_eq!(summary.total_quota_limit, 50);
         assert_eq!(summary.total_quota_remaining, 40);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    async fn insert_summary_window_bucket(
+        proxy: &TavilyProxy,
+        key_id: &str,
+        bucket_start: i64,
+        total_requests: i64,
+        success_count: i64,
+        error_count: i64,
+        quota_exhausted_count: i64,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO api_key_usage_buckets (
+                api_key_id,
+                bucket_start,
+                bucket_secs,
+                total_requests,
+                success_count,
+                error_count,
+                quota_exhausted_count,
+                updated_at
+            ) VALUES (?, ?, 86400, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(key_id)
+        .bind(bucket_start)
+        .bind(total_requests)
+        .bind(success_count)
+        .bind(error_count)
+        .bind(quota_exhausted_count)
+        .bind(bucket_start + 60)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("insert summary window bucket");
+    }
+
+    #[tokio::test]
+    async fn summary_windows_split_today_yesterday_and_month() {
+        let db_path = temp_db_path("summary-windows-split");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-summary-window-a".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let key_id = proxy
+            .list_api_key_metrics()
+            .await
+            .expect("list key metrics")
+            .into_iter()
+            .next()
+            .expect("seeded key")
+            .id;
+
+        let now = Local::now();
+        let today_start = start_of_local_day_utc_ts(now);
+        let yesterday_start = start_of_local_day_utc_ts(now - ChronoDuration::days(1));
+        let month_start = start_of_local_month_utc_ts(now);
+        let previous_month_start = start_of_local_month_utc_ts(now - ChronoDuration::days(32));
+
+        insert_summary_window_bucket(&proxy, &key_id, today_start, 12, 9, 2, 1).await;
+        insert_summary_window_bucket(&proxy, &key_id, yesterday_start, 7, 5, 1, 1).await;
+        let mut expected_month = SummaryWindowMetrics {
+            total_requests: 19,
+            success_count: 14,
+            error_count: 3,
+            quota_exhausted_count: 2,
+        };
+        if month_start < yesterday_start {
+            insert_summary_window_bucket(&proxy, &key_id, month_start, 3, 2, 1, 0).await;
+            expected_month.total_requests += 3;
+            expected_month.success_count += 2;
+            expected_month.error_count += 1;
+        }
+        insert_summary_window_bucket(&proxy, &key_id, previous_month_start, 99, 80, 10, 9).await;
+
+        let summary = proxy.summary_windows().await.expect("summary windows");
+
+        assert_eq!(
+            summary.today,
+            SummaryWindowMetrics {
+                total_requests: 12,
+                success_count: 9,
+                error_count: 2,
+                quota_exhausted_count: 1,
+            }
+        );
+        assert_eq!(
+            summary.yesterday,
+            SummaryWindowMetrics {
+                total_requests: 7,
+                success_count: 5,
+                error_count: 1,
+                quota_exhausted_count: 1,
+            }
+        );
+        assert_eq!(summary.month, expected_month);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn summary_windows_return_zero_for_empty_yesterday_bucket() {
+        let db_path = temp_db_path("summary-windows-empty-yesterday");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-summary-window-b".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let key_id = proxy
+            .list_api_key_metrics()
+            .await
+            .expect("list key metrics")
+            .into_iter()
+            .next()
+            .expect("seeded key")
+            .id;
+
+        let today_start = start_of_local_day_utc_ts(Local::now());
+        insert_summary_window_bucket(&proxy, &key_id, today_start, 5, 4, 1, 0).await;
+
+        let summary = proxy.summary_windows().await.expect("summary windows");
+        assert_eq!(summary.yesterday, SummaryWindowMetrics::default());
 
         let _ = std::fs::remove_file(db_path);
     }

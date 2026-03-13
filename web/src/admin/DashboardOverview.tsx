@@ -5,13 +5,25 @@ export interface DashboardMetricCard {
   id: string
   label: string
   value: string
-  subtitle: string
+  subtitle?: string
+  comparison?: {
+    label: string
+    value: string
+    direction: 'up' | 'down' | 'flat'
+  }
 }
 
 export interface DashboardOverviewStrings {
   title: string
   description: string
   loading: string
+  summaryUnavailable: string
+  todayTitle: string
+  todayDescription: string
+  monthTitle: string
+  monthDescription: string
+  currentStatusTitle: string
+  currentStatusDescription: string
   trendsTitle: string
   trendsDescription: string
   requestTrend: string
@@ -36,7 +48,9 @@ export interface DashboardOverviewStrings {
 interface DashboardOverviewProps {
   strings: DashboardOverviewStrings
   overviewReady: boolean
-  metrics: DashboardMetricCard[]
+  todayMetrics: DashboardMetricCard[]
+  monthMetrics: DashboardMetricCard[]
+  statusMetrics: DashboardMetricCard[]
   trend: {
     request: number[]
     error: number[]
@@ -76,10 +90,30 @@ function Sparkline({ values }: { values: number[] }): JSX.Element {
   )
 }
 
+function SummaryMetricCard({ metric, compact = false }: { metric: DashboardMetricCard; compact?: boolean }): JSX.Element {
+  return (
+    <div className={`metric-card dashboard-summary-card${compact ? ' dashboard-summary-card-compact' : ''}`}>
+      <h3>{metric.label}</h3>
+      <div className="metric-value">{metric.value}</div>
+      {metric.comparison ? (
+        <div className={`metric-delta metric-delta-${metric.comparison.direction}`}>
+          <span className="metric-delta-label">{metric.comparison.label}</span>
+          <span className="metric-delta-value">{metric.comparison.value}</span>
+        </div>
+      ) : metric.subtitle ? (
+        <div className="metric-subtitle">{metric.subtitle}</div>
+      ) : null}
+      {metric.comparison && metric.subtitle ? <div className="metric-subtitle">{metric.subtitle}</div> : null}
+    </div>
+  )
+}
+
 export default function DashboardOverview({
   strings,
   overviewReady,
-  metrics,
+  todayMetrics,
+  monthMetrics,
+  statusMetrics,
   trend,
   tokenCoverage,
   tokens,
@@ -136,6 +170,8 @@ export default function DashboardOverview({
     })
   }
 
+  const summaryReady = overviewReady && todayMetrics.length > 0 && monthMetrics.length > 0 && statusMetrics.length > 0
+
   return (
     <div className="dashboard-overview-stack">
       <section className="surface panel dashboard-hero-panel">
@@ -150,17 +186,53 @@ export default function DashboardOverview({
         </div>
       </section>
 
-      <section className="surface quick-stats-grid">
-        {metrics.length === 0 ? (
-          <div className="empty-state alert">{strings.loading}</div>
+      <section className="surface panel dashboard-summary-panel">
+        {!summaryReady ? (
+          <div className="empty-state alert">{overviewReady ? strings.summaryUnavailable : strings.loading}</div>
         ) : (
-          metrics.map((metric) => (
-            <div key={metric.id} className="metric-card quick-stats-card">
-              <h3>{metric.label}</h3>
-              <div className="metric-value">{metric.value}</div>
-              <div className="metric-subtitle">{metric.subtitle}</div>
-            </div>
-          ))
+          <div className="dashboard-summary-layout">
+            <article className="dashboard-summary-block dashboard-summary-block-primary">
+              <header className="dashboard-summary-header">
+                <div>
+                  <h2>{strings.todayTitle}</h2>
+                  <p className="panel-description">{strings.todayDescription}</p>
+                </div>
+              </header>
+              <div className="dashboard-summary-metrics dashboard-summary-metrics-primary">
+                {todayMetrics.map((metric) => (
+                  <SummaryMetricCard key={metric.id} metric={metric} />
+                ))}
+              </div>
+            </article>
+
+            <article className="dashboard-summary-block dashboard-summary-block-secondary">
+              <header className="dashboard-summary-header">
+                <div>
+                  <h2>{strings.monthTitle}</h2>
+                  <p className="panel-description">{strings.monthDescription}</p>
+                </div>
+              </header>
+              <div className="dashboard-summary-metrics dashboard-summary-metrics-compact">
+                {monthMetrics.map((metric) => (
+                  <SummaryMetricCard key={metric.id} metric={metric} compact />
+                ))}
+              </div>
+            </article>
+
+            <article className="dashboard-summary-block dashboard-summary-block-status">
+              <header className="dashboard-summary-header">
+                <div>
+                  <h2>{strings.currentStatusTitle}</h2>
+                  <p className="panel-description">{strings.currentStatusDescription}</p>
+                </div>
+              </header>
+              <div className="dashboard-summary-metrics dashboard-summary-metrics-compact">
+                {statusMetrics.map((metric) => (
+                  <SummaryMetricCard key={metric.id} metric={metric} compact />
+                ))}
+              </div>
+            </article>
+          </div>
         )}
       </section>
 

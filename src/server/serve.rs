@@ -104,6 +104,7 @@ pub async fn serve(
         )
         .route("/api/tavily/usage", get(tavily_http_usage))
         .route("/api/summary", get(fetch_summary))
+        .route("/api/summary/windows", get(fetch_summary_windows))
         .route("/api/public/metrics", get(get_public_metrics))
         .route("/api/keys", get(list_keys))
         .route("/api/keys", post(create_api_key))

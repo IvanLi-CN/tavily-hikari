@@ -2783,6 +2783,7 @@ mod tests {
             .route("/api/admin/login", post(post_admin_login))
             .route("/api/admin/logout", post(post_admin_logout))
             .route("/api/summary", get(fetch_summary))
+            .route("/api/summary/windows", get(fetch_summary_windows))
             .route("/api/keys", get(list_keys))
             .route("/api/keys/:id", get(get_api_key_detail))
             .route("/api/keys/batch", post(create_api_keys_batch))
@@ -5285,6 +5286,163 @@ mod tests {
         assert_eq!(
             admin_body.get("quarantined_keys").and_then(|v| v.as_i64()),
             Some(1)
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn summary_windows_requires_admin_auth() {
+        let db_path = temp_db_path("summary-windows-auth");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-summary-window-auth".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let admin_password = "summary-window-admin-password";
+        let admin_addr = spawn_builtin_keys_admin_server(proxy, admin_password).await;
+        let client = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build client");
+
+        let public_resp = client
+            .get(format!("http://{}/api/summary/windows", admin_addr))
+            .send()
+            .await
+            .expect("public summary windows request");
+        assert_eq!(public_resp.status(), reqwest::StatusCode::FORBIDDEN);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn summary_windows_returns_today_yesterday_and_month_buckets() {
+        let db_path = temp_db_path("summary-windows-admin");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-summary-window-admin".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let key_id = proxy
+            .list_api_key_metrics()
+            .await
+            .expect("list api key metrics")
+            .into_iter()
+            .next()
+            .expect("seeded key exists")
+            .id;
+
+        let local_day_start = |value: chrono::DateTime<Local>| -> i64 {
+            let naive = value
+                .date_naive()
+                .and_hms_opt(0, 0, 0)
+                .expect("valid local midnight");
+            match Local.from_local_datetime(&naive) {
+                chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc).timestamp(),
+                chrono::LocalResult::Ambiguous(dt, _) => dt.with_timezone(&Utc).timestamp(),
+                chrono::LocalResult::None => value.with_timezone(&Utc).timestamp(),
+            }
+        };
+        let local_month_start = |value: chrono::DateTime<Local>| -> i64 {
+            Local
+                .with_ymd_and_hms(value.year(), value.month(), 1, 0, 0, 0)
+                .single()
+                .expect("valid start of local month")
+                .with_timezone(&Utc)
+                .timestamp()
+        };
+
+        let now = Local::now();
+        let today_start = local_day_start(now);
+        let yesterday_start = local_day_start(now - ChronoDuration::days(1));
+        let month_start = local_month_start(now);
+
+        let options = SqliteConnectOptions::new()
+            .filename(&db_str)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open db pool");
+
+        sqlx::query(
+            r#"
+            INSERT INTO api_key_usage_buckets (
+                api_key_id,
+                bucket_start,
+                bucket_secs,
+                total_requests,
+                success_count,
+                error_count,
+                quota_exhausted_count,
+                updated_at
+            ) VALUES
+                (?, ?, 86400, 10, 8, 1, 1, ?),
+                (?, ?, 86400, 4, 3, 1, 0, ?)
+            "#,
+        )
+        .bind(&key_id)
+        .bind(today_start)
+        .bind(today_start + 60)
+        .bind(&key_id)
+        .bind(yesterday_start)
+        .bind(yesterday_start + 60)
+        .execute(&pool)
+        .await
+        .expect("insert summary window buckets");
+
+        let admin_password = "summary-window-admin-password";
+        let admin_addr = spawn_builtin_keys_admin_server(proxy, admin_password).await;
+        let client = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build client");
+
+        let login_resp = client
+            .post(format!("http://{}/api/admin/login", admin_addr))
+            .json(&serde_json::json!({ "password": admin_password }))
+            .send()
+            .await
+            .expect("admin login");
+        assert_eq!(login_resp.status(), reqwest::StatusCode::OK);
+        let admin_cookie = find_cookie_pair(login_resp.headers(), BUILTIN_ADMIN_COOKIE_NAME)
+            .expect("admin session cookie");
+
+        let resp = client
+            .get(format!("http://{}/api/summary/windows", admin_addr))
+            .header(reqwest::header::COOKIE, admin_cookie)
+            .send()
+            .await
+            .expect("summary windows request");
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+        let body: serde_json::Value = resp.json().await.expect("summary windows json");
+        assert_eq!(
+            body.pointer("/today/total_requests").and_then(|v| v.as_i64()),
+            Some(10)
+        );
+        assert_eq!(
+            body.pointer("/yesterday/total_requests")
+                .and_then(|v| v.as_i64()),
+            Some(4)
+        );
+        let month_expected = if month_start <= yesterday_start { 14 } else { 10 };
+        assert_eq!(
+            body.pointer("/month/total_requests").and_then(|v| v.as_i64()),
+            Some(month_expected)
         );
 
         let _ = std::fs::remove_file(db_path);
