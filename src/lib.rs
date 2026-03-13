@@ -511,6 +511,22 @@ impl AccountQuotaLimits {
     }
 }
 
+fn account_quota_limits_from_row(
+    hourly_any_limit: i64,
+    hourly_limit: i64,
+    daily_limit: i64,
+    monthly_limit: i64,
+    inherits_defaults: i64,
+) -> AccountQuotaLimits {
+    AccountQuotaLimits {
+        hourly_any_limit,
+        hourly_limit,
+        daily_limit,
+        monthly_limit,
+        inherits_defaults: inherits_defaults == 1,
+    }
+}
+
 fn default_account_quota_limits_for_created_at(
     user_created_at: i64,
     zero_base_cutover_at: i64,
@@ -8022,6 +8038,10 @@ impl KeyStore {
         &self,
         user_id: &str,
     ) -> Result<AccountQuotaLimits, ProxyError> {
+        if let Some(existing) = self.fetch_account_quota_limits(user_id).await? {
+            return Ok(existing);
+        }
+
         let now = Utc::now().timestamp();
         let defaults = self.default_account_quota_limits_for_user(user_id).await?;
         sqlx::query(
@@ -8049,24 +8069,13 @@ impl KeyStore {
         .execute(&self.pool)
         .await?;
 
-        let (hourly_any_limit, hourly_limit, daily_limit, monthly_limit, inherits_defaults) =
-            sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
-                r#"SELECT hourly_any_limit, hourly_limit, daily_limit, monthly_limit,
-                          COALESCE(inherits_defaults, 1)
-                   FROM account_quota_limits
-                   WHERE user_id = ?
-                   LIMIT 1"#,
-            )
-            .bind(user_id)
-            .fetch_one(&self.pool)
-            .await?;
-        Ok(AccountQuotaLimits {
-            hourly_any_limit,
-            hourly_limit,
-            daily_limit,
-            monthly_limit,
-            inherits_defaults: inherits_defaults == 1,
-        })
+        self.fetch_account_quota_limits(user_id)
+            .await?
+            .ok_or_else(|| {
+                ProxyError::Other(format!(
+                    "account quota limits missing after ensure for user {user_id}"
+                ))
+            })
     }
 
     async fn ensure_account_quota_limits_for_users(
@@ -8077,15 +8086,25 @@ impl KeyStore {
             return Ok(());
         }
 
+        let existing = self.fetch_account_quota_limits_bulk(user_ids).await?;
+        let missing_user_ids: Vec<String> = user_ids
+            .iter()
+            .filter(|user_id| !existing.contains_key(*user_id))
+            .cloned()
+            .collect();
+        if missing_user_ids.is_empty() {
+            return Ok(());
+        }
+
         let now = Utc::now().timestamp();
         let defaults_by_user = self
-            .default_account_quota_limits_for_users(user_ids)
+            .default_account_quota_limits_for_users(&missing_user_ids)
             .await?;
 
         let mut builder = QueryBuilder::new(
             "INSERT INTO account_quota_limits (user_id, hourly_any_limit, hourly_limit, daily_limit, monthly_limit, inherits_defaults, created_at, updated_at) ",
         );
-        builder.push_values(user_ids, |mut b, user_id| {
+        builder.push_values(&missing_user_ids, |mut b, user_id| {
             let defaults = defaults_by_user
                 .get(user_id)
                 .cloned()
@@ -8102,6 +8121,33 @@ impl KeyStore {
         builder.push(" ON CONFLICT(user_id) DO NOTHING");
         builder.build().execute(&self.pool).await?;
         Ok(())
+    }
+
+    async fn fetch_account_quota_limits(
+        &self,
+        user_id: &str,
+    ) -> Result<Option<AccountQuotaLimits>, ProxyError> {
+        let row = sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
+            r#"SELECT hourly_any_limit, hourly_limit, daily_limit, monthly_limit,
+                      COALESCE(inherits_defaults, 1)
+               FROM account_quota_limits
+               WHERE user_id = ?
+               LIMIT 1"#,
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(
+            |(hourly_any_limit, hourly_limit, daily_limit, monthly_limit, inherits_defaults)| {
+                account_quota_limits_from_row(
+                    hourly_any_limit,
+                    hourly_limit,
+                    daily_limit,
+                    monthly_limit,
+                    inherits_defaults,
+                )
+            },
+        ))
     }
 
     async fn fetch_account_quota_limits_bulk(
@@ -8138,13 +8184,13 @@ impl KeyStore {
         {
             map.insert(
                 user_id,
-                AccountQuotaLimits {
+                account_quota_limits_from_row(
                     hourly_any_limit,
                     hourly_limit,
                     daily_limit,
                     monthly_limit,
-                    inherits_defaults: inherits_defaults == 1,
-                },
+                    inherits_defaults,
+                ),
             );
         }
         Ok(map)
@@ -8374,9 +8420,11 @@ impl KeyStore {
                 .fetch_optional(&mut **tx)
                 .await?
         else {
-            return Err(ProxyError::Other(format!(
-                "missing system tag for LinuxDo trust level {level}"
-            )));
+            eprintln!(
+                "linuxdo system tag sync skipped for user {} trust_level {:?}: missing system tag for LinuxDo trust level {}",
+                user_id, trust_level, level
+            );
+            return Ok(());
         };
 
         let now = Utc::now().timestamp();
@@ -19775,7 +19823,7 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
     }
 
     #[tokio::test]
-    async fn linuxdo_oauth_upsert_requires_tag_sync_for_new_accounts_and_recovers_after_reseed() {
+    async fn linuxdo_oauth_upsert_skips_missing_tags_for_new_accounts_and_recovers_after_reseed() {
         let _guard = env_lock().lock_owned().await;
         let db_path = temp_db_path("linuxdo-sync-best-effort");
         let db_str = db_path.to_string_lossy().to_string();
@@ -19789,7 +19837,7 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
             .await
             .expect("delete linuxdo system tags");
 
-        let err = proxy
+        let user = proxy
             .upsert_oauth_account(&OAuthAccountProfile {
                 provider: "linuxdo".to_string(),
                 provider_user_id: "linuxdo-best-effort-user".to_string(),
@@ -19801,8 +19849,7 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
                 raw_payload_json: None,
             })
             .await
-            .expect_err("new linuxdo account should fail when tag sync fails");
-        assert!(err.to_string().contains("missing system tag"));
+            .expect("new linuxdo account should still succeed without system tags");
 
         let oauth_row_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM oauth_accounts WHERE provider = 'linuxdo' AND provider_user_id = ?",
@@ -19811,14 +19858,14 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
         .fetch_one(&proxy.key_store.pool)
         .await
         .expect("count oauth rows");
-        assert_eq!(oauth_row_count, 0);
+        assert_eq!(oauth_row_count, 1);
         let user_row_count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE username = ?")
                 .bind("linuxdo_best_effort_user")
                 .fetch_one(&proxy.key_store.pool)
                 .await
                 .expect("count user rows");
-        assert_eq!(user_row_count, 0);
+        assert_eq!(user_row_count, 1);
 
         let binding_count: i64 = sqlx::query_scalar(
             r#"SELECT COUNT(*)
@@ -19826,10 +19873,10 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
                JOIN user_tags t ON t.id = b.tag_id
                WHERE b.user_id = ? AND t.system_key LIKE 'linuxdo_l%'"#,
         )
-        .bind("missing-user")
+        .bind(&user.user_id)
         .fetch_one(&proxy.key_store.pool)
         .await
-        .expect("count linuxdo bindings after failed sync");
+        .expect("count linuxdo bindings after skipped sync");
         assert_eq!(binding_count, 0);
 
         proxy
@@ -19849,7 +19896,7 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
                 raw_payload_json: None,
             })
             .await
-            .expect("oauth upsert should succeed after reseeding tags");
+            .expect("oauth upsert should attach system tag after reseeding tags");
 
         let restored_key: String = sqlx::query_scalar(
             r#"SELECT t.system_key
