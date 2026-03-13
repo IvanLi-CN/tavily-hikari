@@ -1222,7 +1222,7 @@ export default function ForwardProxySettingsModule({
       </Card>
 
       <Dialog open={dialogKind != null} onOpenChange={(open) => (!open ? closeDialog() : undefined)}>
-        <DialogContent className="max-w-3xl border-border/80 bg-background/96">
+        <DialogContent className="max-w-3xl border-border/90 bg-background shadow-2xl">
           <DialogHeader>
             <DialogTitle>
               {dialogIsSubscription ? strings.config.subscriptionDialogTitle : strings.config.manualDialogTitle}
