@@ -1,6 +1,15 @@
 import { afterEach, describe, expect, it, mock } from 'bun:test'
 
-import { bindAdminUserTag, fetchAdminUsers, fetchAdminUserTags, fetchJobs, updateAdminUserQuota } from './api'
+import {
+  bindAdminUserTag,
+  fetchAdminRegistrationSettings,
+  fetchAdminUsers,
+  fetchAdminUserTags,
+  fetchApiKeys,
+  fetchJobs,
+  updateAdminRegistrationSettings,
+  updateAdminUserQuota,
+} from './api'
 
 const originalFetch = globalThis.fetch
 
@@ -83,6 +92,39 @@ describe('admin user tag api helpers', () => {
     expect(input).toBe('/api/users?page=1&per_page=20&q=L2&tagId=linuxdo_l2')
   })
 
+  it('sends repeated key group and status filters when listing paginated api keys', async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            items: [],
+            total: 0,
+            page: 2,
+            perPage: 50,
+            facets: {
+              groups: [{ value: 'ops', count: 3 }],
+              statuses: [{ value: 'quarantined', count: 2 }],
+            },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    )
+    globalThis.fetch = fetchMock as typeof fetch
+
+    const result = await fetchApiKeys(2, 50, {
+      groups: ['ops', ''],
+      statuses: ['Quarantined', 'disabled'],
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [input] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(input).toBe('/api/keys?page=2&per_page=50&group=ops&group=&status=quarantined&status=disabled')
+    expect(result.page).toBe(2)
+    expect(result.perPage).toBe(50)
+    expect(result.facets.groups[0]).toEqual({ value: 'ops', count: 3 })
+  })
+
   it('patches base quota through the existing user quota endpoint', async () => {
     const fetchMock = mock(() => Promise.resolve(new Response(null, { status: 204 })))
     globalThis.fetch = fetchMock as typeof fetch
@@ -106,6 +148,45 @@ describe('admin user tag api helpers', () => {
         monthlyLimit: 600000,
       }),
     )
+  })
+
+  it('reads admin registration settings from the dedicated endpoint', async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ allowRegistration: false }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    )
+    globalThis.fetch = fetchMock as typeof fetch
+
+    const settings = await fetchAdminRegistrationSettings()
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/admin/registration')
+    expect(settings).toEqual({ allowRegistration: false })
+  })
+
+  it('patches admin registration settings through the dedicated endpoint', async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ allowRegistration: true }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    )
+    globalThis.fetch = fetchMock as typeof fetch
+
+    const settings = await updateAdminRegistrationSettings(true)
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [input, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(input).toBe('/api/admin/registration')
+    expect(init.method).toBe('PATCH')
+    expect(init.body).toBe(JSON.stringify({ allowRegistration: true }))
+    expect(settings).toEqual({ allowRegistration: true })
   })
 
   it('normalizes jobs responses to the snake_case shape used by the admin UI', async () => {

@@ -19,6 +19,7 @@ export type AdminPathRoute =
   | { name: 'key'; id: string }
 
 const ADMIN_BASE = '/admin'
+const DEFAULT_KEYS_PER_PAGE = 20
 
 function normalize(pathname: string): string {
   if (!pathname) return ADMIN_BASE
@@ -165,6 +166,53 @@ export function userTagEditPath(id: string, query?: string, tagId?: string | nul
   return appendUsersContext(`${ADMIN_BASE}/users/tags/${encodeURIComponent(id)}`, query, tagId, page)
 }
 
-export function keyDetailPath(id: string): string {
-  return `${ADMIN_BASE}/keys/${encodeURIComponent(id)}`
+export interface AdminKeyListContext {
+  page?: number | null
+  perPage?: number | null
+  groups?: string[] | null
+  statuses?: string[] | null
+}
+
+function normalizeKeyContextValues(
+  values?: string[] | null,
+  preserveEmpty = false,
+  normalizeCase: 'preserve' | 'lower' = 'preserve',
+): string[] {
+  const normalized = new Set<string>()
+  for (const value of values ?? []) {
+    const trimmed = value.trim()
+    if (!trimmed && !preserveEmpty) continue
+    normalized.add(normalizeCase === 'lower' ? trimmed.toLowerCase() : trimmed)
+  }
+  return Array.from(normalized)
+}
+
+function appendKeysContext(path: string, context?: AdminKeyListContext): string {
+  const params = new URLSearchParams()
+  const normalizedPage = Number.isFinite(context?.page)
+    ? Math.max(1, Math.trunc(context?.page as number))
+    : 1
+  const normalizedPerPage = Number.isFinite(context?.perPage)
+    ? Math.max(1, Math.trunc(context?.perPage as number))
+    : DEFAULT_KEYS_PER_PAGE
+
+  if (normalizedPage > 1) params.set('page', String(normalizedPage))
+  if (normalizedPerPage !== DEFAULT_KEYS_PER_PAGE) params.set('perPage', String(normalizedPerPage))
+  for (const group of normalizeKeyContextValues(context?.groups, true)) {
+    params.append('group', group)
+  }
+  for (const status of normalizeKeyContextValues(context?.statuses, false, 'lower')) {
+    params.append('status', status)
+  }
+
+  const search = params.toString()
+  return search ? `${path}?${search}` : path
+}
+
+export function buildAdminKeysPath(context?: AdminKeyListContext): string {
+  return appendKeysContext(`${ADMIN_BASE}/keys`, context)
+}
+
+export function keyDetailPath(id: string, context?: AdminKeyListContext): string {
+  return appendKeysContext(`${ADMIN_BASE}/keys/${encodeURIComponent(id)}`, context)
 }

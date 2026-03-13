@@ -262,6 +262,7 @@ function PublicHome(): JSX.Element {
   const builtinAuthEnabled = profile?.builtinAuthEnabled ?? false
   const isLoggedOut = profile?.userLoggedIn === false
   const showLinuxDoLogin = isLoggedOut
+  const showRegistrationPausedNotice = isLoggedOut && profile?.allowRegistration === false
   const hasTokenInfo = token.trim().length > 0
   const hasValidTokenForLogs = isFullToken(token) && !invalidToken
   const hideTokenPanels = !hasTokenInfo && (loading || isLoggedOut)
@@ -486,6 +487,7 @@ function PublicHome(): JSX.Element {
         totalKeys={totalKeys}
         error={error}
         showLinuxDoLogin={showLinuxDoLogin}
+        showRegistrationPausedNotice={showRegistrationPausedNotice}
         showTokenAccessButton={hideTokenPanels}
         showAdminAction={isAdmin || builtinAuthEnabled}
         adminActionLabel={isAdmin ? publicStrings.adminButton : publicStrings.adminLoginButton}

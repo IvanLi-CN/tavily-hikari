@@ -42,6 +42,9 @@ export default defineConfig({
           if (pathname === '/login' || pathname === '/login/') {
             req.url = `/login.html${parsed.search}`
           }
+          if (pathname === '/registration-paused' || pathname === '/registration-paused/') {
+            req.url = `/registration-paused.html${parsed.search}`
+          }
           next()
         })
       },
@@ -69,6 +72,7 @@ export default defineConfig({
         admin: resolve(rootDir, 'admin.html'),
         console: resolve(rootDir, 'console.html'),
         login: resolve(rootDir, 'login.html'),
+        registrationPaused: resolve(rootDir, 'registration-paused.html'),
       },
     },
   },

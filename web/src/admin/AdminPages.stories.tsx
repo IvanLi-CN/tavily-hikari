@@ -2,7 +2,7 @@ import { Icon } from '@iconify/react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { addons } from 'storybook/preview-api'
 import { SELECT_STORY } from 'storybook/internal/core-events'
-import { Fragment, type ReactNode, useState } from 'react'
+import { Fragment, type ReactNode, useEffect, useState } from 'react'
 
 import type {
   AdminUserDetail,
@@ -16,6 +16,7 @@ import type {
   RequestLog,
 } from '../api'
 import AdminPanelHeader from '../components/AdminPanelHeader'
+import AdminTablePagination from '../components/AdminTablePagination'
 import JobKeyLink from '../components/JobKeyLink'
 import QuotaRangeField from '../components/QuotaRangeField'
 import { StatusBadge, type StatusTone } from '../components/StatusBadge'
@@ -33,6 +34,7 @@ import {
 import { Input } from '../components/ui/input'
 import { Card } from '../components/ui/card'
 import { Badge } from '../components/ui/badge'
+import { Switch } from '../components/ui/switch'
 import { LanguageProvider, useTranslate, type AdminTranslations } from '../i18n'
 
 import AdminShell, { type AdminNavItem } from './AdminShell'
@@ -1436,6 +1438,8 @@ function KeysPageCanvas({
   const keyDetailsStrings = admin.keyDetails
   const [selectedGroups, setSelectedGroups] = useState<string[]>([])
   const [selectedStatuses, setSelectedStatuses] = useState<string[]>([])
+  const [page, setPage] = useState(1)
+  const [perPage, setPerPage] = useState(20)
   const [quarantineDetailExpanded, setQuarantineDetailExpanded] = useState(false)
   const groupOptions = Array.from(
     keys.reduce((map, item) => {
@@ -1468,6 +1472,9 @@ function KeysPageCanvas({
     const statusMatched = selectedStatuses.length === 0 || selectedStatuses.includes(statusKey)
     return groupMatched && statusMatched
   })
+  const totalPages = Math.max(1, Math.ceil(filteredKeys.length / perPage))
+  const safePage = Math.min(page, totalPages)
+  const pagedKeys = filteredKeys.slice((safePage - 1) * perPage, safePage * perPage)
   const selectedKey = selectedKeyId ? filteredKeys.find((item) => item.id === selectedKeyId) ?? null : null
   const quarantineDetailId = `story-key-quarantine-detail-${selectedKey?.id ?? 'unknown'}`
   const quarantineRawDetail = selectedKey?.quarantine?.reasonDetail?.trim() ?? ''
@@ -1484,6 +1491,12 @@ function KeysPageCanvas({
     keyStrings.groups.all,
     keyStrings.filters.selectedSuffix,
   )
+
+  useEffect(() => {
+    if (page !== safePage) {
+      setPage(safePage)
+    }
+  }, [page, safePage])
 
   return (
     <AdminPageFrame activeModule="keys">
@@ -1636,7 +1649,7 @@ function KeysPageCanvas({
               </tr>
             </thead>
             <tbody>
-              {filteredKeys.map((item) => (
+              {pagedKeys.map((item) => (
                 <tr key={item.id}>
                   <td>
                     <div style={tableStackStyle}>
@@ -1692,6 +1705,30 @@ function KeysPageCanvas({
             </tbody>
           </table>
         </div>
+        {filteredKeys.length > perPage ? (
+          <AdminTablePagination
+            page={safePage}
+            totalPages={totalPages}
+            pageSummary={
+              <span className="panel-description">
+                {keyStrings.pagination.page.replace('{page}', String(safePage)).replace('{total}', String(totalPages))}
+              </span>
+            }
+            perPage={perPage}
+            perPageLabel={keyStrings.pagination.perPage}
+            perPageAriaLabel={keyStrings.pagination.perPage}
+            previousLabel={admin.tokens.pagination.prev}
+            nextLabel={admin.tokens.pagination.next}
+            previousDisabled={safePage <= 1}
+            nextDisabled={safePage >= totalPages}
+            onPrevious={() => setPage((current) => Math.max(1, current - 1))}
+            onNext={() => setPage((current) => Math.min(totalPages, current + 1))}
+            onPerPageChange={(value) => {
+              setPerPage(value)
+              setPage(1)
+            }}
+          />
+        ) : null}
       </section>
 
       {selectedKey?.quarantine ? (
@@ -2069,6 +2106,7 @@ function UsersPageCanvas(): JSX.Element {
   const admin = useTranslate().admin
   const users = admin.users
   const [query, setQuery] = useState('')
+  const [allowRegistration, setAllowRegistration] = useState(true)
   const normalizedQuery = query.trim().toLowerCase()
   const filteredUsers = MOCK_USERS.filter((item) => {
     if (!normalizedQuery) return true
@@ -2123,6 +2161,36 @@ function UsersPageCanvas(): JSX.Element {
           <div>
             <h2>{users.title}</h2>
             <p className="panel-description">{users.description}</p>
+          </div>
+          <div
+            className="rounded-xl border border-border/60 bg-background/55 px-4 py-3 shadow-sm backdrop-blur"
+            style={{
+              display: 'flex',
+              minWidth: 260,
+              maxWidth: 380,
+              flex: '1 1 300px',
+              alignItems: 'flex-start',
+              justifyContent: 'space-between',
+              gap: 12,
+            }}
+          >
+            <div style={{ minWidth: 0, flex: '1 1 auto' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <div className="text-sm font-semibold">{users.registration.title}</div>
+                <Badge variant={allowRegistration ? 'success' : 'warning'}>
+                  {allowRegistration ? users.status.enabled : users.status.disabled}
+                </Badge>
+              </div>
+              <p className="text-xs font-medium" role="status" aria-live="polite" style={{ margin: '6px 0 0' }}>
+                {allowRegistration ? users.registration.enabled : users.registration.disabled}
+              </p>
+            </div>
+            <Switch
+              checked={allowRegistration}
+              aria-label={users.registration.title}
+              onCheckedChange={() => setAllowRegistration((current) => !current)}
+              style={{ flex: '0 0 auto' }}
+            />
           </div>
           <div className="users-search-controls">
             <input

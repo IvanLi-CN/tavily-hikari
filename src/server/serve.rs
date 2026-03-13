@@ -86,6 +86,11 @@ pub async fn serve(
         .route("/api/user/tokens/:id", get(get_user_token_detail))
         .route("/api/user/tokens/:id/secret", get(get_user_token_secret))
         .route("/api/user/tokens/:id/logs", get(get_user_token_logs))
+        .route("/api/admin/registration", get(get_admin_registration_settings))
+        .route(
+            "/api/admin/registration",
+            patch(patch_admin_registration_settings),
+        )
         .route("/api/admin/login", post(post_admin_login))
         .route("/api/admin/logout", post(post_admin_logout))
         .route("/api/tavily/search", post(tavily_http_search))
@@ -165,6 +170,18 @@ pub async fn serve(
                 router = router.route("/login", get(serve_login));
                 router = router.route("/login/", get(serve_login));
                 router = router.route("/login.html", get(serve_login));
+                router = router.route(
+                    "/registration-paused",
+                    get(serve_registration_paused_index),
+                );
+                router = router.route(
+                    "/registration-paused/",
+                    get(serve_registration_paused_index),
+                );
+                router = router.route(
+                    "/registration-paused.html",
+                    get(serve_registration_paused_index),
+                );
                 router =
                     router.route_service("/favicon.svg", ServeFile::new(dir.join("favicon.svg")));
                 router = router.route_service(

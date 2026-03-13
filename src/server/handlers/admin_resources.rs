@@ -60,19 +60,118 @@ fn detect_versions(static_dir: Option<&FsPath>) -> (String, String) {
 async fn list_keys(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<Vec<ApiKeyView>>, StatusCode> {
+    uri: axum::http::Uri,
+) -> Result<Json<PaginatedApiKeysView>, StatusCode> {
     if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
+    let query = ListKeysQuery::from_query(uri.query());
     state
         .proxy
-        .list_api_key_metrics()
+        .list_api_key_metrics_paged(
+            query.page.unwrap_or(1),
+            query.per_page.unwrap_or(20),
+            &query.group,
+            &query.status,
+        )
         .await
-        .map(|metrics| Json(metrics.into_iter().map(ApiKeyView::from_list).collect()))
+        .map(|result| {
+            Json(PaginatedApiKeysView {
+                items: result
+                    .items
+                    .into_iter()
+                    .map(ApiKeyView::from_list)
+                    .collect(),
+                total: result.total,
+                page: result.page,
+                per_page: result.per_page,
+                facets: ApiKeyFacetsView {
+                    groups: result
+                        .facets
+                        .groups
+                        .into_iter()
+                        .map(|facet| ApiKeyFacetCountView {
+                            value: facet.value,
+                            count: facet.count,
+                        })
+                        .collect(),
+                    statuses: result
+                        .facets
+                        .statuses
+                        .into_iter()
+                        .map(|facet| ApiKeyFacetCountView {
+                            value: facet.value,
+                            count: facet.count,
+                        })
+                        .collect(),
+                },
+            })
+        })
         .map_err(|err| {
             eprintln!("list keys error: {err}");
             StatusCode::INTERNAL_SERVER_ERROR
         })
+}
+
+#[derive(Debug, Default)]
+struct ListKeysQuery {
+    page: Option<i64>,
+    per_page: Option<i64>,
+    group: Vec<String>,
+    status: Vec<String>,
+}
+
+impl ListKeysQuery {
+    fn from_query(raw_query: Option<&str>) -> Self {
+        let mut query = Self::default();
+        let Some(raw_query) = raw_query else {
+            return query;
+        };
+
+        for (key, value) in url::form_urlencoded::parse(raw_query.as_bytes()) {
+            match key.as_ref() {
+                "page" => {
+                    if let Ok(parsed) = value.parse::<i64>() {
+                        query.page = Some(parsed);
+                    }
+                }
+                "per_page" => {
+                    if let Ok(parsed) = value.parse::<i64>() {
+                        query.per_page = Some(parsed);
+                    }
+                }
+                "group" => query.group.push(value.into_owned()),
+                "status" => query.status.push(value.into_owned()),
+                _ => {}
+            }
+        }
+
+        query
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ApiKeyFacetCountView {
+    value: String,
+    count: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ApiKeyFacetsView {
+    groups: Vec<ApiKeyFacetCountView>,
+    statuses: Vec<ApiKeyFacetCountView>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PaginatedApiKeysView {
+    items: Vec<ApiKeyView>,
+    total: i64,
+    page: i64,
+    per_page: i64,
+    facets: ApiKeyFacetsView,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1111,7 +1210,10 @@ async fn unbind_user_tag(
         .await
         .map_err(|err| admin_proxy_error_response("unbind user tag error", err))?;
     if !unbound {
-        return Err((StatusCode::NOT_FOUND, "user tag binding not found".to_string()));
+        return Err((
+            StatusCode::NOT_FOUND,
+            "user tag binding not found".to_string(),
+        ));
     }
     Ok(StatusCode::NO_CONTENT)
 }

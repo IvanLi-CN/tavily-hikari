@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'bun:test'
 
 import {
+  buildAdminKeysPath,
   buildAdminUsersPath,
   isSameAdminRoute,
+  keyDetailPath,
   parseAdminPath,
   userDetailPath,
   userTagCreatePath,
@@ -47,6 +49,26 @@ describe('admin user tag routes', () => {
       '/admin/users/tags/linuxdo%20l2?q=L2&tagId=linuxdo_l2&page=3',
     )
     expect(userDetailPath('usr_alice')).toBe('/admin/users/usr_alice')
+  })
+
+  it('builds stable key list paths with pagination and repeated filters', () => {
+    expect(buildAdminKeysPath()).toBe('/admin/keys')
+    expect(
+      buildAdminKeysPath({
+        page: 2,
+        perPage: 50,
+        groups: ['ops', '', 'ops'],
+        statuses: ['active', 'Quarantined', 'active'],
+      }),
+    ).toBe('/admin/keys?page=2&perPage=50&group=ops&group=&status=active&status=quarantined')
+    expect(
+      keyDetailPath('key 42', {
+        page: 3,
+        perPage: 100,
+        groups: ['ops'],
+        statuses: ['disabled'],
+      }),
+    ).toBe('/admin/keys/key%2042?page=3&perPage=100&group=ops&status=disabled')
   })
 
   it('compares user tag editor routes by mode and id', () => {
