@@ -7176,12 +7176,18 @@ tbody .log-details-row:hover {
   gap: 0.35rem;
 }
 
+.forward-proxy-summary-topbar {
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+}
+
 .forward-proxy-panel-meta {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
   gap: 0.75rem;
-  margin-left: auto;
+  min-height: 5.5rem;
 }
 
 .forward-proxy-panel-content {
@@ -7530,6 +7536,10 @@ tbody .log-details-row:hover {
   .forward-proxy-panel-header,
   .forward-proxy-panel-meta {
     align-items: stretch;
+  }
+
+  .forward-proxy-summary-topbar {
+    justify-content: flex-start;
   }
 
   .forward-proxy-range-row {
