@@ -133,6 +133,13 @@ export function updateDialogProgressState(
     }
   }
 
+  if (current.steps.some((step) => step.status === 'error')) {
+    return {
+      ...current,
+      message: current.message ?? strings.failed,
+    }
+  }
+
   return {
     ...current,
     steps: current.steps.map((step) =>

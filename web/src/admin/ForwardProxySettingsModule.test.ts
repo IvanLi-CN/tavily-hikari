@@ -81,4 +81,27 @@ describe('ForwardProxySettingsModule progress state helpers', () => {
     })
     expect(state.message).toBe('Subscription unavailable')
   })
+
+  it('does not overwrite a failure banner when a late complete event arrives', () => {
+    let state = createDialogProgressState(strings.progress, 'subscription', 'validate')
+    state = updateDialogProgressState(state, strings.progress, {
+      type: 'phase',
+      operation: 'validate',
+      phaseKey: 'fetch_subscription',
+      label: 'Fetch subscription',
+    } satisfies ForwardProxyProgressEvent)
+    state = updateDialogProgressState(state, strings.progress, {
+      type: 'error',
+      operation: 'validate',
+      message: 'Validation failed',
+    } satisfies ForwardProxyProgressEvent)
+    state = updateDialogProgressState(state, strings.progress, {
+      type: 'complete',
+      operation: 'validate',
+      payload: null,
+    } satisfies ForwardProxyProgressEvent)
+
+    expect(state.steps.find((step) => step.key === 'fetch_subscription')?.status).toBe('error')
+    expect(state.message).toBe('Validation failed')
+  })
 })

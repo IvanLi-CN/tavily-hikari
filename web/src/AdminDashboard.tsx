@@ -1860,41 +1860,26 @@ function AdminDashboard(): JSX.Element {
       rawValues: string[],
       onProgress?: (event: ForwardProxyProgressEvent) => void,
     ): Promise<ForwardProxyValidationEntry[]> => {
-      const results: ForwardProxyValidationEntry[] = []
+      const results = new Array<ForwardProxyValidationEntry>(rawValues.length)
+      let hadFatalError = false
 
-      for (const [index, value] of rawValues.entries()) {
+      if (rawValues.length === 1) {
+        const value = rawValues[0]
         try {
-          const result = await validateForwardProxyCandidateWithProgress(
-            { kind, value },
-            (event) => {
-              if (!onProgress) return
-              if (kind === 'proxyUrl' && event.type === 'phase' && event.phaseKey === 'parse_input' && index > 0) {
-                return
-              }
-              if (event.type === 'phase' && event.phaseKey === 'probe_nodes') {
-                onProgress({
-                  ...event,
-                  current: index + 1,
-                  total: rawValues.length,
-                })
-                return
-              }
-              if (kind === 'proxyUrl' && event.type === 'phase' && event.phaseKey === 'generate_result' && index < rawValues.length - 1) {
-                return
-              }
-              if (event.type === 'complete') return
-              onProgress(event)
-            },
-          )
-          results.push({
-            id: `${kind}:${index}:${value}`,
+          const result = await validateForwardProxyCandidateWithProgress({ kind, value }, (event) => {
+            if (event.type === 'complete') return
+            onProgress?.(event)
+          })
+          results[0] = {
+            id: `${kind}:0:${value}`,
             kind,
             value,
             result,
-          } satisfies ForwardProxyValidationEntry)
+          } satisfies ForwardProxyValidationEntry
         } catch (err) {
-          results.push({
-            id: `${kind}:${index}:${value}`,
+          hadFatalError = true
+          results[0] = {
+            id: `${kind}:0:${value}`,
             kind,
             value,
             result: {
@@ -1905,19 +1890,96 @@ function AdminDashboard(): JSX.Element {
               discoveredNodes: 0,
               latencyMs: null,
             },
-          } satisfies ForwardProxyValidationEntry)
+          } satisfies ForwardProxyValidationEntry
+        }
+      } else {
+        let introEmitted = false
+        const probeStarted = new Set<number>()
+
+        await Promise.all(rawValues.map(async (value, index) => {
+          try {
+            const result = await validateForwardProxyCandidateWithProgress(
+              { kind, value },
+              (event) => {
+                if (!onProgress || event.type === 'complete') return
+
+                if (event.type === 'phase') {
+                  if (
+                    (event.phaseKey === 'parse_input' ||
+                      event.phaseKey === 'normalize_input' ||
+                      event.phaseKey === 'fetch_subscription') &&
+                    !introEmitted
+                  ) {
+                    introEmitted = true
+                    onProgress(event)
+                    return
+                  }
+
+                  if (event.phaseKey === 'probe_nodes') {
+                    probeStarted.add(index)
+                    onProgress({
+                      ...event,
+                      current: probeStarted.size,
+                      total: rawValues.length,
+                    })
+                    return
+                  }
+
+                  if (event.phaseKey === 'generate_result') {
+                    return
+                  }
+                }
+
+                onProgress(event)
+              },
+            )
+            results[index] = {
+              id: `${kind}:${index}:${value}`,
+              kind,
+              value,
+              result,
+            } satisfies ForwardProxyValidationEntry
+          } catch (err) {
+            hadFatalError = true
+            results[index] = {
+              id: `${kind}:${index}:${value}`,
+              kind,
+              value,
+              result: {
+                ok: false,
+                message:
+                  err instanceof Error ? err.message : proxySettingsStrings.validation.requestFailed,
+                normalizedValue: value,
+                discoveredNodes: 0,
+                latencyMs: null,
+              },
+            } satisfies ForwardProxyValidationEntry
+          }
+        }))
+
+        if (!hadFatalError) {
+          onProgress?.({
+            type: 'phase',
+            operation: 'validate',
+            phaseKey: 'generate_result',
+            label: proxySettingsStrings.progress.steps.generate_result,
+            current: rawValues.length,
+            total: rawValues.length,
+          })
         }
       }
 
-      onProgress?.({
-        type: 'complete',
-        operation: 'validate',
-        payload: null,
-      })
+      if (!hadFatalError) {
+        onProgress?.({
+          type: 'complete',
+          operation: 'validate',
+          payload: null,
+        })
+      }
 
-      return results
+      return results.filter((entry): entry is ForwardProxyValidationEntry => entry != null)
     },
-    [proxySettingsStrings.validation.requestFailed],
+    [proxySettingsStrings.progress.steps.generate_result, proxySettingsStrings.validation.requestFailed],
   )
 
   const saveForwardProxySettings = useCallback(async (
