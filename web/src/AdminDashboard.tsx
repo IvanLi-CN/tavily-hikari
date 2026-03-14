@@ -2524,6 +2524,9 @@ function AdminDashboard(): JSX.Element {
         setSseConnected(false)
       }
       es.addEventListener('degraded', () => {
+        if (!(routeRef.current.name === 'module' && routeRef.current.module === 'dashboard')) {
+          return
+        }
         setSseConnected(false)
         if (es) {
           try { es.close() } catch {}

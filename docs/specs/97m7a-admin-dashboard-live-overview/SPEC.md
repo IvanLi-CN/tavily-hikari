@@ -131,6 +131,7 @@
 - `2026-03-14`：继续收敛 review：dashboard signals 补拉加入独立代次保护与 last-good 保留语义；admin SSE 在 snapshot 降级时发送 degraded 事件以重新启用 fallback polling；`cargo test` / `cargo clippy -- -D warnings`、`cd web && bun run build`、`cd web && bun run build-storybook` 复跑通过。
 - `2026-03-14`：继续收敛 review：为 `api_key_quarantines.created_at` 增加前导索引，避免 admin SSE 的月度隔离计数触发周期性全表扫描；同时 degraded 进入后立即执行 HTTP fallback 并主动重建 SSE；`cargo test` / `cargo clippy -- -D warnings`、`cd web && bun run build` 复跑通过。
 - `2026-03-14`：继续收敛 review：将 `api_keys.created_at` 回填改为 meta-gated 的一次性迁移，避免旧 key 在迁移后首次产生日志/隔离记录时被未来时间重新分类；补充“只回填一次”的回归测试并通过。
+- `2026-03-14`：继续收敛 review：将 degraded 恢复逻辑限制在 dashboard 路由，避免共享 admin SSE 通道误把其它管理页拉回 overview fallback；同时把 proxy summary 查询故障提升为 dashboard snapshot 的显式 degraded 信号；`cargo test` / `cargo clippy -- -D warnings`、`cd web && bun run build`、`cd web && bun run build-storybook` 复跑通过。
 - `2026-03-14`：`chrome-devtools` 本轮调用超时，浏览器 MCP 复核待在后续 PR 收敛轮次补齐。
 
 ## 实现里程碑
@@ -162,3 +163,4 @@
 - 2026-03-14: 为 `api_key_quarantines.created_at` 增加前导索引，避免 month lifecycle 统计在 admin SSE 周期查询里退化成全表扫描。
 - 2026-03-14: degraded 进入时立即执行 HTTP fallback，并主动重建 SSE 连接，避免恢复后无新数据变化时长期停留在 polling 模式。
 - 2026-03-14: 将 `api_keys.created_at` 回填改为 meta-gated 的一次性迁移，并补上“后续重启不能重新改写旧 key 创建时间”的回归测试。
+- 2026-03-14: 将 degraded 恢复范围限制在 dashboard 页面，并把 proxy summary 查询失败升级为 snapshot 降级信号，确保共享 `/api/events` 不误伤其它管理页且代理摘要故障能触发 fallback。

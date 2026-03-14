@@ -17480,6 +17480,7 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
 
     #[tokio::test]
     async fn quota_blocks_after_hourly_limit() {
+        let _guard = env_lock().lock_owned().await;
         let db_path = temp_db_path("quota-test");
         let db_str = db_path.to_string_lossy().to_string();
         let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
