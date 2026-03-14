@@ -2429,13 +2429,18 @@ function AdminDashboard(): JSX.Element {
     }
 
     if (pollingTimerRef.current == null) {
-      pollingTimerRef.current = window.setInterval(() => {
+      const refreshFallback = () => {
         const controller = new AbortController()
         const tasks: Array<Promise<unknown>> = [loadData({ signal: controller.signal, reason: 'refresh' })]
         if (route.name === 'module' && route.module === 'dashboard') {
           tasks.push(loadDashboardOverview(controller.signal))
         }
         void Promise.all(tasks).finally(() => controller.abort())
+      }
+
+      refreshFallback()
+      pollingTimerRef.current = window.setInterval(() => {
+        refreshFallback()
       }, REFRESH_INTERVAL_MS) as unknown as number
     }
 
@@ -2495,6 +2500,17 @@ function AdminDashboard(): JSX.Element {
   // Establish SSE connection to receive live dashboard updates
   useEffect(() => {
     let es: EventSource | null = null
+    let reconnectTimer: number | null = null
+
+    const scheduleReconnect = () => {
+      if (reconnectTimer != null) {
+        return
+      }
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = null
+        connect()
+      }, 1000) as unknown as number
+    }
 
     const connect = () => {
       if (es) {
@@ -2509,6 +2525,11 @@ function AdminDashboard(): JSX.Element {
       }
       es.addEventListener('degraded', () => {
         setSseConnected(false)
+        if (es) {
+          try { es.close() } catch {}
+          es = null
+        }
+        scheduleReconnect()
       })
       es.addEventListener('snapshot', (ev: MessageEvent) => {
         try {
@@ -2538,6 +2559,10 @@ function AdminDashboard(): JSX.Element {
 
     connect()
     return () => {
+      if (reconnectTimer != null) {
+        window.clearTimeout(reconnectTimer)
+        reconnectTimer = null
+      }
       if (es) {
         try { es.close() } catch {}
       }

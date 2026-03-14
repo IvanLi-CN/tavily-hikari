@@ -74,6 +74,7 @@
   - schema 迁移时，为历史行做最佳努力回填；只允许使用不可变证据（如最早 request log、最早 quarantine 记录），无法证明时保留 `0`，但不得阻塞启动。
 - `new_keys` 统计基于 `api_keys.created_at`，不是基于 request log 首次使用时间。
 - `new_quarantines` 统计基于 `api_key_quarantines.created_at`，同一个 key 在当前月多次“新增隔离记录”计入多条记录；若当前实现只允许一个 active quarantine，则仍按记录数聚合。
+- `api_key_quarantines` 必须为月度隔离统计提供 `created_at` 前导索引，避免 admin SSE 的周期性 month lifecycle 查询退化成全表扫描。
 - `可用代理节点数` 定义为 `ForwardProxyLiveStatsResponse.nodes` 中 `available && !penalized` 的数量。
 - `代理节点总数` 定义为 `ForwardProxyLiveStatsResponse.nodes.len()`。
 - SSE 变更检测必须覆盖：summary 值变化、month lifecycle 指标变化、代理节点摘要变化、最近日志变化。
@@ -97,6 +98,8 @@
 - `tokens / recent jobs` 风险区不能依赖 overview 的一次性 HTTP 返回或 SSE 断线后的兜底刷新；在 SSE 正常时也必须继续轻量补拉，避免首屏后状态静止。
 - dashboard signals（tokens / recent jobs）的异步补拉也必须具备请求代次保护与 last-good 保留语义：较旧响应不得覆盖较新快照，单次失败不得把已有风险区直接清空。
 - 当 admin SSE 连续进入 snapshot 构建失败/查询降级时，服务端应发出可识别的 degraded 信号，前端据此临时恢复 HTTP fallback polling，避免“连接在线但总览冻结”。
+- 进入 degraded/fallback 时必须立即执行一次 HTTP 兜底刷新，而不是等待下一次 30s 轮询周期。
+- degraded 不能只是把连接状态置为 unhealthy；前端还必须主动重建 SSE，确保服务端恢复但数据暂时未变化时也能重新回到 healthy 状态。
 
 ## 验收标准
 
@@ -125,6 +128,7 @@
 - `2026-03-14`：继续收敛 review：新增 `/api/stats/forward-proxy/summary` 轻量摘要接口，dashboard overview 初始/兜底加载不再请求完整 forward proxy live stats；`cargo test` / `cargo clippy -- -D warnings`、`cd web && bun run build`、`cd web && bun run build-storybook` 复跑通过。
 - `2026-03-14`：继续收敛 review：历史 `api_keys.created_at` 回填只接受 request log / quarantine 等不可变证据，且在 SSE 正常时继续轻量补拉 dashboard tokens / recent jobs，避免风险区静止；`cargo test` / `cargo clippy -- -D warnings` 复跑通过。
 - `2026-03-14`：继续收敛 review：dashboard signals 补拉加入独立代次保护与 last-good 保留语义；admin SSE 在 snapshot 降级时发送 degraded 事件以重新启用 fallback polling；`cargo test` / `cargo clippy -- -D warnings`、`cd web && bun run build`、`cd web && bun run build-storybook` 复跑通过。
+- `2026-03-14`：继续收敛 review：为 `api_key_quarantines.created_at` 增加前导索引，避免 admin SSE 的月度隔离计数触发周期性全表扫描；同时 degraded 进入后立即执行 HTTP fallback 并主动重建 SSE；`cargo test` / `cargo clippy -- -D warnings`、`cd web && bun run build` 复跑通过。
 - `2026-03-14`：`chrome-devtools` 本轮调用超时，浏览器 MCP 复核待在后续 PR 收敛轮次补齐。
 
 ## 实现里程碑
@@ -153,3 +157,5 @@
 - 2026-03-14: 新增 `/api/stats/forward-proxy/summary` 轻量接口，并将 dashboard overview 的初始/兜底代理节点加载切到该摘要接口。
 - 2026-03-14: 将历史 `api_keys.created_at` 回填改为仅接受 request logs / quarantines 的不可变证据，同时在 SSE 正常时继续轻量刷新 dashboard 的 tokens / recent jobs 风险区。
 - 2026-03-14: 为 dashboard signals 补拉加入独立代次保护与 last-good 保留，并让 admin SSE 在 snapshot 构建失败时发送 degraded 事件，促使前端恢复 fallback polling。
+- 2026-03-14: 为 `api_key_quarantines.created_at` 增加前导索引，避免 month lifecycle 统计在 admin SSE 周期查询里退化成全表扫描。
+- 2026-03-14: degraded 进入时立即执行 HTTP fallback，并主动重建 SSE 连接，避免恢复后无新数据变化时长期停留在 polling 模式。

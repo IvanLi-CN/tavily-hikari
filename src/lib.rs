@@ -7343,6 +7343,12 @@ impl KeyStore {
         .execute(&self.pool)
         .await?;
 
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_api_key_quarantines_created_at ON api_key_quarantines(created_at DESC, key_id)",
+        )
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 
