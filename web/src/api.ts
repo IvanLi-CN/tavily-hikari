@@ -18,12 +18,38 @@ export interface SummaryWindowMetrics {
   success_count: number
   error_count: number
   quota_exhausted_count: number
+  new_keys: number
+  new_quarantines: number
 }
 
 export interface SummaryWindowsResponse {
   today: SummaryWindowMetrics
   yesterday: SummaryWindowMetrics
   month: SummaryWindowMetrics
+}
+
+export interface DashboardSiteStatusSnapshot {
+  remainingQuota: number
+  totalQuotaLimit: number
+  activeKeys: number
+  quarantinedKeys: number
+  exhaustedKeys: number
+  availableProxyNodes: number | null
+  totalProxyNodes: number | null
+}
+
+export interface DashboardForwardProxySnapshot {
+  availableNodes: number | null
+  totalNodes: number | null
+}
+
+export interface DashboardSnapshotEvent {
+  summary: Summary
+  summaryWindows: SummaryWindowsResponse
+  siteStatus: DashboardSiteStatusSnapshot
+  forwardProxy: DashboardForwardProxySnapshot
+  keys: ApiKeyStats[]
+  logs: RequestLog[]
 }
 
 export interface PublicMetrics {

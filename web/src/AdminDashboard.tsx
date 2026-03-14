@@ -108,6 +108,8 @@ import {
   fetchSummaryWindows,
   fetchVersion,
   type ApiKeyStats,
+  type DashboardSnapshotEvent,
+  type DashboardSiteStatusSnapshot,
   type Profile,
   type RequestLog,
   type Summary,
@@ -163,7 +165,6 @@ const LOGS_PER_PAGE = 20
 const LOGS_MAX_PAGES = 10
 const DASHBOARD_RECENT_LOGS_PER_PAGE = 64
 const DASHBOARD_RECENT_JOBS_PER_PAGE = 20
-const DASHBOARD_OVERVIEW_SSE_REFRESH_INTERVAL_MS = 30_000
 const DEFAULT_KEYS_PER_PAGE = 20
 const USERS_PER_PAGE = 20
 // Auto-collapse behavior for the API keys batch overlay (empty textarea only):
@@ -196,6 +197,8 @@ type UserTagLike = Pick<AdminUserTagBinding, 'displayName' | 'icon' | 'systemKey
   source?: string | null
 }
 
+type DashboardSiteStatusState = DashboardSiteStatusSnapshot
+
 const EMPTY_USER_TAG_FORM: UserTagFormState = {
   tagId: null,
   name: '',
@@ -206,6 +209,22 @@ const EMPTY_USER_TAG_FORM: UserTagFormState = {
   hourlyDelta: '0',
   dailyDelta: '0',
   monthlyDelta: '0',
+}
+
+function summarizeForwardProxyNodes(
+  stats: ForwardProxyStatsResponse | null,
+): Pick<DashboardSiteStatusState, 'availableProxyNodes' | 'totalProxyNodes'> {
+  if (!stats) {
+    return {
+      availableProxyNodes: null,
+      totalProxyNodes: null,
+    }
+  }
+
+  return {
+    availableProxyNodes: stats.nodes.filter((node) => node.available && !node.penalized).length,
+    totalProxyNodes: stats.nodes.length,
+  }
 }
 
 function splitMultilineEntries(value: string): string[] {
@@ -840,8 +859,8 @@ function AdminDashboard(): JSX.Element {
   const footerStrings = adminStrings.footer
   const errorStrings = adminStrings.errors
   const [summary, setSummary] = useState<Summary | null>(null)
-  const [dashboardSummarySnapshot, setDashboardSummarySnapshot] = useState<Summary | null>(null)
   const [dashboardSummaryWindows, setDashboardSummaryWindows] = useState<SummaryWindowsResponse | null>(null)
+  const [dashboardSiteStatusSnapshot, setDashboardSiteStatusSnapshot] = useState<DashboardSiteStatusState | null>(null)
   const [keys, setKeys] = useState<ApiKeyStats[]>([])
   const [dashboardKeys, setDashboardKeys] = useState<ApiKeyStats[]>([])
   const [keysTotal, setKeysTotal] = useState(0)
@@ -932,11 +951,8 @@ function AdminDashboard(): JSX.Element {
   const [error, setError] = useState<string | null>(null)
   const pollingTimerRef = useRef<number | null>(null)
   const routeRef = useRef<AdminPathRoute>(route)
-  const loadDashboardOverviewRef = useRef<((signal?: AbortSignal) => Promise<void>) | null>(null)
-  const dashboardOverviewInFlightRef = useRef(false)
-  const dashboardOverviewLastSseRefreshAtRef = useRef(0)
-  const dashboardAdminSnapshotEnabledRef = useRef(false)
   const baseDataLoadedRef = useRef(false)
+  const dashboardOverviewVersionRef = useRef(0)
   const tokenLeaderboardQueryKeyRef = useRef<string | null>(null)
   const tokenLeaderboardNonceRef = useRef(0)
   const requestsLoadedRef = useRef(false)
@@ -1597,13 +1613,6 @@ function AdminDashboard(): JSX.Element {
 
         setProfile(profileData ?? null)
         setSummary(summaryData)
-        if (
-          routeRef.current.name === 'module' &&
-          routeRef.current.module === 'dashboard' &&
-          dashboardAdminSnapshotEnabledRef.current
-        ) {
-          setDashboardSummarySnapshot(summaryData)
-        }
         setTokens(tokenData.items)
         setTokensTotal(tokenData.total)
         setTokenGroups(tokenGroupsData)
@@ -1630,6 +1639,7 @@ function AdminDashboard(): JSX.Element {
 
   const loadDashboardOverview = useCallback(
     async (signal?: AbortSignal) => {
+      const requestVersion = ++dashboardOverviewVersionRef.current
       try {
         const dashboardWindowsRequest = fetchSummaryWindows(signal)
           .then((data) => ({ kind: 'ok' as const, data }))
@@ -1649,9 +1659,19 @@ function AdminDashboard(): JSX.Element {
                 ? (error as { status?: number }).status ?? null
                 : null,
           }))
+        const dashboardForwardProxyRequest = fetchForwardProxyStats(signal)
+          .then((data) => ({ kind: 'ok' as const, data }))
+          .catch((error: unknown) => ({
+            kind: 'error' as const,
+            status:
+              typeof error === 'object' && error && 'status' in error
+                ? (error as { status?: number }).status ?? null
+                : null,
+          }))
         const [
           dashboardSummaryWindowsResult,
           dashboardSummarySnapshotResult,
+          dashboardForwardProxyResult,
           dashboardTokenSnapshot,
           dashboardKeysData,
           dashboardLogsData,
@@ -1659,6 +1679,7 @@ function AdminDashboard(): JSX.Element {
         ] = await Promise.all([
           dashboardWindowsRequest,
           dashboardSummaryRequest,
+          dashboardForwardProxyRequest,
           loadAllTokensForDashboard(signal)
             .then((value) => ({ kind: 'ok' as const, ...value }))
             .catch(() => ({ kind: 'error' as const })),
@@ -1683,7 +1704,7 @@ function AdminDashboard(): JSX.Element {
           ),
         ])
 
-        if (signal?.aborted) {
+        if (signal?.aborted || requestVersion !== dashboardOverviewVersionRef.current) {
           return
         }
 
@@ -1691,17 +1712,35 @@ function AdminDashboard(): JSX.Element {
           (dashboardSummaryWindowsResult.kind === 'error' &&
             dashboardSummaryWindowsResult.status === 403) ||
           (dashboardSummarySnapshotResult.kind === 'error' &&
-            dashboardSummarySnapshotResult.status === 403)
+            dashboardSummarySnapshotResult.status === 403) ||
+          (dashboardForwardProxyResult.kind === 'error' &&
+            dashboardForwardProxyResult.status === 403)
 
-        dashboardAdminSnapshotEnabledRef.current = !dashboardAuthExpired
-        setDashboardSummarySnapshot(
+        const nextSummary =
           !dashboardAuthExpired && dashboardSummarySnapshotResult.kind === 'ok'
             ? dashboardSummarySnapshotResult.data
-            : null,
-        )
-        setDashboardSummaryWindows(
+            : null
+        const nextSummaryWindows =
           !dashboardAuthExpired && dashboardSummaryWindowsResult.kind === 'ok'
             ? dashboardSummaryWindowsResult.data
+            : null
+        const nextForwardProxySummary = summarizeForwardProxyNodes(
+          !dashboardAuthExpired && dashboardForwardProxyResult.kind === 'ok'
+            ? dashboardForwardProxyResult.data
+            : null,
+        )
+        setDashboardSummaryWindows(nextSummaryWindows)
+        setDashboardSiteStatusSnapshot(
+          nextSummary
+            ? {
+                remainingQuota: nextSummary.total_quota_remaining,
+                totalQuotaLimit: nextSummary.total_quota_limit,
+                activeKeys: nextSummary.active_keys,
+                quarantinedKeys: nextSummary.quarantined_keys,
+                exhaustedKeys: nextSummary.exhausted_keys,
+                availableProxyNodes: nextForwardProxySummary.availableProxyNodes,
+                totalProxyNodes: nextForwardProxySummary.totalProxyNodes,
+              }
             : null,
         )
         if (dashboardTokenSnapshot.kind === 'ok') {
@@ -1718,16 +1757,18 @@ function AdminDashboard(): JSX.Element {
         if ((err as Error).name === 'AbortError') {
           return
         }
-        dashboardAdminSnapshotEnabledRef.current = false
-        setDashboardSummarySnapshot(null)
+        if (requestVersion !== dashboardOverviewVersionRef.current) {
+          return
+        }
         setDashboardSummaryWindows(null)
+        setDashboardSiteStatusSnapshot(null)
         setDashboardTokens([])
         setDashboardTokenCoverage('error')
         setDashboardKeys([])
         setDashboardLogs([])
         setDashboardJobs([])
       } finally {
-        if (!(signal?.aborted ?? false)) {
+        if (!(signal?.aborted ?? false) && requestVersion === dashboardOverviewVersionRef.current) {
           setDashboardOverviewLoaded(true)
         }
       }
@@ -1738,10 +1779,6 @@ function AdminDashboard(): JSX.Element {
   useEffect(() => {
     routeRef.current = route
   }, [route])
-
-  useEffect(() => {
-    loadDashboardOverviewRef.current = loadDashboardOverview
-  }, [loadDashboardOverview])
 
   const loadTokenLeaderboard = useCallback(
     async ({
@@ -1944,10 +1981,10 @@ function AdminDashboard(): JSX.Element {
     if (!(route.name === 'module' && route.module === 'dashboard')) {
       return
     }
-    dashboardAdminSnapshotEnabledRef.current = false
+    dashboardOverviewVersionRef.current += 1
     setDashboardOverviewLoaded(false)
-    setDashboardSummarySnapshot(null)
     setDashboardSummaryWindows(null)
+    setDashboardSiteStatusSnapshot(null)
   }, [route])
 
   useEffect(() => {
@@ -1955,7 +1992,6 @@ function AdminDashboard(): JSX.Element {
       return
     }
     const controller = new AbortController()
-    dashboardOverviewLastSseRefreshAtRef.current = Date.now()
     void loadDashboardOverview(controller.signal)
     return () => controller.abort()
   }, [route, loadDashboardOverview])
@@ -2414,40 +2450,23 @@ function AdminDashboard(): JSX.Element {
       }
       es.addEventListener('snapshot', (ev: MessageEvent) => {
         try {
-          const data = JSON.parse(ev.data) as { summary: Summary; keys: ApiKeyStats[]; logs: RequestLog[] }
+          const data = JSON.parse(ev.data) as DashboardSnapshotEvent
           setSummary(data.summary)
-          if (
-            routeRef.current.name === 'module' &&
-            routeRef.current.module === 'dashboard' &&
-            dashboardAdminSnapshotEnabledRef.current
-          ) {
-            setDashboardSummarySnapshot(data.summary)
+          if (routeRef.current.name === 'module' && routeRef.current.module === 'dashboard') {
+            dashboardOverviewVersionRef.current += 1
+            setDashboardSummaryWindows(data.summaryWindows)
+            setDashboardSiteStatusSnapshot({
+              ...data.siteStatus,
+              availableProxyNodes: data.siteStatus.availableProxyNodes,
+              totalProxyNodes: data.siteStatus.totalProxyNodes,
+            })
+            setDashboardOverviewLoaded(true)
           }
           setDashboardKeys(data.keys)
           setDashboardLogs(data.logs)
           setLastUpdated(new Date())
           setError(null)
           setLoading(false)
-          const canRefreshOverview =
-            Date.now() - dashboardOverviewLastSseRefreshAtRef.current >=
-            DASHBOARD_OVERVIEW_SSE_REFRESH_INTERVAL_MS
-          if (
-            routeRef.current.name === 'module' &&
-            routeRef.current.module === 'dashboard' &&
-            !dashboardOverviewInFlightRef.current &&
-            canRefreshOverview
-          ) {
-            const refreshOverview = loadDashboardOverviewRef.current
-            if (refreshOverview) {
-              dashboardOverviewLastSseRefreshAtRef.current = Date.now()
-              dashboardOverviewInFlightRef.current = true
-              const controller = new AbortController()
-              void refreshOverview(controller.signal).finally(() => {
-                controller.abort()
-                dashboardOverviewInFlightRef.current = false
-              })
-            }
-          }
         } catch (e) {
           console.error('SSE parse error', e)
         }
@@ -2873,40 +2892,58 @@ function AdminDashboard(): JSX.Element {
           total,
         ),
       },
+      {
+        id: 'month-new-keys',
+        label: metricsStrings.labels.newKeys,
+        value: formatNumber(month.new_keys),
+        subtitle: adminStrings.dashboard.monthAdded,
+      },
+      {
+        id: 'month-new-quarantines',
+        label: metricsStrings.labels.newQuarantines,
+        value: formatNumber(month.new_quarantines),
+        subtitle: adminStrings.dashboard.monthAdded,
+      },
     ]
-  }, [adminStrings.dashboard.monthShare, adminStrings.dashboard.monthToDate, dashboardSummaryWindows, metricsStrings.labels])
+  }, [
+    adminStrings.dashboard.monthAdded,
+    adminStrings.dashboard.monthShare,
+    adminStrings.dashboard.monthToDate,
+    dashboardSummaryWindows,
+    metricsStrings.labels,
+  ])
 
   const statusMetrics = useMemo(() => {
-    if (!dashboardSummarySnapshot) {
+    if (!dashboardSiteStatusSnapshot) {
       return []
     }
 
     const allKeysAvailable =
-      dashboardSummarySnapshot.quarantined_keys === 0 &&
-      dashboardSummarySnapshot.exhausted_keys === 0
+      dashboardSiteStatusSnapshot.quarantinedKeys === 0 &&
+      dashboardSiteStatusSnapshot.exhaustedKeys === 0
 
     return [
       {
         id: 'remaining',
         label: metricsStrings.labels.remaining,
-        value: `${formatNumber(dashboardSummarySnapshot.total_quota_remaining)} / ${formatNumber(dashboardSummarySnapshot.total_quota_limit)}`,
+        value: `${formatNumber(dashboardSiteStatusSnapshot.remainingQuota)} / ${formatNumber(dashboardSiteStatusSnapshot.totalQuotaLimit)}`,
         subtitle:
-          dashboardSummarySnapshot.total_quota_limit > 0
-            ? `${adminStrings.dashboard.currentSnapshot} · ${formatPercent(dashboardSummarySnapshot.total_quota_remaining, dashboardSummarySnapshot.total_quota_limit)}`
+          dashboardSiteStatusSnapshot.totalQuotaLimit > 0
+            ? `${adminStrings.dashboard.currentSnapshot} · ${formatPercent(dashboardSiteStatusSnapshot.remainingQuota, dashboardSiteStatusSnapshot.totalQuotaLimit)}`
             : adminStrings.dashboard.currentSnapshot,
       },
       {
         id: 'keys',
         label: metricsStrings.labels.keys,
-        value: formatNumber(dashboardSummarySnapshot.active_keys),
+        value: formatNumber(dashboardSiteStatusSnapshot.activeKeys),
         subtitle: adminStrings.dashboard.currentSnapshot,
       },
       {
         id: 'quarantined',
         label: metricsStrings.labels.quarantined,
-        value: formatNumber(dashboardSummarySnapshot.quarantined_keys),
+        value: formatNumber(dashboardSiteStatusSnapshot.quarantinedKeys),
         subtitle:
-          dashboardSummarySnapshot.quarantined_keys > 0
+          dashboardSiteStatusSnapshot.quarantinedKeys > 0
             ? keyStrings.quarantine.badge
             : allKeysAvailable
               ? metricsStrings.subtitles.keysAll
@@ -2915,14 +2952,37 @@ function AdminDashboard(): JSX.Element {
       {
         id: 'exhausted',
         label: metricsStrings.labels.exhausted,
-        value: formatNumber(dashboardSummarySnapshot.exhausted_keys),
+        value: formatNumber(dashboardSiteStatusSnapshot.exhaustedKeys),
         subtitle:
           allKeysAvailable
             ? metricsStrings.subtitles.keysAll
-            : metricsStrings.subtitles.keysExhausted.replace('{count}', formatNumber(dashboardSummarySnapshot.exhausted_keys)),
+            : metricsStrings.subtitles.keysExhausted.replace('{count}', formatNumber(dashboardSiteStatusSnapshot.exhaustedKeys)),
+      },
+      {
+        id: 'proxy-available',
+        label: metricsStrings.labels.proxyAvailable,
+        value:
+          dashboardSiteStatusSnapshot.availableProxyNodes == null
+            ? '—'
+            : formatNumber(dashboardSiteStatusSnapshot.availableProxyNodes),
+        subtitle:
+          dashboardSiteStatusSnapshot.availableProxyNodes != null &&
+          dashboardSiteStatusSnapshot.totalProxyNodes != null &&
+          dashboardSiteStatusSnapshot.totalProxyNodes > 0
+            ? `${adminStrings.dashboard.currentSnapshot} · ${formatPercent(dashboardSiteStatusSnapshot.availableProxyNodes, dashboardSiteStatusSnapshot.totalProxyNodes)}`
+            : adminStrings.dashboard.currentSnapshot,
+      },
+      {
+        id: 'proxy-total',
+        label: metricsStrings.labels.proxyTotal,
+        value:
+          dashboardSiteStatusSnapshot.totalProxyNodes == null
+            ? '—'
+            : formatNumber(dashboardSiteStatusSnapshot.totalProxyNodes),
+        subtitle: adminStrings.dashboard.currentSnapshot,
       },
     ]
-  }, [adminStrings.dashboard.currentSnapshot, dashboardSummarySnapshot, keyStrings.quarantine.badge, metricsStrings])
+  }, [adminStrings.dashboard.currentSnapshot, dashboardSiteStatusSnapshot, keyStrings.quarantine.badge, metricsStrings])
 
   const dashboardStatusLoading = !dashboardOverviewLoaded
 
