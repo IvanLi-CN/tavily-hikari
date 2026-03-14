@@ -935,6 +935,7 @@ function AdminDashboard(): JSX.Element {
   const loadDashboardOverviewRef = useRef<((signal?: AbortSignal) => Promise<void>) | null>(null)
   const dashboardOverviewInFlightRef = useRef(false)
   const dashboardOverviewLastSseRefreshAtRef = useRef(0)
+  const dashboardAdminSnapshotEnabledRef = useRef(false)
   const baseDataLoadedRef = useRef(false)
   const tokenLeaderboardQueryKeyRef = useRef<string | null>(null)
   const tokenLeaderboardNonceRef = useRef(0)
@@ -1596,7 +1597,11 @@ function AdminDashboard(): JSX.Element {
 
         setProfile(profileData ?? null)
         setSummary(summaryData)
-        if (routeRef.current.name === 'module' && routeRef.current.module === 'dashboard') {
+        if (
+          routeRef.current.name === 'module' &&
+          routeRef.current.module === 'dashboard' &&
+          dashboardAdminSnapshotEnabledRef.current
+        ) {
           setDashboardSummarySnapshot(summaryData)
         }
         setTokens(tokenData.items)
@@ -1682,13 +1687,20 @@ function AdminDashboard(): JSX.Element {
           return
         }
 
+        const dashboardAuthExpired =
+          (dashboardSummaryWindowsResult.kind === 'error' &&
+            dashboardSummaryWindowsResult.status === 403) ||
+          (dashboardSummarySnapshotResult.kind === 'error' &&
+            dashboardSummarySnapshotResult.status === 403)
+
+        dashboardAdminSnapshotEnabledRef.current = !dashboardAuthExpired
         setDashboardSummarySnapshot(
-          dashboardSummarySnapshotResult.kind === 'ok'
+          !dashboardAuthExpired && dashboardSummarySnapshotResult.kind === 'ok'
             ? dashboardSummarySnapshotResult.data
             : null,
         )
         setDashboardSummaryWindows(
-          dashboardSummaryWindowsResult.kind === 'ok'
+          !dashboardAuthExpired && dashboardSummaryWindowsResult.kind === 'ok'
             ? dashboardSummaryWindowsResult.data
             : null,
         )
@@ -1706,6 +1718,7 @@ function AdminDashboard(): JSX.Element {
         if ((err as Error).name === 'AbortError') {
           return
         }
+        dashboardAdminSnapshotEnabledRef.current = false
         setDashboardSummarySnapshot(null)
         setDashboardSummaryWindows(null)
         setDashboardTokens([])
@@ -1931,6 +1944,7 @@ function AdminDashboard(): JSX.Element {
     if (!(route.name === 'module' && route.module === 'dashboard')) {
       return
     }
+    dashboardAdminSnapshotEnabledRef.current = false
     setDashboardOverviewLoaded(false)
     setDashboardSummarySnapshot(null)
     setDashboardSummaryWindows(null)
@@ -2402,7 +2416,11 @@ function AdminDashboard(): JSX.Element {
         try {
           const data = JSON.parse(ev.data) as { summary: Summary; keys: ApiKeyStats[]; logs: RequestLog[] }
           setSummary(data.summary)
-          if (routeRef.current.name === 'module' && routeRef.current.module === 'dashboard') {
+          if (
+            routeRef.current.name === 'module' &&
+            routeRef.current.module === 'dashboard' &&
+            dashboardAdminSnapshotEnabledRef.current
+          ) {
             setDashboardSummarySnapshot(data.summary)
           }
           setDashboardKeys(data.keys)

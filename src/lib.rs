@@ -4077,13 +4077,27 @@ impl TavilyProxy {
 
     /// Admin dashboard period summary windows based on server-local day/month boundaries.
     pub async fn summary_windows(&self) -> Result<SummaryWindows, ProxyError> {
-        let now = Local::now();
+        self.summary_windows_at(Local::now()).await
+    }
+
+    async fn summary_windows_at(
+        &self,
+        now: chrono::DateTime<Local>,
+    ) -> Result<SummaryWindows, ProxyError> {
         let today_start = start_of_local_day_utc_ts(now);
         let yesterday_start = previous_local_day_start_utc_ts(now);
         let month_start = start_of_local_month_utc_ts(now);
+        let today_end = now.with_timezone(&Utc).timestamp().saturating_add(1);
+        let yesterday_same_time_end = previous_local_same_time_utc_ts(now).saturating_add(1);
 
         self.key_store
-            .fetch_summary_windows(today_start, yesterday_start, month_start)
+            .fetch_summary_windows(
+                today_start,
+                today_end,
+                yesterday_start,
+                yesterday_same_time_end,
+                month_start,
+            )
             .await
     }
 
@@ -13349,21 +13363,58 @@ impl KeyStore {
     async fn fetch_summary_windows(
         &self,
         today_start: i64,
+        today_end: i64,
         yesterday_start: i64,
+        yesterday_end: i64,
         month_start: i64,
     ) -> Result<SummaryWindows, ProxyError> {
-        let earliest_start = std::cmp::min(month_start, yesterday_start);
-        let row = sqlx::query(
+        let mut tx = self.pool.begin().await?;
+        let window_row = sqlx::query(
             r#"
             SELECT
-                COALESCE(SUM(CASE WHEN bucket_start >= ? THEN total_requests ELSE 0 END), 0) AS today_total_requests,
-                COALESCE(SUM(CASE WHEN bucket_start >= ? THEN success_count ELSE 0 END), 0) AS today_success_count,
-                COALESCE(SUM(CASE WHEN bucket_start >= ? THEN error_count ELSE 0 END), 0) AS today_error_count,
-                COALESCE(SUM(CASE WHEN bucket_start >= ? THEN quota_exhausted_count ELSE 0 END), 0) AS today_quota_exhausted_count,
-                COALESCE(SUM(CASE WHEN bucket_start >= ? AND bucket_start < ? THEN total_requests ELSE 0 END), 0) AS yesterday_total_requests,
-                COALESCE(SUM(CASE WHEN bucket_start >= ? AND bucket_start < ? THEN success_count ELSE 0 END), 0) AS yesterday_success_count,
-                COALESCE(SUM(CASE WHEN bucket_start >= ? AND bucket_start < ? THEN error_count ELSE 0 END), 0) AS yesterday_error_count,
-                COALESCE(SUM(CASE WHEN bucket_start >= ? AND bucket_start < ? THEN quota_exhausted_count ELSE 0 END), 0) AS yesterday_quota_exhausted_count,
+                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? THEN 1 ELSE 0 END), 0) AS today_total_requests,
+                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS today_success_count,
+                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS today_error_count,
+                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS today_quota_exhausted_count,
+                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? THEN 1 ELSE 0 END), 0) AS yesterday_total_requests,
+                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS yesterday_success_count,
+                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS yesterday_error_count,
+                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS yesterday_quota_exhausted_count
+            FROM request_logs
+            WHERE created_at >= ?
+              AND created_at < ?
+            "#,
+        )
+        .bind(today_start)
+        .bind(today_end)
+        .bind(today_start)
+        .bind(today_end)
+        .bind(OUTCOME_SUCCESS)
+        .bind(today_start)
+        .bind(today_end)
+        .bind(OUTCOME_ERROR)
+        .bind(today_start)
+        .bind(today_end)
+        .bind(OUTCOME_QUOTA_EXHAUSTED)
+        .bind(yesterday_start)
+        .bind(yesterday_end)
+        .bind(yesterday_start)
+        .bind(yesterday_end)
+        .bind(OUTCOME_SUCCESS)
+        .bind(yesterday_start)
+        .bind(yesterday_end)
+        .bind(OUTCOME_ERROR)
+        .bind(yesterday_start)
+        .bind(yesterday_end)
+        .bind(OUTCOME_QUOTA_EXHAUSTED)
+        .bind(yesterday_start)
+        .bind(today_end)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        let month_row = sqlx::query(
+            r#"
+            SELECT
                 COALESCE(SUM(CASE WHEN bucket_start >= ? THEN total_requests ELSE 0 END), 0) AS month_total_requests,
                 COALESCE(SUM(CASE WHEN bucket_start >= ? THEN success_count ELSE 0 END), 0) AS month_success_count,
                 COALESCE(SUM(CASE WHEN bucket_start >= ? THEN error_count ELSE 0 END), 0) AS month_error_count,
@@ -13373,44 +13424,34 @@ impl KeyStore {
               AND bucket_start >= ?
             "#,
         )
-        .bind(today_start)
-        .bind(today_start)
-        .bind(today_start)
-        .bind(today_start)
-        .bind(yesterday_start)
-        .bind(today_start)
-        .bind(yesterday_start)
-        .bind(today_start)
-        .bind(yesterday_start)
-        .bind(today_start)
-        .bind(yesterday_start)
-        .bind(today_start)
         .bind(month_start)
         .bind(month_start)
         .bind(month_start)
         .bind(month_start)
-        .bind(earliest_start)
-        .fetch_one(&self.pool)
+        .bind(month_start)
+        .fetch_one(&mut *tx)
         .await?;
+
+        tx.commit().await?;
 
         Ok(SummaryWindows {
             today: SummaryWindowMetrics {
-                total_requests: row.try_get("today_total_requests")?,
-                success_count: row.try_get("today_success_count")?,
-                error_count: row.try_get("today_error_count")?,
-                quota_exhausted_count: row.try_get("today_quota_exhausted_count")?,
+                total_requests: window_row.try_get("today_total_requests")?,
+                success_count: window_row.try_get("today_success_count")?,
+                error_count: window_row.try_get("today_error_count")?,
+                quota_exhausted_count: window_row.try_get("today_quota_exhausted_count")?,
             },
             yesterday: SummaryWindowMetrics {
-                total_requests: row.try_get("yesterday_total_requests")?,
-                success_count: row.try_get("yesterday_success_count")?,
-                error_count: row.try_get("yesterday_error_count")?,
-                quota_exhausted_count: row.try_get("yesterday_quota_exhausted_count")?,
+                total_requests: window_row.try_get("yesterday_total_requests")?,
+                success_count: window_row.try_get("yesterday_success_count")?,
+                error_count: window_row.try_get("yesterday_error_count")?,
+                quota_exhausted_count: window_row.try_get("yesterday_quota_exhausted_count")?,
             },
             month: SummaryWindowMetrics {
-                total_requests: row.try_get("month_total_requests")?,
-                success_count: row.try_get("month_success_count")?,
-                error_count: row.try_get("month_error_count")?,
-                quota_exhausted_count: row.try_get("month_quota_exhausted_count")?,
+                total_requests: month_row.try_get("month_total_requests")?,
+                success_count: month_row.try_get("month_success_count")?,
+                error_count: month_row.try_get("month_error_count")?,
+                quota_exhausted_count: month_row.try_get("month_quota_exhausted_count")?,
             },
         })
     }
@@ -14131,11 +14172,18 @@ fn start_of_day(now: chrono::DateTime<Utc>) -> chrono::DateTime<Utc> {
 
 fn local_date_start_utc_ts(date: chrono::NaiveDate, fallback_now: chrono::DateTime<Local>) -> i64 {
     let naive = date.and_hms_opt(0, 0, 0).expect("valid start of local day");
+    local_naive_datetime_utc_ts(naive, fallback_now)
+}
+
+fn local_naive_datetime_utc_ts(
+    naive: chrono::NaiveDateTime,
+    fallback_now: chrono::DateTime<Local>,
+) -> i64 {
     match Local.from_local_datetime(&naive) {
         chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc).timestamp(),
         chrono::LocalResult::Ambiguous(dt, _) => dt.with_timezone(&Utc).timestamp(),
         chrono::LocalResult::None => {
-            // Extremely unlikely at midnight; fall back to current timestamp.
+            // Extremely unlikely for the local datetimes we use here; fall back to current timestamp.
             fallback_now.with_timezone(&Utc).timestamp()
         }
     }
@@ -14151,6 +14199,15 @@ fn previous_local_day_start_utc_ts(now: chrono::DateTime<Local>) -> i64 {
         .pred_opt()
         .unwrap_or_else(|| now.date_naive());
     local_date_start_utc_ts(previous_date, now)
+}
+
+fn previous_local_same_time_utc_ts(now: chrono::DateTime<Local>) -> i64 {
+    let previous_date = now
+        .date_naive()
+        .pred_opt()
+        .unwrap_or_else(|| now.date_naive());
+    let naive = previous_date.and_time(now.time());
+    local_naive_datetime_utc_ts(naive, now)
 }
 
 fn local_day_bucket_start_utc_ts(created_at_utc_ts: i64) -> i64 {
@@ -16885,6 +16942,43 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
         .expect("insert summary window bucket");
     }
 
+    async fn insert_summary_window_logs(
+        proxy: &TavilyProxy,
+        key_id: &str,
+        created_at: i64,
+        outcome: &str,
+        count: usize,
+    ) {
+        for offset in 0..count {
+            sqlx::query(
+                r#"
+                INSERT INTO request_logs (
+                    api_key_id,
+                    auth_token_id,
+                    method,
+                    path,
+                    query,
+                    status_code,
+                    tavily_status_code,
+                    error_message,
+                    result_status,
+                    request_body,
+                    response_body,
+                    forwarded_headers,
+                    dropped_headers,
+                    created_at
+                ) VALUES (?, NULL, 'GET', '/v1/search', NULL, 200, 200, NULL, ?, NULL, NULL, '[]', '[]', ?)
+                "#,
+            )
+            .bind(key_id)
+            .bind(outcome)
+            .bind(created_at + offset as i64)
+            .execute(&proxy.key_store.pool)
+            .await
+            .expect("insert summary window log");
+        }
+    }
+
     #[tokio::test]
     async fn summary_windows_split_today_yesterday_and_month() {
         let db_path = temp_db_path("summary-windows-split");
@@ -16907,14 +17001,53 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
             .expect("seeded key")
             .id;
 
-        let now = Local::now();
+        let fallback_now = Local::now();
+        let now_naive = fallback_now
+            .date_naive()
+            .and_hms_opt(12, 0, 0)
+            .expect("valid midday");
+        let now = match Local.from_local_datetime(&now_naive) {
+            chrono::LocalResult::Single(dt) => dt,
+            chrono::LocalResult::Ambiguous(dt, _) => dt,
+            chrono::LocalResult::None => fallback_now,
+        };
         let today_start = start_of_local_day_utc_ts(now);
         let yesterday_start = previous_local_day_start_utc_ts(now);
+        let yesterday_same_time = previous_local_same_time_utc_ts(now);
         let month_start = start_of_local_month_utc_ts(now);
         let previous_month_start = start_of_local_month_utc_ts(now - chrono::Duration::days(32));
 
+        insert_summary_window_logs(&proxy, &key_id, today_start + 60, OUTCOME_SUCCESS, 9).await;
+        insert_summary_window_logs(&proxy, &key_id, today_start + 3600, OUTCOME_ERROR, 2).await;
+        insert_summary_window_logs(
+            &proxy,
+            &key_id,
+            today_start + 7200,
+            OUTCOME_QUOTA_EXHAUSTED,
+            1,
+        )
+        .await;
+        insert_summary_window_logs(&proxy, &key_id, yesterday_start + 60, OUTCOME_SUCCESS, 5).await;
+        insert_summary_window_logs(&proxy, &key_id, yesterday_start + 3600, OUTCOME_ERROR, 1).await;
+        insert_summary_window_logs(
+            &proxy,
+            &key_id,
+            yesterday_start + 7200,
+            OUTCOME_QUOTA_EXHAUSTED,
+            1,
+        )
+        .await;
+        insert_summary_window_logs(
+            &proxy,
+            &key_id,
+            yesterday_same_time + 60,
+            OUTCOME_SUCCESS,
+            3,
+        )
+        .await;
+
         insert_summary_window_bucket(&proxy, &key_id, today_start, 12, 9, 2, 1).await;
-        insert_summary_window_bucket(&proxy, &key_id, yesterday_start, 7, 5, 1, 1).await;
+        insert_summary_window_bucket(&proxy, &key_id, yesterday_start, 10, 8, 1, 1).await;
         let mut expected_month = SummaryWindowMetrics {
             total_requests: 12,
             success_count: 9,
@@ -16922,8 +17055,8 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
             quota_exhausted_count: 1,
         };
         if yesterday_start >= month_start {
-            expected_month.total_requests += 7;
-            expected_month.success_count += 5;
+            expected_month.total_requests += 10;
+            expected_month.success_count += 8;
             expected_month.error_count += 1;
             expected_month.quota_exhausted_count += 1;
         }
@@ -16935,7 +17068,10 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
         }
         insert_summary_window_bucket(&proxy, &key_id, previous_month_start, 99, 80, 10, 9).await;
 
-        let summary = proxy.summary_windows().await.expect("summary windows");
+        let summary = proxy
+            .summary_windows_at(now)
+            .await
+            .expect("summary windows");
 
         assert_eq!(
             summary.today,
@@ -16982,10 +17118,25 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
             .expect("seeded key")
             .id;
 
-        let today_start = start_of_local_day_utc_ts(Local::now());
+        let fallback_now = Local::now();
+        let now_naive = fallback_now
+            .date_naive()
+            .and_hms_opt(12, 0, 0)
+            .expect("valid midday");
+        let now = match Local.from_local_datetime(&now_naive) {
+            chrono::LocalResult::Single(dt) => dt,
+            chrono::LocalResult::Ambiguous(dt, _) => dt,
+            chrono::LocalResult::None => fallback_now,
+        };
+        let today_start = start_of_local_day_utc_ts(now);
+        insert_summary_window_logs(&proxy, &key_id, today_start + 60, OUTCOME_SUCCESS, 4).await;
+        insert_summary_window_logs(&proxy, &key_id, today_start + 3600, OUTCOME_ERROR, 1).await;
         insert_summary_window_bucket(&proxy, &key_id, today_start, 5, 4, 1, 0).await;
 
-        let summary = proxy.summary_windows().await.expect("summary windows");
+        let summary = proxy
+            .summary_windows_at(now)
+            .await
+            .expect("summary windows");
         assert_eq!(summary.yesterday, SummaryWindowMetrics::default());
 
         let _ = std::fs::remove_file(db_path);

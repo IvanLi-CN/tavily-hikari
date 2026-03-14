@@ -5483,7 +5483,16 @@ mod tests {
                 .timestamp()
         };
 
-        let now = Local::now();
+        let fallback_now = Local::now();
+        let now_naive = fallback_now
+            .date_naive()
+            .and_hms_opt(12, 0, 0)
+            .expect("valid midday");
+        let now = match Local.from_local_datetime(&now_naive) {
+            chrono::LocalResult::Single(dt) => dt,
+            chrono::LocalResult::Ambiguous(dt, _) => dt,
+            chrono::LocalResult::None => fallback_now,
+        };
         let today_start = local_day_start(now);
         let yesterday_start = local_previous_day_start(now);
         let month_start = local_month_start(now);
@@ -5525,6 +5534,75 @@ mod tests {
         .execute(&pool)
         .await
         .expect("insert summary window buckets");
+
+        for offset in 0..8_i64 {
+            sqlx::query(
+                r#"
+                INSERT INTO request_logs (
+                    api_key_id,
+                    auth_token_id,
+                    method,
+                    path,
+                    query,
+                    status_code,
+                    tavily_status_code,
+                    error_message,
+                    result_status,
+                    request_body,
+                    response_body,
+                    forwarded_headers,
+                    dropped_headers,
+                    created_at
+                ) VALUES (?, NULL, 'GET', '/v1/search', NULL, 200, 200, NULL, 'success', NULL, NULL, '[]', '[]', ?)
+                "#,
+            )
+            .bind(&key_id)
+            .bind(today_start + 60 + offset)
+            .execute(&pool)
+            .await
+            .expect("insert today success log");
+        }
+        sqlx::query(
+            r#"
+            INSERT INTO request_logs (
+                api_key_id,
+                auth_token_id,
+                method,
+                path,
+                query,
+                status_code,
+                tavily_status_code,
+                error_message,
+                result_status,
+                request_body,
+                response_body,
+                forwarded_headers,
+                dropped_headers,
+                created_at
+            ) VALUES
+                (?, NULL, 'GET', '/v1/search', NULL, 500, 500, 'boom', 'error', NULL, NULL, '[]', '[]', ?),
+                (?, NULL, 'GET', '/v1/search', NULL, 429, 429, 'quota', 'quota_exhausted', NULL, NULL, '[]', '[]', ?),
+                (?, NULL, 'GET', '/v1/search', NULL, 200, 200, NULL, 'success', NULL, NULL, '[]', '[]', ?),
+                (?, NULL, 'GET', '/v1/search', NULL, 200, 200, NULL, 'success', NULL, NULL, '[]', '[]', ?),
+                (?, NULL, 'GET', '/v1/search', NULL, 200, 200, NULL, 'success', NULL, NULL, '[]', '[]', ?),
+                (?, NULL, 'GET', '/v1/search', NULL, 500, 500, 'boom', 'error', NULL, NULL, '[]', '[]', ?)
+            "#,
+        )
+        .bind(&key_id)
+        .bind(today_start + 3600)
+        .bind(&key_id)
+        .bind(today_start + 7200)
+        .bind(&key_id)
+        .bind(yesterday_start + 60)
+        .bind(&key_id)
+        .bind(yesterday_start + 61)
+        .bind(&key_id)
+        .bind(yesterday_start + 62)
+        .bind(&key_id)
+        .bind(yesterday_start + 3600)
+        .execute(&pool)
+        .await
+        .expect("insert summary window logs");
 
         let admin_password = "summary-window-admin-password";
         let admin_addr = spawn_builtin_keys_admin_server(proxy, admin_password).await;
