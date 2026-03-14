@@ -93,6 +93,20 @@ function Sparkline({ values }: { values: number[] }): JSX.Element {
   )
 }
 
+function MetricValue({ value, compact = false }: { value: string; compact?: boolean }): JSX.Element {
+  const splitValue = value.split(' / ')
+  if (splitValue.length === 2) {
+    return (
+      <div className={`metric-value dashboard-metric-value-split${compact ? ' dashboard-metric-value-split-compact' : ''}`}>
+        <span>{splitValue[0]}</span>
+        <span className="dashboard-metric-value-divider">/ {splitValue[1]}</span>
+      </div>
+    )
+  }
+
+  return <div className="metric-value dashboard-metric-value">{value}</div>
+}
+
 function SummaryMetricCard({ metric, compact = false }: { metric: DashboardMetricCard; compact?: boolean }): JSX.Element {
   const deltaTone = metric.comparison?.tone ?? (
     metric.comparison?.direction === 'flat'
@@ -105,7 +119,7 @@ function SummaryMetricCard({ metric, compact = false }: { metric: DashboardMetri
   return (
     <div className={`metric-card dashboard-summary-card${compact ? ' dashboard-summary-card-compact' : ''}`}>
       <h3>{metric.label}</h3>
-      <div className="metric-value">{metric.value}</div>
+      <MetricValue value={metric.value} compact={compact} />
       {metric.comparison ? (
         <div className={`metric-delta metric-delta-${deltaTone}`}>
           <span className="metric-delta-label">{metric.comparison.label}</span>
@@ -123,7 +137,7 @@ function TodayMetricCard({ metric }: { metric: DashboardMetricCard }): JSX.Eleme
   return (
     <div className="metric-card dashboard-summary-card dashboard-today-card">
       <h3>{metric.label}</h3>
-      <div className="metric-value">{metric.value}</div>
+      <MetricValue value={metric.value} />
       {metric.subtitle ? <div className="metric-subtitle">{metric.subtitle}</div> : null}
     </div>
   )
@@ -217,52 +231,53 @@ export default function DashboardOverview({
           <div className="empty-state alert">{overviewReady ? strings.summaryUnavailable : strings.loading}</div>
         ) : (
           <div className="dashboard-summary-layout">
-            <article className="dashboard-summary-block dashboard-summary-block-primary">
-              <header className="dashboard-summary-header">
-                <div>
-                  <h2>{strings.todayTitle}</h2>
-                  <p className="panel-description">{strings.todayDescription}</p>
-                </div>
-              </header>
-              {hasTodaySummary ? (
-                <>
-                  <div className="dashboard-summary-metrics dashboard-summary-metrics-primary dashboard-today-grid">
-                    {todayMetrics.map((metric) => (
-                      <TodayMetricCard key={metric.id} metric={metric} />
-                    ))}
+            <div className="dashboard-summary-top-row">
+              <article className="dashboard-summary-block dashboard-summary-block-primary">
+                <header className="dashboard-summary-header">
+                  <div>
+                    <h2>{strings.todayTitle}</h2>
+                    <p className="panel-description">{strings.todayDescription}</p>
                   </div>
-                  <div className="dashboard-today-comparisons">
-                    {todayMetrics.map((metric) => {
-                      const deltaTone = metric.comparison?.tone ?? (
-                        metric.comparison?.direction === 'flat'
-                          ? 'neutral'
-                          : metric.comparison?.direction === 'up'
-                            ? 'positive'
-                            : 'negative'
-                      )
+                </header>
+                {hasTodaySummary ? (
+                  <>
+                    <div className="dashboard-summary-metrics dashboard-summary-metrics-primary dashboard-today-grid">
+                      {todayMetrics.map((metric) => (
+                        <TodayMetricCard key={metric.id} metric={metric} />
+                      ))}
+                    </div>
+                    <div className="dashboard-today-comparisons">
+                      {todayMetrics.map((metric) => {
+                        const deltaTone = metric.comparison?.tone ?? (
+                          metric.comparison?.direction === 'flat'
+                            ? 'neutral'
+                            : metric.comparison?.direction === 'up'
+                              ? 'positive'
+                              : 'negative'
+                        )
 
-                      return (
-                        <div key={`${metric.id}-comparison`} className="dashboard-today-comparison-row">
-                          <div className="dashboard-today-comparison-copy">
-                            <div className="dashboard-today-comparison-label">{metric.label}</div>
-                            {metric.subtitle ? <div className="dashboard-today-comparison-subtitle">{metric.subtitle}</div> : null}
-                          </div>
-                          {metric.comparison ? (
-                            <div className={`metric-delta metric-delta-${deltaTone}`}>
-                              <span className="metric-delta-label">{metric.comparison.label}</span>
-                              <span className="metric-delta-value">{metric.comparison.value}</span>
+                        return (
+                          <div key={`${metric.id}-comparison`} className="dashboard-today-comparison-row">
+                            <div className="dashboard-today-comparison-copy">
+                              <div className="dashboard-today-comparison-label">{metric.label}</div>
+                              {metric.subtitle ? <div className="dashboard-today-comparison-subtitle">{metric.subtitle}</div> : null}
                             </div>
-                          ) : null}
-                        </div>
-                      )
-                    })}
-                  </div>
-                </>
-              ) : (
-                <div className="empty-state alert dashboard-summary-empty">{strings.summaryUnavailable}</div>
-              )}
-            </article>
-            <div className="dashboard-summary-side">
+                            {metric.comparison ? (
+                              <div className={`metric-delta metric-delta-${deltaTone}`}>
+                                <span className="metric-delta-label">{metric.comparison.label}</span>
+                                <span className="metric-delta-value">{metric.comparison.value}</span>
+                              </div>
+                            ) : null}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </>
+                ) : (
+                  <div className="empty-state alert dashboard-summary-empty">{strings.summaryUnavailable}</div>
+                )}
+              </article>
+
               <article className="dashboard-summary-block dashboard-summary-block-secondary">
                 <header className="dashboard-summary-header">
                   <div>
@@ -271,7 +286,7 @@ export default function DashboardOverview({
                   </div>
                 </header>
                 {hasMonthSummary ? (
-                  <div className="dashboard-summary-metrics dashboard-summary-metrics-compact">
+                  <div className="dashboard-summary-metrics dashboard-summary-metrics-compact dashboard-summary-metrics-month">
                     {monthMetrics.map((metric) => (
                       <SummaryMetricCard key={metric.id} metric={metric} compact />
                     ))}
@@ -280,27 +295,27 @@ export default function DashboardOverview({
                   <div className="empty-state alert dashboard-summary-empty">{strings.summaryUnavailable}</div>
                 )}
               </article>
-
-              <article className="dashboard-summary-block dashboard-summary-block-status">
-                <header className="dashboard-summary-header">
-                  <div>
-                    <h2>{strings.currentStatusTitle}</h2>
-                    <p className="panel-description">{strings.currentStatusDescription}</p>
-                  </div>
-                </header>
-                {hasStatusSummary ? (
-                  <div className="dashboard-summary-metrics dashboard-summary-metrics-compact">
-                    {statusMetrics.map((metric) => (
-                      <SummaryMetricCard key={metric.id} metric={metric} compact />
-                    ))}
-                  </div>
-                ) : (
-                  <div className="empty-state alert dashboard-summary-empty">
-                    {statusLoading ? strings.loading : strings.statusUnavailable}
-                  </div>
-                )}
-              </article>
             </div>
+
+            <article className="dashboard-summary-block dashboard-summary-block-status">
+              <header className="dashboard-summary-header">
+                <div>
+                  <h2>{strings.currentStatusTitle}</h2>
+                  <p className="panel-description">{strings.currentStatusDescription}</p>
+                </div>
+              </header>
+              {hasStatusSummary ? (
+                <div className="dashboard-summary-metrics dashboard-summary-metrics-compact dashboard-summary-metrics-status">
+                  {statusMetrics.map((metric) => (
+                    <SummaryMetricCard key={metric.id} metric={metric} compact />
+                  ))}
+                </div>
+              ) : (
+                <div className="empty-state alert dashboard-summary-empty">
+                  {statusLoading ? strings.loading : strings.statusUnavailable}
+                </div>
+              )}
+            </article>
           </div>
         )}
       </section>

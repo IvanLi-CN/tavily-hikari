@@ -2782,6 +2782,7 @@ mod tests {
         let app = Router::new()
             .route("/api/admin/login", post(post_admin_login))
             .route("/api/admin/logout", post(post_admin_logout))
+            .route("/api/events", get(sse_dashboard))
             .route("/api/summary", get(fetch_summary))
             .route("/api/summary/windows", get(fetch_summary_windows))
             .route("/api/keys", get(list_keys))
@@ -5604,6 +5605,20 @@ mod tests {
         .await
         .expect("insert summary window logs");
 
+        sqlx::query(
+            r#"
+            INSERT INTO api_key_quarantines (
+                id, key_id, source, reason_code, reason_summary, reason_detail, created_at, cleared_at
+            ) VALUES (?, ?, 'usage', 'quota_exhausted', 'quota exhausted', 'month quarantine', ?, NULL)
+            "#,
+        )
+        .bind("summary-window-quarantine")
+        .bind(&key_id)
+        .bind(today_start + 30)
+        .execute(&pool)
+        .await
+        .expect("insert summary window quarantine");
+
         let admin_password = "summary-window-admin-password";
         let admin_addr = spawn_builtin_keys_admin_server(proxy, admin_password).await;
         let client = Client::builder()
@@ -5644,7 +5659,193 @@ mod tests {
             body.pointer("/month/total_requests").and_then(|v| v.as_i64()),
             Some(month_expected)
         );
+        assert_eq!(
+            body.pointer("/month/new_keys").and_then(|v| v.as_i64()),
+            Some(1)
+        );
+        assert_eq!(
+            body.pointer("/month/new_quarantines")
+                .and_then(|v| v.as_i64()),
+            Some(1)
+        );
 
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn api_keys_schema_upgrade_backfills_created_at_best_effort() {
+        let db_path = temp_db_path("api-keys-created-at-upgrade");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let options = SqliteConnectOptions::new()
+            .filename(&db_str)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open db pool");
+
+        sqlx::query(
+            r#"
+            CREATE TABLE api_keys (
+                id TEXT PRIMARY KEY,
+                api_key TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL DEFAULT 'active',
+                status_changed_at INTEGER,
+                last_used_at INTEGER NOT NULL DEFAULT 0,
+                quota_limit INTEGER,
+                quota_remaining INTEGER,
+                quota_synced_at INTEGER,
+                deleted_at INTEGER
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create legacy api_keys");
+
+        sqlx::query(
+            r#"
+            INSERT INTO api_keys (
+                id, api_key, status, status_changed_at, last_used_at, quota_limit, quota_remaining, quota_synced_at, deleted_at
+            ) VALUES (?, ?, 'active', ?, ?, NULL, NULL, ?, NULL)
+            "#,
+        )
+        .bind("k123")
+        .bind("tvly-created-at-legacy")
+        .bind(420_i64)
+        .bind(360_i64)
+        .bind(540_i64)
+        .execute(&pool)
+        .await
+        .expect("insert legacy api key");
+        drop(pool);
+
+        let _proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-created-at-upgrade".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("upgrade proxy");
+
+        let options = SqliteConnectOptions::new()
+            .filename(&db_str)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let upgraded_pool = SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open upgraded db pool");
+
+        let created_at = sqlx::query_scalar::<_, i64>(
+            "SELECT created_at FROM api_keys WHERE id = ? LIMIT 1",
+        )
+        .bind("k123")
+        .fetch_one(&upgraded_pool)
+        .await
+        .expect("read created_at");
+
+        assert_eq!(created_at, 360);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn admin_dashboard_sse_snapshot_includes_overview_segments() {
+        let db_path = temp_db_path("admin-dashboard-snapshot-overview");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-admin-dashboard-overview".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let admin_password = "admin-dashboard-overview-password";
+        let admin_addr = spawn_builtin_keys_admin_server(proxy, admin_password).await;
+        let client = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build client");
+
+        let login_resp = client
+            .post(format!("http://{}/api/admin/login", admin_addr))
+            .json(&serde_json::json!({ "password": admin_password }))
+            .send()
+            .await
+            .expect("admin login");
+        assert_eq!(login_resp.status(), reqwest::StatusCode::OK);
+        let admin_cookie = find_cookie_pair(login_resp.headers(), BUILTIN_ADMIN_COOKIE_NAME)
+            .expect("admin session cookie");
+
+        let mut events_resp = client
+            .get(format!("http://{}/api/events", admin_addr))
+            .header(reqwest::header::COOKIE, admin_cookie)
+            .send()
+            .await
+            .expect("admin events request");
+        assert_eq!(events_resp.status(), reqwest::StatusCode::OK);
+
+        let mut first_text = String::new();
+        while !first_text.contains("\n\n") {
+            let chunk = events_resp
+                .chunk()
+                .await
+                .expect("read event chunk")
+                .expect("snapshot chunk exists");
+            first_text.push_str(std::str::from_utf8(&chunk).expect("snapshot chunk utf8"));
+        }
+
+        let snapshot_event = first_text
+            .split("\n\n")
+            .find(|chunk| chunk.contains("event: snapshot"))
+            .expect("snapshot event");
+        let snapshot_line = snapshot_event
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .expect("snapshot data line");
+        let snapshot_json: serde_json::Value =
+            serde_json::from_str(snapshot_line).expect("snapshot payload json");
+
+        assert!(snapshot_json.get("summary").is_some(), "summary should exist");
+        assert!(
+            snapshot_json.get("summaryWindows").is_some(),
+            "summaryWindows should exist"
+        );
+        assert!(snapshot_json.get("siteStatus").is_some(), "siteStatus should exist");
+        assert!(
+            snapshot_json.get("forwardProxy").is_some(),
+            "forwardProxy should exist"
+        );
+        assert_eq!(
+            snapshot_json
+                .pointer("/summaryWindows/month/new_keys")
+                .and_then(|value| value.as_i64()),
+            Some(1)
+        );
+        assert_eq!(
+            snapshot_json
+                .pointer("/siteStatus/totalProxyNodes")
+                .and_then(|value| value.as_i64()),
+            Some(1)
+        );
+        assert_eq!(
+            snapshot_json
+                .pointer("/forwardProxy/availableNodes")
+                .and_then(|value| value.as_i64()),
+            Some(1)
+        );
+
+        drop(events_resp);
         let _ = std::fs::remove_file(db_path);
     }
 
@@ -5714,9 +5915,9 @@ mod tests {
             .await
             .expect("compute signatures");
         let sig = sig.expect("summary signature");
-        assert_eq!(sig.4, 1);
-        assert_eq!(sig.5, 0);
-        assert_eq!(sig.6, 1);
+        assert_eq!(sig.summary.4, 1);
+        assert_eq!(sig.summary.5, 0);
+        assert_eq!(sig.summary.6, 1);
         assert!(latest_id.is_none());
 
         let _ = std::fs::remove_file(db_path);

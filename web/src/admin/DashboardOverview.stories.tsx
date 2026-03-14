@@ -93,6 +93,8 @@ const monthMetrics = [
   { id: 'month-success', label: 'Successful', value: '84,031', subtitle: 'Month share · 87.2%' },
   { id: 'month-errors', label: 'Errors', value: '8,247', subtitle: 'Month share · 8.6%' },
   { id: 'month-quota', label: 'Quota Exhausted', value: '4,142', subtitle: 'Month share · 4.3%' },
+  { id: 'month-new-keys', label: 'New Keys', value: '128', subtitle: 'Added this month' },
+  { id: 'month-new-quarantines', label: 'New Quarantines', value: '12', subtitle: 'Added this month' },
 ]
 
 const statusMetrics = [
@@ -100,6 +102,8 @@ const statusMetrics = [
   { id: 'keys', label: 'Active Keys', value: '31', subtitle: 'Current snapshot' },
   { id: 'quarantined', label: 'Quarantined', value: '0', subtitle: 'All keys available' },
   { id: 'exhausted', label: 'Exhausted', value: '59', subtitle: '59 exhausted' },
+  { id: 'proxy-available', label: 'Available Proxy Nodes', value: '7', subtitle: 'Current snapshot · 77.8%' },
+  { id: 'proxy-total', label: 'Proxy Nodes Total', value: '9', subtitle: 'Current snapshot' },
 ]
 
 export const Default: Story = {
@@ -176,6 +180,8 @@ export const QuarantineState: Story = {
       { id: 'keys', label: 'Active Keys', value: '5', subtitle: 'Current snapshot' },
       { id: 'quarantined', label: 'Quarantined', value: '1', subtitle: 'Needs manual review' },
       { id: 'exhausted', label: 'Exhausted', value: '1', subtitle: '1 exhausted' },
+      { id: 'proxy-available', label: 'Available Proxy Nodes', value: '2', subtitle: 'Current snapshot · 50.0%' },
+      { id: 'proxy-total', label: 'Proxy Nodes Total', value: '4', subtitle: 'Current snapshot' },
     ],
     keys: [
       {
@@ -206,6 +212,28 @@ export const QuarantineState: Story = {
     ],
     jobs: [
       { id: 1, job_type: 'quota_sync', key_id: 'Qn8R', key_group: 'ops', status: 'error', attempt: 1, message: 'account deactivated', started_at: 1, finished_at: 2 },
+    ],
+  },
+}
+
+export const LargeNumbers: Story = {
+  args: {
+    ...Default.args,
+    monthMetrics: [
+      { id: 'month-total', label: 'Total Requests', value: '1,205,420', subtitle: 'Month to date' },
+      { id: 'month-success', label: 'Successful', value: '1,084,031', subtitle: 'Month share · 89.9%' },
+      { id: 'month-errors', label: 'Errors', value: '88,247', subtitle: 'Month share · 7.3%' },
+      { id: 'month-quota', label: 'Quota Exhausted', value: '33,142', subtitle: 'Month share · 2.8%' },
+      { id: 'month-new-keys', label: 'New Keys', value: '1,248', subtitle: 'Added this month' },
+      { id: 'month-new-quarantines', label: 'New Quarantines', value: '108', subtitle: 'Added this month' },
+    ],
+    statusMetrics: [
+      { id: 'remaining', label: 'Remaining', value: '149,482 / 1,200,000', subtitle: 'Current snapshot · 12.5%' },
+      { id: 'keys', label: 'Active Keys', value: '1,231', subtitle: 'Current snapshot' },
+      { id: 'quarantined', label: 'Quarantined', value: '29', subtitle: 'Needs manual review' },
+      { id: 'exhausted', label: 'Exhausted', value: '402', subtitle: '402 exhausted' },
+      { id: 'proxy-available', label: 'Available Proxy Nodes', value: '128', subtitle: 'Current snapshot · 84.8%' },
+      { id: 'proxy-total', label: 'Proxy Nodes Total', value: '151', subtitle: 'Current snapshot' },
     ],
   },
 }

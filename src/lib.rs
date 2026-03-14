@@ -1137,6 +1137,20 @@ impl TavilyProxy {
         forward_proxy::build_forward_proxy_live_stats_response(&self.key_store.pool, &manager).await
     }
 
+    pub async fn get_forward_proxy_dashboard_summary(
+        &self,
+    ) -> Result<ForwardProxyDashboardSummary, ProxyError> {
+        let stats = self.get_forward_proxy_live_stats().await?;
+        Ok(ForwardProxyDashboardSummary {
+            available_nodes: stats
+                .nodes
+                .iter()
+                .filter(|node| node.available && !node.penalized)
+                .count() as i64,
+            total_nodes: stats.nodes.len() as i64,
+        })
+    }
+
     pub async fn update_forward_proxy_settings(
         &self,
         settings: ForwardProxySettings,
@@ -5105,6 +5119,7 @@ impl KeyStore {
                 api_key TEXT NOT NULL UNIQUE,
                 group_name TEXT,
                 status TEXT NOT NULL DEFAULT 'active',
+                created_at INTEGER NOT NULL DEFAULT 0,
                 status_changed_at INTEGER,
                 last_used_at INTEGER NOT NULL DEFAULT 0,
                 quota_limit INTEGER,
@@ -7172,6 +7187,12 @@ impl KeyStore {
                 .await?;
         }
 
+        if !self.api_keys_column_exists("created_at").await? {
+            sqlx::query("ALTER TABLE api_keys ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0")
+                .execute(&self.pool)
+                .await?;
+        }
+
         // Add deleted_at for soft delete marker (timestamp)
         if !self.api_keys_column_exists("deleted_at").await? {
             sqlx::query("ALTER TABLE api_keys ADD COLUMN deleted_at INTEGER")
@@ -7248,8 +7269,30 @@ impl KeyStore {
         .execute(&self.pool)
         .await?;
 
+        sqlx::query(
+            r#"
+            UPDATE api_keys
+            SET created_at = COALESCE(
+                NULLIF(created_at, 0),
+                NULLIF(last_used_at, 0),
+                NULLIF(status_changed_at, 0),
+                NULLIF(quota_synced_at, 0),
+                0
+            )
+            WHERE created_at IS NULL OR created_at <= 0
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
         self.ensure_api_key_ids().await?;
         self.ensure_api_keys_primary_key().await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_api_keys_created_at ON api_keys(created_at DESC)",
+        )
+        .execute(&self.pool)
+        .await?;
 
         Ok(())
     }
@@ -7334,6 +7377,7 @@ impl KeyStore {
                 api_key TEXT NOT NULL UNIQUE,
                 group_name TEXT,
                 status TEXT NOT NULL DEFAULT 'active',
+                created_at INTEGER NOT NULL DEFAULT 0,
                 status_changed_at INTEGER,
                 last_used_at INTEGER NOT NULL DEFAULT 0,
                 quota_limit INTEGER,
@@ -7353,6 +7397,7 @@ impl KeyStore {
                 api_key,
                 group_name,
                 status,
+                created_at,
                 status_changed_at,
                 last_used_at,
                 quota_limit,
@@ -7365,6 +7410,7 @@ impl KeyStore {
                 api_key,
                 group_name,
                 status,
+                created_at,
                 status_changed_at,
                 last_used_at,
                 quota_limit,
@@ -7814,13 +7860,14 @@ impl KeyStore {
             let id = Self::generate_unique_key_id(&mut tx).await?;
             sqlx::query(
                 r#"
-                INSERT INTO api_keys (id, api_key, status, status_changed_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO api_keys (id, api_key, status, created_at, status_changed_at)
+                VALUES (?, ?, ?, ?, ?)
                 "#,
             )
             .bind(&id)
             .bind(key)
             .bind(STATUS_ACTIVE)
+            .bind(now)
             .bind(now)
             .execute(&mut *tx)
             .await?;
@@ -12274,14 +12321,15 @@ impl KeyStore {
             let id = Self::generate_unique_key_id(&mut tx).await?;
             sqlx::query(
                 r#"
-                INSERT INTO api_keys (id, api_key, group_name, status, status_changed_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO api_keys (id, api_key, group_name, status, created_at, status_changed_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 "#,
             )
             .bind(&id)
             .bind(api_key)
             .bind(group)
             .bind(STATUS_ACTIVE)
+            .bind(now)
             .bind(now)
             .execute(&mut *tx)
             .await?;
@@ -13438,6 +13486,27 @@ impl KeyStore {
         .fetch_one(&mut *tx)
         .await?;
 
+        let month_lifecycle_row = sqlx::query(
+            r#"
+            SELECT
+                (
+                    SELECT COALESCE(COUNT(*), 0)
+                    FROM api_keys
+                    WHERE deleted_at IS NULL
+                      AND created_at >= ?
+                ) AS month_new_keys,
+                (
+                    SELECT COALESCE(COUNT(*), 0)
+                    FROM api_key_quarantines
+                    WHERE created_at >= ?
+                ) AS month_new_quarantines
+            "#,
+        )
+        .bind(month_start)
+        .bind(month_start)
+        .fetch_one(&mut *tx)
+        .await?;
+
         tx.commit().await?;
 
         Ok(SummaryWindows {
@@ -13446,18 +13515,24 @@ impl KeyStore {
                 success_count: window_row.try_get("today_success_count")?,
                 error_count: window_row.try_get("today_error_count")?,
                 quota_exhausted_count: window_row.try_get("today_quota_exhausted_count")?,
+                new_keys: 0,
+                new_quarantines: 0,
             },
             yesterday: SummaryWindowMetrics {
                 total_requests: window_row.try_get("yesterday_total_requests")?,
                 success_count: window_row.try_get("yesterday_success_count")?,
                 error_count: window_row.try_get("yesterday_error_count")?,
                 quota_exhausted_count: window_row.try_get("yesterday_quota_exhausted_count")?,
+                new_keys: 0,
+                new_quarantines: 0,
             },
             month: SummaryWindowMetrics {
                 total_requests: month_row.try_get("month_total_requests")?,
                 success_count: month_row.try_get("month_success_count")?,
                 error_count: month_row.try_get("month_error_count")?,
                 quota_exhausted_count: month_row.try_get("month_quota_exhausted_count")?,
+                new_keys: month_lifecycle_row.try_get("month_new_keys")?,
+                new_quarantines: month_lifecycle_row.try_get("month_new_quarantines")?,
             },
         })
     }
@@ -13800,6 +13875,8 @@ pub struct SummaryWindowMetrics {
     pub success_count: i64,
     pub error_count: i64,
     pub quota_exhausted_count: i64,
+    pub new_keys: i64,
+    pub new_quarantines: i64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -13807,6 +13884,12 @@ pub struct SummaryWindows {
     pub today: SummaryWindowMetrics,
     pub yesterday: SummaryWindowMetrics,
     pub month: SummaryWindowMetrics,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ForwardProxyDashboardSummary {
+    pub available_nodes: i64,
+    pub total_nodes: i64,
 }
 
 /// Successful request counters for public metrics.
@@ -17059,6 +17142,8 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
             success_count: 9,
             error_count: 2,
             quota_exhausted_count: 1,
+            new_keys: 1,
+            new_quarantines: 0,
         };
         if yesterday_start >= month_start {
             expected_month.total_requests += 10;
@@ -17086,6 +17171,7 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
                 success_count: 9,
                 error_count: 2,
                 quota_exhausted_count: 1,
+                ..SummaryWindowMetrics::default()
             }
         );
         assert_eq!(
@@ -17095,6 +17181,7 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
                 success_count: 5,
                 error_count: 1,
                 quota_exhausted_count: 1,
+                ..SummaryWindowMetrics::default()
             }
         );
         assert_eq!(summary.month, expected_month);

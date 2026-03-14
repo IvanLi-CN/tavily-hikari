@@ -24,6 +24,8 @@ struct SummaryWindowView {
     success_count: i64,
     error_count: i64,
     quota_exhausted_count: i64,
+    new_keys: i64,
+    new_quarantines: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -46,10 +48,15 @@ async fn fetch_summary_windows(
         .summary_windows()
         .await
         .map(|summary| {
+            let tavily_hikari::SummaryWindows {
+                today,
+                yesterday,
+                month,
+            } = summary;
             Json(SummaryWindowsView {
-                today: SummaryWindowView::from(summary.today),
-                yesterday: SummaryWindowView::from(summary.yesterday),
-                month: SummaryWindowView::from(summary.month),
+                today: SummaryWindowView::from(today),
+                yesterday: SummaryWindowView::from(yesterday),
+                month: SummaryWindowView::from(month),
             })
         })
         .map_err(|err| {
@@ -84,6 +91,8 @@ impl From<tavily_hikari::SummaryWindowMetrics> for SummaryWindowView {
             success_count: summary.success_count,
             error_count: summary.error_count,
             quota_exhausted_count: summary.quota_exhausted_count,
+            new_keys: summary.new_keys,
+            new_quarantines: summary.new_quarantines,
         }
     }
 }
@@ -428,8 +437,33 @@ async fn get_public_logs(
 #[serde(rename_all = "camelCase")]
 struct DashboardSnapshot {
     summary: SummaryView,
+    #[serde(rename = "summaryWindows")]
+    summary_windows: SummaryWindowsView,
+    #[serde(rename = "siteStatus")]
+    site_status: DashboardSiteStatusView,
+    #[serde(rename = "forwardProxy")]
+    forward_proxy: DashboardForwardProxyView,
     keys: Vec<ApiKeyView>,
     logs: Vec<RequestLogView>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DashboardSiteStatusView {
+    remaining_quota: i64,
+    total_quota_limit: i64,
+    active_keys: i64,
+    quarantined_keys: i64,
+    exhausted_keys: i64,
+    available_proxy_nodes: i64,
+    total_proxy_nodes: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DashboardForwardProxyView {
+    available_nodes: i64,
+    total_nodes: i64,
 }
 
 async fn sse_dashboard(
@@ -608,6 +642,16 @@ async fn sse_public(
 
 async fn build_snapshot_event(state: &Arc<AppState>) -> Option<Event> {
     let summary = state.proxy.summary().await.ok()?;
+    let tavily_hikari::SummaryWindows {
+        today,
+        yesterday,
+        month,
+    } = state.proxy.summary_windows().await.ok()?;
+    let forward_proxy = state
+        .proxy
+        .get_forward_proxy_dashboard_summary()
+        .await
+        .unwrap_or_default();
     let keys = state.proxy.list_api_key_metrics().await.ok()?;
     let logs = state
         .proxy
@@ -616,7 +660,25 @@ async fn build_snapshot_event(state: &Arc<AppState>) -> Option<Event> {
         .ok()?;
 
     let payload = DashboardSnapshot {
-        summary: summary.into(),
+        summary: summary.clone().into(),
+        summary_windows: SummaryWindowsView {
+            today: SummaryWindowView::from(today),
+            yesterday: SummaryWindowView::from(yesterday),
+            month: SummaryWindowView::from(month),
+        },
+        site_status: DashboardSiteStatusView {
+            remaining_quota: summary.total_quota_remaining,
+            total_quota_limit: summary.total_quota_limit,
+            active_keys: summary.active_keys,
+            quarantined_keys: summary.quarantined_keys,
+            exhausted_keys: summary.exhausted_keys,
+            available_proxy_nodes: forward_proxy.available_nodes,
+            total_proxy_nodes: forward_proxy.total_nodes,
+        },
+        forward_proxy: DashboardForwardProxyView {
+            available_nodes: forward_proxy.available_nodes,
+            total_nodes: forward_proxy.total_nodes,
+        },
         keys: keys.into_iter().map(ApiKeyView::from_list).collect(),
         logs: logs.into_iter().map(RequestLogView::from).collect(),
     };
@@ -629,18 +691,51 @@ async fn compute_signatures(
     state: &Arc<AppState>,
 ) -> Result<(Option<SummarySig>, Option<i64>), ()> {
     let summary = state.proxy.summary().await.map_err(|_| ())?;
+    let tavily_hikari::SummaryWindows {
+        today,
+        yesterday,
+        month,
+    } = state.proxy.summary_windows().await.map_err(|_| ())?;
+    let forward_proxy = state
+        .proxy
+        .get_forward_proxy_dashboard_summary()
+        .await
+        .unwrap_or_default();
     let logs = state.proxy.recent_request_logs(1).await.map_err(|_| ())?;
     let latest_id = logs.first().map(|l| l.id);
-    let sig: Option<SummarySig> = Some((
-        summary.total_requests,
-        summary.success_count,
-        summary.error_count,
-        summary.quota_exhausted_count,
-        summary.active_keys,
-        summary.exhausted_keys,
-        summary.quarantined_keys,
-        summary.last_activity,
-    ));
+    let sig: Option<SummarySig> = Some(SummarySig {
+        summary: (
+            summary.total_requests,
+            summary.success_count,
+            summary.error_count,
+            summary.quota_exhausted_count,
+            summary.active_keys,
+            summary.exhausted_keys,
+            summary.quarantined_keys,
+            summary.last_activity,
+        ),
+        today: (
+            today.total_requests,
+            today.success_count,
+            today.error_count,
+            today.quota_exhausted_count,
+        ),
+        yesterday: (
+            yesterday.total_requests,
+            yesterday.success_count,
+            yesterday.error_count,
+            yesterday.quota_exhausted_count,
+        ),
+        month: (
+            month.total_requests,
+            month.success_count,
+            month.error_count,
+            month.quota_exhausted_count,
+            month.new_keys,
+            month.new_quarantines,
+        ),
+        proxy: (forward_proxy.available_nodes, forward_proxy.total_nodes),
+    });
     Ok((sig, latest_id))
 }
 
