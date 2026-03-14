@@ -97,6 +97,7 @@ interface ForwardProxySettingsModuleProps {
   ) => Promise<ForwardProxyValidationEntry[]>
   onRefresh: () => void
   dialogPreview?: ForwardProxyDialogPreviewState | null
+  onDialogPreviewClose?: () => void
 }
 
 const FORWARD_PROXY_INTERVAL_OPTIONS = [
@@ -869,6 +870,7 @@ export default function ForwardProxySettingsModule({
   onValidateCandidates,
   onRefresh,
   dialogPreview = null,
+  onDialogPreviewClose,
 }: ForwardProxySettingsModuleProps): JSX.Element {
   const mergedNodes = buildMergedNodes(settings, stats)
   const nodeRows = mergedNodes.map((node) => ({
@@ -964,7 +966,11 @@ export default function ForwardProxySettingsModule({
   }
 
   const closeDialog = () => {
-    if (isDialogPreview || dialogValidating) return
+    if (dialogValidating) return
+    if (isDialogPreview) {
+      onDialogPreviewClose?.()
+      return
+    }
     setDialogKind(null)
     setDialogInput('')
     setDialogError(null)

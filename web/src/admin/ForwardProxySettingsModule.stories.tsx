@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { useEffect, useState } from 'react'
 
 import ForwardProxySettingsModule, {
   type ForwardProxyDialogPreviewState,
@@ -115,6 +116,11 @@ interface StoryCanvasProps {
 
 function StoryCanvas({ dialogPreview = null }: StoryCanvasProps): JSX.Element {
   const strings = useTranslate().admin.proxySettings
+  const [previewOpen, setPreviewOpen] = useState(dialogPreview != null)
+
+  useEffect(() => {
+    setPreviewOpen(dialogPreview != null)
+  }, [dialogPreview])
 
   return (
     <div
@@ -144,7 +150,8 @@ function StoryCanvas({ dialogPreview = null }: StoryCanvasProps): JSX.Element {
         onPersistDraft={async () => {}}
         onValidateCandidates={async () => []}
         onRefresh={() => {}}
-        dialogPreview={dialogPreview}
+        dialogPreview={previewOpen ? dialogPreview : null}
+        onDialogPreviewClose={() => setPreviewOpen(false)}
       />
     </div>
   )
