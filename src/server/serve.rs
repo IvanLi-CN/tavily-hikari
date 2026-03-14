@@ -104,6 +104,13 @@ pub async fn serve(
         )
         .route("/api/tavily/usage", get(tavily_http_usage))
         .route("/api/summary", get(fetch_summary))
+        .route("/api/settings", get(get_settings))
+        .route("/api/settings/forward-proxy", put(put_forward_proxy_settings))
+        .route(
+            "/api/settings/forward-proxy/validate",
+            post(post_forward_proxy_candidate_validation),
+        )
+        .route("/api/stats/forward-proxy", get(get_forward_proxy_live_stats))
         .route("/api/public/metrics", get(get_public_metrics))
         .route("/api/keys", get(list_keys))
         .route("/api/keys", post(create_api_key))
@@ -252,6 +259,7 @@ pub async fn serve(
     spawn_token_usage_rollup_scheduler(state.clone());
     spawn_auth_token_logs_gc_scheduler(state.clone());
     spawn_request_logs_gc_scheduler(state.clone());
+    spawn_forward_proxy_maintenance_scheduler(state.clone());
 
     axum::serve(
         listener,

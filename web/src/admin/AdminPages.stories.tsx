@@ -39,7 +39,13 @@ import { LanguageProvider, useTranslate, type AdminTranslations } from '../i18n'
 
 import AdminShell, { type AdminNavItem } from './AdminShell'
 import DashboardOverview, { type DashboardMetricCard } from './DashboardOverview'
+import ForwardProxySettingsModule from './ForwardProxySettingsModule'
 import ModulePlaceholder from './ModulePlaceholder'
+import {
+  forwardProxyStorySavedAt,
+  forwardProxyStorySettings,
+  forwardProxyStoryStats,
+} from './forwardProxyStoryData'
 import {
   buildQuotaSliderTrack,
   clampQuotaSliderStageIndex,
@@ -2719,17 +2725,23 @@ function AlertsPageCanvas(): JSX.Element {
 
 function ProxySettingsPageCanvas(): JSX.Element {
   const admin = useTranslate().admin
+
   return (
     <AdminPageFrame activeModule="proxy-settings">
-      <ModulePlaceholder
-        title={admin.modules.proxySettings.title}
-        description={admin.modules.proxySettings.description}
-        sections={[
-          admin.modules.proxySettings.sections.upstream,
-          admin.modules.proxySettings.sections.routing,
-          admin.modules.proxySettings.sections.rateLimit,
-        ]}
-        comingSoonLabel={admin.modules.comingSoon}
+      <ForwardProxySettingsModule
+        strings={admin.proxySettings}
+        settings={forwardProxyStorySettings}
+        stats={forwardProxyStoryStats}
+        settingsLoadState="ready"
+        statsLoadState="ready"
+        settingsError={null}
+        statsError={null}
+        saveError={null}
+        saving={false}
+        savedAt={forwardProxyStorySavedAt}
+        onPersistDraft={async () => {}}
+        onValidateCandidates={async () => []}
+        onRefresh={() => {}}
       />
     </AdminPageFrame>
   )

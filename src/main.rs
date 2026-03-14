@@ -8,7 +8,7 @@ use std::{
 use argon2::password_hash::PasswordHash;
 use clap::Parser;
 use dotenvy::dotenv;
-use tavily_hikari::{DEFAULT_UPSTREAM, TavilyProxy};
+use tavily_hikari::{DEFAULT_UPSTREAM, TavilyProxy, TavilyProxyOptions};
 
 #[derive(Debug, Parser)]
 #[command(author, version, about = "Tavily reverse proxy with key rotation")]
@@ -37,6 +37,14 @@ struct Cli {
     /// SQLite 数据库存储路径
     #[arg(long, env = "PROXY_DB_PATH", default_value = "data/tavily_proxy.db")]
     db_path: String,
+
+    /// Xray binary path used for share-link based forward proxies.
+    #[arg(long, env = "XRAY_BINARY", default_value = "xray")]
+    xray_binary: String,
+
+    /// Xray runtime directory for generated per-node configs.
+    #[arg(long, env = "XRAY_RUNTIME_DIR")]
+    xray_runtime_dir: Option<PathBuf>,
 
     /// Web 静态资源目录（指向打包后的前端 dist）
     #[arg(long, env = "WEB_STATIC_DIR")]
@@ -153,7 +161,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("Using database: {}", db_path.display());
 
-    let proxy = TavilyProxy::with_endpoint(cli.keys, &cli.upstream, &cli.db_path).await?;
+    let proxy_options = TavilyProxyOptions {
+        xray_binary: cli.xray_binary,
+        xray_runtime_dir: cli.xray_runtime_dir.unwrap_or_else(|| {
+            TavilyProxyOptions::from_database_path(&cli.db_path).xray_runtime_dir
+        }),
+    };
+    let proxy =
+        TavilyProxy::with_options(cli.keys, &cli.upstream, &cli.db_path, proxy_options).await?;
     let addr: SocketAddr = format!("{}:{}", cli.bind, cli.port).parse()?;
 
     let forward_auth_header = parse_header_name(cli.forward_auth_header, "FORWARD_AUTH_HEADER")?;

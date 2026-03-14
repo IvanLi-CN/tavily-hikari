@@ -233,3 +233,13 @@ fn spawn_request_logs_gc_scheduler(state: Arc<AppState>) {
     });
 }
 
+fn spawn_forward_proxy_maintenance_scheduler(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        loop {
+            if let Err(err) = state.proxy.maybe_run_forward_proxy_maintenance().await {
+                eprintln!("forward-proxy-maintenance: {err}");
+            }
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        }
+    });
+}
