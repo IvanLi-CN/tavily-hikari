@@ -172,6 +172,8 @@
 
 ## Visual Evidence (PR)
 
+![Forward proxy subscription dialog success state](./assets/forward-proxy-subscription-dialog-success.png)
+
 ## 资产晋升（Asset promotion）
 
 None
