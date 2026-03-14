@@ -9,6 +9,7 @@
 
 |    ID | Title                                                  | Status           | Spec                                                       | Last       | Notes                                                                                                                       |
 | ----: | ------------------------------------------------------ | ---------------- | ---------------------------------------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------- |
+| 3v7ip | Admin API Keys 注册 IP 与地区增强                      | 进行中（快车道） | `3v7ip-admin-key-registration-ip-region/SPEC.md`           | 2026-03-14 | 导入时提取注册 IP，按 xp 的 country.is 方案解析地区，并扩展 keys 列表/详情展示与筛选                                        |
 | sqt3d | Tavily Hikari 正向代理等价功能对齐                     | 进行中           | `sqt3d-forward-proxy-parity/SPEC.md`                       | 2026-03-13 | local branch `th/forward-proxy-parity`; subscription-first、多节点调度、Xray share-link、上游 key 主备亲和与 UI 收口        |
 | km4gk | Admin API Keys 后端分页与 URL 状态同步                 | 已完成（快车道） | `km4gk-admin-api-keys-pagination-url-sync/SPEC.md`         | 2026-03-13 | PR #126；`/api/keys` 后端分页、URL 状态同步、详情返回上下文与验证已完成                                                     |
 | 7vp6f | 新用户基础额度归零，仅靠标签发放额度                   | 已完成（快车道） | `7vp6f-new-user-zero-base-quota/SPEC.md`                   | 2026-03-13 | follow-up of `2mt2u` / `45squ`; new accounts default to zero base quota while historical accounts keep current rows         |

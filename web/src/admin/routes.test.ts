@@ -59,16 +59,22 @@ describe('admin user tag routes', () => {
         perPage: 50,
         groups: ['ops', '', 'ops'],
         statuses: ['active', 'Quarantined', 'active'],
+        registrationIp: '8.8.8.8',
+        regions: ['US California', 'US California', 'JP Tokyo'],
       }),
-    ).toBe('/admin/keys?page=2&perPage=50&group=ops&group=&status=active&status=quarantined')
+    ).toBe(
+      '/admin/keys?page=2&perPage=50&group=ops&group=&status=active&status=quarantined&registrationIp=8.8.8.8&region=US+California&region=JP+Tokyo',
+    )
     expect(
       keyDetailPath('key 42', {
         page: 3,
         perPage: 100,
         groups: ['ops'],
         statuses: ['disabled'],
+        registrationIp: '1.1.1.1',
+        regions: ['AU Sydney'],
       }),
-    ).toBe('/admin/keys/key%2042?page=3&perPage=100&group=ops&status=disabled')
+    ).toBe('/admin/keys/key%2042?page=3&perPage=100&group=ops&status=disabled&registrationIp=1.1.1.1&region=AU+Sydney')
   })
 
   it('compares user tag editor routes by mode and id', () => {

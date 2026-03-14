@@ -83,7 +83,7 @@ import {
   userTagsPath,
 } from './admin/routes'
 import { useLanguage, useTranslate, type AdminTranslations } from './i18n'
-import { extractTvlyDevApiKeysFromText } from './lib/api-key-extract'
+import { extractApiKeyImportEntriesFromText } from './lib/api-key-extract'
 import { ADMIN_USER_CONSOLE_HREF } from './lib/adminUserConsoleEntry'
 import {
   copyText,
@@ -96,6 +96,7 @@ import {
   fetchApiKeys,
   fetchApiKeySecret,
   addApiKeysBatch,
+  type AddApiKeysBatchItem,
   type AddApiKeysBatchResponse,
   validateApiKeys,
   type ValidateKeyResult,
@@ -246,6 +247,11 @@ function formatKeyGroupName(group: string | null | undefined, ungroupedLabel: st
   return normalized.length > 0 ? normalized : ungroupedLabel
 }
 
+function formatRegistrationValue(value: string | null | undefined): string {
+  const normalized = value?.trim() ?? ''
+  return normalized.length > 0 ? normalized : '—'
+}
+
 function toggleSelection(values: string[], value: string): string[] {
   return values.includes(value) ? values.filter((item) => item !== value) : [...values, value]
 }
@@ -370,6 +376,21 @@ function getAdminKeysValuesFromLocation(name: 'group' | 'status'): string[] {
     const trimmed = value.trim()
     if (!trimmed && name !== 'group') continue
     normalized.add(name === 'status' ? trimmed.toLowerCase() : trimmed)
+  }
+  return Array.from(normalized)
+}
+
+function getAdminKeysRegistrationIpFromLocation(): string {
+  return new URLSearchParams(window.location.search).get('registrationIp')?.trim() ?? ''
+}
+
+function getAdminKeysRegionsFromLocation(): string[] {
+  const values = new URLSearchParams(window.location.search).getAll('region')
+  const normalized = new Set<string>()
+  for (const value of values) {
+    const trimmed = value.trim()
+    if (!trimmed) continue
+    normalized.add(trimmed)
   }
   return Array.from(normalized)
 }
@@ -851,6 +872,7 @@ function AdminDashboard(): JSX.Element {
   const [keysError, setKeysError] = useState<string | null>(null)
   const [keyGroupFacets, setKeyGroupFacets] = useState<Array<{ value: string; count: number }>>([])
   const [keyStatusFacets, setKeyStatusFacets] = useState<Array<{ value: string; count: number }>>([])
+  const [keyRegionFacets, setKeyRegionFacets] = useState<Array<{ value: string; count: number }>>([])
   const [tokens, setTokens] = useState<AuthToken[]>([])
   const [dashboardTokens, setDashboardTokens] = useState<AuthToken[]>([])
   const [dashboardTokenCoverage, setDashboardTokenCoverage] = useState<'ok' | 'truncated' | 'error'>('ok')
@@ -978,6 +1000,9 @@ function AdminDashboard(): JSX.Element {
   const [newKeysGroup, setNewKeysGroup] = useState('')
   const [selectedKeyGroups, setSelectedKeyGroups] = useState<string[]>(() => getAdminKeysValuesFromLocation('group'))
   const [selectedKeyStatuses, setSelectedKeyStatuses] = useState<string[]>(() => getAdminKeysValuesFromLocation('status'))
+  const [selectedKeyRegistrationIp, setSelectedKeyRegistrationIp] = useState(getAdminKeysRegistrationIpFromLocation)
+  const [keyRegistrationIpInput, setKeyRegistrationIpInput] = useState(getAdminKeysRegistrationIpFromLocation)
+  const [selectedKeyRegions, setSelectedKeyRegions] = useState<string[]>(() => getAdminKeysRegionsFromLocation())
   const [keysBatchExpanded, setKeysBatchExpanded] = useState(false)
   const [keysBatchClosing, setKeysBatchClosing] = useState(false)
   const keysBatchOpenReasonRef = useRef<'hover' | 'focus' | null>(null)
@@ -1005,6 +1030,7 @@ function AdminDashboard(): JSX.Element {
   type KeyValidationRow = {
     api_key: string
     status: KeyValidationStatus
+    registration_ip?: string | null
     quota_limit?: number
     quota_remaining?: number
     detail?: string
@@ -1021,6 +1047,7 @@ function AdminDashboard(): JSX.Element {
     importing: boolean
     rows: KeyValidationRow[]
     imported_api_keys: string[]
+    registration_ip_by_key: Record<string, string>
     importReport?: AddApiKeysBatchResponse
     importWarning?: string
     importError?: string
@@ -2079,7 +2106,14 @@ function AdminDashboard(): JSX.Element {
     if (!(route.name === 'module' && route.module === 'keys')) return
 
     const request = beginManagedRequest(keysAbortRef)
-    const nextQueryKey = `${keysPage}:${keysPerPage}:${selectedKeyGroups.join('\u0000')}:${selectedKeyStatuses.join('\u0000')}`
+    const nextQueryKey = [
+      keysPage,
+      keysPerPage,
+      selectedKeyGroups.join('\u0000'),
+      selectedKeyStatuses.join('\u0000'),
+      selectedKeyRegistrationIp,
+      selectedKeyRegions.join('\u0000'),
+    ].join(':')
     const sameQueryRefresh = keysLoadedRef.current && keysQueryKeyRef.current === nextQueryKey
     setKeysLoadState(
       sameQueryRefresh ? getRefreshingLoadState(true) : getBlockingLoadState(keysLoadedRef.current),
@@ -2096,6 +2130,8 @@ function AdminDashboard(): JSX.Element {
       {
         groups: selectedKeyGroups,
         statuses: selectedKeyStatuses,
+        registrationIp: selectedKeyRegistrationIp,
+        regions: selectedKeyRegions,
       },
       request.signal,
     )
@@ -2107,6 +2143,7 @@ function AdminDashboard(): JSX.Element {
         setKeysPerPage(result.perPage)
         setKeyGroupFacets(result.facets.groups)
         setKeyStatusFacets(result.facets.statuses)
+        setKeyRegionFacets(result.facets.regions)
         setKeysLoadState('ready')
         keysLoadedRef.current = true
         keysQueryKeyRef.current = nextQueryKey
@@ -2115,6 +2152,8 @@ function AdminDashboard(): JSX.Element {
           perPage: result.perPage,
           groups: selectedKeyGroups,
           statuses: selectedKeyStatuses,
+          registrationIp: selectedKeyRegistrationIp,
+          regions: selectedKeyRegions,
         })
         const currentLocation = `${window.location.pathname}${window.location.search}`
         if (currentLocation !== normalizedLocation) {
@@ -2128,6 +2167,7 @@ function AdminDashboard(): JSX.Element {
         setKeysTotal(0)
         setKeyGroupFacets([])
         setKeyStatusFacets([])
+        setKeyRegionFacets([])
         setKeysError(err instanceof Error ? err.message : loadingStateStrings.error)
         setKeysLoadState('error')
       })
@@ -2139,7 +2179,17 @@ function AdminDashboard(): JSX.Element {
       request.abort()
       request.cleanup()
     }
-  }, [beginManagedRequest, keysPage, keysPerPage, loadingStateStrings.error, route, selectedKeyGroups, selectedKeyStatuses])
+  }, [
+    beginManagedRequest,
+    keysPage,
+    keysPerPage,
+    loadingStateStrings.error,
+    route,
+    selectedKeyGroups,
+    selectedKeyRegistrationIp,
+    selectedKeyRegions,
+    selectedKeyStatuses,
+  ])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -2279,6 +2329,8 @@ function AdminDashboard(): JSX.Element {
     const locationPerPage = getAdminKeysPerPageFromLocation()
     const locationGroups = getAdminKeysValuesFromLocation('group')
     const locationStatuses = getAdminKeysValuesFromLocation('status')
+    const locationRegistrationIp = getAdminKeysRegistrationIpFromLocation()
+    const locationRegions = getAdminKeysRegionsFromLocation()
     setKeysPage((previous) => (previous === locationPage ? previous : locationPage))
     setKeysPerPage((previous) => (previous === locationPerPage ? previous : locationPerPage))
     setSelectedKeyGroups((previous) =>
@@ -2290,6 +2342,13 @@ function AdminDashboard(): JSX.Element {
       previous.length === locationStatuses.length && previous.every((value, index) => value === locationStatuses[index])
         ? previous
         : locationStatuses,
+    )
+    setSelectedKeyRegistrationIp((previous) => (previous === locationRegistrationIp ? previous : locationRegistrationIp))
+    setKeyRegistrationIpInput((previous) => (previous === locationRegistrationIp ? previous : locationRegistrationIp))
+    setSelectedKeyRegions((previous) =>
+      previous.length === locationRegions.length && previous.every((value, index) => value === locationRegions[index])
+        ? previous
+        : locationRegions,
     )
   }, [route])
 
@@ -2498,13 +2557,23 @@ function AdminDashboard(): JSX.Element {
             perPage: keysPerPage,
             groups: selectedKeyGroups,
             statuses: selectedKeyStatuses,
+            registrationIp: selectedKeyRegistrationIp,
+            regions: selectedKeyRegions,
           }),
         )
         return
       }
       navigateToPath(keyDetailPath(id))
     },
-    [keysPage, keysPerPage, navigateToPath, selectedKeyGroups, selectedKeyStatuses],
+    [
+      keysPage,
+      keysPerPage,
+      navigateToPath,
+      selectedKeyGroups,
+      selectedKeyRegistrationIp,
+      selectedKeyRegions,
+      selectedKeyStatuses,
+    ],
   )
 
   const navigateToken = useCallback(
@@ -2545,6 +2614,8 @@ function AdminDashboard(): JSX.Element {
       perPage?: number | null
       groups?: string[] | null
       statuses?: string[] | null
+      registrationIp?: string | null
+      regions?: string[] | null
     }) => {
       const page = options?.page != null ? Math.max(1, Math.trunc(options.page)) : 1
       const perPage = options?.perPage != null ? Math.max(1, Math.trunc(options.perPage)) : DEFAULT_KEYS_PER_PAGE
@@ -2552,22 +2623,57 @@ function AdminDashboard(): JSX.Element {
       const statuses = Array.from(
         new Set((options?.statuses ?? []).map((value) => value.trim()).filter((value) => value.length > 0)),
       )
+      const registrationIp = options?.registrationIp?.trim() ?? ''
+      const regions = Array.from(
+        new Set((options?.regions ?? []).map((value) => value.trim()).filter((value) => value.length > 0)),
+      )
 
       setKeysPage(page)
       setKeysPerPage(perPage)
       setSelectedKeyGroups(groups)
       setSelectedKeyStatuses(statuses)
+      setSelectedKeyRegistrationIp(registrationIp)
+      setKeyRegistrationIpInput(registrationIp)
+      setSelectedKeyRegions(regions)
       navigateToPath(
         buildAdminKeysPath({
           page,
           perPage,
           groups,
           statuses,
+          registrationIp,
+          regions,
         }),
       )
     },
     [navigateToPath],
   )
+
+  useEffect(() => {
+    if (!(route.name === 'module' && route.module === 'keys')) return
+    const timer = window.setTimeout(() => {
+      const normalized = keyRegistrationIpInput.trim()
+      if (normalized === selectedKeyRegistrationIp) return
+      navigateKeysList({
+        page: 1,
+        perPage: keysPerPage,
+        groups: selectedKeyGroups,
+        statuses: selectedKeyStatuses,
+        registrationIp: normalized,
+        regions: selectedKeyRegions,
+      })
+    }, 250)
+    return () => window.clearTimeout(timer)
+  }, [
+    keyRegistrationIpInput,
+    keysPerPage,
+    navigateKeysList,
+    route,
+    selectedKeyGroups,
+    selectedKeyRegistrationIp,
+    selectedKeyRegions,
+    selectedKeyStatuses,
+  ])
 
   const navigateUserTags = useCallback(() => {
     const query = route.name === 'module' && route.module === 'users' ? usersQuery : getAdminUsersQueryFromLocation()
@@ -2696,7 +2802,14 @@ function AdminDashboard(): JSX.Element {
     }
     if (route.name === 'module' && route.module === 'keys') {
       const request = beginManagedRequest(keysAbortRef, controller.signal)
-      const nextQueryKey = `${keysPage}:${keysPerPage}:${selectedKeyGroups.join('\u0000')}:${selectedKeyStatuses.join('\u0000')}`
+      const nextQueryKey = [
+        keysPage,
+        keysPerPage,
+        selectedKeyGroups.join('\u0000'),
+        selectedKeyStatuses.join('\u0000'),
+        selectedKeyRegistrationIp,
+        selectedKeyRegions.join('\u0000'),
+      ].join(':')
       setKeysLoadState(getRefreshingLoadState(keysLoadedRef.current))
       setKeysError(null)
       tasks.push(
@@ -2706,6 +2819,8 @@ function AdminDashboard(): JSX.Element {
           {
             groups: selectedKeyGroups,
             statuses: selectedKeyStatuses,
+            registrationIp: selectedKeyRegistrationIp,
+            regions: selectedKeyRegions,
           },
           request.signal,
         )
@@ -2717,6 +2832,7 @@ function AdminDashboard(): JSX.Element {
             setKeysPerPage(result.perPage)
             setKeyGroupFacets(result.facets.groups)
             setKeyStatusFacets(result.facets.statuses)
+            setKeyRegionFacets(result.facets.regions)
             setKeysLoadState('ready')
             keysLoadedRef.current = true
             keysQueryKeyRef.current = nextQueryKey
@@ -2725,6 +2841,8 @@ function AdminDashboard(): JSX.Element {
               perPage: result.perPage,
               groups: selectedKeyGroups,
               statuses: selectedKeyStatuses,
+              registrationIp: selectedKeyRegistrationIp,
+              regions: selectedKeyRegions,
             })
             const currentLocation = `${window.location.pathname}${window.location.search}`
             if (currentLocation !== normalizedLocation) {
@@ -2953,6 +3071,16 @@ function AdminDashboard(): JSX.Element {
     [adminStrings, keyStatusFacets],
   )
 
+  const keyRegionFilterOptions = useMemo(
+    () =>
+      keyRegionFacets.map((region) => ({
+        value: region.value,
+        label: region.value,
+        count: region.count,
+      })),
+    [keyRegionFacets],
+  )
+
   const ungroupedTokenGroup = tokenGroups.find((group) => group.name.trim().length === 0)
   const namedTokenGroups = tokenGroups.filter((group) => group.name.trim().length > 0)
   const hasTokenGroups = tokenGroups.length > 0
@@ -2985,6 +3113,14 @@ function AdminDashboard(): JSX.Element {
     [keyStatusFilterOptions, selectedKeyStatuses],
   )
 
+  const selectedKeyRegionLabels = useMemo(
+    () =>
+      keyRegionFilterOptions
+        .filter((option) => selectedKeyRegions.includes(option.value))
+        .map((option) => option.label),
+    [keyRegionFilterOptions, selectedKeyRegions],
+  )
+
   const keyGroupFilterSummary = useMemo(
     () =>
       summarizeFilterSelection(
@@ -3008,8 +3144,19 @@ function AdminDashboard(): JSX.Element {
   )
 
   const keysBatchParsed = useMemo(() => {
-    return extractTvlyDevApiKeysFromText(newKeysText)
+    return extractApiKeyImportEntriesFromText(newKeysText)
   }, [newKeysText])
+
+  const keyRegionFilterSummary = useMemo(
+    () =>
+      summarizeFilterSelection(
+        keyStrings.filters.region,
+        selectedKeyRegionLabels,
+        keyStrings.groups.all,
+        keyStrings.filters.selectedSuffix,
+      ),
+    [keyStrings.filters.region, keyStrings.filters.selectedSuffix, keyStrings.groups.all, selectedKeyRegionLabels],
+  )
 
   const keysBatchFirstLine = useMemo(() => {
     return newKeysText.split(/\r?\n/)[0] ?? ''
@@ -3367,24 +3514,39 @@ function AdminDashboard(): JSX.Element {
 
   const handleAddKey = async () => {
     const rawLines = newKeysText.split(/\r?\n/)
-    const apiKeys = extractTvlyDevApiKeysFromText(newKeysText)
-    if (apiKeys.length === 0) return
+    const parsedEntries = extractApiKeyImportEntriesFromText(newKeysText)
+    if (parsedEntries.length === 0) return
 
     const group = newKeysGroup.trim()
 
     const seen = new Set<string>()
     const rows: KeyValidationRow[] = []
     const uniqueKeys: string[] = []
+    const registrationIpByKey: Record<string, string> = {}
     let duplicateCount = 0
-    for (const api_key of apiKeys) {
+    for (const entry of parsedEntries) {
+      const api_key = entry.api_key
       if (seen.has(api_key)) {
         duplicateCount += 1
-        rows.push({ api_key, status: 'duplicate_in_input', attempts: 0 })
+        rows.push({
+          api_key,
+          registration_ip: entry.registration_ip,
+          status: 'duplicate_in_input',
+          attempts: 0,
+        })
         continue
       }
       seen.add(api_key)
       uniqueKeys.push(api_key)
-      rows.push({ api_key, status: 'pending', attempts: 0 })
+      if (entry.registration_ip) {
+        registrationIpByKey[api_key] = entry.registration_ip
+      }
+      rows.push({
+        api_key,
+        registration_ip: entry.registration_ip,
+        status: 'pending',
+        attempts: 0,
+      })
     }
 
     keysValidateRunIdRef.current = (keysValidateRunIdRef.current ?? 0) + 1
@@ -3392,13 +3554,14 @@ function AdminDashboard(): JSX.Element {
     setKeysValidation({
       group,
       input_lines: rawLines.length,
-      valid_lines: apiKeys.length,
+      valid_lines: parsedEntries.length,
       unique_in_input: uniqueKeys.length,
       duplicate_in_input: duplicateCount,
       checking: true,
       importing: false,
       rows,
       imported_api_keys: [],
+      registration_ip_by_key: registrationIpByKey,
     })
 
     // Collapse the in-place overlay once we hand off to the dialog.
@@ -3488,7 +3651,11 @@ function AdminDashboard(): JSX.Element {
       for (let i = 0; i < keysValidationValidKeys.length; i += API_KEYS_IMPORT_CHUNK_SIZE) {
         const chunk = keysValidationValidKeys.slice(i, i + API_KEYS_IMPORT_CHUNK_SIZE)
         const exhaustedInChunk = chunk.filter((apiKey) => exhaustedSet.has(apiKey))
-        const chunkResponse = await addApiKeysBatch(chunk, normalizedGroup, exhaustedInChunk)
+        const chunkItems: AddApiKeysBatchItem[] = chunk.map((api_key) => ({
+          api_key,
+          registration_ip: keysValidation.registration_ip_by_key[api_key] ?? undefined,
+        }))
+        const chunkResponse = await addApiKeysBatch(chunkItems, normalizedGroup, exhaustedInChunk)
         response.summary.input_lines += chunkResponse.summary.input_lines
         response.summary.valid_lines += chunkResponse.summary.valid_lines
         response.summary.unique_in_input += chunkResponse.summary.unique_in_input
@@ -3577,7 +3744,12 @@ function AdminDashboard(): JSX.Element {
 
   const totalPages = useMemo(() => Math.max(1, Math.ceil(tokensTotal / tokensPerPage)), [tokensTotal])
   const keysTotalPages = useMemo(() => Math.max(1, Math.ceil(keysTotal / keysPerPage)), [keysPerPage, keysTotal])
-  const keysHasFilters = selectedKeyGroups.length > 0 || selectedKeyStatuses.length > 0
+  const keysHasFilters = (
+    selectedKeyGroups.length > 0
+    || selectedKeyStatuses.length > 0
+    || selectedKeyRegions.length > 0
+    || selectedKeyRegistrationIp.length > 0
+  )
   const keysBlocking = isBlockingLoadState(keysLoadState)
   const keysRefreshing = isRefreshingLoadState(keysLoadState)
 
@@ -3621,6 +3793,8 @@ function AdminDashboard(): JSX.Element {
       perPage: keysPerPage,
       groups: selectedKeyGroups,
       statuses: selectedKeyStatuses,
+      registrationIp: selectedKeyRegistrationIp,
+      regions: selectedKeyRegions,
     })
   }
 
@@ -3630,6 +3804,8 @@ function AdminDashboard(): JSX.Element {
       perPage: keysPerPage,
       groups: selectedKeyGroups,
       statuses: selectedKeyStatuses,
+      registrationIp: selectedKeyRegistrationIp,
+      regions: selectedKeyRegions,
     })
   }
 
@@ -3639,6 +3815,8 @@ function AdminDashboard(): JSX.Element {
       perPage: nextPerPage,
       groups: selectedKeyGroups,
       statuses: selectedKeyStatuses,
+      registrationIp: selectedKeyRegistrationIp,
+      regions: selectedKeyRegions,
     })
   }
 
@@ -3662,6 +3840,8 @@ function AdminDashboard(): JSX.Element {
       {
         groups: selectedKeyGroups,
         statuses: selectedKeyStatuses,
+        registrationIp: selectedKeyRegistrationIp,
+        regions: selectedKeyRegions,
       },
     )
     setKeys(pagedKeys.items)
@@ -3670,6 +3850,7 @@ function AdminDashboard(): JSX.Element {
     setKeysPerPage(pagedKeys.perPage)
     setKeyGroupFacets(pagedKeys.facets.groups)
     setKeyStatusFacets(pagedKeys.facets.statuses)
+    setKeyRegionFacets(pagedKeys.facets.regions)
     return pagedKeys
   }
   const toggleAllowRegistration = async () => {
@@ -3937,6 +4118,8 @@ function AdminDashboard(): JSX.Element {
       perPage: keysPerPage,
       groups: toggleSelection(selectedKeyGroups, group),
       statuses: selectedKeyStatuses,
+      registrationIp: selectedKeyRegistrationIp,
+      regions: selectedKeyRegions,
     })
   }
 
@@ -3946,6 +4129,19 @@ function AdminDashboard(): JSX.Element {
       perPage: keysPerPage,
       groups: selectedKeyGroups,
       statuses: toggleSelection(selectedKeyStatuses, status),
+      registrationIp: selectedKeyRegistrationIp,
+      regions: selectedKeyRegions,
+    })
+  }
+
+  const handleToggleKeyRegionFilter = (region: string) => {
+    navigateKeysList({
+      page: 1,
+      perPage: keysPerPage,
+      groups: selectedKeyGroups,
+      statuses: selectedKeyStatuses,
+      registrationIp: selectedKeyRegistrationIp,
+      regions: toggleSelection(selectedKeyRegions, region),
     })
   }
 
@@ -3955,6 +4151,8 @@ function AdminDashboard(): JSX.Element {
       perPage: keysPerPage,
       groups: [],
       statuses: selectedKeyStatuses,
+      registrationIp: selectedKeyRegistrationIp,
+      regions: selectedKeyRegions,
     })
   }
 
@@ -3964,6 +4162,31 @@ function AdminDashboard(): JSX.Element {
       perPage: keysPerPage,
       groups: selectedKeyGroups,
       statuses: [],
+      registrationIp: selectedKeyRegistrationIp,
+      regions: selectedKeyRegions,
+    })
+  }
+
+  const handleClearKeyRegionFilters = () => {
+    navigateKeysList({
+      page: 1,
+      perPage: keysPerPage,
+      groups: selectedKeyGroups,
+      statuses: selectedKeyStatuses,
+      registrationIp: selectedKeyRegistrationIp,
+      regions: [],
+    })
+  }
+
+  const handleClearKeyRegistrationIpFilter = () => {
+    setKeyRegistrationIpInput('')
+    navigateKeysList({
+      page: 1,
+      perPage: keysPerPage,
+      groups: selectedKeyGroups,
+      statuses: selectedKeyStatuses,
+      registrationIp: '',
+      regions: selectedKeyRegions,
     })
   }
 
@@ -4668,6 +4891,8 @@ function AdminDashboard(): JSX.Element {
                 perPage: getAdminKeysPerPageFromLocation(),
                 groups: getAdminKeysValuesFromLocation('group'),
                 statuses: getAdminKeysValuesFromLocation('status'),
+                registrationIp: getAdminKeysRegistrationIpFromLocation(),
+                regions: getAdminKeysRegionsFromLocation(),
               }),
             )
           }
@@ -6046,6 +6271,26 @@ function AdminDashboard(): JSX.Element {
 	        </div>
           <div style={keysUtilityRowStyle}>
             <div style={keysFilterClusterStyle}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Input
+                  type="text"
+                  value={keyRegistrationIpInput}
+                  onChange={(event) => setKeyRegistrationIpInput(event.target.value)}
+                  placeholder={keyStrings.filters.registrationIpPlaceholder}
+                  aria-label={keyStrings.filters.registrationIp}
+                  style={{ width: 188 }}
+                />
+                {selectedKeyRegistrationIp ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleClearKeyRegistrationIpFilter}
+                  >
+                    {keyStrings.filters.clearRegistrationIp}
+                  </Button>
+                ) : null}
+              </div>
               {hasKeyGroups && (
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
@@ -6126,6 +6371,45 @@ function AdminDashboard(): JSX.Element {
                   ))}
                 </DropdownMenuContent>
               </DropdownMenu>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button type="button" variant="outline" size="sm" aria-label={keyRegionFilterSummary}>
+                    <Icon icon="mdi:map-marker-radius-outline" width={16} height={16} aria-hidden="true" />
+                    <span style={{ whiteSpace: 'nowrap' }}>{keyRegionFilterSummary}</span>
+                    {selectedKeyRegions.length > 0 ? (
+                      <Badge variant="neutral" className="ml-1 px-1.5 py-0 text-[10px]">
+                        {selectedKeyRegions.length}
+                      </Badge>
+                    ) : null}
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="w-72">
+                  <DropdownMenuLabel>{keyStrings.filters.region}</DropdownMenuLabel>
+                  <DropdownMenuItem
+                    className="cursor-pointer"
+                    disabled={selectedKeyRegions.length === 0}
+                    onSelect={(event) => {
+                      event.preventDefault()
+                      handleClearKeyRegionFilters()
+                    }}
+                  >
+                    {keyStrings.filters.clearRegions}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  {keyRegionFilterOptions.map((option) => (
+                    <DropdownMenuCheckboxItem
+                      key={option.value}
+                      className="cursor-pointer"
+                      checked={selectedKeyRegions.includes(option.value)}
+                      onSelect={(event) => event.preventDefault()}
+                      onCheckedChange={() => handleToggleKeyRegionFilter(option.value)}
+                    >
+                      <span>{option.label}</span>
+                      <span className="ml-auto text-xs opacity-60">{formatNumber(option.count)}</span>
+                    </DropdownMenuCheckboxItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
             {isAdmin && (
               <div
@@ -6198,7 +6482,7 @@ function AdminDashboard(): JSX.Element {
           {visibleKeys.length === 0 ? (
             <tbody>
               <tr>
-                <td colSpan={isAdmin ? 6 : 5}>
+                <td colSpan={isAdmin ? 7 : 6}>
                   <div className="empty-state alert">
                     {keysHasFilters ? keyStrings.empty.filtered : keyStrings.empty.none}
                   </div>
@@ -6213,6 +6497,12 @@ function AdminDashboard(): JSX.Element {
                     <div style={adminTableHeaderStackStyle}>
                       <span style={adminTableFieldStyle}>{keyStrings.table.keyId}</span>
                       <span style={adminTableSecondaryFieldStyle}>{keyStrings.groups.label}</span>
+                    </div>
+                  </th>
+                  <th>
+                    <div style={adminTableHeaderStackStyle}>
+                      <span style={adminTableFieldStyle}>{keyStrings.table.registration}</span>
+                      <span style={adminTableSecondaryFieldStyle}>{keyStrings.table.registrationRegion}</span>
                     </div>
                   </th>
                   <th>
@@ -6290,6 +6580,14 @@ function AdminDashboard(): JSX.Element {
                             )}
                           </div>
                           <span style={adminTableSecondaryFieldStyle}>{keyGroupName}</span>
+                        </div>
+                      </td>
+                      <td>
+                        <div style={adminTableStackStyle}>
+                          <span style={adminTableFieldStyle}>{formatRegistrationValue(item.registration_ip)}</span>
+                          <span style={adminTableSecondaryFieldStyle}>
+                            {formatRegistrationValue(item.registration_region)}
+                          </span>
                         </div>
                       </td>
                       <td>
@@ -6428,6 +6726,14 @@ function AdminDashboard(): JSX.Element {
                     <strong>
                       <code>{item.id}</code>
                     </strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{keyStrings.table.registrationIp}</span>
+                    <strong>{formatRegistrationValue(item.registration_ip)}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{keyStrings.table.registrationRegion}</span>
+                    <strong>{formatRegistrationValue(item.registration_region)}</strong>
                   </div>
                   <div className="admin-mobile-kv">
                     <span>{keyStrings.table.status}</span>
@@ -8064,6 +8370,31 @@ function KeyDetails({ id, onBack }: { id: string; onBack: () => void }): JSX.Ele
       </section>
 
       {error && <div className="surface error-banner" style={{ marginTop: 8, marginBottom: 0 }}>{error}</div>}
+
+      {detail && (
+        <section className="surface panel">
+          <div className="panel-header">
+            <div>
+              <h2>{keyDetailsStrings.metadata.title}</h2>
+              <p className="panel-description">{keyDetailsStrings.metadata.description}</p>
+            </div>
+          </div>
+          <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
+            <div className="admin-mobile-kv">
+              <span>{keyDetailsStrings.metadata.group}</span>
+              <strong>{formatKeyGroupName(detail.group, keyStrings.groups.ungrouped)}</strong>
+            </div>
+            <div className="admin-mobile-kv">
+              <span>{keyDetailsStrings.metadata.registrationIp}</span>
+              <strong>{formatRegistrationValue(detail.registration_ip)}</strong>
+            </div>
+            <div className="admin-mobile-kv">
+              <span>{keyDetailsStrings.metadata.registrationRegion}</span>
+              <strong>{formatRegistrationValue(detail.registration_region)}</strong>
+            </div>
+          </div>
+        </section>
+      )}
 
       {detail?.quarantine && (
         <section className="surface panel">

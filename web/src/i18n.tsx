@@ -813,8 +813,13 @@ interface AdminTranslationsShape {
     }
     filters: {
       status: string
+      region: string
+      registrationIp: string
+      registrationIpPlaceholder: string
       clearGroups: string
       clearStatuses: string
+      clearRegistrationIp: string
+      clearRegions: string
       selectedSuffix: string
     }
     pagination: {
@@ -831,6 +836,9 @@ interface AdminTranslationsShape {
       successRate: string
       remainingPct: string
       quotaLeft: string
+      registration: string
+      registrationIp: string
+      registrationRegion: string
       syncedAt: string
       lastUsed: string
       statusChanged: string
@@ -980,6 +988,13 @@ interface AdminTranslationsShape {
       createdAt: string
       clearAction: string
       clearing: string
+    }
+    metadata: {
+      title: string
+      description: string
+      group: string
+      registrationIp: string
+      registrationRegion: string
     }
     logsTitle: string
     logsDescription: string
@@ -1801,9 +1816,9 @@ export const translations: Record<Language, TranslationShape> = {
         addButton: 'Add Key',
         adding: 'Adding…',
         batch: {
-          placeholder: 'Paste text (extract first tvly-dev-* key per line)',
+          placeholder: 'Paste text (extract first tvly-dev-* key and public IP per line)',
           groupPlaceholder: 'Group (optional)',
-          hint: 'Each line extracts the first tvly-dev-* key; unmatched lines are ignored.',
+          hint: 'Each line extracts the first tvly-dev-* key and first public IP; geo lookup uses the configured country.is-compatible service.',
           count: 'Extracted keys {count}',
           report: {
             title: 'Batch Import Report',
@@ -1830,7 +1845,7 @@ export const translations: Record<Language, TranslationShape> = {
         },
         validation: {
           title: 'Verify API Keys',
-          hint: 'Support text paste: extract the first tvly-dev-* key from each line before validation.',
+          hint: 'Support text paste: extract the first tvly-dev-* key and first public IP from each line; geo lookup uses the configured country.is-compatible service.',
           actions: {
             close: 'Close',
             retry: 'Retry',
@@ -1883,18 +1898,26 @@ export const translations: Record<Language, TranslationShape> = {
         },
         filters: {
           status: 'Status',
+          region: 'Region',
+          registrationIp: 'Registration IP',
+          registrationIpPlaceholder: 'Filter by exact IP',
           clearGroups: 'Show all groups',
           clearStatuses: 'Show all statuses',
+          clearRegistrationIp: 'Clear IP',
+          clearRegions: 'Show all regions',
           selectedSuffix: 'selected',
         },
         pagination: {
           page: 'Page {page} of {total}',
           perPage: 'Per page',
         },
-      table: {
-        keyId: 'Key ID',
-        status: 'Status',
-        total: 'Total',
+        table: {
+          keyId: 'Key ID',
+          registration: 'Registration',
+          registrationIp: 'Registration IP',
+          registrationRegion: 'Region',
+          status: 'Status',
+          total: 'Total',
         success: 'Success',
         errors: 'Errors',
         quota: 'Quota Exhausted',
@@ -2075,6 +2098,13 @@ export const translations: Record<Language, TranslationShape> = {
           createdAt: 'Quarantined at',
           clearAction: 'Clear quarantine',
           clearing: 'Clearing…',
+        },
+        metadata: {
+          title: 'Registration Metadata',
+          description: 'Import-time registration metadata extracted from the original account row.',
+          group: 'Group',
+          registrationIp: 'Registration IP',
+          registrationRegion: 'Region',
         },
         logsTitle: 'Recent Requests',
         logsDescription: 'Up to the latest 200 for this key.',
@@ -2854,9 +2884,9 @@ export const translations: Record<Language, TranslationShape> = {
         addButton: '添加密钥',
         adding: '添加中…',
         batch: {
-          placeholder: '粘贴文本（每行提取首个 tvly-dev-* key）',
+          placeholder: '粘贴文本（每行提取首个 tvly-dev-* key 和公网 IP）',
           groupPlaceholder: '分组名（可选）',
-          hint: '每行提取首个 tvly-dev-* key，未匹配行会被忽略。',
+          hint: '每行提取首个 tvly-dev-* key 和首个公网 IP；地区解析会访问已配置的兼容 country.is 服务。',
           count: '可提取 key {count}',
           report: {
             title: '批量导入结果',
@@ -2883,7 +2913,7 @@ export const translations: Record<Language, TranslationShape> = {
         },
         validation: {
           title: '检测 API Keys',
-          hint: '支持粘贴文本：每行先提取首个 tvly-dev-* key，再检测并入库。',
+          hint: '支持粘贴文本：每行先提取首个 tvly-dev-* key 和首个公网 IP，再检测并入库；地区解析会访问已配置的兼容 country.is 服务。',
           actions: {
             close: '关闭',
             retry: '重试',
@@ -2936,8 +2966,13 @@ export const translations: Record<Language, TranslationShape> = {
         },
         filters: {
           status: '状态',
+          region: '地区',
+          registrationIp: '注册 IP',
+          registrationIpPlaceholder: '按完整 IP 筛选',
           clearGroups: '显示全部分组',
           clearStatuses: '显示全部状态',
+          clearRegistrationIp: '清空 IP',
+          clearRegions: '显示全部地区',
           selectedSuffix: '项已选',
         },
         pagination: {
@@ -2946,6 +2981,9 @@ export const translations: Record<Language, TranslationShape> = {
         },
         table: {
           keyId: 'Key ID',
+          registration: '注册信息',
+          registrationIp: '注册 IP',
+          registrationRegion: '地区',
           status: '状态',
           total: '总请求',
           success: '成功',
@@ -3128,6 +3166,13 @@ export const translations: Record<Language, TranslationShape> = {
           createdAt: '隔离时间',
           clearAction: '解除隔离',
           clearing: '解除中…',
+        },
+        metadata: {
+          title: '注册信息',
+          description: '这里展示导入时从原始账号行提取出的注册元数据。',
+          group: '分组',
+          registrationIp: '注册 IP',
+          registrationRegion: '地区',
         },
         logsTitle: '近期请求',
         logsDescription: '最多展示该密钥的 200 条请求。',

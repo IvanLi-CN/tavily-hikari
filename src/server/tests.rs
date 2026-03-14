@@ -2612,6 +2612,7 @@ mod tests {
             linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
             dev_open_admin,
             usage_base,
+            api_key_ip_geo_origin: "https://api.country.is".to_string(),
         });
 
         let app = Router::new()
@@ -2653,6 +2654,7 @@ mod tests {
             linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
             dev_open_admin,
             usage_base: "http://127.0.0.1:58088".to_string(),
+            api_key_ip_geo_origin: "https://api.country.is".to_string(),
         });
 
         let app = Router::new()
@@ -2685,11 +2687,45 @@ mod tests {
             linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
             dev_open_admin,
             usage_base,
+            api_key_ip_geo_origin: "https://api.country.is".to_string(),
         });
 
         let app = Router::new()
             .route("/api/keys/batch", post(create_api_keys_batch))
             .route("/api/keys/validate", post(post_validate_api_keys))
+            .route("/api/admin/login", post(post_admin_login))
+            .with_state(state);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+        addr
+    }
+
+    async fn spawn_keys_admin_server_with_geo_origin(
+        proxy: TavilyProxy,
+        forward_auth: ForwardAuthConfig,
+        dev_open_admin: bool,
+        geo_origin: String,
+    ) -> SocketAddr {
+        let state = Arc::new(AppState {
+            proxy,
+            static_dir: None,
+            forward_auth,
+            forward_auth_enabled: true,
+            builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+            dev_open_admin,
+            usage_base: "http://127.0.0.1:58088".to_string(),
+            api_key_ip_geo_origin: geo_origin,
+        });
+
+        let app = Router::new()
+            .route("/api/keys/batch", post(create_api_keys_batch))
             .route("/api/admin/login", post(post_admin_login))
             .with_state(state);
 
@@ -2756,6 +2792,47 @@ mod tests {
         addr
     }
 
+    async fn spawn_api_key_geo_mock_server() -> SocketAddr {
+        let app = Router::new().route(
+            "/geo",
+            post(|Json(ips): Json<Vec<String>>| async move {
+                let entries = ips
+                    .into_iter()
+                    .map(|ip| match ip.as_str() {
+                        "8.8.8.8" => serde_json::json!({
+                            "ip": ip,
+                            "country": "United States",
+                            "city": "Mountain View",
+                            "subdivision": "CA",
+                        }),
+                        "1.1.1.1" => serde_json::json!({
+                            "ip": ip,
+                            "country": "Australia",
+                            "city": "Sydney",
+                            "subdivision": "NSW",
+                        }),
+                        _ => serde_json::json!({
+                            "ip": ip,
+                            "country": null,
+                            "city": null,
+                            "subdivision": null,
+                        }),
+                    })
+                    .collect::<Vec<_>>();
+                (StatusCode::OK, Json(entries))
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+        addr
+    }
+
     fn hash_admin_password_for_test(password: &str) -> String {
         use argon2::password_hash::{PasswordHasher, SaltString};
 
@@ -2777,6 +2854,7 @@ mod tests {
             linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
             dev_open_admin: false,
             usage_base: "http://127.0.0.1:58088".to_string(),
+            api_key_ip_geo_origin: "https://api.country.is".to_string(),
         });
 
         let app = Router::new()
@@ -2828,6 +2906,7 @@ mod tests {
             linuxdo_oauth,
             dev_open_admin: false,
             usage_base: "http://127.0.0.1:58088".to_string(),
+            api_key_ip_geo_origin: "https://api.country.is".to_string(),
         });
 
         let app = Router::new()
@@ -2870,6 +2949,7 @@ mod tests {
             linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
             dev_open_admin,
             usage_base: "http://127.0.0.1:58088".to_string(),
+            api_key_ip_geo_origin: "https://api.country.is".to_string(),
         });
 
         let app = Router::new()
@@ -2910,6 +2990,7 @@ mod tests {
             linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
             dev_open_admin,
             usage_base: "http://127.0.0.1:58088".to_string(),
+            api_key_ip_geo_origin: "https://api.country.is".to_string(),
         });
 
         let app = Router::new()
@@ -2945,6 +3026,7 @@ mod tests {
             linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
             dev_open_admin,
             usage_base,
+            api_key_ip_geo_origin: "https://api.country.is".to_string(),
         });
 
         let app = Router::new()
@@ -3700,6 +3782,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn api_keys_batch_structured_items_store_first_registration_metadata() {
+        let db_path = temp_db_path("keys-batch-registration-metadata");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        let geo_addr = spawn_api_key_geo_mock_server().await;
+
+        let forward_auth = ForwardAuthConfig::new(
+            Some(HeaderName::from_static("x-forward-user")),
+            Some("admin".to_string()),
+            None,
+            None,
+        );
+        let addr = spawn_keys_admin_server_with_geo_origin(
+            proxy,
+            forward_auth,
+            false,
+            format!("http://{geo_addr}/geo"),
+        )
+        .await;
+
+        let client = Client::new();
+        let url = format!("http://{}/api/keys/batch", addr);
+        let resp = client
+            .post(url)
+            .header("x-forward-user", "admin")
+            .json(&serde_json::json!({
+                "items": [
+                    { "api_key": "tvly-registration-first", "registration_ip": "8.8.8.8" },
+                    { "api_key": "tvly-registration-private", "registration_ip": "10.0.0.1" },
+                    { "api_key": "tvly-registration-first", "registration_ip": "1.1.1.1" }
+                ],
+                "group": "ops"
+            }))
+            .send()
+            .await
+            .expect("request succeeds");
+
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        let body: serde_json::Value = resp.json().await.expect("parse json body");
+        let summary = body.get("summary").expect("summary exists");
+        assert_eq!(summary.get("created").and_then(|v| v.as_u64()), Some(2));
+        assert_eq!(
+            summary.get("duplicate_in_input").and_then(|v| v.as_u64()),
+            Some(1)
+        );
+
+        let options = SqliteConnectOptions::new()
+            .filename(&db_str)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open db pool");
+
+        let first_row: (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT registration_ip, registration_region FROM api_keys WHERE api_key = ?",
+        )
+        .bind("tvly-registration-first")
+        .fetch_one(&pool)
+        .await
+        .expect("first key metadata");
+        assert_eq!(first_row.0.as_deref(), Some("8.8.8.8"));
+        assert_eq!(first_row.1.as_deref(), Some("United States Mountain View (CA)"));
+
+        let private_row: (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT registration_ip, registration_region FROM api_keys WHERE api_key = ?",
+        )
+        .bind("tvly-registration-private")
+        .fetch_one(&pool)
+        .await
+        .expect("private key metadata");
+        assert!(private_row.0.is_none(), "private ip should not be stored");
+        assert!(private_row.1.is_none(), "private region should stay empty");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn builtin_admin_login_allows_admin_endpoints_and_logout_revokes() {
         let db_path = temp_db_path("builtin-admin-login");
         let db_str = db_path.to_string_lossy().to_string();
@@ -4111,6 +4278,7 @@ mod tests {
             linuxdo_oauth: linuxdo_oauth_options_for_test(),
             dev_open_admin: false,
             usage_base: "http://127.0.0.1:58088".to_string(),
+            api_key_ip_geo_origin: "https://api.country.is".to_string(),
         });
 
         let app = Router::new()
@@ -4595,6 +4763,7 @@ mod tests {
             linuxdo_oauth: oauth_options,
             dev_open_admin: false,
             usage_base: "http://127.0.0.1:58088".to_string(),
+            api_key_ip_geo_origin: "https://api.country.is".to_string(),
         });
 
         let app = Router::new()
@@ -5062,6 +5231,26 @@ mod tests {
             .expect("update last_used_at");
         }
 
+        for (key_id, registration_ip, registration_region) in [
+            (&alpha_active_id, Some("8.8.8.8"), Some("United States Mountain View (CA)")),
+            (&alpha_quarantined_id, Some("1.1.1.1"), Some("Australia Sydney NSW")),
+            (&beta_active_id, Some("8.8.8.8"), Some("United States Mountain View (CA)")),
+            (&beta_disabled_id, Some("9.9.9.9"), Some("United States")),
+            (&ungrouped_exhausted_id, None, None),
+        ] {
+            sqlx::query(
+                r#"UPDATE api_keys
+                   SET registration_ip = ?, registration_region = ?
+                   WHERE id = ?"#,
+            )
+            .bind(registration_ip)
+            .bind(registration_region)
+            .bind(key_id)
+            .execute(&pool)
+            .await
+            .expect("update registration metadata");
+        }
+
         sqlx::query(
             r#"INSERT INTO api_key_quarantines
                (key_id, source, reason_code, reason_summary, reason_detail, created_at, cleared_at)
@@ -5179,6 +5368,33 @@ mod tests {
         assert_eq!(status_counts.get("exhausted").copied(), Some(1));
         assert_eq!(status_counts.get("quarantined").copied(), Some(1));
 
+        let region_facets = page_one_body
+            .get("facets")
+            .and_then(|value| value.get("regions"))
+            .and_then(|value| value.as_array())
+            .expect("region facets");
+        let region_counts = region_facets
+            .iter()
+            .map(|value| {
+                (
+                    value
+                        .get("value")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default(),
+                    value
+                        .get("count")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or_default(),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(
+            region_counts.get("United States Mountain View (CA)").copied(),
+            Some(2)
+        );
+        assert_eq!(region_counts.get("Australia Sydney NSW").copied(), Some(1));
+        assert_eq!(region_counts.get("United States").copied(), Some(1));
+
         let filtered_resp = client
             .get(format!(
                 "http://{}/api/keys?page=1&per_page=10&group=team-a&group=team-b&status=quarantined&status=disabled",
@@ -5254,6 +5470,65 @@ mod tests {
         assert_eq!(filtered_status_counts.get("disabled").copied(), Some(1));
         assert_eq!(filtered_status_counts.get("quarantined").copied(), Some(1));
         assert_eq!(filtered_status_counts.len(), 3);
+
+        let registration_filtered_resp = client
+            .get(format!(
+                "http://{}/api/keys?page=1&per_page=10&registration_ip=8.8.8.8&region=United%20States%20Mountain%20View%20(CA)",
+                admin_addr
+            ))
+            .header(reqwest::header::COOKIE, admin_cookie.clone())
+            .send()
+            .await
+            .expect("registration filtered request");
+        assert_eq!(registration_filtered_resp.status(), reqwest::StatusCode::OK);
+        let registration_filtered_body: serde_json::Value = registration_filtered_resp
+            .json()
+            .await
+            .expect("registration filtered json");
+        assert_eq!(
+            registration_filtered_body
+                .get("total")
+                .and_then(|value| value.as_i64()),
+            Some(2)
+        );
+        let registration_filtered_items = registration_filtered_body
+            .get("items")
+            .and_then(|value| value.as_array())
+            .expect("registration filtered items");
+        assert_eq!(registration_filtered_items.len(), 2);
+        assert_eq!(
+            registration_filtered_items[0]
+                .get("registration_ip")
+                .and_then(|value| value.as_str()),
+            Some("8.8.8.8")
+        );
+        assert_eq!(
+            registration_filtered_items[0]
+                .get("registration_region")
+                .and_then(|value| value.as_str()),
+            Some("United States Mountain View (CA)")
+        );
+
+        let detail_resp = client
+            .get(format!("http://{}/api/keys/{}", admin_addr, alpha_active_id))
+            .header(reqwest::header::COOKIE, admin_cookie.clone())
+            .send()
+            .await
+            .expect("detail request");
+        assert_eq!(detail_resp.status(), reqwest::StatusCode::OK);
+        let detail_body: serde_json::Value = detail_resp.json().await.expect("detail json");
+        assert_eq!(
+            detail_body
+                .get("registration_ip")
+                .and_then(|value| value.as_str()),
+            Some("8.8.8.8")
+        );
+        assert_eq!(
+            detail_body
+                .get("registration_region")
+                .and_then(|value| value.as_str()),
+            Some("United States Mountain View (CA)")
+        );
 
         let ungrouped_resp = client
             .get(format!(
@@ -5708,6 +5983,7 @@ mod tests {
             linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
             dev_open_admin: false,
             usage_base: "http://127.0.0.1:58088".to_string(),
+            api_key_ip_geo_origin: "https://api.country.is".to_string(),
         });
 
         let (sig, latest_id) = compute_signatures(&state)

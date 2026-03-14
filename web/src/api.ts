@@ -95,6 +95,8 @@ export interface ApiKeyStats {
   id: string
   status: string
   group: string | null
+  registration_ip: string | null
+  registration_region: string | null
   status_changed_at: number | null
   last_used_at: number | null
   deleted_at: number | null
@@ -138,6 +140,7 @@ export interface ApiKeyFacetOption {
 export interface ApiKeyListFacets {
   groups: ApiKeyFacetOption[]
   statuses: ApiKeyFacetOption[]
+  regions: ApiKeyFacetOption[]
 }
 
 // ---- Access Tokens (for /mcp auth) ----
@@ -267,7 +270,7 @@ export interface PaginatedApiKeys extends Paginated<ApiKeyStats> {
 export function fetchApiKeys(
   page = 1,
   perPage = 20,
-  options?: { groups?: string[]; statuses?: string[] },
+  options?: { groups?: string[]; statuses?: string[]; registrationIp?: string | null; regions?: string[] },
   signal?: AbortSignal,
 ): Promise<PaginatedApiKeys> {
   const params = new URLSearchParams({
@@ -282,6 +285,15 @@ export function fetchApiKeys(
     const normalized = status.trim().toLowerCase()
     if (!normalized) continue
     params.append('status', normalized)
+  }
+  const normalizedRegistrationIp = options?.registrationIp?.trim()
+  if (normalizedRegistrationIp) {
+    params.set('registration_ip', normalizedRegistrationIp)
+  }
+  for (const region of options?.regions ?? []) {
+    const normalized = region.trim()
+    if (!normalized) continue
+    params.append('region', normalized)
   }
   return requestJson(`/api/keys?${params.toString()}`, { signal })
 }
@@ -695,8 +707,13 @@ export interface AddApiKeysBatchResponse {
   results: AddApiKeysBatchResult[]
 }
 
+export interface AddApiKeysBatchItem {
+  api_key: string
+  registration_ip?: string | null
+}
+
 export async function addApiKeysBatch(
-  apiKeys: string[],
+  items: AddApiKeysBatchItem[],
   group?: string,
   exhaustedApiKeys?: string[],
 ): Promise<AddApiKeysBatchResponse> {
@@ -705,7 +722,7 @@ export async function addApiKeysBatch(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      api_keys: apiKeys,
+      items,
       group: trimmedGroup && trimmedGroup.length > 0 ? trimmedGroup : undefined,
       exhausted_api_keys: exhaustedApiKeys && exhaustedApiKeys.length > 0 ? exhaustedApiKeys : undefined,
     }),

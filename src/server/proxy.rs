@@ -1018,6 +1018,8 @@ impl ApiKeyView {
             id: metrics.id,
             status: metrics.status,
             group: metrics.group_name,
+            registration_ip: metrics.registration_ip,
+            registration_region: metrics.registration_region,
             status_changed_at: metrics.status_changed_at,
             last_used_at: metrics.last_used_at,
             deleted_at: metrics.deleted_at,

@@ -171,6 +171,8 @@ export interface AdminKeyListContext {
   perPage?: number | null
   groups?: string[] | null
   statuses?: string[] | null
+  registrationIp?: string | null
+  regions?: string[] | null
 }
 
 function normalizeKeyContextValues(
@@ -203,6 +205,13 @@ function appendKeysContext(path: string, context?: AdminKeyListContext): string 
   }
   for (const status of normalizeKeyContextValues(context?.statuses, false, 'lower')) {
     params.append('status', status)
+  }
+  const normalizedRegistrationIp = context?.registrationIp?.trim() ?? ''
+  if (normalizedRegistrationIp) {
+    params.set('registrationIp', normalizedRegistrationIp)
+  }
+  for (const region of normalizeKeyContextValues(context?.regions, false)) {
+    params.append('region', region)
   }
 
   const search = params.toString()
