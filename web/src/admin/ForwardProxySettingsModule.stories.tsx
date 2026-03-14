@@ -5,6 +5,7 @@ import ForwardProxySettingsModule, {
   type ForwardProxyDialogPreviewState,
   type ForwardProxyValidationEntry,
 } from './ForwardProxySettingsModule'
+import type { ForwardProxyDialogProgressState } from './forwardProxyDialogProgress'
 import {
   forwardProxyStorySavedAt,
   forwardProxyStorySettings,
@@ -109,6 +110,58 @@ const MANUAL_OVERFLOW_RESULTS: ForwardProxyValidationEntry[] = Array.from({ leng
     },
   }
 })
+
+const SUBSCRIPTION_VALIDATING_PROGRESS: ForwardProxyDialogProgressState = {
+  action: 'validate',
+  activeStepKey: 'probe_nodes',
+  message: '2/3 · edge-2.example.com:443',
+  steps: [
+    { key: 'normalize_input', label: '规范化输入', status: 'done', detail: '已完成' },
+    { key: 'fetch_subscription', label: '拉取订阅', status: 'done', detail: '已完成' },
+    { key: 'probe_nodes', label: '探测节点', status: 'running', detail: '2/3 · edge-2.example.com:443' },
+    { key: 'generate_result', label: '生成结果', status: 'pending', detail: null },
+  ],
+}
+
+const SUBSCRIPTION_ADDING_PROGRESS: ForwardProxyDialogProgressState = {
+  action: 'save',
+  activeStepKey: 'bootstrap_probe',
+  message: '3/8 · tokyo-03.example.com:443',
+  steps: [
+    { key: 'save_settings', label: '保存配置', status: 'done', detail: '已完成' },
+    { key: 'refresh_subscription', label: '刷新订阅', status: 'done', detail: '已完成' },
+    { key: 'bootstrap_probe', label: '引导探测节点', status: 'running', detail: '3/8 · tokyo-03.example.com:443' },
+    { key: 'refresh_ui', label: '刷新列表与统计', status: 'pending', detail: null },
+  ],
+}
+
+const MANUAL_VALIDATING_PROGRESS: ForwardProxyDialogProgressState = {
+  action: 'validate',
+  activeStepKey: 'probe_nodes',
+  message: '2/4 · socks5h://198.51.100.8:1080',
+  steps: [
+    { key: 'parse_input', label: '解析输入', status: 'done', detail: '已完成' },
+    { key: 'probe_nodes', label: '探测节点', status: 'running', detail: '2/4 · socks5h://198.51.100.8:1080' },
+    { key: 'generate_result', label: '生成结果', status: 'pending', detail: null },
+  ],
+}
+
+const PROGRESS_FAILURE: ForwardProxyDialogProgressState = {
+  action: 'save',
+  activeStepKey: 'refresh_subscription',
+  message: 'Subscription unavailable: upstream returned 503 after 3 retries.',
+  steps: [
+    { key: 'save_settings', label: '保存配置', status: 'done', detail: '已完成' },
+    {
+      key: 'refresh_subscription',
+      label: '刷新订阅',
+      status: 'error',
+      detail: 'Subscription unavailable: upstream returned 503 after 3 retries.',
+    },
+    { key: 'bootstrap_probe', label: '引导探测节点', status: 'pending', detail: null },
+    { key: 'refresh_ui', label: '刷新列表与统计', status: 'pending', detail: null },
+  ],
+}
 
 interface StoryCanvasProps {
   dialogPreview?: ForwardProxyDialogPreviewState | null
@@ -226,6 +279,53 @@ export const ManualValidationOverflow: Story = {
       kind: 'manual',
       input: MANUAL_OVERFLOW_RESULTS.map((entry) => entry.value).join('\n'),
       results: MANUAL_OVERFLOW_RESULTS,
+    },
+  },
+}
+
+export const SubscriptionValidatingProgress: Story = {
+  args: {
+    dialogPreview: {
+      kind: 'subscription',
+      input: LONG_SUBSCRIPTION_URL,
+      validating: true,
+      progress: SUBSCRIPTION_VALIDATING_PROGRESS,
+      results: [],
+    },
+  },
+}
+
+export const SubscriptionAddingProgress: Story = {
+  args: {
+    dialogPreview: {
+      kind: 'subscription',
+      input: LONG_SUBSCRIPTION_URL,
+      progress: SUBSCRIPTION_ADDING_PROGRESS,
+      results: SUBSCRIPTION_SUCCESS_RESULT,
+    },
+  },
+}
+
+export const ManualValidatingProgress: Story = {
+  args: {
+    dialogPreview: {
+      kind: 'manual',
+      input: MANUAL_MIXED_RESULTS.map((entry) => entry.value).join('\n'),
+      validating: true,
+      progress: MANUAL_VALIDATING_PROGRESS,
+      results: [],
+    },
+  },
+}
+
+export const ProgressFailure: Story = {
+  args: {
+    dialogPreview: {
+      kind: 'subscription',
+      input: LONG_SUBSCRIPTION_URL,
+      error: 'Subscription unavailable: upstream returned 503 after 3 retries.',
+      progress: PROGRESS_FAILURE,
+      results: [],
     },
   },
 }

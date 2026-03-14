@@ -210,6 +210,150 @@ async function requestJsonWithToken<T>(
   return requestJson<T>(input, { ...init, headers })
 }
 
+export type ForwardProxyProgressOperation = 'save' | 'validate'
+export type ForwardProxyProgressPhaseKey =
+  | 'save_settings'
+  | 'refresh_subscription'
+  | 'bootstrap_probe'
+  | 'normalize_input'
+  | 'parse_input'
+  | 'fetch_subscription'
+  | 'probe_nodes'
+  | 'generate_result'
+  | 'refresh_ui'
+
+export type ForwardProxyProgressEvent =
+  | {
+      type: 'phase'
+      operation: ForwardProxyProgressOperation
+      phaseKey: ForwardProxyProgressPhaseKey
+      label: string
+      current?: number | null
+      total?: number | null
+      detail?: string | null
+    }
+  | {
+      type: 'complete'
+      operation: ForwardProxyProgressOperation
+      payload: unknown
+    }
+  | {
+      type: 'error'
+      operation: ForwardProxyProgressOperation
+      message: string
+      phaseKey?: ForwardProxyProgressPhaseKey | null
+      label?: string | null
+      current?: number | null
+      total?: number | null
+      detail?: string | null
+    }
+
+function extractErrorMessage(response: Response, fallbackBody?: string): Error & { status?: number } {
+  const err = new Error(
+    (fallbackBody != null && fallbackBody.trim().length > 0 ? fallbackBody : response.statusText)
+      || `Request failed with status ${response.status}`,
+  ) as Error & { status?: number }
+  err.status = response.status
+  return err
+}
+
+function parseForwardProxySseChunk(chunk: string): ForwardProxyProgressEvent | null {
+  const trimmed = chunk.trim()
+  if (!trimmed) return null
+  const data = trimmed
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => line.slice('data:'.length).trim())
+    .join('\n')
+  if (!data) return null
+  return JSON.parse(data) as ForwardProxyProgressEvent
+}
+
+async function requestForwardProxyProgress<T>(
+  input: RequestInfo,
+  init: RequestInit,
+  fallbackOperation: ForwardProxyProgressOperation,
+  onEvent?: (event: ForwardProxyProgressEvent) => void,
+): Promise<T> {
+  const headers = new Headers(init.headers ?? {})
+  headers.set('Accept', 'text/event-stream, application/json')
+  if (init.body != null && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json')
+  }
+
+  const response = await fetch(input, { ...init, headers })
+  const contentType = response.headers.get('Content-Type') ?? ''
+
+  if (!response.ok && !contentType.includes('text/event-stream')) {
+    const message = await response.text().catch(() => response.statusText)
+    throw extractErrorMessage(response, message)
+  }
+
+  if (!contentType.includes('text/event-stream')) {
+    const payload = (await response.json()) as T
+    onEvent?.({ type: 'complete', operation: fallbackOperation, payload })
+    return payload
+  }
+
+  if (!response.ok) {
+    const message = await response.text().catch(() => response.statusText)
+    throw extractErrorMessage(response, message)
+  }
+
+  const reader = response.body?.getReader()
+  if (!reader) {
+    throw new Error('Progress stream body is unavailable')
+  }
+
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let completePayload: T | null = null
+
+  while (true) {
+    const { done, value } = await reader.read()
+    buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done })
+
+    let boundaryIndex = buffer.search(/\r?\n\r?\n/)
+    while (boundaryIndex >= 0) {
+      const chunk = buffer.slice(0, boundaryIndex)
+      buffer = buffer.slice(boundaryIndex + (buffer[boundaryIndex] === '\r' ? 4 : 2))
+      const event = parseForwardProxySseChunk(chunk)
+      if (event) {
+        onEvent?.(event)
+        if (event.type === 'complete') {
+          completePayload = event.payload as T
+        }
+        if (event.type === 'error') {
+          throw new Error(event.message || event.detail || 'Forward proxy progress stream failed')
+        }
+      }
+      boundaryIndex = buffer.search(/\r?\n\r?\n/)
+    }
+
+    if (done) {
+      const trailingEvent = parseForwardProxySseChunk(buffer)
+      if (trailingEvent) {
+        onEvent?.(trailingEvent)
+        if (trailingEvent.type === 'complete') {
+          completePayload = trailingEvent.payload as T
+        }
+        if (trailingEvent.type === 'error') {
+          throw new Error(
+            trailingEvent.message || trailingEvent.detail || 'Forward proxy progress stream failed',
+          )
+        }
+      }
+      break
+    }
+  }
+
+  if (completePayload == null) {
+    throw new Error('Forward proxy progress stream ended before completion')
+  }
+
+  return completePayload
+}
+
 export interface VersionInfo {
   backend: string
   frontend: string
@@ -1191,6 +1335,22 @@ export function updateForwardProxySettings(
   })
 }
 
+export function updateForwardProxySettingsWithProgress(
+  payload: UpdateForwardProxySettingsPayload,
+  onEvent?: (event: ForwardProxyProgressEvent) => void,
+): Promise<ForwardProxySettings> {
+  return requestForwardProxyProgress<ForwardProxySettings>(
+    '/api/settings/forward-proxy',
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+    'save',
+    onEvent,
+  )
+}
+
 export function validateForwardProxyCandidate(
   payload: ForwardProxyValidationRequest,
 ): Promise<ForwardProxyValidationResponse> {
@@ -1199,6 +1359,22 @@ export function validateForwardProxyCandidate(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   })
+}
+
+export function validateForwardProxyCandidateWithProgress(
+  payload: ForwardProxyValidationRequest,
+  onEvent?: (event: ForwardProxyProgressEvent) => void,
+): Promise<ForwardProxyValidationResponse> {
+  return requestForwardProxyProgress<ForwardProxyValidationResponse>(
+    '/api/settings/forward-proxy/validate',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+    'validate',
+    onEvent,
+  )
 }
 
 export function fetchForwardProxyStats(signal?: AbortSignal): Promise<ForwardProxyStatsResponse> {

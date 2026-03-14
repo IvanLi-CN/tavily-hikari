@@ -152,10 +152,11 @@ import {
   type ForwardProxySettings,
   type ForwardProxyStatsResponse,
   type ForwardProxyValidationKind,
+  type ForwardProxyProgressEvent,
   fetchForwardProxySettings,
   fetchForwardProxyStats,
-  updateForwardProxySettings,
-  validateForwardProxyCandidate,
+  updateForwardProxySettingsWithProgress,
+  validateForwardProxyCandidateWithProgress,
 } from './api'
 
 const REFRESH_INTERVAL_MS = 30_000
@@ -1857,39 +1858,72 @@ function AdminDashboard(): JSX.Element {
     async (
       kind: ForwardProxyValidationKind,
       rawValues: string[],
+      onProgress?: (event: ForwardProxyProgressEvent) => void,
     ): Promise<ForwardProxyValidationEntry[]> => {
-      return Promise.all(
-        rawValues.map(async (value, index) => {
-          try {
-            const result = await validateForwardProxyCandidate({ kind, value })
-            return {
-              id: `${kind}:${index}:${value}`,
-              kind,
-              value,
-              result,
-            } satisfies ForwardProxyValidationEntry
-          } catch (err) {
-            return {
-              id: `${kind}:${index}:${value}`,
-              kind,
-              value,
-              result: {
-                ok: false,
-                message:
-                  err instanceof Error ? err.message : proxySettingsStrings.validation.requestFailed,
-                normalizedValue: value,
-                discoveredNodes: 0,
-                latencyMs: null,
-              },
-            } satisfies ForwardProxyValidationEntry
-          }
-        }),
-      )
+      const results: ForwardProxyValidationEntry[] = []
+
+      for (const [index, value] of rawValues.entries()) {
+        try {
+          const result = await validateForwardProxyCandidateWithProgress(
+            { kind, value },
+            (event) => {
+              if (!onProgress) return
+              if (kind === 'proxyUrl' && event.type === 'phase' && event.phaseKey === 'parse_input' && index > 0) {
+                return
+              }
+              if (event.type === 'phase' && event.phaseKey === 'probe_nodes') {
+                onProgress({
+                  ...event,
+                  current: index + 1,
+                  total: rawValues.length,
+                })
+                return
+              }
+              if (kind === 'proxyUrl' && event.type === 'phase' && event.phaseKey === 'generate_result' && index < rawValues.length - 1) {
+                return
+              }
+              if (event.type === 'complete') return
+              onProgress(event)
+            },
+          )
+          results.push({
+            id: `${kind}:${index}:${value}`,
+            kind,
+            value,
+            result,
+          } satisfies ForwardProxyValidationEntry)
+        } catch (err) {
+          results.push({
+            id: `${kind}:${index}:${value}`,
+            kind,
+            value,
+            result: {
+              ok: false,
+              message:
+                err instanceof Error ? err.message : proxySettingsStrings.validation.requestFailed,
+              normalizedValue: value,
+              discoveredNodes: 0,
+              latencyMs: null,
+            },
+          } satisfies ForwardProxyValidationEntry)
+        }
+      }
+
+      onProgress?.({
+        type: 'complete',
+        operation: 'validate',
+        payload: null,
+      })
+
+      return results
     },
     [proxySettingsStrings.validation.requestFailed],
   )
 
-  const saveForwardProxySettings = useCallback(async (nextDraft: ForwardProxyDraft) => {
+  const saveForwardProxySettings = useCallback(async (
+    nextDraft: ForwardProxyDraft,
+    onProgress?: (event: ForwardProxyProgressEvent) => void,
+  ) => {
     const parsedInterval = Number.parseInt(nextDraft.subscriptionUpdateIntervalSecs.trim(), 10)
     if (!Number.isFinite(parsedInterval) || parsedInterval <= 0) {
       setForwardProxySaveError(proxySettingsStrings.config.invalidInterval)
@@ -1900,18 +1934,27 @@ function AdminDashboard(): JSX.Element {
     setForwardProxySaving(true)
 
     try {
-      const nextSettings = await updateForwardProxySettings({
-        proxyUrls: splitMultilineEntries(nextDraft.proxyUrlsText),
-        subscriptionUrls: splitMultilineEntries(nextDraft.subscriptionUrlsText),
-        subscriptionUpdateIntervalSecs: parsedInterval,
-        insertDirect: nextDraft.insertDirect,
-      })
+      const nextSettings = await updateForwardProxySettingsWithProgress(
+        {
+          proxyUrls: splitMultilineEntries(nextDraft.proxyUrlsText),
+          subscriptionUrls: splitMultilineEntries(nextDraft.subscriptionUrlsText),
+          subscriptionUpdateIntervalSecs: parsedInterval,
+          insertDirect: nextDraft.insertDirect,
+        },
+        onProgress,
+      )
       setForwardProxySettings(nextSettings)
       setForwardProxySettingsLoadState('ready')
       setForwardProxySettingsError(null)
       setForwardProxySavedAt(Date.now())
       setLastUpdated(new Date())
       forwardProxySettingsLoadedRef.current = true
+      onProgress?.({
+        type: 'phase',
+        operation: 'save',
+        phaseKey: 'refresh_ui',
+        label: 'Refreshing settings and stats',
+      })
       await loadForwardProxyStatsData({ reason: 'refresh' })
     } catch (err) {
       console.error(err)

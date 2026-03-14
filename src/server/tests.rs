@@ -11977,6 +11977,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn admin_forward_proxy_validate_proxy_streams_progress_events() {
+        let db_path = temp_db_path("admin-forward-proxy-validate-proxy-sse");
+        let db_str = db_path.to_string_lossy().to_string();
+        let upstream_addr = spawn_forward_proxy_probe_upstream().await;
+        let fake_proxy_addr = spawn_fake_forward_proxy(StatusCode::NOT_FOUND).await;
+        let upstream = format!("http://{}/mcp", upstream_addr);
+        let usage_base = format!("http://{}", upstream_addr);
+        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+            .await
+            .expect("create proxy");
+        let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
+
+        let client = Client::new();
+        let response = client
+            .post(format!("http://{addr}/api/settings/forward-proxy/validate"))
+            .header(reqwest::header::ACCEPT, "text/event-stream")
+            .json(&serde_json::json!({
+                "kind": "proxyUrl",
+                "value": format!("http://{}", fake_proxy_addr),
+            }))
+            .send()
+            .await
+            .expect("validate proxy");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.text().await.expect("read sse body");
+        assert!(
+            body.contains("\"type\":\"phase\",\"operation\":\"validate\",\"phaseKey\":\"parse_input\""),
+            "expected parse_input phase, got: {body}"
+        );
+        assert!(
+            body.contains("\"type\":\"phase\",\"operation\":\"validate\",\"phaseKey\":\"probe_nodes\""),
+            "expected probe_nodes phase, got: {body}"
+        );
+        assert!(
+            body.contains("\"type\":\"complete\",\"operation\":\"validate\""),
+            "expected complete event, got: {body}"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn admin_forward_proxy_validate_subscription_accepts_reachable_404() {
         let db_path = temp_db_path("admin-forward-proxy-validate-subscription");
         let db_str = db_path.to_string_lossy().to_string();
@@ -12096,6 +12138,50 @@ mod tests {
         let nodes = body["nodes"].as_array().expect("nodes array");
         assert_eq!(nodes.len(), 1, "direct should not be injected");
         assert!(nodes.iter().all(|node| node["key"].as_str() != Some("__direct__")));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn admin_forward_proxy_settings_stream_progress_events() {
+        let db_path = temp_db_path("admin-forward-proxy-settings-sse");
+        let db_str = db_path.to_string_lossy().to_string();
+        let upstream_addr = spawn_forward_proxy_probe_upstream().await;
+        let fake_proxy_addr = spawn_fake_forward_proxy(StatusCode::NOT_FOUND).await;
+        let upstream = format!("http://{}/mcp", upstream_addr);
+        let usage_base = format!("http://{}", upstream_addr);
+        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+            .await
+            .expect("create proxy");
+        let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
+
+        let client = Client::new();
+        let response = client
+            .put(format!("http://{addr}/api/settings/forward-proxy"))
+            .header(reqwest::header::ACCEPT, "text/event-stream")
+            .json(&serde_json::json!({
+                "proxyUrls": [format!("http://{}", fake_proxy_addr)],
+                "subscriptionUrls": [],
+                "subscriptionUpdateIntervalSecs": 3600,
+                "insertDirect": true,
+            }))
+            .send()
+            .await
+            .expect("stream settings update");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.text().await.expect("read sse body");
+        assert!(
+            body.contains("\"type\":\"phase\",\"operation\":\"save\",\"phaseKey\":\"save_settings\""),
+            "expected save_settings phase, got: {body}"
+        );
+        assert!(
+            body.contains("\"type\":\"phase\",\"operation\":\"save\",\"phaseKey\":\"bootstrap_probe\""),
+            "expected bootstrap_probe phase, got: {body}"
+        );
+        assert!(
+            body.contains("\"type\":\"complete\",\"operation\":\"save\""),
+            "expected complete event, got: {body}"
+        );
 
         let _ = std::fs::remove_file(db_path);
     }

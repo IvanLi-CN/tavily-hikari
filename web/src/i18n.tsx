@@ -356,6 +356,33 @@ interface AdminTranslationsShape {
       subscriptionUnreachable: string
       validationFailed: string
     }
+    progress: {
+      titleValidate: string
+      titleSave: string
+      badgeValidate: string
+      badgeSave: string
+      buttonValidatingSubscription: string
+      buttonValidatingManual: string
+      buttonAddingSubscription: string
+      buttonAddingManual: string
+      running: string
+      waiting: string
+      done: string
+      failed: string
+      stepCounter: string
+      steps: Record<
+        | 'save_settings'
+        | 'refresh_subscription'
+        | 'bootstrap_probe'
+        | 'normalize_input'
+        | 'parse_input'
+        | 'fetch_subscription'
+        | 'probe_nodes'
+        | 'generate_result'
+        | 'refresh_ui',
+        string
+      >
+    }
     nodes: {
       title: string
       description: string
@@ -1421,6 +1448,32 @@ export const translations: Record<Language, TranslationShape> = {
           subscriptionUnreachable: 'Subscription unavailable',
           validationFailed: 'Validation failed',
         },
+        progress: {
+          titleValidate: 'Validation progress',
+          titleSave: 'Add progress',
+          badgeValidate: 'Validate',
+          badgeSave: 'Add',
+          buttonValidatingSubscription: 'Validating subscription…',
+          buttonValidatingManual: 'Validating nodes…',
+          buttonAddingSubscription: 'Adding subscription…',
+          buttonAddingManual: 'Importing nodes…',
+          running: 'In progress…',
+          waiting: 'Waiting…',
+          done: 'Done',
+          failed: 'Failed',
+          stepCounter: '{current}/{total}',
+          steps: {
+            save_settings: 'Save settings',
+            refresh_subscription: 'Refresh subscription',
+            bootstrap_probe: 'Run bootstrap probes',
+            normalize_input: 'Normalize input',
+            parse_input: 'Parse input',
+            fetch_subscription: 'Fetch subscription',
+            probe_nodes: 'Probe nodes',
+            generate_result: 'Prepare result',
+            refresh_ui: 'Refresh settings and stats',
+          },
+        },
         nodes: {
           title: 'Node pool & live stats',
           description: 'Observe current node state, window metrics, 24-hour activity, and key affinity spread.',
@@ -2473,6 +2526,32 @@ export const translations: Record<Language, TranslationShape> = {
           xrayMissing: 'Xray 不可用',
           subscriptionUnreachable: '订阅不可达',
           validationFailed: '验证失败',
+        },
+        progress: {
+          titleValidate: '验证进度',
+          titleSave: '添加进度',
+          badgeValidate: '验证',
+          badgeSave: '添加',
+          buttonValidatingSubscription: '正在验证订阅…',
+          buttonValidatingManual: '正在验证节点…',
+          buttonAddingSubscription: '正在添加订阅…',
+          buttonAddingManual: '正在导入节点…',
+          running: '进行中…',
+          waiting: '等待中…',
+          done: '已完成',
+          failed: '失败',
+          stepCounter: '{current}/{total}',
+          steps: {
+            save_settings: '保存配置',
+            refresh_subscription: '刷新订阅',
+            bootstrap_probe: '引导探测节点',
+            normalize_input: '规范化输入',
+            parse_input: '解析输入',
+            fetch_subscription: '拉取订阅',
+            probe_nodes: '探测节点',
+            generate_result: '生成结果',
+            refresh_ui: '刷新列表与统计',
+          },
         },
         nodes: {
           title: '节点池与实时统计',

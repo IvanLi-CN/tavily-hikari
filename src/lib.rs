@@ -19,6 +19,7 @@ use reqwest::{
     Client, Method, StatusCode, Url,
     header::{CONTENT_LENGTH, HOST, HeaderMap, HeaderValue},
 };
+use serde::Serialize;
 use serde_json::Value;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
@@ -30,6 +31,108 @@ pub use forward_proxy::{
     ForwardProxyLiveStatsResponse, ForwardProxySettings, ForwardProxySettingsResponse,
     ForwardProxyValidationError, ForwardProxyValidationProbeResult, ForwardProxyValidationResponse,
 };
+
+pub type ForwardProxyProgressCallback = dyn Fn(ForwardProxyProgressEvent) + Send + Sync;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum ForwardProxyProgressEvent {
+    Phase {
+        operation: &'static str,
+        #[serde(rename = "phaseKey")]
+        phase_key: &'static str,
+        label: &'static str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        current: Option<usize>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        total: Option<usize>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+    },
+    Complete {
+        operation: &'static str,
+        payload: Value,
+    },
+    Error {
+        operation: &'static str,
+        message: String,
+        #[serde(rename = "phaseKey")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        phase_key: Option<&'static str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        label: Option<&'static str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        current: Option<usize>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        total: Option<usize>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+    },
+}
+
+impl ForwardProxyProgressEvent {
+    pub fn phase(operation: &'static str, phase_key: &'static str, label: &'static str) -> Self {
+        Self::Phase {
+            operation,
+            phase_key,
+            label,
+            current: None,
+            total: None,
+            detail: None,
+        }
+    }
+
+    pub fn phase_with_progress(
+        operation: &'static str,
+        phase_key: &'static str,
+        label: &'static str,
+        current: usize,
+        total: usize,
+        detail: Option<String>,
+    ) -> Self {
+        Self::Phase {
+            operation,
+            phase_key,
+            label,
+            current: Some(current),
+            total: Some(total),
+            detail,
+        }
+    }
+
+    pub fn complete(operation: &'static str, payload: Value) -> Self {
+        Self::Complete { operation, payload }
+    }
+
+    pub fn error(
+        operation: &'static str,
+        message: impl Into<String>,
+        phase_key: Option<&'static str>,
+        label: Option<&'static str>,
+        current: Option<usize>,
+        total: Option<usize>,
+        detail: Option<String>,
+    ) -> Self {
+        Self::Error {
+            operation,
+            message: message.into(),
+            phase_key,
+            label,
+            current,
+            total,
+            detail,
+        }
+    }
+}
+
+fn emit_forward_proxy_progress(
+    progress: Option<&ForwardProxyProgressCallback>,
+    event: ForwardProxyProgressEvent,
+) {
+    if let Some(progress) = progress {
+        progress(event);
+    }
+}
 
 /// Tavily MCP upstream默认端点。
 pub const DEFAULT_UPSTREAM: &str = "https://mcp.tavily.com/mcp";
@@ -1017,6 +1120,27 @@ impl ApiKeyUpsertStatus {
     }
 }
 
+const FORWARD_PROXY_PROGRESS_OPERATION_SAVE: &str = "save";
+const FORWARD_PROXY_PROGRESS_OPERATION_VALIDATE: &str = "validate";
+
+const FORWARD_PROXY_PHASE_SAVE_SETTINGS: &str = "save_settings";
+const FORWARD_PROXY_PHASE_REFRESH_SUBSCRIPTION: &str = "refresh_subscription";
+const FORWARD_PROXY_PHASE_BOOTSTRAP_PROBE: &str = "bootstrap_probe";
+const FORWARD_PROXY_PHASE_NORMALIZE_INPUT: &str = "normalize_input";
+const FORWARD_PROXY_PHASE_PARSE_INPUT: &str = "parse_input";
+const FORWARD_PROXY_PHASE_FETCH_SUBSCRIPTION: &str = "fetch_subscription";
+const FORWARD_PROXY_PHASE_PROBE_NODES: &str = "probe_nodes";
+const FORWARD_PROXY_PHASE_GENERATE_RESULT: &str = "generate_result";
+
+const FORWARD_PROXY_LABEL_SAVE_SETTINGS: &str = "Saving forward proxy settings";
+const FORWARD_PROXY_LABEL_REFRESH_SUBSCRIPTION: &str = "Refreshing subscription nodes";
+const FORWARD_PROXY_LABEL_BOOTSTRAP_PROBE: &str = "Running bootstrap probes";
+const FORWARD_PROXY_LABEL_NORMALIZE_INPUT: &str = "Normalizing input";
+const FORWARD_PROXY_LABEL_PARSE_INPUT: &str = "Parsing input";
+const FORWARD_PROXY_LABEL_FETCH_SUBSCRIPTION: &str = "Fetching subscription";
+const FORWARD_PROXY_LABEL_PROBE_NODES: &str = "Probing nodes";
+const FORWARD_PROXY_LABEL_GENERATE_RESULT: &str = "Preparing result";
+
 impl TavilyProxy {
     pub async fn new<I, S>(keys: I, database_path: &str) -> Result<Self, ProxyError>
     where
@@ -1141,6 +1265,15 @@ impl TavilyProxy {
         &self,
         settings: ForwardProxySettings,
     ) -> Result<ForwardProxySettingsResponse, ProxyError> {
+        self.update_forward_proxy_settings_with_progress(settings, None)
+            .await
+    }
+
+    pub async fn update_forward_proxy_settings_with_progress(
+        &self,
+        settings: ForwardProxySettings,
+        progress: Option<&ForwardProxyProgressCallback>,
+    ) -> Result<ForwardProxySettingsResponse, ProxyError> {
         let normalized = settings.normalized();
         let previous_manager = {
             let manager = self.forward_proxy.lock().await;
@@ -1152,13 +1285,24 @@ impl TavilyProxy {
             .filter(|endpoint| endpoint.source == forward_proxy::FORWARD_PROXY_SOURCE_SUBSCRIPTION)
             .filter_map(|endpoint| endpoint.raw_url.clone())
             .collect::<Vec<_>>();
+        emit_forward_proxy_progress(
+            progress,
+            ForwardProxyProgressEvent::phase(
+                FORWARD_PROXY_PROGRESS_OPERATION_SAVE,
+                FORWARD_PROXY_PHASE_SAVE_SETTINGS,
+                FORWARD_PROXY_LABEL_SAVE_SETTINGS,
+            ),
+        );
         forward_proxy::save_forward_proxy_settings(&self.key_store.pool, normalized.clone())
             .await?;
         {
             let mut manager = self.forward_proxy.lock().await;
             manager.apply_settings(normalized.clone());
         }
-        if let Err(err) = self.refresh_forward_proxy_subscriptions().await {
+        if let Err(err) = self
+            .refresh_forward_proxy_subscriptions_with_progress(progress)
+            .await
+        {
             eprintln!("forward-proxy subscription refresh after settings update error: {err}");
             if normalized.subscription_urls == previous_manager.settings.subscription_urls
                 && !previous_subscription_urls.is_empty()
@@ -1178,7 +1322,19 @@ impl TavilyProxy {
                 .cloned()
                 .collect::<Vec<_>>()
         };
-        for endpoint in targets.drain(..) {
+        let bootstrap_total = targets.len();
+        for (index, endpoint) in targets.drain(..).enumerate() {
+            emit_forward_proxy_progress(
+                progress,
+                ForwardProxyProgressEvent::phase_with_progress(
+                    FORWARD_PROXY_PROGRESS_OPERATION_SAVE,
+                    FORWARD_PROXY_PHASE_BOOTSTRAP_PROBE,
+                    FORWARD_PROXY_LABEL_BOOTSTRAP_PROBE,
+                    index + 1,
+                    bootstrap_total,
+                    Some(endpoint.display_name.clone()),
+                ),
+            );
             let _ = self
                 .probe_and_record_forward_proxy_endpoint(
                     &endpoint,
@@ -1196,13 +1352,38 @@ impl TavilyProxy {
         proxy_urls: Vec<String>,
         subscription_urls: Vec<String>,
     ) -> Result<ForwardProxyValidationResponse, ProxyError> {
+        self.validate_forward_proxy_candidates_with_progress(proxy_urls, subscription_urls, None)
+            .await
+    }
+
+    pub async fn validate_forward_proxy_candidates_with_progress(
+        &self,
+        proxy_urls: Vec<String>,
+        subscription_urls: Vec<String>,
+        progress: Option<&ForwardProxyProgressCallback>,
+    ) -> Result<ForwardProxyValidationResponse, ProxyError> {
         let mut results = Vec::new();
         let mut normalized_values = Vec::new();
         let mut discovered_nodes = 0usize;
         let mut best_latency: Option<f64> = None;
         let probe_url = forward_proxy::derive_probe_url(&self.upstream);
+        let normalized_proxy_urls = forward_proxy::normalize_proxy_url_entries(proxy_urls);
+        let normalized_subscription_urls =
+            forward_proxy::normalize_subscription_entries(subscription_urls);
 
-        for raw in forward_proxy::normalize_proxy_url_entries(proxy_urls) {
+        if !normalized_proxy_urls.is_empty() {
+            emit_forward_proxy_progress(
+                progress,
+                ForwardProxyProgressEvent::phase(
+                    FORWARD_PROXY_PROGRESS_OPERATION_VALIDATE,
+                    FORWARD_PROXY_PHASE_PARSE_INPUT,
+                    FORWARD_PROXY_LABEL_PARSE_INPUT,
+                ),
+            );
+        }
+
+        let manual_total = normalized_proxy_urls.len();
+        for (index, raw) in normalized_proxy_urls.into_iter().enumerate() {
             let Some(parsed) = forward_proxy::parse_forward_proxy_entry(&raw) else {
                 results.push(ForwardProxyValidationProbeResult {
                     value: raw.clone(),
@@ -1226,6 +1407,17 @@ impl TavilyProxy {
                 endpoint_url: parsed.endpoint_url.clone(),
                 raw_url: Some(parsed.normalized.clone()),
             };
+            emit_forward_proxy_progress(
+                progress,
+                ForwardProxyProgressEvent::phase_with_progress(
+                    FORWARD_PROXY_PROGRESS_OPERATION_VALIDATE,
+                    FORWARD_PROXY_PHASE_PROBE_NODES,
+                    FORWARD_PROXY_LABEL_PROBE_NODES,
+                    index + 1,
+                    manual_total,
+                    Some(endpoint.display_name.clone()),
+                ),
+            );
             match self
                 .probe_forward_proxy_endpoint(
                     &endpoint,
@@ -1263,9 +1455,20 @@ impl TavilyProxy {
             }
         }
 
-        for subscription_url in forward_proxy::normalize_subscription_entries(subscription_urls) {
+        if !normalized_subscription_urls.is_empty() {
+            emit_forward_proxy_progress(
+                progress,
+                ForwardProxyProgressEvent::phase(
+                    FORWARD_PROXY_PROGRESS_OPERATION_VALIDATE,
+                    FORWARD_PROXY_PHASE_NORMALIZE_INPUT,
+                    FORWARD_PROXY_LABEL_NORMALIZE_INPUT,
+                ),
+            );
+        }
+
+        for subscription_url in normalized_subscription_urls {
             match self
-                .validate_forward_proxy_subscription(&subscription_url)
+                .validate_forward_proxy_subscription_with_progress(&subscription_url, progress)
                 .await
             {
                 Ok((count, latency_ms, mut normalized)) => {
@@ -1298,6 +1501,14 @@ impl TavilyProxy {
             }
         }
 
+        emit_forward_proxy_progress(
+            progress,
+            ForwardProxyProgressEvent::phase(
+                FORWARD_PROXY_PROGRESS_OPERATION_VALIDATE,
+                FORWARD_PROXY_PHASE_GENERATE_RESULT,
+                FORWARD_PROXY_LABEL_GENERATE_RESULT,
+            ),
+        );
         normalized_values.sort();
         normalized_values.dedup();
         let ok = results.iter().any(|result| result.ok);
@@ -1323,9 +1534,10 @@ impl TavilyProxy {
         })
     }
 
-    async fn validate_forward_proxy_subscription(
+    async fn validate_forward_proxy_subscription_with_progress(
         &self,
         subscription_url: &str,
+        progress: Option<&ForwardProxyProgressCallback>,
     ) -> Result<(usize, f64, Vec<String>), ProxyError> {
         let validation_timeout =
             Duration::from_secs(forward_proxy::FORWARD_PROXY_SUBSCRIPTION_VALIDATION_TIMEOUT_SECS);
@@ -1337,6 +1549,14 @@ impl TavilyProxy {
                 .ok_or_else(|| {
                     ProxyError::Other("subscription url must be a valid http/https url".to_string())
                 })?;
+        emit_forward_proxy_progress(
+            progress,
+            ForwardProxyProgressEvent::phase(
+                FORWARD_PROXY_PROGRESS_OPERATION_VALIDATE,
+                FORWARD_PROXY_PHASE_FETCH_SUBSCRIPTION,
+                FORWARD_PROXY_LABEL_FETCH_SUBSCRIPTION,
+            ),
+        );
         let urls = forward_proxy::fetch_subscription_proxy_urls_with_validation_budget(
             &self.forward_proxy_clients.direct_client(),
             &normalized_subscription,
@@ -1372,7 +1592,19 @@ impl TavilyProxy {
         };
         let mut last_error: Option<ProxyError> = None;
         let mut best_latency: Option<f64> = None;
-        for endpoint in endpoints.iter().take(3) {
+        let probe_total = endpoints.len().min(3);
+        for (index, endpoint) in endpoints.iter().take(3).enumerate() {
+            emit_forward_proxy_progress(
+                progress,
+                ForwardProxyProgressEvent::phase_with_progress(
+                    FORWARD_PROXY_PROGRESS_OPERATION_VALIDATE,
+                    FORWARD_PROXY_PHASE_PROBE_NODES,
+                    FORWARD_PROXY_LABEL_PROBE_NODES,
+                    index + 1,
+                    probe_total,
+                    Some(endpoint.display_name.clone()),
+                ),
+            );
             let Some(remaining_timeout) =
                 validation_timeout.checked_sub(validation_started.elapsed())
             else {
@@ -1421,6 +1653,14 @@ impl TavilyProxy {
     }
 
     pub async fn refresh_forward_proxy_subscriptions(&self) -> Result<(), ProxyError> {
+        self.refresh_forward_proxy_subscriptions_with_progress(None)
+            .await
+    }
+
+    pub async fn refresh_forward_proxy_subscriptions_with_progress(
+        &self,
+        progress: Option<&ForwardProxyProgressCallback>,
+    ) -> Result<(), ProxyError> {
         let settings = {
             let manager = self.forward_proxy.lock().await;
             manager.settings.clone()
@@ -1428,7 +1668,19 @@ impl TavilyProxy {
 
         let mut subscription_urls = Vec::new();
         let mut fetched_any_subscription = false;
-        for subscription_url in &settings.subscription_urls {
+        let total = settings.subscription_urls.len();
+        for (index, subscription_url) in settings.subscription_urls.iter().enumerate() {
+            emit_forward_proxy_progress(
+                progress,
+                ForwardProxyProgressEvent::phase_with_progress(
+                    FORWARD_PROXY_PROGRESS_OPERATION_SAVE,
+                    FORWARD_PROXY_PHASE_REFRESH_SUBSCRIPTION,
+                    FORWARD_PROXY_LABEL_REFRESH_SUBSCRIPTION,
+                    index + 1,
+                    total,
+                    Some(subscription_url.clone()),
+                ),
+            );
             match forward_proxy::fetch_subscription_proxy_urls(
                 &self.forward_proxy_clients.direct_client(),
                 subscription_url,
