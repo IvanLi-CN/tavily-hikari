@@ -9,6 +9,7 @@ export interface UserConsoleFooterStrings {
   githubAria: string
   githubLabel: string
   loadingVersion: string
+  errorVersion: string
   tagPrefix: string
 }
 
@@ -21,22 +22,34 @@ export function buildUserConsoleFooterRelease(version: VersionInfo | null): {
     return null
   }
 
-  const clean = raw.replace(/-.+$/, '')
-  const tag = clean.startsWith('v') ? clean : `v${clean}`
+  // Only stable semver builds map cleanly to a GitHub release tag.
+  if (!/^v?\d+\.\d+\.\d+$/.test(raw)) {
+    return null
+  }
+
+  const tag = raw.startsWith('v') ? raw : `v${raw}`
   return {
     href: `${REPO_URL}/releases/tag/${tag}`,
-    label: `v${raw}`,
+    label: tag,
   }
 }
 
 export default function UserConsoleFooter({
   strings,
-  version,
+  versionState,
 }: {
   strings: UserConsoleFooterStrings
-  version: VersionInfo | null
+  versionState:
+    | { status: 'loading' }
+    | { status: 'error' }
+    | { status: 'ready'; value: VersionInfo | null }
 }): JSX.Element {
-  const release = buildUserConsoleFooterRelease(version)
+  const release = versionState.status === 'ready'
+    ? buildUserConsoleFooterRelease(versionState.value)
+    : null
+  const versionLabel = versionState.status === 'ready'
+    ? versionState.value?.backend?.trim() || null
+    : null
 
   return (
     <footer className="app-footer user-console-footer">
@@ -61,6 +74,13 @@ export default function UserConsoleFooter({
               {release.label}
             </a>
           </>
+        ) : versionLabel ? (
+          <>
+            {strings.tagPrefix}
+            <span>{versionLabel.startsWith('v') ? versionLabel : `v${versionLabel}`}</span>
+          </>
+        ) : versionState.status === 'error' ? (
+          strings.errorVersion
         ) : (
           strings.loadingVersion
         )}

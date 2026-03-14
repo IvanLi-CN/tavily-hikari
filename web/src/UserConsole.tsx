@@ -238,7 +238,9 @@ export default function UserConsole(): JSX.Element {
   const [profile, setProfile] = useState<Profile | null>(null)
   const [dashboard, setDashboard] = useState<UserDashboard | null>(null)
   const [tokens, setTokens] = useState<UserTokenSummary[]>([])
-  const [version, setVersion] = useState<VersionInfo | null>(null)
+  const [versionState, setVersionState] = useState<
+    { status: 'loading' } | { status: 'error' } | { status: 'ready'; value: VersionInfo | null }
+  >({ status: 'loading' })
   const [route, setRoute] = useState<ConsoleRoute>(() => parseUserConsoleHash(window.location.hash || ''))
   const [detail, setDetail] = useState<UserTokenSummary | null>(null)
   const [detailLogs, setDetailLogs] = useState<PublicTokenLog[]>([])
@@ -344,10 +346,10 @@ export default function UserConsole(): JSX.Element {
     const controller = new AbortController()
     fetchVersion(controller.signal)
       .then((nextVersion) => {
-        setVersion(nextVersion)
+        setVersionState({ status: 'ready', value: nextVersion })
       })
       .catch(() => {
-        setVersion(null)
+        setVersionState({ status: 'error' })
       })
     return () => controller.abort()
   }, [])
@@ -1849,7 +1851,7 @@ export default function UserConsole(): JSX.Element {
 
         </>
       )}
-      <UserConsoleFooter strings={text.footer} version={version} />
+      <UserConsoleFooter strings={text.footer} versionState={versionState} />
       <ManualCopyBubble
         open={manualCopyBubble != null}
         anchorEl={manualCopyBubble?.anchorEl ?? null}
@@ -2305,6 +2307,7 @@ const EN = {
     githubAria: 'Open GitHub repository',
     githubLabel: 'GitHub',
     loadingVersion: '· Loading version…',
+    errorVersion: '· Version unavailable',
     tagPrefix: '· ',
   },
 }
@@ -2454,6 +2457,7 @@ const ZH = {
     githubAria: '打开 GitHub 仓库',
     githubLabel: 'GitHub',
     loadingVersion: '· 正在读取版本…',
+    errorVersion: '· 版本不可用',
     tagPrefix: '· ',
   },
 }

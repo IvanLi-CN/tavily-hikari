@@ -8,6 +8,7 @@ const strings = {
   githubAria: 'Open GitHub repository',
   githubLabel: 'GitHub',
   loadingVersion: '· Loading version…',
+  errorVersion: '· Version unavailable',
   tagPrefix: '· ',
 }
 
@@ -16,7 +17,7 @@ describe('UserConsoleFooter', () => {
     const html = renderToStaticMarkup(
       <UserConsoleFooter
         strings={strings}
-        version={{ backend: '0.2.0-dev', frontend: '0.2.0-dev' }}
+        versionState={{ status: 'ready', value: { backend: '0.2.0', frontend: '0.2.0' } }}
       />,
     )
 
@@ -24,22 +25,43 @@ describe('UserConsoleFooter', () => {
     expect(html).toContain('Open GitHub repository')
     expect(html).toContain('href="https://github.com/IvanLi-CN/tavily-hikari"')
     expect(html).toContain('href="https://github.com/IvanLi-CN/tavily-hikari/releases/tag/v0.2.0"')
-    expect(html).toContain('v0.2.0-dev')
+    expect(html).toContain('v0.2.0')
   })
 
-  it('falls back to the loading copy when version data is unavailable', () => {
-    const html = renderToStaticMarkup(<UserConsoleFooter strings={strings} version={null} />)
+  it('renders plain text when the version is a non-release build', () => {
+    const html = renderToStaticMarkup(
+      <UserConsoleFooter
+        strings={strings}
+        versionState={{ status: 'ready', value: { backend: '0.2.0-dev', frontend: '0.2.0-dev' } }}
+      />,
+    )
+
+    expect(html).toContain('v0.2.0-dev')
+    expect(html).not.toContain('/releases/tag/')
+  })
+
+  it('falls back to the loading copy while version data is still loading', () => {
+    const html = renderToStaticMarkup(<UserConsoleFooter strings={strings} versionState={{ status: 'loading' }} />)
 
     expect(html).toContain('· Loading version…')
+    expect(html).not.toContain('/releases/tag/')
+  })
+
+  it('shows an error placeholder when the version request fails', () => {
+    const html = renderToStaticMarkup(<UserConsoleFooter strings={strings} versionState={{ status: 'error' }} />)
+
+    expect(html).toContain('· Version unavailable')
     expect(html).not.toContain('/releases/tag/')
   })
 })
 
 describe('buildUserConsoleFooterRelease', () => {
-  it('strips prerelease suffixes when building the release tag URL', () => {
-    expect(buildUserConsoleFooterRelease({ backend: '0.2.0-dev', frontend: '0.2.0-dev' })).toEqual({
+  it('builds a release link for stable semver versions only', () => {
+    expect(buildUserConsoleFooterRelease({ backend: '0.2.0', frontend: '0.2.0' })).toEqual({
       href: 'https://github.com/IvanLi-CN/tavily-hikari/releases/tag/v0.2.0',
-      label: 'v0.2.0-dev',
+      label: 'v0.2.0',
     })
+    expect(buildUserConsoleFooterRelease({ backend: '0.2.0-dev', frontend: '0.2.0-dev' })).toBeNull()
+    expect(buildUserConsoleFooterRelease({ backend: 'ci-deadbeef', frontend: 'ci-deadbeef' })).toBeNull()
   })
 })
