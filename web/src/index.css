@@ -5507,7 +5507,12 @@ tbody .log-details-row:hover {
   display: flex;
   justify-content: flex-end;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
+}
+
+.user-console-footer {
+  padding-inline: 4px;
 }
 
 .app-footer .footer-meta {

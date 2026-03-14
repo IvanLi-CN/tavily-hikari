@@ -160,6 +160,11 @@ const adminProfileSample: Profile = {
   isAdmin: true,
 }
 
+const versionSample = {
+  backend: '0.2.0-dev',
+  frontend: '0.2.0-dev',
+}
+
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
@@ -241,6 +246,10 @@ function installUserConsoleFetchMock(state: UserConsoleStoryState): () => void {
 
     if (url.pathname === '/api/user/dashboard') {
       return jsonResponse(dashboardSample)
+    }
+
+    if (url.pathname === '/api/version') {
+      return jsonResponse(versionSample)
     }
 
     if (url.pathname === '/api/user/tokens') {

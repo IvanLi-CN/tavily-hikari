@@ -5,6 +5,7 @@ import TokenSecretField, { type TokenSecretCopyState } from './components/TokenS
 import ManualCopyBubble from './components/ManualCopyBubble'
 
 import {
+  fetchVersion,
   fetchProfile,
   probeApiTavilyCrawl,
   probeApiTavilyExtract,
@@ -23,11 +24,13 @@ import {
   type PublicTokenLog,
   type UserDashboard,
   type UserTokenSummary,
+  type VersionInfo,
 } from './api'
 import LanguageSwitcher from './components/LanguageSwitcher'
 import RollingNumber from './components/RollingNumber'
 import { StatusBadge, type StatusTone } from './components/StatusBadge'
 import ThemeToggle from './components/ThemeToggle'
+import UserConsoleFooter from './components/UserConsoleFooter'
 import { Button } from './components/ui/button'
 import { useLanguage, useTranslate, type Language } from './i18n'
 import { copyText, isCopyIntentKey, selectAllReadonlyText, shouldPrewarmSecretCopy } from './lib/clipboard'
@@ -51,7 +54,6 @@ import {
   type UserConsoleRoute as ConsoleRoute,
 } from './lib/userConsoleRoutes'
 
-const REPO_URL = 'https://github.com/IvanLi-CN/tavily-hikari'
 const CODEX_DOC_URL = 'https://github.com/openai/codex/blob/main/docs/config.md'
 const CLAUDE_DOC_URL = 'https://code.claude.com/docs/en/mcp'
 const VSCODE_DOC_URL = 'https://code.visualstudio.com/docs/copilot/customization/mcp-servers'
@@ -236,6 +238,7 @@ export default function UserConsole(): JSX.Element {
   const [profile, setProfile] = useState<Profile | null>(null)
   const [dashboard, setDashboard] = useState<UserDashboard | null>(null)
   const [tokens, setTokens] = useState<UserTokenSummary[]>([])
+  const [version, setVersion] = useState<VersionInfo | null>(null)
   const [route, setRoute] = useState<ConsoleRoute>(() => parseUserConsoleHash(window.location.hash || ''))
   const [detail, setDetail] = useState<UserTokenSummary | null>(null)
   const [detailLogs, setDetailLogs] = useState<PublicTokenLog[]>([])
@@ -336,6 +339,18 @@ export default function UserConsole(): JSX.Element {
     void reloadBase(controller.signal)
     return () => controller.abort()
   }, [reloadBase])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    fetchVersion(controller.signal)
+      .then((nextVersion) => {
+        setVersion(nextVersion)
+      })
+      .catch(() => {
+        setVersion(null)
+      })
+    return () => controller.abort()
+  }, [])
 
   const consoleAvailability = resolveUserConsoleAvailability(profile)
 
@@ -1832,14 +1847,9 @@ export default function UserConsole(): JSX.Element {
             {activeGuide === 'cherryStudio' && <CherryStudioMock apiKeyExample={guideToken} />}
           </section>
 
-          <footer className="surface public-home-footer">
-            <a className="footer-gh" href={REPO_URL} target="_blank" rel="noreferrer">
-              <img src="https://api.iconify.design/mdi/github.svg?color=%232563eb" alt="GitHub" />
-              <span>GitHub</span>
-            </a>
-          </footer>
         </>
       )}
+      <UserConsoleFooter strings={text.footer} version={version} />
       <ManualCopyBubble
         open={manualCopyBubble != null}
         anchorEl={manualCopyBubble?.anchorEl ?? null}
@@ -2290,6 +2300,13 @@ const EN = {
     load: 'Failed to load console data',
     detail: 'Failed to load token detail',
   },
+  footer: {
+    title: 'Tavily Hikari User Console',
+    githubAria: 'Open GitHub repository',
+    githubLabel: 'GitHub',
+    loadingVersion: '· Loading version…',
+    tagPrefix: '· ',
+  },
 }
 
 const ZH = {
@@ -2431,5 +2448,12 @@ const ZH = {
   errors: {
     load: '加载控制台数据失败',
     detail: '加载 Token 详情失败',
+  },
+  footer: {
+    title: 'Tavily Hikari 用户控制台',
+    githubAria: '打开 GitHub 仓库',
+    githubLabel: 'GitHub',
+    loadingVersion: '· 正在读取版本…',
+    tagPrefix: '· ',
   },
 }
