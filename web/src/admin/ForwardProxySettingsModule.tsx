@@ -69,6 +69,16 @@ export interface ForwardProxyValidationEntry {
   result: ForwardProxyValidationResponse
 }
 
+type ForwardProxyDialogKind = 'subscription' | 'manual' | null
+
+export interface ForwardProxyDialogPreviewState {
+  kind: Exclude<ForwardProxyDialogKind, null>
+  input: string
+  error?: string | null
+  validating?: boolean
+  results?: ForwardProxyValidationEntry[]
+}
+
 interface ForwardProxySettingsModuleProps {
   strings: AdminTranslations['proxySettings']
   settings: ForwardProxySettings | null
@@ -86,9 +96,8 @@ interface ForwardProxySettingsModuleProps {
     values: string[],
   ) => Promise<ForwardProxyValidationEntry[]>
   onRefresh: () => void
+  dialogPreview?: ForwardProxyDialogPreviewState | null
 }
-
-type ForwardProxyDialogKind = 'subscription' | 'manual' | null
 
 const FORWARD_PROXY_INTERVAL_OPTIONS = [
   { value: '60', label: '1m' },
@@ -605,6 +614,191 @@ function mapValidationErrorLabel(
   }
 }
 
+function ForwardProxyCandidateDialog({
+  strings,
+  dialogIsSubscription,
+  dialogInput,
+  dialogError,
+  dialogValidating,
+  dialogResults,
+  dialogAvailableResults,
+  saving,
+  onClose,
+  onInputChange,
+  onValidate,
+  onAddSubscription,
+  onAddManualBatch,
+  onAddManualEntry,
+}: {
+  strings: AdminTranslations['proxySettings']
+  dialogIsSubscription: boolean
+  dialogInput: string
+  dialogError: string | null
+  dialogValidating: boolean
+  dialogResults: ForwardProxyValidationEntry[]
+  dialogAvailableResults: ForwardProxyValidationEntry[]
+  saving: boolean
+  onClose: () => void
+  onInputChange: (value: string) => void
+  onValidate: () => void
+  onAddSubscription: () => void
+  onAddManualBatch: () => void
+  onAddManualEntry: (entry: ForwardProxyValidationEntry) => void
+}): JSX.Element {
+  return (
+    <div className="flex min-h-0 flex-col">
+      <DialogHeader className="shrink-0 px-6 pt-6">
+        <DialogTitle>
+          {dialogIsSubscription ? strings.config.subscriptionDialogTitle : strings.config.manualDialogTitle}
+        </DialogTitle>
+        <DialogDescription>
+          {dialogIsSubscription ? strings.config.subscriptionDialogDescription : strings.config.manualDialogDescription}
+        </DialogDescription>
+      </DialogHeader>
+
+      <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-5 pt-4">
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-foreground" htmlFor="forward-proxy-dialog-input">
+              {dialogIsSubscription ? strings.config.subscriptionDialogInputLabel : strings.config.manualDialogInputLabel}
+            </label>
+            {dialogIsSubscription ? (
+              <Input
+                id="forward-proxy-dialog-input"
+                value={dialogInput}
+                placeholder={strings.config.subscriptionsPlaceholder}
+                onChange={(event) => onInputChange(event.target.value)}
+              />
+            ) : (
+              <Textarea
+                id="forward-proxy-dialog-input"
+                rows={7}
+                value={dialogInput}
+                placeholder={strings.config.manualPlaceholder}
+                onChange={(event) => onInputChange(event.target.value)}
+              />
+            )}
+          </div>
+
+          {dialogError && (
+            <div className="alert alert-error" role="alert">
+              {dialogError}
+            </div>
+          )}
+
+          {dialogValidating && (
+            <div className="alert" role="status">
+              {strings.config.validating}
+            </div>
+          )}
+
+          {!dialogIsSubscription && dialogResults.length > 0 && (
+            <div className="overflow-hidden rounded-2xl border border-border/70 bg-card/35">
+              <Table className="table-fixed text-xs">
+                <TableHeader className="bg-muted/40 uppercase tracking-[0.08em] text-[11px] text-muted-foreground">
+                  <TableRow className="hover:bg-transparent">
+                    <TableHead className="w-12">#</TableHead>
+                    <TableHead>{strings.config.resultNode}</TableHead>
+                    <TableHead className="w-24">{strings.config.resultStatus}</TableHead>
+                    <TableHead className="w-28 text-right">{strings.config.resultLatency}</TableHead>
+                    <TableHead className="w-24 text-right">{strings.config.resultAction}</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {dialogResults.map((entry, index) => (
+                    <TableRow key={entry.id} className="border-border/65">
+                      <TableCell>{index + 1}</TableCell>
+                      <TableCell className="min-w-0">
+                        <div className="truncate font-medium">
+                          {extractListDisplayName(
+                            entry.result.normalizedValue ?? entry.value,
+                            strings.config.manualItemFallback.replace('{index}', String(index + 1)),
+                          )}
+                        </div>
+                        <div className="truncate text-[11px] text-muted-foreground">
+                          {entry.result.normalizedValue ?? entry.value}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex flex-col items-start gap-1">
+                          <Badge variant={entry.result.ok ? 'success' : 'destructive'}>
+                            {entry.result.ok
+                              ? strings.validation.ok
+                              : mapValidationErrorLabel(strings, entry.result.errorCode)}
+                          </Badge>
+                          {!entry.result.ok && (
+                            <span className="text-[11px] text-muted-foreground">{entry.result.message}</span>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-right text-muted-foreground">{formatLatency(entry.result.latencyMs)}</TableCell>
+                      <TableCell className="text-right">
+                        <Button
+                          type="button"
+                          size="xs"
+                          onClick={() => onAddManualEntry(entry)}
+                          disabled={!entry.result.ok || saving}
+                        >
+                          {strings.config.add}
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+
+          {dialogIsSubscription && dialogResults[0] && (
+            <Card className="forward-proxy-validation-card">
+              <CardContent className="forward-proxy-validation-card-content">
+                <div className="forward-proxy-validation-head">
+                  <Badge variant={dialogResults[0].result.ok ? 'success' : 'destructive'}>
+                    {dialogResults[0].result.ok
+                      ? strings.validation.ok
+                      : mapValidationErrorLabel(strings, dialogResults[0].result.errorCode)}
+                  </Badge>
+                  <Badge variant="outline">{strings.validation.subscriptionKind}</Badge>
+                </div>
+                <code className="forward-proxy-code-block">
+                  {dialogResults[0].result.normalizedValue ?? dialogResults[0].value}
+                </code>
+                <p className="forward-proxy-validation-message">{dialogResults[0].result.message}</p>
+                <div className="forward-proxy-validation-meta">
+                  <span>
+                    {strings.validation.discoveredNodes}: {formatNumber(dialogResults[0].result.discoveredNodes ?? 0)}
+                  </span>
+                  <span>
+                    {strings.validation.latency}: {formatLatency(dialogResults[0].result.latencyMs)}
+                  </span>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      </div>
+
+      <DialogFooter className="mt-0 shrink-0 border-t border-border/70 bg-background/95 px-6 pb-6 pt-4 backdrop-blur supports-[backdrop-filter]:bg-background/88">
+        <Button type="button" variant="ghost" onClick={onClose} disabled={dialogValidating || saving}>
+          {strings.config.cancel}
+        </Button>
+        <Button type="button" variant="secondary" onClick={onValidate} disabled={dialogValidating || saving}>
+          {strings.config.validate}
+        </Button>
+        {dialogIsSubscription ? (
+          <Button type="button" onClick={onAddSubscription} disabled={dialogAvailableResults.length === 0 || saving}>
+            {strings.config.add}
+          </Button>
+        ) : (
+          <Button type="button" onClick={onAddManualBatch} disabled={dialogAvailableResults.length === 0 || saving}>
+            {strings.config.importAvailable.replace('{count}', formatNumber(dialogAvailableResults.length))}
+          </Button>
+        )}
+      </DialogFooter>
+    </div>
+  )
+}
+
 function getNodeStateBadge(
   strings: AdminTranslations['proxySettings'],
   node: ForwardProxyStatsNode,
@@ -644,6 +838,7 @@ export default function ForwardProxySettingsModule({
   onPersistDraft,
   onValidateCandidates,
   onRefresh,
+  dialogPreview = null,
 }: ForwardProxySettingsModuleProps): JSX.Element {
   const mergedNodes = buildMergedNodes(settings, stats)
   const nodeRows = mergedNodes.map((node) => ({
@@ -678,8 +873,14 @@ export default function ForwardProxySettingsModule({
   const [dialogError, setDialogError] = useState<string | null>(null)
   const [dialogValidating, setDialogValidating] = useState(false)
   const [dialogResults, setDialogResults] = useState<ForwardProxyValidationEntry[]>([])
-  const dialogIsSubscription = dialogKind === 'subscription'
-  const dialogAvailableResults = dialogResults.filter((entry) => entry.result.ok)
+  const isDialogPreview = dialogPreview != null
+  const activeDialogKind = dialogPreview?.kind ?? dialogKind
+  const activeDialogInput = dialogPreview?.input ?? dialogInput
+  const activeDialogError = dialogPreview?.error ?? dialogError
+  const activeDialogValidating = dialogPreview?.validating ?? dialogValidating
+  const activeDialogResults = dialogPreview?.results ?? dialogResults
+  const dialogIsSubscription = activeDialogKind === 'subscription'
+  const dialogAvailableResults = activeDialogResults.filter((entry) => entry.result.ok)
   const selectedInterval =
     FORWARD_PROXY_INTERVAL_OPTIONS.find(
       (option) => option.value === String(settings?.subscriptionUpdateIntervalSecs ?? 3600),
@@ -725,6 +926,7 @@ export default function ForwardProxySettingsModule({
   ]
 
   const openDialog = (kind: Exclude<ForwardProxyDialogKind, null>) => {
+    if (isDialogPreview) return
     setDialogKind(kind)
     setDialogInput('')
     setDialogError(null)
@@ -732,7 +934,7 @@ export default function ForwardProxySettingsModule({
   }
 
   const closeDialog = () => {
-    if (dialogValidating) return
+    if (isDialogPreview || dialogValidating) return
     setDialogKind(null)
     setDialogInput('')
     setDialogError(null)
@@ -791,7 +993,8 @@ export default function ForwardProxySettingsModule({
   }
 
   const handleValidateDialog = async () => {
-    const values = dialogIsSubscription ? normalizeEntries([dialogInput]) : splitMultilineInput(dialogInput)
+    if (isDialogPreview) return
+    const values = dialogIsSubscription ? normalizeEntries([activeDialogInput]) : splitMultilineInput(activeDialogInput)
     if (values.length === 0) {
       setDialogResults([])
       setDialogError(
@@ -818,6 +1021,7 @@ export default function ForwardProxySettingsModule({
   }
 
   const handleAddSubscription = async () => {
+    if (isDialogPreview) return
     const candidate = dialogAvailableResults[0]
     if (!candidate) return
     const nextValue = candidate.result.normalizedValue ?? candidate.value
@@ -830,6 +1034,7 @@ export default function ForwardProxySettingsModule({
   }
 
   const handleAddManualBatch = async () => {
+    if (isDialogPreview) return
     const nextValues = normalizeEntries([
       ...manualUrls,
       ...dialogAvailableResults.map((entry) => entry.result.normalizedValue ?? entry.value),
@@ -844,6 +1049,7 @@ export default function ForwardProxySettingsModule({
   }
 
   const handleAddManualEntry = async (entry: ForwardProxyValidationEntry) => {
+    if (isDialogPreview) return
     const nextValue = entry.result.normalizedValue ?? entry.value
     try {
       await persistManualUrls([...manualUrls, nextValue])
@@ -1260,179 +1466,29 @@ export default function ForwardProxySettingsModule({
         </CardContent>
       </Card>
 
-      <Dialog open={dialogKind != null} onOpenChange={(open) => (!open ? closeDialog() : undefined)}>
-        <DialogContent className="max-w-3xl border-border/90 bg-background shadow-2xl">
-          <DialogHeader>
-            <DialogTitle>
-              {dialogIsSubscription ? strings.config.subscriptionDialogTitle : strings.config.manualDialogTitle}
-            </DialogTitle>
-            <DialogDescription>
-              {dialogIsSubscription
-                ? strings.config.subscriptionDialogDescription
-                : strings.config.manualDialogDescription}
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-foreground" htmlFor="forward-proxy-dialog-input">
-                {dialogIsSubscription
-                  ? strings.config.subscriptionDialogInputLabel
-                  : strings.config.manualDialogInputLabel}
-              </label>
-              {dialogIsSubscription ? (
-                <Input
-                  id="forward-proxy-dialog-input"
-                  value={dialogInput}
-                  placeholder={strings.config.subscriptionsPlaceholder}
-                  onChange={(event) => {
-                    setDialogInput(event.target.value)
-                    setDialogResults([])
-                    setDialogError(null)
-                  }}
-                />
-              ) : (
-                <Textarea
-                  id="forward-proxy-dialog-input"
-                  rows={7}
-                  value={dialogInput}
-                  placeholder={strings.config.manualPlaceholder}
-                  onChange={(event) => {
-                    setDialogInput(event.target.value)
-                    setDialogResults([])
-                    setDialogError(null)
-                  }}
-                />
-              )}
-            </div>
-
-            {dialogError && (
-              <div className="alert alert-error" role="alert">
-                {dialogError}
-              </div>
-            )}
-
-            {dialogValidating && (
-              <div className="alert" role="status">
-                {strings.config.validating}
-              </div>
-            )}
-
-            {!dialogIsSubscription && dialogResults.length > 0 && (
-              <div className="rounded-2xl border border-border/70 bg-card/35">
-                <Table className="table-fixed text-xs">
-                  <TableHeader className="bg-muted/40 uppercase tracking-[0.08em] text-[11px] text-muted-foreground">
-                    <TableRow className="hover:bg-transparent">
-                      <TableHead className="w-12">#</TableHead>
-                      <TableHead>{strings.config.resultNode}</TableHead>
-                      <TableHead className="w-24">{strings.config.resultStatus}</TableHead>
-                      <TableHead className="w-28 text-right">{strings.config.resultLatency}</TableHead>
-                      <TableHead className="w-24 text-right">{strings.config.resultAction}</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {dialogResults.map((entry, index) => (
-                      <TableRow key={entry.id} className="border-border/65">
-                        <TableCell>{index + 1}</TableCell>
-                        <TableCell className="min-w-0">
-                          <div className="truncate font-medium">
-                            {extractListDisplayName(
-                              entry.result.normalizedValue ?? entry.value,
-                              strings.config.manualItemFallback.replace('{index}', String(index + 1)),
-                            )}
-                          </div>
-                          <div className="truncate text-[11px] text-muted-foreground">
-                            {entry.result.normalizedValue ?? entry.value}
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex flex-col items-start gap-1">
-                            <Badge variant={entry.result.ok ? 'success' : 'destructive'}>
-                              {entry.result.ok
-                                ? strings.validation.ok
-                                : mapValidationErrorLabel(strings, entry.result.errorCode)}
-                            </Badge>
-                            {!entry.result.ok && (
-                              <span className="text-[11px] text-muted-foreground">{entry.result.message}</span>
-                            )}
-                          </div>
-                        </TableCell>
-                        <TableCell className="text-right text-muted-foreground">{formatLatency(entry.result.latencyMs)}</TableCell>
-                        <TableCell className="text-right">
-                          <Button
-                            type="button"
-                            size="xs"
-                            onClick={() => void handleAddManualEntry(entry)}
-                            disabled={!entry.result.ok || saving}
-                          >
-                            {strings.config.add}
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            )}
-
-            {dialogIsSubscription && dialogResults[0] && (
-              <Card className="forward-proxy-validation-card">
-                <CardContent className="forward-proxy-validation-card-content">
-                  <div className="forward-proxy-validation-head">
-                    <Badge variant={dialogResults[0].result.ok ? 'success' : 'destructive'}>
-                      {dialogResults[0].result.ok
-                        ? strings.validation.ok
-                        : mapValidationErrorLabel(strings, dialogResults[0].result.errorCode)}
-                    </Badge>
-                    <Badge variant="outline">{strings.validation.subscriptionKind}</Badge>
-                  </div>
-                  <code className="forward-proxy-code-block">
-                    {dialogResults[0].result.normalizedValue ?? dialogResults[0].value}
-                  </code>
-                  <p className="forward-proxy-validation-message">{dialogResults[0].result.message}</p>
-                  <div className="forward-proxy-validation-meta">
-                    <span>
-                      {strings.validation.discoveredNodes}: {formatNumber(dialogResults[0].result.discoveredNodes ?? 0)}
-                    </span>
-                    <span>
-                      {strings.validation.latency}: {formatLatency(dialogResults[0].result.latencyMs)}
-                    </span>
-                  </div>
-                </CardContent>
-              </Card>
-            )}
-          </div>
-
-          <DialogFooter>
-            <Button type="button" variant="ghost" onClick={closeDialog} disabled={dialogValidating || saving}>
-              {strings.config.cancel}
-            </Button>
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={() => void handleValidateDialog()}
-              disabled={dialogValidating || saving}
-            >
-              {strings.config.validate}
-            </Button>
-            {dialogIsSubscription ? (
-              <Button
-                type="button"
-                onClick={() => void handleAddSubscription()}
-                disabled={dialogAvailableResults.length === 0 || saving}
-              >
-                {strings.config.add}
-              </Button>
-            ) : (
-              <Button
-                type="button"
-                onClick={() => void handleAddManualBatch()}
-                disabled={dialogAvailableResults.length === 0 || saving}
-              >
-                {strings.config.importAvailable.replace('{count}', formatNumber(dialogAvailableResults.length))}
-              </Button>
-            )}
-          </DialogFooter>
+      <Dialog open={activeDialogKind != null} onOpenChange={(open) => (!open ? closeDialog() : undefined)}>
+        <DialogContent className="max-w-3xl gap-0 overflow-hidden border-border/90 bg-background p-0 shadow-2xl sm:max-h-[min(calc(100dvh-4rem),calc(100vh-4rem))]">
+          <ForwardProxyCandidateDialog
+            strings={strings}
+            dialogIsSubscription={dialogIsSubscription}
+            dialogInput={activeDialogInput}
+            dialogError={activeDialogError}
+            dialogValidating={activeDialogValidating}
+            dialogResults={activeDialogResults}
+            dialogAvailableResults={dialogAvailableResults}
+            saving={saving}
+            onClose={closeDialog}
+            onInputChange={(value) => {
+              if (isDialogPreview) return
+              setDialogInput(value)
+              setDialogResults([])
+              setDialogError(null)
+            }}
+            onValidate={() => void handleValidateDialog()}
+            onAddSubscription={() => void handleAddSubscription()}
+            onAddManualBatch={() => void handleAddManualBatch()}
+            onAddManualEntry={(entry) => void handleAddManualEntry(entry)}
+          />
         </DialogContent>
       </Dialog>
     </div>

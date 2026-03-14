@@ -130,6 +130,10 @@
   When settings 与 live stats 已加载
   Then 页面可查看 settings、节点窗口统计、24h weight、主/备绑定计数并执行保存与验证。
 
+- Given 管理员在订阅或手工节点弹窗里拿到长结果内容（长 URL、验证消息、节点统计）
+  When 弹窗显示验证结果
+  Then footer 操作区必须始终留在可视区域内，内容改由弹窗 body 自身滚动承载，不得把 `取消 / 验证 / 添加或导入` 推出视口。
+
 ## 实现前置条件（Definition of Ready / Preconditions）
 
 - 目标/非目标、scope in/out、mock-only 约束已明确
@@ -147,7 +151,7 @@
 
 ### UI / Storybook (if applicable)
 
-- Stories to add/update: Admin proxy settings page state（空态、已配置、验证成功/失败、live stats）。
+- Stories to add/update: Admin proxy settings page state（空态、已配置、验证成功/失败、live stats），并补充可直接打开的 forward proxy 弹窗待验证 / 成功 / 失败复现 story。
 - Visual regression baseline changes (if any): proxy settings 模块从 placeholder 切换为真实页面。
 
 ### Quality checks

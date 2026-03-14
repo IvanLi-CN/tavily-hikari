@@ -1,6 +1,9 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
-import ForwardProxySettingsModule from './ForwardProxySettingsModule'
+import ForwardProxySettingsModule, {
+  type ForwardProxyDialogPreviewState,
+  type ForwardProxyValidationEntry,
+} from './ForwardProxySettingsModule'
 import {
   forwardProxyStorySavedAt,
   forwardProxyStorySettings,
@@ -8,7 +11,82 @@ import {
 } from './forwardProxyStoryData'
 import { LanguageProvider, useTranslate } from '../i18n'
 
-function StoryCanvas(): JSX.Element {
+const LONG_SUBSCRIPTION_URL =
+  'https://iijb-xp.707979.example/api/v1/client/subscribe?token=demo_1234567890abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ&format=raw'
+
+const SUBSCRIPTION_SUCCESS_RESULT: ForwardProxyValidationEntry[] = [
+  {
+    id: 'subscription-success',
+    kind: 'subscriptionUrl',
+    value: LONG_SUBSCRIPTION_URL,
+    result: {
+      ok: true,
+      message: 'subscription validation succeeded',
+      normalizedValue: LONG_SUBSCRIPTION_URL,
+      discoveredNodes: 8,
+      latencyMs: 1135.57,
+    },
+  },
+]
+
+const SUBSCRIPTION_FAILURE_RESULT: ForwardProxyValidationEntry[] = [
+  {
+    id: 'subscription-failure',
+    kind: 'subscriptionUrl',
+    value: LONG_SUBSCRIPTION_URL,
+    result: {
+      ok: false,
+      message: 'Subscription unavailable: upstream returned 503 after 3 retries.',
+      normalizedValue: LONG_SUBSCRIPTION_URL,
+      discoveredNodes: 0,
+      latencyMs: 1840.12,
+      errorCode: 'subscription_unreachable',
+    },
+  },
+]
+
+const MANUAL_MIXED_RESULTS: ForwardProxyValidationEntry[] = [
+  {
+    id: 'manual-ok-1',
+    kind: 'proxyUrl',
+    value: 'ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@example.com:443#Tokyo-A',
+    result: {
+      ok: true,
+      message: 'proxy validation succeeded',
+      normalizedValue: 'ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@example.com:443#Tokyo-A',
+      latencyMs: 128.45,
+    },
+  },
+  {
+    id: 'manual-bad-1',
+    kind: 'proxyUrl',
+    value: 'http://203.0.113.17:8080',
+    result: {
+      ok: false,
+      message: 'Proxy timed out during bootstrap probe.',
+      normalizedValue: 'http://203.0.113.17:8080',
+      latencyMs: 2100,
+      errorCode: 'proxy_timeout',
+    },
+  },
+  {
+    id: 'manual-ok-2',
+    kind: 'proxyUrl',
+    value: 'socks5h://198.51.100.8:1080',
+    result: {
+      ok: true,
+      message: 'proxy validation succeeded',
+      normalizedValue: 'socks5h://198.51.100.8:1080',
+      latencyMs: 242.19,
+    },
+  },
+]
+
+interface StoryCanvasProps {
+  dialogPreview?: ForwardProxyDialogPreviewState | null
+}
+
+function StoryCanvas({ dialogPreview = null }: StoryCanvasProps): JSX.Element {
   const strings = useTranslate().admin.proxySettings
 
   return (
@@ -39,6 +117,7 @@ function StoryCanvas(): JSX.Element {
         onPersistDraft={async () => {}}
         onValidateCandidates={async () => []}
         onRefresh={() => {}}
+        dialogPreview={dialogPreview}
       />
     </div>
   )
@@ -46,6 +125,7 @@ function StoryCanvas(): JSX.Element {
 
 const meta = {
   title: 'Admin/ForwardProxySettingsModule',
+  component: StoryCanvas,
   parameters: {
     layout: 'fullscreen',
   },
@@ -56,12 +136,52 @@ const meta = {
       </LanguageProvider>
     ),
   ],
-} satisfies Meta<typeof ForwardProxySettingsModule>
+} satisfies Meta<typeof StoryCanvas>
 
 export default meta
 
 type Story = StoryObj<typeof meta>
 
 export const Default: Story = {
-  render: () => <StoryCanvas />,
+  args: {},
+}
+
+export const SubscriptionDialogEmpty: Story = {
+  args: {
+    dialogPreview: {
+      kind: 'subscription',
+      input: LONG_SUBSCRIPTION_URL,
+      results: [],
+    },
+  },
+}
+
+export const SubscriptionValidationSuccess: Story = {
+  args: {
+    dialogPreview: {
+      kind: 'subscription',
+      input: LONG_SUBSCRIPTION_URL,
+      results: SUBSCRIPTION_SUCCESS_RESULT,
+    },
+  },
+}
+
+export const SubscriptionValidationFailure: Story = {
+  args: {
+    dialogPreview: {
+      kind: 'subscription',
+      input: LONG_SUBSCRIPTION_URL,
+      results: SUBSCRIPTION_FAILURE_RESULT,
+    },
+  },
+}
+
+export const ManualValidationMixed: Story = {
+  args: {
+    dialogPreview: {
+      kind: 'manual',
+      input: MANUAL_MIXED_RESULTS.map((entry) => entry.value).join('\n'),
+      results: MANUAL_MIXED_RESULTS,
+    },
+  },
 }
