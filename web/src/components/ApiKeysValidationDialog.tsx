@@ -471,19 +471,9 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                     return (
                       <div key={`${row.api_key}-${index}`} className="p-3">
                         <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <code className="block font-mono text-xs break-all whitespace-normal bg-base-200/50 px-2 py-1 rounded-lg max-w-full">
-                              {row.api_key}
-                            </code>
-                            {registrationIp && registrationTooltip ? (
-                              <div className="mt-2">
-                                <RegistrationIpIndicator
-                                  label={ipBadgeLabel}
-                                  tooltip={registrationTooltip}
-                                />
-                              </div>
-                            ) : null}
-                          </div>
+                          <code className="block font-mono text-xs break-all whitespace-normal bg-base-200/50 px-2 py-1 rounded-lg max-w-full">
+                            {row.api_key}
+                          </code>
                           <Button
                             type="button"
                             variant="ghost"
@@ -504,6 +494,12 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                           >
                             {label}
                           </StatusBadge>
+                          {registrationIp && registrationTooltip ? (
+                            <RegistrationIpIndicator
+                              label={ipBadgeLabel}
+                              tooltip={registrationTooltip}
+                            />
+                          ) : null}
                           <span className="text-xs font-mono tabular-nums opacity-70 whitespace-nowrap">{quotaLabel}</span>
                         </div>
 
@@ -569,19 +565,9 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                         return (
                           <TableRow key={`${row.api_key}-${index}`}>
                             <TableCell className="max-w-0">
-                              <div className="min-w-0">
-                                <code className="block font-mono text-xs break-all whitespace-normal bg-base-200/50 px-2 py-1 rounded-lg max-w-full">
-                                  {row.api_key}
-                                </code>
-                                {registrationIp && registrationTooltip ? (
-                                  <div className="mt-2">
-                                    <RegistrationIpIndicator
-                                      label={ipBadgeLabel}
-                                      tooltip={registrationTooltip}
-                                    />
-                                  </div>
-                                ) : null}
-                              </div>
+                              <code className="block font-mono text-xs break-all whitespace-normal bg-base-200/50 px-2 py-1 rounded-lg max-w-full">
+                                {row.api_key}
+                              </code>
                             </TableCell>
                             <TableCell className="max-w-0">
                               {row.detail ? (
@@ -593,6 +579,12 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                                     >
                                       {label}
                                     </StatusBadge>
+                                    {registrationIp && registrationTooltip ? (
+                                      <RegistrationIpIndicator
+                                        label={ipBadgeLabel}
+                                        tooltip={registrationTooltip}
+                                      />
+                                    ) : null}
                                     <span className="opacity-60">
                                       <Icon icon="mdi:information-outline" width={16} height={16} />
                                     </span>
@@ -602,12 +594,20 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                                   </div>
                                 </details>
                               ) : (
-                                <StatusBadge
-                                  tone={statusTone(row.status)}
-                                  className="max-w-full flex-wrap whitespace-normal break-words"
-                                >
-                                  {label}
-                                </StatusBadge>
+                                <div className="inline-flex max-w-full flex-wrap items-center gap-2">
+                                  <StatusBadge
+                                    tone={statusTone(row.status)}
+                                    className="max-w-full flex-wrap whitespace-normal break-words"
+                                  >
+                                    {label}
+                                  </StatusBadge>
+                                  {registrationIp && registrationTooltip ? (
+                                    <RegistrationIpIndicator
+                                      label={ipBadgeLabel}
+                                      tooltip={registrationTooltip}
+                                    />
+                                  ) : null}
+                                </div>
                               )}
                             </TableCell>
                             <TableCell className="text-right font-mono text-xs tabular-nums opacity-70 whitespace-nowrap">
