@@ -23,7 +23,7 @@ use axum::{
     extract::{Form, Path, Query, RawQuery, State},
     http::{HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode},
     response::{Json, Redirect},
-    routing::{any, delete, get, patch, post},
+    routing::{any, delete, get, patch, post, put},
 };
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, Local, NaiveDate, TimeZone, Utc};
 use futures_util::stream as futures_stream;

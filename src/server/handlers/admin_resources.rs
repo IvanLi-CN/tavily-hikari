@@ -260,6 +260,177 @@ struct ValidateKeysResponse {
     results: Vec<ValidateKeyResult>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SettingsResponse {
+    forward_proxy: Option<tavily_hikari::ForwardProxySettingsResponse>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ForwardProxySettingsUpdatePayload {
+    #[serde(default)]
+    proxy_urls: Vec<String>,
+    #[serde(default)]
+    subscription_urls: Vec<String>,
+    #[serde(default = "default_forward_proxy_subscription_update_interval_secs")]
+    subscription_update_interval_secs: u64,
+    #[serde(default = "default_forward_proxy_insert_direct")]
+    insert_direct: bool,
+}
+
+#[derive(Debug, Deserialize, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+enum ForwardProxyValidationKindPayload {
+    ProxyUrl,
+    SubscriptionUrl,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ForwardProxyValidationPayload {
+    kind: ForwardProxyValidationKindPayload,
+    value: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ForwardProxyValidationView {
+    ok: bool,
+    message: String,
+    normalized_value: Option<String>,
+    discovered_nodes: Option<usize>,
+    latency_ms: Option<f64>,
+    error_code: Option<String>,
+}
+
+fn default_forward_proxy_subscription_update_interval_secs() -> u64 {
+    3600
+}
+
+fn default_forward_proxy_insert_direct() -> bool {
+    true
+}
+
+async fn get_settings(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<SettingsResponse>, (StatusCode, String)> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
+    }
+    let forward_proxy = state.proxy.get_forward_proxy_settings().await.map_err(|err| {
+        eprintln!("get settings error: {err}");
+        (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+    })?;
+    Ok(Json(SettingsResponse {
+        forward_proxy: Some(forward_proxy),
+    }))
+}
+
+async fn put_forward_proxy_settings(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<ForwardProxySettingsUpdatePayload>,
+) -> Result<Json<tavily_hikari::ForwardProxySettingsResponse>, (StatusCode, String)> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
+    }
+    let settings = tavily_hikari::ForwardProxySettings {
+        proxy_urls: payload.proxy_urls,
+        subscription_urls: payload.subscription_urls,
+        subscription_update_interval_secs: payload.subscription_update_interval_secs,
+        insert_direct: payload.insert_direct,
+    }
+    .normalized();
+    state
+        .proxy
+        .update_forward_proxy_settings(settings)
+        .await
+        .map(Json)
+        .map_err(|err| {
+            eprintln!("update forward proxy settings error: {err}");
+            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+        })
+}
+
+async fn post_forward_proxy_candidate_validation(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<ForwardProxyValidationPayload>,
+) -> Result<Json<ForwardProxyValidationView>, StatusCode> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let validation = match payload.kind {
+        ForwardProxyValidationKindPayload::ProxyUrl => state
+            .proxy
+            .validate_forward_proxy_candidates(vec![payload.value.clone()], Vec::new())
+            .await,
+        ForwardProxyValidationKindPayload::SubscriptionUrl => state
+            .proxy
+            .validate_forward_proxy_candidates(Vec::new(), vec![payload.value.clone()])
+            .await,
+    }
+    .map_err(|err| {
+        eprintln!("validate forward proxy candidate error: {err}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let result = validation.results.into_iter().next();
+    let response = if let Some(result) = result {
+        ForwardProxyValidationView {
+            ok: result.ok,
+            message: result.message,
+            normalized_value: result.normalized_value,
+            discovered_nodes: result.discovered_nodes,
+            latency_ms: result.latency_ms,
+            error_code: result.error_code,
+        }
+    } else if let Some(error) = validation.first_error {
+        ForwardProxyValidationView {
+            ok: false,
+            message: error.message,
+            normalized_value: None,
+            discovered_nodes: Some(validation.discovered_nodes),
+            latency_ms: validation.latency_ms,
+            error_code: Some(error.code),
+        }
+    } else {
+        ForwardProxyValidationView {
+            ok: validation.ok,
+            message: if validation.ok {
+                "validation succeeded".to_string()
+            } else {
+                "validation failed".to_string()
+            },
+            normalized_value: validation.normalized_values.into_iter().next(),
+            discovered_nodes: Some(validation.discovered_nodes),
+            latency_ms: validation.latency_ms,
+            error_code: None,
+        }
+    };
+    Ok(Json(response))
+}
+
+async fn get_forward_proxy_live_stats(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<tavily_hikari::ForwardProxyLiveStatsResponse>, (StatusCode, String)> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
+    }
+    state
+        .proxy
+        .get_forward_proxy_live_stats()
+        .await
+        .map(Json)
+        .map_err(|err| {
+            eprintln!("get forward proxy live stats error: {err}");
+            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+        })
+}
+
 fn truncate_detail(mut input: String, max_len: usize) -> String {
     if input.len() <= max_len {
         return input;

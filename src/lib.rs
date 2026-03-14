@@ -1,3 +1,5 @@
+mod forward_proxy;
+
 use std::{
     cmp::min,
     collections::{BTreeMap, HashMap, HashSet},
@@ -23,6 +25,11 @@ use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 use thiserror::Error;
 use tokio::sync::{Mutex, RwLock};
 use url::form_urlencoded;
+
+pub use forward_proxy::{
+    ForwardProxyLiveStatsResponse, ForwardProxySettings, ForwardProxySettingsResponse,
+    ForwardProxyValidationError, ForwardProxyValidationProbeResult, ForwardProxyValidationResponse,
+};
 
 /// Tavily MCP upstream默认端点。
 pub const DEFAULT_UPSTREAM: &str = "https://mcp.tavily.com/mcp";
@@ -824,6 +831,10 @@ struct TokenRequestLimit {
 #[derive(Clone, Debug)]
 pub struct TavilyProxy {
     client: Client,
+    forward_proxy_clients: forward_proxy::ForwardProxyClientPool,
+    forward_proxy: Arc<Mutex<forward_proxy::ForwardProxyManager>>,
+    forward_proxy_affinity: Arc<Mutex<HashMap<String, forward_proxy::ForwardProxyAffinityRecord>>>,
+    xray_supervisor: Arc<Mutex<forward_proxy::XraySupervisor>>,
     upstream: Url,
     key_store: Arc<KeyStore>,
     upstream_origin: String,
@@ -836,6 +847,21 @@ pub struct TavilyProxy {
     // serialization is provided by quota_subject_locks in SQLite.
     token_billing_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
     research_key_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TavilyProxyOptions {
+    pub xray_binary: String,
+    pub xray_runtime_dir: std::path::PathBuf,
+}
+
+impl TavilyProxyOptions {
+    pub fn from_database_path(database_path: &str) -> Self {
+        Self {
+            xray_binary: forward_proxy::default_xray_binary(),
+            xray_runtime_dir: forward_proxy::default_xray_runtime_dir(database_path),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -997,13 +1023,38 @@ impl TavilyProxy {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        Self::with_endpoint(keys, DEFAULT_UPSTREAM, database_path).await
+        Self::with_options(
+            keys,
+            DEFAULT_UPSTREAM,
+            database_path,
+            TavilyProxyOptions::from_database_path(database_path),
+        )
+        .await
     }
 
     pub async fn with_endpoint<I, S>(
         keys: I,
         upstream: &str,
         database_path: &str,
+    ) -> Result<Self, ProxyError>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self::with_options(
+            keys,
+            upstream,
+            database_path,
+            TavilyProxyOptions::from_database_path(database_path),
+        )
+        .await
+    }
+
+    pub async fn with_options<I, S>(
+        keys: I,
+        upstream: &str,
+        database_path: &str,
+        options: TavilyProxyOptions,
     ) -> Result<Self, ProxyError>
     where
         I: IntoIterator<Item = S>,
@@ -1024,12 +1075,27 @@ impl TavilyProxy {
             source,
         })?;
         let upstream_origin = origin_from_url(&upstream);
+        let forward_proxy_settings =
+            forward_proxy::load_forward_proxy_settings(&key_store.pool).await?;
+        let forward_proxy_runtime =
+            forward_proxy::load_forward_proxy_runtime_states(&key_store.pool).await?;
+        let forward_proxy = Arc::new(Mutex::new(forward_proxy::ForwardProxyManager::new(
+            forward_proxy_settings,
+            forward_proxy_runtime,
+        )));
         let key_store = Arc::new(key_store);
         let token_quota = TokenQuota::new(key_store.clone());
         let token_request_limit = TokenRequestLimit::new(key_store.clone());
-
-        Ok(Self {
-            client: Client::new(),
+        let forward_proxy_clients = forward_proxy::ForwardProxyClientPool::new()?;
+        let mut proxy = Self {
+            client: forward_proxy_clients.direct_client(),
+            forward_proxy_clients,
+            forward_proxy,
+            forward_proxy_affinity: Arc::new(Mutex::new(HashMap::new())),
+            xray_supervisor: Arc::new(Mutex::new(forward_proxy::XraySupervisor::new(
+                options.xray_binary,
+                options.xray_runtime_dir,
+            ))),
             upstream,
             key_store,
             upstream_origin,
@@ -1044,7 +1110,921 @@ impl TavilyProxy {
             ))),
             token_billing_locks: Arc::new(Mutex::new(HashMap::new())),
             research_key_locks: Arc::new(Mutex::new(HashMap::new())),
+        };
+        proxy.initialize_forward_proxy_runtime().await?;
+        Ok(proxy)
+    }
+
+    async fn initialize_forward_proxy_runtime(&mut self) -> Result<(), ProxyError> {
+        if let Err(err) = self.refresh_forward_proxy_subscriptions().await {
+            eprintln!("forward-proxy startup subscription refresh error: {err}");
+        }
+        let manager = self.forward_proxy.lock().await;
+        forward_proxy::sync_manager_runtime_to_store(&self.key_store, &manager).await
+    }
+
+    pub async fn get_forward_proxy_settings(
+        &self,
+    ) -> Result<ForwardProxySettingsResponse, ProxyError> {
+        let manager = self.forward_proxy.lock().await;
+        forward_proxy::build_forward_proxy_settings_response(&self.key_store.pool, &manager).await
+    }
+
+    pub async fn get_forward_proxy_live_stats(
+        &self,
+    ) -> Result<ForwardProxyLiveStatsResponse, ProxyError> {
+        let manager = self.forward_proxy.lock().await;
+        forward_proxy::build_forward_proxy_live_stats_response(&self.key_store.pool, &manager).await
+    }
+
+    pub async fn update_forward_proxy_settings(
+        &self,
+        settings: ForwardProxySettings,
+    ) -> Result<ForwardProxySettingsResponse, ProxyError> {
+        let normalized = settings.normalized();
+        let previous_manager = {
+            let manager = self.forward_proxy.lock().await;
+            manager.clone()
+        };
+        let previous_subscription_urls = previous_manager
+            .endpoints
+            .iter()
+            .filter(|endpoint| endpoint.source == forward_proxy::FORWARD_PROXY_SOURCE_SUBSCRIPTION)
+            .filter_map(|endpoint| endpoint.raw_url.clone())
+            .collect::<Vec<_>>();
+        forward_proxy::save_forward_proxy_settings(&self.key_store.pool, normalized.clone())
+            .await?;
+        {
+            let mut manager = self.forward_proxy.lock().await;
+            manager.apply_settings(normalized.clone());
+        }
+        if let Err(err) = self.refresh_forward_proxy_subscriptions().await {
+            eprintln!("forward-proxy subscription refresh after settings update error: {err}");
+            if normalized.subscription_urls == previous_manager.settings.subscription_urls
+                && !previous_subscription_urls.is_empty()
+            {
+                let mut manager = self.forward_proxy.lock().await;
+                manager.apply_subscription_urls(previous_subscription_urls);
+                let mut xray = self.xray_supervisor.lock().await;
+                xray.sync_endpoints(&mut manager.endpoints).await?;
+            }
+        }
+        let mut targets = {
+            let manager = self.forward_proxy.lock().await;
+            manager
+                .endpoints
+                .iter()
+                .filter(|endpoint| !endpoint.is_direct())
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        for endpoint in targets.drain(..) {
+            let _ = self
+                .probe_and_record_forward_proxy_endpoint(
+                    &endpoint,
+                    "settings_update",
+                    None,
+                    Duration::from_secs(forward_proxy::FORWARD_PROXY_VALIDATION_TIMEOUT_SECS),
+                )
+                .await;
+        }
+        self.get_forward_proxy_settings().await
+    }
+
+    pub async fn validate_forward_proxy_candidates(
+        &self,
+        proxy_urls: Vec<String>,
+        subscription_urls: Vec<String>,
+    ) -> Result<ForwardProxyValidationResponse, ProxyError> {
+        let mut results = Vec::new();
+        let mut normalized_values = Vec::new();
+        let mut discovered_nodes = 0usize;
+        let mut best_latency: Option<f64> = None;
+        let probe_url = forward_proxy::derive_probe_url(&self.upstream);
+
+        for raw in forward_proxy::normalize_proxy_url_entries(proxy_urls) {
+            let Some(parsed) = forward_proxy::parse_forward_proxy_entry(&raw) else {
+                results.push(ForwardProxyValidationProbeResult {
+                    value: raw.clone(),
+                    normalized_value: None,
+                    ok: false,
+                    discovered_nodes: Some(0),
+                    latency_ms: None,
+                    error_code: Some("proxy_invalid".to_string()),
+                    message: "unsupported proxy url or unsupported scheme".to_string(),
+                });
+                continue;
+            };
+            let endpoint = forward_proxy::ForwardProxyEndpoint {
+                key: format!(
+                    "__validate_proxy__{:016x}",
+                    forward_proxy::stable_hash_u64(&parsed.normalized)
+                ),
+                source: forward_proxy::FORWARD_PROXY_SOURCE_MANUAL.to_string(),
+                display_name: parsed.display_name.clone(),
+                protocol: parsed.protocol,
+                endpoint_url: parsed.endpoint_url.clone(),
+                raw_url: Some(parsed.normalized.clone()),
+            };
+            match self
+                .probe_forward_proxy_endpoint(
+                    &endpoint,
+                    Duration::from_secs(forward_proxy::FORWARD_PROXY_VALIDATION_TIMEOUT_SECS),
+                    &probe_url,
+                )
+                .await
+            {
+                Ok(latency_ms) => {
+                    normalized_values.push(parsed.normalized.clone());
+                    discovered_nodes += 1;
+                    best_latency =
+                        Some(best_latency.map_or(latency_ms, |current| current.min(latency_ms)));
+                    results.push(ForwardProxyValidationProbeResult {
+                        value: raw,
+                        normalized_value: Some(parsed.normalized),
+                        ok: true,
+                        discovered_nodes: Some(1),
+                        latency_ms: Some(latency_ms),
+                        error_code: None,
+                        message: "proxy validation succeeded".to_string(),
+                    });
+                }
+                Err(err) => {
+                    results.push(ForwardProxyValidationProbeResult {
+                        value: raw,
+                        normalized_value: Some(parsed.normalized),
+                        ok: false,
+                        discovered_nodes: Some(1),
+                        latency_ms: None,
+                        error_code: Some(map_forward_proxy_validation_error_code(&err)),
+                        message: err.to_string(),
+                    });
+                }
+            }
+        }
+
+        for subscription_url in forward_proxy::normalize_subscription_entries(subscription_urls) {
+            match self
+                .validate_forward_proxy_subscription(&subscription_url)
+                .await
+            {
+                Ok((count, latency_ms, mut normalized)) => {
+                    discovered_nodes += count;
+                    best_latency =
+                        Some(best_latency.map_or(latency_ms, |current| current.min(latency_ms)));
+                    normalized_values.push(subscription_url.clone());
+                    normalized_values.append(&mut normalized);
+                    results.push(ForwardProxyValidationProbeResult {
+                        value: subscription_url.clone(),
+                        normalized_value: Some(subscription_url),
+                        ok: true,
+                        discovered_nodes: Some(count),
+                        latency_ms: Some(latency_ms),
+                        error_code: None,
+                        message: "subscription validation succeeded".to_string(),
+                    });
+                }
+                Err(err) => {
+                    results.push(ForwardProxyValidationProbeResult {
+                        value: subscription_url.clone(),
+                        normalized_value: Some(subscription_url),
+                        ok: false,
+                        discovered_nodes: Some(0),
+                        latency_ms: None,
+                        error_code: Some(map_forward_proxy_validation_error_code(&err)),
+                        message: err.to_string(),
+                    });
+                }
+            }
+        }
+
+        normalized_values.sort();
+        normalized_values.dedup();
+        let ok = results.iter().any(|result| result.ok);
+        let first_error =
+            results
+                .iter()
+                .find(|result| !result.ok)
+                .map(|result| ForwardProxyValidationError {
+                    code: result
+                        .error_code
+                        .clone()
+                        .unwrap_or_else(|| "validation_failed".to_string()),
+                    message: result.message.clone(),
+                });
+
+        Ok(ForwardProxyValidationResponse {
+            ok,
+            normalized_values,
+            discovered_nodes,
+            latency_ms: best_latency,
+            results,
+            first_error,
         })
+    }
+
+    async fn validate_forward_proxy_subscription(
+        &self,
+        subscription_url: &str,
+    ) -> Result<(usize, f64, Vec<String>), ProxyError> {
+        let validation_timeout =
+            Duration::from_secs(forward_proxy::FORWARD_PROXY_SUBSCRIPTION_VALIDATION_TIMEOUT_SECS);
+        let validation_started = Instant::now();
+        let normalized_subscription =
+            forward_proxy::normalize_subscription_entries(vec![subscription_url.to_string()])
+                .into_iter()
+                .next()
+                .ok_or_else(|| {
+                    ProxyError::Other("subscription url must be a valid http/https url".to_string())
+                })?;
+        let urls = forward_proxy::fetch_subscription_proxy_urls_with_validation_budget(
+            &self.forward_proxy_clients.direct_client(),
+            &normalized_subscription,
+            validation_timeout,
+            validation_started,
+        )
+        .await
+        .map_err(|err| {
+            ProxyError::Other(format!(
+                "failed to fetch or decode subscription payload: {err}"
+            ))
+        })?;
+        if urls.is_empty() {
+            return Err(ProxyError::Other(
+                "subscription resolved zero proxy entries".to_string(),
+            ));
+        }
+        let endpoints = forward_proxy::normalize_proxy_endpoints_from_urls(
+            &urls,
+            forward_proxy::FORWARD_PROXY_SOURCE_SUBSCRIPTION,
+        );
+        if endpoints.is_empty() {
+            return Err(ProxyError::Other(
+                "subscription contains no supported proxy entries".to_string(),
+            ));
+        }
+        let probe_url = forward_proxy::derive_probe_url(&self.upstream);
+        let timeout_error = || {
+            ProxyError::Other(format!(
+                "validation timed out after {}ms",
+                validation_timeout.as_millis()
+            ))
+        };
+        let mut last_error: Option<ProxyError> = None;
+        let mut best_latency: Option<f64> = None;
+        for endpoint in endpoints.iter().take(3) {
+            let Some(remaining_timeout) =
+                validation_timeout.checked_sub(validation_started.elapsed())
+            else {
+                last_error = Some(timeout_error());
+                break;
+            };
+            if remaining_timeout.is_zero() {
+                last_error = Some(timeout_error());
+                break;
+            }
+            match self
+                .probe_forward_proxy_endpoint(endpoint, remaining_timeout, &probe_url)
+                .await
+            {
+                Ok(latency_ms) => {
+                    best_latency = Some(latency_ms);
+                    break;
+                }
+                Err(err) => {
+                    if validation_started.elapsed() >= validation_timeout {
+                        last_error = Some(timeout_error());
+                        break;
+                    }
+                    last_error = Some(err);
+                }
+            }
+        }
+        let Some(latency_ms) = best_latency else {
+            if let Some(err) = last_error {
+                return Err(ProxyError::Other(format!(
+                    "subscription proxy probe failed: {err}; no entry passed validation"
+                )));
+            }
+            return Err(ProxyError::Other(
+                "no subscription proxy entry passed validation".to_string(),
+            ));
+        };
+        Ok((
+            endpoints.len(),
+            latency_ms,
+            endpoints
+                .into_iter()
+                .filter_map(|endpoint| endpoint.raw_url)
+                .collect(),
+        ))
+    }
+
+    pub async fn refresh_forward_proxy_subscriptions(&self) -> Result<(), ProxyError> {
+        let settings = {
+            let manager = self.forward_proxy.lock().await;
+            manager.settings.clone()
+        };
+
+        let mut subscription_urls = Vec::new();
+        let mut fetched_any_subscription = false;
+        for subscription_url in &settings.subscription_urls {
+            match forward_proxy::fetch_subscription_proxy_urls(
+                &self.forward_proxy_clients.direct_client(),
+                subscription_url,
+                Duration::from_secs(
+                    forward_proxy::FORWARD_PROXY_SUBSCRIPTION_VALIDATION_TIMEOUT_SECS,
+                ),
+            )
+            .await
+            {
+                Ok(urls) => {
+                    fetched_any_subscription = true;
+                    subscription_urls.extend(urls);
+                }
+                Err(err) => {
+                    eprintln!(
+                        "failed to refresh forward proxy subscription {subscription_url}: {err}"
+                    );
+                }
+            }
+        }
+
+        if !settings.subscription_urls.is_empty() && !fetched_any_subscription {
+            return Err(ProxyError::Other(
+                "all forward proxy subscriptions failed to refresh".to_string(),
+            ));
+        }
+
+        let mut manager = self.forward_proxy.lock().await;
+        manager.apply_subscription_urls(subscription_urls);
+        {
+            let mut xray = self.xray_supervisor.lock().await;
+            xray.sync_endpoints(&mut manager.endpoints).await?;
+        }
+        let endpoints = manager.endpoints.clone();
+        for endpoint in &endpoints {
+            if let Some(runtime) = manager.runtime.get_mut(&endpoint.key) {
+                runtime.kind = endpoint.protocol.as_str().to_string();
+                runtime.endpoint_url = endpoint
+                    .endpoint_url
+                    .as_ref()
+                    .map(Url::to_string)
+                    .or_else(|| endpoint.raw_url.clone());
+                runtime.available = endpoint.is_selectable();
+                if endpoint.is_direct() || endpoint.is_selectable() {
+                    runtime.last_error = None;
+                } else if !endpoint.is_selectable() {
+                    runtime.last_error = Some("xray_missing".to_string());
+                }
+            }
+        }
+        forward_proxy::sync_manager_runtime_to_store(&self.key_store, &manager).await
+    }
+
+    pub async fn maybe_run_forward_proxy_maintenance(&self) -> Result<(), ProxyError> {
+        let should_refresh = {
+            let manager = self.forward_proxy.lock().await;
+            manager.should_refresh_subscriptions()
+        };
+        if should_refresh {
+            self.refresh_forward_proxy_subscriptions().await?;
+        }
+        let probe_candidate = {
+            let mut manager = self.forward_proxy.lock().await;
+            manager
+                .mark_probe_started()
+                .and_then(|selected| manager.endpoint_by_key(&selected.key))
+        };
+        if let Some(endpoint) = probe_candidate {
+            let probe_url = forward_proxy::derive_probe_url(&self.upstream);
+            let probe_result = self
+                .probe_forward_proxy_endpoint(
+                    &endpoint,
+                    Duration::from_secs(forward_proxy::FORWARD_PROXY_VALIDATION_TIMEOUT_SECS),
+                    &probe_url,
+                )
+                .await;
+            match probe_result {
+                Ok(latency_ms) => {
+                    let _ = self
+                        .record_forward_proxy_attempt_inner(
+                            &endpoint.key,
+                            true,
+                            Some(latency_ms),
+                            None,
+                            true,
+                        )
+                        .await;
+                }
+                Err(err) => {
+                    let failure_kind = map_forward_proxy_validation_error_code(&err);
+                    let _ = self
+                        .record_forward_proxy_attempt_inner(
+                            &endpoint.key,
+                            false,
+                            None,
+                            Some(failure_kind.as_str()),
+                            true,
+                        )
+                        .await;
+                }
+            }
+            let mut manager = self.forward_proxy.lock().await;
+            manager.mark_probe_finished();
+        }
+        Ok(())
+    }
+
+    async fn probe_forward_proxy_endpoint(
+        &self,
+        endpoint: &forward_proxy::ForwardProxyEndpoint,
+        timeout: Duration,
+        probe_url: &Url,
+    ) -> Result<f64, ProxyError> {
+        let mut temporary_xray_key = None;
+        let resolved = if endpoint.requires_xray() && endpoint.endpoint_url.is_none() {
+            let raw_url = endpoint.raw_url.as_deref().ok_or_else(|| {
+                ProxyError::Other("xray proxy validation requires raw proxy url".to_string())
+            })?;
+            let validate_key = format!(
+                "__validate_xray__{:016x}",
+                forward_proxy::stable_hash_u64(raw_url)
+            );
+            let validate_endpoint = forward_proxy::ForwardProxyEndpoint {
+                key: validate_key.clone(),
+                source: endpoint.source.clone(),
+                display_name: endpoint.display_name.clone(),
+                protocol: endpoint.protocol,
+                endpoint_url: None,
+                raw_url: Some(raw_url.to_string()),
+            };
+            let route_url = self
+                .xray_supervisor
+                .lock()
+                .await
+                .ensure_instance(&validate_endpoint)
+                .await?;
+            temporary_xray_key = Some(validate_key);
+            forward_proxy::ForwardProxyEndpoint {
+                endpoint_url: Some(route_url),
+                ..validate_endpoint
+            }
+        } else {
+            endpoint.clone()
+        };
+        let result = forward_proxy::probe_forward_proxy_endpoint(
+            &self.forward_proxy_clients,
+            &resolved,
+            probe_url,
+            timeout,
+        )
+        .await;
+        if let Some(temp_key) = temporary_xray_key {
+            self.xray_supervisor
+                .lock()
+                .await
+                .remove_instance(&temp_key)
+                .await;
+        }
+        result
+    }
+
+    async fn probe_and_record_forward_proxy_endpoint(
+        &self,
+        endpoint: &forward_proxy::ForwardProxyEndpoint,
+        request_kind: &str,
+        api_key_id: Option<&str>,
+        timeout: Duration,
+    ) -> Result<f64, ProxyError> {
+        let probe_url = forward_proxy::derive_probe_url(&self.upstream);
+        let result = self
+            .probe_forward_proxy_endpoint(endpoint, timeout, &probe_url)
+            .await;
+        match result {
+            Ok(latency_ms) => {
+                self.record_forward_proxy_attempt(
+                    endpoint.key.as_str(),
+                    api_key_id,
+                    request_kind,
+                    true,
+                    Some(latency_ms),
+                    None,
+                )
+                .await?;
+                Ok(latency_ms)
+            }
+            Err(err) => {
+                let error_code = map_forward_proxy_validation_error_code(&err);
+                self.record_forward_proxy_attempt(
+                    endpoint.key.as_str(),
+                    api_key_id,
+                    request_kind,
+                    false,
+                    None,
+                    Some(error_code.as_str()),
+                )
+                .await?;
+                Err(err)
+            }
+        }
+    }
+
+    async fn load_proxy_affinity_record(
+        &self,
+        api_key_id: &str,
+    ) -> Result<forward_proxy::ForwardProxyAffinityRecord, ProxyError> {
+        {
+            let cache = self.forward_proxy_affinity.lock().await;
+            if let Some(record) = cache.get(api_key_id) {
+                return Ok(record.clone());
+            }
+        }
+        let record =
+            forward_proxy::load_forward_proxy_key_affinity(&self.key_store.pool, api_key_id)
+                .await?
+                .unwrap_or_default();
+        let mut cache = self.forward_proxy_affinity.lock().await;
+        cache.insert(api_key_id.to_string(), record.clone());
+        Ok(record)
+    }
+
+    async fn store_proxy_affinity_record(
+        &self,
+        api_key_id: &str,
+        record: forward_proxy::ForwardProxyAffinityRecord,
+    ) -> Result<(), ProxyError> {
+        forward_proxy::save_forward_proxy_key_affinity(&self.key_store.pool, api_key_id, &record)
+            .await?;
+        let mut cache = self.forward_proxy_affinity.lock().await;
+        cache.insert(api_key_id.to_string(), record);
+        Ok(())
+    }
+
+    async fn reconcile_proxy_affinity_record(
+        &self,
+        api_key_id: &str,
+    ) -> Result<forward_proxy::ForwardProxyAffinityRecord, ProxyError> {
+        let mut record = self.load_proxy_affinity_record(api_key_id).await?;
+        let now = Utc::now().timestamp();
+        let mut manager = self.forward_proxy.lock().await;
+        manager.ensure_non_zero_weight();
+
+        let is_valid = |proxy_key: &str,
+                        manager: &forward_proxy::ForwardProxyManager,
+                        allow_direct_primary: bool| {
+            let Some(endpoint) = manager.endpoint(proxy_key) else {
+                return false;
+            };
+            if endpoint.is_direct() && !allow_direct_primary {
+                return false;
+            }
+            manager.runtime(proxy_key).is_some_and(|runtime| {
+                runtime.available && runtime.weight > 0.0 && endpoint.is_selectable()
+            })
+        };
+
+        if let Some(primary) = record.primary_proxy_key.as_deref()
+            && !is_valid(primary, &manager, true)
+        {
+            record.primary_proxy_key = None;
+        }
+        if let Some(secondary) = record.secondary_proxy_key.as_deref()
+            && !is_valid(secondary, &manager, true)
+        {
+            record.secondary_proxy_key = None;
+        }
+        if record.primary_proxy_key == record.secondary_proxy_key {
+            record.secondary_proxy_key = None;
+        }
+
+        if record.primary_proxy_key.is_none() {
+            let exclude = HashSet::new();
+            if let Some(primary) = manager
+                .rank_candidates_for_subject(
+                    &format!("{api_key_id}:primary"),
+                    &exclude,
+                    false,
+                    forward_proxy::FORWARD_PROXY_DEFAULT_PRIMARY_CANDIDATE_COUNT,
+                )
+                .into_iter()
+                .next()
+                .or_else(|| {
+                    manager
+                        .rank_candidates_for_subject(
+                            &format!("{api_key_id}:primary"),
+                            &exclude,
+                            true,
+                            forward_proxy::FORWARD_PROXY_DEFAULT_PRIMARY_CANDIDATE_COUNT,
+                        )
+                        .into_iter()
+                        .next()
+                })
+            {
+                record.primary_proxy_key = Some(primary.key.clone());
+            }
+        }
+
+        if record.secondary_proxy_key.is_none() {
+            let mut exclude = HashSet::new();
+            if let Some(primary) = record.primary_proxy_key.as_ref() {
+                exclude.insert(primary.clone());
+            }
+            if let Some(secondary) = manager
+                .rank_candidates_for_subject(
+                    &format!("{api_key_id}:secondary"),
+                    &exclude,
+                    false,
+                    forward_proxy::FORWARD_PROXY_DEFAULT_SECONDARY_CANDIDATE_COUNT,
+                )
+                .into_iter()
+                .next()
+                .or_else(|| {
+                    manager
+                        .rank_candidates_for_subject(
+                            &format!("{api_key_id}:secondary"),
+                            &exclude,
+                            true,
+                            forward_proxy::FORWARD_PROXY_DEFAULT_SECONDARY_CANDIDATE_COUNT,
+                        )
+                        .into_iter()
+                        .next()
+                })
+            {
+                record.secondary_proxy_key = Some(secondary.key.clone());
+            }
+        }
+
+        if record.primary_proxy_key.is_none() && record.secondary_proxy_key.is_some() {
+            record.primary_proxy_key = record.secondary_proxy_key.take();
+        }
+        record.updated_at = now;
+        drop(manager);
+        self.store_proxy_affinity_record(api_key_id, record.clone())
+            .await?;
+        Ok(record)
+    }
+
+    async fn promote_proxy_affinity_secondary(
+        &self,
+        api_key_id: &str,
+        succeeded_proxy_key: &str,
+    ) -> Result<(), ProxyError> {
+        let mut record = self.reconcile_proxy_affinity_record(api_key_id).await?;
+        if record.primary_proxy_key.as_deref() == Some(succeeded_proxy_key) {
+            return Ok(());
+        }
+        if record.secondary_proxy_key.as_deref() == Some(succeeded_proxy_key) {
+            record.primary_proxy_key = Some(succeeded_proxy_key.to_string());
+            record.secondary_proxy_key = None;
+            let manager = self.forward_proxy.lock().await;
+            let mut exclude = HashSet::new();
+            exclude.insert(succeeded_proxy_key.to_string());
+            if let Some(next_secondary) = manager
+                .rank_candidates_for_subject(
+                    &format!("{api_key_id}:secondary"),
+                    &exclude,
+                    false,
+                    forward_proxy::FORWARD_PROXY_DEFAULT_SECONDARY_CANDIDATE_COUNT,
+                )
+                .into_iter()
+                .next()
+                .or_else(|| {
+                    manager
+                        .rank_candidates_for_subject(
+                            &format!("{api_key_id}:secondary"),
+                            &exclude,
+                            true,
+                            forward_proxy::FORWARD_PROXY_DEFAULT_SECONDARY_CANDIDATE_COUNT,
+                        )
+                        .into_iter()
+                        .next()
+                })
+            {
+                record.secondary_proxy_key = Some(next_secondary.key.clone());
+            }
+            drop(manager);
+            record.updated_at = Utc::now().timestamp();
+            self.store_proxy_affinity_record(api_key_id, record).await?;
+        }
+        Ok(())
+    }
+
+    async fn build_proxy_attempt_plan(
+        &self,
+        api_key_id: &str,
+    ) -> Result<Vec<forward_proxy::SelectedForwardProxy>, ProxyError> {
+        let record = self.reconcile_proxy_affinity_record(api_key_id).await?;
+        let manager = self.forward_proxy.lock().await;
+        let mut plan = Vec::new();
+        let mut seen = HashSet::new();
+        for key in [
+            record.primary_proxy_key.as_ref(),
+            record.secondary_proxy_key.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if seen.insert(key.clone())
+                && let Some(endpoint) = manager.endpoint(key)
+                && endpoint.is_selectable()
+            {
+                plan.push(forward_proxy::SelectedForwardProxy::from_endpoint(endpoint));
+            }
+        }
+        if plan.is_empty() {
+            let exclude = HashSet::new();
+            if let Some(endpoint) = manager
+                .rank_candidates_for_subject(
+                    &format!("{api_key_id}:fallback"),
+                    &exclude,
+                    true,
+                    forward_proxy::FORWARD_PROXY_DEFAULT_PRIMARY_CANDIDATE_COUNT,
+                )
+                .into_iter()
+                .next()
+            {
+                plan.push(forward_proxy::SelectedForwardProxy::from_endpoint(
+                    &endpoint,
+                ));
+            }
+        }
+        Ok(plan)
+    }
+
+    async fn record_forward_proxy_attempt(
+        &self,
+        proxy_key: &str,
+        _api_key_id: Option<&str>,
+        _request_kind: &str,
+        success: bool,
+        latency_ms: Option<f64>,
+        failure_kind: Option<&str>,
+    ) -> Result<(), ProxyError> {
+        self.record_forward_proxy_attempt_inner(proxy_key, success, latency_ms, failure_kind, false)
+            .await
+    }
+
+    async fn record_forward_proxy_attempt_inner(
+        &self,
+        proxy_key: &str,
+        success: bool,
+        latency_ms: Option<f64>,
+        failure_kind: Option<&str>,
+        is_probe: bool,
+    ) -> Result<(), ProxyError> {
+        forward_proxy::insert_forward_proxy_attempt(
+            &self.key_store.pool,
+            proxy_key,
+            success,
+            latency_ms,
+            failure_kind,
+            is_probe,
+        )
+        .await?;
+        {
+            let mut manager = self.forward_proxy.lock().await;
+            manager.record_attempt(proxy_key, success, latency_ms, failure_kind);
+            if let Some(runtime) = manager.runtime(proxy_key).cloned() {
+                let bucket_start = (Utc::now().timestamp() / 3600) * 3600;
+                let sample_epoch_us = Utc::now().timestamp_nanos_opt().unwrap_or_default() / 1_000;
+                forward_proxy::persist_forward_proxy_runtime_state(&self.key_store.pool, &runtime)
+                    .await?;
+                forward_proxy::upsert_forward_proxy_weight_hourly_bucket(
+                    &self.key_store.pool,
+                    proxy_key,
+                    bucket_start,
+                    runtime.weight,
+                    sample_epoch_us,
+                )
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn send_with_forward_proxy<F>(
+        &self,
+        api_key_id: &str,
+        request_kind: &str,
+        mut build: F,
+    ) -> Result<(reqwest::Response, forward_proxy::SelectedForwardProxy), ProxyError>
+    where
+        F: FnMut(Client) -> reqwest::RequestBuilder,
+    {
+        {
+            let mut manager = self.forward_proxy.lock().await;
+            manager.note_request();
+        }
+        if let Err(err) = self.maybe_run_forward_proxy_maintenance().await {
+            eprintln!("forward-proxy maintenance error: {err}");
+        }
+        let plan: Vec<forward_proxy::SelectedForwardProxy> = self
+            .build_proxy_attempt_plan(api_key_id)
+            .await
+            .unwrap_or_default();
+        let mut last_error: Option<ProxyError> = None;
+        for candidate in plan {
+            let client = match self
+                .forward_proxy_clients
+                .client_for(candidate.endpoint_url.as_ref())
+                .await
+            {
+                Ok(client) => client,
+                Err(err) => {
+                    let error_code = map_forward_proxy_validation_error_code(&err);
+                    let _ = self
+                        .record_forward_proxy_attempt(
+                            &candidate.key,
+                            Some(api_key_id),
+                            request_kind,
+                            false,
+                            None,
+                            Some(error_code.as_str()),
+                        )
+                        .await;
+                    last_error = Some(err);
+                    continue;
+                }
+            };
+            let started = Instant::now();
+            match build(client).send().await {
+                Ok(response) => {
+                    let latency_ms = started.elapsed().as_secs_f64() * 1000.0;
+                    let _ = self
+                        .record_forward_proxy_attempt(
+                            &candidate.key,
+                            Some(api_key_id),
+                            request_kind,
+                            true,
+                            Some(latency_ms),
+                            None,
+                        )
+                        .await;
+                    let _ = self
+                        .promote_proxy_affinity_secondary(api_key_id, &candidate.key)
+                        .await;
+                    return Ok((response, candidate));
+                }
+                Err(err) => {
+                    let failure_kind = forward_proxy::failure_kind_from_http_error(&err);
+                    let _ = self
+                        .record_forward_proxy_attempt(
+                            &candidate.key,
+                            Some(api_key_id),
+                            request_kind,
+                            false,
+                            None,
+                            Some(failure_kind),
+                        )
+                        .await;
+                    last_error = Some(ProxyError::Http(err));
+                }
+            }
+        }
+
+        let direct = {
+            let manager = self.forward_proxy.lock().await;
+            manager
+                .endpoint_by_key(forward_proxy::FORWARD_PROXY_DIRECT_KEY)
+                .filter(|endpoint| endpoint.is_selectable())
+                .map(|endpoint| forward_proxy::SelectedForwardProxy::from_endpoint(&endpoint))
+        };
+        let Some(direct) = direct else {
+            return Err(last_error.unwrap_or_else(|| {
+                ProxyError::Other("no selectable forward proxy endpoints available".to_string())
+            }));
+        };
+        let client = self.forward_proxy_clients.direct_client();
+        let started = Instant::now();
+        match build(client).send().await {
+            Ok(response) => {
+                let _ = self
+                    .record_forward_proxy_attempt(
+                        &direct.key,
+                        Some(api_key_id),
+                        request_kind,
+                        true,
+                        Some(started.elapsed().as_secs_f64() * 1000.0),
+                        None,
+                    )
+                    .await;
+                Ok((response, direct))
+            }
+            Err(err) => {
+                let _ = self
+                    .record_forward_proxy_attempt(
+                        &direct.key,
+                        Some(api_key_id),
+                        request_kind,
+                        false,
+                        None,
+                        Some(forward_proxy::failure_kind_from_http_error(&err)),
+                    )
+                    .await;
+                Err(last_error.unwrap_or(ProxyError::Http(err)))
+            }
+        }
     }
 
     async fn billing_subject_for_token(&self, token_id: &str) -> Result<String, ProxyError> {
@@ -1417,23 +2397,28 @@ impl TavilyProxy {
 
         drop(url.query_pairs_mut());
 
-        let mut builder = self.client.request(request.method.clone(), url.clone());
-
         let sanitized_headers = self.sanitize_headers(&request.headers);
-        for (name, value) in sanitized_headers.headers.iter() {
-            // Host/Content-Length 由 reqwest 重算。
-            if name == HOST || name == CONTENT_LENGTH {
-                continue;
-            }
-            builder = builder.header(name, value);
-        }
-
-        builder = builder.header("Tavily-Api-Key", lease.secret.as_str());
-
-        let response = builder.body(request.body.clone()).send().await;
+        let request_method = request.method.clone();
+        let request_body = request.body.clone();
+        let request_url = url.clone();
+        let tavily_secret = lease.secret.clone();
+        let response = self
+            .send_with_forward_proxy(&lease.id, "mcp", |client| {
+                let mut builder = client.request(request_method.clone(), request_url.clone());
+                for (name, value) in sanitized_headers.headers.iter() {
+                    if name == HOST || name == CONTENT_LENGTH {
+                        continue;
+                    }
+                    builder = builder.header(name, value);
+                }
+                builder
+                    .header("Tavily-Api-Key", tavily_secret.as_str())
+                    .body(request_body.clone())
+            })
+            .await;
 
         match response {
-            Ok(response) => {
+            Ok((response, _selected_proxy)) => {
                 let status = response.status();
                 let headers = response.headers().clone();
                 let body_bytes = response.bytes().await.map_err(ProxyError::Http)?;
@@ -1475,7 +2460,7 @@ impl TavilyProxy {
                 })
             }
             Err(err) => {
-                log_error(
+                log_proxy_error(
                     &lease.secret,
                     &request.method,
                     &request.path,
@@ -1499,7 +2484,7 @@ impl TavilyProxy {
                         dropped_headers: &sanitized_headers.dropped,
                     })
                     .await?;
-                Err(ProxyError::Http(err))
+                Err(err)
             }
         }
     }
@@ -1565,22 +2550,28 @@ impl TavilyProxy {
             serde_json::to_vec(&upstream_options).map_err(|e| ProxyError::Other(e.to_string()))?;
         let redacted_request_body = redact_api_key_bytes(&request_body);
 
-        let mut builder = self.client.request(method.clone(), url.clone());
-        for (name, value) in sanitized_headers.headers.iter() {
-            // Host/Content-Length are recomputed by reqwest.
-            if name == HOST || name == CONTENT_LENGTH {
-                continue;
-            }
-            builder = builder.header(name, value);
-        }
-        if inject_upstream_bearer_auth {
-            builder = builder.header("Authorization", format!("Bearer {}", lease.secret));
-        }
-
-        let response = builder.body(request_body.clone()).send().await;
+        let request_method = method.clone();
+        let request_url = url.clone();
+        let upstream_secret = lease.secret.clone();
+        let response = self
+            .send_with_forward_proxy(&lease.id, upstream_path.trim_start_matches('/'), |client| {
+                let mut builder = client.request(request_method.clone(), request_url.clone());
+                for (name, value) in sanitized_headers.headers.iter() {
+                    if name == HOST || name == CONTENT_LENGTH {
+                        continue;
+                    }
+                    builder = builder.header(name, value);
+                }
+                if inject_upstream_bearer_auth {
+                    builder =
+                        builder.header("Authorization", format!("Bearer {}", upstream_secret));
+                }
+                builder.body(request_body.clone())
+            })
+            .await;
 
         match response {
-            Ok(response) => {
+            Ok((response, _selected_proxy)) => {
                 let status = response.status();
                 let headers = response.headers().clone();
                 let body_bytes = response.bytes().await.map_err(ProxyError::Http)?;
@@ -1627,7 +2618,7 @@ impl TavilyProxy {
                 ))
             }
             Err(err) => {
-                log_error(&lease.secret, method, display_path, None, &err);
+                log_proxy_error(&lease.secret, method, display_path, None, &err);
                 let redacted_empty: Vec<u8> = Vec::new();
                 self.key_store
                     .log_attempt(AttemptLog {
@@ -1646,7 +2637,7 @@ impl TavilyProxy {
                         dropped_headers: &sanitized_headers.dropped,
                     })
                     .await?;
-                Err(ProxyError::Http(err))
+                Err(err)
             }
         }
     }
@@ -1674,7 +2665,12 @@ impl TavilyProxy {
         let _key_guard = self.lock_research_key_usage(&lease.id).await?;
 
         let before_usage = match self
-            .fetch_research_usage_for_secret_with_retries(&lease.secret, usage_base)
+            .fetch_research_usage_for_secret_with_retries(
+                &lease.secret,
+                usage_base,
+                Some(&lease.id),
+                "research_usage_before",
+            )
             .await
         {
             Ok(usage) => usage,
@@ -1719,21 +2715,28 @@ impl TavilyProxy {
             serde_json::to_vec(&upstream_options).map_err(|e| ProxyError::Other(e.to_string()))?;
         let redacted_request_body = redact_api_key_bytes(&request_body);
 
-        let mut builder = self.client.request(method.clone(), url.clone());
-        for (name, value) in sanitized_headers.headers.iter() {
-            if name == HOST || name == CONTENT_LENGTH {
-                continue;
-            }
-            builder = builder.header(name, value);
-        }
-        if inject_upstream_bearer_auth {
-            builder = builder.header("Authorization", format!("Bearer {}", lease.secret));
-        }
-
-        let response = builder.body(request_body.clone()).send().await;
+        let request_method = method.clone();
+        let request_url = url.clone();
+        let upstream_secret = lease.secret.clone();
+        let response = self
+            .send_with_forward_proxy(&lease.id, "research", |client| {
+                let mut builder = client.request(request_method.clone(), request_url.clone());
+                for (name, value) in sanitized_headers.headers.iter() {
+                    if name == HOST || name == CONTENT_LENGTH {
+                        continue;
+                    }
+                    builder = builder.header(name, value);
+                }
+                if inject_upstream_bearer_auth {
+                    builder =
+                        builder.header("Authorization", format!("Bearer {}", upstream_secret));
+                }
+                builder.body(request_body.clone())
+            })
+            .await;
 
         match response {
-            Ok(response) => {
+            Ok((response, _selected_proxy)) => {
                 let status = response.status();
                 let headers = response.headers().clone();
                 let body_bytes = response.bytes().await.map_err(ProxyError::Http)?;
@@ -1770,7 +2773,12 @@ impl TavilyProxy {
                     .await?;
 
                 let after_usage = match self
-                    .fetch_research_usage_for_secret_with_retries(&lease.secret, usage_base)
+                    .fetch_research_usage_for_secret_with_retries(
+                        &lease.secret,
+                        usage_base,
+                        Some(&lease.id),
+                        "research_usage_after",
+                    )
                     .await
                 {
                     Ok(usage) => Some(usage),
@@ -1800,7 +2808,7 @@ impl TavilyProxy {
                 ))
             }
             Err(err) => {
-                log_error(&lease.secret, method, display_path, None, &err);
+                log_proxy_error(&lease.secret, method, display_path, None, &err);
                 let redacted_empty: Vec<u8> = Vec::new();
                 self.key_store
                     .log_attempt(AttemptLog {
@@ -1819,7 +2827,7 @@ impl TavilyProxy {
                         dropped_headers: &sanitized_headers.dropped,
                     })
                     .await?;
-                Err(ProxyError::Http(err))
+                Err(err)
             }
         }
     }
@@ -1854,22 +2862,28 @@ impl TavilyProxy {
         let sanitized_headers = sanitize_headers_inner(original_headers, &base, &origin);
 
         let redacted_request_body: Vec<u8> = Vec::new();
-        let mut builder = self.client.request(method.clone(), url.clone());
-        for (name, value) in sanitized_headers.headers.iter() {
-            // Host/Content-Length are recomputed by reqwest.
-            if name == HOST || name == CONTENT_LENGTH {
-                continue;
-            }
-            builder = builder.header(name, value);
-        }
-        if inject_upstream_bearer_auth {
-            builder = builder.header("Authorization", format!("Bearer {}", lease.secret));
-        }
-
-        let response = builder.send().await;
+        let request_method = method.clone();
+        let request_url = url.clone();
+        let upstream_secret = lease.secret.clone();
+        let response = self
+            .send_with_forward_proxy(&lease.id, "research_result", |client| {
+                let mut builder = client.request(request_method.clone(), request_url.clone());
+                for (name, value) in sanitized_headers.headers.iter() {
+                    if name == HOST || name == CONTENT_LENGTH {
+                        continue;
+                    }
+                    builder = builder.header(name, value);
+                }
+                if inject_upstream_bearer_auth {
+                    builder =
+                        builder.header("Authorization", format!("Bearer {}", upstream_secret));
+                }
+                builder
+            })
+            .await;
 
         match response {
-            Ok(response) => {
+            Ok((response, _selected_proxy)) => {
                 let status = response.status();
                 let headers = response.headers().clone();
                 let body_bytes = response.bytes().await.map_err(ProxyError::Http)?;
@@ -1915,7 +2929,7 @@ impl TavilyProxy {
                 ))
             }
             Err(err) => {
-                log_error(&lease.secret, method, display_path, None, &err);
+                log_proxy_error(&lease.secret, method, display_path, None, &err);
                 let redacted_empty: Vec<u8> = Vec::new();
                 self.key_store
                     .log_attempt(AttemptLog {
@@ -1934,7 +2948,7 @@ impl TavilyProxy {
                         dropped_headers: &sanitized_headers.dropped,
                     })
                     .await?;
-                Err(ProxyError::Http(err))
+                Err(err)
             }
         }
     }
@@ -3749,7 +4763,7 @@ impl TavilyProxy {
             return Err(ProxyError::Database(sqlx::Error::RowNotFound));
         };
         let (limit, remaining) = match self
-            .fetch_usage_quota_for_secret(&secret, usage_base, None)
+            .fetch_usage_quota_for_secret(&secret, usage_base, None, Some(key_id), "quota_sync")
             .await
         {
             Ok(quota) => quota,
@@ -3777,6 +4791,8 @@ impl TavilyProxy {
             api_key,
             usage_base,
             Some(Duration::from_secs(USAGE_PROBE_TIMEOUT_SECS)),
+            None,
+            "quota_probe",
         )
         .await
     }
@@ -3794,6 +4810,8 @@ impl TavilyProxy {
         secret: &str,
         usage_base: &str,
         timeout: Option<Duration>,
+        api_key_id: Option<&str>,
+        request_kind: &str,
     ) -> Result<(i64, i64), ProxyError> {
         let base = Url::parse(usage_base).map_err(|e| ProxyError::InvalidEndpoint {
             endpoint: usage_base.to_string(),
@@ -3802,14 +4820,32 @@ impl TavilyProxy {
         let mut url = base.clone();
         url.set_path("/usage");
 
-        let mut req = self
-            .client
-            .get(url)
-            .header("Authorization", format!("Bearer {}", secret));
-        if let Some(timeout) = timeout {
-            req = req.timeout(timeout);
-        }
-        let resp = req.send().await.map_err(ProxyError::Http)?;
+        let secret_header = secret.to_string();
+        let request_url = url.clone();
+        let resp = match api_key_id {
+            Some(api_key_id) => self
+                .send_with_forward_proxy(api_key_id, request_kind, |client| {
+                    let mut req = client
+                        .get(request_url.clone())
+                        .header("Authorization", format!("Bearer {}", secret_header));
+                    if let Some(timeout) = timeout {
+                        req = req.timeout(timeout);
+                    }
+                    req
+                })
+                .await
+                .map(|(response, _)| response)?,
+            None => {
+                let mut req = self
+                    .client
+                    .get(request_url.clone())
+                    .header("Authorization", format!("Bearer {}", secret_header));
+                if let Some(timeout) = timeout {
+                    req = req.timeout(timeout);
+                }
+                req.send().await.map_err(ProxyError::Http)?
+            }
+        };
         let status = resp.status();
         let bytes = resp.bytes().await.map_err(ProxyError::Http)?;
         if !status.is_success() {
@@ -3850,6 +4886,8 @@ impl TavilyProxy {
         secret: &str,
         usage_base: &str,
         timeout: Option<Duration>,
+        api_key_id: Option<&str>,
+        request_kind: &str,
     ) -> Result<i64, ProxyError> {
         let base = Url::parse(usage_base).map_err(|e| ProxyError::InvalidEndpoint {
             endpoint: usage_base.to_string(),
@@ -3858,14 +4896,32 @@ impl TavilyProxy {
         let mut url = base.clone();
         url.set_path("/usage");
 
-        let mut req = self
-            .client
-            .get(url)
-            .header("Authorization", format!("Bearer {}", secret));
-        if let Some(timeout) = timeout {
-            req = req.timeout(timeout);
-        }
-        let resp = req.send().await.map_err(ProxyError::Http)?;
+        let secret_header = secret.to_string();
+        let request_url = url.clone();
+        let resp = match api_key_id {
+            Some(api_key_id) => self
+                .send_with_forward_proxy(api_key_id, request_kind, |client| {
+                    let mut req = client
+                        .get(request_url.clone())
+                        .header("Authorization", format!("Bearer {}", secret_header));
+                    if let Some(timeout) = timeout {
+                        req = req.timeout(timeout);
+                    }
+                    req
+                })
+                .await
+                .map(|(response, _)| response)?,
+            None => {
+                let mut req = self
+                    .client
+                    .get(request_url.clone())
+                    .header("Authorization", format!("Bearer {}", secret_header));
+                if let Some(timeout) = timeout {
+                    req = req.timeout(timeout);
+                }
+                req.send().await.map_err(ProxyError::Http)?
+            }
+        };
         let status = resp.status();
         let bytes = resp.bytes().await.map_err(ProxyError::Http)?;
         if !status.is_success() {
@@ -3888,6 +4944,8 @@ impl TavilyProxy {
         &self,
         secret: &str,
         usage_base: &str,
+        api_key_id: Option<&str>,
+        request_kind: &str,
     ) -> Result<i64, ProxyError> {
         let mut last_error: Option<ProxyError> = None;
         for attempt in 0..USAGE_PROBE_RETRY_ATTEMPTS {
@@ -3896,6 +4954,8 @@ impl TavilyProxy {
                     secret,
                     usage_base,
                     Some(Duration::from_secs(USAGE_PROBE_TIMEOUT_SECS)),
+                    api_key_id,
+                    request_kind,
                 )
                 .await
             {
@@ -4166,6 +5226,8 @@ impl KeyStore {
         )
         .execute(&self.pool)
         .await?;
+
+        forward_proxy::ensure_forward_proxy_schema(&self.pool).await?;
 
         // User identity model (separated from admin auth):
         // - users: local user records
@@ -12981,6 +14043,30 @@ pub enum ProxyError {
     Other(String),
 }
 
+fn map_forward_proxy_validation_error_code(error: &ProxyError) -> String {
+    match error {
+        ProxyError::Http(err) => {
+            if err.is_timeout() {
+                "proxy_timeout".to_string()
+            } else {
+                "proxy_unreachable".to_string()
+            }
+        }
+        ProxyError::Other(message) => {
+            if message.contains("xray") {
+                "xray_missing".to_string()
+            } else if message.contains("subscription") {
+                "subscription_unreachable".to_string()
+            } else if message.contains("timeout") {
+                "proxy_timeout".to_string()
+            } else {
+                "validation_failed".to_string()
+            }
+        }
+        _ => "validation_failed".to_string(),
+    }
+}
+
 fn start_of_month(now: chrono::DateTime<Utc>) -> chrono::DateTime<Utc> {
     Utc.with_ymd_and_hms(now.year(), now.month(), 1, 0, 0, 0)
         .single()
@@ -13089,6 +14175,17 @@ fn log_error(key: &str, method: &Method, path: &str, query: Option<&str>, err: &
     let key_preview = preview_key(key);
     let full_path = compose_path(path, query);
     eprintln!("[{key_preview}] {method} {full_path} !! {err}");
+}
+
+fn log_proxy_error(key: &str, method: &Method, path: &str, query: Option<&str>, err: &ProxyError) {
+    match err {
+        ProxyError::Http(source) => log_error(key, method, path, query, source),
+        _ => {
+            let key_preview = preview_key(key);
+            let full_path = compose_path(path, query);
+            eprintln!("[{key_preview}] {method} {full_path} !! {err}");
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

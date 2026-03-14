@@ -1073,3 +1073,134 @@ export function fetchTokenUsageLeaderboard(
   const params = new URLSearchParams({ period, focus })
   return requestJson(`/api/tokens/leaderboard?${params.toString()}`, { signal })
 }
+
+export interface ForwardProxyWindowStats {
+  attempts: number
+  successCount?: number | null
+  failureCount?: number | null
+  successRate?: number | null
+  avgLatencyMs?: number | null
+}
+
+export interface ForwardProxyNode {
+  key: string
+  source: string
+  displayName: string
+  endpointUrl: string | null
+  weight: number
+  available: boolean
+  lastError?: string | null
+  penalized: boolean
+  primaryAssignmentCount: number
+  secondaryAssignmentCount: number
+  stats: {
+    oneMinute: ForwardProxyWindowStats
+    fifteenMinutes: ForwardProxyWindowStats
+    oneHour: ForwardProxyWindowStats
+    oneDay: ForwardProxyWindowStats
+    sevenDays: ForwardProxyWindowStats
+  }
+}
+
+export interface ForwardProxySettings {
+  proxyUrls: string[]
+  subscriptionUrls: string[]
+  subscriptionUpdateIntervalSecs: number
+  insertDirect: boolean
+  nodes: ForwardProxyNode[]
+}
+
+export interface ForwardProxySettingsEnvelope {
+  forwardProxy?: ForwardProxySettings | null
+}
+
+export interface UpdateForwardProxySettingsPayload {
+  proxyUrls: string[]
+  subscriptionUrls: string[]
+  subscriptionUpdateIntervalSecs: number
+  insertDirect: boolean
+}
+
+export type ForwardProxyValidationKind = 'proxyUrl' | 'subscriptionUrl'
+
+export interface ForwardProxyValidationRequest {
+  kind: ForwardProxyValidationKind
+  value: string
+}
+
+export interface ForwardProxyValidationResponse {
+  ok: boolean
+  message: string
+  normalizedValue?: string | null
+  discoveredNodes?: number | null
+  latencyMs?: number | null
+  errorCode?: string | null
+}
+
+export interface ForwardProxyActivityBucket {
+  bucketStart: string
+  bucketEnd: string
+  successCount: number
+  failureCount: number
+}
+
+export interface ForwardProxyWeightBucket {
+  bucketStart: string
+  bucketEnd: string
+  sampleCount: number
+  minWeight: number
+  maxWeight: number
+  avgWeight: number
+  lastWeight: number
+}
+
+export interface ForwardProxyStatsNode extends ForwardProxyNode {
+  last24h: ForwardProxyActivityBucket[]
+  weight24h: ForwardProxyWeightBucket[]
+}
+
+export interface ForwardProxyStatsResponse {
+  rangeStart: string
+  rangeEnd: string
+  bucketSeconds: number
+  nodes: ForwardProxyStatsNode[]
+}
+
+function createEmptyForwardProxySettings(): ForwardProxySettings {
+  return {
+    proxyUrls: [],
+    subscriptionUrls: [],
+    subscriptionUpdateIntervalSecs: 3600,
+    insertDirect: true,
+    nodes: [],
+  }
+}
+
+export async function fetchForwardProxySettings(signal?: AbortSignal): Promise<ForwardProxySettings> {
+  const response = await requestJson<ForwardProxySettingsEnvelope>('/api/settings', { signal })
+  return response.forwardProxy ?? createEmptyForwardProxySettings()
+}
+
+export function updateForwardProxySettings(
+  payload: UpdateForwardProxySettingsPayload,
+): Promise<ForwardProxySettings> {
+  return requestJson('/api/settings/forward-proxy', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export function validateForwardProxyCandidate(
+  payload: ForwardProxyValidationRequest,
+): Promise<ForwardProxyValidationResponse> {
+  return requestJson('/api/settings/forward-proxy/validate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export function fetchForwardProxyStats(signal?: AbortSignal): Promise<ForwardProxyStatsResponse> {
+  return requestJson('/api/stats/forward-proxy', { signal })
+}
