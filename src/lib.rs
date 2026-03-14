@@ -5153,6 +5153,12 @@ impl KeyStore {
         )
         .execute(&self.pool)
         .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_request_logs_time
+               ON request_logs(created_at DESC, id DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
 
         // API key usage rollups (for statistics that must not depend on request_logs retention).
         sqlx::query(
