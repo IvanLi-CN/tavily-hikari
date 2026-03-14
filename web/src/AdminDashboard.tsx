@@ -2848,6 +2848,12 @@ function AdminDashboard(): JSX.Element {
     ]
   }, [adminStrings.dashboard.currentSnapshot, keyStrings.quarantine.badge, metricsStrings, summary])
 
+  const dashboardStatusLoading =
+    !summary &&
+    (tokensLoadState === 'initial_loading' ||
+      tokensLoadState === 'switch_loading' ||
+      tokensLoadState === 'refreshing')
+
   const namedKeyGroups = keyGroupFacets
     .filter((group) => group.value.trim().length > 0)
     .map((group) => ({ name: group.value, keyCount: group.count }))
@@ -5503,6 +5509,7 @@ function AdminDashboard(): JSX.Element {
         <DashboardOverview
           strings={adminStrings.dashboard}
           overviewReady={dashboardOverviewLoaded}
+          statusLoading={dashboardStatusLoading}
           todayMetrics={todayMetrics}
           monthMetrics={monthMetrics}
           statusMetrics={statusMetrics}

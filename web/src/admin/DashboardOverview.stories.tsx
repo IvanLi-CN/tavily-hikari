@@ -23,6 +23,7 @@ const strings = {
   description: 'Global health, risk signals, and actionable activity in one place.',
   loading: 'Loading dashboard data…',
   summaryUnavailable: 'Unable to load the summary windows right now.',
+  statusUnavailable: 'Unable to load the current site status right now.',
   todayTitle: 'Today',
   todayDescription: 'Core request signals up to now, directly compared with yesterday.',
   monthTitle: 'This Month',
@@ -105,6 +106,7 @@ export const Default: Story = {
   args: {
     strings,
     overviewReady: true,
+    statusLoading: false,
     todayMetrics,
     monthMetrics,
     statusMetrics,

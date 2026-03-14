@@ -203,6 +203,7 @@ interface AdminTranslationsShape {
     description: string
     loading: string
     summaryUnavailable: string
+    statusUnavailable: string
     todayTitle: string
     todayDescription: string
     monthTitle: string
@@ -1267,6 +1268,7 @@ export const translations: Record<Language, TranslationShape> = {
         description: 'Global health, risk signals, and actionable activity in one place.',
         loading: 'Loading dashboard data…',
         summaryUnavailable: 'Unable to load the summary windows right now.',
+        statusUnavailable: 'Unable to load the current site status right now.',
         todayTitle: 'Today',
         todayDescription: 'Core request signals up to now, directly compared with yesterday.',
         monthTitle: 'This Month',
@@ -2319,6 +2321,7 @@ export const translations: Record<Language, TranslationShape> = {
         description: '在一个页面查看全局健康度、风险与可执行动作。',
         loading: '正在加载仪表盘数据…',
         summaryUnavailable: '暂时无法加载期间摘要。',
+        statusUnavailable: '暂时无法加载站点当前状态。',
         todayTitle: '今日',
         todayDescription: '截至当前的核心请求指标，直接对比昨日。',
         monthTitle: '本月',

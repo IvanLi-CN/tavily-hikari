@@ -1329,6 +1329,7 @@ function DashboardPageCanvas(): JSX.Element {
       <DashboardOverview
         strings={admin.dashboard}
         overviewReady
+        statusLoading={false}
         todayMetrics={todayMetrics}
         monthMetrics={monthMetrics}
         statusMetrics={statusMetrics}

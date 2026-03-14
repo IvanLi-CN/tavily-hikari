@@ -19,6 +19,7 @@ export interface DashboardOverviewStrings {
   description: string
   loading: string
   summaryUnavailable: string
+  statusUnavailable: string
   todayTitle: string
   todayDescription: string
   monthTitle: string
@@ -49,6 +50,7 @@ export interface DashboardOverviewStrings {
 interface DashboardOverviewProps {
   strings: DashboardOverviewStrings
   overviewReady: boolean
+  statusLoading: boolean
   todayMetrics: DashboardMetricCard[]
   monthMetrics: DashboardMetricCard[]
   statusMetrics: DashboardMetricCard[]
@@ -130,6 +132,7 @@ function TodayMetricCard({ metric }: { metric: DashboardMetricCard }): JSX.Eleme
 export default function DashboardOverview({
   strings,
   overviewReady,
+  statusLoading,
   todayMetrics,
   monthMetrics,
   statusMetrics,
@@ -292,7 +295,9 @@ export default function DashboardOverview({
                     ))}
                   </div>
                 ) : (
-                  <div className="empty-state alert dashboard-summary-empty">{strings.summaryUnavailable}</div>
+                  <div className="empty-state alert dashboard-summary-empty">
+                    {statusLoading ? strings.loading : strings.statusUnavailable}
+                  </div>
                 )}
               </article>
             </div>
