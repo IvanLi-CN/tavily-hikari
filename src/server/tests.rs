@@ -5510,6 +5510,13 @@ mod tests {
             .await
             .expect("open db pool");
 
+        sqlx::query("UPDATE api_keys SET deleted_at = ? WHERE id = ?")
+            .bind(today_start + 120)
+            .bind(&key_id)
+            .execute(&pool)
+            .await
+            .expect("soft-delete seeded key after creation");
+
         sqlx::query(
             r#"
             INSERT INTO api_key_usage_buckets (
@@ -5717,8 +5724,8 @@ mod tests {
         )
         .bind("k123")
         .bind("tvly-created-at-legacy")
-        .bind(420_i64)
         .bind(360_i64)
+        .bind(420_i64)
         .bind(540_i64)
         .execute(&pool)
         .await

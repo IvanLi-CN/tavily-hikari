@@ -197,10 +197,7 @@ type UserTagLike = Pick<AdminUserTagBinding, 'displayName' | 'icon' | 'systemKey
   source?: string | null
 }
 
-type DashboardSiteStatusState = Omit<DashboardSiteStatusSnapshot, 'availableProxyNodes' | 'totalProxyNodes'> & {
-  availableProxyNodes: number | null
-  totalProxyNodes: number | null
-}
+type DashboardSiteStatusState = DashboardSiteStatusSnapshot
 
 const EMPTY_USER_TAG_FORM: UserTagFormState = {
   tagId: null,

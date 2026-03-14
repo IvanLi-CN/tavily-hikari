@@ -34,13 +34,13 @@ export interface DashboardSiteStatusSnapshot {
   activeKeys: number
   quarantinedKeys: number
   exhaustedKeys: number
-  availableProxyNodes: number
-  totalProxyNodes: number
+  availableProxyNodes: number | null
+  totalProxyNodes: number | null
 }
 
 export interface DashboardForwardProxySnapshot {
-  availableNodes: number
-  totalNodes: number
+  availableNodes: number | null
+  totalNodes: number | null
 }
 
 export interface DashboardSnapshotEvent {

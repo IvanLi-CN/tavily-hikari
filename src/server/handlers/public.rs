@@ -455,15 +455,15 @@ struct DashboardSiteStatusView {
     active_keys: i64,
     quarantined_keys: i64,
     exhausted_keys: i64,
-    available_proxy_nodes: i64,
-    total_proxy_nodes: i64,
+    available_proxy_nodes: Option<i64>,
+    total_proxy_nodes: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DashboardForwardProxyView {
-    available_nodes: i64,
-    total_nodes: i64,
+    available_nodes: Option<i64>,
+    total_nodes: Option<i64>,
 }
 
 async fn sse_dashboard(
@@ -647,11 +647,7 @@ async fn build_snapshot_event(state: &Arc<AppState>) -> Option<Event> {
         yesterday,
         month,
     } = state.proxy.summary_windows().await.ok()?;
-    let forward_proxy = state
-        .proxy
-        .get_forward_proxy_dashboard_summary()
-        .await
-        .unwrap_or_default();
+    let forward_proxy = state.proxy.get_forward_proxy_dashboard_summary().await.ok();
     let keys = state.proxy.list_api_key_metrics().await.ok()?;
     let logs = state
         .proxy
@@ -672,12 +668,12 @@ async fn build_snapshot_event(state: &Arc<AppState>) -> Option<Event> {
             active_keys: summary.active_keys,
             quarantined_keys: summary.quarantined_keys,
             exhausted_keys: summary.exhausted_keys,
-            available_proxy_nodes: forward_proxy.available_nodes,
-            total_proxy_nodes: forward_proxy.total_nodes,
+            available_proxy_nodes: forward_proxy.as_ref().map(|summary| summary.available_nodes),
+            total_proxy_nodes: forward_proxy.as_ref().map(|summary| summary.total_nodes),
         },
         forward_proxy: DashboardForwardProxyView {
-            available_nodes: forward_proxy.available_nodes,
-            total_nodes: forward_proxy.total_nodes,
+            available_nodes: forward_proxy.as_ref().map(|summary| summary.available_nodes),
+            total_nodes: forward_proxy.as_ref().map(|summary| summary.total_nodes),
         },
         keys: keys.into_iter().map(ApiKeyView::from_list).collect(),
         logs: logs.into_iter().map(RequestLogView::from).collect(),
@@ -696,11 +692,7 @@ async fn compute_signatures(
         yesterday,
         month,
     } = state.proxy.summary_windows().await.map_err(|_| ())?;
-    let forward_proxy = state
-        .proxy
-        .get_forward_proxy_dashboard_summary()
-        .await
-        .unwrap_or_default();
+    let forward_proxy = state.proxy.get_forward_proxy_dashboard_summary().await.ok();
     let logs = state.proxy.recent_request_logs(1).await.map_err(|_| ())?;
     let latest_id = logs.first().map(|l| l.id);
     let sig: Option<SummarySig> = Some(SummarySig {
@@ -734,7 +726,7 @@ async fn compute_signatures(
             month.new_keys,
             month.new_quarantines,
         ),
-        proxy: (forward_proxy.available_nodes, forward_proxy.total_nodes),
+        proxy: forward_proxy.map(|summary| (summary.available_nodes, summary.total_nodes)),
     });
     Ok((sig, latest_id))
 }

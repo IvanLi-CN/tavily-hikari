@@ -39,7 +39,7 @@ struct SummarySig {
     today: (i64, i64, i64, i64),
     yesterday: (i64, i64, i64, i64),
     month: (i64, i64, i64, i64, i64, i64),
-    proxy: (i64, i64),
+    proxy: Option<(i64, i64)>,
 }
 use std::time::{Duration, Instant};
 use tavily_hikari::{

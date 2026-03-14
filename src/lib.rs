@@ -7273,10 +7273,17 @@ impl KeyStore {
             r#"
             UPDATE api_keys
             SET created_at = COALESCE(
-                NULLIF(created_at, 0),
-                NULLIF(last_used_at, 0),
-                NULLIF(status_changed_at, 0),
-                NULLIF(quota_synced_at, 0),
+                (
+                    SELECT MIN(candidate_ts)
+                    FROM (
+                        SELECT NULLIF(status_changed_at, 0) AS candidate_ts
+                        UNION ALL
+                        SELECT NULLIF(last_used_at, 0)
+                        UNION ALL
+                        SELECT NULLIF(quota_synced_at, 0)
+                    )
+                    WHERE candidate_ts IS NOT NULL
+                ),
                 0
             )
             WHERE created_at IS NULL OR created_at <= 0
@@ -13492,8 +13499,7 @@ impl KeyStore {
                 (
                     SELECT COALESCE(COUNT(*), 0)
                     FROM api_keys
-                    WHERE deleted_at IS NULL
-                      AND created_at >= ?
+                    WHERE created_at >= ?
                 ) AS month_new_keys,
                 (
                     SELECT COALESCE(COUNT(*), 0)
