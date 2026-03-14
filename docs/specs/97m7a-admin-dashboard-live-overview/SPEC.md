@@ -106,6 +106,7 @@
 - `2026-03-14`：`cd web && bun run build` 通过。
 - `2026-03-14`：`cd web && bun run build-storybook` 通过。
 - `2026-03-14`：本地 `curl` + Python SSE 验证通过；在 `/api/events` 首个 `snapshot` 后新增 key，确认 `summary.active_keys` 与 `summaryWindows.month.new_keys` 在后续 SSE `snapshot` 中直接递增，无需 overview 补拉。
+- `2026-03-14`：review 修复后再次执行 `cargo test` / `cargo clippy -- -D warnings`，新增“仅额度变化也会触发 dashboard SSE snapshot 刷新”的回归测试并通过。
 - `2026-03-14`：`chrome-devtools` 本轮调用超时，浏览器 MCP 复核待在后续 PR 收敛轮次补齐。
 
 ## 实现里程碑
@@ -128,3 +129,4 @@
 - 2026-03-14: 初始化 spec，定义 dashboard 实时总览、month lifecycle 指标、代理节点摘要与大数展示收口目标。
 - 2026-03-14: 完成 `api_keys.created_at` 迁移与最佳努力回填、month `new_keys/new_quarantines` 聚合、admin SSE `summaryWindows/siteStatus/forwardProxy` 扩容，以及 dashboard 总览布局/大数字展示改造。
 - 2026-03-14: 根据 review 收敛修正 `created_at` 历史回填口径、月新增 key 对软删除 key 的统计语义，以及 forward proxy SSE 失败时的空值降级表达。
+- 2026-03-14: 根据后续 review 收敛补齐 dashboard SSE 对额度汇总变化的签名检测，改为轻量 forward proxy 节点摘要采样，并新增额度变化触发 snapshot 的回归测试。
