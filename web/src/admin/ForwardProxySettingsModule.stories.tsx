@@ -12,7 +12,7 @@ import {
 import { LanguageProvider, useTranslate } from '../i18n'
 
 const LONG_SUBSCRIPTION_URL =
-  'https://iijb-xp.707979.example/api/v1/client/subscribe?token=demo_1234567890abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ&format=raw'
+  'https://subscription.example.com/api/v1/client/subscribe?token=demo_1234567890abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ&format=raw'
 
 const SUBSCRIPTION_SUCCESS_RESULT: ForwardProxyValidationEntry[] = [
   {
