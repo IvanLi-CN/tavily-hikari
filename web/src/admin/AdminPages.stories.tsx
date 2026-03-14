@@ -1223,42 +1223,104 @@ function DashboardPageCanvas(): JSX.Element {
   const exhaustedKeys = MOCK_KEYS.filter((item) => item.status === 'exhausted').length
   const activeKeys = MOCK_KEYS.filter((item) => item.status === 'active').length
 
-  const metrics: DashboardMetricCard[] = [
+  const todayMetrics: DashboardMetricCard[] = [
     {
-      id: 'total',
+      id: 'today-total',
       label: admin.metrics.labels.total,
       value: formatNumber(totalRequests),
-      subtitle: '—',
+      subtitle: admin.dashboard.asOfNow,
+      comparison: {
+        label: admin.dashboard.deltaFromYesterday,
+        value: '+128 (+6.1%)',
+        direction: 'up',
+      },
     },
     {
-      id: 'success',
+      id: 'today-success',
       label: admin.metrics.labels.success,
       value: formatNumber(successCount),
-      subtitle: formatPercent(successCount, totalRequests),
+      subtitle: `${admin.dashboard.todayShare} · ${formatPercent(successCount, totalRequests)}`,
+      comparison: {
+        label: admin.dashboard.deltaFromYesterday,
+        value: '+96 (+5.4%)',
+        direction: 'up',
+      },
     },
     {
-      id: 'errors',
+      id: 'today-errors',
       label: admin.metrics.labels.errors,
       value: formatNumber(errorCount),
-      subtitle: formatPercent(errorCount, totalRequests),
+      subtitle: `${admin.dashboard.todayShare} · ${formatPercent(errorCount, totalRequests)}`,
+      comparison: {
+        label: admin.dashboard.deltaFromYesterday,
+        value: '-12 (-9.8%)',
+        direction: 'down',
+      },
     },
     {
-      id: 'quota',
+      id: 'today-quota',
       label: admin.metrics.labels.quota,
       value: formatNumber(quotaExhaustedCount),
-      subtitle: formatPercent(quotaExhaustedCount, totalRequests),
+      subtitle: `${admin.dashboard.todayShare} · ${formatPercent(quotaExhaustedCount, totalRequests)}`,
+      comparison: {
+        label: admin.dashboard.deltaFromYesterday,
+        value: '+4 (+12.5%)',
+        direction: 'up',
+      },
     },
+  ]
+
+  const monthMetrics: DashboardMetricCard[] = [
+    {
+      id: 'month-total',
+      label: admin.metrics.labels.total,
+      value: formatNumber(totalRequests * 14),
+      subtitle: admin.dashboard.monthToDate,
+    },
+    {
+      id: 'month-success',
+      label: admin.metrics.labels.success,
+      value: formatNumber(successCount * 14),
+      subtitle: `${admin.dashboard.monthShare} · ${formatPercent(successCount, totalRequests)}`,
+    },
+    {
+      id: 'month-errors',
+      label: admin.metrics.labels.errors,
+      value: formatNumber(errorCount * 14),
+      subtitle: `${admin.dashboard.monthShare} · ${formatPercent(errorCount, totalRequests)}`,
+    },
+    {
+      id: 'month-quota',
+      label: admin.metrics.labels.quota,
+      value: formatNumber(quotaExhaustedCount * 14),
+      subtitle: `${admin.dashboard.monthShare} · ${formatPercent(quotaExhaustedCount, totalRequests)}`,
+    },
+  ]
+
+  const statusMetrics: DashboardMetricCard[] = [
     {
       id: 'remaining',
       label: admin.metrics.labels.remaining,
       value: `${formatNumber(totalQuotaRemaining)} / ${formatNumber(totalQuotaLimit)}`,
-      subtitle: formatPercent(totalQuotaRemaining, totalQuotaLimit),
+      subtitle: `${admin.dashboard.currentSnapshot} · ${formatPercent(totalQuotaRemaining, totalQuotaLimit)}`,
     },
     {
       id: 'keys',
       label: admin.metrics.labels.keys,
-      value: `${formatNumber(activeKeys)} / ${formatNumber(MOCK_KEYS.length)}`,
-      subtitle: admin.metrics.subtitles.keysExhausted.replace('{count}', String(exhaustedKeys)),
+      value: formatNumber(activeKeys),
+      subtitle: admin.dashboard.currentSnapshot,
+    },
+    {
+      id: 'quarantined',
+      label: admin.metrics.labels.quarantined,
+      value: '0',
+      subtitle: admin.metrics.subtitles.keysAll,
+    },
+    {
+      id: 'exhausted',
+      label: admin.metrics.labels.exhausted,
+      value: formatNumber(exhaustedKeys),
+      subtitle: admin.metrics.subtitles.keysExhausted.replace('{count}', formatNumber(exhaustedKeys)),
     },
   ]
 
@@ -1267,7 +1329,10 @@ function DashboardPageCanvas(): JSX.Element {
       <DashboardOverview
         strings={admin.dashboard}
         overviewReady
-        metrics={metrics}
+        statusLoading={false}
+        todayMetrics={todayMetrics}
+        monthMetrics={monthMetrics}
+        statusMetrics={statusMetrics}
         trend={{
           request: [86, 94, 101, 112, 97, 121, 133, 126],
           error: [3, 5, 4, 8, 7, 6, 9, 5],

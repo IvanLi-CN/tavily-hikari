@@ -202,6 +202,21 @@ interface AdminTranslationsShape {
     title: string
     description: string
     loading: string
+    summaryUnavailable: string
+    statusUnavailable: string
+    todayTitle: string
+    todayDescription: string
+    monthTitle: string
+    monthDescription: string
+    currentStatusTitle: string
+    currentStatusDescription: string
+    deltaFromYesterday: string
+    deltaNoBaseline: string
+    asOfNow: string
+    currentSnapshot: string
+    todayShare: string
+    monthToDate: string
+    monthShare: string
     trendsTitle: string
     trendsDescription: string
     requestTrend: string
@@ -699,6 +714,7 @@ interface AdminTranslationsShape {
         quota: string
         keys: string
         quarantined: string
+        exhausted: string
         remaining: string
       }
       subtitles: {
@@ -1251,6 +1267,21 @@ export const translations: Record<Language, TranslationShape> = {
         title: 'Operations Dashboard',
         description: 'Global health, risk signals, and actionable activity in one place.',
         loading: 'Loading dashboard data…',
+        summaryUnavailable: 'Unable to load the summary windows right now.',
+        statusUnavailable: 'Unable to load the current site status right now.',
+        todayTitle: 'Today',
+        todayDescription: 'Core request signals up to now, compared with the same time yesterday.',
+        monthTitle: 'This Month',
+        monthDescription: 'Month-to-date request totals in one compact view.',
+        currentStatusTitle: 'Current Site Status',
+        currentStatusDescription: 'Live quota, active keys, and pool health right now.',
+        deltaFromYesterday: 'vs same time yesterday',
+        deltaNoBaseline: 'No yesterday baseline',
+        asOfNow: 'Up to now',
+        currentSnapshot: 'Current snapshot',
+        todayShare: 'Today share',
+        monthToDate: 'Month to date',
+        monthShare: 'Month share',
         trendsTitle: 'Traffic Trends',
         trendsDescription: 'Recent request and error changes from latest logs.',
         requestTrend: 'Request volume',
@@ -1753,6 +1784,7 @@ export const translations: Record<Language, TranslationShape> = {
           quota: 'Quota Exhausted',
           keys: 'Active Keys',
           quarantined: 'Quarantined',
+          exhausted: 'Exhausted',
           remaining: 'Remaining',
         },
         subtitles: {
@@ -2288,6 +2320,21 @@ export const translations: Record<Language, TranslationShape> = {
         title: '运营仪表盘',
         description: '在一个页面查看全局健康度、风险与可执行动作。',
         loading: '正在加载仪表盘数据…',
+        summaryUnavailable: '暂时无法加载期间摘要。',
+        statusUnavailable: '暂时无法加载站点当前状态。',
+        todayTitle: '今日',
+        todayDescription: '截至当前的核心请求指标，对比昨日同一时刻。',
+        monthTitle: '本月',
+        monthDescription: '用紧凑视图查看本月累计请求表现。',
+        currentStatusTitle: '站点当前状态',
+        currentStatusDescription: '查看此刻的额度、活跃密钥与池状态。',
+        deltaFromYesterday: '较昨日同刻',
+        deltaNoBaseline: '昨日无基线',
+        asOfNow: '截至当前',
+        currentSnapshot: '当前快照',
+        todayShare: '今日占比',
+        monthToDate: '本月累计',
+        monthShare: '本月占比',
         trendsTitle: '流量趋势',
         trendsDescription: '基于最新请求日志的请求量与错误变化。',
         requestTrend: '请求量趋势',
@@ -2790,6 +2837,7 @@ export const translations: Record<Language, TranslationShape> = {
           quota: '额度耗尽',
           keys: '活跃密钥',
           quarantined: '隔离中',
+          exhausted: '已耗尽',
           remaining: '剩余可用',
         },
         subtitles: {

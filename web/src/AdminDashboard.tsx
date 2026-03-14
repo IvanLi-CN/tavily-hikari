@@ -105,11 +105,13 @@ import {
   fetchProfile,
   fetchRequestLogs,
   fetchSummary,
+  fetchSummaryWindows,
   fetchVersion,
   type ApiKeyStats,
   type Profile,
   type RequestLog,
   type Summary,
+  type SummaryWindowsResponse,
   fetchTokens,
   type AuthToken,
   fetchTokenSecret,
@@ -606,6 +608,19 @@ function formatPercent(numerator: number, denominator: number): string {
   return percentageFormatter.format(numerator / denominator)
 }
 
+function formatSignedNumber(value: number): string {
+  if (value > 0) return `+${formatNumber(value)}`
+  return formatNumber(value)
+}
+
+function buildWindowSubtitle(
+  label: string,
+  value: number,
+  total: number,
+): string {
+  return total > 0 ? `${label} · ${formatPercent(value, total)}` : label
+}
+
 function formatTimestamp(value: number | null): string {
   if (!value) {
     return '—'
@@ -825,6 +840,8 @@ function AdminDashboard(): JSX.Element {
   const footerStrings = adminStrings.footer
   const errorStrings = adminStrings.errors
   const [summary, setSummary] = useState<Summary | null>(null)
+  const [dashboardSummarySnapshot, setDashboardSummarySnapshot] = useState<Summary | null>(null)
+  const [dashboardSummaryWindows, setDashboardSummaryWindows] = useState<SummaryWindowsResponse | null>(null)
   const [keys, setKeys] = useState<ApiKeyStats[]>([])
   const [dashboardKeys, setDashboardKeys] = useState<ApiKeyStats[]>([])
   const [keysTotal, setKeysTotal] = useState(0)
@@ -918,6 +935,7 @@ function AdminDashboard(): JSX.Element {
   const loadDashboardOverviewRef = useRef<((signal?: AbortSignal) => Promise<void>) | null>(null)
   const dashboardOverviewInFlightRef = useRef(false)
   const dashboardOverviewLastSseRefreshAtRef = useRef(0)
+  const dashboardAdminSnapshotEnabledRef = useRef(false)
   const baseDataLoadedRef = useRef(false)
   const tokenLeaderboardQueryKeyRef = useRef<string | null>(null)
   const tokenLeaderboardNonceRef = useRef(0)
@@ -1579,6 +1597,13 @@ function AdminDashboard(): JSX.Element {
 
         setProfile(profileData ?? null)
         setSummary(summaryData)
+        if (
+          routeRef.current.name === 'module' &&
+          routeRef.current.module === 'dashboard' &&
+          dashboardAdminSnapshotEnabledRef.current
+        ) {
+          setDashboardSummarySnapshot(summaryData)
+        }
         setTokens(tokenData.items)
         setTokensTotal(tokenData.total)
         setTokenGroups(tokenGroupsData)
@@ -1606,7 +1631,34 @@ function AdminDashboard(): JSX.Element {
   const loadDashboardOverview = useCallback(
     async (signal?: AbortSignal) => {
       try {
-        const [dashboardTokenSnapshot, dashboardKeysData, dashboardLogsData, dashboardJobsData] = await Promise.all([
+        const dashboardWindowsRequest = fetchSummaryWindows(signal)
+          .then((data) => ({ kind: 'ok' as const, data }))
+          .catch((error: unknown) => ({
+            kind: 'error' as const,
+            status:
+              typeof error === 'object' && error && 'status' in error
+                ? (error as { status?: number }).status ?? null
+                : null,
+          }))
+        const dashboardSummaryRequest = fetchSummary(signal)
+          .then((data) => ({ kind: 'ok' as const, data }))
+          .catch((error: unknown) => ({
+            kind: 'error' as const,
+            status:
+              typeof error === 'object' && error && 'status' in error
+                ? (error as { status?: number }).status ?? null
+                : null,
+          }))
+        const [
+          dashboardSummaryWindowsResult,
+          dashboardSummarySnapshotResult,
+          dashboardTokenSnapshot,
+          dashboardKeysData,
+          dashboardLogsData,
+          dashboardJobsData,
+        ] = await Promise.all([
+          dashboardWindowsRequest,
+          dashboardSummaryRequest,
           loadAllTokensForDashboard(signal)
             .then((value) => ({ kind: 'ok' as const, ...value }))
             .catch(() => ({ kind: 'error' as const })),
@@ -1635,6 +1687,23 @@ function AdminDashboard(): JSX.Element {
           return
         }
 
+        const dashboardAuthExpired =
+          (dashboardSummaryWindowsResult.kind === 'error' &&
+            dashboardSummaryWindowsResult.status === 403) ||
+          (dashboardSummarySnapshotResult.kind === 'error' &&
+            dashboardSummarySnapshotResult.status === 403)
+
+        dashboardAdminSnapshotEnabledRef.current = !dashboardAuthExpired
+        setDashboardSummarySnapshot(
+          !dashboardAuthExpired && dashboardSummarySnapshotResult.kind === 'ok'
+            ? dashboardSummarySnapshotResult.data
+            : null,
+        )
+        setDashboardSummaryWindows(
+          !dashboardAuthExpired && dashboardSummaryWindowsResult.kind === 'ok'
+            ? dashboardSummaryWindowsResult.data
+            : null,
+        )
         if (dashboardTokenSnapshot.kind === 'ok') {
           setDashboardTokens(dashboardTokenSnapshot.items)
           setDashboardTokenCoverage(dashboardTokenSnapshot.truncated ? 'truncated' : 'ok')
@@ -1649,6 +1718,9 @@ function AdminDashboard(): JSX.Element {
         if ((err as Error).name === 'AbortError') {
           return
         }
+        dashboardAdminSnapshotEnabledRef.current = false
+        setDashboardSummarySnapshot(null)
+        setDashboardSummaryWindows(null)
         setDashboardTokens([])
         setDashboardTokenCoverage('error')
         setDashboardKeys([])
@@ -1867,6 +1939,16 @@ function AdminDashboard(): JSX.Element {
     })
     return () => controller.abort()
   }, [loadData])
+
+  useLayoutEffect(() => {
+    if (!(route.name === 'module' && route.module === 'dashboard')) {
+      return
+    }
+    dashboardAdminSnapshotEnabledRef.current = false
+    setDashboardOverviewLoaded(false)
+    setDashboardSummarySnapshot(null)
+    setDashboardSummaryWindows(null)
+  }, [route])
 
   useEffect(() => {
     if (!(route.name === 'module' && route.module === 'dashboard')) {
@@ -2334,6 +2416,13 @@ function AdminDashboard(): JSX.Element {
         try {
           const data = JSON.parse(ev.data) as { summary: Summary; keys: ApiKeyStats[]; logs: RequestLog[] }
           setSummary(data.summary)
+          if (
+            routeRef.current.name === 'module' &&
+            routeRef.current.module === 'dashboard' &&
+            dashboardAdminSnapshotEnabledRef.current
+          ) {
+            setDashboardSummarySnapshot(data.summary)
+          }
           setDashboardKeys(data.keys)
           setDashboardLogs(data.logs)
           setLastUpdated(new Date())
@@ -2659,66 +2748,183 @@ function AdminDashboard(): JSX.Element {
     void Promise.all(tasks).finally(() => controller.abort())
   }
 
-  const metrics = useMemo(() => {
-    if (!summary) {
+  const buildTodayComparison = useCallback(
+    (
+      currentValue: number,
+      previousValue: number,
+      trend: 'higher-is-better' | 'lower-is-better' = 'higher-is-better',
+    ) => {
+      const deltaValue = currentValue - previousValue
+      const direction: 'up' | 'down' | 'flat' =
+        deltaValue > 0 ? 'up' : deltaValue < 0 ? 'down' : 'flat'
+      const tone: 'positive' | 'negative' | 'neutral' =
+        direction === 'flat'
+          ? 'neutral'
+          : trend === 'higher-is-better'
+            ? direction === 'up'
+              ? 'positive'
+              : 'negative'
+            : direction === 'down'
+              ? 'positive'
+              : 'negative'
+      let value = formatSignedNumber(deltaValue)
+      if (previousValue > 0) {
+        value = `${value} (${percentageFormatter.format(deltaValue / previousValue)})`
+      } else if (deltaValue !== 0) {
+        value = `${value} · ${adminStrings.dashboard.deltaNoBaseline}`
+      }
+      return {
+        label: adminStrings.dashboard.deltaFromYesterday,
+        value,
+        direction,
+        tone,
+      }
+    },
+    [adminStrings.dashboard.deltaFromYesterday, adminStrings.dashboard.deltaNoBaseline],
+  )
+
+  const todayMetrics = useMemo(() => {
+    if (!dashboardSummaryWindows) {
       return []
     }
 
-    const total = summary.total_requests
+    const today = dashboardSummaryWindows.today
+    const yesterday = dashboardSummaryWindows.yesterday
+    const total = today.total_requests
+
     return [
       {
-        id: 'total',
+        id: 'today-total',
         label: metricsStrings.labels.total,
-        value: formatNumber(summary.total_requests),
-        subtitle: '—',
+        value: formatNumber(today.total_requests),
+        subtitle: adminStrings.dashboard.asOfNow,
+        comparison: buildTodayComparison(today.total_requests, yesterday.total_requests),
       },
       {
-        id: 'success',
+        id: 'today-success',
         label: metricsStrings.labels.success,
-        value: formatNumber(summary.success_count),
-        subtitle: formatPercent(summary.success_count, total),
+        value: formatNumber(today.success_count),
+        subtitle: buildWindowSubtitle(adminStrings.dashboard.todayShare, today.success_count, total),
+        comparison: buildTodayComparison(today.success_count, yesterday.success_count),
       },
       {
-        id: 'errors',
+        id: 'today-errors',
         label: metricsStrings.labels.errors,
-        value: formatNumber(summary.error_count),
-        subtitle: formatPercent(summary.error_count, total),
+        value: formatNumber(today.error_count),
+        subtitle: buildWindowSubtitle(adminStrings.dashboard.todayShare, today.error_count, total),
+        comparison: buildTodayComparison(
+          today.error_count,
+          yesterday.error_count,
+          'lower-is-better',
+        ),
       },
       {
-        id: 'quota',
+        id: 'today-quota',
         label: metricsStrings.labels.quota,
-        value: formatNumber(summary.quota_exhausted_count),
-        subtitle: formatPercent(summary.quota_exhausted_count, total),
+        value: formatNumber(today.quota_exhausted_count),
+        subtitle: buildWindowSubtitle(
+          adminStrings.dashboard.todayShare,
+          today.quota_exhausted_count,
+          total,
+        ),
+        comparison: buildTodayComparison(
+          today.quota_exhausted_count,
+          yesterday.quota_exhausted_count,
+          'lower-is-better',
+        ),
       },
+    ]
+  }, [adminStrings.dashboard.asOfNow, adminStrings.dashboard.todayShare, buildTodayComparison, dashboardSummaryWindows, metricsStrings.labels])
+
+  const monthMetrics = useMemo(() => {
+    if (!dashboardSummaryWindows) {
+      return []
+    }
+
+    const month = dashboardSummaryWindows.month
+    const total = month.total_requests
+
+    return [
+      {
+        id: 'month-total',
+        label: metricsStrings.labels.total,
+        value: formatNumber(month.total_requests),
+        subtitle: adminStrings.dashboard.monthToDate,
+      },
+      {
+        id: 'month-success',
+        label: metricsStrings.labels.success,
+        value: formatNumber(month.success_count),
+        subtitle: buildWindowSubtitle(adminStrings.dashboard.monthShare, month.success_count, total),
+      },
+      {
+        id: 'month-errors',
+        label: metricsStrings.labels.errors,
+        value: formatNumber(month.error_count),
+        subtitle: buildWindowSubtitle(adminStrings.dashboard.monthShare, month.error_count, total),
+      },
+      {
+        id: 'month-quota',
+        label: metricsStrings.labels.quota,
+        value: formatNumber(month.quota_exhausted_count),
+        subtitle: buildWindowSubtitle(
+          adminStrings.dashboard.monthShare,
+          month.quota_exhausted_count,
+          total,
+        ),
+      },
+    ]
+  }, [adminStrings.dashboard.monthShare, adminStrings.dashboard.monthToDate, dashboardSummaryWindows, metricsStrings.labels])
+
+  const statusMetrics = useMemo(() => {
+    if (!dashboardSummarySnapshot) {
+      return []
+    }
+
+    const allKeysAvailable =
+      dashboardSummarySnapshot.quarantined_keys === 0 &&
+      dashboardSummarySnapshot.exhausted_keys === 0
+
+    return [
       {
         id: 'remaining',
         label: metricsStrings.labels.remaining,
-        value: `${formatNumber(summary.total_quota_remaining)} / ${formatNumber(summary.total_quota_limit)}`,
+        value: `${formatNumber(dashboardSummarySnapshot.total_quota_remaining)} / ${formatNumber(dashboardSummarySnapshot.total_quota_limit)}`,
         subtitle:
-          summary.total_quota_limit > 0
-            ? formatPercent(summary.total_quota_remaining, summary.total_quota_limit)
-            : '—',
+          dashboardSummarySnapshot.total_quota_limit > 0
+            ? `${adminStrings.dashboard.currentSnapshot} · ${formatPercent(dashboardSummarySnapshot.total_quota_remaining, dashboardSummarySnapshot.total_quota_limit)}`
+            : adminStrings.dashboard.currentSnapshot,
       },
       {
         id: 'keys',
         label: metricsStrings.labels.keys,
-        value: formatNumber(summary.active_keys),
-        subtitle: metricsStrings.subtitles.keysAvailability
-          .replace('{active}', formatNumber(summary.active_keys))
-          .replace('{quarantined}', formatNumber(summary.quarantined_keys))
-          .replace('{exhausted}', formatNumber(summary.exhausted_keys)),
+        value: formatNumber(dashboardSummarySnapshot.active_keys),
+        subtitle: adminStrings.dashboard.currentSnapshot,
       },
       {
         id: 'quarantined',
         label: metricsStrings.labels.quarantined,
-        value: formatNumber(summary.quarantined_keys),
+        value: formatNumber(dashboardSummarySnapshot.quarantined_keys),
         subtitle:
-          summary.quarantined_keys === 0
+          dashboardSummarySnapshot.quarantined_keys > 0
+            ? keyStrings.quarantine.badge
+            : allKeysAvailable
+              ? metricsStrings.subtitles.keysAll
+              : adminStrings.dashboard.currentSnapshot,
+      },
+      {
+        id: 'exhausted',
+        label: metricsStrings.labels.exhausted,
+        value: formatNumber(dashboardSummarySnapshot.exhausted_keys),
+        subtitle:
+          allKeysAvailable
             ? metricsStrings.subtitles.keysAll
-            : keyStrings.quarantine.badge,
+            : metricsStrings.subtitles.keysExhausted.replace('{count}', formatNumber(dashboardSummarySnapshot.exhausted_keys)),
       },
     ]
-  }, [keyStrings.quarantine.badge, metricsStrings, summary])
+  }, [adminStrings.dashboard.currentSnapshot, dashboardSummarySnapshot, keyStrings.quarantine.badge, metricsStrings])
+
+  const dashboardStatusLoading = !dashboardOverviewLoaded
 
   const namedKeyGroups = keyGroupFacets
     .filter((group) => group.value.trim().length > 0)
@@ -5375,7 +5581,10 @@ function AdminDashboard(): JSX.Element {
         <DashboardOverview
           strings={adminStrings.dashboard}
           overviewReady={dashboardOverviewLoaded}
-          metrics={metrics}
+          statusLoading={dashboardStatusLoading}
+          todayMetrics={todayMetrics}
+          monthMetrics={monthMetrics}
+          statusMetrics={statusMetrics}
           trend={trendBuckets}
           tokenCoverage={dashboardTokenCoverage}
           tokens={dashboardTokens}

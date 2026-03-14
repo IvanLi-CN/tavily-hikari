@@ -18,6 +18,46 @@ async fn fetch_summary(
         })
 }
 
+#[derive(Debug, Serialize)]
+struct SummaryWindowView {
+    total_requests: i64,
+    success_count: i64,
+    error_count: i64,
+    quota_exhausted_count: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct SummaryWindowsView {
+    today: SummaryWindowView,
+    yesterday: SummaryWindowView,
+    month: SummaryWindowView,
+}
+
+async fn fetch_summary_windows(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<SummaryWindowsView>, StatusCode> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    state
+        .proxy
+        .summary_windows()
+        .await
+        .map(|summary| {
+            Json(SummaryWindowsView {
+                today: SummaryWindowView::from(summary.today),
+                yesterday: SummaryWindowView::from(summary.yesterday),
+                month: SummaryWindowView::from(summary.month),
+            })
+        })
+        .map_err(|err| {
+            eprintln!("summary windows error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
 async fn get_public_metrics(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<PublicMetricsView>, StatusCode> {
@@ -35,6 +75,17 @@ async fn get_public_metrics(
             eprintln!("public metrics error: {err}");
             StatusCode::INTERNAL_SERVER_ERROR
         })
+}
+
+impl From<tavily_hikari::SummaryWindowMetrics> for SummaryWindowView {
+    fn from(summary: tavily_hikari::SummaryWindowMetrics) -> Self {
+        Self {
+            total_requests: summary.total_requests,
+            success_count: summary.success_count,
+            error_count: summary.error_count,
+            quota_exhausted_count: summary.quota_exhausted_count,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
