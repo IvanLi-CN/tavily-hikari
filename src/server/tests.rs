@@ -5497,6 +5497,11 @@ mod tests {
         let today_start = local_day_start(now);
         let yesterday_start = local_previous_day_start(now);
         let month_start = local_month_start(now);
+        let current_utc_ts = Local::now().with_timezone(&Utc).timestamp();
+        let today_window_anchor = (current_utc_ts - 5).max(today_start + 30);
+        let today_log_start = (today_window_anchor - 9).max(today_start);
+        let yesterday_window_anchor = today_window_anchor - 86_400;
+        let yesterday_log_start = (yesterday_window_anchor - 3).max(yesterday_start);
 
         let options = SqliteConnectOptions::new()
             .filename(&db_str)
@@ -5510,12 +5515,26 @@ mod tests {
             .await
             .expect("open db pool");
 
-        sqlx::query("UPDATE api_keys SET deleted_at = ? WHERE id = ?")
-            .bind(today_start + 120)
-            .bind(&key_id)
-            .execute(&pool)
-            .await
-            .expect("soft-delete seeded key after creation");
+        sqlx::query(
+            r#"
+            INSERT INTO api_keys (
+                id,
+                api_key,
+                status,
+                created_at,
+                status_changed_at,
+                deleted_at
+            ) VALUES (?, ?, 'disabled', ?, ?, ?)
+            "#,
+        )
+        .bind("summary-window-deleted")
+        .bind("tvly-summary-window-deleted")
+        .bind(today_start + 120)
+        .bind(today_start + 120)
+        .bind(today_start + 180)
+        .execute(&pool)
+        .await
+        .expect("insert deleted key created this month");
 
         sqlx::query(
             r#"
@@ -5565,7 +5584,7 @@ mod tests {
                 "#,
             )
             .bind(&key_id)
-            .bind(today_start + 60 + offset)
+            .bind(today_log_start + offset)
             .execute(&pool)
             .await
             .expect("insert today success log");
@@ -5597,17 +5616,17 @@ mod tests {
             "#,
         )
         .bind(&key_id)
-        .bind(today_start + 3600)
+        .bind(today_window_anchor - 1)
         .bind(&key_id)
-        .bind(today_start + 7200)
+        .bind(today_window_anchor)
         .bind(&key_id)
-        .bind(yesterday_start + 60)
+        .bind(yesterday_log_start)
         .bind(&key_id)
-        .bind(yesterday_start + 61)
+        .bind(yesterday_log_start + 1)
         .bind(&key_id)
-        .bind(yesterday_start + 62)
+        .bind(yesterday_log_start + 2)
         .bind(&key_id)
-        .bind(yesterday_start + 3600)
+        .bind(yesterday_window_anchor)
         .execute(&pool)
         .await
         .expect("insert summary window logs");
@@ -5668,7 +5687,7 @@ mod tests {
         );
         assert_eq!(
             body.pointer("/month/new_keys").and_then(|v| v.as_i64()),
-            Some(1)
+            Some(2)
         );
         assert_eq!(
             body.pointer("/month/new_quarantines")

@@ -476,27 +476,26 @@ async fn sse_dashboard(
     let state = state.clone();
 
     let stream = stream! {
-        let mut last_log_id: Option<i64> = None;
-        let mut last_sig: Option<SummarySig> = None;
-
         // send initial snapshot regardless
-        if let Some(event) = build_snapshot_event(&state).await {
-            // prime signatures from payload
-            if let Ok((sig, latest_id)) = compute_signatures(&state).await {
-                last_sig = sig;
-                last_log_id = latest_id;
-            }
-            yield Ok(event);
-        }
+        let Some(event) = build_snapshot_event(&state).await else {
+            return;
+        };
+        // prime signatures from payload
+        let (mut last_sig, mut last_log_id) = match compute_signatures(&state).await {
+            Ok((sig, latest_id)) => (sig, latest_id),
+            Err(()) => return,
+        };
+        yield Ok(event);
 
         loop {
             // detect changes
             match compute_signatures(&state).await {
                 Ok((sig, latest_id)) => {
                     if sig != last_sig || latest_id != last_log_id {
-                        if let Some(event) = build_snapshot_event(&state).await {
-                            yield Ok(event);
-                        }
+                        let Some(event) = build_snapshot_event(&state).await else {
+                            break;
+                        };
+                        yield Ok(event);
                         last_sig = sig;
                         last_log_id = latest_id;
                     } else {
@@ -505,11 +504,7 @@ async fn sse_dashboard(
                         yield Ok(keep);
                     }
                 }
-                Err(_e) => {
-                    // On error, still try to keep connection with heartbeat
-                    let keep = Event::default().event("ping").data("{}");
-                    yield Ok(keep);
-                }
+                Err(_e) => break,
             }
 
             tokio::time::sleep(Duration::from_secs(2)).await;

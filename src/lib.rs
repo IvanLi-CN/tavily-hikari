@@ -7279,8 +7279,6 @@ impl KeyStore {
                         SELECT NULLIF(status_changed_at, 0) AS candidate_ts
                         UNION ALL
                         SELECT NULLIF(last_used_at, 0)
-                        UNION ALL
-                        SELECT NULLIF(quota_synced_at, 0)
                     )
                     WHERE candidate_ts IS NOT NULL
                 ),

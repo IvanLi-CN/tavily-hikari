@@ -952,6 +952,7 @@ function AdminDashboard(): JSX.Element {
   const pollingTimerRef = useRef<number | null>(null)
   const routeRef = useRef<AdminPathRoute>(route)
   const baseDataLoadedRef = useRef(false)
+  const dashboardOverviewVersionRef = useRef(0)
   const tokenLeaderboardQueryKeyRef = useRef<string | null>(null)
   const tokenLeaderboardNonceRef = useRef(0)
   const requestsLoadedRef = useRef(false)
@@ -1638,6 +1639,7 @@ function AdminDashboard(): JSX.Element {
 
   const loadDashboardOverview = useCallback(
     async (signal?: AbortSignal) => {
+      const requestVersion = ++dashboardOverviewVersionRef.current
       try {
         const dashboardWindowsRequest = fetchSummaryWindows(signal)
           .then((data) => ({ kind: 'ok' as const, data }))
@@ -1702,7 +1704,7 @@ function AdminDashboard(): JSX.Element {
           ),
         ])
 
-        if (signal?.aborted) {
+        if (signal?.aborted || requestVersion !== dashboardOverviewVersionRef.current) {
           return
         }
 
@@ -1755,6 +1757,9 @@ function AdminDashboard(): JSX.Element {
         if ((err as Error).name === 'AbortError') {
           return
         }
+        if (requestVersion !== dashboardOverviewVersionRef.current) {
+          return
+        }
         setDashboardSummaryWindows(null)
         setDashboardSiteStatusSnapshot(null)
         setDashboardTokens([])
@@ -1763,7 +1768,7 @@ function AdminDashboard(): JSX.Element {
         setDashboardLogs([])
         setDashboardJobs([])
       } finally {
-        if (!(signal?.aborted ?? false)) {
+        if (!(signal?.aborted ?? false) && requestVersion === dashboardOverviewVersionRef.current) {
           setDashboardOverviewLoaded(true)
         }
       }
@@ -1976,6 +1981,7 @@ function AdminDashboard(): JSX.Element {
     if (!(route.name === 'module' && route.module === 'dashboard')) {
       return
     }
+    dashboardOverviewVersionRef.current += 1
     setDashboardOverviewLoaded(false)
     setDashboardSummaryWindows(null)
     setDashboardSiteStatusSnapshot(null)
@@ -2447,6 +2453,7 @@ function AdminDashboard(): JSX.Element {
           const data = JSON.parse(ev.data) as DashboardSnapshotEvent
           setSummary(data.summary)
           if (routeRef.current.name === 'module' && routeRef.current.module === 'dashboard') {
+            dashboardOverviewVersionRef.current += 1
             setDashboardSummaryWindows(data.summaryWindows)
             setDashboardSiteStatusSnapshot({
               ...data.siteStatus,
