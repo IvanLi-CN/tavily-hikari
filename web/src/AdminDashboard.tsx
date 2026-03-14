@@ -1682,16 +1682,10 @@ function AdminDashboard(): JSX.Element {
           return
         }
 
-        const windowsUnauthorized =
-          dashboardSummaryWindowsResult.kind === 'error' &&
-          dashboardSummaryWindowsResult.status === 403
-
         setDashboardSummarySnapshot(
-          windowsUnauthorized
-            ? null
-            : dashboardSummarySnapshotResult.kind === 'ok'
-              ? dashboardSummarySnapshotResult.data
-              : null,
+          dashboardSummarySnapshotResult.kind === 'ok'
+            ? dashboardSummarySnapshotResult.data
+            : null,
         )
         setDashboardSummaryWindows(
           dashboardSummaryWindowsResult.kind === 'ok'
