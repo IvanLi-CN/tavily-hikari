@@ -4082,24 +4082,9 @@ impl TavilyProxy {
         let yesterday_start = start_of_local_day_utc_ts(now - ChronoDuration::days(1));
         let month_start = start_of_local_month_utc_ts(now);
 
-        let today = self
-            .key_store
-            .fetch_summary_window(today_start, None)
-            .await?;
-        let yesterday = self
-            .key_store
-            .fetch_summary_window(yesterday_start, Some(today_start))
-            .await?;
-        let month = self
-            .key_store
-            .fetch_summary_window(month_start, None)
-            .await?;
-
-        Ok(SummaryWindows {
-            today,
-            yesterday,
-            month,
-        })
+        self.key_store
+            .fetch_summary_windows(today_start, yesterday_start, month_start)
+            .await
     }
 
     /// Public metrics: successful requests today and this month.
@@ -13361,35 +13346,72 @@ impl KeyStore {
         })
     }
 
-    async fn fetch_summary_window(
+    async fn fetch_summary_windows(
         &self,
-        since: i64,
-        until: Option<i64>,
-    ) -> Result<SummaryWindowMetrics, ProxyError> {
-        let totals_row = sqlx::query(
+        today_start: i64,
+        yesterday_start: i64,
+        month_start: i64,
+    ) -> Result<SummaryWindows, ProxyError> {
+        let earliest_start = std::cmp::min(month_start, yesterday_start);
+        let row = sqlx::query(
             r#"
             SELECT
-                COALESCE(SUM(total_requests), 0) AS total_requests,
-                COALESCE(SUM(success_count), 0) AS success_count,
-                COALESCE(SUM(error_count), 0) AS error_count,
-                COALESCE(SUM(quota_exhausted_count), 0) AS quota_exhausted_count
+                COALESCE(SUM(CASE WHEN bucket_start >= ? THEN total_requests ELSE 0 END), 0) AS today_total_requests,
+                COALESCE(SUM(CASE WHEN bucket_start >= ? THEN success_count ELSE 0 END), 0) AS today_success_count,
+                COALESCE(SUM(CASE WHEN bucket_start >= ? THEN error_count ELSE 0 END), 0) AS today_error_count,
+                COALESCE(SUM(CASE WHEN bucket_start >= ? THEN quota_exhausted_count ELSE 0 END), 0) AS today_quota_exhausted_count,
+                COALESCE(SUM(CASE WHEN bucket_start >= ? AND bucket_start < ? THEN total_requests ELSE 0 END), 0) AS yesterday_total_requests,
+                COALESCE(SUM(CASE WHEN bucket_start >= ? AND bucket_start < ? THEN success_count ELSE 0 END), 0) AS yesterday_success_count,
+                COALESCE(SUM(CASE WHEN bucket_start >= ? AND bucket_start < ? THEN error_count ELSE 0 END), 0) AS yesterday_error_count,
+                COALESCE(SUM(CASE WHEN bucket_start >= ? AND bucket_start < ? THEN quota_exhausted_count ELSE 0 END), 0) AS yesterday_quota_exhausted_count,
+                COALESCE(SUM(CASE WHEN bucket_start >= ? THEN total_requests ELSE 0 END), 0) AS month_total_requests,
+                COALESCE(SUM(CASE WHEN bucket_start >= ? THEN success_count ELSE 0 END), 0) AS month_success_count,
+                COALESCE(SUM(CASE WHEN bucket_start >= ? THEN error_count ELSE 0 END), 0) AS month_error_count,
+                COALESCE(SUM(CASE WHEN bucket_start >= ? THEN quota_exhausted_count ELSE 0 END), 0) AS month_quota_exhausted_count
             FROM api_key_usage_buckets
             WHERE bucket_secs = 86400
               AND bucket_start >= ?
-              AND (? IS NULL OR bucket_start < ?)
             "#,
         )
-        .bind(since)
-        .bind(until)
-        .bind(until)
+        .bind(today_start)
+        .bind(today_start)
+        .bind(today_start)
+        .bind(today_start)
+        .bind(yesterday_start)
+        .bind(today_start)
+        .bind(yesterday_start)
+        .bind(today_start)
+        .bind(yesterday_start)
+        .bind(today_start)
+        .bind(yesterday_start)
+        .bind(today_start)
+        .bind(month_start)
+        .bind(month_start)
+        .bind(month_start)
+        .bind(month_start)
+        .bind(earliest_start)
         .fetch_one(&self.pool)
         .await?;
 
-        Ok(SummaryWindowMetrics {
-            total_requests: totals_row.try_get("total_requests")?,
-            success_count: totals_row.try_get("success_count")?,
-            error_count: totals_row.try_get("error_count")?,
-            quota_exhausted_count: totals_row.try_get("quota_exhausted_count")?,
+        Ok(SummaryWindows {
+            today: SummaryWindowMetrics {
+                total_requests: row.try_get("today_total_requests")?,
+                success_count: row.try_get("today_success_count")?,
+                error_count: row.try_get("today_error_count")?,
+                quota_exhausted_count: row.try_get("today_quota_exhausted_count")?,
+            },
+            yesterday: SummaryWindowMetrics {
+                total_requests: row.try_get("yesterday_total_requests")?,
+                success_count: row.try_get("yesterday_success_count")?,
+                error_count: row.try_get("yesterday_error_count")?,
+                quota_exhausted_count: row.try_get("yesterday_quota_exhausted_count")?,
+            },
+            month: SummaryWindowMetrics {
+                total_requests: row.try_get("month_total_requests")?,
+                success_count: row.try_get("month_success_count")?,
+                error_count: row.try_get("month_error_count")?,
+                quota_exhausted_count: row.try_get("month_quota_exhausted_count")?,
+            },
         })
     }
 
