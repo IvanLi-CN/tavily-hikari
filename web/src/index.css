@@ -7687,26 +7687,6 @@ tbody .log-details-row:hover {
   gap: 0.5rem;
 }
 
-.forward-proxy-code-block,
-.forward-proxy-code-inline {
-  font-family:
-    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
-}
-
-.forward-proxy-code-block {
-  display: block;
-  padding: 0.65rem 0.75rem;
-  border-radius: 0.8rem;
-  background: hsl(var(--muted) / 0.42);
-  overflow-wrap: anywhere;
-}
-
-.forward-proxy-code-inline {
-  font-size: 0.78rem;
-  color: hsl(var(--muted-foreground));
-  overflow-wrap: anywhere;
-}
-
 .forward-proxy-validation-message {
   margin: 0;
   color: hsl(var(--foreground));

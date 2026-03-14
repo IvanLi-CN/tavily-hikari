@@ -764,9 +764,6 @@ function ForwardProxyCandidateDialog({
                   </Badge>
                   <Badge variant="outline">{strings.validation.subscriptionKind}</Badge>
                 </div>
-                <code className="forward-proxy-code-block">
-                  {dialogResults[0].result.normalizedValue ?? dialogResults[0].value}
-                </code>
                 <p className="forward-proxy-validation-message">{dialogResults[0].result.message}</p>
                 <div className="forward-proxy-validation-meta">
                   <span>
