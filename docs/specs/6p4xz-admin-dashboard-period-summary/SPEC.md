@@ -50,3 +50,9 @@
 - `站点当前状态` 保留 `剩余可用`、`活跃密钥`、`隔离中` 三项实时快照。
 - `GET /api/summary/windows` 在空窗口时返回 `0`，昨日窗口不会混入今日数据，本月窗口累计到当前时刻。
 - `cargo test`、`cargo clippy -- -D warnings`、`cd web && bun run build`、`cd web && bun run build-storybook` 全部通过。
+
+## 成果展示
+
+- 当前实现将摘要区重构为“左侧今日主块 + 右侧本月/站点当前状态侧栏”，并在今日块内补入较昨日变化清单，避免桌面端出现大面积空白。
+
+![管理仪表盘摘要区成果截图](./assets/dashboard-summary-result.png)
