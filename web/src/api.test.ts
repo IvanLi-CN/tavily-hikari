@@ -7,8 +7,10 @@ import {
   fetchAdminUserTags,
   fetchApiKeys,
   fetchJobs,
+  updateForwardProxySettingsWithProgress,
   updateAdminRegistrationSettings,
   updateAdminUserQuota,
+  validateForwardProxyCandidateWithProgress,
 } from './api'
 
 const originalFetch = globalThis.fetch
@@ -17,7 +19,83 @@ afterEach(() => {
   globalThis.fetch = originalFetch
 })
 
+function createSseResponse(chunks: string[]): Response {
+  const encoder = new TextEncoder()
+  return new Response(
+    new ReadableStream({
+      start(controller) {
+        for (const chunk of chunks) {
+          controller.enqueue(encoder.encode(chunk))
+        }
+        controller.close()
+      },
+    }),
+    {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    },
+  )
+}
+
 describe('admin user tag api helpers', () => {
+  it('streams forward proxy validation progress events before returning the final payload', async () => {
+    const events: string[] = []
+    const fetchMock = mock(() =>
+      Promise.resolve(
+        createSseResponse([
+          'data: {"type":"phase","operation":"validate","phaseKey":"parse_input","label":"Parse input"}\n\n',
+          'data: {"type":"phase","operation":"validate","phaseKey":"probe_nodes","label":"Probe nodes","current":1,"total":3,"detail":"edge-a"}\n\n',
+          'data: {"type":"complete","operation":"validate","payload":{"ok":true,"message":"proxy validation succeeded","normalizedValue":"http://127.0.0.1:8080","discoveredNodes":1,"latencyMs":42}}\n\n',
+        ]),
+      ),
+    )
+    globalThis.fetch = fetchMock as typeof fetch
+
+    const payload = await validateForwardProxyCandidateWithProgress(
+      { kind: 'proxyUrl', value: 'http://127.0.0.1:8080' },
+      (event) => events.push(`${event.type}:${event.operation}:${'phaseKey' in event ? event.phaseKey ?? 'none' : 'complete'}`),
+    )
+
+    expect(payload.ok).toBe(true)
+    expect(events).toEqual([
+      'phase:validate:parse_input',
+      'phase:validate:probe_nodes',
+      'complete:validate:complete',
+    ])
+  })
+
+  it('falls back to JSON forward proxy save responses without breaking callers', async () => {
+    const seen: string[] = []
+    const fetchMock = mock(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            proxyUrls: ['http://127.0.0.1:8080'],
+            subscriptionUrls: [],
+            subscriptionUpdateIntervalSecs: 3600,
+            insertDirect: true,
+            nodes: [],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    )
+    globalThis.fetch = fetchMock as typeof fetch
+
+    const payload = await updateForwardProxySettingsWithProgress(
+      {
+        proxyUrls: ['http://127.0.0.1:8080'],
+        subscriptionUrls: [],
+        subscriptionUpdateIntervalSecs: 3600,
+        insertDirect: true,
+      },
+      (event) => seen.push(event.type),
+    )
+
+    expect(payload.proxyUrls).toEqual(['http://127.0.0.1:8080'])
+    expect(seen).toEqual(['complete'])
+  })
+
   it('unwraps tag catalog list responses', async () => {
     const fetchMock = mock(() =>
       Promise.resolve(

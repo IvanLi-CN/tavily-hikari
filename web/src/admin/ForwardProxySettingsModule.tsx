@@ -1,3 +1,4 @@
+import { Icon } from '@iconify/react'
 import { useState } from 'react'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
@@ -17,6 +18,7 @@ import { Textarea } from '../components/ui/textarea'
 import AdminLoadingRegion from '../components/AdminLoadingRegion'
 import type {
   ForwardProxyActivityBucket,
+  ForwardProxyProgressEvent,
   ForwardProxySettings,
   ForwardProxyStatsNode,
   ForwardProxyStatsResponse,
@@ -26,6 +28,12 @@ import type {
   ForwardProxyWindowStats,
 } from '../api'
 import type { AdminTranslations } from '../i18n'
+import {
+  createDialogProgressState,
+  type ForwardProxyDialogKind,
+  type ForwardProxyDialogProgressState,
+  updateDialogProgressState,
+} from './forwardProxyDialogProgress'
 import type { QueryLoadState } from './queryLoadState'
 
 const numberFormatter = new Intl.NumberFormat()
@@ -69,14 +77,13 @@ export interface ForwardProxyValidationEntry {
   result: ForwardProxyValidationResponse
 }
 
-type ForwardProxyDialogKind = 'subscription' | 'manual' | null
-
 export interface ForwardProxyDialogPreviewState {
   kind: Exclude<ForwardProxyDialogKind, null>
   input: string
   error?: string | null
   validating?: boolean
   results?: ForwardProxyValidationEntry[]
+  progress?: ForwardProxyDialogProgressState | null
 }
 
 interface ForwardProxySettingsModuleProps {
@@ -90,10 +97,14 @@ interface ForwardProxySettingsModuleProps {
   saveError: string | null
   saving: boolean
   savedAt: number | null
-  onPersistDraft: (draft: ForwardProxyDraft) => Promise<void>
+  onPersistDraft: (
+    draft: ForwardProxyDraft,
+    onProgress?: (event: ForwardProxyProgressEvent) => void,
+  ) => Promise<void>
   onValidateCandidates: (
     kind: ForwardProxyValidationKind,
     values: string[],
+    onProgress?: (event: ForwardProxyProgressEvent) => void,
   ) => Promise<ForwardProxyValidationEntry[]>
   onRefresh: () => void
   dialogPreview?: ForwardProxyDialogPreviewState | null
@@ -615,6 +626,86 @@ function mapValidationErrorLabel(
   }
 }
 
+function ForwardProxyProgressBubble({
+  strings,
+  progress,
+}: {
+  strings: AdminTranslations['proxySettings']
+  progress: ForwardProxyDialogProgressState
+}): JSX.Element {
+  const title = progress.action === 'validate' ? strings.progress.titleValidate : strings.progress.titleSave
+
+  return (
+    <div className="rounded-2xl border border-primary/25 bg-primary/5 px-4 py-3 shadow-[0_16px_40px_-28px_hsl(var(--primary)/0.8)]">
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold text-foreground">{title}</p>
+          <p className="text-xs text-muted-foreground">
+            {progress.message ?? strings.progress.running}
+          </p>
+        </div>
+        <Badge variant="outline" className="border-primary/30 bg-background/70">
+          {progress.action === 'validate' ? strings.progress.badgeValidate : strings.progress.badgeSave}
+        </Badge>
+      </div>
+
+      <div className="space-y-2">
+        {progress.steps.map((step) => {
+          const icon =
+            step.status === 'done'
+              ? 'mdi:check-circle'
+              : step.status === 'error'
+                ? 'mdi:alert-circle'
+                : step.status === 'running'
+                  ? 'mdi:loading'
+                  : 'mdi:circle-outline'
+          const toneClass =
+            step.status === 'done'
+              ? 'text-success'
+              : step.status === 'error'
+                ? 'text-destructive'
+                : step.status === 'running'
+                  ? 'text-primary'
+                  : 'text-muted-foreground'
+
+          return (
+            <div
+              key={step.key}
+              className={`flex items-start gap-3 rounded-2xl border px-3 py-2 transition-colors ${
+                step.status === 'running'
+                  ? 'border-primary/35 bg-background/88'
+                  : step.status === 'error'
+                    ? 'border-destructive/30 bg-destructive/5'
+                    : step.status === 'done'
+                      ? 'border-success/25 bg-success/5'
+                      : 'border-border/60 bg-background/70'
+              }`}
+            >
+              <Icon
+                icon={icon}
+                className={`${toneClass} mt-0.5 text-base ${step.status === 'running' ? 'animate-spin' : ''}`}
+              />
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-foreground">{step.label}</p>
+                <p className="text-xs text-muted-foreground">
+                  {step.detail
+                    ?? (step.status === 'done'
+                      ? strings.progress.done
+                      : step.status === 'error'
+                        ? strings.progress.failed
+                        : step.status === 'running'
+                          ? strings.progress.running
+                          : strings.progress.waiting)}
+                </p>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 function ForwardProxyCandidateDialog({
   strings,
   previewMode,
@@ -622,9 +713,11 @@ function ForwardProxyCandidateDialog({
   dialogInput,
   dialogError,
   dialogValidating,
+  dialogSaving,
   dialogResults,
   dialogAvailableResults,
   saving,
+  progress,
   onClose,
   onInputChange,
   onValidate,
@@ -638,9 +731,11 @@ function ForwardProxyCandidateDialog({
   dialogInput: string
   dialogError: string | null
   dialogValidating: boolean
+  dialogSaving: boolean
   dialogResults: ForwardProxyValidationEntry[]
   dialogAvailableResults: ForwardProxyValidationEntry[]
   saving: boolean
+  progress: ForwardProxyDialogProgressState | null
   onClose: () => void
   onInputChange: (value: string) => void
   onValidate: () => void
@@ -707,11 +802,13 @@ function ForwardProxyCandidateDialog({
             </div>
           )}
 
-          {dialogValidating && (
+          {dialogValidating && !progress && (
             <div className="alert" role="status">
               {strings.config.validating}
             </div>
           )}
+
+          {progress && <ForwardProxyProgressBubble strings={strings} progress={progress} />}
 
           {!dialogIsSubscription && dialogResults.length > 0 && (
             <div className="overflow-hidden rounded-2xl border border-border/70 bg-card/35">
@@ -806,7 +903,14 @@ function ForwardProxyCandidateDialog({
           onClick={onValidate}
           disabled={previewMode || dialogValidating || saving}
         >
-          {strings.config.validate}
+          {dialogValidating ? (
+            <>
+              <Icon icon="mdi:loading" className="animate-spin text-base" />
+              <span>{dialogIsSubscription ? strings.progress.buttonValidatingSubscription : strings.progress.buttonValidatingManual}</span>
+            </>
+          ) : (
+            strings.config.validate
+          )}
         </Button>
         {dialogIsSubscription ? (
           <Button
@@ -814,7 +918,14 @@ function ForwardProxyCandidateDialog({
             onClick={onAddSubscription}
             disabled={previewMode || dialogAvailableResults.length === 0 || saving}
           >
-            {strings.config.add}
+            {dialogSaving ? (
+              <>
+                <Icon icon="mdi:loading" className="animate-spin text-base" />
+                <span>{strings.progress.buttonAddingSubscription}</span>
+              </>
+            ) : (
+              strings.config.add
+            )}
           </Button>
         ) : (
           <Button
@@ -822,7 +933,14 @@ function ForwardProxyCandidateDialog({
             onClick={onAddManualBatch}
             disabled={previewMode || dialogAvailableResults.length === 0 || saving}
           >
-            {strings.config.importAvailable.replace('{count}', formatNumber(dialogAvailableResults.length))}
+            {dialogSaving ? (
+              <>
+                <Icon icon="mdi:loading" className="animate-spin text-base" />
+                <span>{strings.progress.buttonAddingManual}</span>
+              </>
+            ) : (
+              strings.config.importAvailable.replace('{count}', formatNumber(dialogAvailableResults.length))
+            )}
           </Button>
         )}
       </DialogFooter>
@@ -905,14 +1023,17 @@ export default function ForwardProxySettingsModule({
   const [dialogError, setDialogError] = useState<string | null>(null)
   const [dialogValidating, setDialogValidating] = useState(false)
   const [dialogResults, setDialogResults] = useState<ForwardProxyValidationEntry[]>([])
+  const [dialogProgress, setDialogProgress] = useState<ForwardProxyDialogProgressState | null>(null)
   const isDialogPreview = dialogPreview != null
   const activeDialogKind = dialogPreview?.kind ?? dialogKind
   const activeDialogInput = dialogPreview?.input ?? dialogInput
   const activeDialogError = dialogPreview?.error ?? dialogError
   const activeDialogValidating = dialogPreview?.validating ?? dialogValidating
   const activeDialogResults = dialogPreview?.results ?? dialogResults
+  const activeDialogProgress = dialogPreview?.progress ?? dialogProgress
   const dialogIsSubscription = activeDialogKind === 'subscription'
   const dialogAvailableResults = activeDialogResults.filter((entry) => entry.result.ok)
+  const dialogIsSaving = activeDialogProgress?.action === 'save' ? (saving || isDialogPreview) : false
   const selectedInterval =
     FORWARD_PROXY_INTERVAL_OPTIONS.find(
       (option) => option.value === String(settings?.subscriptionUpdateIntervalSecs ?? 3600),
@@ -963,10 +1084,11 @@ export default function ForwardProxySettingsModule({
     setDialogInput('')
     setDialogError(null)
     setDialogResults([])
+    setDialogProgress(null)
   }
 
   const closeDialog = () => {
-    if (dialogValidating) return
+    if (dialogValidating || saving) return
     if (isDialogPreview) {
       onDialogPreviewClose?.()
       return
@@ -975,19 +1097,29 @@ export default function ForwardProxySettingsModule({
     setDialogInput('')
     setDialogError(null)
     setDialogResults([])
+    setDialogProgress(null)
   }
 
-  const persistDraft = async (nextDraft: ForwardProxyDraft) => {
+  const persistDraft = async (
+    nextDraft: ForwardProxyDraft,
+    onProgress?: (event: ForwardProxyProgressEvent) => void,
+  ) => {
     setDialogError(null)
-    await onPersistDraft(nextDraft)
+    await onPersistDraft(nextDraft, onProgress)
   }
 
-  const persistManualUrls = async (nextManualUrls: string[]) => {
-    await persistDraft(withDraftList(draft, 'proxyUrlsText', nextManualUrls))
+  const persistManualUrls = async (
+    nextManualUrls: string[],
+    onProgress?: (event: ForwardProxyProgressEvent) => void,
+  ) => {
+    await persistDraft(withDraftList(draft, 'proxyUrlsText', nextManualUrls), onProgress)
   }
 
-  const persistSubscriptionUrls = async (nextSubscriptionUrls: string[]) => {
-    await persistDraft(withDraftList(draft, 'subscriptionUrlsText', nextSubscriptionUrls))
+  const persistSubscriptionUrls = async (
+    nextSubscriptionUrls: string[],
+    onProgress?: (event: ForwardProxyProgressEvent) => void,
+  ) => {
+    await persistDraft(withDraftList(draft, 'subscriptionUrlsText', nextSubscriptionUrls), onProgress)
   }
 
   const handleRemoveManual = async (value: string) => {
@@ -1041,9 +1173,17 @@ export default function ForwardProxySettingsModule({
 
     setDialogError(null)
     setDialogValidating(true)
+    setDialogProgress(createDialogProgressState(strings.progress, dialogIsSubscription ? 'subscription' : 'manual', 'validate'))
     try {
       const kind: ForwardProxyValidationKind = dialogIsSubscription ? 'subscriptionUrl' : 'proxyUrl'
-      const results = await onValidateCandidates(kind, values)
+      const results = await onValidateCandidates(kind, values, (event) => {
+        setDialogProgress((current) => {
+          const base =
+            current
+            ?? createDialogProgressState(strings.progress, dialogIsSubscription ? 'subscription' : 'manual', 'validate')
+          return updateDialogProgressState(base, strings.progress, event)
+        })
+      })
       setDialogResults(results)
       if (results.length === 0) {
         setDialogError(strings.validation.requestFailed)
@@ -1062,7 +1202,13 @@ export default function ForwardProxySettingsModule({
     if (!candidate) return
     const nextValue = candidate.result.normalizedValue ?? candidate.value
     try {
-      await persistSubscriptionUrls([...subscriptionUrls, nextValue])
+      setDialogProgress(createDialogProgressState(strings.progress, 'subscription', 'save'))
+      await persistSubscriptionUrls([...subscriptionUrls, nextValue], (event) => {
+        setDialogProgress((current) => {
+          const base = current ?? createDialogProgressState(strings.progress, 'subscription', 'save')
+          return updateDialogProgressState(base, strings.progress, event)
+        })
+      })
       closeDialog()
     } catch (err) {
       setDialogError(err instanceof Error ? err.message : strings.config.saveFailed)
@@ -1077,7 +1223,13 @@ export default function ForwardProxySettingsModule({
     ])
     if (nextValues.length === manualUrls.length) return
     try {
-      await persistManualUrls(nextValues)
+      setDialogProgress(createDialogProgressState(strings.progress, 'manual', 'save'))
+      await persistManualUrls(nextValues, (event) => {
+        setDialogProgress((current) => {
+          const base = current ?? createDialogProgressState(strings.progress, 'manual', 'save')
+          return updateDialogProgressState(base, strings.progress, event)
+        })
+      })
       closeDialog()
     } catch (err) {
       setDialogError(err instanceof Error ? err.message : strings.config.saveFailed)
@@ -1088,7 +1240,14 @@ export default function ForwardProxySettingsModule({
     if (isDialogPreview) return
     const nextValue = entry.result.normalizedValue ?? entry.value
     try {
-      await persistManualUrls([...manualUrls, nextValue])
+      setDialogError(null)
+      setDialogProgress(createDialogProgressState(strings.progress, 'manual', 'save'))
+      await persistManualUrls([...manualUrls, nextValue], (event) => {
+        setDialogProgress((current) => {
+          const base = current ?? createDialogProgressState(strings.progress, 'manual', 'save')
+          return updateDialogProgressState(base, strings.progress, event)
+        })
+      })
       setDialogResults((previous) =>
         previous.map((item) =>
           item.id === entry.id
@@ -1511,15 +1670,18 @@ export default function ForwardProxySettingsModule({
             dialogInput={activeDialogInput}
             dialogError={activeDialogError}
             dialogValidating={activeDialogValidating}
+            dialogSaving={dialogIsSaving}
             dialogResults={activeDialogResults}
             dialogAvailableResults={dialogAvailableResults}
             saving={saving}
+            progress={activeDialogProgress}
             onClose={closeDialog}
             onInputChange={(value) => {
               if (isDialogPreview) return
               setDialogInput(value)
               setDialogResults([])
               setDialogError(null)
+              setDialogProgress(null)
             }}
             onValidate={() => void handleValidateDialog()}
             onAddSubscription={() => void handleAddSubscription()}
