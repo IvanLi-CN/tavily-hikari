@@ -1240,7 +1240,14 @@ export default function ForwardProxySettingsModule({
     if (isDialogPreview) return
     const nextValue = entry.result.normalizedValue ?? entry.value
     try {
-      await persistManualUrls([...manualUrls, nextValue])
+      setDialogError(null)
+      setDialogProgress(createDialogProgressState(strings.progress, 'manual', 'save'))
+      await persistManualUrls([...manualUrls, nextValue], (event) => {
+        setDialogProgress((current) => {
+          const base = current ?? createDialogProgressState(strings.progress, 'manual', 'save')
+          return updateDialogProgressState(base, strings.progress, event)
+        })
+      })
       setDialogResults((previous) =>
         previous.map((item) =>
           item.id === entry.id

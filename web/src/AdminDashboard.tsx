@@ -1862,6 +1862,11 @@ function AdminDashboard(): JSX.Element {
     ): Promise<ForwardProxyValidationEntry[]> => {
       const results = new Array<ForwardProxyValidationEntry>(rawValues.length)
       let hadFatalError = false
+      const fallbackPhaseKey = kind === 'subscriptionUrl' ? 'normalize_input' : 'parse_input'
+      const fallbackLabel =
+        kind === 'subscriptionUrl'
+          ? proxySettingsStrings.progress.steps.normalize_input
+          : proxySettingsStrings.progress.steps.parse_input
 
       if (rawValues.length === 1) {
         const value = rawValues[0]
@@ -1878,14 +1883,23 @@ function AdminDashboard(): JSX.Element {
           } satisfies ForwardProxyValidationEntry
         } catch (err) {
           hadFatalError = true
+          const message =
+            err instanceof Error ? err.message : proxySettingsStrings.validation.requestFailed
+          onProgress?.({
+            type: 'error',
+            operation: 'validate',
+            phaseKey: fallbackPhaseKey,
+            label: fallbackLabel,
+            message,
+            detail: value,
+          })
           results[0] = {
             id: `${kind}:0:${value}`,
             kind,
             value,
             result: {
               ok: false,
-              message:
-                err instanceof Error ? err.message : proxySettingsStrings.validation.requestFailed,
+              message,
               normalizedValue: value,
               discoveredNodes: 0,
               latencyMs: null,
@@ -1941,14 +1955,25 @@ function AdminDashboard(): JSX.Element {
             } satisfies ForwardProxyValidationEntry
           } catch (err) {
             hadFatalError = true
+            const message =
+              err instanceof Error ? err.message : proxySettingsStrings.validation.requestFailed
+            onProgress?.({
+              type: 'error',
+              operation: 'validate',
+              phaseKey: fallbackPhaseKey,
+              label: fallbackLabel,
+              current: index + 1,
+              total: rawValues.length,
+              message,
+              detail: value,
+            })
             results[index] = {
               id: `${kind}:${index}:${value}`,
               kind,
               value,
               result: {
                 ok: false,
-                message:
-                  err instanceof Error ? err.message : proxySettingsStrings.validation.requestFailed,
+                message,
                 normalizedValue: value,
                 discoveredNodes: 0,
                 latencyMs: null,
@@ -1979,7 +2004,12 @@ function AdminDashboard(): JSX.Element {
 
       return results.filter((entry): entry is ForwardProxyValidationEntry => entry != null)
     },
-    [proxySettingsStrings.progress.steps.generate_result, proxySettingsStrings.validation.requestFailed],
+    [
+      proxySettingsStrings.progress.steps.generate_result,
+      proxySettingsStrings.progress.steps.normalize_input,
+      proxySettingsStrings.progress.steps.parse_input,
+      proxySettingsStrings.validation.requestFailed,
+    ],
   )
 
   const saveForwardProxySettings = useCallback(async (
@@ -2018,10 +2048,22 @@ function AdminDashboard(): JSX.Element {
         label: 'Refreshing settings and stats',
       })
       await loadForwardProxyStatsData({ reason: 'refresh' })
+      onProgress?.({
+        type: 'complete',
+        operation: 'save',
+        payload: null,
+      })
     } catch (err) {
       console.error(err)
       const message = err instanceof Error ? err.message : proxySettingsStrings.config.saveFailed
       setForwardProxySaveError(message)
+      onProgress?.({
+        type: 'error',
+        operation: 'save',
+        phaseKey: 'refresh_ui',
+        label: 'Refreshing settings and stats',
+        message,
+      })
       throw err instanceof Error ? err : new Error(message)
     } finally {
       setForwardProxySaving(false)
