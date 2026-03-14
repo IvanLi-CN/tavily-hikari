@@ -840,6 +840,7 @@ function AdminDashboard(): JSX.Element {
   const footerStrings = adminStrings.footer
   const errorStrings = adminStrings.errors
   const [summary, setSummary] = useState<Summary | null>(null)
+  const [dashboardSummarySnapshot, setDashboardSummarySnapshot] = useState<Summary | null>(null)
   const [dashboardSummaryWindows, setDashboardSummaryWindows] = useState<SummaryWindowsResponse | null>(null)
   const [keys, setKeys] = useState<ApiKeyStats[]>([])
   const [dashboardKeys, setDashboardKeys] = useState<ApiKeyStats[]>([])
@@ -1622,8 +1623,16 @@ function AdminDashboard(): JSX.Element {
   const loadDashboardOverview = useCallback(
     async (signal?: AbortSignal) => {
       try {
-        const [dashboardSummaryWindowsData, dashboardTokenSnapshot, dashboardKeysData, dashboardLogsData, dashboardJobsData] = await Promise.all([
+        const [
+          dashboardSummaryWindowsData,
+          dashboardSummarySnapshotData,
+          dashboardTokenSnapshot,
+          dashboardKeysData,
+          dashboardLogsData,
+          dashboardJobsData,
+        ] = await Promise.all([
           fetchSummaryWindows(signal).catch(() => null),
+          fetchSummary(signal).catch(() => null),
           loadAllTokensForDashboard(signal)
             .then((value) => ({ kind: 'ok' as const, ...value }))
             .catch(() => ({ kind: 'error' as const })),
@@ -1652,6 +1661,7 @@ function AdminDashboard(): JSX.Element {
           return
         }
 
+        setDashboardSummarySnapshot(dashboardSummarySnapshotData)
         setDashboardSummaryWindows(dashboardSummaryWindowsData)
         if (dashboardTokenSnapshot.kind === 'ok') {
           setDashboardTokens(dashboardTokenSnapshot.items)
@@ -1667,6 +1677,7 @@ function AdminDashboard(): JSX.Element {
         if ((err as Error).name === 'AbortError') {
           return
         }
+        setDashboardSummarySnapshot(null)
         setDashboardSummaryWindows(null)
         setDashboardTokens([])
         setDashboardTokenCoverage('error')
@@ -1892,6 +1903,7 @@ function AdminDashboard(): JSX.Element {
       return
     }
     setDashboardOverviewLoaded(false)
+    setDashboardSummarySnapshot(null)
     setDashboardSummaryWindows(null)
   }, [route])
 
@@ -2815,35 +2827,36 @@ function AdminDashboard(): JSX.Element {
   }, [adminStrings.dashboard.monthShare, adminStrings.dashboard.monthToDate, dashboardSummaryWindows, metricsStrings.labels])
 
   const statusMetrics = useMemo(() => {
-    if (!summary) {
+    if (!dashboardSummarySnapshot) {
       return []
     }
 
     const allKeysAvailable =
-      summary.quarantined_keys === 0 && summary.exhausted_keys === 0
+      dashboardSummarySnapshot.quarantined_keys === 0 &&
+      dashboardSummarySnapshot.exhausted_keys === 0
 
     return [
       {
         id: 'remaining',
         label: metricsStrings.labels.remaining,
-        value: `${formatNumber(summary.total_quota_remaining)} / ${formatNumber(summary.total_quota_limit)}`,
+        value: `${formatNumber(dashboardSummarySnapshot.total_quota_remaining)} / ${formatNumber(dashboardSummarySnapshot.total_quota_limit)}`,
         subtitle:
-          summary.total_quota_limit > 0
-            ? `${adminStrings.dashboard.currentSnapshot} · ${formatPercent(summary.total_quota_remaining, summary.total_quota_limit)}`
+          dashboardSummarySnapshot.total_quota_limit > 0
+            ? `${adminStrings.dashboard.currentSnapshot} · ${formatPercent(dashboardSummarySnapshot.total_quota_remaining, dashboardSummarySnapshot.total_quota_limit)}`
             : adminStrings.dashboard.currentSnapshot,
       },
       {
         id: 'keys',
         label: metricsStrings.labels.keys,
-        value: formatNumber(summary.active_keys),
+        value: formatNumber(dashboardSummarySnapshot.active_keys),
         subtitle: adminStrings.dashboard.currentSnapshot,
       },
       {
         id: 'quarantined',
         label: metricsStrings.labels.quarantined,
-        value: formatNumber(summary.quarantined_keys),
+        value: formatNumber(dashboardSummarySnapshot.quarantined_keys),
         subtitle:
-          summary.quarantined_keys > 0
+          dashboardSummarySnapshot.quarantined_keys > 0
             ? keyStrings.quarantine.badge
             : allKeysAvailable
               ? metricsStrings.subtitles.keysAll
@@ -2852,20 +2865,16 @@ function AdminDashboard(): JSX.Element {
       {
         id: 'exhausted',
         label: metricsStrings.labels.exhausted,
-        value: formatNumber(summary.exhausted_keys),
+        value: formatNumber(dashboardSummarySnapshot.exhausted_keys),
         subtitle:
           allKeysAvailable
             ? metricsStrings.subtitles.keysAll
-            : metricsStrings.subtitles.keysExhausted.replace('{count}', formatNumber(summary.exhausted_keys)),
+            : metricsStrings.subtitles.keysExhausted.replace('{count}', formatNumber(dashboardSummarySnapshot.exhausted_keys)),
       },
     ]
-  }, [adminStrings.dashboard.currentSnapshot, keyStrings.quarantine.badge, metricsStrings, summary])
+  }, [adminStrings.dashboard.currentSnapshot, dashboardSummarySnapshot, keyStrings.quarantine.badge, metricsStrings])
 
-  const dashboardStatusLoading =
-    !summary &&
-    (tokensLoadState === 'initial_loading' ||
-      tokensLoadState === 'switch_loading' ||
-      tokensLoadState === 'refreshing')
+  const dashboardStatusLoading = !dashboardOverviewLoaded
 
   const namedKeyGroups = keyGroupFacets
     .filter((group) => group.value.trim().length > 0)

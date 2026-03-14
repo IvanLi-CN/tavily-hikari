@@ -11,7 +11,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use chrono::{Datelike, Duration as ChronoDuration, Local, TimeZone, Utc};
+use chrono::{Datelike, Local, TimeZone, Utc};
 use futures_util::TryStreamExt;
 use nanoid::nanoid;
 use rand::Rng;
@@ -4079,7 +4079,7 @@ impl TavilyProxy {
     pub async fn summary_windows(&self) -> Result<SummaryWindows, ProxyError> {
         let now = Local::now();
         let today_start = start_of_local_day_utc_ts(now);
-        let yesterday_start = start_of_local_day_utc_ts(now - ChronoDuration::days(1));
+        let yesterday_start = previous_local_day_start_utc_ts(now);
         let month_start = start_of_local_month_utc_ts(now);
 
         self.key_store
@@ -14129,19 +14129,28 @@ fn start_of_day(now: chrono::DateTime<Utc>) -> chrono::DateTime<Utc> {
         .and_utc()
 }
 
-fn start_of_local_day_utc_ts(now: chrono::DateTime<Local>) -> i64 {
-    let naive = now
-        .date_naive()
-        .and_hms_opt(0, 0, 0)
-        .expect("valid start of local day");
+fn local_date_start_utc_ts(date: chrono::NaiveDate, fallback_now: chrono::DateTime<Local>) -> i64 {
+    let naive = date.and_hms_opt(0, 0, 0).expect("valid start of local day");
     match Local.from_local_datetime(&naive) {
         chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc).timestamp(),
         chrono::LocalResult::Ambiguous(dt, _) => dt.with_timezone(&Utc).timestamp(),
         chrono::LocalResult::None => {
             // Extremely unlikely at midnight; fall back to current timestamp.
-            now.with_timezone(&Utc).timestamp()
+            fallback_now.with_timezone(&Utc).timestamp()
         }
     }
+}
+
+fn start_of_local_day_utc_ts(now: chrono::DateTime<Local>) -> i64 {
+    local_date_start_utc_ts(now.date_naive(), now)
+}
+
+fn previous_local_day_start_utc_ts(now: chrono::DateTime<Local>) -> i64 {
+    let previous_date = now
+        .date_naive()
+        .pred_opt()
+        .unwrap_or_else(|| now.date_naive());
+    local_date_start_utc_ts(previous_date, now)
 }
 
 fn local_day_bucket_start_utc_ts(created_at_utc_ts: i64) -> i64 {
@@ -16900,9 +16909,9 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
 
         let now = Local::now();
         let today_start = start_of_local_day_utc_ts(now);
-        let yesterday_start = start_of_local_day_utc_ts(now - ChronoDuration::days(1));
+        let yesterday_start = previous_local_day_start_utc_ts(now);
         let month_start = start_of_local_month_utc_ts(now);
-        let previous_month_start = start_of_local_month_utc_ts(now - ChronoDuration::days(32));
+        let previous_month_start = start_of_local_month_utc_ts(now - chrono::Duration::days(32));
 
         insert_summary_window_bucket(&proxy, &key_id, today_start, 12, 9, 2, 1).await;
         insert_summary_window_bucket(&proxy, &key_id, yesterday_start, 7, 5, 1, 1).await;

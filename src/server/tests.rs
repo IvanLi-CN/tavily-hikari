@@ -5460,6 +5460,20 @@ mod tests {
                 chrono::LocalResult::None => value.with_timezone(&Utc).timestamp(),
             }
         };
+        let local_previous_day_start = |value: chrono::DateTime<Local>| -> i64 {
+            let previous_date = value
+                .date_naive()
+                .pred_opt()
+                .unwrap_or_else(|| value.date_naive());
+            let naive = previous_date
+                .and_hms_opt(0, 0, 0)
+                .expect("valid local midnight");
+            match Local.from_local_datetime(&naive) {
+                chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc).timestamp(),
+                chrono::LocalResult::Ambiguous(dt, _) => dt.with_timezone(&Utc).timestamp(),
+                chrono::LocalResult::None => value.with_timezone(&Utc).timestamp(),
+            }
+        };
         let local_month_start = |value: chrono::DateTime<Local>| -> i64 {
             Local
                 .with_ymd_and_hms(value.year(), value.month(), 1, 0, 0, 0)
@@ -5471,7 +5485,7 @@ mod tests {
 
         let now = Local::now();
         let today_start = local_day_start(now);
-        let yesterday_start = local_day_start(now - ChronoDuration::days(1));
+        let yesterday_start = local_previous_day_start(now);
         let month_start = local_month_start(now);
 
         let options = SqliteConnectOptions::new()
