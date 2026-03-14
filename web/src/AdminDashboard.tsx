@@ -1867,12 +1867,32 @@ function AdminDashboard(): JSX.Element {
         kind === 'subscriptionUrl'
           ? proxySettingsStrings.progress.steps.normalize_input
           : proxySettingsStrings.progress.steps.parse_input
+      const emitValidationError = (
+        message: string,
+        lastPhase?: Extract<ForwardProxyProgressEvent, { type: 'phase' }> | null,
+        detail?: string,
+      ) => {
+        onProgress?.({
+          type: 'error',
+          operation: 'validate',
+          phaseKey: lastPhase?.phaseKey ?? fallbackPhaseKey,
+          label: lastPhase?.label ?? fallbackLabel,
+          current: lastPhase?.current,
+          total: lastPhase?.total,
+          message,
+          detail: lastPhase?.detail ?? detail,
+        })
+      }
 
       if (rawValues.length === 1) {
         const value = rawValues[0]
+        let lastPhase: Extract<ForwardProxyProgressEvent, { type: 'phase' }> | null = null
         try {
           const result = await validateForwardProxyCandidateWithProgress({ kind, value }, (event) => {
             if (event.type === 'complete') return
+            if (event.type === 'phase') {
+              lastPhase = event
+            }
             onProgress?.(event)
           })
           results[0] = {
@@ -1881,18 +1901,14 @@ function AdminDashboard(): JSX.Element {
             value,
             result,
           } satisfies ForwardProxyValidationEntry
+          if (!result.ok) {
+            emitValidationError(result.message, lastPhase, value)
+          }
         } catch (err) {
           hadFatalError = true
           const message =
             err instanceof Error ? err.message : proxySettingsStrings.validation.requestFailed
-          onProgress?.({
-            type: 'error',
-            operation: 'validate',
-            phaseKey: fallbackPhaseKey,
-            label: fallbackLabel,
-            message,
-            detail: value,
-          })
+          emitValidationError(message, lastPhase, value)
           results[0] = {
             id: `${kind}:0:${value}`,
             kind,
@@ -1909,6 +1925,9 @@ function AdminDashboard(): JSX.Element {
       } else {
         let introEmitted = false
         const probeStarted = new Set<number>()
+        const lastPhaseByIndex = new Array<Extract<ForwardProxyProgressEvent, { type: 'phase' }> | null>(
+          rawValues.length,
+        ).fill(null)
 
         await Promise.all(rawValues.map(async (value, index) => {
           try {
@@ -1918,6 +1937,7 @@ function AdminDashboard(): JSX.Element {
                 if (!onProgress || event.type === 'complete') return
 
                 if (event.type === 'phase') {
+                  lastPhaseByIndex[index] = event
                   if (
                     (event.phaseKey === 'parse_input' ||
                       event.phaseKey === 'normalize_input' ||
@@ -1957,16 +1977,7 @@ function AdminDashboard(): JSX.Element {
             hadFatalError = true
             const message =
               err instanceof Error ? err.message : proxySettingsStrings.validation.requestFailed
-            onProgress?.({
-              type: 'error',
-              operation: 'validate',
-              phaseKey: fallbackPhaseKey,
-              label: fallbackLabel,
-              current: index + 1,
-              total: rawValues.length,
-              message,
-              detail: value,
-            })
+            emitValidationError(message, lastPhaseByIndex[index], value)
             results[index] = {
               id: `${kind}:${index}:${value}`,
               kind,
@@ -1982,7 +1993,8 @@ function AdminDashboard(): JSX.Element {
           }
         }))
 
-        if (!hadFatalError) {
+        const hasAnySuccess = results.some((entry) => entry?.result.ok)
+        if (!hadFatalError && hasAnySuccess) {
           onProgress?.({
             type: 'phase',
             operation: 'validate',
@@ -1991,10 +2003,16 @@ function AdminDashboard(): JSX.Element {
             current: rawValues.length,
             total: rawValues.length,
           })
+        } else if (!hadFatalError && !hasAnySuccess) {
+          emitValidationError(
+            proxySettingsStrings.validation.requestFailed,
+            lastPhaseByIndex.find((event) => event != null) ?? null,
+          )
         }
       }
 
-      if (!hadFatalError) {
+      const hasAnySuccess = results.some((entry) => entry?.result.ok)
+      if (!hadFatalError && hasAnySuccess) {
         onProgress?.({
           type: 'complete',
           operation: 'validate',
@@ -2047,23 +2065,21 @@ function AdminDashboard(): JSX.Element {
         phaseKey: 'refresh_ui',
         label: 'Refreshing settings and stats',
       })
-      await loadForwardProxyStatsData({ reason: 'refresh' })
-      onProgress?.({
-        type: 'complete',
-        operation: 'save',
-        payload: null,
-      })
+      try {
+        await loadForwardProxyStatsData({ reason: 'refresh' })
+      } catch (refreshErr) {
+        console.error(refreshErr)
+      } finally {
+        onProgress?.({
+          type: 'complete',
+          operation: 'save',
+          payload: null,
+        })
+      }
     } catch (err) {
       console.error(err)
       const message = err instanceof Error ? err.message : proxySettingsStrings.config.saveFailed
       setForwardProxySaveError(message)
-      onProgress?.({
-        type: 'error',
-        operation: 'save',
-        phaseKey: 'refresh_ui',
-        label: 'Refreshing settings and stats',
-        message,
-      })
       throw err instanceof Error ? err : new Error(message)
     } finally {
       setForwardProxySaving(false)
