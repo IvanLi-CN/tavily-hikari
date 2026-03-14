@@ -2679,10 +2679,24 @@ function AdminDashboard(): JSX.Element {
   }
 
   const buildTodayComparison = useCallback(
-    (currentValue: number, previousValue: number) => {
+    (
+      currentValue: number,
+      previousValue: number,
+      trend: 'higher-is-better' | 'lower-is-better' = 'higher-is-better',
+    ) => {
       const deltaValue = currentValue - previousValue
       const direction: 'up' | 'down' | 'flat' =
         deltaValue > 0 ? 'up' : deltaValue < 0 ? 'down' : 'flat'
+      const tone: 'positive' | 'negative' | 'neutral' =
+        direction === 'flat'
+          ? 'neutral'
+          : trend === 'higher-is-better'
+            ? direction === 'up'
+              ? 'positive'
+              : 'negative'
+            : direction === 'down'
+              ? 'positive'
+              : 'negative'
       let value = formatSignedNumber(deltaValue)
       if (previousValue > 0) {
         value = `${value} (${percentageFormatter.format(deltaValue / previousValue)})`
@@ -2693,6 +2707,7 @@ function AdminDashboard(): JSX.Element {
         label: adminStrings.dashboard.deltaFromYesterday,
         value,
         direction,
+        tone,
       }
     },
     [adminStrings.dashboard.deltaFromYesterday, adminStrings.dashboard.deltaNoBaseline],
@@ -2727,7 +2742,11 @@ function AdminDashboard(): JSX.Element {
         label: metricsStrings.labels.errors,
         value: formatNumber(today.error_count),
         subtitle: buildWindowSubtitle(adminStrings.dashboard.todayShare, today.error_count, total),
-        comparison: buildTodayComparison(today.error_count, yesterday.error_count),
+        comparison: buildTodayComparison(
+          today.error_count,
+          yesterday.error_count,
+          'lower-is-better',
+        ),
       },
       {
         id: 'today-quota',
@@ -2741,6 +2760,7 @@ function AdminDashboard(): JSX.Element {
         comparison: buildTodayComparison(
           today.quota_exhausted_count,
           yesterday.quota_exhausted_count,
+          'lower-is-better',
         ),
       },
     ]

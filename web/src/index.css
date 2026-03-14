@@ -2521,22 +2521,31 @@ button:disabled {
   font-family: 'JetBrains Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
 }
 
-.metric-delta-up {
+.metric-delta-up,
+.metric-delta-positive {
   color: #166534;
   background: rgb(34 197 94 / 0.12);
   border-color: rgb(34 197 94 / 0.22);
 }
 
-.metric-delta-down {
+.metric-delta-down,
+.metric-delta-negative {
   color: #b91c1c;
   background: rgb(239 68 68 / 0.12);
   border-color: rgb(239 68 68 / 0.22);
 }
 
-.metric-delta-flat {
+.metric-delta-flat,
+.metric-delta-neutral {
   color: hsl(var(--muted-foreground));
   background: hsl(var(--muted) / 0.5);
   border-color: hsl(var(--border) / 0.8);
+}
+
+.dashboard-summary-empty {
+  min-height: 120px;
+  display: flex;
+  align-items: center;
 }
 
 @media (min-width: 768px) {

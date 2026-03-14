@@ -10,6 +10,7 @@ export interface DashboardMetricCard {
     label: string
     value: string
     direction: 'up' | 'down' | 'flat'
+    tone?: 'positive' | 'negative' | 'neutral'
   }
 }
 
@@ -91,12 +92,20 @@ function Sparkline({ values }: { values: number[] }): JSX.Element {
 }
 
 function SummaryMetricCard({ metric, compact = false }: { metric: DashboardMetricCard; compact?: boolean }): JSX.Element {
+  const deltaTone = metric.comparison?.tone ?? (
+    metric.comparison?.direction === 'flat'
+      ? 'neutral'
+      : metric.comparison?.direction === 'up'
+        ? 'positive'
+        : 'negative'
+  )
+
   return (
     <div className={`metric-card dashboard-summary-card${compact ? ' dashboard-summary-card-compact' : ''}`}>
       <h3>{metric.label}</h3>
       <div className="metric-value">{metric.value}</div>
       {metric.comparison ? (
-        <div className={`metric-delta metric-delta-${metric.comparison.direction}`}>
+        <div className={`metric-delta metric-delta-${deltaTone}`}>
           <span className="metric-delta-label">{metric.comparison.label}</span>
           <span className="metric-delta-value">{metric.comparison.value}</span>
         </div>
@@ -180,7 +189,9 @@ export default function DashboardOverview({
     })
   }
 
-  const summaryReady = overviewReady && todayMetrics.length > 0 && monthMetrics.length > 0 && statusMetrics.length > 0
+  const hasTodaySummary = todayMetrics.length > 0
+  const hasMonthSummary = monthMetrics.length > 0
+  const hasStatusSummary = statusMetrics.length > 0
 
   return (
     <div className="dashboard-overview-stack">
@@ -197,7 +208,9 @@ export default function DashboardOverview({
       </section>
 
       <section className="surface panel dashboard-summary-panel">
-        {!summaryReady ? (
+        {!overviewReady ? (
+          <div className="empty-state alert">{strings.loading}</div>
+        ) : !hasTodaySummary && !hasMonthSummary && !hasStatusSummary ? (
           <div className="empty-state alert">{overviewReady ? strings.summaryUnavailable : strings.loading}</div>
         ) : (
           <div className="dashboard-summary-layout">
@@ -208,27 +221,43 @@ export default function DashboardOverview({
                   <p className="panel-description">{strings.todayDescription}</p>
                 </div>
               </header>
-              <div className="dashboard-summary-metrics dashboard-summary-metrics-primary dashboard-today-grid">
-                {todayMetrics.map((metric) => (
-                  <TodayMetricCard key={metric.id} metric={metric} />
-                ))}
-              </div>
-              <div className="dashboard-today-comparisons">
-                {todayMetrics.map((metric) => (
-                  <div key={`${metric.id}-comparison`} className="dashboard-today-comparison-row">
-                    <div className="dashboard-today-comparison-copy">
-                      <div className="dashboard-today-comparison-label">{metric.label}</div>
-                      {metric.subtitle ? <div className="dashboard-today-comparison-subtitle">{metric.subtitle}</div> : null}
-                    </div>
-                    {metric.comparison ? (
-                      <div className={`metric-delta metric-delta-${metric.comparison.direction}`}>
-                        <span className="metric-delta-label">{metric.comparison.label}</span>
-                        <span className="metric-delta-value">{metric.comparison.value}</span>
-                      </div>
-                    ) : null}
+              {hasTodaySummary ? (
+                <>
+                  <div className="dashboard-summary-metrics dashboard-summary-metrics-primary dashboard-today-grid">
+                    {todayMetrics.map((metric) => (
+                      <TodayMetricCard key={metric.id} metric={metric} />
+                    ))}
                   </div>
-                ))}
-              </div>
+                  <div className="dashboard-today-comparisons">
+                    {todayMetrics.map((metric) => {
+                      const deltaTone = metric.comparison?.tone ?? (
+                        metric.comparison?.direction === 'flat'
+                          ? 'neutral'
+                          : metric.comparison?.direction === 'up'
+                            ? 'positive'
+                            : 'negative'
+                      )
+
+                      return (
+                        <div key={`${metric.id}-comparison`} className="dashboard-today-comparison-row">
+                          <div className="dashboard-today-comparison-copy">
+                            <div className="dashboard-today-comparison-label">{metric.label}</div>
+                            {metric.subtitle ? <div className="dashboard-today-comparison-subtitle">{metric.subtitle}</div> : null}
+                          </div>
+                          {metric.comparison ? (
+                            <div className={`metric-delta metric-delta-${deltaTone}`}>
+                              <span className="metric-delta-label">{metric.comparison.label}</span>
+                              <span className="metric-delta-value">{metric.comparison.value}</span>
+                            </div>
+                          ) : null}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </>
+              ) : (
+                <div className="empty-state alert dashboard-summary-empty">{strings.summaryUnavailable}</div>
+              )}
             </article>
             <div className="dashboard-summary-side">
               <article className="dashboard-summary-block dashboard-summary-block-secondary">
@@ -238,11 +267,15 @@ export default function DashboardOverview({
                     <p className="panel-description">{strings.monthDescription}</p>
                   </div>
                 </header>
-                <div className="dashboard-summary-metrics dashboard-summary-metrics-compact">
-                  {monthMetrics.map((metric) => (
-                    <SummaryMetricCard key={metric.id} metric={metric} compact />
-                  ))}
-                </div>
+                {hasMonthSummary ? (
+                  <div className="dashboard-summary-metrics dashboard-summary-metrics-compact">
+                    {monthMetrics.map((metric) => (
+                      <SummaryMetricCard key={metric.id} metric={metric} compact />
+                    ))}
+                  </div>
+                ) : (
+                  <div className="empty-state alert dashboard-summary-empty">{strings.summaryUnavailable}</div>
+                )}
               </article>
 
               <article className="dashboard-summary-block dashboard-summary-block-status">
@@ -252,11 +285,15 @@ export default function DashboardOverview({
                     <p className="panel-description">{strings.currentStatusDescription}</p>
                   </div>
                 </header>
-                <div className="dashboard-summary-metrics dashboard-summary-metrics-compact">
-                  {statusMetrics.map((metric) => (
-                    <SummaryMetricCard key={metric.id} metric={metric} compact />
-                  ))}
-                </div>
+                {hasStatusSummary ? (
+                  <div className="dashboard-summary-metrics dashboard-summary-metrics-compact">
+                    {statusMetrics.map((metric) => (
+                      <SummaryMetricCard key={metric.id} metric={metric} compact />
+                    ))}
+                  </div>
+                ) : (
+                  <div className="empty-state alert dashboard-summary-empty">{strings.summaryUnavailable}</div>
+                )}
               </article>
             </div>
           </div>

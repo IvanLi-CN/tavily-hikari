@@ -16885,11 +16885,17 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
         insert_summary_window_bucket(&proxy, &key_id, today_start, 12, 9, 2, 1).await;
         insert_summary_window_bucket(&proxy, &key_id, yesterday_start, 7, 5, 1, 1).await;
         let mut expected_month = SummaryWindowMetrics {
-            total_requests: 19,
-            success_count: 14,
-            error_count: 3,
-            quota_exhausted_count: 2,
+            total_requests: 12,
+            success_count: 9,
+            error_count: 2,
+            quota_exhausted_count: 1,
         };
+        if yesterday_start >= month_start {
+            expected_month.total_requests += 7;
+            expected_month.success_count += 5;
+            expected_month.error_count += 1;
+            expected_month.quota_exhausted_count += 1;
+        }
         if month_start < yesterday_start {
             insert_summary_window_bucket(&proxy, &key_id, month_start, 3, 2, 1, 0).await;
             expected_month.total_requests += 3;
