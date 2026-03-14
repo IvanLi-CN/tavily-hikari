@@ -1887,6 +1887,14 @@ function AdminDashboard(): JSX.Element {
     return () => controller.abort()
   }, [loadData])
 
+  useLayoutEffect(() => {
+    if (!(route.name === 'module' && route.module === 'dashboard')) {
+      return
+    }
+    setDashboardOverviewLoaded(false)
+    setDashboardSummaryWindows(null)
+  }, [route])
+
   useEffect(() => {
     if (!(route.name === 'module' && route.module === 'dashboard')) {
       return
@@ -2835,9 +2843,11 @@ function AdminDashboard(): JSX.Element {
         label: metricsStrings.labels.quarantined,
         value: formatNumber(summary.quarantined_keys),
         subtitle:
-          allKeysAvailable
-            ? metricsStrings.subtitles.keysAll
-            : keyStrings.quarantine.badge,
+          summary.quarantined_keys > 0
+            ? keyStrings.quarantine.badge
+            : allKeysAvailable
+              ? metricsStrings.subtitles.keysAll
+              : adminStrings.dashboard.currentSnapshot,
       },
       {
         id: 'exhausted',
