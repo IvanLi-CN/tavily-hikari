@@ -72,6 +72,7 @@
 - `api_keys.created_at` 为新的持久字段：
   - 新增 key 时必须写入当前 UTC 秒级时间戳。
   - schema 迁移时，为历史行做最佳努力回填；只允许使用不可变证据（如最早 request log、最早 quarantine 记录），无法证明时保留 `0`，但不得阻塞启动。
+  - 回填必须是一次性迁移，不能在后续重启时根据“迁移后新出现的日志/隔离记录”再次改写旧 key 的 `created_at`。
 - `new_keys` 统计基于 `api_keys.created_at`，不是基于 request log 首次使用时间。
 - `new_quarantines` 统计基于 `api_key_quarantines.created_at`，同一个 key 在当前月多次“新增隔离记录”计入多条记录；若当前实现只允许一个 active quarantine，则仍按记录数聚合。
 - `api_key_quarantines` 必须为月度隔离统计提供 `created_at` 前导索引，避免 admin SSE 的周期性 month lifecycle 查询退化成全表扫描。
@@ -129,6 +130,7 @@
 - `2026-03-14`：继续收敛 review：历史 `api_keys.created_at` 回填只接受 request log / quarantine 等不可变证据，且在 SSE 正常时继续轻量补拉 dashboard tokens / recent jobs，避免风险区静止；`cargo test` / `cargo clippy -- -D warnings` 复跑通过。
 - `2026-03-14`：继续收敛 review：dashboard signals 补拉加入独立代次保护与 last-good 保留语义；admin SSE 在 snapshot 降级时发送 degraded 事件以重新启用 fallback polling；`cargo test` / `cargo clippy -- -D warnings`、`cd web && bun run build`、`cd web && bun run build-storybook` 复跑通过。
 - `2026-03-14`：继续收敛 review：为 `api_key_quarantines.created_at` 增加前导索引，避免 admin SSE 的月度隔离计数触发周期性全表扫描；同时 degraded 进入后立即执行 HTTP fallback 并主动重建 SSE；`cargo test` / `cargo clippy -- -D warnings`、`cd web && bun run build` 复跑通过。
+- `2026-03-14`：继续收敛 review：将 `api_keys.created_at` 回填改为 meta-gated 的一次性迁移，避免旧 key 在迁移后首次产生日志/隔离记录时被未来时间重新分类；补充“只回填一次”的回归测试并通过。
 - `2026-03-14`：`chrome-devtools` 本轮调用超时，浏览器 MCP 复核待在后续 PR 收敛轮次补齐。
 
 ## 实现里程碑
@@ -159,3 +161,4 @@
 - 2026-03-14: 为 dashboard signals 补拉加入独立代次保护与 last-good 保留，并让 admin SSE 在 snapshot 构建失败时发送 degraded 事件，促使前端恢复 fallback polling。
 - 2026-03-14: 为 `api_key_quarantines.created_at` 增加前导索引，避免 month lifecycle 统计在 admin SSE 周期查询里退化成全表扫描。
 - 2026-03-14: degraded 进入时立即执行 HTTP fallback，并主动重建 SSE 连接，避免恢复后无新数据变化时长期停留在 polling 模式。
+- 2026-03-14: 将 `api_keys.created_at` 回填改为 meta-gated 的一次性迁移，并补上“后续重启不能重新改写旧 key 创建时间”的回归测试。

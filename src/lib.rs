@@ -171,6 +171,7 @@ const META_KEY_LINUXDO_SYSTEM_TAG_DEFAULTS_V1: &str = "linuxdo_system_tag_defaul
 const META_KEY_LINUXDO_SYSTEM_TAG_DEFAULTS_TUPLE_V1: &str = "linuxdo_system_tag_defaults_tuple_v1";
 const META_KEY_AUTH_TOKEN_LOG_REQUEST_KIND_BACKFILL_V1: &str =
     "auth_token_log_request_kind_backfill_v1";
+const META_KEY_API_KEY_CREATED_AT_BACKFILL_V1: &str = "api_key_created_at_backfill_v1";
 // Cutover marker for switching business quota counters from "requests" to "credits".
 // We cannot retroactively convert legacy request counts into credits, so we reset the
 // lightweight counters once and start charging by upstream credits going forward.
@@ -5161,7 +5162,6 @@ impl KeyStore {
         .await?;
 
         self.upgrade_request_logs_schema().await?;
-        self.backfill_api_key_created_at().await?;
 
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_request_logs_auth_token_time
@@ -5172,6 +5172,12 @@ impl KeyStore {
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_request_logs_time
                ON request_logs(created_at DESC, id DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_request_logs_key_time
+               ON request_logs(api_key_id, created_at DESC)"#,
         )
         .execute(&self.pool)
         .await?;
@@ -5754,6 +5760,19 @@ impl KeyStore {
         )
         .execute(&self.pool)
         .await?;
+
+        if self
+            .get_meta_i64(META_KEY_API_KEY_CREATED_AT_BACKFILL_V1)
+            .await?
+            .is_none()
+        {
+            self.backfill_api_key_created_at().await?;
+            self.set_meta_i64(
+                META_KEY_API_KEY_CREATED_AT_BACKFILL_V1,
+                Utc::now().timestamp(),
+            )
+            .await?;
+        }
 
         if request_kind_schema_changed
             || self

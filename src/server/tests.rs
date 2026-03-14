@@ -5920,6 +5920,128 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn api_keys_created_at_backfill_only_runs_once() {
+        let db_path = temp_db_path("api-keys-created-at-backfill-once");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let options = SqliteConnectOptions::new()
+            .filename(&db_str)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open db pool");
+
+        sqlx::query(
+            r#"
+            CREATE TABLE api_keys (
+                id TEXT PRIMARY KEY,
+                api_key TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL DEFAULT 'active',
+                status_changed_at INTEGER,
+                last_used_at INTEGER NOT NULL DEFAULT 0,
+                quota_limit INTEGER,
+                quota_remaining INTEGER,
+                quota_synced_at INTEGER,
+                deleted_at INTEGER
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create legacy api_keys");
+
+        sqlx::query(
+            r#"
+            INSERT INTO api_keys (
+                id, api_key, status, status_changed_at, last_used_at, quota_limit, quota_remaining, quota_synced_at, deleted_at
+            ) VALUES (?, ?, 'active', NULL, 0, NULL, NULL, NULL, NULL)
+            "#,
+        )
+        .bind("k-once")
+        .bind("tvly-created-at-once")
+        .execute(&pool)
+        .await
+        .expect("insert legacy api key");
+        drop(pool);
+
+        let _proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-created-at-once-upgrade".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("first upgrade");
+
+        let options = SqliteConnectOptions::new()
+            .filename(&db_str)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let upgraded_pool = SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open upgraded db pool");
+
+        sqlx::query(
+            r#"
+            INSERT INTO request_logs (
+                api_key_id, auth_token_id, method, path, query, status_code, tavily_status_code,
+                error_message, result_status, request_body, response_body, forwarded_headers,
+                dropped_headers, created_at
+            ) VALUES (?, NULL, 'POST', '/search', NULL, 200, 200, NULL, 'success', NULL, NULL, '', '', ?)
+            "#,
+        )
+        .bind("k-once")
+        .bind(1_234_i64)
+        .execute(&upgraded_pool)
+        .await
+        .expect("insert late request log");
+        drop(upgraded_pool);
+
+        let _proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-created-at-once-second".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("second upgrade");
+
+        let options = SqliteConnectOptions::new()
+            .filename(&db_str)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let verify_pool = SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open verify db pool");
+
+        let created_at = sqlx::query_scalar::<_, i64>(
+            "SELECT created_at FROM api_keys WHERE id = ? LIMIT 1",
+        )
+        .bind("k-once")
+        .fetch_one(&verify_pool)
+        .await
+        .expect("read created_at");
+
+        assert_eq!(
+            created_at, 0,
+            "keys without evidence during the one-time migration must not be retroactively reclassified on later restarts"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn compute_signatures_tracks_quarantined_key_count() {
         let db_path = temp_db_path("summary-signatures-quarantine");
         let db_str = db_path.to_string_lossy().to_string();
