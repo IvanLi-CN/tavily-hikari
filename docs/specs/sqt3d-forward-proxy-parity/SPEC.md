@@ -134,6 +134,10 @@
   When 弹窗显示验证结果
   Then footer 操作区必须始终留在可视区域内，内容改由弹窗 body 自身滚动承载，不得把 `取消 / 验证 / 添加或导入` 推出视口。
 
+- Given 管理员校验 subscription URL
+  When 弹窗显示订阅校验结果
+  Then 原始 subscription URL 只保留在顶部输入框内供复制或继续编辑，结果卡片不得再次回显该 URL。
+
 ## 实现前置条件（Definition of Ready / Preconditions）
 
 - 目标/非目标、scope in/out、mock-only 约束已明确
@@ -148,6 +152,7 @@
 - Unit tests: 代理 URL/订阅/share-link 解析，scheduler weight/penalty，key affinity 主备切换，Xray config 构造。
 - Integration tests: mock upstream + mock proxy + mock subscription 下验证 `/mcp`、`/api/tavily/*`、quota sync、管理员 key 校验走代理。
 - E2E tests (if applicable): 浏览器打开 `/admin/proxy-settings`，完成 subscription 添加、候选验证与 live stats 查看。
+- Storybook: 至少提供 empty / subscription success / subscription failure / overflow proof 四个确定性 stories，其中 overflow proof 必须让弹窗 body 发生滚动而 footer 仍可见。
 
 ### UI / Storybook (if applicable)
 

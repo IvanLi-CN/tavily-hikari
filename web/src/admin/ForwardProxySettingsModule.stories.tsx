@@ -82,6 +82,33 @@ const MANUAL_MIXED_RESULTS: ForwardProxyValidationEntry[] = [
   },
 ]
 
+const MANUAL_OVERFLOW_RESULTS: ForwardProxyValidationEntry[] = Array.from({ length: 14 }, (_, index) => {
+  const item = index + 1
+  const value =
+    item % 4 === 0
+      ? `trojan://demo-password-${item}@edge-${item}.example.com:443?security=tls&type=ws#Overflow-${item}`
+      : item % 3 === 0
+        ? `socks5h://198.51.100.${item}:1080`
+        : `ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ${item}@edge-${item}.example.com:443#Overflow-${item}`
+
+  const ok = item % 5 !== 0
+
+  return {
+    id: `manual-overflow-${item}`,
+    kind: 'proxyUrl',
+    value,
+    result: {
+      ok,
+      message: ok
+        ? `proxy validation succeeded via edge-${item}.example.com after a longer bootstrap handshake to simulate a tall scrollable result list`
+        : `Proxy bootstrap probe failed on edge-${item}.example.com after repeated timeout and TLS handshake retries.`,
+      normalizedValue: value,
+      latencyMs: 90 + item * 37.5,
+      errorCode: ok ? undefined : 'proxy_timeout',
+    },
+  }
+})
+
 interface StoryCanvasProps {
   dialogPreview?: ForwardProxyDialogPreviewState | null
 }
@@ -182,6 +209,16 @@ export const ManualValidationMixed: Story = {
       kind: 'manual',
       input: MANUAL_MIXED_RESULTS.map((entry) => entry.value).join('\n'),
       results: MANUAL_MIXED_RESULTS,
+    },
+  },
+}
+
+export const ManualValidationOverflow: Story = {
+  args: {
+    dialogPreview: {
+      kind: 'manual',
+      input: MANUAL_OVERFLOW_RESULTS.map((entry) => entry.value).join('\n'),
+      results: MANUAL_OVERFLOW_RESULTS,
     },
   },
 }
