@@ -1596,6 +1596,9 @@ function AdminDashboard(): JSX.Element {
 
         setProfile(profileData ?? null)
         setSummary(summaryData)
+        if (routeRef.current.name === 'module' && routeRef.current.module === 'dashboard') {
+          setDashboardSummarySnapshot(summaryData)
+        }
         setTokens(tokenData.items)
         setTokensTotal(tokenData.total)
         setTokenGroups(tokenGroupsData)
@@ -1623,16 +1626,34 @@ function AdminDashboard(): JSX.Element {
   const loadDashboardOverview = useCallback(
     async (signal?: AbortSignal) => {
       try {
+        const dashboardWindowsRequest = fetchSummaryWindows(signal)
+          .then((data) => ({ kind: 'ok' as const, data }))
+          .catch((error: unknown) => ({
+            kind: 'error' as const,
+            status:
+              typeof error === 'object' && error && 'status' in error
+                ? (error as { status?: number }).status ?? null
+                : null,
+          }))
+        const dashboardSummaryRequest = fetchSummary(signal)
+          .then((data) => ({ kind: 'ok' as const, data }))
+          .catch((error: unknown) => ({
+            kind: 'error' as const,
+            status:
+              typeof error === 'object' && error && 'status' in error
+                ? (error as { status?: number }).status ?? null
+                : null,
+          }))
         const [
-          dashboardSummaryWindowsData,
-          dashboardSummarySnapshotData,
+          dashboardSummaryWindowsResult,
+          dashboardSummarySnapshotResult,
           dashboardTokenSnapshot,
           dashboardKeysData,
           dashboardLogsData,
           dashboardJobsData,
         ] = await Promise.all([
-          fetchSummaryWindows(signal).catch(() => null),
-          fetchSummary(signal).catch(() => null),
+          dashboardWindowsRequest,
+          dashboardSummaryRequest,
           loadAllTokensForDashboard(signal)
             .then((value) => ({ kind: 'ok' as const, ...value }))
             .catch(() => ({ kind: 'error' as const })),
@@ -1661,8 +1682,22 @@ function AdminDashboard(): JSX.Element {
           return
         }
 
-        setDashboardSummarySnapshot(dashboardSummarySnapshotData)
-        setDashboardSummaryWindows(dashboardSummaryWindowsData)
+        const windowsUnauthorized =
+          dashboardSummaryWindowsResult.kind === 'error' &&
+          dashboardSummaryWindowsResult.status === 403
+
+        setDashboardSummarySnapshot(
+          windowsUnauthorized
+            ? null
+            : dashboardSummarySnapshotResult.kind === 'ok'
+              ? dashboardSummarySnapshotResult.data
+              : null,
+        )
+        setDashboardSummaryWindows(
+          dashboardSummaryWindowsResult.kind === 'ok'
+            ? dashboardSummaryWindowsResult.data
+            : null,
+        )
         if (dashboardTokenSnapshot.kind === 'ok') {
           setDashboardTokens(dashboardTokenSnapshot.items)
           setDashboardTokenCoverage(dashboardTokenSnapshot.truncated ? 'truncated' : 'ok')
@@ -2373,6 +2408,9 @@ function AdminDashboard(): JSX.Element {
         try {
           const data = JSON.parse(ev.data) as { summary: Summary; keys: ApiKeyStats[]; logs: RequestLog[] }
           setSummary(data.summary)
+          if (routeRef.current.name === 'module' && routeRef.current.module === 'dashboard') {
+            setDashboardSummarySnapshot(data.summary)
+          }
           setDashboardKeys(data.keys)
           setDashboardLogs(data.logs)
           setLastUpdated(new Date())
