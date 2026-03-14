@@ -5161,6 +5161,7 @@ impl KeyStore {
         .await?;
 
         self.upgrade_request_logs_schema().await?;
+        self.backfill_api_key_created_at().await?;
 
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_request_logs_auth_token_time
@@ -7269,6 +7270,19 @@ impl KeyStore {
         .execute(&self.pool)
         .await?;
 
+        self.ensure_api_key_ids().await?;
+        self.ensure_api_keys_primary_key().await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_api_keys_created_at ON api_keys(created_at DESC)",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn backfill_api_key_created_at(&self) -> Result<(), ProxyError> {
         sqlx::query(
             r#"
             UPDATE api_keys
@@ -7276,25 +7290,21 @@ impl KeyStore {
                 (
                     SELECT MIN(candidate_ts)
                     FROM (
-                        SELECT NULLIF(status_changed_at, 0) AS candidate_ts
+                        SELECT MIN(r.created_at) AS candidate_ts
+                        FROM request_logs r
+                        WHERE r.api_key_id = api_keys.id
                         UNION ALL
-                        SELECT NULLIF(last_used_at, 0)
-                    )
+                        SELECT MIN(q.created_at) AS candidate_ts
+                        FROM api_key_quarantines q
+                        WHERE q.key_id = api_keys.id
+                    ) candidates
                     WHERE candidate_ts IS NOT NULL
+                      AND candidate_ts > 0
                 ),
                 0
             )
             WHERE created_at IS NULL OR created_at <= 0
             "#,
-        )
-        .execute(&self.pool)
-        .await?;
-
-        self.ensure_api_key_ids().await?;
-        self.ensure_api_keys_primary_key().await?;
-
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_api_keys_created_at ON api_keys(created_at DESC)",
         )
         .execute(&self.pool)
         .await?;

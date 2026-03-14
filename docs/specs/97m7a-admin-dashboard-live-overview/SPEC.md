@@ -39,7 +39,7 @@
   - `yesterday`: `{ total_requests, success_count, error_count, quota_exhausted_count }`
   - `month`: `{ total_requests, success_count, error_count, quota_exhausted_count }`
 - 扩展 `month`：
-  - `new_keys`: 本月新增密钥数，基于 `api_keys.created_at >= local_month_start` 统计，排除软删除与状态变化影响。
+  - `new_keys`: 本月新增密钥数，基于 `api_keys.created_at >= local_month_start` 统计；生命周期统计不因后续软删除或状态变化而回退。
   - `new_quarantines`: 本月新增隔离密钥数，基于 `api_key_quarantines.created_at >= local_month_start` 统计当前月新建隔离记录数量。
 
 ### `GET /api/events` admin `snapshot`
@@ -59,11 +59,19 @@
   - `forwardProxy`: 供顶部总览直接消费的代理池摘要；不必内嵌完整 24h buckets。
   - `keys`, `logs`: 保持现有首屏行为，避免破坏下游依赖。
 
+### `GET /api/stats/forward-proxy/summary`
+
+- 仅管理员可访问。
+- 返回 dashboard overview 所需的轻量代理摘要：
+  - `availableNodes`
+  - `totalNodes`
+- 该接口只能复用已存在的 runtime snapshot 聚合，不允许为了两个计数生成完整节点多窗口统计或 24h buckets。
+
 ## 统计与口径约束
 
 - `api_keys.created_at` 为新的持久字段：
   - 新增 key 时必须写入当前 UTC 秒级时间戳。
-  - schema 迁移时，为历史行做最佳努力回填；优先沿用可证明的现有时间字段，无法证明时退回稳定近似值，但不得阻塞启动。
+  - schema 迁移时，为历史行做最佳努力回填；只允许使用不可变证据（如最早 request log、最早 quarantine 记录），无法证明时保留 `0`，但不得阻塞启动。
 - `new_keys` 统计基于 `api_keys.created_at`，不是基于 request log 首次使用时间。
 - `new_quarantines` 统计基于 `api_key_quarantines.created_at`，同一个 key 在当前月多次“新增隔离记录”计入多条记录；若当前实现只允许一个 active quarantine，则仍按记录数聚合。
 - `可用代理节点数` 定义为 `ForwardProxyLiveStatsResponse.nodes` 中 `available && !penalized` 的数量。
@@ -84,6 +92,11 @@
   - 数值容器允许 `clamp()` 字号、断点收缩、双行分母展示或卡片变宽。
   - 任意断点下都不得引入横向滚动。
 - SSE 连接可用时，不再为 dashboard 顶部总览单独触发节流补拉；只允许保留断线/首屏/权限失败时的兜底加载。
+- 首屏若 SSE 快照先于 overview HTTP 返回，前端必须保留较新的 overview 快照，同时继续接收同一轮 HTTP 返回的 tokens / recent jobs 补充数据。
+- admin SSE 在瞬时查询失败（如 SQLite busy）时应保活并等待下个轮询周期重试，不因单次 overview 查询失败主动断开长连接。
+- `tokens / recent jobs` 风险区不能依赖 overview 的一次性 HTTP 返回或 SSE 断线后的兜底刷新；在 SSE 正常时也必须继续轻量补拉，避免首屏后状态静止。
+- dashboard signals（tokens / recent jobs）的异步补拉也必须具备请求代次保护与 last-good 保留语义：较旧响应不得覆盖较新快照，单次失败不得把已有风险区直接清空。
+- 当 admin SSE 连续进入 snapshot 构建失败/查询降级时，服务端应发出可识别的 degraded 信号，前端据此临时恢复 HTTP fallback polling，避免“连接在线但总览冻结”。
 
 ## 验收标准
 
@@ -107,7 +120,11 @@
 - `2026-03-14`：`cd web && bun run build-storybook` 通过。
 - `2026-03-14`：本地 `curl` + Python SSE 验证通过；在 `/api/events` 首个 `snapshot` 后新增 key，确认 `summary.active_keys` 与 `summaryWindows.month.new_keys` 在后续 SSE `snapshot` 中直接递增，无需 overview 补拉。
 - `2026-03-14`：review 修复后再次执行 `cargo test` / `cargo clippy -- -D warnings`，新增“仅额度变化也会触发 dashboard SSE snapshot 刷新”的回归测试并通过。
-- `2026-03-14`：继续收敛 review：移除 `quota_synced_at` 对历史 `created_at` 回填的污染来源、在 SSE 汇总查询失败时让前端回退 polling，并为 overview 的 HTTP/SSE 并发写入补上防倒退保护；`cargo test` / `cargo clippy -- -D warnings` 复跑通过。
+- `2026-03-14`：继续收敛 review：移除 `quota_synced_at` 对历史 `created_at` 回填的污染来源，修正 overview 的 HTTP/SSE 并发写入以避免新快照被旧总览覆盖，同时保留 tokens / recent jobs 的首屏补拉；`cargo test` / `cargo clippy -- -D warnings` 复跑通过。
+- `2026-03-14`：继续收敛 review：恢复 admin SSE 在瞬时查询失败时的保活重试策略，避免单次 overview 查询失败直接打断长连接；`cargo test` / `cargo clippy -- -D warnings`、`cd web && bun run build`、`cd web && bun run build-storybook` 复跑通过。
+- `2026-03-14`：继续收敛 review：新增 `/api/stats/forward-proxy/summary` 轻量摘要接口，dashboard overview 初始/兜底加载不再请求完整 forward proxy live stats；`cargo test` / `cargo clippy -- -D warnings`、`cd web && bun run build`、`cd web && bun run build-storybook` 复跑通过。
+- `2026-03-14`：继续收敛 review：历史 `api_keys.created_at` 回填只接受 request log / quarantine 等不可变证据，且在 SSE 正常时继续轻量补拉 dashboard tokens / recent jobs，避免风险区静止；`cargo test` / `cargo clippy -- -D warnings` 复跑通过。
+- `2026-03-14`：继续收敛 review：dashboard signals 补拉加入独立代次保护与 last-good 保留语义；admin SSE 在 snapshot 降级时发送 degraded 事件以重新启用 fallback polling；`cargo test` / `cargo clippy -- -D warnings`、`cd web && bun run build`、`cd web && bun run build-storybook` 复跑通过。
 - `2026-03-14`：`chrome-devtools` 本轮调用超时，浏览器 MCP 复核待在后续 PR 收敛轮次补齐。
 
 ## 实现里程碑
@@ -131,4 +148,8 @@
 - 2026-03-14: 完成 `api_keys.created_at` 迁移与最佳努力回填、month `new_keys/new_quarantines` 聚合、admin SSE `summaryWindows/siteStatus/forwardProxy` 扩容，以及 dashboard 总览布局/大数字展示改造。
 - 2026-03-14: 根据 review 收敛修正 `created_at` 历史回填口径、月新增 key 对软删除 key 的统计语义，以及 forward proxy SSE 失败时的空值降级表达。
 - 2026-03-14: 根据后续 review 收敛补齐 dashboard SSE 对额度汇总变化的签名检测，改为轻量 forward proxy 节点摘要采样，并新增额度变化触发 snapshot 的回归测试。
-- 2026-03-14: 再次收敛 review，移除 `quota_synced_at` 参与历史创建时间回填、在 overview 查询失败时主动让 SSE 断开回退轮询，并阻止初始 HTTP overview 结果覆盖更新的 SSE 快照。
+- 2026-03-14: 再次收敛 review，移除 `quota_synced_at` 参与历史创建时间回填，阻止初始 HTTP overview 结果覆盖更新的 SSE 快照，同时保留 tokens / recent jobs 的首屏补拉。
+- 2026-03-14: 继续收敛 review，恢复 admin SSE 在瞬时 overview 查询失败时的保活重试策略，避免单次查询抖动直接打断 Dashboard 长连接。
+- 2026-03-14: 新增 `/api/stats/forward-proxy/summary` 轻量接口，并将 dashboard overview 的初始/兜底代理节点加载切到该摘要接口。
+- 2026-03-14: 将历史 `api_keys.created_at` 回填改为仅接受 request logs / quarantines 的不可变证据，同时在 SSE 正常时继续轻量刷新 dashboard 的 tokens / recent jobs 风险区。
+- 2026-03-14: 为 dashboard signals 补拉加入独立代次保护与 last-good 保留，并让 admin SSE 在 snapshot 构建失败时发送 degraded 事件，促使前端恢复 fallback polling。

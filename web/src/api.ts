@@ -43,6 +43,11 @@ export interface DashboardForwardProxySnapshot {
   totalNodes: number | null
 }
 
+export interface ForwardProxyDashboardSummaryResponse {
+  availableNodes: number
+  totalNodes: number
+}
+
 export interface DashboardSnapshotEvent {
   summary: Summary
   summaryWindows: SummaryWindowsResponse
@@ -1229,4 +1234,10 @@ export function validateForwardProxyCandidate(
 
 export function fetchForwardProxyStats(signal?: AbortSignal): Promise<ForwardProxyStatsResponse> {
   return requestJson('/api/stats/forward-proxy', { signal })
+}
+
+export function fetchForwardProxyDashboardSummary(
+  signal?: AbortSignal,
+): Promise<ForwardProxyDashboardSummaryResponse> {
+  return requestJson('/api/stats/forward-proxy/summary', { signal })
 }

@@ -431,6 +431,36 @@ async fn get_forward_proxy_live_stats(
         })
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ForwardProxyDashboardSummaryView {
+    available_nodes: i64,
+    total_nodes: i64,
+}
+
+async fn get_forward_proxy_dashboard_summary(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<ForwardProxyDashboardSummaryView>, (StatusCode, String)> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
+    }
+    state
+        .proxy
+        .get_forward_proxy_dashboard_summary()
+        .await
+        .map(|summary| {
+            Json(ForwardProxyDashboardSummaryView {
+                available_nodes: summary.available_nodes,
+                total_nodes: summary.total_nodes,
+            })
+        })
+        .map_err(|err| {
+            eprintln!("get forward proxy dashboard summary error: {err}");
+            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+        })
+}
+
 fn truncate_detail(mut input: String, max_len: usize) -> String {
     if input.len() <= max_len {
         return input;

@@ -153,7 +153,9 @@ import {
   type AdminUserTagBinding,
   type ForwardProxySettings,
   type ForwardProxyStatsResponse,
+  type ForwardProxyDashboardSummaryResponse,
   type ForwardProxyValidationKind,
+  fetchForwardProxyDashboardSummary,
   fetchForwardProxySettings,
   fetchForwardProxyStats,
   updateForwardProxySettings,
@@ -198,6 +200,12 @@ type UserTagLike = Pick<AdminUserTagBinding, 'displayName' | 'icon' | 'systemKey
 }
 
 type DashboardSiteStatusState = DashboardSiteStatusSnapshot
+type DashboardTokenSnapshot =
+  | { kind: 'ok'; items: AuthToken[]; truncated: boolean }
+  | { kind: 'error' }
+type DashboardJobsSnapshot =
+  | { kind: 'ok'; data: Paginated<JobLogView> }
+  | { kind: 'error' }
 
 const EMPTY_USER_TAG_FORM: UserTagFormState = {
   tagId: null,
@@ -209,22 +217,6 @@ const EMPTY_USER_TAG_FORM: UserTagFormState = {
   hourlyDelta: '0',
   dailyDelta: '0',
   monthlyDelta: '0',
-}
-
-function summarizeForwardProxyNodes(
-  stats: ForwardProxyStatsResponse | null,
-): Pick<DashboardSiteStatusState, 'availableProxyNodes' | 'totalProxyNodes'> {
-  if (!stats) {
-    return {
-      availableProxyNodes: null,
-      totalProxyNodes: null,
-    }
-  }
-
-  return {
-    availableProxyNodes: stats.nodes.filter((node) => node.available && !node.penalized).length,
-    totalProxyNodes: stats.nodes.length,
-  }
 }
 
 function splitMultilineEntries(value: string): string[] {
@@ -950,9 +942,11 @@ function AdminDashboard(): JSX.Element {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const pollingTimerRef = useRef<number | null>(null)
+  const dashboardSignalsTimerRef = useRef<number | null>(null)
   const routeRef = useRef<AdminPathRoute>(route)
   const baseDataLoadedRef = useRef(false)
   const dashboardOverviewVersionRef = useRef(0)
+  const dashboardSignalsVersionRef = useRef(0)
   const tokenLeaderboardQueryKeyRef = useRef<string | null>(null)
   const tokenLeaderboardNonceRef = useRef(0)
   const requestsLoadedRef = useRef(false)
@@ -1519,6 +1513,44 @@ function AdminDashboard(): JSX.Element {
     [],
   )
 
+  const loadDashboardSignalsSnapshot = useCallback(
+    async (
+      signal?: AbortSignal,
+    ): Promise<{ tokenSnapshot: DashboardTokenSnapshot; jobsSnapshot: DashboardJobsSnapshot }> => {
+      const [tokenSnapshot, jobsSnapshot] = await Promise.all([
+        loadAllTokensForDashboard(signal)
+          .then((value) => ({ kind: 'ok' as const, ...value }))
+          .catch(() => ({ kind: 'error' as const })),
+        fetchJobs(1, DASHBOARD_RECENT_JOBS_PER_PAGE, 'all', signal)
+          .then((data) => ({ kind: 'ok' as const, data }))
+          .catch(() => ({ kind: 'error' as const })),
+      ])
+      return { tokenSnapshot, jobsSnapshot }
+    },
+    [loadAllTokensForDashboard],
+  )
+
+  const applyDashboardSignalsSnapshot = useCallback(
+    ({
+      tokenSnapshot,
+      jobsSnapshot,
+    }: {
+      tokenSnapshot: DashboardTokenSnapshot
+      jobsSnapshot: DashboardJobsSnapshot
+    }) => {
+      if (tokenSnapshot.kind === 'ok') {
+        setDashboardTokens(tokenSnapshot.items)
+        setDashboardTokenCoverage(tokenSnapshot.truncated ? 'truncated' : 'ok')
+      } else {
+        setDashboardTokenCoverage('error')
+      }
+      if (jobsSnapshot.kind === 'ok') {
+        setDashboardJobs(jobsSnapshot.data.items)
+      }
+    },
+    [],
+  )
+
   const handleCopySecret = useCallback(
     async (id: string, stateKey: string, anchorEl?: HTMLElement | null) => {
       setManualCopyBubble(null)
@@ -1640,6 +1672,7 @@ function AdminDashboard(): JSX.Element {
   const loadDashboardOverview = useCallback(
     async (signal?: AbortSignal) => {
       const requestVersion = ++dashboardOverviewVersionRef.current
+      const signalVersion = ++dashboardSignalsVersionRef.current
       try {
         const dashboardWindowsRequest = fetchSummaryWindows(signal)
           .then((data) => ({ kind: 'ok' as const, data }))
@@ -1659,7 +1692,7 @@ function AdminDashboard(): JSX.Element {
                 ? (error as { status?: number }).status ?? null
                 : null,
           }))
-        const dashboardForwardProxyRequest = fetchForwardProxyStats(signal)
+        const dashboardForwardProxyRequest = fetchForwardProxyDashboardSummary(signal)
           .then((data) => ({ kind: 'ok' as const, data }))
           .catch((error: unknown) => ({
             kind: 'error' as const,
@@ -1672,17 +1705,14 @@ function AdminDashboard(): JSX.Element {
           dashboardSummaryWindowsResult,
           dashboardSummarySnapshotResult,
           dashboardForwardProxyResult,
-          dashboardTokenSnapshot,
+          dashboardSignalsSnapshot,
           dashboardKeysData,
           dashboardLogsData,
-          dashboardJobsData,
         ] = await Promise.all([
           dashboardWindowsRequest,
           dashboardSummaryRequest,
           dashboardForwardProxyRequest,
-          loadAllTokensForDashboard(signal)
-            .then((value) => ({ kind: 'ok' as const, ...value }))
-            .catch(() => ({ kind: 'error' as const })),
+          loadDashboardSignalsSnapshot(signal),
           loadExhaustedKeysForDashboard(signal).catch(() => [] as ApiKeyStats[]),
           fetchRequestLogs(1, DASHBOARD_RECENT_LOGS_PER_PAGE, undefined, signal).catch(
             () =>
@@ -1693,20 +1723,13 @@ function AdminDashboard(): JSX.Element {
                 perPage: DASHBOARD_RECENT_LOGS_PER_PAGE,
               }) as Paginated<RequestLog>,
           ),
-          fetchJobs(1, DASHBOARD_RECENT_JOBS_PER_PAGE, 'all', signal).catch(
-            () =>
-              ({
-                items: [],
-                total: 0,
-                page: 1,
-                perPage: DASHBOARD_RECENT_JOBS_PER_PAGE,
-              }) as Paginated<JobLogView>,
-          ),
         ])
 
-        if (signal?.aborted || requestVersion !== dashboardOverviewVersionRef.current) {
+        if (signal?.aborted) {
           return
         }
+        const overviewStale = requestVersion !== dashboardOverviewVersionRef.current
+        const signalsStale = signalVersion !== dashboardSignalsVersionRef.current
 
         const dashboardAuthExpired =
           (dashboardSummaryWindowsResult.kind === 'error' &&
@@ -1724,40 +1747,39 @@ function AdminDashboard(): JSX.Element {
           !dashboardAuthExpired && dashboardSummaryWindowsResult.kind === 'ok'
             ? dashboardSummaryWindowsResult.data
             : null
-        const nextForwardProxySummary = summarizeForwardProxyNodes(
+        const nextForwardProxySummary: ForwardProxyDashboardSummaryResponse | null =
           !dashboardAuthExpired && dashboardForwardProxyResult.kind === 'ok'
             ? dashboardForwardProxyResult.data
-            : null,
-        )
-        setDashboardSummaryWindows(nextSummaryWindows)
-        setDashboardSiteStatusSnapshot(
-          nextSummary
-            ? {
-                remainingQuota: nextSummary.total_quota_remaining,
-                totalQuotaLimit: nextSummary.total_quota_limit,
-                activeKeys: nextSummary.active_keys,
-                quarantinedKeys: nextSummary.quarantined_keys,
-                exhaustedKeys: nextSummary.exhausted_keys,
-                availableProxyNodes: nextForwardProxySummary.availableProxyNodes,
-                totalProxyNodes: nextForwardProxySummary.totalProxyNodes,
-              }
-            : null,
-        )
-        if (dashboardTokenSnapshot.kind === 'ok') {
-          setDashboardTokens(dashboardTokenSnapshot.items)
-          setDashboardTokenCoverage(dashboardTokenSnapshot.truncated ? 'truncated' : 'ok')
-        } else {
-          setDashboardTokens([])
-          setDashboardTokenCoverage('error')
+            : null
+        if (!overviewStale) {
+          setDashboardSummaryWindows(nextSummaryWindows)
+          setDashboardSiteStatusSnapshot(
+            nextSummary
+              ? {
+                  remainingQuota: nextSummary.total_quota_remaining,
+                  totalQuotaLimit: nextSummary.total_quota_limit,
+                  activeKeys: nextSummary.active_keys,
+                  quarantinedKeys: nextSummary.quarantined_keys,
+                  exhaustedKeys: nextSummary.exhausted_keys,
+                  availableProxyNodes: nextForwardProxySummary?.availableNodes ?? null,
+                  totalProxyNodes: nextForwardProxySummary?.totalNodes ?? null,
+                }
+              : null,
+          )
         }
-        setDashboardKeys(dashboardKeysData)
-        setDashboardLogs(dashboardLogsData.items)
-        setDashboardJobs(dashboardJobsData.items)
+        if (!signalsStale) {
+          applyDashboardSignalsSnapshot(dashboardSignalsSnapshot)
+        }
+        if (!overviewStale) {
+          setDashboardKeys(dashboardKeysData)
+          setDashboardLogs(dashboardLogsData.items)
+        }
       } catch (err) {
         if ((err as Error).name === 'AbortError') {
           return
         }
-        if (requestVersion !== dashboardOverviewVersionRef.current) {
+        const overviewStale = requestVersion !== dashboardOverviewVersionRef.current
+        if (overviewStale) {
           return
         }
         setDashboardSummaryWindows(null)
@@ -1773,7 +1795,19 @@ function AdminDashboard(): JSX.Element {
         }
       }
     },
-    [loadAllTokensForDashboard, loadExhaustedKeysForDashboard],
+    [applyDashboardSignalsSnapshot, loadDashboardSignalsSnapshot, loadExhaustedKeysForDashboard],
+  )
+
+  const refreshDashboardSignals = useCallback(
+    async (signal?: AbortSignal) => {
+      const requestVersion = ++dashboardSignalsVersionRef.current
+      const snapshot = await loadDashboardSignalsSnapshot(signal)
+      if (signal?.aborted || requestVersion !== dashboardSignalsVersionRef.current) {
+        return
+      }
+      applyDashboardSignalsSnapshot(snapshot)
+    },
+    [applyDashboardSignalsSnapshot, loadDashboardSignalsSnapshot],
   )
 
   useEffect(() => {
@@ -2413,6 +2447,31 @@ function AdminDashboard(): JSX.Element {
     }
   }, [sseConnected, loadData, loadDashboardOverview, route])
 
+  useEffect(() => {
+    if (!(route.name === 'module' && route.module === 'dashboard') || !sseConnected) {
+      if (dashboardSignalsTimerRef.current != null) {
+        window.clearInterval(dashboardSignalsTimerRef.current)
+        dashboardSignalsTimerRef.current = null
+      }
+      return
+    }
+
+    if (dashboardSignalsTimerRef.current == null) {
+      dashboardSignalsTimerRef.current = window.setInterval(() => {
+        const controller = new AbortController()
+        void refreshDashboardSignals(controller.signal)
+          .finally(() => controller.abort())
+      }, REFRESH_INTERVAL_MS) as unknown as number
+    }
+
+    return () => {
+      if (dashboardSignalsTimerRef.current != null) {
+        window.clearInterval(dashboardSignalsTimerRef.current)
+        dashboardSignalsTimerRef.current = null
+      }
+    }
+  }, [refreshDashboardSignals, route, sseConnected])
+
   // Detect whether the collapsed token groups row overflows horizontally.
   // If everything fits in a single line, we hide the "more" toggle button.
   useEffect(() => {
@@ -2448,9 +2507,13 @@ function AdminDashboard(): JSX.Element {
         // Trigger fallback polling; attempt reconnect automatically
         setSseConnected(false)
       }
+      es.addEventListener('degraded', () => {
+        setSseConnected(false)
+      })
       es.addEventListener('snapshot', (ev: MessageEvent) => {
         try {
           const data = JSON.parse(ev.data) as DashboardSnapshotEvent
+          setSseConnected(true)
           setSummary(data.summary)
           if (routeRef.current.name === 'module' && routeRef.current.module === 'dashboard') {
             dashboardOverviewVersionRef.current += 1

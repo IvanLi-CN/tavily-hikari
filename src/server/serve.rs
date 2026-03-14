@@ -111,6 +111,10 @@ pub async fn serve(
             "/api/settings/forward-proxy/validate",
             post(post_forward_proxy_candidate_validation),
         )
+        .route(
+            "/api/stats/forward-proxy/summary",
+            get(get_forward_proxy_dashboard_summary),
+        )
         .route("/api/stats/forward-proxy", get(get_forward_proxy_live_stats))
         .route("/api/public/metrics", get(get_public_metrics))
         .route("/api/keys", get(list_keys))

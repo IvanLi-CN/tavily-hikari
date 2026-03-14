@@ -476,35 +476,30 @@ async fn sse_dashboard(
     let state = state.clone();
 
     let stream = stream! {
-        // send initial snapshot regardless
-        let Some(event) = build_snapshot_event(&state).await else {
-            return;
-        };
-        // prime signatures from payload
-        let (mut last_sig, mut last_log_id) = match compute_signatures(&state).await {
-            Ok((sig, latest_id)) => (sig, latest_id),
-            Err(()) => return,
-        };
-        yield Ok(event);
+        let mut last_sig: Option<SummarySig> = None;
+        let mut last_log_id: Option<i64> = None;
 
         loop {
-            // detect changes
             match compute_signatures(&state).await {
                 Ok((sig, latest_id)) => {
-                    if sig != last_sig || latest_id != last_log_id {
-                        let Some(event) = build_snapshot_event(&state).await else {
-                            break;
-                        };
-                        yield Ok(event);
-                        last_sig = sig;
-                        last_log_id = latest_id;
+                    if last_sig.is_none() || sig != last_sig || latest_id != last_log_id {
+                        if let Some(event) = build_snapshot_event(&state).await {
+                            yield Ok(event);
+                            last_sig = sig;
+                            last_log_id = latest_id;
+                        } else {
+                            let degraded = Event::default().event("degraded").data("{}");
+                            yield Ok(degraded);
+                        }
                     } else {
-                        // heartbeat to keep connections alive on proxies
                         let keep = Event::default().event("ping").data("{}");
                         yield Ok(keep);
                     }
                 }
-                Err(_e) => break,
+                Err(_e) => {
+                    let degraded = Event::default().event("degraded").data("{}");
+                    yield Ok(degraded);
+                }
             }
 
             tokio::time::sleep(Duration::from_secs(2)).await;

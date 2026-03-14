@@ -2955,6 +2955,10 @@ mod tests {
                 "/api/settings/forward-proxy/validate",
                 post(post_forward_proxy_candidate_validation),
             )
+            .route(
+                "/api/stats/forward-proxy/summary",
+                get(get_forward_proxy_dashboard_summary),
+            )
             .route("/api/stats/forward-proxy", get(get_forward_proxy_live_stats))
             .with_state(state);
 
@@ -5749,6 +5753,46 @@ mod tests {
         .execute(&pool)
         .await
         .expect("insert legacy api key");
+
+        sqlx::query(
+            r#"
+            CREATE TABLE request_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                api_key_id TEXT NOT NULL,
+                auth_token_id TEXT,
+                method TEXT NOT NULL,
+                path TEXT NOT NULL,
+                query TEXT,
+                status_code INTEGER,
+                tavily_status_code INTEGER,
+                error_message TEXT,
+                result_status TEXT NOT NULL DEFAULT 'unknown',
+                request_body BLOB,
+                response_body BLOB,
+                forwarded_headers TEXT,
+                dropped_headers TEXT,
+                created_at INTEGER NOT NULL
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create legacy request_logs");
+
+        sqlx::query(
+            r#"
+            INSERT INTO request_logs (
+                api_key_id, auth_token_id, method, path, query, status_code, tavily_status_code,
+                error_message, result_status, request_body, response_body, forwarded_headers,
+                dropped_headers, created_at
+            ) VALUES (?, NULL, 'POST', '/search', NULL, 200, 200, NULL, 'success', NULL, NULL, '', '', ?)
+            "#,
+        )
+        .bind("k123")
+        .bind(180_i64)
+        .execute(&pool)
+        .await
+        .expect("insert legacy request log");
         drop(pool);
 
         let _proxy = TavilyProxy::with_endpoint(
@@ -5779,7 +5823,7 @@ mod tests {
         .await
         .expect("read created_at");
 
-        assert_eq!(created_at, 360);
+        assert_eq!(created_at, 180);
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -12316,6 +12360,27 @@ mod tests {
                 .as_array()
                 .is_some_and(|nodes| !nodes.is_empty()),
             "stats should include at least one node",
+        );
+
+        let summary = client
+            .get(format!("http://{addr}/api/stats/forward-proxy/summary"))
+            .send()
+            .await
+            .expect("get dashboard summary");
+        assert_eq!(summary.status(), StatusCode::OK);
+        let summary_body = summary
+            .json::<serde_json::Value>()
+            .await
+            .expect("decode dashboard summary");
+        assert!(
+            summary_body["totalNodes"].as_i64().is_some_and(|value| value >= 1),
+            "dashboard summary should expose total node count",
+        );
+        assert!(
+            summary_body["availableNodes"]
+                .as_i64()
+                .is_some_and(|value| value >= 0),
+            "dashboard summary should expose available node count",
         );
 
         let _ = std::fs::remove_file(db_path);
