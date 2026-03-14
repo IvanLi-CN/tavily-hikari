@@ -667,17 +667,33 @@ function ForwardProxyCandidateDialog({
             {dialogIsSubscription ? (
               <Input
                 id="forward-proxy-dialog-input"
+                type="url"
+                name="subscription-source-url"
                 value={dialogInput}
                 readOnly={previewMode}
+                autoComplete="off"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                inputMode="url"
+                data-1p-ignore="true"
+                data-op-ignore="true"
                 placeholder={strings.config.subscriptionsPlaceholder}
                 onChange={(event) => onInputChange(event.target.value)}
               />
             ) : (
               <Textarea
                 id="forward-proxy-dialog-input"
+                name="manual-proxy-nodes"
                 rows={7}
                 value={dialogInput}
                 readOnly={previewMode}
+                autoComplete="off"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                data-1p-ignore="true"
+                data-op-ignore="true"
                 placeholder={strings.config.manualPlaceholder}
                 onChange={(event) => onInputChange(event.target.value)}
               />
