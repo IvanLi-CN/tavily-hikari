@@ -35,7 +35,7 @@ use sha2::{Digest, Sha256};
 use url::form_urlencoded;
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SummarySig {
-    summary: (i64, i64, i64, i64, i64, i64, i64, Option<i64>),
+    summary: (i64, i64, i64, i64, i64, i64, i64, Option<i64>, i64, i64),
     today: (i64, i64, i64, i64),
     yesterday: (i64, i64, i64, i64),
     month: (i64, i64, i64, i64, i64, i64),

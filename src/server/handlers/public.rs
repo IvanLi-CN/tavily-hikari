@@ -705,6 +705,8 @@ async fn compute_signatures(
             summary.exhausted_keys,
             summary.quarantined_keys,
             summary.last_activity,
+            summary.total_quota_limit,
+            summary.total_quota_remaining,
         ),
         today: (
             today.total_requests,

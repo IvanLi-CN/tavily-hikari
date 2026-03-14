@@ -5931,6 +5931,158 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn admin_dashboard_sse_snapshot_refreshes_when_quota_totals_change() {
+        let db_path = temp_db_path("admin-dashboard-snapshot-quota-change");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-admin-dashboard-quota".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let key_id = proxy
+            .list_api_key_metrics()
+            .await
+            .expect("list api key metrics")
+            .into_iter()
+            .next()
+            .expect("seeded key exists")
+            .id;
+
+        let admin_password = "admin-dashboard-quota-password";
+        let admin_addr = spawn_builtin_keys_admin_server(proxy, admin_password).await;
+        let client = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build client");
+
+        let login_resp = client
+            .post(format!("http://{}/api/admin/login", admin_addr))
+            .json(&serde_json::json!({ "password": admin_password }))
+            .send()
+            .await
+            .expect("admin login");
+        assert_eq!(login_resp.status(), reqwest::StatusCode::OK);
+        let admin_cookie = find_cookie_pair(login_resp.headers(), BUILTIN_ADMIN_COOKIE_NAME)
+            .expect("admin session cookie");
+
+        let mut events_resp = client
+            .get(format!("http://{}/api/events", admin_addr))
+            .header(reqwest::header::COOKIE, admin_cookie)
+            .send()
+            .await
+            .expect("admin events request");
+        assert_eq!(events_resp.status(), reqwest::StatusCode::OK);
+
+        let mut first_text = String::new();
+        while !first_text.contains("\n\n") {
+            let chunk = events_resp
+                .chunk()
+                .await
+                .expect("read initial event chunk")
+                .expect("initial snapshot chunk exists");
+            first_text.push_str(std::str::from_utf8(&chunk).expect("initial snapshot chunk utf8"));
+        }
+
+        let initial_snapshot = first_text
+            .split("\n\n")
+            .find(|chunk| chunk.contains("event: snapshot"))
+            .expect("initial snapshot event");
+        let initial_data = initial_snapshot
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .expect("initial snapshot data");
+        let initial_json: serde_json::Value =
+            serde_json::from_str(initial_data).expect("initial snapshot payload json");
+        assert_eq!(
+            initial_json
+                .pointer("/siteStatus/remainingQuota")
+                .and_then(|value| value.as_i64()),
+            Some(0)
+        );
+
+        let options = SqliteConnectOptions::new()
+            .filename(&db_str)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open db pool");
+
+        sqlx::query(
+            "UPDATE api_keys SET quota_limit = ?, quota_remaining = ?, quota_synced_at = ? WHERE id = ?",
+        )
+        .bind(2_000_i64)
+        .bind(1_234_i64)
+        .bind(Utc::now().timestamp())
+        .bind(&key_id)
+        .execute(&pool)
+        .await
+        .expect("update quota totals");
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+        let mut buffer = String::new();
+        let mut refreshed_snapshot: Option<serde_json::Value> = None;
+        while tokio::time::Instant::now() < deadline {
+            let chunk = tokio::time::timeout(Duration::from_secs(3), events_resp.chunk())
+                .await
+                .expect("await refreshed event chunk in time")
+                .expect("read refreshed event chunk")
+                .expect("refreshed event chunk exists");
+            buffer.push_str(std::str::from_utf8(&chunk).expect("refreshed event chunk utf8"));
+            while let Some((event_chunk, rest)) = buffer.split_once("\n\n") {
+                let event_chunk = event_chunk.to_string();
+                buffer = rest.to_string();
+                if !event_chunk.contains("event: snapshot") {
+                    continue;
+                }
+                let Some(data) = event_chunk
+                    .lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                else {
+                    continue;
+                };
+                let payload: serde_json::Value =
+                    serde_json::from_str(data).expect("refreshed snapshot payload json");
+                if payload
+                    .pointer("/siteStatus/remainingQuota")
+                    .and_then(|value| value.as_i64())
+                    == Some(1_234)
+                {
+                    refreshed_snapshot = Some(payload);
+                    break;
+                }
+            }
+            if refreshed_snapshot.is_some() {
+                break;
+            }
+        }
+
+        let refreshed_snapshot = refreshed_snapshot.expect("quota snapshot refresh");
+        assert_eq!(
+            refreshed_snapshot
+                .pointer("/siteStatus/remainingQuota")
+                .and_then(|value| value.as_i64()),
+            Some(1_234)
+        );
+        assert_eq!(
+            refreshed_snapshot
+                .pointer("/siteStatus/totalQuotaLimit")
+                .and_then(|value| value.as_i64()),
+            Some(2_000)
+        );
+
+        drop(events_resp);
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn admin_user_management_lists_details_and_updates_quota() {
         let db_path = temp_db_path("admin-users");
         let db_str = db_path.to_string_lossy().to_string();

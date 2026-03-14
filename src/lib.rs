@@ -1140,14 +1140,14 @@ impl TavilyProxy {
     pub async fn get_forward_proxy_dashboard_summary(
         &self,
     ) -> Result<ForwardProxyDashboardSummary, ProxyError> {
-        let stats = self.get_forward_proxy_live_stats().await?;
+        let manager = self.forward_proxy.lock().await;
+        let runtime_rows = manager.snapshot_runtime();
         Ok(ForwardProxyDashboardSummary {
-            available_nodes: stats
-                .nodes
+            available_nodes: runtime_rows
                 .iter()
-                .filter(|node| node.available && !node.penalized)
+                .filter(|node| node.available && !node.is_penalized())
                 .count() as i64,
-            total_nodes: stats.nodes.len() as i64,
+            total_nodes: runtime_rows.len() as i64,
         })
     }
 
