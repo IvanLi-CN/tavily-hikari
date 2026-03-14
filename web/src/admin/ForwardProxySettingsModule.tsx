@@ -616,6 +616,7 @@ function mapValidationErrorLabel(
 
 function ForwardProxyCandidateDialog({
   strings,
+  previewMode,
   dialogIsSubscription,
   dialogInput,
   dialogError,
@@ -631,6 +632,7 @@ function ForwardProxyCandidateDialog({
   onAddManualEntry,
 }: {
   strings: AdminTranslations['proxySettings']
+  previewMode: boolean
   dialogIsSubscription: boolean
   dialogInput: string
   dialogError: string | null
@@ -646,7 +648,7 @@ function ForwardProxyCandidateDialog({
   onAddManualEntry: (entry: ForwardProxyValidationEntry) => void
 }): JSX.Element {
   return (
-    <div className="flex min-h-0 flex-col">
+    <>
       <DialogHeader className="shrink-0 px-6 pt-6">
         <DialogTitle>
           {dialogIsSubscription ? strings.config.subscriptionDialogTitle : strings.config.manualDialogTitle}
@@ -666,6 +668,7 @@ function ForwardProxyCandidateDialog({
               <Input
                 id="forward-proxy-dialog-input"
                 value={dialogInput}
+                readOnly={previewMode}
                 placeholder={strings.config.subscriptionsPlaceholder}
                 onChange={(event) => onInputChange(event.target.value)}
               />
@@ -674,6 +677,7 @@ function ForwardProxyCandidateDialog({
                 id="forward-proxy-dialog-input"
                 rows={7}
                 value={dialogInput}
+                readOnly={previewMode}
                 placeholder={strings.config.manualPlaceholder}
                 onChange={(event) => onInputChange(event.target.value)}
               />
@@ -737,7 +741,7 @@ function ForwardProxyCandidateDialog({
                           type="button"
                           size="xs"
                           onClick={() => onAddManualEntry(entry)}
-                          disabled={!entry.result.ok || saving}
+                          disabled={previewMode || !entry.result.ok || saving}
                         >
                           {strings.config.add}
                         </Button>
@@ -779,23 +783,36 @@ function ForwardProxyCandidateDialog({
       </div>
 
       <DialogFooter className="mt-0 shrink-0 border-t border-border/70 bg-background/95 px-6 pb-6 pt-4 backdrop-blur supports-[backdrop-filter]:bg-background/88">
-        <Button type="button" variant="ghost" onClick={onClose} disabled={dialogValidating || saving}>
+        <Button type="button" variant="ghost" onClick={onClose} disabled={previewMode || dialogValidating || saving}>
           {strings.config.cancel}
         </Button>
-        <Button type="button" variant="secondary" onClick={onValidate} disabled={dialogValidating || saving}>
+        <Button
+          type="button"
+          variant="secondary"
+          onClick={onValidate}
+          disabled={previewMode || dialogValidating || saving}
+        >
           {strings.config.validate}
         </Button>
         {dialogIsSubscription ? (
-          <Button type="button" onClick={onAddSubscription} disabled={dialogAvailableResults.length === 0 || saving}>
+          <Button
+            type="button"
+            onClick={onAddSubscription}
+            disabled={previewMode || dialogAvailableResults.length === 0 || saving}
+          >
             {strings.config.add}
           </Button>
         ) : (
-          <Button type="button" onClick={onAddManualBatch} disabled={dialogAvailableResults.length === 0 || saving}>
+          <Button
+            type="button"
+            onClick={onAddManualBatch}
+            disabled={previewMode || dialogAvailableResults.length === 0 || saving}
+          >
             {strings.config.importAvailable.replace('{count}', formatNumber(dialogAvailableResults.length))}
           </Button>
         )}
       </DialogFooter>
-    </div>
+    </>
   )
 }
 
@@ -1467,9 +1484,10 @@ export default function ForwardProxySettingsModule({
       </Card>
 
       <Dialog open={activeDialogKind != null} onOpenChange={(open) => (!open ? closeDialog() : undefined)}>
-        <DialogContent className="max-w-3xl gap-0 overflow-hidden border-border/90 bg-background p-0 shadow-2xl sm:max-h-[min(calc(100dvh-4rem),calc(100vh-4rem))]">
+        <DialogContent className="max-h-[min(calc(100dvh-2rem),calc(100vh-2rem))] max-w-3xl grid-rows-[auto,minmax(0,1fr),auto] gap-0 overflow-hidden border-border/90 bg-background p-0 shadow-2xl sm:max-h-[min(calc(100dvh-4rem),calc(100vh-4rem))]">
           <ForwardProxyCandidateDialog
             strings={strings}
+            previewMode={isDialogPreview}
             dialogIsSubscription={dialogIsSubscription}
             dialogInput={activeDialogInput}
             dialogError={activeDialogError}
