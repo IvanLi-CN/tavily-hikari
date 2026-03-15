@@ -18,9 +18,11 @@
 
 - 批量导入时按行智能提取首个 `tvly-dev-*` key 与首个公网 IP，兼容空格、`|`、`;`、`,` 等混合文本。
 - 在 `api_keys` 中持久化 `registration_ip` 与 `registration_region`，并在 key 列表 / 详情返回。
+- 导入时若校验阶段已经选中了代理节点，即使没有注册 IP / 地区，也要把该代理亲和结果持久化到 `forward_proxy_key_affinity`。
 - 列表支持 `registration_ip` 精确筛选与 `registration_region` 多选 facets 筛选，且保持 URL / 分页上下文。
 - 地区解析遵循 `xp` 的 `country.is` 思路：批量解析、短暂失败回退、不阻断导入。
 - 导入校验弹窗中的映射节点名称按匹配来源着色：注册 IP=`success`、同地区=`info`、其他=`warning`。
+- 同地区命中多个代理节点时，主节点选择要继续遵循既有 ranked order，避免导入结果异常集中到单一节点。
 
 ### Non-goals
 
@@ -28,7 +30,7 @@
 - 不新增手工编辑注册 IP / 地区的后台入口。
 - 不支持 CIDR、模糊 IP 搜索或自定义 geo provider 配置页。
 - 不扩展校验对话框为 metadata 检查器；校验流程仍只验证 key 可用性。
-- 不改动代理选点优先级，也不把匹配来源持久化到数据库。
+- 不改动 `registration_ip > same_region > preferred_hint > fallback` 的代理选点优先级，也不新增新的匹配来源持久化字段。
 
 ## 范围（Scope）
 
@@ -133,6 +135,10 @@
   When 打开列表
   Then 只返回完全匹配该 IP 且地区属于所选 region facets 的 key，并返回全量 region facets 计数。
 
+- Given 导入项只携带 `assigned_proxy_key`
+  When 创建、恢复或刷新 key
+  Then `forward_proxy_key_affinity.primary_proxy_key` 仍会持久化为校验阶段选中的节点。
+
 - Given 校验结果返回 `assigned_proxy_match_kind=registration_ip`
   When 打开导入校验弹窗的注册信息 bubble
   Then 节点名称文本使用成功色，且不影响其它字段颜色。
@@ -140,6 +146,10 @@
 - Given 校验结果返回 `assigned_proxy_match_kind=same_region`
   When 打开导入校验弹窗的注册信息 bubble
   Then 节点名称文本使用信息色。
+
+- Given 同地区存在多个可选代理节点
+  When 校验或导入选择主节点
+  Then 只在同地区命中集合内按既有 ranked order 取首个节点，不会因为 geo 候选扫描顺序而固定粘在单一节点上。
 
 - Given 校验结果返回 `assigned_proxy_match_kind=other` 或缺失
   When 打开导入校验弹窗的注册信息 bubble

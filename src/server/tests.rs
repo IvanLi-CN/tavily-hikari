@@ -4215,6 +4215,95 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn api_keys_batch_structured_items_persist_assigned_proxy_hint_without_registration_metadata(
+    ) {
+        let db_path = temp_db_path("keys-batch-assigned-proxy-hint");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        proxy
+            .update_forward_proxy_settings(
+                ForwardProxySettings {
+                    proxy_urls: vec![
+                        "http://18.183.246.69:8080".to_string(),
+                        "http://1.1.1.1:8080".to_string(),
+                    ],
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: false,
+                },
+                false,
+            )
+            .await
+            .expect("proxy settings updated");
+
+        let forward_auth = ForwardAuthConfig::new(
+            Some(HeaderName::from_static("x-forward-user")),
+            Some("admin".to_string()),
+            None,
+            None,
+        );
+        let addr = spawn_keys_admin_server(proxy, forward_auth, false).await;
+
+        let client = Client::new();
+        let url = format!("http://{}/api/keys/batch", addr);
+        let resp = client
+            .post(url)
+            .header("x-forward-user", "admin")
+            .json(&serde_json::json!({
+                "items": [
+                    {
+                        "api_key": "tvly-assigned-proxy-hint",
+                        "assigned_proxy_key": "http://1.1.1.1:8080"
+                    }
+                ]
+            }))
+            .send()
+            .await
+            .expect("request succeeds");
+
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+        let options = SqliteConnectOptions::new()
+            .filename(&db_str)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open db pool");
+
+        let row: (Option<String>, Option<String>, Option<String>) = sqlx::query_as(
+            r#"
+            SELECT api_keys.registration_ip,
+                   api_keys.registration_region,
+                   forward_proxy_key_affinity.primary_proxy_key
+              FROM api_keys
+              LEFT JOIN forward_proxy_key_affinity
+                ON forward_proxy_key_affinity.key_id = api_keys.id
+             WHERE api_keys.api_key = ?
+            "#,
+        )
+        .bind("tvly-assigned-proxy-hint")
+        .fetch_one(&pool)
+        .await
+        .expect("hint-only key exists");
+        assert!(row.0.is_none(), "hint-only batch import should not store registration_ip");
+        assert!(
+            row.1.is_none(),
+            "hint-only batch import should not fabricate registration_region"
+        );
+        assert_eq!(row.2.as_deref(), Some("http://1.1.1.1:8080"));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn api_keys_batch_updates_existing_registration_metadata_without_overriding_group() {
         let db_path = temp_db_path("keys-batch-update-existing-registration");
         let db_str = db_path.to_string_lossy().to_string();

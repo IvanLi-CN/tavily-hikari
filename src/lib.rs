@@ -2960,31 +2960,53 @@ impl TavilyProxy {
                 .find(|endpoint| endpoint.key == preferred_key)
                 .cloned()
         });
-
-        let exact_match = normalized_registration_ip
+        let select_ranked_geo_match = |matching_keys: &HashSet<String>| {
+            primary_pool
+                .iter()
+                .find(|endpoint| matching_keys.contains(&endpoint.key))
+                .cloned()
+                .or_else(|| {
+                    ranked_any
+                        .iter()
+                        .find(|endpoint| matching_keys.contains(&endpoint.key))
+                        .cloned()
+                })
+        };
+        let exact_match_keys = normalized_registration_ip
             .as_ref()
-            .and_then(|registration_ip| {
+            .map(|registration_ip| {
                 geo_candidates
                     .iter()
-                    .find(|candidate| candidate.host_ips.iter().any(|ip| ip == registration_ip))
-                    .map(|candidate| candidate.endpoint.clone())
-            });
-        let region_match =
-            normalized_registration_region
-                .as_ref()
-                .and_then(|registration_region| {
-                    geo_candidates
-                        .iter()
-                        .find(|candidate| {
-                            candidate
-                                .regions
-                                .iter()
-                                .any(|region| region == registration_region)
-                        })
-                        .map(|candidate| candidate.endpoint.clone())
-                });
-        let exact_match_key = exact_match.as_ref().map(|candidate| candidate.key.clone());
-        let region_match_key = region_match.as_ref().map(|candidate| candidate.key.clone());
+                    .filter(|candidate| candidate.host_ips.iter().any(|ip| ip == registration_ip))
+                    .map(|candidate| candidate.endpoint.key.clone())
+                    .collect::<HashSet<_>>()
+            })
+            .unwrap_or_default();
+        let region_match_keys = normalized_registration_region
+            .as_ref()
+            .map(|registration_region| {
+                geo_candidates
+                    .iter()
+                    .filter(|candidate| {
+                        candidate
+                            .regions
+                            .iter()
+                            .any(|region| region == registration_region)
+                    })
+                    .map(|candidate| candidate.endpoint.key.clone())
+                    .collect::<HashSet<_>>()
+            })
+            .unwrap_or_default();
+        let exact_match = if exact_match_keys.is_empty() {
+            None
+        } else {
+            select_ranked_geo_match(&exact_match_keys)
+        };
+        let region_match = if region_match_keys.is_empty() {
+            None
+        } else {
+            select_ranked_geo_match(&region_match_keys)
+        };
 
         let primary = exact_match
             .or(region_match)
@@ -2993,15 +3015,9 @@ impl TavilyProxy {
             .or_else(|| ranked_any.first().cloned());
         let primary_proxy_key = primary.as_ref().map(|endpoint| endpoint.key.clone());
         let primary_match_kind = primary.as_ref().map(|endpoint| {
-            if exact_match_key
-                .as_ref()
-                .is_some_and(|candidate_key| candidate_key == &endpoint.key)
-            {
+            if exact_match_keys.contains(&endpoint.key) {
                 AssignedProxyMatchKind::RegistrationIp
-            } else if region_match_key
-                .as_ref()
-                .is_some_and(|candidate_key| candidate_key == &endpoint.key)
-            {
+            } else if region_match_keys.contains(&endpoint.key) {
                 AssignedProxyMatchKind::SameRegion
             } else {
                 AssignedProxyMatchKind::Other
@@ -5415,7 +5431,10 @@ impl TavilyProxy {
         geo_origin: &str,
         preferred_primary_proxy_key: Option<&str>,
     ) -> Result<(String, ApiKeyUpsertStatus), ProxyError> {
-        let proxy_affinity = if registration_ip.is_some() || registration_region.is_some() {
+        let proxy_affinity = if registration_ip.is_some()
+            || registration_region.is_some()
+            || preferred_primary_proxy_key.is_some()
+        {
             Some(
                 self.select_proxy_affinity_for_registration_with_hint(
                     api_key,
@@ -13864,9 +13883,7 @@ impl KeyStore {
                     }
                     sql.bind(&id).execute(&mut *tx).await?;
                 }
-                if registration_ip.is_some()
-                    && let Some(proxy_affinity) = proxy_affinity
-                {
+                if let Some(proxy_affinity) = proxy_affinity {
                     sqlx::query(
                         r#"
                         INSERT INTO forward_proxy_key_affinity (key_id, primary_proxy_key, secondary_proxy_key, updated_at)
@@ -13917,9 +13934,7 @@ impl KeyStore {
             .bind(now)
             .execute(&mut *tx)
             .await?;
-            if registration_ip.is_some()
-                && let Some(proxy_affinity) = proxy_affinity
-            {
+            if let Some(proxy_affinity) = proxy_affinity {
                 sqlx::query(
                     r#"
                     INSERT INTO forward_proxy_key_affinity (key_id, primary_proxy_key, secondary_proxy_key, updated_at)
@@ -18247,6 +18262,194 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
             created_affinity.0.as_deref(),
             Some("http://1.1.1.1:8080"),
             "fallback imports should preserve the proxy chosen during validation"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn add_or_undelete_key_with_hint_only_proxy_affinity_persists_across_upsert_paths() {
+        let db_path = temp_db_path("proxy-affinity-hint-only-upsert");
+        let db_str = db_path.to_string_lossy().to_string();
+        let geo_addr = spawn_api_key_geo_mock_server().await;
+        let geo_origin = format!("http://{geo_addr}/geo");
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        {
+            let mut manager = proxy.forward_proxy.lock().await;
+            manager.apply_settings(
+                ForwardProxySettings {
+                    proxy_urls: vec![
+                        "http://18.183.246.69:8080".to_string(),
+                        "http://1.1.1.1:8080".to_string(),
+                    ],
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: false,
+                }
+                .normalized(),
+            );
+        }
+
+        let (key_id, created_status) = proxy
+            .add_or_undelete_key_with_status_in_group_and_registration_proxy_affinity_hint(
+                "tvly-hint-only",
+                Some("alpha"),
+                None,
+                None,
+                &geo_origin,
+                Some("http://1.1.1.1:8080"),
+            )
+            .await
+            .expect("key created with hint-only affinity");
+        assert_eq!(created_status, ApiKeyUpsertStatus::Created);
+
+        let created_affinity: (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT primary_proxy_key, secondary_proxy_key FROM forward_proxy_key_affinity WHERE key_id = ?",
+        )
+        .bind(&key_id)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("load created hint-only affinity");
+        assert_eq!(created_affinity.0.as_deref(), Some("http://1.1.1.1:8080"));
+
+        let (same_key_id, existed_status) = proxy
+            .add_or_undelete_key_with_status_in_group_and_registration_proxy_affinity_hint(
+                "tvly-hint-only",
+                Some("beta"),
+                None,
+                None,
+                &geo_origin,
+                Some("http://18.183.246.69:8080"),
+            )
+            .await
+            .expect("key refreshed with hint-only affinity");
+        assert_eq!(same_key_id, key_id);
+        assert_eq!(existed_status, ApiKeyUpsertStatus::Existed);
+
+        let refreshed_affinity: (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT primary_proxy_key, secondary_proxy_key FROM forward_proxy_key_affinity WHERE key_id = ?",
+        )
+        .bind(&key_id)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("load refreshed hint-only affinity");
+        assert_eq!(
+            refreshed_affinity.0.as_deref(),
+            Some("http://18.183.246.69:8080")
+        );
+
+        proxy
+            .soft_delete_key_by_id(&key_id)
+            .await
+            .expect("soft delete key before undelete");
+
+        let (_, undeleted_status) = proxy
+            .add_or_undelete_key_with_status_in_group_and_registration_proxy_affinity_hint(
+                "tvly-hint-only",
+                Some("gamma"),
+                None,
+                None,
+                &geo_origin,
+                Some("http://1.1.1.1:8080"),
+            )
+            .await
+            .expect("key undeleted with hint-only affinity");
+        assert_eq!(undeleted_status, ApiKeyUpsertStatus::Undeleted);
+
+        let undeleted_affinity: (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT primary_proxy_key, secondary_proxy_key FROM forward_proxy_key_affinity WHERE key_id = ?",
+        )
+        .bind(&key_id)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("load undeleted hint-only affinity");
+        assert_eq!(undeleted_affinity.0.as_deref(), Some("http://1.1.1.1:8080"));
+
+        let row: (Option<i64>, Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT deleted_at, registration_ip, registration_region FROM api_keys WHERE id = ?",
+        )
+        .bind(&key_id)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("load undeleted key");
+        assert!(row.0.is_none(), "undelete should clear deleted_at");
+        assert!(
+            row.1.is_none() && row.2.is_none(),
+            "hint-only imports should not fabricate registration metadata"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn select_proxy_affinity_for_same_region_uses_ranked_match_within_region_candidates() {
+        let db_path = temp_db_path("proxy-affinity-region-ranked-match");
+        let db_str = db_path.to_string_lossy().to_string();
+        let geo_addr = spawn_api_key_geo_mock_server().await;
+        let geo_origin = format!("http://{geo_addr}/geo");
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        {
+            let mut manager = proxy.forward_proxy.lock().await;
+            manager.apply_settings(
+                ForwardProxySettings {
+                    proxy_urls: vec![
+                        "http://1.1.1.1:8080".to_string(),
+                        "http://1.0.0.1:8080".to_string(),
+                        "http://18.183.246.69:8080".to_string(),
+                    ],
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: false,
+                }
+                .normalized(),
+            );
+        }
+
+        let (subject, expected_primary) = {
+            let mut manager = proxy.forward_proxy.lock().await;
+            manager.ensure_non_zero_weight();
+            (0..256usize)
+                .filter_map(|index| {
+                    let subject = format!("subject:ranked-region:{index}");
+                    let ranked =
+                        manager.rank_candidates_for_subject(&subject, &HashSet::new(), false, 3);
+                    let first_hk = ranked.into_iter().find(|endpoint| {
+                        matches!(
+                            endpoint.key.as_str(),
+                            "http://1.1.1.1:8080" | "http://1.0.0.1:8080"
+                        )
+                    })?;
+                    (first_hk.key == "http://1.0.0.1:8080").then_some((subject, first_hk.key))
+                })
+                .next()
+                .expect("find subject whose ranked HK candidate is not the first configured node")
+        };
+
+        let (affinity, preview) = proxy
+            .select_proxy_affinity_preview_for_registration_with_hint(
+                &subject,
+                &geo_origin,
+                Some("103.232.214.107"),
+                Some("HK"),
+                Some("http://1.1.1.1:8080"),
+            )
+            .await
+            .expect("same-region proxy affinity");
+        assert_eq!(
+            affinity.primary_proxy_key.as_deref(),
+            Some(expected_primary.as_str()),
+            "same-region selection should stay inside the region-matched set and follow ranked order"
+        );
+        assert_eq!(
+            preview.as_ref().map(|item| item.match_kind),
+            Some(AssignedProxyMatchKind::SameRegion),
+            "same-region ranked picks should still report same_region"
         );
 
         let _ = std::fs::remove_file(db_path);
