@@ -4,7 +4,7 @@
 
 - Status: 已完成（快车道）
 - Created: 2026-03-12
-- Last: 2026-03-15
+- Last: 2026-03-16
 
 ## 背景 / 问题陈述
 
@@ -52,6 +52,7 @@
 - `GET /api/settings` 返回 `forwardProxy`，并新增 `PUT /api/settings/forward-proxy`、`POST /api/settings/forward-proxy/validate`、`GET /api/stats/forward-proxy`。
 - settings 合约保持 `proxyUrls`、`subscriptionUrls`、`subscriptionUpdateIntervalSecs`、`insertDirect` 字段，并返回 `nodes`。
 - subscription-only 配置可工作；share-link 节点依赖 Xray 时必须给出明确可诊断错误。
+- share-link 中的展示名若来自 URL fragment，必须先做一次性 percent-decoding，再进入 validation、runtime/live stats 与 API/UI 输出链路。
 - Tavily `/mcp`、`/api/tavily/search|extract|crawl|map|research`、`/api/tavily/research/:request_id`、管理员 key 校验、quota sync 全部经过 selected forward proxy。
 - 同一个上游 key 默认只使用主节点；主节点不可达时切到备用，备用承接成功后提升为主，并补新的备用节点。
 - `Direct` 默认只作为备用候选或无健康代理时的兜底主节点。
@@ -209,6 +210,7 @@ None
 
 - 2026-03-12: 创建规格，冻结 forward proxy parity、subscription-only、Xray share-link 与上游 key 主备亲和口径。
 - 2026-03-15: forward proxy parity 功能与 `/admin/proxy-settings` 收口完成；补齐订阅弹窗 footer 固定、成功/失败/overflow Storybook 复现、视觉证据与 PR-stage review-loop，规格状态切换为已完成（快车道）。
+- 2026-03-16: 明确 share-link URL fragment 展示名要做一次性 percent-decoding，避免中文或 emoji 节点名在 validation/live stats 中退化为编码串。
 
 ## 参考（References）
 

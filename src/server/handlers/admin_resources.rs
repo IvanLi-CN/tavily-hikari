@@ -2674,3 +2674,46 @@ async fn create_tokens_batch(
             StatusCode::INTERNAL_SERVER_ERROR
         })
 }
+
+#[cfg(test)]
+mod admin_resources_tests {
+    use super::*;
+
+    #[test]
+    fn build_forward_proxy_validation_view_preserves_readable_display_name() {
+        let view = build_forward_proxy_validation_view(tavily_hikari::ForwardProxyValidationResponse {
+            ok: true,
+            normalized_values: vec![
+                "vless://user@example.com:443?encryption=none#%E9%A6%99%E6%B8%AF%20%F0%9F%87%AD%F0%9F%87%B0"
+                    .to_string(),
+            ],
+            discovered_nodes: 1,
+            latency_ms: Some(42.0),
+            results: vec![tavily_hikari::ForwardProxyValidationProbeResult {
+                value: "subscription".to_string(),
+                normalized_value: Some(
+                    "vless://user@example.com:443?encryption=none#%E9%A6%99%E6%B8%AF%20%F0%9F%87%AD%F0%9F%87%B0"
+                        .to_string(),
+                ),
+                ok: true,
+                discovered_nodes: Some(1),
+                latency_ms: Some(42.0),
+                error_code: None,
+                message: "subscription validation succeeded".to_string(),
+                nodes: vec![tavily_hikari::ForwardProxyValidationNodeResult {
+                    display_name: "香港 🇭🇰".to_string(),
+                    protocol: "vless".to_string(),
+                    ok: true,
+                    latency_ms: Some(42.0),
+                    ip: Some("203.0.113.8".to_string()),
+                    location: Some("HK / HKG".to_string()),
+                    message: None,
+                }],
+            }],
+            first_error: None,
+        });
+
+        let payload = serde_json::to_value(&view).expect("serialize view");
+        assert_eq!(payload["nodes"][0]["displayName"].as_str(), Some("香港 🇭🇰"));
+    }
+}

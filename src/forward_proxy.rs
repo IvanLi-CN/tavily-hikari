@@ -2220,10 +2220,11 @@ fn parse_shadowsocks_forward_proxy(candidate: &str) -> Option<ParsedForwardProxy
 }
 
 fn proxy_display_name_from_url(url: &Url) -> Option<String> {
-    if let Some(fragment) = url.fragment()
-        && !fragment.trim().is_empty()
-    {
-        return Some(fragment.to_string());
+    if let Some(fragment) = url.fragment() {
+        let decoded = percent_decode_once_lossy(fragment);
+        if !decoded.trim().is_empty() {
+            return Some(decoded);
+        }
     }
     let host = url.host_str()?;
     let port = url.port_or_known_default()?;
@@ -3293,5 +3294,34 @@ rule-providers:
             reality.get("shortId").and_then(Value::as_str),
             Some("61446ca92a46cdc7")
         );
+    }
+
+    #[test]
+    fn parse_vless_forward_proxy_decodes_percent_encoded_display_name_once() {
+        let parsed = parse_vless_forward_proxy(
+            "vless://0688fa59-e971-4278-8c03-4b35821a71dc@example.com:443?encryption=none#%E9%A6%99%E6%B8%AF%20%F0%9F%87%AD%F0%9F%87%B0",
+        )
+        .expect("parse vless");
+
+        assert_eq!(parsed.display_name, "香港 🇭🇰");
+    }
+
+    #[test]
+    fn parse_trojan_forward_proxy_falls_back_when_fragment_decodes_to_blank() {
+        let parsed =
+            parse_trojan_forward_proxy("trojan://secret@example.com:8443?security=tls#%20%20")
+                .expect("parse trojan");
+
+        assert_eq!(parsed.display_name, "example.com:8443");
+    }
+
+    #[test]
+    fn parse_vless_forward_proxy_keeps_lossy_fragment_for_invalid_percent_encoding() {
+        let parsed = parse_vless_forward_proxy(
+            "vless://0688fa59-e971-4278-8c03-4b35821a71dc@example.com:443?encryption=none#broken%ZZname",
+        )
+        .expect("parse vless");
+
+        assert_eq!(parsed.display_name, "broken%ZZname");
     }
 }
