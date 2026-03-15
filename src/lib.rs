@@ -3080,6 +3080,52 @@ impl TavilyProxy {
         .map(|(record, _preview)| record)
     }
 
+    async fn select_proxy_affinity_for_hint_only(
+        &self,
+        subject: &str,
+        geo_origin: &str,
+        preferred_primary_proxy_key: &str,
+    ) -> forward_proxy::ForwardProxyAffinityRecord {
+        let (preferred_exists, candidate_limit) = {
+            let manager = self.forward_proxy.lock().await;
+            (
+                manager.endpoint(preferred_primary_proxy_key).is_some(),
+                manager.endpoints.len().max(1),
+            )
+        };
+        if !preferred_exists {
+            return forward_proxy::ForwardProxyAffinityRecord {
+                updated_at: Utc::now().timestamp(),
+                ..Default::default()
+            };
+        }
+
+        let mut secondary_exclude = HashSet::new();
+        secondary_exclude.insert(preferred_primary_proxy_key.to_string());
+        let secondary_proxy_key = self
+            .rank_registration_aware_candidates(
+                &format!("{subject}:secondary"),
+                RegistrationAffinityContext {
+                    geo_origin,
+                    registration_ip: None,
+                    registration_region: None,
+                },
+                &secondary_exclude,
+                true,
+                candidate_limit,
+            )
+            .await
+            .into_iter()
+            .next()
+            .map(|endpoint| endpoint.key);
+
+        forward_proxy::ForwardProxyAffinityRecord {
+            primary_proxy_key: Some(preferred_primary_proxy_key.to_string()),
+            secondary_proxy_key,
+            updated_at: Utc::now().timestamp(),
+        }
+    }
+
     async fn build_proxy_attempt_plan_for_record(
         &self,
         subject: &str,
@@ -5443,17 +5489,14 @@ impl TavilyProxy {
                 .await?,
             )
         } else if let Some(preferred_primary_proxy_key) = preferred_primary_proxy_key {
-            let affinity = self
-                .select_proxy_affinity_for_registration_with_hint(
+            Some(
+                self.select_proxy_affinity_for_hint_only(
                     api_key,
                     geo_origin,
-                    registration_ip,
-                    registration_region,
-                    Some(preferred_primary_proxy_key),
+                    preferred_primary_proxy_key,
                 )
-                .await?;
-            (affinity.primary_proxy_key.as_deref() == Some(preferred_primary_proxy_key))
-                .then_some(affinity)
+                .await,
+            )
         } else {
             None
         };
@@ -13893,21 +13936,30 @@ impl KeyStore {
                     sql.bind(&id).execute(&mut *tx).await?;
                 }
                 if let Some(proxy_affinity) = proxy_affinity {
-                    sqlx::query(
-                        r#"
-                        INSERT INTO forward_proxy_key_affinity (key_id, primary_proxy_key, secondary_proxy_key, updated_at)
-                        VALUES (?1, ?2, ?3, strftime('%s', 'now'))
-                        ON CONFLICT(key_id) DO UPDATE SET
-                            primary_proxy_key = excluded.primary_proxy_key,
-                            secondary_proxy_key = excluded.secondary_proxy_key,
-                            updated_at = strftime('%s', 'now')
-                        "#,
-                    )
-                    .bind(&id)
-                    .bind(proxy_affinity.primary_proxy_key.as_deref())
-                    .bind(proxy_affinity.secondary_proxy_key.as_deref())
-                    .execute(&mut *tx)
-                    .await?;
+                    if proxy_affinity.primary_proxy_key.is_none()
+                        && proxy_affinity.secondary_proxy_key.is_none()
+                    {
+                        sqlx::query("DELETE FROM forward_proxy_key_affinity WHERE key_id = ?")
+                            .bind(&id)
+                            .execute(&mut *tx)
+                            .await?;
+                    } else {
+                        sqlx::query(
+                            r#"
+                            INSERT INTO forward_proxy_key_affinity (key_id, primary_proxy_key, secondary_proxy_key, updated_at)
+                            VALUES (?1, ?2, ?3, strftime('%s', 'now'))
+                            ON CONFLICT(key_id) DO UPDATE SET
+                                primary_proxy_key = excluded.primary_proxy_key,
+                                secondary_proxy_key = excluded.secondary_proxy_key,
+                                updated_at = strftime('%s', 'now')
+                            "#,
+                        )
+                        .bind(&id)
+                        .bind(proxy_affinity.primary_proxy_key.as_deref())
+                        .bind(proxy_affinity.secondary_proxy_key.as_deref())
+                        .execute(&mut *tx)
+                        .await?;
+                    }
                 }
 
                 if deleted_at.is_some() {
@@ -13944,21 +13996,30 @@ impl KeyStore {
             .execute(&mut *tx)
             .await?;
             if let Some(proxy_affinity) = proxy_affinity {
-                sqlx::query(
-                    r#"
-                    INSERT INTO forward_proxy_key_affinity (key_id, primary_proxy_key, secondary_proxy_key, updated_at)
-                    VALUES (?1, ?2, ?3, strftime('%s', 'now'))
-                    ON CONFLICT(key_id) DO UPDATE SET
-                        primary_proxy_key = excluded.primary_proxy_key,
-                        secondary_proxy_key = excluded.secondary_proxy_key,
-                        updated_at = strftime('%s', 'now')
-                    "#,
-                )
-                .bind(&id)
-                .bind(proxy_affinity.primary_proxy_key.as_deref())
-                .bind(proxy_affinity.secondary_proxy_key.as_deref())
-                .execute(&mut *tx)
-                .await?;
+                if proxy_affinity.primary_proxy_key.is_none()
+                    && proxy_affinity.secondary_proxy_key.is_none()
+                {
+                    sqlx::query("DELETE FROM forward_proxy_key_affinity WHERE key_id = ?")
+                        .bind(&id)
+                        .execute(&mut *tx)
+                        .await?;
+                } else {
+                    sqlx::query(
+                        r#"
+                        INSERT INTO forward_proxy_key_affinity (key_id, primary_proxy_key, secondary_proxy_key, updated_at)
+                        VALUES (?1, ?2, ?3, strftime('%s', 'now'))
+                        ON CONFLICT(key_id) DO UPDATE SET
+                            primary_proxy_key = excluded.primary_proxy_key,
+                            secondary_proxy_key = excluded.secondary_proxy_key,
+                            updated_at = strftime('%s', 'now')
+                        "#,
+                    )
+                    .bind(&id)
+                    .bind(proxy_affinity.primary_proxy_key.as_deref())
+                    .bind(proxy_affinity.secondary_proxy_key.as_deref())
+                    .execute(&mut *tx)
+                    .await?;
+                }
             }
             Ok((id, ApiKeyUpsertStatus::Created))
         }
@@ -18442,6 +18503,130 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
         assert!(
             affinity_row.is_none(),
             "stale hint-only imports must not silently bind a fallback node"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn add_or_undelete_key_with_hint_only_proxy_affinity_keeps_selected_node_when_temporarily_unavailable()
+     {
+        let db_path = temp_db_path("proxy-affinity-hint-only-unavailable");
+        let db_str = db_path.to_string_lossy().to_string();
+        let geo_addr = spawn_api_key_geo_mock_server().await;
+        let geo_origin = format!("http://{geo_addr}/geo");
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        {
+            let mut manager = proxy.forward_proxy.lock().await;
+            manager.apply_settings(
+                ForwardProxySettings {
+                    proxy_urls: vec![
+                        "http://18.183.246.69:8080".to_string(),
+                        "http://1.1.1.1:8080".to_string(),
+                    ],
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: false,
+                }
+                .normalized(),
+            );
+            manager
+                .runtime
+                .get_mut("http://1.1.1.1:8080")
+                .expect("runtime for selected node")
+                .available = false;
+        }
+
+        let (key_id, status) = proxy
+            .add_or_undelete_key_with_status_in_group_and_registration_proxy_affinity_hint(
+                "tvly-hint-unavailable",
+                None,
+                None,
+                None,
+                &geo_origin,
+                Some("http://1.1.1.1:8080"),
+            )
+            .await
+            .expect("key created with unavailable hint-only affinity");
+        assert_eq!(status, ApiKeyUpsertStatus::Created);
+
+        let affinity_row: (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT primary_proxy_key, secondary_proxy_key FROM forward_proxy_key_affinity WHERE key_id = ?",
+        )
+        .bind(&key_id)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("query persisted unavailable hint affinity");
+        assert_eq!(affinity_row.0.as_deref(), Some("http://1.1.1.1:8080"));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn add_or_undelete_key_with_stale_hint_only_proxy_affinity_clears_existing_affinity() {
+        let db_path = temp_db_path("proxy-affinity-stale-hint-clears-existing");
+        let db_str = db_path.to_string_lossy().to_string();
+        let geo_addr = spawn_api_key_geo_mock_server().await;
+        let geo_origin = format!("http://{geo_addr}/geo");
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        {
+            let mut manager = proxy.forward_proxy.lock().await;
+            manager.apply_settings(
+                ForwardProxySettings {
+                    proxy_urls: vec![
+                        "http://18.183.246.69:8080".to_string(),
+                        "http://1.1.1.1:8080".to_string(),
+                    ],
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: false,
+                }
+                .normalized(),
+            );
+        }
+
+        let (key_id, created_status) = proxy
+            .add_or_undelete_key_with_status_in_group_and_registration_proxy_affinity_hint(
+                "tvly-stale-hint-refresh",
+                None,
+                None,
+                None,
+                &geo_origin,
+                Some("http://1.1.1.1:8080"),
+            )
+            .await
+            .expect("key created with valid hint");
+        assert_eq!(created_status, ApiKeyUpsertStatus::Created);
+
+        let (_, existed_status) = proxy
+            .add_or_undelete_key_with_status_in_group_and_registration_proxy_affinity_hint(
+                "tvly-stale-hint-refresh",
+                None,
+                None,
+                None,
+                &geo_origin,
+                Some("http://9.9.9.9:8080"),
+            )
+            .await
+            .expect("existing key refreshed with stale hint");
+        assert_eq!(existed_status, ApiKeyUpsertStatus::Existed);
+
+        let affinity_row: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT primary_proxy_key, secondary_proxy_key FROM forward_proxy_key_affinity WHERE key_id = ?",
+        )
+        .bind(&key_id)
+        .fetch_optional(&proxy.key_store.pool)
+        .await
+        .expect("query affinity row after stale refresh");
+        assert!(
+            affinity_row.is_none(),
+            "stale hint-only refresh should clear the old affinity instead of keeping it"
         );
 
         let _ = std::fs::remove_file(db_path);
