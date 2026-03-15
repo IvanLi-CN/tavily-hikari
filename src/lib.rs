@@ -177,6 +177,7 @@ const META_KEY_API_KEY_CREATED_AT_BACKFILL_V1: &str = "api_key_created_at_backfi
 // lightweight counters once and start charging by upstream credits going forward.
 const META_KEY_BUSINESS_QUOTA_CREDITS_CUTOVER_V1: &str = "business_quota_credits_cutover_v1";
 const API_KEY_UPSERT_TRANSIENT_RETRY_BACKOFF_MS: [u64; 2] = [20, 50];
+const TOKEN_USAGE_ROLLUP_TRANSIENT_RETRY_BACKOFF_MS: [u64; 3] = [20, 50, 100];
 
 fn token_limit_from_env(var: &str, default: i64) -> i64 {
     match std::env::var(var) {
@@ -4990,7 +4991,25 @@ impl TavilyProxy {
     /// Aggregate per-token usage logs into token_usage_stats for UI metrics.
     /// Used by background schedulers to keep usage charts up to date.
     pub async fn rollup_token_usage_stats(&self) -> Result<(i64, Option<i64>), ProxyError> {
-        self.key_store.rollup_token_usage_stats().await
+        let mut retry_idx = 0usize;
+        loop {
+            match self.key_store.rollup_token_usage_stats().await {
+                Ok(result) => return Ok(result),
+                Err(err)
+                    if is_transient_sqlite_write_error(&err)
+                        && retry_idx < TOKEN_USAGE_ROLLUP_TRANSIENT_RETRY_BACKOFF_MS.len() =>
+                {
+                    let backoff_ms = TOKEN_USAGE_ROLLUP_TRANSIENT_RETRY_BACKOFF_MS[retry_idx];
+                    retry_idx += 1;
+                    eprintln!(
+                        "token usage rollup transient sqlite error (attempt={}, backoff={}ms): {}",
+                        retry_idx, backoff_ms, err
+                    );
+                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                }
+                Err(err) => return Err(err),
+            }
+        }
     }
 
     /// Time-based garbage collection for per-token access logs.
