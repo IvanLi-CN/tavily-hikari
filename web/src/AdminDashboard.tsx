@@ -3017,7 +3017,7 @@ function AdminDashboard(): JSX.Element {
       {
         id: 'remaining',
         label: metricsStrings.labels.remaining,
-        value: `${formatNumber(dashboardSiteStatusSnapshot.remainingQuota)} / ${formatNumber(dashboardSiteStatusSnapshot.totalQuotaLimit)}`,
+        value: formatNumber(dashboardSiteStatusSnapshot.remainingQuota),
         subtitle:
           dashboardSiteStatusSnapshot.totalQuotaLimit > 0
             ? `${adminStrings.dashboard.currentSnapshot} · ${formatPercent(dashboardSiteStatusSnapshot.remainingQuota, dashboardSiteStatusSnapshot.totalQuotaLimit)}`

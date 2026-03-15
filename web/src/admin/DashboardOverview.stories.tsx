@@ -89,21 +89,21 @@ const todayMetrics = [
 ]
 
 const monthMetrics = [
-  { id: 'month-total', label: 'Total Requests', value: '96,420', subtitle: 'Month to date' },
-  { id: 'month-success', label: 'Successful', value: '84,031', subtitle: 'Month share · 87.2%' },
-  { id: 'month-errors', label: 'Errors', value: '8,247', subtitle: 'Month share · 8.6%' },
-  { id: 'month-quota', label: 'Quota Exhausted', value: '4,142', subtitle: 'Month share · 4.3%' },
-  { id: 'month-new-keys', label: 'New Keys', value: '128', subtitle: 'Added this month' },
-  { id: 'month-new-quarantines', label: 'New Quarantines', value: '12', subtitle: 'Added this month' },
+  { id: 'month-total', label: 'Total Requests', value: '105,041', subtitle: 'Month to date' },
+  { id: 'month-success', label: 'Successful', value: '86,279', subtitle: 'Month share · 82.1%' },
+  { id: 'month-errors', label: 'Errors', value: '2,368', subtitle: 'Month share · 2.3%' },
+  { id: 'month-quota', label: 'Quota Exhausted', value: '0', subtitle: 'Month share · 0%' },
+  { id: 'month-new-keys', label: 'New Keys', value: '3', subtitle: 'Added this month' },
+  { id: 'month-new-quarantines', label: 'New Quarantines', value: '0', subtitle: 'Added this month' },
 ]
 
 const statusMetrics = [
-  { id: 'remaining', label: 'Remaining', value: '14,255 / 20,000', subtitle: 'Current snapshot · 71.3%' },
-  { id: 'keys', label: 'Active Keys', value: '31', subtitle: 'Current snapshot' },
-  { id: 'quarantined', label: 'Quarantined', value: '0', subtitle: 'All keys available' },
-  { id: 'exhausted', label: 'Exhausted', value: '59', subtitle: '59 exhausted' },
-  { id: 'proxy-available', label: 'Available Proxy Nodes', value: '7', subtitle: 'Current snapshot · 77.8%' },
-  { id: 'proxy-total', label: 'Proxy Nodes Total', value: '9', subtitle: 'Current snapshot' },
+  { id: 'remaining', label: 'Remaining', value: '49,482', subtitle: 'Current snapshot · 88.4%' },
+  { id: 'keys', label: 'Active Keys', value: '57', subtitle: 'Current snapshot' },
+  { id: 'quarantined', label: 'Quarantined', value: '59', subtitle: 'Needs manual review' },
+  { id: 'exhausted', label: 'Exhausted', value: '0', subtitle: '0 exhausted' },
+  { id: 'proxy-available', label: 'Available Proxy Nodes', value: '12', subtitle: 'Current snapshot · 85.7%' },
+  { id: 'proxy-total', label: 'Proxy Nodes Total', value: '14', subtitle: 'Current snapshot' },
 ]
 
 export const Default: Story = {
@@ -176,7 +176,7 @@ export const QuarantineState: Story = {
   args: {
     ...Default.args,
     statusMetrics: [
-      { id: 'remaining', label: 'Remaining', value: '3,120 / 4,000', subtitle: 'Current snapshot · 78.0%' },
+      { id: 'remaining', label: 'Remaining', value: '3,120', subtitle: 'Current snapshot · 78.0%' },
       { id: 'keys', label: 'Active Keys', value: '5', subtitle: 'Current snapshot' },
       { id: 'quarantined', label: 'Quarantined', value: '1', subtitle: 'Needs manual review' },
       { id: 'exhausted', label: 'Exhausted', value: '1', subtitle: '1 exhausted' },
@@ -228,7 +228,7 @@ export const LargeNumbers: Story = {
       { id: 'month-new-quarantines', label: 'New Quarantines', value: '108', subtitle: 'Added this month' },
     ],
     statusMetrics: [
-      { id: 'remaining', label: 'Remaining', value: '149,482 / 1,200,000', subtitle: 'Current snapshot · 12.5%' },
+      { id: 'remaining', label: 'Remaining', value: '149,482', subtitle: 'Current snapshot · 12.5%' },
       { id: 'keys', label: 'Active Keys', value: '1,231', subtitle: 'Current snapshot' },
       { id: 'quarantined', label: 'Quarantined', value: '29', subtitle: 'Needs manual review' },
       { id: 'exhausted', label: 'Exhausted', value: '402', subtitle: '402 exhausted' },

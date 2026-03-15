@@ -2588,9 +2588,12 @@ button:disabled {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .dashboard-summary-metrics-month,
   .dashboard-summary-metrics-status {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .dashboard-summary-metrics-month {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .dashboard-today-comparison-row {
@@ -2609,7 +2612,7 @@ button:disabled {
   }
 
   .dashboard-summary-metrics-month {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
