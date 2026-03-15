@@ -326,3 +326,17 @@ export const RegistrationIpPreview: Story = {
     viewport: { defaultViewport: "1440-device-desktop" },
   },
 };
+
+export const AssignedProxyMatchKinds: Story = {
+  ...RegistrationIpPreview,
+  name: "Assigned Proxy Match Kinds",
+  parameters: {
+    ...RegistrationIpPreview.parameters,
+    docs: {
+      description: {
+        story:
+          "Showcases the three assigned proxy match-color states inside the registration bubble: registration IP (success), same region (info), and fallback/other (warning).",
+      },
+    },
+  },
+};
