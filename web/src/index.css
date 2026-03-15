@@ -3954,6 +3954,18 @@ table {
   font-weight: 600;
 }
 
+.key-validation-bubble-value.text-success {
+  color: hsl(var(--success));
+}
+
+.key-validation-bubble-value.text-info {
+  color: hsl(var(--info));
+}
+
+.key-validation-bubble-value.text-warning {
+  color: hsl(var(--warning));
+}
+
 @media (max-width: 767px) {
   .key-validation-modal {
     padding: 0;
