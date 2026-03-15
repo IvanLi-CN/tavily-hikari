@@ -1,4 +1,4 @@
-import { Icon } from '@iconify/react'
+import { Icon } from '../lib/icons'
 import { type PropsWithChildren, useEffect, useRef, useState } from 'react'
 import { ADMIN_SIDEBAR_STACK_MAX, useResponsiveModes } from '../lib/responsive'
 

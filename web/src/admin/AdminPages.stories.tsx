@@ -1,4 +1,4 @@
-import { Icon } from '@iconify/react'
+import { Icon } from '../lib/icons'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { addons } from 'storybook/preview-api'
 import { SELECT_STORY } from 'storybook/internal/core-events'

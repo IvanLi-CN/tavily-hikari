@@ -1,4 +1,4 @@
-import { Icon } from '@iconify/react'
+import { Icon } from '../lib/icons'
 
 import { languageOptions, type Language, useLanguage, useTranslate } from '../i18n'
 import { Button } from './ui/button'

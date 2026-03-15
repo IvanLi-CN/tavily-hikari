@@ -1,5 +1,5 @@
 import React, { ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Icon } from '@iconify/react'
+import { Icon, getGuideClientIconName } from './lib/icons'
 import CherryStudioMock from './components/CherryStudioMock'
 import TokenSecretField, { type TokenSecretCopyState } from './components/TokenSecretField'
 import ManualCopyBubble from './components/ManualCopyBubble'
@@ -59,7 +59,6 @@ const CLAUDE_DOC_URL = 'https://code.claude.com/docs/en/mcp'
 const VSCODE_DOC_URL = 'https://code.visualstudio.com/docs/copilot/customization/mcp-servers'
 const NOCODB_DOC_URL = 'https://nocodb.com/docs/product-docs/mcp'
 const MCP_SPEC_URL = 'https://modelcontextprotocol.io/introduction'
-const ICONIFY_ENDPOINT = 'https://api.iconify.design'
 const USER_CONSOLE_SECRET_CACHE_TTL_MS = 2_000
 const USER_CONSOLE_SECRET_PREWARM_DELAY_MS = 120
 
@@ -1875,36 +1874,33 @@ function MobileGuideDropdown({
   onChange: (id: GuideKey) => void
   labels: { id: GuideKey, label: string }[]
 }): JSX.Element {
-  const icon = (id: GuideKey) => {
-    const map: Record<GuideKey, string> = {
-      codex: 'simple-icons/openai',
-      claude: 'simple-icons/anthropic',
-      vscode: 'simple-icons/visualstudiocode',
-      claudeDesktop: 'simple-icons/anthropic',
-      cursor: 'simple-icons/cursor',
-      windsurf: 'simple-icons/codeium',
-      cherryStudio: 'mdi/cherry',
-      other: 'mdi/dots-horizontal',
-    }
-    const key = map[id] ?? 'mdi/dots-horizontal'
-    return `${ICONIFY_ENDPOINT}/${key}.svg?color=%23475569`
-  }
-
   const current = labels.find((l) => l.id === active)
   return (
     <div className="dropdown w-full">
       <div tabIndex={0} role="button" className="btn btn-outline w-full justify-between btn-sm md:btn-md">
         <span className="inline-flex items-center gap-2">
-          <img src={icon(active)} alt="client" width={18} height={18} />
+          <Icon
+            icon={getGuideClientIconName(active)}
+            width={18}
+            height={18}
+            aria-hidden="true"
+            style={{ color: '#475569' }}
+          />
           {current?.label ?? active}
         </span>
-        <img src={`${ICONIFY_ENDPOINT}/mdi/chevron-down.svg?color=%23647589`} alt="open" width={16} height={16} />
+        <Icon icon="mdi:chevron-down" width={16} height={16} aria-hidden="true" style={{ color: '#647589' }} />
       </div>
       <ul tabIndex={0} className="menu dropdown-content bg-base-100 rounded-box z-[1] w-60 p-2 shadow mt-2">
         {labels.map((tab) => (
           <li key={tab.id}>
             <button type="button" onClick={() => onChange(tab.id)} className="flex items-center gap-2">
-              <img src={icon(tab.id)} alt="" width={16} height={16} />
+              <Icon
+                icon={getGuideClientIconName(tab.id)}
+                width={16}
+                height={16}
+                aria-hidden="true"
+                style={{ color: '#475569' }}
+              />
               <span className="truncate">{tab.label}</span>
             </button>
           </li>

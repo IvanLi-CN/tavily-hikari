@@ -1,5 +1,5 @@
 import React, { type ReactNode } from 'react'
-import { Icon } from '@iconify/react'
+import { Icon } from '../lib/icons'
 
 import type { PublicMetrics } from '../api'
 import type { Translations } from '../i18n'

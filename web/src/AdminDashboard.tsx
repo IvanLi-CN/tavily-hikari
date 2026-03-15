@@ -1,4 +1,4 @@
-import { Icon } from '@iconify/react'
+import { Icon } from './lib/icons'
 import { StatusBadge, type StatusTone } from './components/StatusBadge'
 import AdminTablePagination from './components/AdminTablePagination'
 import AdminLoadingRegion from './components/AdminLoadingRegion'
