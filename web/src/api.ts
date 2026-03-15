@@ -222,6 +222,20 @@ export type ForwardProxyProgressPhaseKey =
   | 'generate_result'
   | 'refresh_ui'
 
+export type ForwardProxyProgressNodeStatus = 'pending' | 'probing' | 'ok' | 'failed'
+
+export interface ForwardProxyProgressNodeState {
+  nodeKey: string
+  displayName: string
+  protocol: string
+  status: ForwardProxyProgressNodeStatus
+  ok?: boolean | null
+  latencyMs?: number | null
+  ip?: string | null
+  location?: string | null
+  message?: string | null
+}
+
 export type ForwardProxyProgressEvent =
   | {
       type: 'phase'
@@ -236,6 +250,16 @@ export type ForwardProxyProgressEvent =
       type: 'complete'
       operation: ForwardProxyProgressOperation
       payload: unknown
+    }
+  | {
+      type: 'nodes'
+      operation: ForwardProxyProgressOperation
+      nodes: ForwardProxyProgressNodeState[]
+    }
+  | {
+      type: 'node'
+      operation: ForwardProxyProgressOperation
+      node: ForwardProxyProgressNodeState
     }
   | {
       type: 'error'
@@ -1263,6 +1287,7 @@ export interface UpdateForwardProxySettingsPayload {
   subscriptionUrls: string[]
   subscriptionUpdateIntervalSecs: number
   insertDirect: boolean
+  skipBootstrapProbe?: boolean
 }
 
 export type ForwardProxyValidationKind = 'proxyUrl' | 'subscriptionUrl'
@@ -1272,6 +1297,16 @@ export interface ForwardProxyValidationRequest {
   value: string
 }
 
+export interface ForwardProxyValidationNode {
+  displayName: string
+  protocol: string
+  ok: boolean
+  latencyMs?: number | null
+  ip?: string | null
+  location?: string | null
+  message?: string | null
+}
+
 export interface ForwardProxyValidationResponse {
   ok: boolean
   message: string
@@ -1279,6 +1314,7 @@ export interface ForwardProxyValidationResponse {
   discoveredNodes?: number | null
   latencyMs?: number | null
   errorCode?: string | null
+  nodes?: ForwardProxyValidationNode[]
 }
 
 export interface ForwardProxyActivityBucket {
@@ -1364,6 +1400,7 @@ export function validateForwardProxyCandidate(
 export function validateForwardProxyCandidateWithProgress(
   payload: ForwardProxyValidationRequest,
   onEvent?: (event: ForwardProxyProgressEvent) => void,
+  signal?: AbortSignal,
 ): Promise<ForwardProxyValidationResponse> {
   return requestForwardProxyProgress<ForwardProxyValidationResponse>(
     '/api/settings/forward-proxy/validate',
@@ -1371,6 +1408,7 @@ export function validateForwardProxyCandidateWithProgress(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
+      signal,
     },
     'validate',
     onEvent,

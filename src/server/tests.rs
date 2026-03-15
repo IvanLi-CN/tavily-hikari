@@ -1,18 +1,23 @@
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::Body;
     use axum::Router;
     use axum::extract::{Json, Query};
     use axum::http::Method;
     use axum::routing::{any, get, patch, post};
+    use bytes::Bytes;
     use nanoid::nanoid;
     use reqwest::Client;
     use sqlx::Row;
     use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
     use std::collections::HashMap;
+    use std::convert::Infallible;
+    use std::future::pending;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+    use std::time::Duration;
     use tavily_hikari::{DEFAULT_UPSTREAM, effective_token_hourly_limit};
     use tokio::net::TcpListener;
     use tokio::sync::Notify;
@@ -2983,7 +2988,55 @@ mod tests {
     }
 
     async fn spawn_fake_forward_proxy(status: StatusCode) -> SocketAddr {
-        let app = Router::new().fallback(any(move || async move { status }));
+        spawn_fake_forward_proxy_with_body(status, String::new()).await
+    }
+
+    async fn spawn_fake_forward_proxy_with_body(status: StatusCode, body: String) -> SocketAddr {
+        let app = Router::new().fallback(any(move || {
+            let body = body.clone();
+            async move { (status, body) }
+        }));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+        addr
+    }
+
+    async fn spawn_fake_forward_proxy_with_stalled_body(status: StatusCode) -> SocketAddr {
+        let app = Router::new().fallback(any(move || async move {
+            let stream = async_stream::stream! {
+                yield Ok::<Bytes, Infallible>(Bytes::from_static(b"ip=203.0.113.8\nloc=JP\ncolo=NRT\n"));
+                pending::<()>().await;
+            };
+            (status, Body::from_stream(stream))
+        }));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+        addr
+    }
+
+    async fn spawn_counted_fake_forward_proxy(
+        status: StatusCode,
+        delay: Duration,
+        hits: Arc<AtomicUsize>,
+    ) -> SocketAddr {
+        let app = Router::new().fallback(any(move || {
+            let hits = hits.clone();
+            async move {
+                hits.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(delay).await;
+                status
+            }
+        }));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
@@ -11977,6 +12030,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn admin_forward_proxy_validate_proxy_returns_node_trace_metadata() {
+        let db_path = temp_db_path("admin-forward-proxy-validate-proxy-trace");
+        let db_str = db_path.to_string_lossy().to_string();
+        let upstream_addr = spawn_forward_proxy_probe_upstream().await;
+        let fake_proxy_addr = spawn_fake_forward_proxy_with_body(
+            StatusCode::OK,
+            "ip=203.0.113.8\nloc=JP\ncolo=NRT\n".to_string(),
+        )
+        .await;
+        let upstream = format!("http://{}/mcp", upstream_addr);
+        let usage_base = format!("http://{}", upstream_addr);
+        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+            .await
+            .expect("create proxy");
+        let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
+
+        let client = Client::new();
+        let response = client
+            .post(format!("http://{addr}/api/settings/forward-proxy/validate"))
+            .json(&serde_json::json!({
+                "kind": "proxyUrl",
+                "value": format!("http://{}", fake_proxy_addr),
+            }))
+            .send()
+            .await
+            .expect("validate proxy");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .json::<serde_json::Value>()
+            .await
+            .expect("decode validation");
+        assert_eq!(body["ok"].as_bool(), Some(true));
+        let expected_display_name = fake_proxy_addr.to_string();
+        assert_eq!(
+            body["nodes"][0]["displayName"].as_str(),
+            Some(expected_display_name.as_str())
+        );
+        assert_eq!(body["nodes"][0]["ip"].as_str(), Some("203.0.113.8"));
+        assert_eq!(body["nodes"][0]["location"].as_str(), Some("JP / NRT"));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn admin_forward_proxy_validate_proxy_streams_progress_events() {
         let db_path = temp_db_path("admin-forward-proxy-validate-proxy-sse");
         let db_str = db_path.to_string_lossy().to_string();
@@ -12013,6 +12110,10 @@ mod tests {
         assert!(
             body.contains("\"type\":\"complete\",\"operation\":\"validate\""),
             "expected complete event, got: {body}"
+        );
+        assert!(
+            body.contains("\"nodes\":["),
+            "expected validation payload to include node rows, got: {body}"
         );
 
         let _ = std::fs::remove_file(db_path);
@@ -12053,6 +12154,221 @@ mod tests {
             .expect("decode validation");
         assert_eq!(body["ok"].as_bool(), Some(true));
         assert_eq!(body["discoveredNodes"].as_u64(), Some(1));
+        assert_eq!(body["nodes"].as_array().map(Vec::len), Some(1));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn admin_forward_proxy_validate_subscription_does_not_hang_on_stalled_trace_body() {
+        let db_path = temp_db_path("admin-forward-proxy-validate-subscription-trace-timeout");
+        let db_str = db_path.to_string_lossy().to_string();
+        let upstream_addr = spawn_forward_proxy_probe_upstream().await;
+        let fake_proxy_addr = spawn_fake_forward_proxy_with_stalled_body(StatusCode::OK).await;
+        let subscription_addr = spawn_forward_proxy_subscription_server(format!(
+            "http://{}\n",
+            fake_proxy_addr
+        ))
+        .await;
+        let upstream = format!("http://{}/mcp", upstream_addr);
+        let usage_base = format!("http://{}", upstream_addr);
+        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+            .await
+            .expect("create proxy");
+        let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
+
+        let client = Client::builder()
+            .timeout(Duration::from_secs(12))
+            .build()
+            .expect("build client");
+        let started = std::time::Instant::now();
+        let response = client
+            .post(format!("http://{addr}/api/settings/forward-proxy/validate"))
+            .json(&serde_json::json!({
+                "kind": "subscriptionUrl",
+                "value": format!("http://{}/subscription", subscription_addr),
+            }))
+            .send()
+            .await
+            .expect("validate subscription");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .json::<serde_json::Value>()
+            .await
+            .expect("decode validation");
+        assert_eq!(body["ok"].as_bool(), Some(true));
+        assert_eq!(body["nodes"][0]["ok"].as_bool(), Some(true));
+        assert!(body["nodes"][0]["ip"].is_null());
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "validation should finish even if trace body stalls; elapsed {:?}",
+            started.elapsed()
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn admin_forward_proxy_validate_subscription_probes_every_node_and_returns_all_rows() {
+        let db_path = temp_db_path("admin-forward-proxy-validate-subscription-all-nodes");
+        let db_str = db_path.to_string_lossy().to_string();
+        let upstream_addr = spawn_forward_proxy_probe_upstream().await;
+        let failing_proxy_addr = spawn_fake_forward_proxy(StatusCode::INTERNAL_SERVER_ERROR).await;
+        let healthy_proxy_addr = spawn_fake_forward_proxy(StatusCode::NOT_FOUND).await;
+        let subscription_addr = spawn_forward_proxy_subscription_server(format!(
+            "http://{}\nhttp://{}\n",
+            failing_proxy_addr, healthy_proxy_addr
+        ))
+        .await;
+        let upstream = format!("http://{}/mcp", upstream_addr);
+        let usage_base = format!("http://{}", upstream_addr);
+        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+            .await
+            .expect("create proxy");
+        let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
+
+        let client = Client::new();
+        let response = client
+            .post(format!("http://{addr}/api/settings/forward-proxy/validate"))
+            .json(&serde_json::json!({
+                "kind": "subscriptionUrl",
+                "value": format!("http://{}/subscription", subscription_addr),
+            }))
+            .send()
+            .await
+            .expect("validate subscription");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .json::<serde_json::Value>()
+            .await
+            .expect("decode validation");
+        assert_eq!(body["ok"].as_bool(), Some(true));
+        assert_eq!(body["discoveredNodes"].as_u64(), Some(2));
+        let nodes = body["nodes"].as_array().expect("nodes array");
+        assert_eq!(nodes.len(), 2, "expected all probed nodes to be returned: {body}");
+        assert_eq!(nodes[0]["displayName"].as_str(), Some(failing_proxy_addr.to_string().as_str()));
+        assert_eq!(nodes[0]["ok"].as_bool(), Some(false));
+        assert_eq!(nodes[1]["displayName"].as_str(), Some(healthy_proxy_addr.to_string().as_str()));
+        assert_eq!(nodes[1]["ok"].as_bool(), Some(true));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn admin_forward_proxy_validate_subscription_streams_full_probe_progress() {
+        let db_path = temp_db_path("admin-forward-proxy-validate-subscription-sse");
+        let db_str = db_path.to_string_lossy().to_string();
+        let upstream_addr = spawn_forward_proxy_probe_upstream().await;
+        let first_proxy_addr = spawn_fake_forward_proxy(StatusCode::INTERNAL_SERVER_ERROR).await;
+        let second_proxy_addr = spawn_fake_forward_proxy(StatusCode::NOT_FOUND).await;
+        let subscription_addr = spawn_forward_proxy_subscription_server(format!(
+            "http://{}\nhttp://{}\n",
+            first_proxy_addr, second_proxy_addr
+        ))
+        .await;
+        let upstream = format!("http://{}/mcp", upstream_addr);
+        let usage_base = format!("http://{}", upstream_addr);
+        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+            .await
+            .expect("create proxy");
+        let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
+
+        let client = Client::new();
+        let response = client
+            .post(format!("http://{addr}/api/settings/forward-proxy/validate"))
+            .header(reqwest::header::ACCEPT, "text/event-stream")
+            .json(&serde_json::json!({
+                "kind": "subscriptionUrl",
+                "value": format!("http://{}/subscription", subscription_addr),
+            }))
+            .send()
+            .await
+            .expect("validate subscription");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.text().await.expect("read sse body");
+        assert!(
+            body.contains("\"type\":\"nodes\",\"operation\":\"validate\",\"nodes\":["),
+            "expected initial nodes event, got: {body}"
+        );
+        assert!(
+            body.contains("\"phaseKey\":\"probe_nodes\",\"label\":\"Probing nodes\",\"current\":1,\"total\":2"),
+            "expected first probe progress event, got: {body}"
+        );
+        assert!(
+            body.contains("\"phaseKey\":\"probe_nodes\",\"label\":\"Probing nodes\",\"current\":2,\"total\":2"),
+            "expected final probe progress event, got: {body}"
+        );
+        assert!(
+            body.contains("\"complete\",\"operation\":\"validate\""),
+            "expected completion event, got: {body}"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn admin_forward_proxy_validate_subscription_stops_after_client_disconnect() {
+        let db_path = temp_db_path("admin-forward-proxy-validate-subscription-cancel");
+        let db_str = db_path.to_string_lossy().to_string();
+        let upstream_addr = spawn_forward_proxy_probe_upstream().await;
+        let hit_count = Arc::new(AtomicUsize::new(0));
+        let proxy_a =
+            spawn_counted_fake_forward_proxy(StatusCode::NOT_FOUND, Duration::from_millis(40), hit_count.clone())
+                .await;
+        let proxy_b =
+            spawn_counted_fake_forward_proxy(StatusCode::NOT_FOUND, Duration::from_millis(40), hit_count.clone())
+                .await;
+        let proxy_c =
+            spawn_counted_fake_forward_proxy(StatusCode::NOT_FOUND, Duration::from_millis(40), hit_count.clone())
+                .await;
+        let proxy_d =
+            spawn_counted_fake_forward_proxy(StatusCode::NOT_FOUND, Duration::from_millis(40), hit_count.clone())
+                .await;
+        let subscription_addr = spawn_forward_proxy_subscription_server(format!(
+            "http://{}\nhttp://{}\nhttp://{}\nhttp://{}\n",
+            proxy_a, proxy_b, proxy_c, proxy_d
+        ))
+        .await;
+        let upstream = format!("http://{}/mcp", upstream_addr);
+        let usage_base = format!("http://{}", upstream_addr);
+        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+            .await
+            .expect("create proxy");
+        let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
+
+        let client = Client::new();
+        let mut response = client
+            .post(format!("http://{addr}/api/settings/forward-proxy/validate"))
+            .header(reqwest::header::ACCEPT, "text/event-stream")
+            .json(&serde_json::json!({
+                "kind": "subscriptionUrl",
+                "value": format!("http://{}/subscription", subscription_addr),
+            }))
+            .send()
+            .await
+            .expect("validate subscription");
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut first_body = String::new();
+        while !first_body.contains("\"type\":\"nodes\"") {
+            let chunk = response
+                .chunk()
+                .await
+                .expect("read sse chunk")
+                .expect("expected sse chunk before disconnect");
+            first_body.push_str(String::from_utf8_lossy(&chunk).as_ref());
+        }
+        assert!(
+            first_body.contains("\"type\":\"nodes\""),
+            "expected initial nodes event before disconnect, got: {first_body}"
+        );
+        drop(response);
+
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        assert!(
+            hit_count.load(Ordering::SeqCst) <= 3,
+            "validation should stop shortly after disconnect; observed {} probe requests",
+            hit_count.load(Ordering::SeqCst),
+        );
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -12181,6 +12497,47 @@ mod tests {
         assert!(
             body.contains("\"type\":\"complete\",\"operation\":\"save\""),
             "expected complete event, got: {body}"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn admin_forward_proxy_settings_can_skip_bootstrap_probe_after_validation() {
+        let db_path = temp_db_path("admin-forward-proxy-settings-skip-bootstrap");
+        let db_str = db_path.to_string_lossy().to_string();
+        let upstream_addr = spawn_forward_proxy_probe_upstream().await;
+        let fake_proxy_addr = spawn_fake_forward_proxy(StatusCode::NOT_FOUND).await;
+        let upstream = format!("http://{}/mcp", upstream_addr);
+        let usage_base = format!("http://{}", upstream_addr);
+        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+            .await
+            .expect("create proxy");
+        let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
+
+        let client = Client::new();
+        let response = client
+            .put(format!("http://{addr}/api/settings/forward-proxy"))
+            .header(reqwest::header::ACCEPT, "text/event-stream")
+            .json(&serde_json::json!({
+                "proxyUrls": [format!("http://{}", fake_proxy_addr)],
+                "subscriptionUrls": [],
+                "subscriptionUpdateIntervalSecs": 3600,
+                "insertDirect": true,
+                "skipBootstrapProbe": true,
+            }))
+            .send()
+            .await
+            .expect("stream settings update");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.text().await.expect("read sse body");
+        assert!(
+            body.contains("\"phaseKey\":\"bootstrap_probe\""),
+            "expected bootstrap phase marker, got: {body}"
+        );
+        assert!(
+            body.contains("Skipped after recent validation"),
+            "expected skipped bootstrap detail, got: {body}"
         );
 
         let _ = std::fs::remove_file(db_path);
@@ -12333,7 +12690,7 @@ mod tests {
                 subscription_urls: Vec::new(),
                 subscription_update_interval_secs: 3600,
                 insert_direct: false,
-            })
+            }, false)
             .await
             .expect("disable direct fallback");
 

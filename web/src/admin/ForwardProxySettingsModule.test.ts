@@ -104,4 +104,34 @@ describe('ForwardProxySettingsModule progress state helpers', () => {
     expect(state.steps.find((step) => step.key === 'fetch_subscription')?.status).toBe('error')
     expect(state.message).toBe('Validation failed')
   })
+
+  it('ignores subscription node streaming events for the step bubble state', () => {
+    let state = createDialogProgressState(strings.progress, 'subscription', 'validate')
+    state = updateDialogProgressState(state, strings.progress, {
+      type: 'nodes',
+      operation: 'validate',
+      nodes: [
+        {
+          nodeKey: 'edge-a',
+          displayName: 'edge-a',
+          protocol: 'ss',
+          status: 'pending',
+        },
+      ],
+    } satisfies ForwardProxyProgressEvent)
+    state = updateDialogProgressState(state, strings.progress, {
+      type: 'node',
+      operation: 'validate',
+      node: {
+        nodeKey: 'edge-a',
+        displayName: 'edge-a',
+        protocol: 'ss',
+        status: 'probing',
+      },
+    } satisfies ForwardProxyProgressEvent)
+
+    expect(state.activeStepKey).toBeNull()
+    expect(state.message).toBeNull()
+    expect(state.steps.every((step) => step.status === 'pending')).toBe(true)
+  })
 })

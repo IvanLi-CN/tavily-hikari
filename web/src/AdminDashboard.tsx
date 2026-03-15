@@ -1859,6 +1859,7 @@ function AdminDashboard(): JSX.Element {
       kind: ForwardProxyValidationKind,
       rawValues: string[],
       onProgress?: (event: ForwardProxyProgressEvent) => void,
+      signal?: AbortSignal,
     ): Promise<ForwardProxyValidationEntry[]> => {
       const results = new Array<ForwardProxyValidationEntry>(rawValues.length)
       let hadFatalError = false
@@ -1888,13 +1889,17 @@ function AdminDashboard(): JSX.Element {
         const value = rawValues[0]
         let lastPhase: Extract<ForwardProxyProgressEvent, { type: 'phase' }> | null = null
         try {
-          const result = await validateForwardProxyCandidateWithProgress({ kind, value }, (event) => {
-            if (event.type === 'complete') return
-            if (event.type === 'phase') {
-              lastPhase = event
-            }
-            onProgress?.(event)
-          })
+          const result = await validateForwardProxyCandidateWithProgress(
+            { kind, value },
+            (event) => {
+              if (event.type === 'complete') return
+              if (event.type === 'phase') {
+                lastPhase = event
+              }
+              onProgress?.(event)
+            },
+            signal,
+          )
           results[0] = {
             id: `${kind}:0:${value}`,
             kind,
@@ -1905,6 +1910,9 @@ function AdminDashboard(): JSX.Element {
             emitValidationError(result.message, lastPhase, value)
           }
         } catch (err) {
+          if (signal?.aborted || (err as Error).name === 'AbortError') {
+            throw err
+          }
           hadFatalError = true
           const message =
             err instanceof Error ? err.message : proxySettingsStrings.validation.requestFailed
@@ -1966,6 +1974,7 @@ function AdminDashboard(): JSX.Element {
 
                 onProgress(event)
               },
+              signal,
             )
             results[index] = {
               id: `${kind}:${index}:${value}`,
@@ -1974,6 +1983,9 @@ function AdminDashboard(): JSX.Element {
               result,
             } satisfies ForwardProxyValidationEntry
           } catch (err) {
+            if (signal?.aborted || (err as Error).name === 'AbortError') {
+              throw err
+            }
             hadFatalError = true
             const message =
               err instanceof Error ? err.message : proxySettingsStrings.validation.requestFailed
@@ -2033,6 +2045,7 @@ function AdminDashboard(): JSX.Element {
   const saveForwardProxySettings = useCallback(async (
     nextDraft: ForwardProxyDraft,
     onProgress?: (event: ForwardProxyProgressEvent) => void,
+    options?: { skipBootstrapProbe?: boolean },
   ) => {
     const parsedInterval = Number.parseInt(nextDraft.subscriptionUpdateIntervalSecs.trim(), 10)
     if (!Number.isFinite(parsedInterval) || parsedInterval <= 0) {
@@ -2050,6 +2063,7 @@ function AdminDashboard(): JSX.Element {
           subscriptionUrls: splitMultilineEntries(nextDraft.subscriptionUrlsText),
           subscriptionUpdateIntervalSecs: parsedInterval,
           insertDirect: nextDraft.insertDirect,
+          skipBootstrapProbe: options?.skipBootstrapProbe ?? false,
         },
         onProgress,
       )

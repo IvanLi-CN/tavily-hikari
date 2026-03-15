@@ -83,6 +83,10 @@ export function updateDialogProgressState(
   strings: ForwardProxyProgressStrings,
   event: ForwardProxyProgressEvent,
 ): ForwardProxyDialogProgressState {
+  if (event.type === 'nodes' || event.type === 'node') {
+    return current
+  }
+
   if (event.type === 'phase') {
     const detail = buildProgressDetail(strings, event.current, event.total, event.detail)
     return {

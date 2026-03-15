@@ -277,6 +277,8 @@ struct ForwardProxySettingsUpdatePayload {
     subscription_update_interval_secs: u64,
     #[serde(default = "default_forward_proxy_insert_direct")]
     insert_direct: bool,
+    #[serde(default)]
+    skip_bootstrap_probe: bool,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy)]
@@ -302,6 +304,33 @@ struct ForwardProxyValidationView {
     discovered_nodes: Option<usize>,
     latency_ms: Option<f64>,
     error_code: Option<String>,
+    nodes: Vec<ForwardProxyValidationNodeView>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ForwardProxyValidationNodeView {
+    display_name: String,
+    ok: bool,
+    latency_ms: Option<f64>,
+    ip: Option<String>,
+    location: Option<String>,
+    message: Option<String>,
+}
+
+#[derive(Clone)]
+struct ForwardProxyStreamCancelGuard(tavily_hikari::ForwardProxyCancellation);
+
+impl ForwardProxyStreamCancelGuard {
+    fn new(cancellation: tavily_hikari::ForwardProxyCancellation) -> Self {
+        Self(cancellation)
+    }
+}
+
+impl Drop for ForwardProxyStreamCancelGuard {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
 }
 
 fn default_forward_proxy_subscription_update_interval_secs() -> u64 {
@@ -344,6 +373,18 @@ fn build_forward_proxy_validation_view(
             discovered_nodes: result.discovered_nodes,
             latency_ms: result.latency_ms,
             error_code: result.error_code,
+            nodes: result
+                .nodes
+                .into_iter()
+                .map(|node| ForwardProxyValidationNodeView {
+                    display_name: node.display_name,
+                    ok: node.ok,
+                    latency_ms: node.latency_ms,
+                    ip: node.ip,
+                    location: node.location,
+                    message: node.message,
+                })
+                .collect(),
         };
     }
 
@@ -355,6 +396,7 @@ fn build_forward_proxy_validation_view(
             discovered_nodes: Some(discovered_nodes),
             latency_ms,
             error_code: Some(error.code),
+            nodes: Vec::new(),
         };
     }
 
@@ -369,6 +411,7 @@ fn build_forward_proxy_validation_view(
         discovered_nodes: Some(discovered_nodes),
         latency_ms,
         error_code: None,
+        nodes: Vec::new(),
     }
 }
 
@@ -403,6 +446,7 @@ async fn put_forward_proxy_settings(
         insert_direct: payload.insert_direct,
     }
     .normalized();
+    let skip_bootstrap_probe = payload.skip_bootstrap_probe;
     if request_accepts_event_stream(&headers) {
         let state = state.clone();
         let stream = stream! {
@@ -414,7 +458,11 @@ async fn put_forward_proxy_settings(
                 };
                 match state
                     .proxy
-                    .update_forward_proxy_settings_with_progress(settings, Some(&progress))
+                    .update_forward_proxy_settings_with_progress(
+                        settings,
+                        skip_bootstrap_probe,
+                        Some(&progress),
+                    )
                     .await
                 {
                     Ok(response) => {
@@ -483,7 +531,7 @@ async fn put_forward_proxy_settings(
     }
     state
         .proxy
-        .update_forward_proxy_settings(settings)
+        .update_forward_proxy_settings(settings, skip_bootstrap_probe)
         .await
         .map(|response| Json(response).into_response())
         .map_err(|err| {
@@ -502,7 +550,10 @@ async fn post_forward_proxy_candidate_validation(
     }
     if request_accepts_event_stream(&headers) {
         let state = state.clone();
+        let cancellation = tavily_hikari::ForwardProxyCancellation::default();
+        let worker_cancellation = cancellation.clone();
         let stream = stream! {
+            let _cancel_guard = ForwardProxyStreamCancelGuard::new(cancellation.clone());
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<tavily_hikari::ForwardProxyProgressEvent>();
             tokio::spawn(async move {
                 let progress_tx = tx.clone();
@@ -516,6 +567,7 @@ async fn post_forward_proxy_candidate_validation(
                             vec![payload.value.clone()],
                             Vec::new(),
                             Some(&progress),
+                            Some(&worker_cancellation),
                         )
                         .await,
                     ForwardProxyValidationKindPayload::SubscriptionUrl => state
@@ -524,6 +576,7 @@ async fn post_forward_proxy_candidate_validation(
                             Vec::new(),
                             vec![payload.value.clone()],
                             Some(&progress),
+                            Some(&worker_cancellation),
                         )
                         .await,
                 };
@@ -549,6 +602,9 @@ async fn post_forward_proxy_candidate_validation(
                         }
                     }
                     Err(err) => {
+                        if worker_cancellation.is_cancelled() {
+                            return;
+                        }
                         eprintln!("validate forward proxy candidate error: {err}");
                         let _ = tx.send(tavily_hikari::ForwardProxyProgressEvent::error(
                             "validate",
@@ -586,6 +642,7 @@ async fn post_forward_proxy_candidate_validation(
                     break;
                 }
             }
+            cancellation.cancel();
         };
 
         return Ok(

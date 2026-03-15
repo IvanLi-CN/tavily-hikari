@@ -27,6 +27,33 @@ const SUBSCRIPTION_SUCCESS_RESULT: ForwardProxyValidationEntry[] = [
       normalizedValue: LONG_SUBSCRIPTION_URL,
       discoveredNodes: 8,
       latencyMs: 1135.57,
+      nodes: [
+        {
+          displayName: 'Tokyo-A',
+          protocol: 'ss',
+          ok: true,
+          ip: '203.0.113.8',
+          location: 'JP / NRT',
+          latencyMs: 1135.57,
+        },
+        {
+          displayName: 'Singapore-B',
+          protocol: 'vless',
+          ok: true,
+          ip: '198.51.100.42',
+          location: 'SG / SIN',
+          latencyMs: 1248.31,
+        },
+        {
+          displayName: 'Frankfurt-C',
+          protocol: 'trojan',
+          ok: false,
+          latencyMs: null,
+          location: null,
+          ip: null,
+          message: 'Bootstrap probe timed out before the node produced a trace response.',
+        },
+      ],
     },
   },
 ]
@@ -57,6 +84,16 @@ const MANUAL_MIXED_RESULTS: ForwardProxyValidationEntry[] = [
       message: 'proxy validation succeeded',
       normalizedValue: 'ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@example.com:443#Tokyo-A',
       latencyMs: 128.45,
+      nodes: [
+        {
+          displayName: 'Tokyo-A',
+          protocol: 'ss',
+          ok: true,
+          ip: '203.0.113.8',
+          location: 'JP / NRT',
+          latencyMs: 128.45,
+        },
+      ],
     },
   },
   {
@@ -69,6 +106,17 @@ const MANUAL_MIXED_RESULTS: ForwardProxyValidationEntry[] = [
       normalizedValue: 'http://203.0.113.17:8080',
       latencyMs: 2100,
       errorCode: 'proxy_timeout',
+      nodes: [
+        {
+          displayName: '203.0.113.17:8080',
+          protocol: 'http',
+          ok: false,
+          ip: null,
+          location: null,
+          latencyMs: null,
+          message: 'Proxy timed out during bootstrap probe.',
+        },
+      ],
     },
   },
   {
@@ -80,6 +128,16 @@ const MANUAL_MIXED_RESULTS: ForwardProxyValidationEntry[] = [
       message: 'proxy validation succeeded',
       normalizedValue: 'socks5h://198.51.100.8:1080',
       latencyMs: 242.19,
+      nodes: [
+        {
+          displayName: '198.51.100.8:1080',
+          protocol: 'socks5h',
+          ok: true,
+          ip: '198.51.100.8',
+          location: 'US / SJC',
+          latencyMs: 242.19,
+        },
+      ],
     },
   },
 ]
@@ -107,6 +165,17 @@ const MANUAL_OVERFLOW_RESULTS: ForwardProxyValidationEntry[] = Array.from({ leng
       normalizedValue: value,
       latencyMs: 90 + item * 37.5,
       errorCode: ok ? undefined : 'proxy_timeout',
+      nodes: [
+        {
+          displayName: `Overflow-${item}`,
+          protocol: value.slice(0, value.indexOf(':')),
+          ok,
+          ip: ok ? `198.51.100.${item}` : null,
+          location: ok ? `US / LAX` : null,
+          latencyMs: ok ? 90 + item * 37.5 : null,
+          message: ok ? undefined : `Proxy bootstrap probe failed on edge-${item}.example.com after repeated timeout and TLS handshake retries.`,
+        },
+      ],
     },
   }
 })
@@ -238,6 +307,16 @@ export const SubscriptionDialogEmpty: Story = {
     dialogPreview: {
       kind: 'subscription',
       input: LONG_SUBSCRIPTION_URL,
+      results: [],
+    },
+  },
+}
+
+export const ManualDialogReadyToImport: Story = {
+  args: {
+    dialogPreview: {
+      kind: 'manual',
+      input: MANUAL_MIXED_RESULTS.map((entry) => entry.value).join('\n'),
       results: [],
     },
   },

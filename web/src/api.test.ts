@@ -44,8 +44,11 @@ describe('admin user tag api helpers', () => {
       Promise.resolve(
         createSseResponse([
           'data: {"type":"phase","operation":"validate","phaseKey":"parse_input","label":"Parse input"}\n\n',
+          'data: {"type":"nodes","operation":"validate","nodes":[{"nodeKey":"edge-a","displayName":"edge-a","protocol":"ss","status":"pending"}]}\n\n',
+          'data: {"type":"node","operation":"validate","node":{"nodeKey":"edge-a","displayName":"edge-a","protocol":"ss","status":"probing"}}\n\n',
           'data: {"type":"phase","operation":"validate","phaseKey":"probe_nodes","label":"Probe nodes","current":1,"total":3,"detail":"edge-a"}\n\n',
-          'data: {"type":"complete","operation":"validate","payload":{"ok":true,"message":"proxy validation succeeded","normalizedValue":"http://127.0.0.1:8080","discoveredNodes":1,"latencyMs":42}}\n\n',
+          'data: {"type":"node","operation":"validate","node":{"nodeKey":"edge-a","displayName":"edge-a","protocol":"ss","status":"ok","ok":true,"latencyMs":42,"ip":"203.0.113.8","location":"JP / NRT"}}\n\n',
+          'data: {"type":"complete","operation":"validate","payload":{"ok":true,"message":"proxy validation succeeded","normalizedValue":"http://127.0.0.1:8080","discoveredNodes":1,"latencyMs":42,"nodes":[{"displayName":"edge-a","protocol":"ss","ok":true,"ip":"203.0.113.8","location":"JP / NRT","latencyMs":42}]}}\n\n',
         ]),
       ),
     )
@@ -57,9 +60,18 @@ describe('admin user tag api helpers', () => {
     )
 
     expect(payload.ok).toBe(true)
+    expect(payload.nodes?.[0]).toMatchObject({
+      displayName: 'edge-a',
+      protocol: 'ss',
+      ip: '203.0.113.8',
+      location: 'JP / NRT',
+    })
     expect(events).toEqual([
       'phase:validate:parse_input',
+      'nodes:validate:complete',
+      'node:validate:complete',
       'phase:validate:probe_nodes',
+      'node:validate:complete',
       'complete:validate:complete',
     ])
   })
@@ -94,6 +106,28 @@ describe('admin user tag api helpers', () => {
 
     expect(payload.proxyUrls).toEqual(['http://127.0.0.1:8080'])
     expect(seen).toEqual(['complete'])
+  })
+
+  it('supports aborting forward proxy validation progress requests', async () => {
+    const fetchMock = mock((_input: RequestInfo | URL, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener(
+          'abort',
+          () => reject(new DOMException('The operation was aborted.', 'AbortError')),
+          { once: true },
+        )
+      }))
+    globalThis.fetch = fetchMock as typeof fetch
+
+    const controller = new AbortController()
+    const promise = validateForwardProxyCandidateWithProgress(
+      { kind: 'proxyUrl', value: 'http://127.0.0.1:8080' },
+      undefined,
+      controller.signal,
+    )
+    controller.abort()
+
+    await expect(promise).rejects.toMatchObject({ name: 'AbortError' })
   })
 
   it('unwraps tag catalog list responses', async () => {
