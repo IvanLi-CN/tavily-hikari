@@ -167,7 +167,7 @@ None
 - [x] M2: 新增共享离线图标注册层并收口现有 Iconify React 导入
 - [x] M3: PublicHome/UserConsole 改为本地图标映射并移除远程 Iconify URL
 - [x] M4: 补齐自动化验证并确认构建产物无 `api.iconify.design`
-- [ ] M5: 完成浏览器验收、PR、checks 与 review-loop 收敛
+- [x] M5: 完成浏览器验收、PR、checks 与 review-loop 收敛
 
 ## 方案概述（Approach, high-level）
 
@@ -186,6 +186,7 @@ None
 - 2026-03-15: 创建 spec，冻结运行时图标内置目标与按需注册策略。
 - 2026-03-15: 完成共享图标注册层、导入路径收口与 PublicHome/UserConsole 外链图标替换。
 - 2026-03-15: 通过 `cd web && bun test`、`cd web && bun run build` 与浏览器网络面板复核，确认构建产物和运行时页面均无 Iconify 外链请求。
+- 2026-03-15: PR #135 全部 checks 通过，补齐 `mdi:tray-arrow-down` 离线清单与覆盖测试后，review-loop 收敛完成。
 
 ## 参考（References）
 
