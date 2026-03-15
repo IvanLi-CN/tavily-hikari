@@ -1,4 +1,4 @@
-import { Icon } from '@iconify/react'
+import { Icon } from '../lib/icons'
 import type { InputHTMLAttributes, KeyboardEvent as ReactKeyboardEvent, Ref } from 'react'
 
 import { isCopyIntentKey } from '../lib/clipboard'

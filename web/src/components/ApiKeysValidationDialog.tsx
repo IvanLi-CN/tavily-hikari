@@ -1,5 +1,5 @@
 import React from "react";
-import { Icon } from "@iconify/react";
+import { Icon } from "../lib/icons";
 
 import { useTranslate } from "../i18n";
 import { useViewportMode } from "../lib/responsive";

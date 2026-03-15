@@ -1,4 +1,4 @@
-import { Icon } from '@iconify/react'
+import { Icon } from '../lib/icons'
 
 import { ADMIN_USER_CONSOLE_HREF } from '../lib/adminUserConsoleEntry'
 

@@ -1,5 +1,5 @@
 import React, { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Icon } from '@iconify/react'
+import { Icon, getGuideClientIconName } from './lib/icons'
 import { StatusBadge, type StatusTone } from './components/StatusBadge'
 import CherryStudioMock from './components/CherryStudioMock'
 import {
@@ -57,7 +57,6 @@ const VSCODE_DOC_URL = 'https://code.visualstudio.com/docs/copilot/customization
 const NOCODB_DOC_URL = 'https://nocodb.com/docs/product-docs/mcp'
 const MCP_SPEC_URL = 'https://modelcontextprotocol.io/introduction'
 const REPO_URL = 'https://github.com/IvanLi-CN/tavily-hikari'
-const ICONIFY_ENDPOINT = 'https://api.iconify.design'
 const STORAGE_LAST_TOKEN = 'tavily-hikari-last-token'
 const STORAGE_TOKEN_MAP = 'tavily-hikari-token-map'
 // Keep in sync with backend constants in src/lib.rs
@@ -780,7 +779,7 @@ function PublicHome(): JSX.Element {
       </section>
       <footer className="surface public-home-footer">
         <a className="footer-gh" href={REPO_URL} target="_blank" rel="noreferrer">
-          <img src={`${ICONIFY_ENDPOINT}/mdi/github.svg?color=%232563eb`} alt="GitHub" />
+          <Icon icon="mdi:github" width={18} height={18} aria-hidden="true" style={{ color: '#2563eb' }} />
           <span>GitHub</span>
         </a>
         <div className="footer-version">
@@ -877,37 +876,33 @@ function MobileGuideDropdown({
   onChange: (id: GuideKey) => void
   labels: { id: GuideKey, label: string }[]
 }): JSX.Element {
-  const icon = (id: GuideKey) => {
-    // Prefer brand logos from simple-icons when available; fallback to MDI
-    const map: Record<GuideKey, string> = {
-      codex: 'simple-icons/openai',
-      claude: 'simple-icons/anthropic',
-      vscode: 'simple-icons/visualstudiocode',
-      claudeDesktop: 'simple-icons/anthropic',
-      cursor: 'simple-icons/cursor', // if missing, Iconify returns 404; UI will still show label
-      windsurf: 'simple-icons/codeium',
-      cherryStudio: 'mdi/cherry',
-      other: 'mdi/dots-horizontal',
-    }
-    const key = map[id] ?? 'mdi/dots-horizontal'
-    return `${ICONIFY_ENDPOINT}/${key}.svg?color=%23475569`
-  }
-
   const current = labels.find((l) => l.id === active)
   return (
     <div className="dropdown w-full">
       <Button type="button" variant="outline" size="sm" className="w-full justify-between md:h-10" tabIndex={0}>
         <span className="inline-flex items-center gap-2">
-          <img src={icon(active)} alt="client" width={18} height={18} />
+          <Icon
+            icon={getGuideClientIconName(active)}
+            width={18}
+            height={18}
+            aria-hidden="true"
+            style={{ color: '#475569' }}
+          />
           {current?.label ?? active}
         </span>
-        <img src={`${ICONIFY_ENDPOINT}/mdi/chevron-down.svg?color=%23647589`} alt="open" width={16} height={16} />
+        <Icon icon="mdi:chevron-down" width={16} height={16} aria-hidden="true" style={{ color: '#647589' }} />
       </Button>
       <ul tabIndex={0} className="menu dropdown-content bg-base-100 rounded-box z-[1] w-60 p-2 shadow mt-2">
         {labels.map((tab) => (
           <li key={tab.id}>
             <button type="button" onClick={() => onChange(tab.id)} className="flex items-center gap-2">
-              <img src={icon(tab.id)} alt="" width={16} height={16} />
+              <Icon
+                icon={getGuideClientIconName(tab.id)}
+                width={16}
+                height={16}
+                aria-hidden="true"
+                style={{ color: '#475569' }}
+              />
               <span className="truncate">{tab.label}</span>
             </button>
           </li>
