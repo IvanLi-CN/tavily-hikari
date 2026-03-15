@@ -2625,6 +2625,19 @@ impl TavilyProxy {
         Ok(row.unwrap_or((None, None)))
     }
 
+    async fn load_api_key_registration_metadata_by_secret(
+        &self,
+        api_key: &str,
+    ) -> Result<(Option<String>, Option<String>), ProxyError> {
+        let row = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+            "SELECT registration_ip, registration_region FROM api_keys WHERE api_key = ? LIMIT 1",
+        )
+        .bind(api_key)
+        .fetch_optional(&self.key_store.pool)
+        .await?;
+        Ok(row.unwrap_or((None, None)))
+    }
+
     async fn rank_registration_aware_candidates(
         &self,
         subject: &str,
@@ -3086,6 +3099,12 @@ impl TavilyProxy {
         geo_origin: &str,
         preferred_primary_proxy_key: &str,
     ) -> forward_proxy::ForwardProxyAffinityRecord {
+        if preferred_primary_proxy_key == forward_proxy::FORWARD_PROXY_DIRECT_KEY {
+            return forward_proxy::ForwardProxyAffinityRecord {
+                updated_at: Utc::now().timestamp(),
+                ..Default::default()
+            };
+        }
         let (preferred_exists, candidate_limit) = {
             let manager = self.forward_proxy.lock().await;
             (
@@ -5485,6 +5504,21 @@ impl TavilyProxy {
                     registration_ip,
                     registration_region,
                     preferred_primary_proxy_key,
+                )
+                .await?,
+            )
+        } else if let (existing_registration_ip, existing_registration_region) = self
+            .load_api_key_registration_metadata_by_secret(api_key)
+            .await?
+            && (existing_registration_ip.is_some() || existing_registration_region.is_some())
+        {
+            Some(
+                self.select_proxy_affinity_for_registration_with_hint(
+                    api_key,
+                    geo_origin,
+                    existing_registration_ip.as_deref(),
+                    existing_registration_region.as_deref(),
+                    None,
                 )
                 .await?,
             )
@@ -18566,6 +18600,45 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
     }
 
     #[tokio::test]
+    async fn add_or_undelete_key_with_hint_only_direct_affinity_does_not_persist() {
+        let db_path = temp_db_path("proxy-affinity-hint-only-direct");
+        let db_str = db_path.to_string_lossy().to_string();
+        let geo_addr = spawn_api_key_geo_mock_server().await;
+        let geo_origin = format!("http://{geo_addr}/geo");
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        let (key_id, status) = proxy
+            .add_or_undelete_key_with_status_in_group_and_registration_proxy_affinity_hint(
+                "tvly-hint-direct",
+                None,
+                None,
+                None,
+                &geo_origin,
+                Some(forward_proxy::FORWARD_PROXY_DIRECT_KEY),
+            )
+            .await
+            .expect("key created without persisting direct hint");
+        assert_eq!(status, ApiKeyUpsertStatus::Created);
+
+        let affinity_row: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT primary_proxy_key, secondary_proxy_key FROM forward_proxy_key_affinity WHERE key_id = ?",
+        )
+        .bind(&key_id)
+        .fetch_optional(&proxy.key_store.pool)
+        .await
+        .expect("query direct hint affinity row");
+        assert!(
+            affinity_row.is_none(),
+            "direct validation results must not become durable affinity records"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn add_or_undelete_key_with_stale_hint_only_proxy_affinity_clears_existing_affinity() {
         let db_path = temp_db_path("proxy-affinity-stale-hint-clears-existing");
         let db_str = db_path.to_string_lossy().to_string();
@@ -18627,6 +18700,74 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
         assert!(
             affinity_row.is_none(),
             "stale hint-only refresh should clear the old affinity instead of keeping it"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn add_or_undelete_key_with_hint_only_proxy_affinity_preserves_existing_registration_affinity()
+     {
+        let db_path = temp_db_path("proxy-affinity-hint-preserves-registration");
+        let db_str = db_path.to_string_lossy().to_string();
+        let geo_addr = spawn_api_key_geo_mock_server().await;
+        let geo_origin = format!("http://{geo_addr}/geo");
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        {
+            let mut manager = proxy.forward_proxy.lock().await;
+            manager.apply_settings(
+                ForwardProxySettings {
+                    proxy_urls: vec![
+                        "http://18.183.246.69:8080".to_string(),
+                        "http://1.1.1.1:8080".to_string(),
+                    ],
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: false,
+                }
+                .normalized(),
+            );
+        }
+
+        let (key_id, created_status) = proxy
+            .add_or_undelete_key_with_status_in_group_and_registration_proxy_affinity(
+                "tvly-hint-preserves-registration",
+                None,
+                Some("1.1.1.1"),
+                Some("US Westfield (MA)"),
+                &geo_origin,
+            )
+            .await
+            .expect("key created with registration affinity");
+        assert_eq!(created_status, ApiKeyUpsertStatus::Created);
+
+        let (_, existed_status) = proxy
+            .add_or_undelete_key_with_status_in_group_and_registration_proxy_affinity_hint(
+                "tvly-hint-preserves-registration",
+                None,
+                None,
+                None,
+                &geo_origin,
+                Some("http://18.183.246.69:8080"),
+            )
+            .await
+            .expect("existing registration key refreshed with hint-only payload");
+        assert_eq!(existed_status, ApiKeyUpsertStatus::Existed);
+
+        let affinity_row: (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT primary_proxy_key, secondary_proxy_key FROM forward_proxy_key_affinity WHERE key_id = ?",
+        )
+        .bind(&key_id)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("query affinity row after hint-only refresh");
+        assert_eq!(
+            affinity_row.0.as_deref(),
+            Some("http://1.1.1.1:8080"),
+            "hint-only refresh must not override durable registration-based affinity"
         );
 
         let _ = std::fs::remove_file(db_path);
