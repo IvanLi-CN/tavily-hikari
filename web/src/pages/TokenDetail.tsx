@@ -1,5 +1,5 @@
 import { Fragment, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Icon } from '@iconify/react'
+import { Icon } from '../lib/icons'
 import { Chart as ChartJS, BarElement, CategoryScale, Legend, LinearScale, Tooltip, type ChartOptions } from 'chart.js'
 import { Bar } from 'react-chartjs-2'
 import { fetchTokenUsageSeries, rotateTokenSecret, type TokenOwnerSummary, type TokenUsageBucket } from '../api'

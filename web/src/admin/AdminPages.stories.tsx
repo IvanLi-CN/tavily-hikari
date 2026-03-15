@@ -1,4 +1,4 @@
-import { Icon } from '@iconify/react'
+import { Icon } from '../lib/icons'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { addons } from 'storybook/preview-api'
 import { SELECT_STORY } from 'storybook/internal/core-events'
@@ -67,6 +67,11 @@ function formatKeyGroupName(group: string | null | undefined, ungroupedLabel: st
   return normalized.length > 0 ? normalized : ungroupedLabel
 }
 
+function formatRegistrationValue(value: string | null | undefined): string {
+  const normalized = value?.trim() ?? ''
+  return normalized.length > 0 ? normalized : '—'
+}
+
 function toggleSelection(values: string[], value: string): string[] {
   return values.includes(value) ? values.filter((item) => item !== value) : [...values, value]
 }
@@ -106,6 +111,8 @@ const tableInlineFieldStyle = {
   gap: 8,
   whiteSpace: 'nowrap',
   lineHeight: 1.35,
+  position: 'relative',
+  paddingRight: 40,
 } as const
 
 const tableHeaderStackStyle = {
@@ -261,6 +268,8 @@ const MOCK_KEYS: ApiKeyStats[] = [
     id: 'MZli',
     status: 'active',
     group: 'production',
+    registration_ip: '8.8.8.8',
+    registration_region: 'US',
     status_changed_at: now - 2_100,
     last_used_at: now - 61,
     deleted_at: null,
@@ -277,6 +286,8 @@ const MOCK_KEYS: ApiKeyStats[] = [
     id: 'asR8',
     status: 'exhausted',
     group: 'production',
+    registration_ip: '8.8.4.4',
+    registration_region: 'US Westfield (MA)',
     status_changed_at: now - 6_480,
     last_used_at: now - 2_300,
     deleted_at: null,
@@ -293,6 +304,8 @@ const MOCK_KEYS: ApiKeyStats[] = [
     id: 'U2vK',
     status: 'active',
     group: 'batch',
+    registration_ip: '2606:4700:4700::1111',
+    registration_region: null,
     status_changed_at: now - 4_200,
     last_used_at: now - 410,
     deleted_at: null,
@@ -309,6 +322,8 @@ const MOCK_KEYS: ApiKeyStats[] = [
     id: 'c7Pk',
     status: 'disabled',
     group: 'ops',
+    registration_ip: null,
+    registration_region: null,
     status_changed_at: now - 86_400,
     last_used_at: now - 86_400 * 2,
     deleted_at: null,
@@ -325,6 +340,8 @@ const MOCK_KEYS: ApiKeyStats[] = [
     id: 'J1nW',
     status: 'active',
     group: 'ops',
+    registration_ip: '9.9.9.9',
+    registration_region: null,
     status_changed_at: now - 1_800,
     last_used_at: now - 180,
     deleted_at: null,
@@ -1500,15 +1517,21 @@ function TokensPageCanvas(): JSX.Element {
 function KeysPageCanvas({
   keys = MOCK_KEYS,
   selectedKeyId,
+  initialRegistrationIp = '',
+  initialRegions = [],
 }: {
   keys?: ApiKeyStats[]
   selectedKeyId?: string
+  initialRegistrationIp?: string
+  initialRegions?: string[]
 } = {}): JSX.Element {
   const admin = useTranslate().admin
   const keyStrings = admin.keys
   const keyDetailsStrings = admin.keyDetails
   const [selectedGroups, setSelectedGroups] = useState<string[]>([])
   const [selectedStatuses, setSelectedStatuses] = useState<string[]>([])
+  const [selectedRegistrationIp, setSelectedRegistrationIp] = useState(initialRegistrationIp)
+  const [selectedRegions, setSelectedRegions] = useState<string[]>(initialRegions)
   const [page, setPage] = useState(1)
   const [perPage, setPerPage] = useState(20)
   const [quarantineDetailExpanded, setQuarantineDetailExpanded] = useState(false)
@@ -1536,12 +1559,31 @@ function KeysPageCanvas({
   )
     .map(([, value]) => value)
     .sort((left, right) => left.label.localeCompare(right.label))
+  const regionOptions = Array.from(
+    keys.reduce((map, item) => {
+      const value = item.registration_region?.trim() ?? ''
+      if (!value) return map
+      map.set(value, {
+        value,
+        label: value,
+        count: (map.get(value)?.count ?? 0) + 1,
+      })
+      return map
+    }, new Map<string, { value: string; label: string; count: number }>()),
+  )
+    .map(([, value]) => value)
+    .sort((left, right) => left.label.localeCompare(right.label))
   const filteredKeys = keys.filter((item) => {
     const groupKey = (item.group ?? '').trim()
     const statusKey = item.quarantine ? 'quarantined' : item.status
+    const registrationIp = item.registration_ip?.trim() ?? ''
+    const regionKey = item.registration_region?.trim() ?? ''
     const groupMatched = selectedGroups.length === 0 || selectedGroups.includes(groupKey)
     const statusMatched = selectedStatuses.length === 0 || selectedStatuses.includes(statusKey)
-    return groupMatched && statusMatched
+    const registrationIpMatched =
+      selectedRegistrationIp.trim().length === 0 || registrationIp === selectedRegistrationIp.trim()
+    const regionMatched = selectedRegions.length === 0 || selectedRegions.includes(regionKey)
+    return groupMatched && statusMatched && registrationIpMatched && regionMatched
   })
   const totalPages = Math.max(1, Math.ceil(filteredKeys.length / perPage))
   const safePage = Math.min(page, totalPages)
@@ -1562,6 +1604,12 @@ function KeysPageCanvas({
     keyStrings.groups.all,
     keyStrings.filters.selectedSuffix,
   )
+  const regionSummary = summarizeFilterSelection(
+    keyStrings.filters.region,
+    regionOptions.filter((option) => selectedRegions.includes(option.value)).map((option) => option.label),
+    keyStrings.groups.all,
+    keyStrings.filters.selectedSuffix,
+  )
 
   useEffect(() => {
     if (page !== safePage) {
@@ -1577,10 +1625,40 @@ function KeysPageCanvas({
             <h2>{keyStrings.title}</h2>
             <p className="panel-description">{keyStrings.description}</p>
           </div>
+          <div style={{ ...keysQuickAddCardStyle, marginLeft: 'auto' }}>
+            <div style={keysQuickAddActionsStyle}>
+              <input
+                type="text"
+                className="input input-bordered"
+                readOnly
+                value="tvly-prod-******"
+                aria-label={keyStrings.placeholder}
+                style={{ flex: '1 1 260px', minWidth: 260, maxWidth: '100%' }}
+              />
+              <button type="button" className="btn btn-primary btn-sm" style={{ whiteSpace: 'nowrap' }}>
+                {keyStrings.addButton}
+              </button>
+            </div>
+          </div>
         </div>
 
         <div style={keysUtilityRowStyle}>
           <div style={keysFilterClusterStyle}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Input
+                type="text"
+                value={selectedRegistrationIp}
+                onChange={(event) => setSelectedRegistrationIp(event.target.value)}
+                placeholder={keyStrings.filters.registrationIpPlaceholder}
+                aria-label={keyStrings.filters.registrationIp}
+                style={{ width: 188 }}
+              />
+              {selectedRegistrationIp ? (
+                <Button type="button" variant="ghost" size="sm" onClick={() => setSelectedRegistrationIp('')}>
+                  {keyStrings.filters.clearRegistrationIp}
+                </Button>
+              ) : null}
+            </div>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button type="button" variant="outline" size="sm" aria-label={groupSummary}>
@@ -1659,21 +1737,45 @@ function KeysPageCanvas({
                 ))}
               </DropdownMenuContent>
             </DropdownMenu>
-          </div>
-          <div style={keysQuickAddCardStyle}>
-            <div style={keysQuickAddActionsStyle}>
-              <input
-                type="text"
-                className="input input-bordered"
-                readOnly
-                value="tvly-prod-******"
-                aria-label={keyStrings.placeholder}
-                style={{ flex: '1 1 260px', minWidth: 260, maxWidth: '100%' }}
-              />
-              <button type="button" className="btn btn-primary btn-sm" style={{ whiteSpace: 'nowrap' }}>
-                {keyStrings.addButton}
-              </button>
-            </div>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button type="button" variant="outline" size="sm" aria-label={regionSummary}>
+                  <Icon icon="mdi:map-marker-radius-outline" width={16} height={16} aria-hidden="true" />
+                  <span style={{ whiteSpace: 'nowrap' }}>{regionSummary}</span>
+                  {selectedRegions.length > 0 ? (
+                    <Badge variant="neutral" className="ml-1 px-1.5 py-0 text-[10px]">
+                      {selectedRegions.length}
+                    </Badge>
+                  ) : null}
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="w-72">
+                <DropdownMenuLabel>{keyStrings.filters.region}</DropdownMenuLabel>
+                <DropdownMenuItem
+                  className="cursor-pointer"
+                  disabled={selectedRegions.length === 0}
+                  onSelect={(event) => {
+                    event.preventDefault()
+                    setSelectedRegions([])
+                  }}
+                >
+                  {keyStrings.filters.clearRegions}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                {regionOptions.map((option) => (
+                  <DropdownMenuCheckboxItem
+                    key={option.value}
+                    className="cursor-pointer"
+                    checked={selectedRegions.includes(option.value)}
+                    onSelect={(event) => event.preventDefault()}
+                    onCheckedChange={() => setSelectedRegions((current) => toggleSelection(current, option.value))}
+                  >
+                    <span>{option.label}</span>
+                    <span className="ml-auto text-xs opacity-60">{formatNumber(option.count)}</span>
+                  </DropdownMenuCheckboxItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
 
@@ -1685,6 +1787,12 @@ function KeysPageCanvas({
                   <div style={tableHeaderStackStyle}>
                     <span style={tableFieldStyle}>{keyStrings.table.keyId}</span>
                     <span style={tableSecondaryFieldStyle}>{keyStrings.groups.label}</span>
+                  </div>
+                </th>
+                <th>
+                  <div style={tableHeaderStackStyle}>
+                    <span style={tableFieldStyle}>{keyStrings.table.registration}</span>
+                    <span style={tableSecondaryFieldStyle}>{keyStrings.table.registrationRegion}</span>
                   </div>
                 </th>
                 <th>
@@ -1726,8 +1834,34 @@ function KeysPageCanvas({
                     <div style={tableStackStyle}>
                       <div style={tableInlineFieldStyle}>
                         <code>{item.id}</code>
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-xs btn-circle"
+                          aria-label={keyStrings.actions.copy}
+                          title={keyStrings.actions.copy}
+                          style={{
+                            position: 'absolute',
+                            right: 0,
+                            top: '50%',
+                            transform: 'translateY(-50%)',
+                            width: 32,
+                            height: 32,
+                            minHeight: 32,
+                            padding: 0,
+                          }}
+                        >
+                          <Icon icon="mdi:content-copy" width={18} height={18} aria-hidden="true" />
+                        </button>
                       </div>
                       <span style={tableSecondaryFieldStyle}>{formatKeyGroupName(item.group, keyStrings.groups.ungrouped)}</span>
+                    </div>
+                  </td>
+                  <td>
+                    <div style={tableStackStyle}>
+                      <span style={tableFieldStyle}>{formatRegistrationValue(item.registration_ip)}</span>
+                      <span style={tableSecondaryFieldStyle}>
+                        {formatRegistrationValue(item.registration_region)}
+                      </span>
                     </div>
                   </td>
                   <td>
@@ -1801,6 +1935,29 @@ function KeysPageCanvas({
           />
         ) : null}
       </section>
+
+      {selectedKey ? (
+        <section className="surface panel" style={{ marginTop: 16 }}>
+          <div className="panel-header">
+            <div>
+              <h2>{keyDetailsStrings.metadata.title}</h2>
+              <p className="panel-description">{keyDetailsStrings.metadata.description}</p>
+            </div>
+          </div>
+          <div className="admin-mobile-kv">
+            <span>{keyDetailsStrings.metadata.group}</span>
+            <strong>{formatKeyGroupName(selectedKey.group, keyStrings.groups.ungrouped)}</strong>
+          </div>
+          <div className="admin-mobile-kv">
+            <span>{keyDetailsStrings.metadata.registrationIp}</span>
+            <strong>{formatRegistrationValue(selectedKey.registration_ip)}</strong>
+          </div>
+          <div className="admin-mobile-kv">
+            <span>{keyDetailsStrings.metadata.registrationRegion}</span>
+            <strong>{formatRegistrationValue(selectedKey.registration_region)}</strong>
+          </div>
+        </section>
+      ) : null}
 
       {selectedKey?.quarantine ? (
         <section className="surface panel" style={{ marginTop: 16 }}>
@@ -2860,6 +3017,25 @@ export const Tokens: Story = {
 
 export const Keys: Story = {
   render: () => <KeysPageCanvas />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+}
+
+export const KeysRegistrationFilters: Story = {
+  render: () => (
+    <KeysPageCanvas
+      initialRegistrationIp="8.8.8.8"
+      initialRegions={['US']}
+    />
+  ),
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+}
+
+export const KeysRegistrationMetadata: Story = {
+  render: () => <KeysPageCanvas selectedKeyId="MZli" />,
   parameters: {
     viewport: { defaultViewport: '1440-device-desktop' },
   },

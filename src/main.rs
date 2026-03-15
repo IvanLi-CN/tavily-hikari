@@ -94,6 +94,14 @@ struct Cli {
     )]
     usage_base: String,
 
+    /// Hosted API origin used to resolve registration IP geo metadata for imported API keys.
+    #[arg(
+        long,
+        env = "API_KEY_IP_GEO_ORIGIN",
+        default_value = "https://api.country.is"
+    )]
+    api_key_ip_geo_origin: String,
+
     /// Enable/disable LinuxDo OAuth2 login for user-facing flow.
     #[arg(long, env = "LINUXDO_OAUTH_ENABLED", default_value_t = false)]
     linuxdo_oauth_enabled: bool,
@@ -296,6 +304,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         admin_auth,
         cli.dev_open_admin,
         cli.usage_base,
+        cli.api_key_ip_geo_origin,
         linuxdo_oauth,
     )
     .await?;

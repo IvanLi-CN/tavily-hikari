@@ -1,10 +1,12 @@
 import React from "react";
-import { Icon } from "@iconify/react";
+import { createPortal } from "react-dom";
+import { Icon } from "../lib/icons";
 
 import { useTranslate } from "../i18n";
 import { useViewportMode } from "../lib/responsive";
 import { StatusBadge, type StatusTone } from "./StatusBadge";
 import { Button } from "./ui/button";
+import { Badge } from "./ui/badge";
 import {
   Dialog,
   DialogContent,
@@ -18,7 +20,7 @@ import {
   TableHeader,
   TableRow,
 } from "./ui/table";
-import type { AddApiKeysBatchResponse } from "../api";
+import type { AddApiKeysBatchResponse, ValidateAssignedProxyMatchKind } from "../api";
 
 export type KeyValidationStatus =
   | "pending"
@@ -33,6 +35,11 @@ export type KeyValidationStatus =
 export type KeyValidationRow = {
   api_key: string;
   status: KeyValidationStatus;
+  registration_ip?: string | null;
+  registration_region?: string | null;
+  assigned_proxy_key?: string | null;
+  assigned_proxy_label?: string | null;
+  assigned_proxy_match_kind?: ValidateAssignedProxyMatchKind | null;
   quota_limit?: number;
   quota_remaining?: number;
   detail?: string;
@@ -65,8 +72,19 @@ export type KeysValidationCounts = {
 };
 
 type ValidationFilterKey = "pending" | "ok" | "exhausted" | "invalid" | "error" | "duplicate";
+type BubblePlacement = "top" | "bottom";
+
+type BubblePosition = {
+  top: number;
+  left: number;
+  placement: BubblePlacement;
+  arrowLeft: number;
+};
 
 const numberFormatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
+const BUBBLE_VIEWPORT_MARGIN = 12;
+const BUBBLE_ANCHOR_GAP = 10;
+const BUBBLE_ARROW_MARGIN = 18;
 
 function formatNumber(value: number | null | undefined): string {
   if (value == null) return "—";
@@ -166,6 +184,175 @@ function filterKeyForStatus(status: KeyValidationStatus): ValidationFilterKey {
   }
 }
 
+export function assignedProxyMatchToneClass(
+  matchKind?: ValidateAssignedProxyMatchKind | null,
+): string {
+  switch (matchKind) {
+    case "registration_ip":
+      return "text-success";
+    case "same_region":
+      return "text-info";
+    case "other":
+      return "text-warning";
+    default:
+      return "";
+  }
+}
+
+function RegistrationIpIndicator(props: {
+  label: string;
+  ip: string;
+  region?: string | null;
+  proxyLabel?: string | null;
+  proxyKey?: string | null;
+  proxyMatchKind?: ValidateAssignedProxyMatchKind | null;
+  ipLabel: string;
+  regionLabel: string;
+  proxyLabelText: string;
+}): JSX.Element {
+  const triggerRef = React.useRef<HTMLSpanElement | null>(null);
+  const bubbleRef = React.useRef<HTMLSpanElement | null>(null);
+  const [open, setOpen] = React.useState(false);
+  const [position, setPosition] = React.useState<BubblePosition | null>(null);
+  const region = props.region?.trim() ?? null;
+  const proxyValue = props.proxyLabel?.trim() || props.proxyKey?.trim() || null;
+  const proxyValueToneClass = assignedProxyMatchToneClass(props.proxyMatchKind);
+  const accessibleLabel = [
+    `${props.ipLabel}: ${props.ip}`,
+    region ? `${props.regionLabel}: ${region}` : null,
+    proxyValue ? `${props.proxyLabelText}: ${proxyValue}` : null,
+  ]
+    .filter(Boolean)
+    .join("; ");
+
+  React.useLayoutEffect(() => {
+    if (!open || !triggerRef.current || typeof window === "undefined") {
+      setPosition(null);
+      return;
+    }
+
+    const anchorEl = triggerRef.current;
+
+    const updatePosition = () => {
+      const bubbleEl = bubbleRef.current;
+      if (!bubbleEl || !anchorEl.isConnected) {
+        setPosition(null);
+        return;
+      }
+
+      const anchorRect = anchorEl.getBoundingClientRect();
+      const bubbleRect = bubbleEl.getBoundingClientRect();
+
+      let top = anchorRect.bottom + BUBBLE_ANCHOR_GAP;
+      let placement: BubblePlacement = "bottom";
+
+      if (top + bubbleRect.height > window.innerHeight - BUBBLE_VIEWPORT_MARGIN) {
+        const nextTop = anchorRect.top - bubbleRect.height - BUBBLE_ANCHOR_GAP;
+        if (nextTop >= BUBBLE_VIEWPORT_MARGIN) {
+          top = nextTop;
+          placement = "top";
+        }
+      }
+
+      top = Math.max(
+        BUBBLE_VIEWPORT_MARGIN,
+        Math.min(top, window.innerHeight - bubbleRect.height - BUBBLE_VIEWPORT_MARGIN),
+      );
+
+      let left = anchorRect.left + anchorRect.width / 2 - bubbleRect.width / 2;
+      left = Math.max(
+        BUBBLE_VIEWPORT_MARGIN,
+        Math.min(left, window.innerWidth - bubbleRect.width - BUBBLE_VIEWPORT_MARGIN),
+      );
+
+      const arrowLeft = Math.max(
+        BUBBLE_ARROW_MARGIN,
+        Math.min(anchorRect.left + anchorRect.width / 2 - left, bubbleRect.width - BUBBLE_ARROW_MARGIN),
+      );
+
+      setPosition({ top, left, placement, arrowLeft });
+    };
+
+    updatePosition();
+
+    const resizeObserver = typeof ResizeObserver !== "undefined" ? new ResizeObserver(updatePosition) : null;
+    resizeObserver?.observe(anchorEl);
+    if (bubbleRef.current) resizeObserver?.observe(bubbleRef.current);
+
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [open]);
+
+  return (
+    <span className="key-validation-detail">
+      <span
+        ref={triggerRef}
+        className="key-validation-detail-trigger inline-flex"
+        tabIndex={0}
+        aria-label={accessibleLabel}
+        data-registration-ip-trigger="true"
+        onMouseEnter={() => setOpen(true)}
+        onMouseLeave={() => setOpen(false)}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setOpen(false)}
+      >
+        <Badge
+          variant="success"
+          className="gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em]"
+        >
+          <Icon icon="mdi:check-bold" width={12} height={12} aria-hidden="true" />
+          <span>{props.label}</span>
+        </Badge>
+      </span>
+      {open && typeof document !== "undefined"
+        ? createPortal(
+            <span
+              ref={bubbleRef}
+              className="key-validation-bubble"
+              role="tooltip"
+              data-placement={position?.placement ?? "bottom"}
+              style={{
+                top: `${position?.top ?? 0}px`,
+                left: `${position?.left ?? 0}px`,
+                visibility: position ? "visible" : "hidden",
+                pointerEvents: "none",
+                ["--key-validation-bubble-arrow-left" as string]: `${position?.arrowLeft ?? 40}px`,
+              }}
+            >
+              <span className="key-validation-bubble-line">
+                <span className="key-validation-bubble-label">{props.ipLabel}</span>
+                <span className="key-validation-bubble-value">{props.ip}</span>
+              </span>
+              {region ? (
+                <span className="key-validation-bubble-line">
+                  <span className="key-validation-bubble-label">{props.regionLabel}</span>
+                  <span className="key-validation-bubble-value">{region}</span>
+                </span>
+              ) : null}
+              {proxyValue ? (
+                <span className="key-validation-bubble-line">
+                  <span className="key-validation-bubble-label">{props.proxyLabelText}</span>
+                  <span
+                    className={`key-validation-bubble-value${proxyValueToneClass ? ` ${proxyValueToneClass}` : ""}`}
+                  >
+                    {proxyValue}
+                  </span>
+                </span>
+              ) : null}
+            </span>,
+            document.body,
+          )
+        : null}
+    </span>
+  );
+}
+
 export interface ApiKeysValidationDialogProps {
   open: boolean;
   state: KeysValidationState | null;
@@ -189,6 +376,10 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
   const summaryStrings = validationStrings.summary;
   const tableStrings = validationStrings.table;
   const importStrings = validationStrings.import;
+  const ipBadgeLabel = validationStrings.registrationIpBadge ?? "IP";
+  const registrationIpLabel = keyStrings.table.registrationIp ?? "Registration IP";
+  const registrationRegionLabel = keyStrings.table.registrationRegion ?? "Region";
+  const assignedProxyLabel = keyStrings.table.assignedProxy ?? "Assigned Proxy";
   const [activeFilter, setActiveFilter] = React.useState<ValidationFilterKey | null>(null);
 
   const groupLabel = props.state?.group?.trim() || "default";
@@ -439,6 +630,11 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                         ? `${formatNumber(row.quota_remaining)}/${formatNumber(row.quota_limit)}`
                         : "—";
                     const label = statuses[row.status] ?? row.status;
+                    const registrationIp = row.registration_ip?.trim();
+                    const registrationRegion = row.registration_region?.trim() ?? null;
+                    const assignedProxyKey = row.assigned_proxy_key?.trim() ?? null;
+                    const assignedProxyLabelValue = row.assigned_proxy_label?.trim() ?? null;
+                    const assignedProxyMatchKind = row.assigned_proxy_match_kind ?? null;
                     return (
                       <div key={`${row.api_key}-${index}`} className="p-3">
                         <div className="flex items-start justify-between gap-3">
@@ -465,6 +661,19 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                           >
                             {label}
                           </StatusBadge>
+                          {registrationIp ? (
+                            <RegistrationIpIndicator
+                              label={ipBadgeLabel}
+                              ip={registrationIp}
+                              region={registrationRegion}
+                              proxyKey={assignedProxyKey}
+                              proxyLabel={assignedProxyLabelValue}
+                              proxyMatchKind={assignedProxyMatchKind}
+                              ipLabel={registrationIpLabel}
+                              regionLabel={registrationRegionLabel}
+                              proxyLabelText={assignedProxyLabel}
+                            />
+                          ) : null}
                           <span className="text-xs font-mono tabular-nums opacity-70 whitespace-nowrap">{quotaLabel}</span>
                         </div>
 
@@ -520,6 +729,11 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                             ? `${formatNumber(row.quota_remaining)}/${formatNumber(row.quota_limit)}`
                             : "—";
                         const label = statuses[row.status] ?? row.status;
+                        const registrationIp = row.registration_ip?.trim();
+                        const registrationRegion = row.registration_region?.trim() ?? null;
+                        const assignedProxyKey = row.assigned_proxy_key?.trim() ?? null;
+                        const assignedProxyLabelValue = row.assigned_proxy_label?.trim() ?? null;
+                        const assignedProxyMatchKind = row.assigned_proxy_match_kind ?? null;
                         return (
                           <TableRow key={`${row.api_key}-${index}`}>
                             <TableCell className="max-w-0">
@@ -537,6 +751,19 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                                     >
                                       {label}
                                     </StatusBadge>
+                                    {registrationIp ? (
+                                      <RegistrationIpIndicator
+                                        label={ipBadgeLabel}
+                                        ip={registrationIp}
+                                        region={registrationRegion}
+                                        proxyKey={assignedProxyKey}
+                                        proxyLabel={assignedProxyLabelValue}
+                                        proxyMatchKind={assignedProxyMatchKind}
+                                        ipLabel={registrationIpLabel}
+                                        regionLabel={registrationRegionLabel}
+                                        proxyLabelText={assignedProxyLabel}
+                                      />
+                                    ) : null}
                                     <span className="opacity-60">
                                       <Icon icon="mdi:information-outline" width={16} height={16} />
                                     </span>
@@ -546,12 +773,27 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                                   </div>
                                 </details>
                               ) : (
-                                <StatusBadge
-                                  tone={statusTone(row.status)}
-                                  className="max-w-full flex-wrap whitespace-normal break-words"
-                                >
-                                  {label}
-                                </StatusBadge>
+                                <div className="inline-flex max-w-full flex-wrap items-center gap-2">
+                                  <StatusBadge
+                                    tone={statusTone(row.status)}
+                                    className="max-w-full flex-wrap whitespace-normal break-words"
+                                  >
+                                    {label}
+                                  </StatusBadge>
+                                  {registrationIp ? (
+                                    <RegistrationIpIndicator
+                                      label={ipBadgeLabel}
+                                      ip={registrationIp}
+                                      region={registrationRegion}
+                                      proxyKey={assignedProxyKey}
+                                      proxyLabel={assignedProxyLabelValue}
+                                      proxyMatchKind={assignedProxyMatchKind}
+                                      ipLabel={registrationIpLabel}
+                                      regionLabel={registrationRegionLabel}
+                                      proxyLabelText={assignedProxyLabel}
+                                    />
+                                  ) : null}
+                                </div>
                               )}
                             </TableCell>
                             <TableCell className="text-right font-mono text-xs tabular-nums opacity-70 whitespace-nowrap">

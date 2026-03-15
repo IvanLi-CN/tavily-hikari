@@ -7,6 +7,7 @@ pub async fn serve(
     admin_auth: AdminAuthOptions,
     dev_open_admin: bool,
     usage_base: String,
+    api_key_ip_geo_origin: String,
     linuxdo_oauth: LinuxDoOAuthOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let AdminAuthOptions {
@@ -29,6 +30,7 @@ pub async fn serve(
         linuxdo_oauth,
         dev_open_admin,
         usage_base: usage_base.clone(),
+        api_key_ip_geo_origin,
     });
 
     println!(

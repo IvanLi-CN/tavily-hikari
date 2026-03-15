@@ -14,6 +14,8 @@ struct ApiKeyView {
     id: String,
     status: String,
     group: Option<String>,
+    registration_ip: Option<String>,
+    registration_region: Option<String>,
     status_changed_at: Option<i64>,
     last_used_at: Option<i64>,
     deleted_at: Option<i64>,

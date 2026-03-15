@@ -45,6 +45,9 @@ const FORWARD_PROXY_PROBE_INTERVAL_SECS: i64 = 30 * 60;
 const FORWARD_PROXY_PROBE_RECOVERY_WEIGHT: f64 = 0.4;
 pub const FORWARD_PROXY_VALIDATION_TIMEOUT_SECS: u64 = 5;
 pub const FORWARD_PROXY_SUBSCRIPTION_VALIDATION_TIMEOUT_SECS: u64 = 60;
+// Use a public plain-HTTP probe target so both real proxies and our test doubles
+// can exercise reachability without relying on CONNECT support to localhost.
+const FORWARD_PROXY_VALIDATION_PROBE_URL: &str = "http://example.com/";
 pub const FORWARD_PROXY_DIRECT_KEY: &str = "__direct__";
 pub const FORWARD_PROXY_DIRECT_LABEL: &str = "Direct";
 pub const FORWARD_PROXY_SOURCE_MANUAL: &str = "manual";
@@ -69,12 +72,9 @@ pub fn default_xray_runtime_dir(database_path: &str) -> PathBuf {
         .join(DEFAULT_XRAY_RUNTIME_DIR)
 }
 
-pub fn derive_probe_url(upstream: &Url) -> Url {
-    let mut probe_url = upstream.clone();
-    probe_url.set_query(None);
-    probe_url.set_fragment(None);
-    probe_url.set_path("/usage");
-    probe_url
+pub fn derive_probe_url(_upstream: &Url) -> Url {
+    Url::parse(FORWARD_PROXY_VALIDATION_PROBE_URL)
+        .expect("forward proxy validation probe url should be a valid absolute url")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -207,6 +207,8 @@ pub struct ForwardProxyValidationProbeResult {
     pub latency_ms: Option<f64>,
     pub error_code: Option<String>,
     pub message: String,
+    #[serde(default)]
+    pub nodes: Vec<ForwardProxyValidationNodeResult>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -218,6 +220,19 @@ pub struct ForwardProxyValidationResponse {
     pub latency_ms: Option<f64>,
     pub results: Vec<ForwardProxyValidationProbeResult>,
     pub first_error: Option<ForwardProxyValidationError>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForwardProxyValidationNodeResult {
+    pub display_name: String,
+    pub protocol: String,
+    pub ok: bool,
+    pub latency_ms: Option<f64>,
+    pub ip: Option<String>,
+    pub location: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -294,6 +309,31 @@ impl ForwardProxyEndpoint {
                 | ForwardProxyProtocol::Trojan
                 | ForwardProxyProtocol::Shadowsocks
         )
+    }
+}
+
+pub fn endpoint_host(endpoint: &ForwardProxyEndpoint) -> Option<String> {
+    if let Some(url) = endpoint.endpoint_url.as_ref() {
+        return url.host_str().map(ToOwned::to_owned);
+    }
+    let raw = endpoint.raw_url.as_deref()?;
+    if !raw.contains("://") {
+        return Url::parse(&format!("http://{raw}"))
+            .ok()
+            .and_then(|url| url.host_str().map(ToOwned::to_owned));
+    }
+    let (scheme_raw, _) = raw.split_once("://")?;
+    match scheme_raw.to_ascii_lowercase().as_str() {
+        "http" | "https" | "socks5" | "socks5h" | "socks" | "vless" | "trojan" => Url::parse(raw)
+            .ok()
+            .and_then(|url| url.host_str().map(ToOwned::to_owned)),
+        "vmess" => parse_vmess_share_link(raw)
+            .ok()
+            .map(|parsed| parsed.address),
+        "ss" => parse_shadowsocks_share_link(raw)
+            .ok()
+            .map(|parsed| parsed.host),
+        _ => None,
     }
 }
 
@@ -2180,10 +2220,11 @@ fn parse_shadowsocks_forward_proxy(candidate: &str) -> Option<ParsedForwardProxy
 }
 
 fn proxy_display_name_from_url(url: &Url) -> Option<String> {
-    if let Some(fragment) = url.fragment()
-        && !fragment.trim().is_empty()
-    {
-        return Some(fragment.to_string());
+    if let Some(fragment) = url.fragment() {
+        let decoded = percent_decode_once_lossy(fragment);
+        if !decoded.trim().is_empty() {
+            return Some(decoded);
+        }
     }
     let host = url.host_str()?;
     let port = url.port_or_known_default()?;
@@ -2549,7 +2590,13 @@ pub async fn fetch_subscription_proxy_urls(
         .await
         .map_err(|_| ProxyError::Other("subscription body read timed out".to_string()))?
         .map_err(ProxyError::Http)?;
-    Ok(parse_proxy_urls_from_subscription_body(&body))
+    let urls = parse_proxy_urls_from_subscription_body(&body);
+    if urls.is_empty() && subscription_body_uses_unsupported_structure(&body) {
+        return Err(ProxyError::Other(
+            "subscription contains no supported proxy entries".to_string(),
+        ));
+    }
+    Ok(urls)
 }
 
 pub(crate) async fn fetch_subscription_proxy_urls_with_validation_budget(
@@ -2599,12 +2646,30 @@ pub(crate) async fn fetch_subscription_proxy_urls_with_validation_budget(
             ))
         })?
         .map_err(ProxyError::Http)?;
-    Ok(parse_proxy_urls_from_subscription_body(&body))
+    let urls = parse_proxy_urls_from_subscription_body(&body);
+    if urls.is_empty() && subscription_body_uses_unsupported_structure(&body) {
+        return Err(ProxyError::Other(
+            "subscription contains no supported proxy entries".to_string(),
+        ));
+    }
+    Ok(urls)
 }
 
 fn parse_proxy_urls_from_subscription_body(raw: &str) -> Vec<String> {
     let decoded = decode_subscription_payload(raw);
+    if subscription_body_uses_unsupported_structure(&decoded) {
+        return Vec::new();
+    }
     normalize_proxy_url_entries(vec![decoded])
+}
+
+fn subscription_body_uses_unsupported_structure(raw: &str) -> bool {
+    raw.lines().map(str::trim).any(|line| {
+        line == "proxies:"
+            || line == "proxy-providers:"
+            || line == "proxy-groups:"
+            || line == "rule-providers:"
+    })
 }
 
 pub fn decode_subscription_payload(raw: &str) -> String {
@@ -3172,6 +3237,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn derive_probe_url_uses_public_probe_endpoint() {
+        let upstream = Url::parse("http://127.0.0.1:30014/mcp").expect("parse upstream");
+        let probe = derive_probe_url(&upstream);
+
+        assert_eq!(probe.as_str(), "http://example.com/");
+    }
+
+    #[test]
+    fn parse_proxy_urls_from_subscription_body_ignores_structured_yaml_configs() {
+        let body = r#"
+proxies:
+  - name: hinet-reality
+    type: vless
+    server: hinet-ep.707979.xyz
+    port: 53842
+rule-providers:
+  sample:
+    type: http
+    url: https://example.com/rules.yaml
+"#;
+
+        assert!(parse_proxy_urls_from_subscription_body(body).is_empty());
+        assert!(subscription_body_uses_unsupported_structure(body));
+    }
+
+    #[test]
     fn build_vless_xray_outbound_preserves_reality_settings() {
         let outbound = build_vless_xray_outbound("vless://0688fa59-e971-4278-8c03-4b35821a71dc@hklb-ep.707979.xyz:53842?encryption=none&security=reality&type=tcp&sni=public.sn.files.1drv.com&fp=chrome&pbk=6cJN5zHglyIywI_ZnsC7xW6lD1IO9gkHSvw6uvULCWQ&sid=61446ca92a46cdc7&flow=xtls-rprx-vision#Ivan-hkl-vless-vision").expect("build outbound");
         let stream = outbound
@@ -3203,5 +3294,34 @@ mod tests {
             reality.get("shortId").and_then(Value::as_str),
             Some("61446ca92a46cdc7")
         );
+    }
+
+    #[test]
+    fn parse_vless_forward_proxy_decodes_percent_encoded_display_name_once() {
+        let parsed = parse_vless_forward_proxy(
+            "vless://0688fa59-e971-4278-8c03-4b35821a71dc@example.com:443?encryption=none#%E9%A6%99%E6%B8%AF%20%F0%9F%87%AD%F0%9F%87%B0",
+        )
+        .expect("parse vless");
+
+        assert_eq!(parsed.display_name, "香港 🇭🇰");
+    }
+
+    #[test]
+    fn parse_trojan_forward_proxy_falls_back_when_fragment_decodes_to_blank() {
+        let parsed =
+            parse_trojan_forward_proxy("trojan://secret@example.com:8443?security=tls#%20%20")
+                .expect("parse trojan");
+
+        assert_eq!(parsed.display_name, "example.com:8443");
+    }
+
+    #[test]
+    fn parse_vless_forward_proxy_keeps_lossy_fragment_for_invalid_percent_encoding() {
+        let parsed = parse_vless_forward_proxy(
+            "vless://0688fa59-e971-4278-8c03-4b35821a71dc@example.com:443?encryption=none#broken%ZZname",
+        )
+        .expect("parse vless");
+
+        assert_eq!(parsed.display_name, "broken%ZZname");
     }
 }

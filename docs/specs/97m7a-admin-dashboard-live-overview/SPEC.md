@@ -2,9 +2,9 @@
 
 ## 状态
 
-- Status: 进行中（快车道）
+- Status: 已完成（快车道）
 - Created: 2026-03-14
-- Last: 2026-03-14
+- Last: 2026-03-16
 
 ## 背景
 
@@ -135,6 +135,7 @@
 - `2026-03-14`：`chrome-devtools` 本轮调用超时，浏览器 MCP 复核待在后续 PR 收敛轮次补齐。
 - `2026-03-16`：根据验收反馈将“本月”卡片区固定为 2 列，并将“剩余可用”主值改为仅显示剩余额度、把百分比保留在副标题中；`cd web && bun run build`、`cd web && bun run build-storybook` 复跑通过，Storybook 已用更接近真实运营量级的数据复核。
 - `2026-03-16`：针对 PR #131 在 GitHub Actions 上暴露的 `database is locked` 抖动，为 token usage rollup 增加瞬时 SQLite 写锁重试；`cargo test tavily_http_usage_returns_daily_and_monthly_counts -- --nocapture`、`cargo test`、`cargo clippy -- -D warnings` 复跑通过。
+- `2026-03-16`：使用浏览器 MCP 复核当前 worktree 的 Storybook 与真实 `/admin` 页面，确认“本月”总览为 2 列、`剩余可用` 仅显示单值、桌面/移动端均无横向滚动，且 `/api/events`、`/api/summary/windows`、`/api/stats/forward-proxy/summary` 请求全部返回 `200`。
 
 ## 实现里程碑
 
@@ -143,7 +144,7 @@
 - [x] M3: admin SSE snapshot 扩容并补齐签名检测
 - [x] M4: dashboard 总览布局与视觉升级落地
 - [x] M5: 大数字展示、Storybook/mock 与自动化回归补齐
-- [ ] M6: 浏览器验收、spec sync、PR/checks/review-loop 收敛
+- [x] M6: 浏览器验收、spec sync、PR/checks/review-loop 收敛
 
 ## 风险与开放点
 
@@ -168,3 +169,4 @@
 - 2026-03-14: 将 degraded 恢复范围限制在 dashboard 页面，并把 proxy summary 查询失败升级为 snapshot 降级信号，确保共享 `/api/events` 不误伤其它管理页且代理摘要故障能触发 fallback。
 - 2026-03-16: 将“本月”总览改为两列布局，并把“剩余可用”卡片从“剩余值 / 总额度”收敛为仅显示剩余值，避免主指标出现不必要的分隔与换行。
 - 2026-03-16: 为 token usage rollup 增加瞬时 SQLite 写锁重试，收敛 dashboard 相关改动引出的 CI 并发抖动。
+- 2026-03-16: 补齐浏览器 MCP 复核、同步 spec 完成态，并准备随 PR #131 一起并入 `main`。

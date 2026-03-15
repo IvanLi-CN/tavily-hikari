@@ -1,12 +1,12 @@
-import { Icon } from '@iconify/react'
+import { Icon } from '../lib/icons'
 
 import { languageOptions, type Language, useLanguage, useTranslate } from '../i18n'
 import { Button } from './ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from './ui/dropdown-menu'
 
 const LANGUAGE_META: Record<Language, { icon: string; short: string }> = {
-  en: { icon: 'twemoji:flag-united-kingdom', short: 'EN' },
-  zh: { icon: 'twemoji:flag-china', short: '中文' },
+  en: { icon: 'circle-flags:gb', short: 'EN' },
+  zh: { icon: 'circle-flags:cn', short: '中文' },
 }
 
 function LanguageSwitcher(): JSX.Element {

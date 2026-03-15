@@ -8,6 +8,7 @@ struct AppState {
     linuxdo_oauth: LinuxDoOAuthOptions,
     dev_open_admin: bool,
     usage_base: String,
+    api_key_ip_geo_origin: String,
 }
 
 #[derive(Clone, Debug)]
@@ -457,4 +458,3 @@ async fn debug_is_admin(
 async fn health_check() -> &'static str {
     "ok"
 }
-

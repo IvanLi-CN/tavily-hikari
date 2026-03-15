@@ -3921,46 +3921,79 @@ table {
 }
 
 .key-validation-bubble {
-  position: absolute;
-  left: 0;
-  top: calc(100% + 8px);
-  transform: scale(0.98);
-  background: hsl(var(--n) / 0.96);
-  color: hsl(var(--nc) / 1);
-  border: 1px solid hsl(var(--n) / 0.12);
-  padding: 12px 14px;
-  border-radius: 16px;
+  position: fixed;
+  z-index: 1300;
   width: max-content;
-  max-width: min(620px, calc(100vw - 64px));
-  white-space: pre-wrap;
+  max-width: min(24rem, calc(100vw - 24px));
+  display: inline-flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid hsl(210 40% 96% / 0.08);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, hsl(222 42% 16% / 0.98), hsl(223 46% 10% / 0.98));
+  color: hsl(210 40% 96%);
+  box-shadow:
+    0 18px 42px hsl(222 47% 8% / 0.42),
+    inset 0 1px 0 hsl(210 40% 96% / 0.06);
+  white-space: normal;
   word-break: break-word;
-  font-size: 0.85rem;
+  font-size: 0.8rem;
   line-height: 1.35;
-  opacity: 0;
-  pointer-events: auto;
   user-select: text;
-  transition: opacity 0.15s ease, transform 0.15s ease;
-  z-index: 20;
-  box-shadow: 0 14px 40px hsl(var(--foreground) / 0.2);
 }
 
 .key-validation-bubble::before {
   content: "";
   position: absolute;
-  left: 18px;
-  top: -7px;
+  left: var(--key-validation-bubble-arrow-left, 50%);
   width: 14px;
   height: 14px;
-  transform: rotate(45deg);
-  background: hsl(var(--n) / 0.96);
-  border-left: 1px solid hsl(var(--n) / 0.12);
-  border-top: 1px solid hsl(var(--n) / 0.12);
+  background: hsl(222 42% 14% / 0.98);
+  border-left: 1px solid hsl(210 40% 96% / 0.08);
+  border-top: 1px solid hsl(210 40% 96% / 0.08);
+  transform: translateX(-50%) rotate(45deg);
 }
 
-.key-validation-detail:hover .key-validation-bubble,
-.key-validation-detail:focus-within .key-validation-bubble {
-  opacity: 1;
-  transform: scale(1);
+.key-validation-bubble[data-placement="bottom"]::before {
+  top: -8px;
+}
+
+.key-validation-bubble[data-placement="top"]::before {
+  bottom: -8px;
+  transform: translateX(-50%) rotate(225deg);
+}
+
+.key-validation-bubble-line {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.key-validation-bubble-label {
+  color: hsl(210 40% 96% / 0.7);
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.key-validation-bubble-value {
+  color: hsl(210 40% 96%);
+  font-weight: 600;
+}
+
+.key-validation-bubble-value.text-success {
+  color: hsl(var(--success));
+}
+
+.key-validation-bubble-value.text-info {
+  color: hsl(var(--info));
+}
+
+.key-validation-bubble-value.text-warning {
+  color: hsl(var(--warning));
 }
 
 @media (max-width: 767px) {
@@ -5212,6 +5245,63 @@ tbody tr:hover {
   text-align: center;
 }
 
+.forward-proxy-status-bubble {
+  position: fixed;
+  z-index: 120;
+  width: min(18rem, calc(100vw - 2rem));
+  border-radius: 16px;
+  border: 1px solid hsl(var(--border) / 0.9);
+  background: hsl(var(--card) / 0.98);
+  color: hsl(var(--card-foreground));
+  box-shadow: 0 18px 48px -24px hsl(var(--foreground) / 0.55);
+  padding: 0.75rem 0.85rem;
+  backdrop-filter: blur(16px);
+}
+
+.forward-proxy-status-bubble-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.45rem;
+}
+
+.forward-proxy-status-bubble-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: hsl(var(--foreground));
+}
+
+.forward-proxy-status-bubble-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 999px;
+  border: 1px solid hsl(var(--border) / 0.75);
+  background: hsl(var(--background) / 0.78);
+  color: hsl(var(--muted-foreground));
+  transition: color 0.18s ease, border-color 0.18s ease, background-color 0.18s ease;
+}
+
+.forward-proxy-status-bubble-close:hover,
+.forward-proxy-status-bubble-close:focus-visible {
+  border-color: hsl(var(--border));
+  background: hsl(var(--background) / 0.92);
+  color: hsl(var(--foreground));
+  outline: none;
+}
+
+.forward-proxy-status-bubble-message {
+  margin: 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 0.88rem;
+  line-height: 1.45;
+  white-space: normal;
+  word-break: break-word;
+}
+
 /* Job type detail pill with hover bubble showing raw code */
 .job-type-pill {
   position: relative;
@@ -5537,7 +5627,12 @@ tbody .log-details-row:hover {
   display: flex;
   justify-content: flex-end;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
+}
+
+.user-console-footer {
+  padding-inline: 4px;
 }
 
 .app-footer .footer-meta {
@@ -7715,26 +7810,6 @@ tbody .log-details-row:hover {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
-}
-
-.forward-proxy-code-block,
-.forward-proxy-code-inline {
-  font-family:
-    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
-}
-
-.forward-proxy-code-block {
-  display: block;
-  padding: 0.65rem 0.75rem;
-  border-radius: 0.8rem;
-  background: hsl(var(--muted) / 0.42);
-  overflow-wrap: anywhere;
-}
-
-.forward-proxy-code-inline {
-  font-size: 0.78rem;
-  color: hsl(var(--muted-foreground));
-  overflow-wrap: anywhere;
 }
 
 .forward-proxy-validation-message {

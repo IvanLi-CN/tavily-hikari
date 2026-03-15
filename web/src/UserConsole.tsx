@@ -1,10 +1,11 @@
 import React, { ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Icon } from '@iconify/react'
+import { Icon, getGuideClientIconName } from './lib/icons'
 import CherryStudioMock from './components/CherryStudioMock'
 import TokenSecretField, { type TokenSecretCopyState } from './components/TokenSecretField'
 import ManualCopyBubble from './components/ManualCopyBubble'
 
 import {
+  fetchVersion,
   fetchProfile,
   probeApiTavilyCrawl,
   probeApiTavilyExtract,
@@ -23,11 +24,13 @@ import {
   type PublicTokenLog,
   type UserDashboard,
   type UserTokenSummary,
+  type VersionInfo,
 } from './api'
 import LanguageSwitcher from './components/LanguageSwitcher'
 import RollingNumber from './components/RollingNumber'
 import { StatusBadge, type StatusTone } from './components/StatusBadge'
 import ThemeToggle from './components/ThemeToggle'
+import UserConsoleFooter from './components/UserConsoleFooter'
 import { Button } from './components/ui/button'
 import { useLanguage, useTranslate, type Language } from './i18n'
 import { copyText, isCopyIntentKey, selectAllReadonlyText, shouldPrewarmSecretCopy } from './lib/clipboard'
@@ -51,13 +54,11 @@ import {
   type UserConsoleRoute as ConsoleRoute,
 } from './lib/userConsoleRoutes'
 
-const REPO_URL = 'https://github.com/IvanLi-CN/tavily-hikari'
 const CODEX_DOC_URL = 'https://github.com/openai/codex/blob/main/docs/config.md'
 const CLAUDE_DOC_URL = 'https://code.claude.com/docs/en/mcp'
 const VSCODE_DOC_URL = 'https://code.visualstudio.com/docs/copilot/customization/mcp-servers'
 const NOCODB_DOC_URL = 'https://nocodb.com/docs/product-docs/mcp'
 const MCP_SPEC_URL = 'https://modelcontextprotocol.io/introduction'
-const ICONIFY_ENDPOINT = 'https://api.iconify.design'
 const USER_CONSOLE_SECRET_CACHE_TTL_MS = 2_000
 const USER_CONSOLE_SECRET_PREWARM_DELAY_MS = 120
 
@@ -236,6 +237,9 @@ export default function UserConsole(): JSX.Element {
   const [profile, setProfile] = useState<Profile | null>(null)
   const [dashboard, setDashboard] = useState<UserDashboard | null>(null)
   const [tokens, setTokens] = useState<UserTokenSummary[]>([])
+  const [versionState, setVersionState] = useState<
+    { status: 'loading' } | { status: 'error' } | { status: 'ready'; value: VersionInfo | null }
+  >({ status: 'loading' })
   const [route, setRoute] = useState<ConsoleRoute>(() => parseUserConsoleHash(window.location.hash || ''))
   const [detail, setDetail] = useState<UserTokenSummary | null>(null)
   const [detailLogs, setDetailLogs] = useState<PublicTokenLog[]>([])
@@ -336,6 +340,18 @@ export default function UserConsole(): JSX.Element {
     void reloadBase(controller.signal)
     return () => controller.abort()
   }, [reloadBase])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    fetchVersion(controller.signal)
+      .then((nextVersion) => {
+        setVersionState({ status: 'ready', value: nextVersion })
+      })
+      .catch(() => {
+        setVersionState({ status: 'error' })
+      })
+    return () => controller.abort()
+  }, [])
 
   const consoleAvailability = resolveUserConsoleAvailability(profile)
 
@@ -1832,14 +1848,9 @@ export default function UserConsole(): JSX.Element {
             {activeGuide === 'cherryStudio' && <CherryStudioMock apiKeyExample={guideToken} />}
           </section>
 
-          <footer className="surface public-home-footer">
-            <a className="footer-gh" href={REPO_URL} target="_blank" rel="noreferrer">
-              <img src="https://api.iconify.design/mdi/github.svg?color=%232563eb" alt="GitHub" />
-              <span>GitHub</span>
-            </a>
-          </footer>
         </>
       )}
+      <UserConsoleFooter strings={text.footer} versionState={versionState} />
       <ManualCopyBubble
         open={manualCopyBubble != null}
         anchorEl={manualCopyBubble?.anchorEl ?? null}
@@ -1863,36 +1874,33 @@ function MobileGuideDropdown({
   onChange: (id: GuideKey) => void
   labels: { id: GuideKey, label: string }[]
 }): JSX.Element {
-  const icon = (id: GuideKey) => {
-    const map: Record<GuideKey, string> = {
-      codex: 'simple-icons/openai',
-      claude: 'simple-icons/anthropic',
-      vscode: 'simple-icons/visualstudiocode',
-      claudeDesktop: 'simple-icons/anthropic',
-      cursor: 'simple-icons/cursor',
-      windsurf: 'simple-icons/codeium',
-      cherryStudio: 'mdi/cherry',
-      other: 'mdi/dots-horizontal',
-    }
-    const key = map[id] ?? 'mdi/dots-horizontal'
-    return `${ICONIFY_ENDPOINT}/${key}.svg?color=%23475569`
-  }
-
   const current = labels.find((l) => l.id === active)
   return (
     <div className="dropdown w-full">
       <div tabIndex={0} role="button" className="btn btn-outline w-full justify-between btn-sm md:btn-md">
         <span className="inline-flex items-center gap-2">
-          <img src={icon(active)} alt="client" width={18} height={18} />
+          <Icon
+            icon={getGuideClientIconName(active)}
+            width={18}
+            height={18}
+            aria-hidden="true"
+            style={{ color: '#475569' }}
+          />
           {current?.label ?? active}
         </span>
-        <img src={`${ICONIFY_ENDPOINT}/mdi/chevron-down.svg?color=%23647589`} alt="open" width={16} height={16} />
+        <Icon icon="mdi:chevron-down" width={16} height={16} aria-hidden="true" style={{ color: '#647589' }} />
       </div>
       <ul tabIndex={0} className="menu dropdown-content bg-base-100 rounded-box z-[1] w-60 p-2 shadow mt-2">
         {labels.map((tab) => (
           <li key={tab.id}>
             <button type="button" onClick={() => onChange(tab.id)} className="flex items-center gap-2">
-              <img src={icon(tab.id)} alt="" width={16} height={16} />
+              <Icon
+                icon={getGuideClientIconName(tab.id)}
+                width={16}
+                height={16}
+                aria-hidden="true"
+                style={{ color: '#475569' }}
+              />
               <span className="truncate">{tab.label}</span>
             </button>
           </li>
@@ -2290,6 +2298,14 @@ const EN = {
     load: 'Failed to load console data',
     detail: 'Failed to load token detail',
   },
+  footer: {
+    title: 'Tavily Hikari User Console',
+    githubAria: 'Open GitHub repository',
+    githubLabel: 'GitHub',
+    loadingVersion: '· Loading version…',
+    errorVersion: '· Version unavailable',
+    tagPrefix: '· ',
+  },
 }
 
 const ZH = {
@@ -2431,5 +2447,13 @@ const ZH = {
   errors: {
     load: '加载控制台数据失败',
     detail: '加载 Token 详情失败',
+  },
+  footer: {
+    title: 'Tavily Hikari 用户控制台',
+    githubAria: '打开 GitHub 仓库',
+    githubLabel: 'GitHub',
+    loadingVersion: '· 正在读取版本…',
+    errorVersion: '· 版本不可用',
+    tagPrefix: '· ',
   },
 }

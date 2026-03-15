@@ -4,7 +4,7 @@
 
 - Status: 已完成（5/5）
 - Created: 2026-03-12
-- Last: 2026-03-12
+- Last: 2026-03-15
 
 ## 背景 / 问题陈述
 
@@ -53,6 +53,7 @@
 - `/console` 首屏同时渲染账户概览区块与 Token 列表区块。
 - `#/dashboard` 与 `#/tokens` 保持可访问，并自动定位到 merged landing 的对应区块。
 - `#/tokens/:id` 保持 detail 页；点击 detail 返回按钮后进入 merged landing 的 Token 列表区块。
+- merged landing 与 token detail 统一渲染用户控制台 footer，包含控制台标题、GitHub 链接与版本展示/加载态。
 - Storybook 与自动化断言不再把 dashboard/tokens 当成两张独立页面。
 
 ### SHOULD
@@ -125,6 +126,10 @@ None
 - Given Token 列表为空
   When 用户停留在 merged landing
   Then Token 区块展示既有空态，同时账户概览区块仍保持可见。
+
+- Given 用户访问 merged landing 或 token detail
+  When 页面底部信息区完成渲染
+  Then 两种视图都显示同一套用户控制台 footer，且 `/api/version` 延迟或失败不会影响主体内容显示。
 
 - Given 本轮实现完成
   When 运行前端质量门槛
@@ -208,6 +213,7 @@ None
 - 2026-03-12: 创建 follow-up spec，冻结 `/console` landing 由双页面切换收敛为单页定位的实现边界。
 - 2026-03-12: 完成 `/console` merged landing 改造、legacy hash route helper、Storybook story/test 收口，以及 `cd web && bun test`、`cd web && bun run build`、`cd web && bun run build-storybook` 本地验证。
 - 2026-03-12: 完成快车道验证、浏览器复核与 review-loop 收敛，spec 收口为完成态。
+- 2026-03-15: 补齐 `/console` merged landing 缺失的共享 footer，并让 landing / token detail 统一显示控制台标题、GitHub 与版本信息。
 
 ## 参考（References）
 

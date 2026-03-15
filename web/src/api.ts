@@ -126,6 +126,8 @@ export interface ApiKeyStats {
   id: string
   status: string
   group: string | null
+  registration_ip: string | null
+  registration_region: string | null
   status_changed_at: number | null
   last_used_at: number | null
   deleted_at: number | null
@@ -169,6 +171,7 @@ export interface ApiKeyFacetOption {
 export interface ApiKeyListFacets {
   groups: ApiKeyFacetOption[]
   statuses: ApiKeyFacetOption[]
+  regions: ApiKeyFacetOption[]
 }
 
 // ---- Access Tokens (for /mcp auth) ----
@@ -241,6 +244,174 @@ async function requestJsonWithToken<T>(
   return requestJson<T>(input, { ...init, headers })
 }
 
+export type ForwardProxyProgressOperation = 'save' | 'validate'
+export type ForwardProxyProgressPhaseKey =
+  | 'save_settings'
+  | 'refresh_subscription'
+  | 'bootstrap_probe'
+  | 'normalize_input'
+  | 'parse_input'
+  | 'fetch_subscription'
+  | 'probe_nodes'
+  | 'generate_result'
+  | 'refresh_ui'
+
+export type ForwardProxyProgressNodeStatus = 'pending' | 'probing' | 'ok' | 'failed'
+
+export interface ForwardProxyProgressNodeState {
+  nodeKey: string
+  displayName: string
+  protocol: string
+  status: ForwardProxyProgressNodeStatus
+  ok?: boolean | null
+  latencyMs?: number | null
+  ip?: string | null
+  location?: string | null
+  message?: string | null
+}
+
+export type ForwardProxyProgressEvent =
+  | {
+      type: 'phase'
+      operation: ForwardProxyProgressOperation
+      phaseKey: ForwardProxyProgressPhaseKey
+      label: string
+      current?: number | null
+      total?: number | null
+      detail?: string | null
+    }
+  | {
+      type: 'complete'
+      operation: ForwardProxyProgressOperation
+      payload: unknown
+    }
+  | {
+      type: 'nodes'
+      operation: ForwardProxyProgressOperation
+      nodes: ForwardProxyProgressNodeState[]
+    }
+  | {
+      type: 'node'
+      operation: ForwardProxyProgressOperation
+      node: ForwardProxyProgressNodeState
+    }
+  | {
+      type: 'error'
+      operation: ForwardProxyProgressOperation
+      message: string
+      phaseKey?: ForwardProxyProgressPhaseKey | null
+      label?: string | null
+      current?: number | null
+      total?: number | null
+      detail?: string | null
+    }
+
+function extractErrorMessage(response: Response, fallbackBody?: string): Error & { status?: number } {
+  const err = new Error(
+    (fallbackBody != null && fallbackBody.trim().length > 0 ? fallbackBody : response.statusText)
+      || `Request failed with status ${response.status}`,
+  ) as Error & { status?: number }
+  err.status = response.status
+  return err
+}
+
+function parseForwardProxySseChunk(chunk: string): ForwardProxyProgressEvent | null {
+  const trimmed = chunk.trim()
+  if (!trimmed) return null
+  const data = trimmed
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => line.slice('data:'.length).trim())
+    .join('\n')
+  if (!data) return null
+  return JSON.parse(data) as ForwardProxyProgressEvent
+}
+
+async function requestForwardProxyProgress<T>(
+  input: RequestInfo,
+  init: RequestInit,
+  fallbackOperation: ForwardProxyProgressOperation,
+  onEvent?: (event: ForwardProxyProgressEvent) => void,
+): Promise<T> {
+  const headers = new Headers(init.headers ?? {})
+  headers.set('Accept', 'text/event-stream, application/json')
+  if (init.body != null && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json')
+  }
+
+  const response = await fetch(input, { ...init, headers })
+  const contentType = response.headers.get('Content-Type') ?? ''
+
+  if (!response.ok && !contentType.includes('text/event-stream')) {
+    const message = await response.text().catch(() => response.statusText)
+    throw extractErrorMessage(response, message)
+  }
+
+  if (!contentType.includes('text/event-stream')) {
+    const payload = (await response.json()) as T
+    onEvent?.({ type: 'complete', operation: fallbackOperation, payload })
+    return payload
+  }
+
+  if (!response.ok) {
+    const message = await response.text().catch(() => response.statusText)
+    throw extractErrorMessage(response, message)
+  }
+
+  const reader = response.body?.getReader()
+  if (!reader) {
+    throw new Error('Progress stream body is unavailable')
+  }
+
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let completePayload: T | null = null
+
+  while (true) {
+    const { done, value } = await reader.read()
+    buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done })
+
+    let boundaryIndex = buffer.search(/\r?\n\r?\n/)
+    while (boundaryIndex >= 0) {
+      const chunk = buffer.slice(0, boundaryIndex)
+      buffer = buffer.slice(boundaryIndex + (buffer[boundaryIndex] === '\r' ? 4 : 2))
+      const event = parseForwardProxySseChunk(chunk)
+      if (event) {
+        onEvent?.(event)
+        if (event.type === 'complete') {
+          completePayload = event.payload as T
+        }
+        if (event.type === 'error') {
+          throw new Error(event.message || event.detail || 'Forward proxy progress stream failed')
+        }
+      }
+      boundaryIndex = buffer.search(/\r?\n\r?\n/)
+    }
+
+    if (done) {
+      const trailingEvent = parseForwardProxySseChunk(buffer)
+      if (trailingEvent) {
+        onEvent?.(trailingEvent)
+        if (trailingEvent.type === 'complete') {
+          completePayload = trailingEvent.payload as T
+        }
+        if (trailingEvent.type === 'error') {
+          throw new Error(
+            trailingEvent.message || trailingEvent.detail || 'Forward proxy progress stream failed',
+          )
+        }
+      }
+      break
+    }
+  }
+
+  if (completePayload == null) {
+    throw new Error('Forward proxy progress stream ended before completion')
+  }
+
+  return completePayload
+}
+
 export interface VersionInfo {
   backend: string
   frontend: string
@@ -298,7 +469,7 @@ export interface PaginatedApiKeys extends Paginated<ApiKeyStats> {
 export function fetchApiKeys(
   page = 1,
   perPage = 20,
-  options?: { groups?: string[]; statuses?: string[] },
+  options?: { groups?: string[]; statuses?: string[]; registrationIp?: string | null; regions?: string[] },
   signal?: AbortSignal,
 ): Promise<PaginatedApiKeys> {
   const params = new URLSearchParams({
@@ -313,6 +484,15 @@ export function fetchApiKeys(
     const normalized = status.trim().toLowerCase()
     if (!normalized) continue
     params.append('status', normalized)
+  }
+  const normalizedRegistrationIp = options?.registrationIp?.trim()
+  if (normalizedRegistrationIp) {
+    params.set('registration_ip', normalizedRegistrationIp)
+  }
+  for (const region of options?.regions ?? []) {
+    const normalized = region.trim()
+    if (!normalized) continue
+    params.append('region', normalized)
   }
   return requestJson(`/api/keys?${params.toString()}`, { signal })
 }
@@ -726,8 +906,14 @@ export interface AddApiKeysBatchResponse {
   results: AddApiKeysBatchResult[]
 }
 
+export interface AddApiKeysBatchItem {
+  api_key: string
+  registration_ip?: string | null
+  assigned_proxy_key?: string | null
+}
+
 export async function addApiKeysBatch(
-  apiKeys: string[],
+  items: AddApiKeysBatchItem[],
   group?: string,
   exhaustedApiKeys?: string[],
 ): Promise<AddApiKeysBatchResponse> {
@@ -736,7 +922,7 @@ export async function addApiKeysBatch(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      api_keys: apiKeys,
+      items,
       group: trimmedGroup && trimmedGroup.length > 0 ? trimmedGroup : undefined,
       exhausted_api_keys: exhaustedApiKeys && exhaustedApiKeys.length > 0 ? exhaustedApiKeys : undefined,
     }),
@@ -805,12 +991,24 @@ export interface ValidateKeysSummary {
   error: number
 }
 
+export type ValidateAssignedProxyMatchKind = 'registration_ip' | 'same_region' | 'other'
+
 export interface ValidateKeyResult {
   api_key: string
   status: string
+  registration_ip?: string | null
+  registration_region?: string | null
+  assigned_proxy_key?: string | null
+  assigned_proxy_label?: string | null
+  assigned_proxy_match_kind?: ValidateAssignedProxyMatchKind | null
   quota_limit?: number
   quota_remaining?: number
   detail?: string
+}
+
+export interface ValidateKeyInput {
+  api_key: string
+  registration_ip?: string | null
 }
 
 export interface ValidateKeysResponse {
@@ -818,12 +1016,12 @@ export interface ValidateKeysResponse {
   results: ValidateKeyResult[]
 }
 
-export async function validateApiKeys(apiKeys: string[], signal?: AbortSignal): Promise<ValidateKeysResponse> {
+export async function validateApiKeys(items: ValidateKeyInput[], signal?: AbortSignal): Promise<ValidateKeysResponse> {
   return await requestJson('/api/keys/validate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     signal,
-    body: JSON.stringify({ api_keys: apiKeys }),
+    body: JSON.stringify({ items }),
   })
 }
 
@@ -1150,6 +1348,7 @@ export interface UpdateForwardProxySettingsPayload {
   subscriptionUrls: string[]
   subscriptionUpdateIntervalSecs: number
   insertDirect: boolean
+  skipBootstrapProbe?: boolean
 }
 
 export type ForwardProxyValidationKind = 'proxyUrl' | 'subscriptionUrl'
@@ -1159,6 +1358,16 @@ export interface ForwardProxyValidationRequest {
   value: string
 }
 
+export interface ForwardProxyValidationNode {
+  displayName: string
+  protocol: string
+  ok: boolean
+  latencyMs?: number | null
+  ip?: string | null
+  location?: string | null
+  message?: string | null
+}
+
 export interface ForwardProxyValidationResponse {
   ok: boolean
   message: string
@@ -1166,6 +1375,7 @@ export interface ForwardProxyValidationResponse {
   discoveredNodes?: number | null
   latencyMs?: number | null
   errorCode?: string | null
+  nodes?: ForwardProxyValidationNode[]
 }
 
 export interface ForwardProxyActivityBucket {
@@ -1222,6 +1432,22 @@ export function updateForwardProxySettings(
   })
 }
 
+export function updateForwardProxySettingsWithProgress(
+  payload: UpdateForwardProxySettingsPayload,
+  onEvent?: (event: ForwardProxyProgressEvent) => void,
+): Promise<ForwardProxySettings> {
+  return requestForwardProxyProgress<ForwardProxySettings>(
+    '/api/settings/forward-proxy',
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+    'save',
+    onEvent,
+  )
+}
+
 export function validateForwardProxyCandidate(
   payload: ForwardProxyValidationRequest,
 ): Promise<ForwardProxyValidationResponse> {
@@ -1230,6 +1456,24 @@ export function validateForwardProxyCandidate(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   })
+}
+
+export function validateForwardProxyCandidateWithProgress(
+  payload: ForwardProxyValidationRequest,
+  onEvent?: (event: ForwardProxyProgressEvent) => void,
+  signal?: AbortSignal,
+): Promise<ForwardProxyValidationResponse> {
+  return requestForwardProxyProgress<ForwardProxyValidationResponse>(
+    '/api/settings/forward-proxy/validate',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal,
+    },
+    'validate',
+    onEvent,
+  )
 }
 
 export function fetchForwardProxyStats(signal?: AbortSignal): Promise<ForwardProxyStatsResponse> {

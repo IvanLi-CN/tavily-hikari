@@ -2,9 +2,9 @@
 
 ## 状态
 
-- Status: 待实现
+- Status: 已完成（快车道）
 - Created: 2026-03-12
-- Last: 2026-03-12
+- Last: 2026-03-16
 
 ## 背景 / 问题陈述
 
@@ -52,6 +52,7 @@
 - `GET /api/settings` 返回 `forwardProxy`，并新增 `PUT /api/settings/forward-proxy`、`POST /api/settings/forward-proxy/validate`、`GET /api/stats/forward-proxy`。
 - settings 合约保持 `proxyUrls`、`subscriptionUrls`、`subscriptionUpdateIntervalSecs`、`insertDirect` 字段，并返回 `nodes`。
 - subscription-only 配置可工作；share-link 节点依赖 Xray 时必须给出明确可诊断错误。
+- share-link 中的展示名若来自 URL fragment，必须先做一次性 percent-decoding，再进入 validation、runtime/live stats 与 API/UI 输出链路。
 - Tavily `/mcp`、`/api/tavily/search|extract|crawl|map|research`、`/api/tavily/research/:request_id`、管理员 key 校验、quota sync 全部经过 selected forward proxy。
 - 同一个上游 key 默认只使用主节点；主节点不可达时切到备用，备用承接成功后提升为主，并补新的备用节点。
 - `Direct` 默认只作为备用候选或无健康代理时的兜底主节点。
@@ -130,6 +131,14 @@
   When settings 与 live stats 已加载
   Then 页面可查看 settings、节点窗口统计、24h weight、主/备绑定计数并执行保存与验证。
 
+- Given 管理员在订阅或手工节点弹窗里拿到长结果内容（长 URL、验证消息、节点统计）
+  When 弹窗显示验证结果
+  Then footer 操作区必须始终留在可视区域内，内容改由弹窗 body 自身滚动承载，不得把 `取消 / 验证 / 添加或导入` 推出视口。
+
+- Given 管理员校验 subscription URL
+  When 弹窗显示订阅校验结果
+  Then 原始 subscription URL 只保留在顶部输入框内供复制或继续编辑，结果卡片不得再次回显该 URL。
+
 ## 实现前置条件（Definition of Ready / Preconditions）
 
 - 目标/非目标、scope in/out、mock-only 约束已明确
@@ -144,10 +153,11 @@
 - Unit tests: 代理 URL/订阅/share-link 解析，scheduler weight/penalty，key affinity 主备切换，Xray config 构造。
 - Integration tests: mock upstream + mock proxy + mock subscription 下验证 `/mcp`、`/api/tavily/*`、quota sync、管理员 key 校验走代理。
 - E2E tests (if applicable): 浏览器打开 `/admin/proxy-settings`，完成 subscription 添加、候选验证与 live stats 查看。
+- Storybook: 至少提供 empty / subscription success / subscription failure / overflow proof 四个确定性 stories，其中 overflow proof 必须让弹窗 body 发生滚动而 footer 仍可见。
 
 ### UI / Storybook (if applicable)
 
-- Stories to add/update: Admin proxy settings page state（空态、已配置、验证成功/失败、live stats）。
+- Stories to add/update: Admin proxy settings page state（空态、已配置、验证成功/失败、live stats），并补充可直接打开的 forward proxy 弹窗待验证 / 成功 / 失败复现 story。
 - Visual regression baseline changes (if any): proxy settings 模块从 placeholder 切换为真实页面。
 
 ### Quality checks
@@ -168,17 +178,19 @@
 
 ## Visual Evidence (PR)
 
+![Forward proxy subscription dialog success state](./assets/forward-proxy-subscription-dialog-success.png)
+
 ## 资产晋升（Asset promotion）
 
 None
 
 ## 实现里程碑（Milestones / Delivery checklist）
 
-- [ ] M1: 落地 forward proxy 数据模型、CLI/runtime 配置与 backend settings/validate/stats API
-- [ ] M2: 落地订阅解析、share-link + Xray route sync、多节点调度与 key 主备亲和
-- [ ] M3: 将 Tavily 所有目标出站链路接入 selected forward proxy，并补齐 mock-only 后端测试
-- [ ] M4: 完成 `/admin/proxy-settings` 页面、前端 API 类型与浏览器/构建验收
-- [ ] M5: 更新 README / SPEC 同步，并完成 fast-flow 所需 review-loop 收敛
+- [x] M1: 落地 forward proxy 数据模型、CLI/runtime 配置与 backend settings/validate/stats API
+- [x] M2: 落地订阅解析、share-link + Xray route sync、多节点调度与 key 主备亲和
+- [x] M3: 将 Tavily 所有目标出站链路接入 selected forward proxy，并补齐 mock-only 后端测试
+- [x] M4: 完成 `/admin/proxy-settings` 页面、前端 API 类型与浏览器/构建验收
+- [x] M5: 更新 README / SPEC 同步，并完成 fast-flow 所需 review-loop 收敛
 
 ## 方案概述（Approach, high-level）
 
@@ -197,6 +209,8 @@ None
 ## 变更记录（Change log）
 
 - 2026-03-12: 创建规格，冻结 forward proxy parity、subscription-only、Xray share-link 与上游 key 主备亲和口径。
+- 2026-03-15: forward proxy parity 功能与 `/admin/proxy-settings` 收口完成；补齐订阅弹窗 footer 固定、成功/失败/overflow Storybook 复现、视觉证据与 PR-stage review-loop，规格状态切换为已完成（快车道）。
+- 2026-03-16: 明确 share-link URL fragment 展示名要做一次性 percent-decoding，避免中文或 emoji 节点名在 validation/live stats 中退化为编码串。
 
 ## 参考（References）
 
