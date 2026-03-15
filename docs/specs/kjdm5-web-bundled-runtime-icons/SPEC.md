@@ -18,7 +18,7 @@
 
 - 让前端构建产物自带当前 UI 实际使用到的运行时图标，不再依赖 Iconify 公网 API。
 - 保留现有按钮、导航、状态、语言切换与 guide 品牌图标语义，不改变页面交互路径。
-- 用按需注册方式收口图标依赖，只打包 `mdi`、`simple-icons`、`twemoji` 中实际使用到的图标。
+- 用按需注册方式收口图标依赖，只打包 `mdi`、`simple-icons`、`circle-flags` 中实际使用到的图标。
 
 ### Non-goals
 
@@ -171,14 +171,14 @@ None
 
 ## 方案概述（Approach, high-level）
 
-- 新增单一 `web/src/lib/icons.tsx`，集中注册当前 UI 实际使用到的 `mdi`、`simple-icons`、`twemoji` 图标，并复用原有稳定字符串名称。
+- 新增单一 `web/src/lib/icons.tsx`，集中注册当前 UI 实际使用到的 `mdi`、`simple-icons`、`circle-flags` 图标，并复用原有稳定字符串名称。
 - 对已有组件调用点尽量保持不变，只把 `Icon` 导入统一切到共享模块，降低改动面。
 - 对外链 `<img>` 图标位点改为直接渲染本地图标组件，并用共享 helper 保持 guide 客户端图标映射一致。
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
 - 风险：若漏注册某个字符串图标，运行时可能重新触发 Iconify API 请求或出现缺图。
-- 风险：Simple Icons / Twemoji 图标数据升级后，个别品牌视觉可能发生轻微变化。
+- 风险：Simple Icons / Circle Flags 图标数据升级后，个别品牌视觉可能发生轻微变化。
 - 假设：当前业务中动态用户标签图标并未直接走 Iconify 远程加载路径，本轮无需扩展到任意用户自定义图标集合。
 
 ## 变更记录（Change log）

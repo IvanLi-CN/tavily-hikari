@@ -2,7 +2,7 @@ import { writeFileSync } from 'node:fs'
 
 import { icons as mdiIcons } from '@iconify-json/mdi'
 import { icons as simpleIcons } from '@iconify-json/simple-icons'
-import { icons as twemojiIcons } from '@iconify-json/twemoji'
+import { icons as circleFlagsIcons } from '@iconify-json/circle-flags'
 
 const ICON_SOURCES = [
   [mdiIcons, [
@@ -50,6 +50,7 @@ const ICON_SOURCES = [
     ['mdi:shield-check-outline', 'shield-check-outline'],
     ['mdi:trash-can-outline', 'trash-can-outline'],
     ['mdi:trash-outline', 'trash-can-outline'],
+    ['mdi:tray-arrow-down', 'tray-arrow-down'],
     ['mdi:tune', 'tune'],
     ['mdi:tune-variant', 'tune-variant'],
     ['mdi:view-dashboard-outline', 'view-dashboard-outline'],
@@ -61,9 +62,9 @@ const ICON_SOURCES = [
     ['simple-icons:cursor', 'cursor'],
     ['simple-icons:codeium', 'codeium'],
   ]],
-  [twemojiIcons, [
-    ['twemoji:flag-china', 'flag-china'],
-    ['twemoji:flag-united-kingdom', 'flag-united-kingdom'],
+  [circleFlagsIcons, [
+    ['circle-flags:cn', 'cn'],
+    ['circle-flags:gb', 'gb'],
   ]],
 ]
 
