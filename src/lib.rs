@@ -2731,32 +2731,49 @@ impl TavilyProxy {
         let mut record = self.load_proxy_affinity_record(api_key_id).await?;
         let (registration_ip, registration_region) =
             self.load_api_key_registration_metadata(api_key_id).await?;
+        let has_registration_metadata = registration_ip.is_some() || registration_region.is_some();
         let now = Utc::now().timestamp();
         {
             let mut manager = self.forward_proxy.lock().await;
             manager.ensure_non_zero_weight();
 
-            let is_valid = |proxy_key: &str,
-                            manager: &forward_proxy::ForwardProxyManager,
-                            allow_direct_primary: bool| {
-                let Some(endpoint) = manager.endpoint(proxy_key) else {
-                    return false;
+            let is_selectable_endpoint =
+                |proxy_key: &str,
+                 manager: &forward_proxy::ForwardProxyManager,
+                 allow_direct_primary: bool| {
+                    let Some(endpoint) = manager.endpoint(proxy_key) else {
+                        return false;
+                    };
+                    if endpoint.is_direct() && !allow_direct_primary {
+                        return false;
+                    }
+                    endpoint.is_selectable() && manager.runtime(proxy_key).is_some()
                 };
-                if endpoint.is_direct() && !allow_direct_primary {
+            let is_available = |proxy_key: &str,
+                                manager: &forward_proxy::ForwardProxyManager,
+                                allow_direct_primary: bool| {
+                if !is_selectable_endpoint(proxy_key, manager, allow_direct_primary) {
                     return false;
                 }
-                manager.runtime(proxy_key).is_some_and(|runtime| {
-                    runtime.available && runtime.weight > 0.0 && endpoint.is_selectable()
-                })
+                manager
+                    .runtime(proxy_key)
+                    .is_some_and(|runtime| runtime.available && runtime.weight > 0.0)
+            };
+            let keep_primary = |proxy_key: &str, manager: &forward_proxy::ForwardProxyManager| {
+                if has_registration_metadata {
+                    is_available(proxy_key, manager, true)
+                } else {
+                    is_selectable_endpoint(proxy_key, manager, true)
+                }
             };
 
             if let Some(primary) = record.primary_proxy_key.as_deref()
-                && !is_valid(primary, &manager, true)
+                && !keep_primary(primary, &manager)
             {
                 record.primary_proxy_key = None;
             }
             if let Some(secondary) = record.secondary_proxy_key.as_deref()
-                && !is_valid(secondary, &manager, true)
+                && !is_available(secondary, &manager, true)
             {
                 record.secondary_proxy_key = None;
             }
@@ -5496,7 +5513,17 @@ impl TavilyProxy {
         geo_origin: &str,
         preferred_primary_proxy_key: Option<&str>,
     ) -> Result<(String, ApiKeyUpsertStatus), ProxyError> {
-        let proxy_affinity = if registration_ip.is_some() || registration_region.is_some() {
+        let has_fresh_registration_metadata =
+            registration_ip.is_some() || registration_region.is_some();
+        let has_existing_registration_metadata = if has_fresh_registration_metadata {
+            false
+        } else {
+            let (existing_registration_ip, existing_registration_region) = self
+                .load_api_key_registration_metadata_by_secret(api_key)
+                .await?;
+            existing_registration_ip.is_some() || existing_registration_region.is_some()
+        };
+        let proxy_affinity = if has_fresh_registration_metadata {
             Some(
                 self.select_proxy_affinity_for_registration_with_hint(
                     api_key,
@@ -5507,21 +5534,8 @@ impl TavilyProxy {
                 )
                 .await?,
             )
-        } else if let (existing_registration_ip, existing_registration_region) = self
-            .load_api_key_registration_metadata_by_secret(api_key)
-            .await?
-            && (existing_registration_ip.is_some() || existing_registration_region.is_some())
-        {
-            Some(
-                self.select_proxy_affinity_for_registration_with_hint(
-                    api_key,
-                    geo_origin,
-                    existing_registration_ip.as_deref(),
-                    existing_registration_region.as_deref(),
-                    None,
-                )
-                .await?,
-            )
+        } else if has_existing_registration_metadata {
+            None
         } else if let Some(preferred_primary_proxy_key) = preferred_primary_proxy_key {
             Some(
                 self.select_proxy_affinity_for_hint_only(
@@ -18595,6 +18609,16 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
         .await
         .expect("query persisted unavailable hint affinity");
         assert_eq!(affinity_row.0.as_deref(), Some("http://1.1.1.1:8080"));
+
+        let reconciled = proxy
+            .reconcile_proxy_affinity_record(&key_id)
+            .await
+            .expect("reconcile unavailable hint affinity");
+        assert_eq!(
+            reconciled.primary_proxy_key.as_deref(),
+            Some("http://1.1.1.1:8080"),
+            "temporary outages should not discard a caller-pinned hint-only primary"
+        );
 
         let _ = std::fs::remove_file(db_path);
     }
