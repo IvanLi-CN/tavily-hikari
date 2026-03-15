@@ -97,6 +97,41 @@
 - Storybook：新增 `SubscriptionValidatingProgress`、`SubscriptionAddingProgress`、`ManualValidatingProgress`、`ProgressFailure`。
 - Browser：在 mock/stub upstream 下验证订阅添加与手工验证流程的按钮 spinner、步骤气泡与失败收尾。
 
+## Visual Evidence (PR)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: `Admin/ForwardProxySettingsModule/SubscriptionValidationSuccess`
+  state: `success`
+  evidence_note: 验证成功后弹窗直接切换到节点列表，展示节点名称、协议、IP/地理位置与结果列延迟。
+
+![Forward proxy subscription validation success state](./assets/subscription-validation-success-story.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: `Admin/ForwardProxySettingsModule/SubscriptionAddingProgress`
+  state: `saving`
+  evidence_note: 导入进行中展示保存配置、刷新订阅、引导探测与刷新列表的分阶段进度，而不是静默等待。
+
+![Forward proxy subscription adding progress state](./assets/subscription-adding-progress-story.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: `Admin/ForwardProxySettingsModule/ProgressFailure`
+  state: `error`
+  evidence_note: 订阅刷新失败时保留错误气泡与失败步骤，证明弹窗不会在异常时静默关闭。
+
+![Forward proxy progress failure state](./assets/progress-failure-story.png)
+
 ## 里程碑（Milestones / Delivery checklist）
 
 - [x] M1: 新增 spec 与 README 索引，冻结 progress envelope / phaseKey / fallback 口径
