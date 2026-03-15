@@ -125,6 +125,32 @@
   When 点击返回
   Then 原分页、分组、状态、IP、region 筛选全部恢复。
 
+## 界面截图（Screenshots）
+
+### 管理端 API Keys 主列表
+
+展示新增后的头部快速添加区、注册信息列以及默认列表状态。
+
+![管理端 API Keys 主列表](assets/admin-keys-list.png)
+
+### 管理端 API Keys 筛选态
+
+展示 `registrationIp=8.8.8.8` 与 `region=US` 的真实筛选结果，以及筛选控件的组合状态。
+
+![管理端 API Keys 筛选态](assets/admin-keys-filtered.png)
+
+### 管理端 Key 详情注册信息区
+
+展示详情页中的注册 IP / 地区元数据区块。
+
+![管理端 Key 详情注册信息区](assets/admin-key-detail-registration.png)
+
+### 导入校验弹窗
+
+展示批量导入后的校验结果弹窗，包括 valid / exhausted / unauthorized / error / duplicate 等状态。
+
+![导入校验弹窗](assets/api-keys-validation-dialog.png)
+
 ## 质量门槛（Quality Gates）
 
 - `cargo fmt --all`
