@@ -5431,10 +5431,7 @@ impl TavilyProxy {
         geo_origin: &str,
         preferred_primary_proxy_key: Option<&str>,
     ) -> Result<(String, ApiKeyUpsertStatus), ProxyError> {
-        let proxy_affinity = if registration_ip.is_some()
-            || registration_region.is_some()
-            || preferred_primary_proxy_key.is_some()
-        {
+        let proxy_affinity = if registration_ip.is_some() || registration_region.is_some() {
             Some(
                 self.select_proxy_affinity_for_registration_with_hint(
                     api_key,
@@ -5445,6 +5442,18 @@ impl TavilyProxy {
                 )
                 .await?,
             )
+        } else if let Some(preferred_primary_proxy_key) = preferred_primary_proxy_key {
+            let affinity = self
+                .select_proxy_affinity_for_registration_with_hint(
+                    api_key,
+                    geo_origin,
+                    registration_ip,
+                    registration_region,
+                    Some(preferred_primary_proxy_key),
+                )
+                .await?;
+            (affinity.primary_proxy_key.as_deref() == Some(preferred_primary_proxy_key))
+                .then_some(affinity)
         } else {
             None
         };
@@ -18379,6 +18388,60 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
         assert!(
             row.1.is_none() && row.2.is_none(),
             "hint-only imports should not fabricate registration metadata"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn add_or_undelete_key_with_stale_hint_only_proxy_affinity_does_not_persist_fallback() {
+        let db_path = temp_db_path("proxy-affinity-stale-hint-only");
+        let db_str = db_path.to_string_lossy().to_string();
+        let geo_addr = spawn_api_key_geo_mock_server().await;
+        let geo_origin = format!("http://{geo_addr}/geo");
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        {
+            let mut manager = proxy.forward_proxy.lock().await;
+            manager.apply_settings(
+                ForwardProxySettings {
+                    proxy_urls: vec![
+                        "http://18.183.246.69:8080".to_string(),
+                        "http://1.1.1.1:8080".to_string(),
+                    ],
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: false,
+                }
+                .normalized(),
+            );
+        }
+
+        let (key_id, status) = proxy
+            .add_or_undelete_key_with_status_in_group_and_registration_proxy_affinity_hint(
+                "tvly-stale-hint-only",
+                None,
+                None,
+                None,
+                &geo_origin,
+                Some("http://9.9.9.9:8080"),
+            )
+            .await
+            .expect("key created without persisting stale hint");
+        assert_eq!(status, ApiKeyUpsertStatus::Created);
+
+        let affinity_row: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT primary_proxy_key, secondary_proxy_key FROM forward_proxy_key_affinity WHERE key_id = ?",
+        )
+        .bind(&key_id)
+        .fetch_optional(&proxy.key_store.pool)
+        .await
+        .expect("query affinity row");
+        assert!(
+            affinity_row.is_none(),
+            "stale hint-only imports must not silently bind a fallback node"
         );
 
         let _ = std::fs::remove_file(db_path);
