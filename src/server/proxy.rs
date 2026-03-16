@@ -669,6 +669,7 @@ async fn proxy_handler(
             let mut billing_error: Option<String> = None;
             if let Some(tid) = token_id.as_deref() {
                 let analysis = analyze_mcp_attempt(resp.status, &resp.body);
+                let api_key_id = resp.api_key_id.as_deref();
                 let tavily_code: Option<i64> = analysis.tavily_status_code;
                 let result_status = analysis.status;
                 let mut attempt_logged = false;
@@ -769,7 +770,7 @@ async fn proxy_handler(
                                     credits,
                                     subject,
                                     &request_kind,
-                                    analysis.api_key_id.as_deref(),
+                                    api_key_id,
                                 )
                                 .await
                         } else {
@@ -787,7 +788,7 @@ async fn proxy_handler(
                                     None,
                                     credits,
                                     &request_kind,
-                                    analysis.api_key_id.as_deref(),
+                                    api_key_id,
                                 )
                                 .await
                         }

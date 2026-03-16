@@ -3754,6 +3754,7 @@ impl TavilyProxy {
                     status,
                     headers,
                     body: body_bytes,
+                    api_key_id: Some(lease.id.clone()),
                 })
             }
             Err(err) => {
@@ -3911,6 +3912,7 @@ impl TavilyProxy {
                         status,
                         headers,
                         body: body_bytes,
+                        api_key_id: Some(lease.id.clone()),
                     },
                     analysis,
                 ))
@@ -4101,6 +4103,7 @@ impl TavilyProxy {
                         status,
                         headers,
                         body: body_bytes,
+                        api_key_id: Some(lease.id.clone()),
                     },
                     analysis,
                     delta,
@@ -4224,6 +4227,7 @@ impl TavilyProxy {
                         status,
                         headers,
                         body: body_bytes,
+                        api_key_id: Some(lease.id.clone()),
                     },
                     analysis,
                 ))
@@ -7978,8 +7982,11 @@ impl KeyStore {
             VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(user_id, api_key_id)
             DO UPDATE SET
-                updated_at = excluded.updated_at,
-                last_success_at = excluded.last_success_at
+                updated_at = CASE
+                    WHEN excluded.last_success_at >= user_api_key_bindings.last_success_at THEN excluded.updated_at
+                    ELSE user_api_key_bindings.updated_at
+                END,
+                last_success_at = MAX(user_api_key_bindings.last_success_at, excluded.last_success_at)
             "#,
         )
         .bind(user_id)
@@ -15672,6 +15679,7 @@ pub struct ProxyResponse {
     pub status: StatusCode,
     pub headers: HeaderMap,
     pub body: Bytes,
+    pub api_key_id: Option<String>,
 }
 
 /// Token quota verdict used by the HTTP layer to decide whether to forward.

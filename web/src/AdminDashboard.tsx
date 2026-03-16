@@ -8613,7 +8613,11 @@ function KeyDetails({ id, onBack, onOpenUser }: { id: string; onBack: () => void
   const [stickyUsers, setStickyUsers] = useState<StickyUserRow[]>([])
   const [stickyNodes, setStickyNodes] = useState<StickyNode[]>([])
   const [detailLoadState, setDetailLoadState] = useState<QueryLoadState>('initial_loading')
+  const [stickyUsersLoadState, setStickyUsersLoadState] = useState<QueryLoadState>('initial_loading')
+  const [stickyNodesLoadState, setStickyNodesLoadState] = useState<QueryLoadState>('initial_loading')
   const [error, setError] = useState<string | null>(null)
+  const [stickyUsersError, setStickyUsersError] = useState<string | null>(null)
+  const [stickyNodesError, setStickyNodesError] = useState<string | null>(null)
   const [syncState, setSyncState] = useState<'idle' | 'syncing' | 'success'>('idle')
   const [quarantineState, setQuarantineState] = useState<'idle' | 'clearing'>('idle')
   const [quarantineDetailExpanded, setQuarantineDetailExpanded] = useState(false)
@@ -8645,12 +8649,18 @@ function KeyDetails({ id, onBack, onOpenUser }: { id: string; onBack: () => void
     const controller = new AbortController()
     loadAbortRef.current = controller
     try {
-      setDetailLoadState(
+      const panelLoadState =
         reason === 'refresh'
           ? getRefreshingLoadState(queryKeyRef.current != null)
-          : getBlockingLoadState(queryKeyRef.current != null),
+          : getBlockingLoadState(queryKeyRef.current != null)
+      setDetailLoadState(
+        panelLoadState,
       )
+      setStickyUsersLoadState(panelLoadState)
+      setStickyNodesLoadState(panelLoadState)
       setError(null)
+      setStickyUsersError(null)
+      setStickyNodesError(null)
       if (reason !== 'refresh') {
         setDetail(null)
         setSummary(null)
@@ -8659,20 +8669,37 @@ function KeyDetails({ id, onBack, onOpenUser }: { id: string; onBack: () => void
         setStickyNodes([])
       }
       const since = computeSince()
-      const [s, ls, d, stickyUsersResponse, stickyNodesResponse] = await Promise.all([
+      const [s, ls, d] = await Promise.all([
         fetchKeyMetrics(id, period, since, controller.signal),
         fetchKeyLogs(id, 50, since, controller.signal),
         fetchApiKeyDetail(id, controller.signal).catch(() => null),
-        fetchKeyStickyUsers(id, 1, 20, controller.signal),
-        fetchKeyStickyNodes(id, controller.signal),
       ])
       if (controller.signal.aborted) return
       setSummary(s)
       setLogs(ls)
       setDetail(d)
-      setStickyUsers(stickyUsersResponse.items)
-      setStickyNodes(stickyNodesResponse.nodes)
       setDetailLoadState('ready')
+      const [stickyUsersResult, stickyNodesResult] = await Promise.allSettled([
+        fetchKeyStickyUsers(id, 1, 20, controller.signal),
+        fetchKeyStickyNodes(id, controller.signal),
+      ])
+      if (controller.signal.aborted) return
+      if (stickyUsersResult.status === 'fulfilled') {
+        setStickyUsers(stickyUsersResult.value.items)
+        setStickyUsersLoadState('ready')
+      } else {
+        console.error(stickyUsersResult.reason)
+        setStickyUsersError(stickyUsersResult.reason instanceof Error ? stickyUsersResult.reason.message : adminStrings.errors.loadKeyDetails)
+        setStickyUsersLoadState('error')
+      }
+      if (stickyNodesResult.status === 'fulfilled') {
+        setStickyNodes(stickyNodesResult.value.nodes)
+        setStickyNodesLoadState('ready')
+      } else {
+        console.error(stickyNodesResult.reason)
+        setStickyNodesError(stickyNodesResult.reason instanceof Error ? stickyNodesResult.reason.message : adminStrings.errors.loadKeyDetails)
+        setStickyNodesLoadState('error')
+      }
       queryKeyRef.current = queryKey
     } catch (err) {
       if ((err as Error).name === 'AbortError') return
