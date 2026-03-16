@@ -1759,6 +1759,15 @@ impl TavilyProxy {
                 .filter(|endpoint| !endpoint.is_direct())
                 .collect::<Vec<_>>()
         };
+        let geo_metadata_targets = if skip_bootstrap_probe {
+            bootstrap_targets
+                .iter()
+                .filter(|endpoint| endpoint.source == forward_proxy::FORWARD_PROXY_SOURCE_MANUAL)
+                .cloned()
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
         if skip_bootstrap_probe && !bootstrap_targets.is_empty() {
             emit_forward_proxy_progress(
                 progress,
@@ -1795,6 +1804,14 @@ impl TavilyProxy {
                     )
                     .await;
             }
+        }
+        if !geo_metadata_targets.is_empty() {
+            let _ = self
+                .resolve_forward_proxy_geo_candidates(
+                    &self.api_key_geo_origin,
+                    geo_metadata_targets,
+                )
+                .await;
         }
         self.get_forward_proxy_settings().await
     }
@@ -2386,24 +2403,6 @@ impl TavilyProxy {
             .await
     }
 
-    async fn refresh_forward_proxy_geo_metadata(&self) {
-        let endpoints = {
-            let manager = self.forward_proxy.lock().await;
-            manager
-                .endpoints
-                .iter()
-                .filter(|endpoint| !endpoint.is_direct())
-                .cloned()
-                .collect::<Vec<_>>()
-        };
-        if endpoints.is_empty() {
-            return;
-        }
-        let _ = self
-            .resolve_forward_proxy_geo_candidates(&self.api_key_geo_origin, endpoints)
-            .await;
-    }
-
     pub async fn refresh_forward_proxy_subscriptions_with_progress(
         &self,
         progress: Option<&ForwardProxyProgressCallback>,
@@ -2439,7 +2438,8 @@ impl TavilyProxy {
             let mut xray = self.xray_supervisor.lock().await;
             xray.sync_endpoints(&mut manager.endpoints).await?;
         }
-        self.sync_forward_proxy_runtime_state(&mut manager).await
+        self.sync_forward_proxy_runtime_state(&mut manager).await?;
+        Ok(())
     }
 
     async fn fetch_forward_proxy_subscription_map_with_progress(
@@ -2516,9 +2516,7 @@ impl TavilyProxy {
                 }
             }
         }
-        forward_proxy::sync_manager_runtime_to_store(&self.key_store, manager).await?;
-        self.refresh_forward_proxy_geo_metadata().await;
-        Ok(())
+        forward_proxy::sync_manager_runtime_to_store(&self.key_store, manager).await
     }
 
     pub async fn maybe_run_forward_proxy_maintenance(&self) -> Result<(), ProxyError> {

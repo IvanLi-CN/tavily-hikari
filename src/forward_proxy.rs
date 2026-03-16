@@ -3652,6 +3652,8 @@ rule-providers:
                 "vless://0688fa59-e971-4278-8c03-4b35821a71dc@1.1.1.1:443?encryption=none#hk"
                     .to_string(),
             ),
+            manual_present: true,
+            subscription_sources: BTreeSet::new(),
         };
 
         assert_eq!(endpoint_host(&endpoint).as_deref(), Some("1.1.1.1"));
@@ -3666,6 +3668,8 @@ rule-providers:
             protocol: ForwardProxyProtocol::Http,
             endpoint_url: Some(Url::parse("http://127.0.0.1:8080").expect("parse http url")),
             raw_url: Some("http://example.com:8080".to_string()),
+            manual_present: true,
+            subscription_sources: BTreeSet::new(),
         };
 
         assert_eq!(endpoint_host(&endpoint).as_deref(), Some("127.0.0.1"));
