@@ -18524,6 +18524,80 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
     }
 
     #[tokio::test]
+    async fn select_proxy_affinity_persists_forward_proxy_runtime_geo_metadata_for_xray_route() {
+        let db_path = temp_db_path("proxy-runtime-geo-persist-xray");
+        let db_str = db_path.to_string_lossy().to_string();
+        let geo_addr = spawn_api_key_geo_mock_server().await;
+        let geo_origin = format!("http://{geo_addr}/geo");
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        let raw_proxy_url =
+            "vless://0688fa59-e971-4278-8c03-4b35821a71dc@1.1.1.1:443?encryption=none#hk";
+        {
+            let mut manager = proxy.forward_proxy.lock().await;
+            manager.apply_settings(
+                ForwardProxySettings {
+                    proxy_urls: vec![raw_proxy_url.to_string()],
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: false,
+                }
+                .normalized(),
+            );
+            let endpoint = manager
+                .endpoints
+                .iter_mut()
+                .find(|endpoint| endpoint.raw_url.as_deref() == Some(raw_proxy_url))
+                .expect("xray endpoint");
+            let endpoint_key = endpoint.key.clone();
+            let route_url =
+                Url::parse("socks5h://127.0.0.1:41000").expect("parse local xray route");
+            endpoint.endpoint_url = Some(route_url.clone());
+            let runtime = manager
+                .runtime
+                .get_mut(&endpoint_key)
+                .expect("xray runtime state");
+            runtime.endpoint_url = Some(route_url.to_string());
+            runtime.available = true;
+            runtime.last_error = None;
+        }
+
+        let (record, preview) = proxy
+            .select_proxy_affinity_preview_for_registration_with_hint(
+                "subject:persist-runtime-geo-xray",
+                &geo_origin,
+                Some("1.1.1.1"),
+                Some("HK"),
+                None,
+            )
+            .await
+            .expect("registration-aware affinity for xray route");
+        let primary = record.primary_proxy_key.expect("primary proxy key");
+        assert_eq!(
+            preview.as_ref().map(|item| item.match_kind),
+            Some(AssignedProxyMatchKind::RegistrationIp)
+        );
+
+        let row: (String, String) = sqlx::query_as(
+            "SELECT resolved_ips_json, resolved_regions_json FROM forward_proxy_runtime WHERE proxy_key = ?",
+        )
+        .bind(&primary)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("load persisted runtime geo metadata for xray route");
+        let resolved_ips: Vec<String> =
+            serde_json::from_str(&row.0).expect("decode persisted resolved ips");
+        let resolved_regions: Vec<String> =
+            serde_json::from_str(&row.1).expect("decode persisted resolved regions");
+        assert_eq!(resolved_ips, vec!["1.1.1.1".to_string()]);
+        assert_eq!(resolved_regions, vec!["HK".to_string()]);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn select_proxy_affinity_reuses_persisted_forward_proxy_runtime_geo_metadata() {
         let db_path = temp_db_path("proxy-runtime-geo-reuse");
         let db_str = db_path.to_string_lossy().to_string();

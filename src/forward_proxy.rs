@@ -313,10 +313,25 @@ impl ForwardProxyEndpoint {
 }
 
 pub fn endpoint_host(endpoint: &ForwardProxyEndpoint) -> Option<String> {
+    if endpoint.requires_xray() {
+        return endpoint
+            .raw_url
+            .as_deref()
+            .and_then(raw_endpoint_host)
+            .or_else(|| {
+                endpoint
+                    .endpoint_url
+                    .as_ref()
+                    .and_then(|url| url.host_str().map(ToOwned::to_owned))
+            });
+    }
     if let Some(url) = endpoint.endpoint_url.as_ref() {
         return url.host_str().map(ToOwned::to_owned);
     }
-    let raw = endpoint.raw_url.as_deref()?;
+    endpoint.raw_url.as_deref().and_then(raw_endpoint_host)
+}
+
+fn raw_endpoint_host(raw: &str) -> Option<String> {
     if !raw.contains("://") {
         return Url::parse(&format!("http://{raw}"))
             .ok()
@@ -3399,5 +3414,38 @@ rule-providers:
         .expect("parse vless");
 
         assert_eq!(parsed.display_name, "broken%ZZname");
+    }
+
+    #[test]
+    fn endpoint_host_prefers_share_link_host_for_xray_routes() {
+        let endpoint = ForwardProxyEndpoint {
+            key: "vless://example".to_string(),
+            source: FORWARD_PROXY_SOURCE_MANUAL.to_string(),
+            display_name: "example".to_string(),
+            protocol: ForwardProxyProtocol::Vless,
+            endpoint_url: Some(
+                Url::parse("socks5h://127.0.0.1:41000").expect("parse local xray route"),
+            ),
+            raw_url: Some(
+                "vless://0688fa59-e971-4278-8c03-4b35821a71dc@1.1.1.1:443?encryption=none#hk"
+                    .to_string(),
+            ),
+        };
+
+        assert_eq!(endpoint_host(&endpoint).as_deref(), Some("1.1.1.1"));
+    }
+
+    #[test]
+    fn endpoint_host_keeps_local_listener_for_non_xray_routes() {
+        let endpoint = ForwardProxyEndpoint {
+            key: "http://127.0.0.1:8080".to_string(),
+            source: FORWARD_PROXY_SOURCE_MANUAL.to_string(),
+            display_name: "local".to_string(),
+            protocol: ForwardProxyProtocol::Http,
+            endpoint_url: Some(Url::parse("http://127.0.0.1:8080").expect("parse http url")),
+            raw_url: Some("http://example.com:8080".to_string()),
+        };
+
+        assert_eq!(endpoint_host(&endpoint).as_deref(), Some("127.0.0.1"));
     }
 }

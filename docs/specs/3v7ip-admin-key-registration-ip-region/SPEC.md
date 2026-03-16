@@ -20,6 +20,7 @@
 - 在 `api_keys` 中持久化 `registration_ip` 与 `registration_region`，并在 key 列表 / 详情返回。
 - 导入时若校验阶段已经选中了代理节点，即使没有注册 IP / 地区，也要把该代理亲和结果持久化到 `forward_proxy_key_affinity`。
 - 代理节点自身的已解析 IP / 地区也要持久化，并在导入绑定时优先复用这些节点元数据，而不是每次都临时 lookup。
+- 对经 Xray 落地的 share-link 节点，geo 元数据必须取自 share-link 的真实远端 host，而不是本地 `127.0.0.1`/`::1` 监听地址。
 - 列表支持 `registration_ip` 精确筛选与 `registration_region` 多选 facets 筛选，且保持 URL / 分页上下文。
 - 地区解析遵循 `xp` 的 `country.is` 思路：批量解析、短暂失败回退、不阻断导入。
 - 导入校验弹窗中的映射节点名称按匹配来源着色：注册 IP=`success`、同地区=`info`、其他=`warning`。
