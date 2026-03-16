@@ -22,7 +22,8 @@
 - 代理节点自身的已解析 IP / 地区也要持久化，并在导入绑定时优先复用这些节点元数据，而不是每次都临时 lookup。
 - 对经 Xray 落地的 share-link 节点，geo 元数据必须取自 share-link 的真实远端 host，而不是本地 `127.0.0.1`/`::1` 监听地址。
 - API key 导入链路不得刷新已有代理节点的 IP / 地区元数据；已有持久化 metadata 只能读取复用，哪怕它是空地区、loopback 或其他脏值，也必须留给独立修复流程处理。
-- 仅当代理节点完全缺少持久化 metadata（`resolved_ips=[]` 且 `resolved_regions=[]`）时，导入链路才允许执行一次 bootstrap 解析并落盘。
+- 校验阶段给导入弹窗返回的代理预览，必须与最终导入持久化使用同一套代理 metadata 策略，避免“预览结果”和“实际入库结果”不一致。
+- 仅当代理节点完全缺少持久化 metadata（`resolved_ips=[]` 且 `resolved_regions=[]`）时，导入/校验链路才允许执行一次 bootstrap 解析并落盘。
 - 列表支持 `registration_ip` 精确筛选与 `registration_region` 多选 facets 筛选，且保持 URL / 分页上下文。
 - 地区解析遵循 `xp` 的 `country.is` 思路：批量解析、短暂失败回退、不阻断导入。
 - 导入校验弹窗中的映射节点名称按匹配来源着色：注册 IP=`success`、同地区=`info`、其他=`warning`。
@@ -117,7 +118,7 @@
   - `resolved_regions: string[]`
 - 语义固定：
   - 节点元数据来自持久化的 forward proxy runtime snapshot
-  - 导入绑定只读取这些已持久化节点元数据；仅在节点元数据完全缺失时允许单次 bootstrap 解析
+  - 导入绑定与导入前校验预览都只读取这些已持久化节点元数据；仅在节点元数据完全缺失时允许单次 bootstrap 解析
   - 已有空地区、loopback 或其他脏 metadata 不得在导入链路内刷新
 
 ## 实现约束（Implementation Notes）

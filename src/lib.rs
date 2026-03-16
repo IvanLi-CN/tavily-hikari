@@ -1548,6 +1548,7 @@ const FORWARD_PROXY_LABEL_PROBE_NODES: &str = "Probing nodes";
 const FORWARD_PROXY_LABEL_GENERATE_RESULT: &str = "Preparing result";
 const FORWARD_PROXY_TRACE_URL: &str = "http://cloudflare.com/cdn-cgi/trace";
 const FORWARD_PROXY_TRACE_TIMEOUT_MS: u64 = 900;
+const API_KEY_BATCH_UPSERT_TX_CHUNK_SIZE: usize = 50;
 
 impl TavilyProxy {
     pub async fn new<I, S>(keys: I, database_path: &str) -> Result<Self, ProxyError>
@@ -3449,6 +3450,31 @@ impl TavilyProxy {
         )
         .await
         .map(|(record, _preview)| record)
+    }
+
+    async fn select_proxy_affinity_preview_for_registration_with_hint_for_import(
+        &self,
+        subject: &str,
+        geo_origin: &str,
+        registration_ip: Option<&str>,
+        registration_region: Option<&str>,
+        preferred_primary_proxy_key: Option<&str>,
+    ) -> Result<
+        (
+            forward_proxy::ForwardProxyAffinityRecord,
+            Option<ForwardProxyAssignmentPreview>,
+        ),
+        ProxyError,
+    > {
+        self.select_proxy_affinity_preview_for_registration_with_hint_and_policy(
+            subject,
+            geo_origin,
+            registration_ip,
+            registration_region,
+            preferred_primary_proxy_key,
+            ForwardProxyGeoResolutionPolicy::BootstrapMissingOnly,
+        )
+        .await
     }
 
     async fn select_proxy_affinity_for_hint_only(
@@ -6834,7 +6860,7 @@ impl TavilyProxy {
         let (proxy_affinity, assigned_proxy) =
             if registration_ip.is_some() || registration_region.is_some() {
                 let (record, preview) = self
-                    .select_proxy_affinity_preview_for_registration_with_hint(
+                    .select_proxy_affinity_preview_for_registration_with_hint_for_import(
                         &format!("validate:{api_key}"),
                         geo_origin,
                         registration_ip,
@@ -14638,6 +14664,38 @@ impl KeyStore {
         if items.is_empty() {
             return Vec::new();
         }
+
+        let mut outcomes = Vec::with_capacity(items.len());
+        let mut chunk = Vec::with_capacity(API_KEY_BATCH_UPSERT_TX_CHUNK_SIZE);
+        for item in items {
+            chunk.push(item);
+            if chunk.len() >= API_KEY_BATCH_UPSERT_TX_CHUNK_SIZE {
+                outcomes.extend(
+                    self.add_or_undelete_keys_with_status_in_group_and_registration_batch_chunk(
+                        std::mem::take(&mut chunk),
+                    )
+                    .await,
+                );
+            }
+        }
+        if !chunk.is_empty() {
+            outcomes.extend(
+                self.add_or_undelete_keys_with_status_in_group_and_registration_batch_chunk(chunk)
+                    .await,
+            );
+        }
+
+        outcomes
+    }
+
+    async fn add_or_undelete_keys_with_status_in_group_and_registration_batch_chunk(
+        &self,
+        items: Vec<ApiKeyBatchUpsertInput>,
+    ) -> Vec<ApiKeyBatchUpsertOutcome> {
+        debug_assert!(
+            !items.is_empty(),
+            "batch chunk helper expects at least one item"
+        );
 
         let mut tx = match self.pool.begin().await {
             Ok(tx) => tx,
