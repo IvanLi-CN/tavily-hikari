@@ -3099,7 +3099,11 @@ impl TavilyProxy {
             }
             host_ips.insert(
                 host.clone(),
-                if cached_ips.is_empty() {
+                if cached_ips.is_empty()
+                    || (endpoint.requires_xray()
+                        && cached_regions.is_empty()
+                        && !cached_ips.iter().any(|ip| is_global_geo_ip(ip)))
+                {
                     Self::resolve_forward_proxy_host_ips(&host).await
                 } else {
                     cached_ips
@@ -18790,14 +18794,33 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
             runtime.last_error = None;
             endpoint_key
         };
+        let persisted_runtime = {
+            let manager = proxy.forward_proxy.lock().await;
+            manager
+                .runtime
+                .get(&endpoint_key)
+                .cloned()
+                .expect("persisted xray runtime state")
+        };
+        forward_proxy::persist_forward_proxy_runtime_state(
+            &proxy.key_store.pool,
+            &persisted_runtime,
+        )
+        .await
+        .expect("persist initial xray runtime state");
 
-        sqlx::query(
+        let updated = sqlx::query(
             "UPDATE forward_proxy_runtime SET resolved_ips_json = '[\"127.0.0.1\"]', resolved_regions_json = '[]' WHERE proxy_key = ?",
         )
         .bind(&endpoint_key)
         .execute(&proxy.key_store.pool)
         .await
         .expect("seed stale loopback runtime geo metadata");
+        assert_eq!(
+            updated.rows_affected(),
+            1,
+            "should seed an existing runtime row"
+        );
 
         let reloaded = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
             .await
