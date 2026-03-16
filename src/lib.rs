@@ -2605,19 +2605,8 @@ impl TavilyProxy {
         api_key_id: &str,
         record: forward_proxy::ForwardProxyAffinityRecord,
     ) -> Result<(), ProxyError> {
-        if record.primary_proxy_key.is_none() && record.secondary_proxy_key.is_none() {
-            sqlx::query("DELETE FROM forward_proxy_key_affinity WHERE key_id = ?")
-                .bind(api_key_id)
-                .execute(&self.key_store.pool)
-                .await?;
-        } else {
-            forward_proxy::save_forward_proxy_key_affinity(
-                &self.key_store.pool,
-                api_key_id,
-                &record,
-            )
+        forward_proxy::save_forward_proxy_key_affinity(&self.key_store.pool, api_key_id, &record)
             .await?;
-        }
         let mut cache = self.forward_proxy_affinity.lock().await;
         cache.insert(api_key_id.to_string(), record);
         Ok(())
@@ -2780,10 +2769,13 @@ impl TavilyProxy {
             record.secondary_proxy_key = None;
         }
 
-        if record.primary_proxy_key.is_none()
+        let has_explicit_empty_affinity_marker = !has_registration_metadata
+            && record.primary_proxy_key.is_none()
             && record.secondary_proxy_key.is_none()
-            && !has_registration_metadata
-        {
+            && forward_proxy::load_forward_proxy_key_affinity(&self.key_store.pool, api_key_id)
+                .await?
+                .is_some();
+        if has_explicit_empty_affinity_marker {
             self.store_proxy_affinity_record(api_key_id, record.clone())
                 .await?;
             return Ok(record);
@@ -13995,30 +13987,21 @@ impl KeyStore {
                 if should_persist_proxy_affinity
                     && let Some(proxy_affinity) = proxy_affinity
                 {
-                    if proxy_affinity.primary_proxy_key.is_none()
-                        && proxy_affinity.secondary_proxy_key.is_none()
-                    {
-                        sqlx::query("DELETE FROM forward_proxy_key_affinity WHERE key_id = ?")
-                            .bind(&id)
-                            .execute(&mut *tx)
-                            .await?;
-                    } else {
-                        sqlx::query(
-                            r#"
-                            INSERT INTO forward_proxy_key_affinity (key_id, primary_proxy_key, secondary_proxy_key, updated_at)
-                            VALUES (?1, ?2, ?3, strftime('%s', 'now'))
-                            ON CONFLICT(key_id) DO UPDATE SET
-                                primary_proxy_key = excluded.primary_proxy_key,
-                                secondary_proxy_key = excluded.secondary_proxy_key,
-                                updated_at = strftime('%s', 'now')
-                            "#,
-                        )
-                        .bind(&id)
-                        .bind(proxy_affinity.primary_proxy_key.as_deref())
-                        .bind(proxy_affinity.secondary_proxy_key.as_deref())
-                        .execute(&mut *tx)
-                        .await?;
-                    }
+                    sqlx::query(
+                        r#"
+                        INSERT INTO forward_proxy_key_affinity (key_id, primary_proxy_key, secondary_proxy_key, updated_at)
+                        VALUES (?1, ?2, ?3, strftime('%s', 'now'))
+                        ON CONFLICT(key_id) DO UPDATE SET
+                            primary_proxy_key = excluded.primary_proxy_key,
+                            secondary_proxy_key = excluded.secondary_proxy_key,
+                            updated_at = strftime('%s', 'now')
+                        "#,
+                    )
+                    .bind(&id)
+                    .bind(proxy_affinity.primary_proxy_key.as_deref())
+                    .bind(proxy_affinity.secondary_proxy_key.as_deref())
+                    .execute(&mut *tx)
+                    .await?;
                 }
 
                 if deleted_at.is_some() {
@@ -14055,30 +14038,21 @@ impl KeyStore {
             .execute(&mut *tx)
             .await?;
             if let Some(proxy_affinity) = proxy_affinity {
-                if proxy_affinity.primary_proxy_key.is_none()
-                    && proxy_affinity.secondary_proxy_key.is_none()
-                {
-                    sqlx::query("DELETE FROM forward_proxy_key_affinity WHERE key_id = ?")
-                        .bind(&id)
-                        .execute(&mut *tx)
-                        .await?;
-                } else {
-                    sqlx::query(
-                        r#"
-                        INSERT INTO forward_proxy_key_affinity (key_id, primary_proxy_key, secondary_proxy_key, updated_at)
-                        VALUES (?1, ?2, ?3, strftime('%s', 'now'))
-                        ON CONFLICT(key_id) DO UPDATE SET
-                            primary_proxy_key = excluded.primary_proxy_key,
-                            secondary_proxy_key = excluded.secondary_proxy_key,
-                            updated_at = strftime('%s', 'now')
-                        "#,
-                    )
-                    .bind(&id)
-                    .bind(proxy_affinity.primary_proxy_key.as_deref())
-                    .bind(proxy_affinity.secondary_proxy_key.as_deref())
-                    .execute(&mut *tx)
-                    .await?;
-                }
+                sqlx::query(
+                    r#"
+                    INSERT INTO forward_proxy_key_affinity (key_id, primary_proxy_key, secondary_proxy_key, updated_at)
+                    VALUES (?1, ?2, ?3, strftime('%s', 'now'))
+                    ON CONFLICT(key_id) DO UPDATE SET
+                        primary_proxy_key = excluded.primary_proxy_key,
+                        secondary_proxy_key = excluded.secondary_proxy_key,
+                        updated_at = strftime('%s', 'now')
+                    "#,
+                )
+                .bind(&id)
+                .bind(proxy_affinity.primary_proxy_key.as_deref())
+                .bind(proxy_affinity.secondary_proxy_key.as_deref())
+                .execute(&mut *tx)
+                .await?;
             }
             Ok((id, ApiKeyUpsertStatus::Created))
         }
@@ -18552,15 +18526,15 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
             .expect("key created without persisting stale hint");
         assert_eq!(status, ApiKeyUpsertStatus::Created);
 
-        let affinity_row: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+        let affinity_row: (Option<String>, Option<String>) = sqlx::query_as(
             "SELECT primary_proxy_key, secondary_proxy_key FROM forward_proxy_key_affinity WHERE key_id = ?",
         )
         .bind(&key_id)
-        .fetch_optional(&proxy.key_store.pool)
+        .fetch_one(&proxy.key_store.pool)
         .await
         .expect("query affinity row");
         assert!(
-            affinity_row.is_none(),
+            affinity_row.0.is_none() && affinity_row.1.is_none(),
             "stale hint-only imports must not silently bind a fallback node"
         );
 
@@ -18573,15 +18547,15 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
             "keys without durable affinity should still get a runtime fallback plan"
         );
 
-        let affinity_row_after_plan: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+        let affinity_row_after_plan: (Option<String>, Option<String>) = sqlx::query_as(
             "SELECT primary_proxy_key, secondary_proxy_key FROM forward_proxy_key_affinity WHERE key_id = ?",
         )
         .bind(&key_id)
-        .fetch_optional(&proxy.key_store.pool)
+        .fetch_one(&proxy.key_store.pool)
         .await
         .expect("query affinity row after building stale hint plan");
         assert!(
-            affinity_row_after_plan.is_none(),
+            affinity_row_after_plan.0.is_none() && affinity_row_after_plan.1.is_none(),
             "runtime fallback planning must not backfill durable affinity for stale hints"
         );
 
@@ -18772,15 +18746,15 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
             .expect("key created without persisting direct hint");
         assert_eq!(status, ApiKeyUpsertStatus::Created);
 
-        let affinity_row: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+        let affinity_row: (Option<String>, Option<String>) = sqlx::query_as(
             "SELECT primary_proxy_key, secondary_proxy_key FROM forward_proxy_key_affinity WHERE key_id = ?",
         )
         .bind(&key_id)
-        .fetch_optional(&proxy.key_store.pool)
+        .fetch_one(&proxy.key_store.pool)
         .await
         .expect("query direct hint affinity row");
         assert!(
-            affinity_row.is_none(),
+            affinity_row.0.is_none() && affinity_row.1.is_none(),
             "direct validation results must not become durable affinity records"
         );
 
@@ -18793,17 +18767,102 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
             "direct-only validation results should still allow runtime fallback selection"
         );
 
-        let affinity_row_after_plan: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+        let affinity_row_after_plan: (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT primary_proxy_key, secondary_proxy_key FROM forward_proxy_key_affinity WHERE key_id = ?",
+        )
+        .bind(&key_id)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("query direct hint affinity row after plan build");
+        assert!(
+            affinity_row_after_plan.0.is_none() && affinity_row_after_plan.1.is_none(),
+            "runtime fallback planning must not convert direct hints into durable affinity"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn add_or_undelete_plain_key_without_registration_metadata_still_synthesizes_affinity() {
+        let db_path = temp_db_path("proxy-affinity-plain-key-synthesizes");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        {
+            let mut manager = proxy.forward_proxy.lock().await;
+            manager.apply_settings(
+                ForwardProxySettings {
+                    proxy_urls: vec![
+                        "http://18.183.246.69:8080".to_string(),
+                        "http://1.1.1.1:8080".to_string(),
+                    ],
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: false,
+                }
+                .normalized(),
+            );
+        }
+
+        let (key_id, status) = proxy
+            .add_or_undelete_key_with_status("tvly-plain-no-registration")
+            .await
+            .expect("plain key created");
+        assert_eq!(status, ApiKeyUpsertStatus::Created);
+
+        let before_plan: Option<(Option<String>, Option<String>)> = sqlx::query_as(
             "SELECT primary_proxy_key, secondary_proxy_key FROM forward_proxy_key_affinity WHERE key_id = ?",
         )
         .bind(&key_id)
         .fetch_optional(&proxy.key_store.pool)
         .await
-        .expect("query direct hint affinity row after plan build");
+        .expect("query affinity before runtime reconciliation");
         assert!(
-            affinity_row_after_plan.is_none(),
-            "runtime fallback planning must not convert direct hints into durable affinity"
+            before_plan.is_none(),
+            "plain keys should start without an explicit affinity marker"
         );
+
+        let plan = proxy
+            .build_proxy_attempt_plan(&key_id)
+            .await
+            .expect("build attempt plan for plain key");
+        assert!(
+            !plan.is_empty(),
+            "plain keys should still get a ranked runtime attempt plan"
+        );
+
+        let synthesized: (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT primary_proxy_key, secondary_proxy_key FROM forward_proxy_key_affinity WHERE key_id = ?",
+        )
+        .bind(&key_id)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("query synthesized affinity after runtime reconciliation");
+        assert!(
+            synthesized.0.is_some(),
+            "plain keys must still materialize a durable primary affinity"
+        );
+
+        if let Some(secondary) = synthesized.1.clone() {
+            proxy
+                .promote_proxy_affinity_secondary(&key_id, &secondary)
+                .await
+                .expect("promote synthesized secondary");
+            let promoted: (Option<String>, Option<String>) = sqlx::query_as(
+                "SELECT primary_proxy_key, secondary_proxy_key FROM forward_proxy_key_affinity WHERE key_id = ?",
+            )
+            .bind(&key_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("query promoted affinity");
+            assert_eq!(
+                promoted.0.as_deref(),
+                Some(secondary.as_str()),
+                "plain keys should keep the existing self-healing promotion behavior"
+            );
+        }
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -18860,15 +18919,15 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
             .expect("existing key refreshed with stale hint");
         assert_eq!(existed_status, ApiKeyUpsertStatus::Existed);
 
-        let affinity_row: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+        let affinity_row: (Option<String>, Option<String>) = sqlx::query_as(
             "SELECT primary_proxy_key, secondary_proxy_key FROM forward_proxy_key_affinity WHERE key_id = ?",
         )
         .bind(&key_id)
-        .fetch_optional(&proxy.key_store.pool)
+        .fetch_one(&proxy.key_store.pool)
         .await
         .expect("query affinity row after stale refresh");
         assert!(
-            affinity_row.is_none(),
+            affinity_row.0.is_none() && affinity_row.1.is_none(),
             "stale hint-only refresh should clear the old affinity instead of keeping it"
         );
 
