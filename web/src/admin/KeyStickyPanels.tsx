@@ -1,6 +1,5 @@
 import { useMemo } from 'react'
 
-import { Icon } from '../lib/icons'
 import type {
   ForwardProxyActivityBucket,
   ForwardProxyStatsNode,
@@ -255,62 +254,28 @@ function stickyNodeWindowSummary(node: StickyNode): string {
   return `${formatNumber(attempts)} · ${rateLabel} · ${latencyLabel}`
 }
 
-function formatStickyWindowHint(template: string, periodLabel: string): string {
-  return template.replace('{period}', periodLabel)
-}
-
-function formatStickyWindowValueHint(
-  template: string,
-  periodLabel: string,
-  successValue: number,
-  failureValue: number,
-): string {
-  return template
-    .replace('{period}', periodLabel)
-    .replace('{success}', formatNumber(successValue))
-    .replace('{failure}', formatNumber(failureValue))
-}
-
-function StickyWindowHeader({
-  label,
-  hint,
-}: {
-  label: string
-  hint: string
-}): JSX.Element {
-  return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-      <span>{label}</span>
-      <span className="tooltip" data-tip={hint}>
-        <button
-          type="button"
-          className="link-button"
-          aria-label={hint}
-          style={{ display: 'inline-flex', alignItems: 'center', color: 'inherit', opacity: 0.78 }}
-        >
-          <Icon icon="mdi:help-circle-outline" width={15} height={15} />
-        </button>
-      </span>
-    </span>
-  )
-}
-
 function StickyWindowValue({
-  periodLabel,
   successValue,
   failureValue,
-  valueHintTemplate,
+  successLabel,
+  failureLabel,
 }: {
-  periodLabel: string
   successValue: number
   failureValue: number
-  valueHintTemplate: string
+  successLabel: string
+  failureLabel: string
 }): JSX.Element {
-  const hint = formatStickyWindowValueHint(valueHintTemplate, periodLabel, successValue, failureValue)
   return (
-    <span className="tooltip" data-tip={hint} style={{ display: 'inline-flex' }}>
-      <span>{formatNumber(successValue)} / {formatNumber(failureValue)}</span>
-    </span>
+    <div className="sticky-window-bubbles">
+      <span className="sticky-window-bubble sticky-window-bubble-success">
+        <span className="sticky-window-bubble-label">{successLabel}</span>
+        <strong className="sticky-window-bubble-value">{formatNumber(successValue)}</strong>
+      </span>
+      <span className="sticky-window-bubble sticky-window-bubble-failure">
+        <span className="sticky-window-bubble-label">{failureLabel}</span>
+        <strong className="sticky-window-bubble-value">{formatNumber(failureValue)}</strong>
+      </span>
+    </div>
   )
 }
 
@@ -361,9 +326,6 @@ export default function KeyStickyPanels({
   const stickyUsersTotalPages = Math.max(1, Math.ceil(stickyUsersTotal / stickyUsersPerPage))
   const stickyNodesRefreshing = isRefreshingLoadState(stickyNodesLoadState)
   const stickyNodesLoadingLabel = stickyNodesRefreshing ? loadingStateStrings.refreshing : loadingStateStrings.switching
-  const yesterdayHint = formatStickyWindowHint(keyDetailsStrings.stickyUsers.windowHint, keyDetailsStrings.stickyUsers.yesterday)
-  const todayHint = formatStickyWindowHint(keyDetailsStrings.stickyUsers.windowHint, keyDetailsStrings.stickyUsers.today)
-  const monthHint = formatStickyWindowHint(keyDetailsStrings.stickyUsers.windowHint, keyDetailsStrings.stickyUsers.month)
 
   return (
     <>
@@ -388,9 +350,9 @@ export default function KeyStickyPanels({
               <thead>
                 <tr>
                   <th>{keyDetailsStrings.stickyUsers.user}</th>
-                  <th><StickyWindowHeader label={keyDetailsStrings.stickyUsers.yesterday} hint={yesterdayHint} /></th>
-                  <th><StickyWindowHeader label={keyDetailsStrings.stickyUsers.today} hint={todayHint} /></th>
-                  <th><StickyWindowHeader label={keyDetailsStrings.stickyUsers.month} hint={monthHint} /></th>
+                  <th>{keyDetailsStrings.stickyUsers.yesterday}</th>
+                  <th>{keyDetailsStrings.stickyUsers.today}</th>
+                  <th>{keyDetailsStrings.stickyUsers.month}</th>
                   <th>{keyDetailsStrings.stickyUsers.lastSuccess}</th>
                   <th>{keyDetailsStrings.stickyUsers.trend}</th>
                 </tr>
@@ -411,26 +373,26 @@ export default function KeyStickyPanels({
                       </td>
                       <td>
                         <StickyWindowValue
-                          periodLabel={keyDetailsStrings.stickyUsers.yesterday}
                           successValue={item.windows.yesterday.successCredits}
                           failureValue={item.windows.yesterday.failureCredits}
-                          valueHintTemplate={keyDetailsStrings.stickyUsers.valueHint}
+                          successLabel={keyDetailsStrings.stickyUsers.success}
+                          failureLabel={keyDetailsStrings.stickyUsers.failure}
                         />
                       </td>
                       <td>
                         <StickyWindowValue
-                          periodLabel={keyDetailsStrings.stickyUsers.today}
                           successValue={item.windows.today.successCredits}
                           failureValue={item.windows.today.failureCredits}
-                          valueHintTemplate={keyDetailsStrings.stickyUsers.valueHint}
+                          successLabel={keyDetailsStrings.stickyUsers.success}
+                          failureLabel={keyDetailsStrings.stickyUsers.failure}
                         />
                       </td>
                       <td>
                         <StickyWindowValue
-                          periodLabel={keyDetailsStrings.stickyUsers.month}
                           successValue={item.windows.month.successCredits}
                           failureValue={item.windows.month.failureCredits}
-                          valueHintTemplate={keyDetailsStrings.stickyUsers.valueHint}
+                          successLabel={keyDetailsStrings.stickyUsers.success}
+                          failureLabel={keyDetailsStrings.stickyUsers.failure}
                         />
                       </td>
                       <td>{formatTimestamp(item.lastSuccessAt)}</td>
@@ -471,10 +433,10 @@ export default function KeyStickyPanels({
                     <span>{keyDetailsStrings.stickyUsers.yesterday}</span>
                     <strong>
                       <StickyWindowValue
-                        periodLabel={keyDetailsStrings.stickyUsers.yesterday}
                         successValue={item.windows.yesterday.successCredits}
                         failureValue={item.windows.yesterday.failureCredits}
-                        valueHintTemplate={keyDetailsStrings.stickyUsers.valueHint}
+                        successLabel={keyDetailsStrings.stickyUsers.success}
+                        failureLabel={keyDetailsStrings.stickyUsers.failure}
                       />
                     </strong>
                   </div>
@@ -482,10 +444,10 @@ export default function KeyStickyPanels({
                     <span>{keyDetailsStrings.stickyUsers.today}</span>
                     <strong>
                       <StickyWindowValue
-                        periodLabel={keyDetailsStrings.stickyUsers.today}
                         successValue={item.windows.today.successCredits}
                         failureValue={item.windows.today.failureCredits}
-                        valueHintTemplate={keyDetailsStrings.stickyUsers.valueHint}
+                        successLabel={keyDetailsStrings.stickyUsers.success}
+                        failureLabel={keyDetailsStrings.stickyUsers.failure}
                       />
                     </strong>
                   </div>
@@ -493,10 +455,10 @@ export default function KeyStickyPanels({
                     <span>{keyDetailsStrings.stickyUsers.month}</span>
                     <strong>
                       <StickyWindowValue
-                        periodLabel={keyDetailsStrings.stickyUsers.month}
                         successValue={item.windows.month.successCredits}
                         failureValue={item.windows.month.failureCredits}
-                        valueHintTemplate={keyDetailsStrings.stickyUsers.valueHint}
+                        successLabel={keyDetailsStrings.stickyUsers.success}
+                        failureLabel={keyDetailsStrings.stickyUsers.failure}
                       />
                     </strong>
                   </div>
