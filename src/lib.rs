@@ -2711,6 +2711,23 @@ impl TavilyProxy {
         ordered
     }
 
+    async fn has_explicit_empty_affinity_marker(
+        &self,
+        api_key_id: &str,
+    ) -> Result<bool, ProxyError> {
+        let (registration_ip, registration_region) =
+            self.load_api_key_registration_metadata(api_key_id).await?;
+        if registration_ip.is_some() || registration_region.is_some() {
+            return Ok(false);
+        }
+        let marker =
+            forward_proxy::load_forward_proxy_key_affinity(&self.key_store.pool, api_key_id)
+                .await?;
+        Ok(marker.as_ref().is_some_and(|stored| {
+            stored.primary_proxy_key.is_none() && stored.secondary_proxy_key.is_none()
+        }))
+    }
+
     async fn reconcile_proxy_affinity_record(
         &self,
         api_key_id: &str,
@@ -2767,18 +2784,6 @@ impl TavilyProxy {
         }
         if record.primary_proxy_key == record.secondary_proxy_key {
             record.secondary_proxy_key = None;
-        }
-
-        let has_explicit_empty_affinity_marker = !has_registration_metadata
-            && record.primary_proxy_key.is_none()
-            && record.secondary_proxy_key.is_none()
-            && forward_proxy::load_forward_proxy_key_affinity(&self.key_store.pool, api_key_id)
-                .await?
-                .is_some();
-        if has_explicit_empty_affinity_marker {
-            self.store_proxy_affinity_record(api_key_id, record.clone())
-                .await?;
-            return Ok(record);
         }
 
         if record.primary_proxy_key.is_none() {
@@ -2842,6 +2847,9 @@ impl TavilyProxy {
         api_key_id: &str,
         succeeded_proxy_key: &str,
     ) -> Result<(), ProxyError> {
+        if self.has_explicit_empty_affinity_marker(api_key_id).await? {
+            return Ok(());
+        }
         let mut record = self.reconcile_proxy_affinity_record(api_key_id).await?;
         if record.primary_proxy_key.as_deref() == Some(succeeded_proxy_key) {
             return Ok(());
@@ -3221,6 +3229,12 @@ impl TavilyProxy {
         &self,
         api_key_id: &str,
     ) -> Result<Vec<forward_proxy::SelectedForwardProxy>, ProxyError> {
+        if self.has_explicit_empty_affinity_marker(api_key_id).await? {
+            let marker_record = self.load_proxy_affinity_record(api_key_id).await?;
+            return self
+                .build_proxy_attempt_plan_for_record(api_key_id, &marker_record)
+                .await;
+        }
         let record = self.reconcile_proxy_affinity_record(api_key_id).await?;
         self.build_proxy_attempt_plan_for_record(api_key_id, &record)
             .await
@@ -18708,6 +18722,71 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
     }
 
     #[tokio::test]
+    async fn add_or_undelete_key_with_hint_only_proxy_affinity_rebuilds_when_primary_disappears() {
+        let db_path = temp_db_path("proxy-affinity-hint-only-rebuilds");
+        let db_str = db_path.to_string_lossy().to_string();
+        let geo_addr = spawn_api_key_geo_mock_server().await;
+        let geo_origin = format!("http://{geo_addr}/geo");
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        {
+            let mut manager = proxy.forward_proxy.lock().await;
+            manager.apply_settings(
+                ForwardProxySettings {
+                    proxy_urls: vec![
+                        "http://18.183.246.69:8080".to_string(),
+                        "http://1.1.1.1:8080".to_string(),
+                    ],
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: false,
+                }
+                .normalized(),
+            );
+        }
+
+        let (key_id, status) = proxy
+            .add_or_undelete_key_with_status_in_group_and_registration_proxy_affinity_hint(
+                "tvly-hint-rebuilds",
+                None,
+                None,
+                None,
+                &geo_origin,
+                Some("http://1.1.1.1:8080"),
+            )
+            .await
+            .expect("key created with hint-only affinity");
+        assert_eq!(status, ApiKeyUpsertStatus::Created);
+
+        {
+            let mut manager = proxy.forward_proxy.lock().await;
+            manager.apply_settings(
+                ForwardProxySettings {
+                    proxy_urls: vec!["http://18.183.246.69:8080".to_string()],
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: false,
+                }
+                .normalized(),
+            );
+        }
+
+        let reconciled = proxy
+            .reconcile_proxy_affinity_record(&key_id)
+            .await
+            .expect("reconcile hint-only affinity after primary removal");
+        assert_eq!(
+            reconciled.primary_proxy_key.as_deref(),
+            Some("http://18.183.246.69:8080"),
+            "when a hinted primary disappears entirely, the key should heal onto a remaining candidate"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn add_or_undelete_key_with_hint_only_direct_affinity_does_not_persist() {
         let db_path = temp_db_path("proxy-affinity-hint-only-direct");
         let db_str = db_path.to_string_lossy().to_string();
@@ -18777,6 +18856,30 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
         assert!(
             affinity_row_after_plan.0.is_none() && affinity_row_after_plan.1.is_none(),
             "runtime fallback planning must not convert direct hints into durable affinity"
+        );
+
+        let marker_updated_at_before: i64 = sqlx::query_scalar(
+            "SELECT updated_at FROM forward_proxy_key_affinity WHERE key_id = ?",
+        )
+        .bind(&key_id)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("query marker timestamp before repeat plan build");
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        let _ = proxy
+            .build_proxy_attempt_plan(&key_id)
+            .await
+            .expect("rebuild direct-hint runtime plan");
+        let marker_updated_at_after: i64 = sqlx::query_scalar(
+            "SELECT updated_at FROM forward_proxy_key_affinity WHERE key_id = ?",
+        )
+        .bind(&key_id)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("query marker timestamp after repeat plan build");
+        assert_eq!(
+            marker_updated_at_after, marker_updated_at_before,
+            "explicit empty markers should not churn the database on every runtime plan build"
         );
 
         let _ = std::fs::remove_file(db_path);

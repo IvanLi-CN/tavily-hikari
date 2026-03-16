@@ -1551,8 +1551,14 @@ async fn load_forward_proxy_affinity(
     .fetch_optional(pool)
     .await?;
     Ok(row.map(|row| ForwardProxyKeyAffinity {
-        primary_proxy_key: row.try_get("primary_proxy_key").ok(),
-        secondary_proxy_key: row.try_get("secondary_proxy_key").ok(),
+        primary_proxy_key: row
+            .try_get("primary_proxy_key")
+            .ok()
+            .filter(|value: &String| !value.trim().is_empty()),
+        secondary_proxy_key: row
+            .try_get("secondary_proxy_key")
+            .ok()
+            .filter(|value: &String| !value.trim().is_empty()),
     }))
 }
 
