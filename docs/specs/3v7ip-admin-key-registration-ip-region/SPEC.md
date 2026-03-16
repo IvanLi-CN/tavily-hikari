@@ -4,7 +4,7 @@
 
 - Status: 进行中（快车道）
 - Created: 2026-03-14
-- Last: 2026-03-14
+- Last: 2026-03-16
 
 ## 背景 / 问题陈述
 
@@ -21,7 +21,8 @@
 - 导入时若校验阶段已经选中了代理节点，即使没有注册 IP / 地区，也要把该代理亲和结果持久化到 `forward_proxy_key_affinity`。
 - 代理节点自身的已解析 IP / 地区也要持久化，并在导入绑定时优先复用这些节点元数据，而不是每次都临时 lookup。
 - 对经 Xray 落地的 share-link 节点，geo 元数据必须取自 share-link 的真实远端 host，而不是本地 `127.0.0.1`/`::1` 监听地址。
-- 对升级前遗留的 Xray 节点 `resolved_ips=["127.0.0.1"]` / 空地区缓存，导入与校验选点时必须识别为 stale metadata 并自动刷新，不得把 loopback cache 视为“已完成解析”。
+- API key 导入链路不得刷新已有代理节点的 IP / 地区元数据；已有持久化 metadata 只能读取复用，哪怕它是空地区、loopback 或其他脏值，也必须留给独立修复流程处理。
+- 仅当代理节点完全缺少持久化 metadata（`resolved_ips=[]` 且 `resolved_regions=[]`）时，导入链路才允许执行一次 bootstrap 解析并落盘。
 - 列表支持 `registration_ip` 精确筛选与 `registration_region` 多选 facets 筛选，且保持 URL / 分页上下文。
 - 地区解析遵循 `xp` 的 `country.is` 思路：批量解析、短暂失败回退、不阻断导入。
 - 导入校验弹窗中的映射节点名称按匹配来源着色：注册 IP=`success`、同地区=`info`、其他=`warning`。
@@ -116,7 +117,8 @@
   - `resolved_regions: string[]`
 - 语义固定：
   - 节点元数据来自持久化的 forward proxy runtime snapshot
-  - 导入/校验绑定优先复用这些已持久化节点元数据；仅在节点元数据缺失时回退到临时 host+geo 解析
+  - 导入绑定只读取这些已持久化节点元数据；仅在节点元数据完全缺失时允许单次 bootstrap 解析
+  - 已有空地区、loopback 或其他脏 metadata 不得在导入链路内刷新
 
 ## 实现约束（Implementation Notes）
 
@@ -130,6 +132,10 @@
 - 本项目数据库只保存最终 `registration_region` 字符串，不额外拆分存 `country/region/city/operator`。
 - UI 需提示注册地区解析会访问 configured `country.is`-compatible 服务。
 - 校验弹窗只给“分配代理”值文本着色；IP badge、状态 badge、地区文案与列表/详情页现有展示保持不变。
+- 导入性能约束：
+  - registration IP geo 查询按批次去重执行，不得按 key 重复请求
+  - 已有代理节点 metadata 的 geo 读取必须是只读路径
+  - API key 批量 upsert 应复用单批次事务，降低逐 key begin/commit 导致的 SQLite 写锁抖动
 
 ## 验收标准（Acceptance Criteria）
 
@@ -168,6 +174,14 @@
 - Given 节点已经完成过 host/IP/region 解析
   When 服务重启后再次导入或校验绑定
   Then 导入绑定仍优先复用持久化的节点 IP / 地区元数据，不依赖当次 geo lookup 成功。
+
+- Given 代理节点已存在 `resolved_ips` / `resolved_regions`，即使内容为空、loopback 或其他脏值
+  When API key 导入绑定代理亲和
+  Then 导入链路也不得刷新这些节点 metadata，只能读取现有持久化值。
+
+- Given 代理节点完全缺少持久化 metadata
+  When API key 批量导入并需要按注册 IP / 地区选点
+  Then 同一批次内最多只允许为该节点 bootstrap 一次 host/IP/region 信息。
 
 - Given 校验结果返回 `assigned_proxy_match_kind=other` 或缺失
   When 打开导入校验弹窗的注册信息 bubble

@@ -1384,7 +1384,7 @@ async fn create_api_key(
 
     match state
         .proxy
-        .add_or_undelete_key_with_status_in_group_and_registration_proxy_affinity_hint(
+        .add_or_undelete_key_with_status_in_group_and_registration_proxy_affinity_hint_for_import(
             api_key,
             group,
             registration_ip.as_deref(),
@@ -1478,20 +1478,24 @@ async fn create_api_keys_batch(
         return Ok((StatusCode::BAD_REQUEST, body).into_response());
     }
 
-    let mut results = Vec::with_capacity(trimmed.len());
-    let mut seen = HashSet::<String>::new();
+    let registration_geo_started = std::time::Instant::now();
     let region_by_ip = resolve_registration_regions(&state.api_key_ip_geo_origin, &geo_lookup_ips).await;
+    let registration_geo_ms = registration_geo_started.elapsed().as_millis();
+
+    let mut result_slots = Vec::with_capacity(trimmed.len());
+    let mut seen = HashSet::<String>::new();
+    let mut batch_items = Vec::with_capacity(trimmed.len());
 
     for item in trimmed {
         if !seen.insert(item.api_key.clone()) {
             summary.duplicate_in_input += 1;
-            results.push(BatchCreateKeysResult {
+            result_slots.push(Some(BatchCreateKeysResult {
                 api_key: item.api_key,
                 status: "duplicate_in_input".to_string(),
                 id: None,
                 error: None,
                 marked_exhausted: None,
-            });
+            }));
             continue;
         }
 
@@ -1499,19 +1503,38 @@ async fn create_api_keys_batch(
             .registration_ip
             .as_ref()
             .and_then(|ip| region_by_ip.get(ip).cloned());
+        let api_key = item.api_key;
+        let mark_exhausted = exhausted_set.contains(&api_key);
+        result_slots.push(None);
+        batch_items.push(tavily_hikari::ApiKeyImportBatchItem {
+            api_key,
+            group: group.map(str::to_string),
+            registration_ip: item.registration_ip,
+            registration_region,
+            preferred_primary_proxy_key: item.assigned_proxy_key,
+            mark_exhausted,
+        });
+    }
 
-        match state
-            .proxy
-            .add_or_undelete_key_with_status_in_group_and_registration_proxy_affinity_hint(
-                &item.api_key,
-                group,
-                item.registration_ip.as_deref(),
-                registration_region.as_deref(),
-                &state.api_key_ip_geo_origin,
-                item.assigned_proxy_key.as_deref(),
-            )
-            .await
-        {
+    let import_started = std::time::Instant::now();
+    let outcomes = state
+        .proxy
+        .add_or_undelete_keys_batch_for_import(batch_items, &state.api_key_ip_geo_origin)
+        .await;
+    let import_db_ms = import_started.elapsed().as_millis();
+
+    let mut outcome_iter = outcomes.into_iter();
+    let mut results = Vec::with_capacity(result_slots.len());
+    for slot in result_slots {
+        if let Some(result) = slot {
+            results.push(result);
+            continue;
+        }
+
+        let outcome = outcome_iter
+            .next()
+            .expect("batch outcomes should match unique input items");
+        match outcome.result {
             Ok((id, status)) => {
                 match status.as_str() {
                     "created" => summary.created += 1,
@@ -1519,32 +1542,18 @@ async fn create_api_keys_batch(
                     "existed" => summary.existed += 1,
                     _ => {}
                 }
-                let mut marked_exhausted = None;
-                if exhausted_set.contains(&item.api_key) {
-                    marked_exhausted = match state
-                        .proxy
-                        .mark_key_quota_exhausted_by_secret(&item.api_key)
-                        .await
-                    {
-                        Ok(changed) => Some(changed),
-                        Err(err) => {
-                            eprintln!("mark exhausted failed for key: {err}");
-                            Some(false)
-                        }
-                    };
-                }
                 results.push(BatchCreateKeysResult {
-                    api_key: item.api_key,
+                    api_key: outcome.api_key,
                     status: status.as_str().to_string(),
                     id: Some(id),
                     error: None,
-                    marked_exhausted,
+                    marked_exhausted: outcome.marked_exhausted,
                 });
             }
             Err(err) => {
                 summary.failed += 1;
                 results.push(BatchCreateKeysResult {
-                    api_key: item.api_key,
+                    api_key: outcome.api_key,
                     status: "failed".to_string(),
                     id: None,
                     error: Some(err.to_string()),
@@ -1553,8 +1562,19 @@ async fn create_api_keys_batch(
             }
         }
     }
+    debug_assert!(
+        outcome_iter.next().is_none(),
+        "all batch outcomes should be consumed in input order"
+    );
 
     summary.unique_in_input = seen.len() as u64;
+    eprintln!(
+        "api key import handler timings (input_lines={}, unique_in_input={}, registration_geo_ms={}, batch_upsert_ms={})",
+        summary.input_lines,
+        summary.unique_in_input,
+        registration_geo_ms,
+        import_db_ms,
+    );
 
     Ok((
         StatusCode::OK,
