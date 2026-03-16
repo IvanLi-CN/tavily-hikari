@@ -2301,6 +2301,24 @@ impl TavilyProxy {
             .await
     }
 
+    async fn refresh_forward_proxy_geo_metadata(&self) {
+        let endpoints = {
+            let manager = self.forward_proxy.lock().await;
+            manager
+                .endpoints
+                .iter()
+                .filter(|endpoint| !endpoint.is_direct())
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        if endpoints.is_empty() {
+            return;
+        }
+        let _ = self
+            .resolve_forward_proxy_geo_candidates(&self.api_key_geo_origin, endpoints)
+            .await;
+    }
+
     pub async fn refresh_forward_proxy_subscriptions_with_progress(
         &self,
         progress: Option<&ForwardProxyProgressCallback>,
@@ -2352,30 +2370,34 @@ impl TavilyProxy {
             ));
         }
 
-        let mut manager = self.forward_proxy.lock().await;
-        manager.apply_subscription_urls(subscription_urls);
         {
-            let mut xray = self.xray_supervisor.lock().await;
-            xray.sync_endpoints(&mut manager.endpoints).await?;
-        }
-        let endpoints = manager.endpoints.clone();
-        for endpoint in &endpoints {
-            if let Some(runtime) = manager.runtime.get_mut(&endpoint.key) {
-                runtime.kind = endpoint.protocol.as_str().to_string();
-                runtime.endpoint_url = endpoint
-                    .endpoint_url
-                    .as_ref()
-                    .map(Url::to_string)
-                    .or_else(|| endpoint.raw_url.clone());
-                runtime.available = endpoint.is_selectable();
-                if endpoint.is_direct() || endpoint.is_selectable() {
-                    runtime.last_error = None;
-                } else if !endpoint.is_selectable() {
-                    runtime.last_error = Some("xray_missing".to_string());
+            let mut manager = self.forward_proxy.lock().await;
+            manager.apply_subscription_urls(subscription_urls);
+            {
+                let mut xray = self.xray_supervisor.lock().await;
+                xray.sync_endpoints(&mut manager.endpoints).await?;
+            }
+            let endpoints = manager.endpoints.clone();
+            for endpoint in &endpoints {
+                if let Some(runtime) = manager.runtime.get_mut(&endpoint.key) {
+                    runtime.kind = endpoint.protocol.as_str().to_string();
+                    runtime.endpoint_url = endpoint
+                        .endpoint_url
+                        .as_ref()
+                        .map(Url::to_string)
+                        .or_else(|| endpoint.raw_url.clone());
+                    runtime.available = endpoint.is_selectable();
+                    if endpoint.is_direct() || endpoint.is_selectable() {
+                        runtime.last_error = None;
+                    } else if !endpoint.is_selectable() {
+                        runtime.last_error = Some("xray_missing".to_string());
+                    }
                 }
             }
+            forward_proxy::sync_manager_runtime_to_store(&self.key_store, &manager).await?;
         }
-        forward_proxy::sync_manager_runtime_to_store(&self.key_store, &manager).await
+        self.refresh_forward_proxy_geo_metadata().await;
+        Ok(())
     }
 
     pub async fn maybe_run_forward_proxy_maintenance(&self) -> Result<(), ProxyError> {
@@ -2988,16 +3010,72 @@ impl TavilyProxy {
         ips
     }
 
+    async fn persist_forward_proxy_geo_candidates(
+        &self,
+        candidates: &[ForwardProxyGeoCandidate],
+    ) -> Result<(), ProxyError> {
+        let changed = {
+            let mut manager = self.forward_proxy.lock().await;
+            let mut changed = Vec::new();
+            for candidate in candidates {
+                let Some(runtime) = manager.runtime.get_mut(&candidate.endpoint.key) else {
+                    continue;
+                };
+                if runtime.resolved_ips == candidate.host_ips
+                    && runtime.resolved_regions == candidate.regions
+                {
+                    continue;
+                }
+                runtime.resolved_ips = candidate.host_ips.clone();
+                runtime.resolved_regions = candidate.regions.clone();
+                changed.push(runtime.clone());
+            }
+            changed
+        };
+        for runtime in changed {
+            forward_proxy::persist_forward_proxy_runtime_state(&self.key_store.pool, &runtime)
+                .await?;
+        }
+        Ok(())
+    }
+
     async fn resolve_forward_proxy_geo_candidates(
         &self,
         geo_origin: &str,
         endpoints: Vec<forward_proxy::ForwardProxyEndpoint>,
     ) -> Vec<ForwardProxyGeoCandidate> {
+        let cached = {
+            let manager = self.forward_proxy.lock().await;
+            endpoints
+                .iter()
+                .filter_map(|endpoint| {
+                    manager.runtime(&endpoint.key).map(|runtime| {
+                        (
+                            endpoint.key.clone(),
+                            (
+                                runtime.resolved_ips.clone(),
+                                runtime.resolved_regions.clone(),
+                            ),
+                        )
+                    })
+                })
+                .collect::<HashMap<_, _>>()
+        };
+
         let mut host_ips = HashMap::<String, Vec<String>>::new();
+        let mut missing = Vec::new();
         for endpoint in &endpoints {
+            if cached
+                .get(&endpoint.key)
+                .is_some_and(|(ips, regions)| !ips.is_empty() || !regions.is_empty())
+            {
+                continue;
+            }
             let Some(host) = forward_proxy::endpoint_host(endpoint) else {
+                missing.push(endpoint.clone());
                 continue;
             };
+            missing.push(endpoint.clone());
             if host_ips.contains_key(&host) {
                 continue;
             }
@@ -3015,7 +3093,7 @@ impl TavilyProxy {
             .collect::<Vec<_>>();
         let region_by_ip = resolve_registration_regions(geo_origin, &geo_lookup_ips).await;
 
-        endpoints
+        let resolved_missing = missing
             .into_iter()
             .map(|endpoint| {
                 let resolved_ips = forward_proxy::endpoint_host(&endpoint)
@@ -3032,6 +3110,38 @@ impl TavilyProxy {
                     host_ips: resolved_ips,
                     regions,
                 }
+            })
+            .collect::<Vec<_>>();
+        if !resolved_missing.is_empty() {
+            let _ = self
+                .persist_forward_proxy_geo_candidates(&resolved_missing)
+                .await;
+        }
+        let resolved_missing_by_key = resolved_missing
+            .into_iter()
+            .map(|candidate| (candidate.endpoint.key.clone(), candidate))
+            .collect::<HashMap<_, _>>();
+
+        endpoints
+            .into_iter()
+            .map(|endpoint| {
+                if let Some((resolved_ips, regions)) = cached.get(&endpoint.key)
+                    && (!resolved_ips.is_empty() || !regions.is_empty())
+                {
+                    return ForwardProxyGeoCandidate {
+                        endpoint,
+                        host_ips: resolved_ips.clone(),
+                        regions: regions.clone(),
+                    };
+                }
+                resolved_missing_by_key
+                    .get(&endpoint.key)
+                    .cloned()
+                    .unwrap_or(ForwardProxyGeoCandidate {
+                        endpoint,
+                        host_ips: Vec::new(),
+                        regions: Vec::new(),
+                    })
             })
             .collect()
     }
@@ -18327,6 +18437,130 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
             fallback_preview.as_ref().map(|item| item.match_kind),
             Some(AssignedProxyMatchKind::Other),
             "fallback selections should expose other match kind"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn select_proxy_affinity_persists_forward_proxy_runtime_geo_metadata() {
+        let db_path = temp_db_path("proxy-runtime-geo-persist");
+        let db_str = db_path.to_string_lossy().to_string();
+        let geo_addr = spawn_api_key_geo_mock_server().await;
+        let geo_origin = format!("http://{geo_addr}/geo");
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        {
+            let mut manager = proxy.forward_proxy.lock().await;
+            manager.apply_settings(
+                ForwardProxySettings {
+                    proxy_urls: vec![
+                        "http://18.183.246.69:8080".to_string(),
+                        "http://1.1.1.1:8080".to_string(),
+                    ],
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: false,
+                }
+                .normalized(),
+            );
+        }
+
+        let (record, _preview) = proxy
+            .select_proxy_affinity_preview_for_registration_with_hint(
+                "subject:persist-runtime-geo",
+                &geo_origin,
+                Some("1.1.1.1"),
+                Some("HK"),
+                None,
+            )
+            .await
+            .expect("registration-aware affinity");
+        assert_eq!(
+            record.primary_proxy_key.as_deref(),
+            Some("http://1.1.1.1:8080")
+        );
+
+        let row: (String, String) = sqlx::query_as(
+            "SELECT resolved_ips_json, resolved_regions_json FROM forward_proxy_runtime WHERE proxy_key = ?",
+        )
+        .bind("http://1.1.1.1:8080")
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("load persisted runtime geo metadata");
+        let resolved_ips: Vec<String> =
+            serde_json::from_str(&row.0).expect("decode persisted resolved ips");
+        let resolved_regions: Vec<String> =
+            serde_json::from_str(&row.1).expect("decode persisted resolved regions");
+        assert_eq!(resolved_ips, vec!["1.1.1.1".to_string()]);
+        assert_eq!(resolved_regions, vec!["HK".to_string()]);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn select_proxy_affinity_reuses_persisted_forward_proxy_runtime_geo_metadata() {
+        let db_path = temp_db_path("proxy-runtime-geo-reuse");
+        let db_str = db_path.to_string_lossy().to_string();
+        let geo_addr = spawn_api_key_geo_mock_server().await;
+        let geo_origin = format!("http://{geo_addr}/geo");
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        let settings = ForwardProxySettings {
+            proxy_urls: vec![
+                "http://18.183.246.69:8080".to_string(),
+                "http://1.1.1.1:8080".to_string(),
+            ],
+            subscription_urls: Vec::new(),
+            subscription_update_interval_secs: 3600,
+            insert_direct: false,
+        }
+        .normalized();
+        {
+            let mut manager = proxy.forward_proxy.lock().await;
+            manager.apply_settings(settings.clone());
+        }
+
+        proxy
+            .select_proxy_affinity_preview_for_registration_with_hint(
+                "subject:seed-runtime-geo",
+                &geo_origin,
+                Some("1.1.1.1"),
+                Some("HK"),
+                None,
+            )
+            .await
+            .expect("seed persisted runtime geo metadata");
+
+        let reloaded = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy reloaded");
+        {
+            let mut manager = reloaded.forward_proxy.lock().await;
+            manager.apply_settings(settings);
+        }
+
+        let (record, preview) = reloaded
+            .select_proxy_affinity_preview_for_registration_with_hint(
+                "subject:reuse-runtime-geo",
+                "http://127.0.0.1:9/geo",
+                Some("1.1.1.1"),
+                Some("HK"),
+                None,
+            )
+            .await
+            .expect("selection should reuse persisted runtime geo metadata");
+        assert_eq!(
+            record.primary_proxy_key.as_deref(),
+            Some("http://1.1.1.1:8080")
+        );
+        assert_eq!(
+            preview.as_ref().map(|item| item.match_kind),
+            Some(AssignedProxyMatchKind::RegistrationIp)
         );
 
         let _ = std::fs::remove_file(db_path);

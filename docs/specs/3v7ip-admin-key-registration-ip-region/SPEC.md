@@ -19,6 +19,7 @@
 - 批量导入时按行智能提取首个 `tvly-dev-*` key 与首个公网 IP，兼容空格、`|`、`;`、`,` 等混合文本。
 - 在 `api_keys` 中持久化 `registration_ip` 与 `registration_region`，并在 key 列表 / 详情返回。
 - 导入时若校验阶段已经选中了代理节点，即使没有注册 IP / 地区，也要把该代理亲和结果持久化到 `forward_proxy_key_affinity`。
+- 代理节点自身的已解析 IP / 地区也要持久化，并在导入绑定时优先复用这些节点元数据，而不是每次都临时 lookup。
 - 列表支持 `registration_ip` 精确筛选与 `registration_region` 多选 facets 筛选，且保持 URL / 分页上下文。
 - 地区解析遵循 `xp` 的 `country.is` 思路：批量解析、短暂失败回退、不阻断导入。
 - 导入校验弹窗中的映射节点名称按匹配来源着色：注册 IP=`success`、同地区=`info`、其他=`warning`。
@@ -39,9 +40,11 @@
 - `src/lib.rs`
   - `api_keys` schema 增加 `registration_ip` / `registration_region`
   - API key upsert / metrics / filters / facets 支持新字段
+  - forward proxy 节点 geo 元数据持久化与导入绑定复用
 - `src/server/handlers/admin_resources.rs`
   - `/api/keys` 新增 `registration_ip` / `region` 查询参数
   - `/api/keys/batch` 支持结构化导入项并在导入时解析地区
+  - `/api/settings` / `/api/stats/forward-proxy` 节点响应补充持久化的 IP / 地区元数据
 - `src/main.rs` / `src/server/state.rs`
   - 新增 `API_KEY_IP_GEO_ORIGIN` 配置并注入 server state
 - `web/src/lib/api-key-extract.ts`
@@ -104,6 +107,15 @@
   - `region=<value>`（可重复）
 - 详情页返回列表时，必须保留 `page / perPage / group / status / registrationIp / region` 全部上下文。
 
+### HTTP: `GET /api/settings` / `GET /api/stats/forward-proxy`
+
+- `forwardProxy.nodes[*]` / `nodes[*]` 新增：
+  - `resolved_ips: string[]`
+  - `resolved_regions: string[]`
+- 语义固定：
+  - 节点元数据来自持久化的 forward proxy runtime snapshot
+  - 导入/校验绑定优先复用这些已持久化节点元数据；仅在节点元数据缺失时回退到临时 host+geo 解析
+
 ## 实现约束（Implementation Notes）
 
 - 地区解析参考 `xp`：
@@ -150,6 +162,10 @@
 - Given 同地区存在多个可选代理节点
   When 校验或导入选择主节点
   Then 只在同地区命中集合内按既有 ranked order 取首个节点，不会因为 geo 候选扫描顺序而固定粘在单一节点上。
+
+- Given 节点已经完成过 host/IP/region 解析
+  When 服务重启后再次导入或校验绑定
+  Then 导入绑定仍优先复用持久化的节点 IP / 地区元数据，不依赖当次 geo lookup 成功。
 
 - Given 校验结果返回 `assigned_proxy_match_kind=other` 或缺失
   When 打开导入校验弹窗的注册信息 bubble

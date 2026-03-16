@@ -1316,6 +1316,8 @@ export interface ForwardProxyNode {
   source: string
   displayName: string
   endpointUrl: string | null
+  resolvedIps: string[]
+  resolvedRegions: string[]
   weight: number
   available: boolean
   lastError?: string | null

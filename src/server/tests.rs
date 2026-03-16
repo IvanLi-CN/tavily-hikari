@@ -3136,6 +3136,21 @@ mod tests {
         usage_base: String,
         dev_open_admin: bool,
     ) -> SocketAddr {
+        spawn_admin_forward_proxy_server_with_geo_origin(
+            proxy,
+            usage_base,
+            dev_open_admin,
+            "https://api.country.is".to_string(),
+        )
+        .await
+    }
+
+    async fn spawn_admin_forward_proxy_server_with_geo_origin(
+        proxy: TavilyProxy,
+        usage_base: String,
+        dev_open_admin: bool,
+        api_key_ip_geo_origin: String,
+    ) -> SocketAddr {
         let static_dir = temp_static_dir("admin-forward-proxy");
         let state = Arc::new(AppState {
             proxy,
@@ -3146,7 +3161,7 @@ mod tests {
             linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
             dev_open_admin,
             usage_base,
-            api_key_ip_geo_origin: "https://api.country.is".to_string(),
+            api_key_ip_geo_origin,
         });
 
         let app = Router::new()
@@ -13453,6 +13468,76 @@ mod tests {
                 .as_i64()
                 .is_some_and(|value| value >= 0),
             "dashboard summary should expose available node count",
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn admin_forward_proxy_settings_and_stats_expose_persisted_geo_metadata() {
+        let db_path = temp_db_path("admin-forward-proxy-geo-metadata");
+        let db_str = db_path.to_string_lossy().to_string();
+        let upstream_addr = spawn_forward_proxy_probe_upstream().await;
+        let geo_addr = spawn_api_key_geo_mock_server().await;
+        let _geo_origin_guard =
+            EnvVarGuard::set("API_KEY_IP_GEO_ORIGIN", &format!("http://{geo_addr}/geo"));
+        let upstream = format!("http://{}/mcp", upstream_addr);
+        let usage_base = format!("http://{}", upstream_addr);
+        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+            .await
+            .expect("create proxy");
+        let addr = spawn_admin_forward_proxy_server_with_geo_origin(
+            proxy,
+            usage_base,
+            true,
+            "https://api.country.is".to_string(),
+        )
+        .await;
+
+        let client = Client::new();
+        let updated = client
+            .put(format!("http://{addr}/api/settings/forward-proxy"))
+            .json(&serde_json::json!({
+                "proxyUrls": ["http://1.1.1.1:8080"],
+                "subscriptionUrls": [],
+                "subscriptionUpdateIntervalSecs": 3600,
+                "insertDirect": false,
+                "skipBootstrapProbe": true,
+            }))
+            .send()
+            .await
+            .expect("update settings");
+        assert_eq!(updated.status(), StatusCode::OK);
+        let updated_body = updated
+            .json::<serde_json::Value>()
+            .await
+            .expect("decode updated settings");
+        assert_eq!(
+            updated_body["nodes"][0]["resolvedIps"][0].as_str(),
+            Some("1.1.1.1")
+        );
+        assert_eq!(
+            updated_body["nodes"][0]["resolvedRegions"][0].as_str(),
+            Some("US Westfield (MA)")
+        );
+
+        let stats = client
+            .get(format!("http://{addr}/api/stats/forward-proxy"))
+            .send()
+            .await
+            .expect("get stats");
+        assert_eq!(stats.status(), StatusCode::OK);
+        let stats_body = stats
+            .json::<serde_json::Value>()
+            .await
+            .expect("decode stats");
+        assert_eq!(
+            stats_body["nodes"][0]["resolvedIps"][0].as_str(),
+            Some("1.1.1.1")
+        );
+        assert_eq!(
+            stats_body["nodes"][0]["resolvedRegions"][0].as_str(),
+            Some("US Westfield (MA)")
         );
 
         let _ = std::fs::remove_file(db_path);
