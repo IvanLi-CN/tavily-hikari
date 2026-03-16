@@ -965,6 +965,105 @@ async fn post_forward_proxy_candidate_validation(
     Ok(Json(build_forward_proxy_validation_view(validation)).into_response())
 }
 
+async fn post_forward_proxy_revalidate(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<axum::response::Response, (StatusCode, String)> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
+    }
+
+    if request_accepts_event_stream(&headers) {
+        let state = state.clone();
+        let stream = stream! {
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<tavily_hikari::ForwardProxyProgressEvent>();
+            tokio::spawn(async move {
+                let progress_tx = tx.clone();
+                let progress = move |event| {
+                    let _ = progress_tx.send(event);
+                };
+
+                match state
+                    .proxy
+                    .revalidate_forward_proxy_with_progress(Some(&progress))
+                    .await
+                {
+                    Ok(response) => {
+                        if let Ok(payload) = serde_json::to_value(&response) {
+                            let _ = tx.send(tavily_hikari::ForwardProxyProgressEvent::complete(
+                                "revalidate",
+                                payload,
+                            ));
+                        } else {
+                            let _ = tx.send(tavily_hikari::ForwardProxyProgressEvent::error(
+                                "revalidate",
+                                "failed to encode forward proxy settings response",
+                                None,
+                                None,
+                                None,
+                                None,
+                                None,
+                            ));
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("revalidate forward proxy settings error: {err}");
+                        let _ = tx.send(tavily_hikari::ForwardProxyProgressEvent::error(
+                            "revalidate",
+                            err.to_string(),
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                        ));
+                    }
+                }
+            });
+
+            while let Some(event) = rx.recv().await {
+                match serde_json::to_string(&event) {
+                    Ok(json) => yield Ok::<Event, axum::http::Error>(Event::default().data(json)),
+                    Err(err) => {
+                        yield Ok::<Event, axum::http::Error>(Event::default().data(
+                            serde_json::json!({
+                                "type": "error",
+                                "operation": "revalidate",
+                                "message": format!("failed to encode progress event: {err}"),
+                            })
+                            .to_string(),
+                        ));
+                        break;
+                    }
+                }
+                if matches!(
+                    event,
+                    tavily_hikari::ForwardProxyProgressEvent::Complete { .. }
+                        | tavily_hikari::ForwardProxyProgressEvent::Error { .. }
+                ) {
+                    break;
+                }
+            }
+        };
+
+        return Ok(
+            Sse::new(stream)
+                .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text(""))
+                .into_response(),
+        );
+    }
+
+    state
+        .proxy
+        .revalidate_forward_proxy_with_progress(None)
+        .await
+        .map(|response| Json(response).into_response())
+        .map_err(|err| {
+            eprintln!("revalidate forward proxy settings error: {err}");
+            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+        })
+}
+
 async fn get_forward_proxy_live_stats(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,

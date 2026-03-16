@@ -3172,6 +3172,10 @@ mod tests {
                 post(post_forward_proxy_candidate_validation),
             )
             .route(
+                "/api/settings/forward-proxy/revalidate",
+                post(post_forward_proxy_revalidate),
+            )
+            .route(
                 "/api/stats/forward-proxy/summary",
                 get(get_forward_proxy_dashboard_summary),
             )
@@ -3289,6 +3293,35 @@ mod tests {
             get(move || {
                 let state = state.clone();
                 async move {
+                    let (status, body) = {
+                        let guard = state.lock().expect("subscription state lock");
+                        (guard.0, guard.1.clone())
+                    };
+                    (status, body)
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+        addr
+    }
+
+    async fn spawn_counted_forward_proxy_subscription_server(
+        state: Arc<Mutex<(StatusCode, String)>>,
+        hits: Arc<AtomicUsize>,
+    ) -> SocketAddr {
+        let app = Router::new().route(
+            "/subscription",
+            get(move || {
+                let state = state.clone();
+                let hits = hits.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
                     let (status, body) = {
                         let guard = state.lock().expect("subscription state lock");
                         (guard.0, guard.1.clone())
@@ -14092,6 +14125,345 @@ mod tests {
             body.contains("Skipped after recent validation"),
             "expected skipped bootstrap detail, got: {body}"
         );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn admin_forward_proxy_incremental_subscription_add_only_refreshes_new_sources() {
+        let db_path = temp_db_path("admin-forward-proxy-incremental-add");
+        let db_str = db_path.to_string_lossy().to_string();
+        let upstream_addr = spawn_forward_proxy_probe_upstream().await;
+        let sub1_proxy_hits = Arc::new(AtomicUsize::new(0));
+        let sub2_proxy_hits = Arc::new(AtomicUsize::new(0));
+        let sub1_proxy_addr = spawn_counted_fake_forward_proxy(
+            StatusCode::NOT_FOUND,
+            Duration::from_millis(0),
+            sub1_proxy_hits.clone(),
+        )
+        .await;
+        let sub2_proxy_addr = spawn_counted_fake_forward_proxy(
+            StatusCode::NOT_FOUND,
+            Duration::from_millis(0),
+            sub2_proxy_hits.clone(),
+        )
+        .await;
+        let sub1_hits = Arc::new(AtomicUsize::new(0));
+        let sub2_hits = Arc::new(AtomicUsize::new(0));
+        let sub1_state = Arc::new(Mutex::new((
+            StatusCode::OK,
+            format!("http://{}\n", sub1_proxy_addr),
+        )));
+        let sub2_state = Arc::new(Mutex::new((
+            StatusCode::OK,
+            format!("http://{}\n", sub2_proxy_addr),
+        )));
+        let sub1_addr =
+            spawn_counted_forward_proxy_subscription_server(sub1_state, sub1_hits.clone()).await;
+        let sub2_addr =
+            spawn_counted_forward_proxy_subscription_server(sub2_state, sub2_hits.clone()).await;
+        let upstream = format!("http://{}/mcp", upstream_addr);
+        let usage_base = format!("http://{}", upstream_addr);
+        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+            .await
+            .expect("create proxy");
+        let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
+
+        let client = Client::new();
+        let first = client
+            .put(format!("http://{addr}/api/settings/forward-proxy"))
+            .json(&serde_json::json!({
+                "proxyUrls": [],
+                "subscriptionUrls": [format!("http://{}/subscription", sub1_addr)],
+                "subscriptionUpdateIntervalSecs": 3600,
+                "insertDirect": false,
+            }))
+            .send()
+            .await
+            .expect("seed first subscription");
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(sub1_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(sub2_hits.load(Ordering::SeqCst), 0);
+        assert_eq!(sub1_proxy_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(sub2_proxy_hits.load(Ordering::SeqCst), 0);
+
+        let second = client
+            .put(format!("http://{addr}/api/settings/forward-proxy"))
+            .json(&serde_json::json!({
+                "proxyUrls": [],
+                "subscriptionUrls": [
+                    format!("http://{}/subscription", sub1_addr),
+                    format!("http://{}/subscription", sub2_addr),
+                ],
+                "subscriptionUpdateIntervalSecs": 3600,
+                "insertDirect": false,
+            }))
+            .send()
+            .await
+            .expect("append second subscription");
+        assert_eq!(second.status(), StatusCode::OK);
+        assert_eq!(
+            sub1_hits.load(Ordering::SeqCst),
+            1,
+            "unchanged subscription should not be refetched on add",
+        );
+        assert_eq!(sub2_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            sub1_proxy_hits.load(Ordering::SeqCst),
+            1,
+            "existing nodes should not be re-probed on add",
+        );
+        assert_eq!(sub2_proxy_hits.load(Ordering::SeqCst), 1);
+
+        let stats = client
+            .get(format!("http://{addr}/api/stats/forward-proxy"))
+            .send()
+            .await
+            .expect("get stats");
+        assert_eq!(stats.status(), StatusCode::OK);
+        let body = stats
+            .json::<serde_json::Value>()
+            .await
+            .expect("decode stats");
+        let nodes = body["nodes"].as_array().expect("stats nodes");
+        assert!(
+            nodes.iter().any(|node| node["endpointUrl"].as_str() == Some(&format!("http://{sub1_proxy_addr}/"))),
+            "first subscription node should remain active",
+        );
+        assert!(
+            nodes.iter().any(|node| node["endpointUrl"].as_str() == Some(&format!("http://{sub2_proxy_addr}/"))),
+            "new subscription node should become active immediately",
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn admin_forward_proxy_interval_only_save_does_not_refresh_subscriptions() {
+        let db_path = temp_db_path("admin-forward-proxy-interval-only");
+        let db_str = db_path.to_string_lossy().to_string();
+        let upstream_addr = spawn_forward_proxy_probe_upstream().await;
+        let proxy_hits = Arc::new(AtomicUsize::new(0));
+        let fake_proxy_addr = spawn_counted_fake_forward_proxy(
+            StatusCode::NOT_FOUND,
+            Duration::from_millis(0),
+            proxy_hits.clone(),
+        )
+        .await;
+        let subscription_hits = Arc::new(AtomicUsize::new(0));
+        let subscription_state = Arc::new(Mutex::new((
+            StatusCode::OK,
+            format!("http://{}\n", fake_proxy_addr),
+        )));
+        let subscription_addr = spawn_counted_forward_proxy_subscription_server(
+            subscription_state,
+            subscription_hits.clone(),
+        )
+        .await;
+        let upstream = format!("http://{}/mcp", upstream_addr);
+        let usage_base = format!("http://{}", upstream_addr);
+        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+            .await
+            .expect("create proxy");
+        let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
+
+        let client = Client::new();
+        let payload = serde_json::json!({
+            "proxyUrls": [],
+            "subscriptionUrls": [format!("http://{}/subscription", subscription_addr)],
+            "subscriptionUpdateIntervalSecs": 3600,
+            "insertDirect": false,
+        });
+        let first = client
+            .put(format!("http://{addr}/api/settings/forward-proxy"))
+            .json(&payload)
+            .send()
+            .await
+            .expect("seed subscription");
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(subscription_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(proxy_hits.load(Ordering::SeqCst), 1);
+
+        let second = client
+            .put(format!("http://{addr}/api/settings/forward-proxy"))
+            .json(&serde_json::json!({
+                "proxyUrls": [],
+                "subscriptionUrls": [format!("http://{}/subscription", subscription_addr)],
+                "subscriptionUpdateIntervalSecs": 60,
+                "insertDirect": false,
+            }))
+            .send()
+            .await
+            .expect("update interval only");
+        assert_eq!(second.status(), StatusCode::OK);
+        assert_eq!(subscription_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(proxy_hits.load(Ordering::SeqCst), 1);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn admin_forward_proxy_removing_subscription_drops_only_removed_nodes() {
+        let db_path = temp_db_path("admin-forward-proxy-remove-subscription");
+        let db_str = db_path.to_string_lossy().to_string();
+        let upstream_addr = spawn_forward_proxy_probe_upstream().await;
+        let sub1_proxy_addr = spawn_fake_forward_proxy(StatusCode::NOT_FOUND).await;
+        let sub2_proxy_addr = spawn_fake_forward_proxy(StatusCode::NOT_FOUND).await;
+        let sub1_hits = Arc::new(AtomicUsize::new(0));
+        let sub2_hits = Arc::new(AtomicUsize::new(0));
+        let sub1_state = Arc::new(Mutex::new((
+            StatusCode::OK,
+            format!("http://{}\n", sub1_proxy_addr),
+        )));
+        let sub2_state = Arc::new(Mutex::new((
+            StatusCode::OK,
+            format!("http://{}\n", sub2_proxy_addr),
+        )));
+        let sub1_addr =
+            spawn_counted_forward_proxy_subscription_server(sub1_state, sub1_hits.clone()).await;
+        let sub2_addr =
+            spawn_counted_forward_proxy_subscription_server(sub2_state, sub2_hits.clone()).await;
+        let upstream = format!("http://{}/mcp", upstream_addr);
+        let usage_base = format!("http://{}", upstream_addr);
+        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+            .await
+            .expect("create proxy");
+        let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
+
+        let client = Client::new();
+        let first = client
+            .put(format!("http://{addr}/api/settings/forward-proxy"))
+            .json(&serde_json::json!({
+                "proxyUrls": [],
+                "subscriptionUrls": [
+                    format!("http://{}/subscription", sub1_addr),
+                    format!("http://{}/subscription", sub2_addr),
+                ],
+                "subscriptionUpdateIntervalSecs": 3600,
+                "insertDirect": false,
+            }))
+            .send()
+            .await
+            .expect("seed subscriptions");
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(sub1_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(sub2_hits.load(Ordering::SeqCst), 1);
+
+        let second = client
+            .put(format!("http://{addr}/api/settings/forward-proxy"))
+            .json(&serde_json::json!({
+                "proxyUrls": [],
+                "subscriptionUrls": [format!("http://{}/subscription", sub2_addr)],
+                "subscriptionUpdateIntervalSecs": 3600,
+                "insertDirect": false,
+            }))
+            .send()
+            .await
+            .expect("remove first subscription");
+        assert_eq!(second.status(), StatusCode::OK);
+        assert_eq!(sub1_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(sub2_hits.load(Ordering::SeqCst), 1);
+
+        let stats = client
+            .get(format!("http://{addr}/api/stats/forward-proxy"))
+            .send()
+            .await
+            .expect("get stats");
+        assert_eq!(stats.status(), StatusCode::OK);
+        let body = stats
+            .json::<serde_json::Value>()
+            .await
+            .expect("decode stats");
+        let nodes = body["nodes"].as_array().expect("stats nodes");
+        assert!(
+            nodes.iter().all(|node| node["endpointUrl"].as_str() != Some(&format!("http://{sub1_proxy_addr}/"))),
+            "removed subscription nodes should disappear immediately",
+        );
+        assert!(
+            nodes.iter().any(|node| node["endpointUrl"].as_str() == Some(&format!("http://{sub2_proxy_addr}/"))),
+            "unchanged subscription nodes should remain active",
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn admin_forward_proxy_revalidate_refreshes_all_subscriptions_and_probes_all_nodes() {
+        let db_path = temp_db_path("admin-forward-proxy-revalidate");
+        let db_str = db_path.to_string_lossy().to_string();
+        let upstream_addr = spawn_forward_proxy_probe_upstream().await;
+        let subscription_proxy_hits = Arc::new(AtomicUsize::new(0));
+        let manual_proxy_hits = Arc::new(AtomicUsize::new(0));
+        let subscription_proxy_addr = spawn_counted_fake_forward_proxy(
+            StatusCode::NOT_FOUND,
+            Duration::from_millis(0),
+            subscription_proxy_hits.clone(),
+        )
+        .await;
+        let manual_proxy_addr = spawn_counted_fake_forward_proxy(
+            StatusCode::NOT_FOUND,
+            Duration::from_millis(0),
+            manual_proxy_hits.clone(),
+        )
+        .await;
+        let subscription_hits = Arc::new(AtomicUsize::new(0));
+        let subscription_state = Arc::new(Mutex::new((
+            StatusCode::OK,
+            format!("http://{}\n", subscription_proxy_addr),
+        )));
+        let subscription_addr = spawn_counted_forward_proxy_subscription_server(
+            subscription_state,
+            subscription_hits.clone(),
+        )
+        .await;
+        let upstream = format!("http://{}/mcp", upstream_addr);
+        let usage_base = format!("http://{}", upstream_addr);
+        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+            .await
+            .expect("create proxy");
+        let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
+
+        let client = Client::new();
+        let first = client
+            .put(format!("http://{addr}/api/settings/forward-proxy"))
+            .json(&serde_json::json!({
+                "proxyUrls": [format!("http://{}", manual_proxy_addr)],
+                "subscriptionUrls": [format!("http://{}/subscription", subscription_addr)],
+                "subscriptionUpdateIntervalSecs": 3600,
+                "insertDirect": false,
+            }))
+            .send()
+            .await
+            .expect("seed proxy pool");
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(subscription_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(subscription_proxy_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(manual_proxy_hits.load(Ordering::SeqCst), 1);
+
+        let response = client
+            .post(format!("http://{addr}/api/settings/forward-proxy/revalidate"))
+            .header(reqwest::header::ACCEPT, "text/event-stream")
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .expect("revalidate settings");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.text().await.expect("read sse body");
+        assert!(
+            body.contains("\"type\":\"phase\",\"operation\":\"revalidate\",\"phaseKey\":\"refresh_subscription\""),
+            "expected refresh_subscription phase, got: {body}"
+        );
+        assert!(
+            body.contains("\"type\":\"phase\",\"operation\":\"revalidate\",\"phaseKey\":\"probe_nodes\""),
+            "expected probe_nodes phase, got: {body}"
+        );
+        assert!(
+            body.contains("\"type\":\"complete\",\"operation\":\"revalidate\""),
+            "expected revalidate completion event, got: {body}"
+        );
+        assert_eq!(subscription_hits.load(Ordering::SeqCst), 2);
+        assert_eq!(subscription_proxy_hits.load(Ordering::SeqCst), 2);
+        assert_eq!(manual_proxy_hits.load(Ordering::SeqCst), 2);
 
         let _ = std::fs::remove_file(db_path);
     }

@@ -101,8 +101,11 @@ interface ForwardProxySettingsModuleProps {
   settingsError: string | null
   statsError: string | null
   saveError: string | null
+  revalidateError: string | null
   saving: boolean
+  revalidating: boolean
   savedAt: number | null
+  revalidateProgress: ForwardProxyDialogProgressState | null
   onPersistDraft: (
     draft: ForwardProxyDraft,
     onProgress?: (event: ForwardProxyProgressEvent) => void,
@@ -115,6 +118,7 @@ interface ForwardProxySettingsModuleProps {
     signal?: AbortSignal,
   ) => Promise<ForwardProxyValidationEntry[]>
   onRefresh: () => void
+  onRevalidate: () => void
   dialogPreview?: ForwardProxyDialogPreviewState | null
   onDialogPreviewClose?: () => void
 }
@@ -722,7 +726,12 @@ function ForwardProxyProgressBubble({
   strings: AdminTranslations['proxySettings']
   progress: ForwardProxyDialogProgressState
 }): JSX.Element {
-  const title = progress.action === 'validate' ? strings.progress.titleValidate : strings.progress.titleSave
+  const title =
+    progress.action === 'validate'
+      ? strings.progress.titleValidate
+      : progress.action === 'revalidate'
+        ? strings.progress.titleRevalidate
+        : strings.progress.titleSave
 
   return (
     <div className="rounded-2xl border border-primary/25 bg-primary/5 px-4 py-3 shadow-[0_16px_40px_-28px_hsl(var(--primary)/0.8)]">
@@ -734,7 +743,11 @@ function ForwardProxyProgressBubble({
           </p>
         </div>
         <Badge variant="outline" className="border-primary/30 bg-background/70">
-          {progress.action === 'validate' ? strings.progress.badgeValidate : strings.progress.badgeSave}
+          {progress.action === 'validate'
+            ? strings.progress.badgeValidate
+            : progress.action === 'revalidate'
+              ? strings.progress.badgeRevalidate
+              : strings.progress.badgeSave}
         </Badge>
       </div>
 
@@ -1479,11 +1492,15 @@ export default function ForwardProxySettingsModule({
   settingsError,
   statsError,
   saveError,
+  revalidateError,
   saving,
+  revalidating,
   savedAt,
+  revalidateProgress,
   onPersistDraft,
   onValidateCandidates,
   onRefresh,
+  onRevalidate,
   dialogPreview = null,
   onDialogPreviewClose,
 }: ForwardProxySettingsModuleProps): JSX.Element {
@@ -1555,6 +1572,7 @@ export default function ForwardProxySettingsModule({
         ...dialogAvailableResults.map((entry) => entry.result.normalizedValue ?? entry.value),
       ])
     : normalizeEntries([...manualUrls, ...dialogInputValues])
+  const controlsDisabled = saving || revalidating
   const canAddSubscription = dialogSubscriptionCandidate != null
     && (!activeDialogValidating || dialogHasLiveImportableSubscription)
   const canAddManualBatch = dialogManualBatchValues.length > manualUrls.length
@@ -1621,7 +1639,7 @@ export default function ForwardProxySettingsModule({
   }
 
   const closeDialog = () => {
-    if (saving) return
+    if (controlsDisabled) return
     if (dialogValidating) {
       dialogValidationAbortRef.current?.abort()
       dialogValidationAbortRef.current = null
@@ -1862,8 +1880,11 @@ export default function ForwardProxySettingsModule({
           </div>
           <div className="forward-proxy-panel-meta">
             <div className="forward-proxy-toolbar">
-              <Button type="button" variant="outline" onClick={onRefresh}>
+              <Button type="button" variant="outline" onClick={onRefresh} disabled={saving || revalidating}>
                 {strings.actions.refresh}
+              </Button>
+              <Button type="button" variant="outline" onClick={onRevalidate} disabled={saving || revalidating}>
+                {revalidating ? strings.actions.validatingSubscriptions : strings.actions.validateSubscriptions}
               </Button>
             </div>
             <div className="forward-proxy-range-row">
@@ -1878,6 +1899,16 @@ export default function ForwardProxySettingsModule({
           </div>
         </CardHeader>
         <CardContent className="forward-proxy-panel-content forward-proxy-summary-content">
+          {revalidateError && (
+            <div className="mb-4 alert alert-error" role="alert">
+              {revalidateError}
+            </div>
+          )}
+          {revalidateProgress && (
+            <div className="mb-4">
+              <ForwardProxyProgressBubble strings={strings} progress={revalidateProgress} />
+            </div>
+          )}
           <div className="forward-proxy-summary-grid">
             {summaryCards.map((card) => (
               <Card key={card.key} className="forward-proxy-summary-card">
@@ -2099,13 +2130,13 @@ export default function ForwardProxySettingsModule({
             <div className="space-y-3">
               <div className="rounded-xl border border-border/70 bg-card/45 px-3.5 py-3">
                 <div className="flex flex-wrap items-center gap-3">
-                  <Button type="button" variant="secondary" size="sm" onClick={() => openDialog('manual')} disabled={saving}>
+                  <Button type="button" variant="secondary" size="sm" onClick={() => openDialog('manual')} disabled={controlsDisabled}>
                     {strings.config.addManual}
                   </Button>
                   <span className="text-xs text-muted-foreground">
                     {strings.config.manualCount.replace('{count}', formatNumber(manualUrls.length))}
                   </span>
-                  <Button type="button" variant="secondary" size="sm" onClick={() => openDialog('subscription')} disabled={saving}>
+                  <Button type="button" variant="secondary" size="sm" onClick={() => openDialog('subscription')} disabled={controlsDisabled}>
                     {strings.config.addSubscription}
                   </Button>
                   <span className="text-xs text-muted-foreground">
@@ -2146,7 +2177,7 @@ export default function ForwardProxySettingsModule({
                               size="xs"
                               variant="ghost"
                               onClick={() => void handleRemoveSubscription(subscriptionUrl)}
-                              disabled={saving}
+                              disabled={controlsDisabled}
                             >
                               {strings.config.remove}
                             </Button>
@@ -2190,7 +2221,7 @@ export default function ForwardProxySettingsModule({
                               size="xs"
                               variant="ghost"
                               onClick={() => void handleRemoveManual(proxyUrl)}
-                              disabled={saving}
+                              disabled={controlsDisabled}
                             >
                               {strings.config.remove}
                             </Button>
@@ -2207,7 +2238,7 @@ export default function ForwardProxySettingsModule({
                   <CardContent className="forward-proxy-field-card-content">
                     <label className="forward-proxy-field">
                       <span className="forward-proxy-field-label">{strings.config.subscriptionIntervalLabel}</span>
-                      <Select value={selectedInterval} onValueChange={(value) => void handleIntervalChange(value)} disabled={saving}>
+                      <Select value={selectedInterval} onValueChange={(value) => void handleIntervalChange(value)} disabled={controlsDisabled}>
                         <SelectTrigger>
                           <SelectValue />
                         </SelectTrigger>
@@ -2232,7 +2263,7 @@ export default function ForwardProxySettingsModule({
                         type="checkbox"
                         checked={settings?.insertDirect ?? true}
                         onChange={(event) => void handleInsertDirectChange(event.target.checked)}
-                        disabled={saving}
+                        disabled={controlsDisabled}
                       />
                       <div>
                         <strong>{strings.config.insertDirectLabel}</strong>
@@ -2262,7 +2293,7 @@ export default function ForwardProxySettingsModule({
             canAddSubscription={canAddSubscription}
             canAddManualBatch={canAddManualBatch}
             addManualBatchLabel={addManualBatchLabel}
-            saving={saving}
+            saving={controlsDisabled}
             progress={activeDialogProgress}
             onClose={closeDialog}
             onCancelValidate={cancelDialogValidation}

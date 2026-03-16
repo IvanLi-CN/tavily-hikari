@@ -1522,6 +1522,7 @@ impl ApiKeyUpsertStatus {
 
 const FORWARD_PROXY_PROGRESS_OPERATION_SAVE: &str = "save";
 const FORWARD_PROXY_PROGRESS_OPERATION_VALIDATE: &str = "validate";
+const FORWARD_PROXY_PROGRESS_OPERATION_REVALIDATE: &str = "revalidate";
 
 const FORWARD_PROXY_PHASE_SAVE_SETTINGS: &str = "save_settings";
 const FORWARD_PROXY_PHASE_REFRESH_SUBSCRIPTION: &str = "refresh_subscription";
@@ -1715,10 +1716,16 @@ impl TavilyProxy {
             manager.clone()
         };
         let previous_subscription_urls = previous_manager
-            .endpoints
+            .settings
+            .subscription_urls
             .iter()
-            .filter(|endpoint| endpoint.source == forward_proxy::FORWARD_PROXY_SOURCE_SUBSCRIPTION)
-            .filter_map(|endpoint| endpoint.raw_url.clone())
+            .cloned()
+            .collect::<HashSet<_>>();
+        let added_subscription_urls = normalized
+            .subscription_urls
+            .iter()
+            .filter(|subscription_url| !previous_subscription_urls.contains(*subscription_url))
+            .cloned()
             .collect::<Vec<_>>();
         emit_forward_proxy_progress(
             progress,
@@ -1730,25 +1737,38 @@ impl TavilyProxy {
         );
         forward_proxy::save_forward_proxy_settings(&self.key_store.pool, normalized.clone())
             .await?;
-        {
+        let fetched_subscriptions = self
+            .fetch_forward_proxy_subscription_map_with_progress(
+                &added_subscription_urls,
+                FORWARD_PROXY_PROGRESS_OPERATION_SAVE,
+                progress,
+                false,
+            )
+            .await?;
+        let bootstrap_targets = {
             let mut manager = self.forward_proxy.lock().await;
-            manager.apply_settings(normalized.clone());
-        }
-        if let Err(err) = self
-            .refresh_forward_proxy_subscriptions_with_progress(progress)
-            .await
-        {
-            eprintln!("forward-proxy subscription refresh after settings update error: {err}");
-            if normalized.subscription_urls == previous_manager.settings.subscription_urls
-                && !previous_subscription_urls.is_empty()
+            let bootstrap_targets =
+                manager.apply_incremental_settings(normalized.clone(), &fetched_subscriptions);
             {
-                let mut manager = self.forward_proxy.lock().await;
-                manager.apply_subscription_urls(previous_subscription_urls);
                 let mut xray = self.xray_supervisor.lock().await;
                 xray.sync_endpoints(&mut manager.endpoints).await?;
             }
-        }
-        if skip_bootstrap_probe {
+            self.sync_forward_proxy_runtime_state(&mut manager).await?;
+            bootstrap_targets
+                .into_iter()
+                .filter(|endpoint| !endpoint.is_direct())
+                .collect::<Vec<_>>()
+        };
+        let geo_metadata_targets = if skip_bootstrap_probe {
+            bootstrap_targets
+                .iter()
+                .filter(|endpoint| endpoint.source == forward_proxy::FORWARD_PROXY_SOURCE_MANUAL)
+                .cloned()
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        if skip_bootstrap_probe && !bootstrap_targets.is_empty() {
             emit_forward_proxy_progress(
                 progress,
                 ForwardProxyProgressEvent::phase_with_progress(
@@ -1760,18 +1780,9 @@ impl TavilyProxy {
                     Some("Skipped after recent validation".to_string()),
                 ),
             );
-        } else {
-            let mut targets = {
-                let manager = self.forward_proxy.lock().await;
-                manager
-                    .endpoints
-                    .iter()
-                    .filter(|endpoint| !endpoint.is_direct())
-                    .cloned()
-                    .collect::<Vec<_>>()
-            };
-            let bootstrap_total = targets.len();
-            for (index, endpoint) in targets.drain(..).enumerate() {
+        } else if !bootstrap_targets.is_empty() {
+            let bootstrap_total = bootstrap_targets.len();
+            for (index, endpoint) in bootstrap_targets.into_iter().enumerate() {
                 emit_forward_proxy_progress(
                     progress,
                     ForwardProxyProgressEvent::phase_with_progress(
@@ -1793,6 +1804,58 @@ impl TavilyProxy {
                     )
                     .await;
             }
+        }
+        if !geo_metadata_targets.is_empty() {
+            let _ = self
+                .resolve_forward_proxy_geo_candidates(
+                    &self.api_key_geo_origin,
+                    geo_metadata_targets,
+                )
+                .await;
+        }
+        self.get_forward_proxy_settings().await
+    }
+
+    pub async fn revalidate_forward_proxy_with_progress(
+        &self,
+        progress: Option<&ForwardProxyProgressCallback>,
+    ) -> Result<ForwardProxySettingsResponse, ProxyError> {
+        self.refresh_forward_proxy_subscriptions_for_operation(
+            FORWARD_PROXY_PROGRESS_OPERATION_REVALIDATE,
+            progress,
+        )
+        .await?;
+        let targets = {
+            let manager = self.forward_proxy.lock().await;
+            manager
+                .endpoints
+                .iter()
+                .filter(|endpoint| !endpoint.is_direct())
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let total = targets.len();
+        for (index, endpoint) in targets.into_iter().enumerate() {
+            emit_forward_proxy_progress(
+                progress,
+                ForwardProxyProgressEvent::phase_with_progress(
+                    FORWARD_PROXY_PROGRESS_OPERATION_REVALIDATE,
+                    FORWARD_PROXY_PHASE_PROBE_NODES,
+                    FORWARD_PROXY_LABEL_PROBE_NODES,
+                    index + 1,
+                    total,
+                    Some(endpoint.display_name.clone()),
+                ),
+            );
+            let _ = self
+                .probe_and_record_forward_proxy_endpoint(
+                    &endpoint,
+                    "revalidate",
+                    None,
+                    Duration::from_secs(forward_proxy::FORWARD_PROXY_VALIDATION_TIMEOUT_SECS),
+                    None,
+                )
+                .await;
         }
         self.get_forward_proxy_settings().await
     }
@@ -1854,17 +1917,16 @@ impl TavilyProxy {
                 });
                 continue;
             };
-            let endpoint = forward_proxy::ForwardProxyEndpoint {
-                key: format!(
+            let endpoint = forward_proxy::ForwardProxyEndpoint::new_manual(
+                format!(
                     "__validate_proxy__{:016x}",
                     forward_proxy::stable_hash_u64(&parsed.normalized)
                 ),
-                source: forward_proxy::FORWARD_PROXY_SOURCE_MANUAL.to_string(),
-                display_name: parsed.display_name.clone(),
-                protocol: parsed.protocol,
-                endpoint_url: parsed.endpoint_url.clone(),
-                raw_url: Some(parsed.normalized.clone()),
-            };
+                parsed.display_name.clone(),
+                parsed.protocol,
+                parsed.endpoint_url.clone(),
+                Some(parsed.normalized.clone()),
+            );
             emit_forward_proxy_progress(
                 progress,
                 ForwardProxyProgressEvent::phase_with_progress(
@@ -2081,9 +2143,9 @@ impl TavilyProxy {
                 "subscription resolved zero proxy entries".to_string(),
             ));
         }
-        let endpoints = forward_proxy::normalize_proxy_endpoints_from_urls(
+        let endpoints = forward_proxy::normalize_subscription_endpoints_from_urls(
             &urls,
-            forward_proxy::FORWARD_PROXY_SOURCE_SUBSCRIPTION,
+            &normalized_subscription,
         );
         if endpoints.is_empty() {
             return Err(ProxyError::Other(
@@ -2341,41 +2403,60 @@ impl TavilyProxy {
             .await
     }
 
-    async fn refresh_forward_proxy_geo_metadata(&self) {
-        let endpoints = {
-            let manager = self.forward_proxy.lock().await;
-            manager
-                .endpoints
-                .iter()
-                .filter(|endpoint| !endpoint.is_direct())
-                .cloned()
-                .collect::<Vec<_>>()
-        };
-        if endpoints.is_empty() {
-            return;
-        }
-        let _ = self
-            .resolve_forward_proxy_geo_candidates(&self.api_key_geo_origin, endpoints)
-            .await;
-    }
-
     pub async fn refresh_forward_proxy_subscriptions_with_progress(
         &self,
+        progress: Option<&ForwardProxyProgressCallback>,
+    ) -> Result<(), ProxyError> {
+        self.refresh_forward_proxy_subscriptions_for_operation(
+            FORWARD_PROXY_PROGRESS_OPERATION_SAVE,
+            progress,
+        )
+        .await
+    }
+
+    async fn refresh_forward_proxy_subscriptions_for_operation(
+        &self,
+        operation: &'static str,
         progress: Option<&ForwardProxyProgressCallback>,
     ) -> Result<(), ProxyError> {
         let settings = {
             let manager = self.forward_proxy.lock().await;
             manager.settings.clone()
         };
+        let subscription_urls = self
+            .fetch_forward_proxy_subscription_map_with_progress(
+                &settings.subscription_urls,
+                operation,
+                progress,
+                true,
+            )
+            .await?;
 
-        let mut subscription_urls = Vec::new();
+        let mut manager = self.forward_proxy.lock().await;
+        manager.apply_subscription_refresh(&subscription_urls);
+        {
+            let mut xray = self.xray_supervisor.lock().await;
+            xray.sync_endpoints(&mut manager.endpoints).await?;
+        }
+        self.sync_forward_proxy_runtime_state(&mut manager).await?;
+        Ok(())
+    }
+
+    async fn fetch_forward_proxy_subscription_map_with_progress(
+        &self,
+        subscription_urls: &[String],
+        operation: &'static str,
+        progress: Option<&ForwardProxyProgressCallback>,
+        fail_when_all_fail: bool,
+    ) -> Result<HashMap<String, Vec<String>>, ProxyError> {
+        let mut fetched = HashMap::new();
         let mut fetched_any_subscription = false;
-        let total = settings.subscription_urls.len();
-        for (index, subscription_url) in settings.subscription_urls.iter().enumerate() {
+        let total = subscription_urls.len();
+        for (index, subscription_url) in subscription_urls.iter().enumerate() {
             emit_forward_proxy_progress(
                 progress,
                 ForwardProxyProgressEvent::phase_with_progress(
-                    FORWARD_PROXY_PROGRESS_OPERATION_SAVE,
+                    operation,
                     FORWARD_PROXY_PHASE_REFRESH_SUBSCRIPTION,
                     FORWARD_PROXY_LABEL_REFRESH_SUBSCRIPTION,
                     index + 1,
@@ -2394,7 +2475,7 @@ impl TavilyProxy {
             {
                 Ok(urls) => {
                     fetched_any_subscription = true;
-                    subscription_urls.extend(urls);
+                    fetched.insert(subscription_url.clone(), urls);
                 }
                 Err(err) => {
                     eprintln!(
@@ -2404,40 +2485,38 @@ impl TavilyProxy {
             }
         }
 
-        if !settings.subscription_urls.is_empty() && !fetched_any_subscription {
+        if fail_when_all_fail && !subscription_urls.is_empty() && !fetched_any_subscription {
             return Err(ProxyError::Other(
                 "all forward proxy subscriptions failed to refresh".to_string(),
             ));
         }
 
-        {
-            let mut manager = self.forward_proxy.lock().await;
-            manager.apply_subscription_urls(subscription_urls);
-            {
-                let mut xray = self.xray_supervisor.lock().await;
-                xray.sync_endpoints(&mut manager.endpoints).await?;
-            }
-            let endpoints = manager.endpoints.clone();
-            for endpoint in &endpoints {
-                if let Some(runtime) = manager.runtime.get_mut(&endpoint.key) {
-                    runtime.kind = endpoint.protocol.as_str().to_string();
-                    runtime.endpoint_url = endpoint
-                        .endpoint_url
-                        .as_ref()
-                        .map(Url::to_string)
-                        .or_else(|| endpoint.raw_url.clone());
-                    runtime.available = endpoint.is_selectable();
-                    if endpoint.is_direct() || endpoint.is_selectable() {
-                        runtime.last_error = None;
-                    } else if !endpoint.is_selectable() {
-                        runtime.last_error = Some("xray_missing".to_string());
-                    }
+        Ok(fetched)
+    }
+
+    async fn sync_forward_proxy_runtime_state(
+        &self,
+        manager: &mut forward_proxy::ForwardProxyManager,
+    ) -> Result<(), ProxyError> {
+        let endpoints = manager.endpoints.clone();
+        for endpoint in &endpoints {
+            if let Some(runtime) = manager.runtime.get_mut(&endpoint.key) {
+                runtime.source = endpoint.source.clone();
+                runtime.kind = endpoint.protocol.as_str().to_string();
+                runtime.endpoint_url = endpoint
+                    .endpoint_url
+                    .as_ref()
+                    .map(Url::to_string)
+                    .or_else(|| endpoint.raw_url.clone());
+                runtime.available = endpoint.is_selectable();
+                if endpoint.is_direct() || endpoint.is_selectable() {
+                    runtime.last_error = None;
+                } else {
+                    runtime.last_error = Some("xray_missing".to_string());
                 }
             }
-            forward_proxy::sync_manager_runtime_to_store(&self.key_store, &manager).await?;
         }
-        self.refresh_forward_proxy_geo_metadata().await;
-        Ok(())
+        forward_proxy::sync_manager_runtime_to_store(&self.key_store, manager).await
     }
 
     pub async fn maybe_run_forward_proxy_maintenance(&self) -> Result<(), ProxyError> {
@@ -2508,14 +2587,16 @@ impl TavilyProxy {
                 "__validate_xray__{:016x}",
                 forward_proxy::stable_hash_u64(raw_url)
             );
-            let validate_endpoint = forward_proxy::ForwardProxyEndpoint {
-                key: validate_key.clone(),
-                source: endpoint.source.clone(),
-                display_name: endpoint.display_name.clone(),
-                protocol: endpoint.protocol,
-                endpoint_url: None,
-                raw_url: Some(raw_url.to_string()),
-            };
+            let mut validate_endpoint = forward_proxy::ForwardProxyEndpoint::new_manual(
+                validate_key.clone(),
+                endpoint.display_name.clone(),
+                endpoint.protocol,
+                None,
+                Some(raw_url.to_string()),
+            );
+            validate_endpoint.source = endpoint.source.clone();
+            validate_endpoint.manual_present = endpoint.manual_present;
+            validate_endpoint.subscription_sources = endpoint.subscription_sources.clone();
             let route_url = self
                 .xray_supervisor
                 .lock()
@@ -2523,14 +2604,9 @@ impl TavilyProxy {
                 .ensure_instance(&validate_endpoint)
                 .await?;
             temporary_xray_key = Some(validate_key);
-            forward_proxy::ForwardProxyEndpoint {
-                key: endpoint.key.clone(),
-                source: endpoint.source.clone(),
-                display_name: endpoint.display_name.clone(),
-                protocol: endpoint.protocol,
-                endpoint_url: Some(route_url),
-                raw_url: endpoint.raw_url.clone(),
-            }
+            let mut resolved = endpoint.clone();
+            resolved.endpoint_url = Some(route_url);
+            resolved
         } else {
             endpoint.clone()
         };

@@ -1,7 +1,7 @@
 import type { ForwardProxyProgressEvent, ForwardProxyProgressPhaseKey } from '../api'
 
 export type ForwardProxyDialogKind = 'subscription' | 'manual' | null
-export type ForwardProxyDialogAction = 'validate' | 'save'
+export type ForwardProxyDialogAction = 'validate' | 'save' | 'revalidate'
 export type ForwardProxyDialogProgressStatus = 'pending' | 'running' | 'done' | 'error'
 
 export interface ForwardProxyProgressStrings {
@@ -49,7 +49,9 @@ function buildProgressSteps(
   action: ForwardProxyDialogAction,
 ): ForwardProxyDialogProgressStep[] {
   const stepKeys: ForwardProxyProgressPhaseKey[] =
-    action === 'validate'
+    action === 'revalidate'
+      ? ['refresh_subscription', 'probe_nodes', 'refresh_ui']
+      : action === 'validate'
       ? kind === 'subscription'
         ? ['normalize_input', 'fetch_subscription', 'probe_nodes', 'generate_result']
         : ['parse_input', 'probe_nodes', 'generate_result']

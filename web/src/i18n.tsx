@@ -369,8 +369,10 @@ interface AdminTranslationsShape {
     progress: {
       titleValidate: string
       titleSave: string
+      titleRevalidate: string
       badgeValidate: string
       badgeSave: string
+      badgeRevalidate: string
       buttonValidatingSubscription: string
       buttonValidatingManual: string
       buttonAddingSubscription: string
@@ -1399,8 +1401,8 @@ export const translations: Record<Language, TranslationShape> = {
           refresh: 'Refresh stats',
           save: 'Save settings',
           saving: 'Saving…',
-          validateSubscriptions: 'Validate subscriptions',
-          validatingSubscriptions: 'Validating subscriptions…',
+          validateSubscriptions: 'Revalidate all',
+          validatingSubscriptions: 'Revalidating all…',
           validateManual: 'Validate manual proxies',
           validatingManual: 'Validating manual proxies…',
         },
@@ -1493,8 +1495,10 @@ export const translations: Record<Language, TranslationShape> = {
         progress: {
           titleValidate: 'Validation progress',
           titleSave: 'Add progress',
+          titleRevalidate: 'Revalidation progress',
           badgeValidate: 'Validate',
           badgeSave: 'Add',
+          badgeRevalidate: 'Revalidate',
           buttonValidatingSubscription: 'Validating subscription…',
           buttonValidatingManual: 'Validating nodes…',
           buttonAddingSubscription: 'Adding subscription…',
@@ -2510,8 +2514,8 @@ export const translations: Record<Language, TranslationShape> = {
           refresh: '刷新统计',
           save: '保存设置',
           saving: '保存中…',
-          validateSubscriptions: '验证订阅',
-          validatingSubscriptions: '正在验证订阅…',
+          validateSubscriptions: '全量验证',
+          validatingSubscriptions: '正在全量验证…',
           validateManual: '验证手工节点',
           validatingManual: '正在验证手工节点…',
         },
@@ -2604,8 +2608,10 @@ export const translations: Record<Language, TranslationShape> = {
         progress: {
           titleValidate: '验证进度',
           titleSave: '添加进度',
+          titleRevalidate: '全量验证进度',
           badgeValidate: '验证',
           badgeSave: '添加',
+          badgeRevalidate: '全量验证',
           buttonValidatingSubscription: '正在验证订阅…',
           buttonValidatingManual: '正在验证节点…',
           buttonAddingSubscription: '正在添加订阅…',

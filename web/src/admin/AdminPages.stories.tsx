@@ -2959,11 +2959,15 @@ function ProxySettingsPageCanvas(): JSX.Element {
         settingsError={null}
         statsError={null}
         saveError={null}
+        revalidateError={null}
         saving={false}
+        revalidating={false}
         savedAt={forwardProxyStorySavedAt}
+        revalidateProgress={null}
         onPersistDraft={async () => {}}
         onValidateCandidates={async () => []}
         onRefresh={() => {}}
+        onRevalidate={() => {}}
       />
     </AdminPageFrame>
   )

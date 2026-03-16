@@ -244,7 +244,7 @@ async function requestJsonWithToken<T>(
   return requestJson<T>(input, { ...init, headers })
 }
 
-export type ForwardProxyProgressOperation = 'save' | 'validate'
+export type ForwardProxyProgressOperation = 'save' | 'validate' | 'revalidate'
 export type ForwardProxyProgressPhaseKey =
   | 'save_settings'
   | 'refresh_subscription'
@@ -1474,6 +1474,21 @@ export function validateForwardProxyCandidateWithProgress(
       signal,
     },
     'validate',
+    onEvent,
+  )
+}
+
+export function revalidateForwardProxyWithProgress(
+  onEvent?: (event: ForwardProxyProgressEvent) => void,
+): Promise<ForwardProxySettings> {
+  return requestForwardProxyProgress<ForwardProxySettings>(
+    '/api/settings/forward-proxy/revalidate',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    },
+    'revalidate',
     onEvent,
   )
 }

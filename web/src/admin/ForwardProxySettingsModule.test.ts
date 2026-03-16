@@ -7,8 +7,10 @@ const strings = {
   progress: {
     titleValidate: '验证进度',
     titleSave: '添加进度',
+    titleRevalidate: '全量验证进度',
     badgeValidate: '验证',
     badgeSave: '添加',
+    badgeRevalidate: '全量验证',
     buttonValidatingSubscription: '正在验证订阅…',
     buttonValidatingManual: '正在验证节点…',
     buttonAddingSubscription: '正在添加订阅…',
@@ -133,5 +135,28 @@ describe('ForwardProxySettingsModule progress state helpers', () => {
     expect(state.activeStepKey).toBeNull()
     expect(state.message).toBeNull()
     expect(state.steps.every((step) => step.status === 'pending')).toBe(true)
+  })
+
+  it('builds revalidate progress with refresh, probe, and ui steps', () => {
+    let state = createDialogProgressState(strings.progress, 'subscription', 'revalidate')
+    state = updateDialogProgressState(state, strings.progress, {
+      type: 'phase',
+      operation: 'revalidate',
+      phaseKey: 'refresh_subscription',
+      label: 'Refresh subscription',
+      current: 1,
+      total: 2,
+      detail: 'https://example.com/subscription',
+    } satisfies ForwardProxyProgressEvent)
+
+    expect(state.steps.map((step) => step.key)).toEqual([
+      'refresh_subscription',
+      'probe_nodes',
+      'refresh_ui',
+    ])
+    expect(state.steps.find((step) => step.key === 'refresh_subscription')).toMatchObject({
+      status: 'running',
+      detail: '1/2 · https://example.com/subscription',
+    })
   })
 })

@@ -114,6 +114,10 @@ pub async fn serve(
             post(post_forward_proxy_candidate_validation),
         )
         .route(
+            "/api/settings/forward-proxy/revalidate",
+            post(post_forward_proxy_revalidate),
+        )
+        .route(
             "/api/stats/forward-proxy/summary",
             get(get_forward_proxy_dashboard_summary),
         )

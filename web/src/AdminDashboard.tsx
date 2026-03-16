@@ -160,9 +160,16 @@ import {
   type ForwardProxyProgressEvent,
   fetchForwardProxySettings,
   fetchForwardProxyStats,
+  revalidateForwardProxyWithProgress,
   updateForwardProxySettingsWithProgress,
   validateForwardProxyCandidateWithProgress,
 } from './api'
+import {
+  createDialogProgressState,
+  type ForwardProxyDialogProgressState,
+  updateDialogProgressState,
+} from './admin/forwardProxyDialogProgress'
+import { finalizeForwardProxyRevalidate } from './admin/forwardProxyRevalidate'
 
 const REFRESH_INTERVAL_MS = 30_000
 const LOGS_PER_PAGE = 20
@@ -963,6 +970,10 @@ function AdminDashboard(): JSX.Element {
   const [forwardProxyStatsError, setForwardProxyStatsError] = useState<string | null>(null)
   const [forwardProxySaving, setForwardProxySaving] = useState(false)
   const [forwardProxySaveError, setForwardProxySaveError] = useState<string | null>(null)
+  const [forwardProxyRevalidating, setForwardProxyRevalidating] = useState(false)
+  const [forwardProxyRevalidateError, setForwardProxyRevalidateError] = useState<string | null>(null)
+  const [forwardProxyRevalidateProgress, setForwardProxyRevalidateProgress] =
+    useState<ForwardProxyDialogProgressState | null>(null)
   const [forwardProxySavedAt, setForwardProxySavedAt] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -2206,6 +2217,71 @@ function AdminDashboard(): JSX.Element {
     loadForwardProxyStatsData,
     proxySettingsStrings.config.invalidInterval,
     proxySettingsStrings.config.saveFailed,
+  ])
+
+  const revalidateForwardProxy = useCallback(async () => {
+    setForwardProxyRevalidateError(null)
+    setForwardProxyRevalidating(true)
+    setForwardProxyRevalidateProgress(
+      createDialogProgressState(proxySettingsStrings.progress, 'subscription', 'revalidate'),
+    )
+
+    try {
+      const nextSettings = await revalidateForwardProxyWithProgress((event) => {
+        setForwardProxyRevalidateProgress((current) => {
+          const base = current ?? createDialogProgressState(proxySettingsStrings.progress, 'subscription', 'revalidate')
+          return updateDialogProgressState(base, proxySettingsStrings.progress, event)
+        })
+      })
+      setForwardProxySettings(nextSettings)
+      setForwardProxySettingsLoadState('ready')
+      setForwardProxySettingsError(null)
+      setForwardProxySavedAt(Date.now())
+      setLastUpdated(new Date())
+      forwardProxySettingsLoadedRef.current = true
+      await finalizeForwardProxyRevalidate(
+        loadForwardProxyStatsData,
+        () => {
+          setForwardProxyRevalidateProgress((current) => {
+            const base = current ?? createDialogProgressState(proxySettingsStrings.progress, 'subscription', 'revalidate')
+            return updateDialogProgressState(base, proxySettingsStrings.progress, {
+              type: 'phase',
+              operation: 'revalidate',
+              phaseKey: 'refresh_ui',
+              label: proxySettingsStrings.progress.steps.refresh_ui,
+            })
+          })
+        },
+        () => {
+          setForwardProxyRevalidateProgress((current) => {
+            const base = current ?? createDialogProgressState(proxySettingsStrings.progress, 'subscription', 'revalidate')
+            return updateDialogProgressState(base, proxySettingsStrings.progress, {
+              type: 'complete',
+              operation: 'revalidate',
+              payload: null,
+            })
+          })
+        },
+      )
+    } catch (err) {
+      console.error(err)
+      const message = err instanceof Error ? err.message : proxySettingsStrings.validation.requestFailed
+      setForwardProxyRevalidateError(message)
+      setForwardProxyRevalidateProgress((current) => {
+        const base = current ?? createDialogProgressState(proxySettingsStrings.progress, 'subscription', 'revalidate')
+        return updateDialogProgressState(base, proxySettingsStrings.progress, {
+          type: 'error',
+          operation: 'revalidate',
+          message,
+        })
+      })
+    } finally {
+      setForwardProxyRevalidating(false)
+    }
+  }, [
+    loadForwardProxyStatsData,
+    proxySettingsStrings.progress,
+    proxySettingsStrings.validation.requestFailed,
   ])
 
   useEffect(() => {
@@ -8019,11 +8095,15 @@ function AdminDashboard(): JSX.Element {
           settingsError={forwardProxySettingsError}
           statsError={forwardProxyStatsError}
           saveError={forwardProxySaveError}
+          revalidateError={forwardProxyRevalidateError}
           saving={forwardProxySaving}
+          revalidating={forwardProxyRevalidating}
           savedAt={forwardProxySavedAt}
+          revalidateProgress={forwardProxyRevalidateProgress}
           onPersistDraft={saveForwardProxySettings}
           onValidateCandidates={validateForwardProxyCandidates}
           onRefresh={handleManualRefresh}
+          onRevalidate={() => void revalidateForwardProxy()}
         />
       )}
 

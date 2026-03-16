@@ -234,15 +234,109 @@ const PROGRESS_FAILURE: ForwardProxyDialogProgressState = {
 
 interface StoryCanvasProps {
   dialogPreview?: ForwardProxyDialogPreviewState | null
+  revalidateProgress?: ForwardProxyDialogProgressState | null
+  revalidateError?: string | null
+  revalidating?: boolean
 }
 
-function StoryCanvas({ dialogPreview = null }: StoryCanvasProps): JSX.Element {
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms)
+  })
+}
+
+const REVALIDATE_PROGRESS: ForwardProxyDialogProgressState = {
+  action: 'revalidate',
+  activeStepKey: 'probe_nodes',
+  message: '4/11 · Singapore-B',
+  steps: [
+    { key: 'refresh_subscription', label: '刷新订阅', status: 'done', detail: '2 条订阅已同步' },
+    { key: 'probe_nodes', label: '探测节点', status: 'running', detail: '4/11 · Singapore-B' },
+    { key: 'refresh_ui', label: '刷新列表与统计', status: 'pending', detail: null },
+  ],
+}
+
+function StoryCanvas({
+  dialogPreview = null,
+  revalidateProgress = null,
+  revalidateError = null,
+  revalidating = false,
+}: StoryCanvasProps): JSX.Element {
   const strings = useTranslate().admin.proxySettings
   const [previewOpen, setPreviewOpen] = useState(dialogPreview != null)
+  const [storySavedAt, setStorySavedAt] = useState(forwardProxyStorySavedAt)
+  const [storyRevalidating, setStoryRevalidating] = useState(revalidating)
+  const [storyRevalidateProgress, setStoryRevalidateProgress] =
+    useState<ForwardProxyDialogProgressState | null>(revalidateProgress)
+  const [storyRevalidateError, setStoryRevalidateError] = useState<string | null>(revalidateError)
 
   useEffect(() => {
     setPreviewOpen(dialogPreview != null)
   }, [dialogPreview])
+
+  useEffect(() => {
+    setStorySavedAt(forwardProxyStorySavedAt)
+  }, [])
+
+  useEffect(() => {
+    setStoryRevalidating(revalidating)
+  }, [revalidating])
+
+  useEffect(() => {
+    setStoryRevalidateProgress(revalidateProgress)
+  }, [revalidateProgress])
+
+  useEffect(() => {
+    setStoryRevalidateError(revalidateError)
+  }, [revalidateError])
+
+  async function handleRevalidate(): Promise<void> {
+    if (storyRevalidating) {
+      return
+    }
+
+    setStoryRevalidateError(null)
+    setStoryRevalidating(true)
+    setStoryRevalidateProgress({
+      action: 'revalidate',
+      activeStepKey: 'refresh_subscription',
+      message: '1/2 · https://subscription.example.com',
+      steps: [
+        { key: 'refresh_subscription', label: '刷新订阅', status: 'running', detail: '1/2 · https://subscription.example.com' },
+        { key: 'probe_nodes', label: '探测节点', status: 'pending', detail: null },
+        { key: 'refresh_ui', label: '刷新列表与统计', status: 'pending', detail: null },
+      ],
+    })
+    await wait(650)
+
+    setStoryRevalidateProgress({
+      action: 'revalidate',
+      activeStepKey: 'probe_nodes',
+      message: '4/11 · Singapore-B',
+      steps: [
+        { key: 'refresh_subscription', label: '刷新订阅', status: 'done', detail: '2 条订阅已同步' },
+        { key: 'probe_nodes', label: '探测节点', status: 'running', detail: '4/11 · Singapore-B' },
+        { key: 'refresh_ui', label: '刷新列表与统计', status: 'pending', detail: null },
+      ],
+    })
+    await wait(850)
+
+    setStoryRevalidateProgress({
+      action: 'revalidate',
+      activeStepKey: 'refresh_ui',
+      message: '正在刷新列表与统计…',
+      steps: [
+        { key: 'refresh_subscription', label: '刷新订阅', status: 'done', detail: '2 条订阅已同步' },
+        { key: 'probe_nodes', label: '探测节点', status: 'done', detail: '11 个节点已完成探测' },
+        { key: 'refresh_ui', label: '刷新列表与统计', status: 'running', detail: '正在同步前端视图' },
+      ],
+    })
+    await wait(550)
+
+    setStorySavedAt(Date.now())
+    setStoryRevalidating(false)
+    setStoryRevalidateProgress(null)
+  }
 
   return (
     <div
@@ -265,13 +359,17 @@ function StoryCanvas({ dialogPreview = null }: StoryCanvasProps): JSX.Element {
         settingsError={null}
         statsError={null}
         saveError={null}
+        revalidateError={storyRevalidateError}
         saving={false}
-        savedAt={forwardProxyStorySavedAt}
+        revalidating={storyRevalidating}
+        savedAt={storySavedAt}
+        revalidateProgress={storyRevalidateProgress}
         settings={forwardProxyStorySettings}
         stats={forwardProxyStoryStats}
         onPersistDraft={async () => {}}
         onValidateCandidates={async () => []}
         onRefresh={() => {}}
+        onRevalidate={handleRevalidate}
         dialogPreview={previewOpen ? dialogPreview : null}
         onDialogPreviewClose={() => setPreviewOpen(false)}
       />
@@ -300,6 +398,13 @@ type Story = StoryObj<typeof meta>
 
 export const Default: Story = {
   args: {},
+}
+
+export const RevalidateProgressBubble: Story = {
+  args: {
+    revalidating: true,
+    revalidateProgress: REVALIDATE_PROGRESS,
+  },
 }
 
 export const SubscriptionDialogEmpty: Story = {
