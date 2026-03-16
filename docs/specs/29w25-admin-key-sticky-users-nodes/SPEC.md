@@ -212,11 +212,11 @@
 
 ## 实现里程碑（Milestones / Delivery checklist）
 
-- [ ] M1: docs/spec 与 contracts 冻结
-- [ ] M2: 后端 schema、binding refresh / prune、charged credits rollup 完成
-- [ ] M3: 最近成功优先调度与 sticky users / nodes API 完成
-- [ ] M4: key detail Sticky Users / Sticky Nodes UI、共享趋势图与 i18n 完成
-- [ ] M5: 测试、build、浏览器验收、PR / review-loop 收敛完成
+- [x] M1: docs/spec 与 contracts 冻结
+- [x] M2: 后端 schema、binding refresh / prune、charged credits rollup 完成
+- [x] M3: 最近成功优先调度与 sticky users / nodes API 完成
+- [x] M4: key detail Sticky Users / Sticky Nodes UI、共享趋势图与 i18n 完成
+- [x] M5: 测试、build、浏览器验收、PR / review-loop 收敛完成
 
 ## 风险 / 开放问题 / 假设
 
@@ -228,3 +228,4 @@
 ## 变更记录（Change log）
 
 - 2026-03-16: 创建快车道 spec，冻结 sticky users / sticky nodes、many-to-many current binding、recent-success-first routing 与 post-launch exact credits 口径。
+- 2026-03-17: 同步 Storybook 视觉证据、plain-value sticky usage UI，并收口 spec 索引与交付里程碑状态。
