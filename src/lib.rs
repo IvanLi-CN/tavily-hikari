@@ -1287,13 +1287,27 @@ struct TokenRequestLimit {
     hourly_limit: i64,
 }
 
+#[derive(Clone, Debug, Default)]
+struct CachedForwardProxyAffinityRecord {
+    record: forward_proxy::ForwardProxyAffinityRecord,
+    has_persisted_row: bool,
+}
+
+#[derive(Clone, Debug)]
+struct LoadedProxyAffinityState {
+    record: forward_proxy::ForwardProxyAffinityRecord,
+    registration_ip: Option<String>,
+    registration_region: Option<String>,
+    has_explicit_empty_marker: bool,
+}
+
 /// 负责均衡 Tavily API key 并透传请求的代理。
 #[derive(Clone, Debug)]
 pub struct TavilyProxy {
     client: Client,
     forward_proxy_clients: forward_proxy::ForwardProxyClientPool,
     forward_proxy: Arc<Mutex<forward_proxy::ForwardProxyManager>>,
-    forward_proxy_affinity: Arc<Mutex<HashMap<String, forward_proxy::ForwardProxyAffinityRecord>>>,
+    forward_proxy_affinity: Arc<Mutex<HashMap<String, CachedForwardProxyAffinityRecord>>>,
     xray_supervisor: Arc<Mutex<forward_proxy::XraySupervisor>>,
     upstream: Url,
     key_store: Arc<KeyStore>,
@@ -2581,20 +2595,34 @@ impl TavilyProxy {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     async fn load_proxy_affinity_record(
         &self,
         api_key_id: &str,
     ) -> Result<forward_proxy::ForwardProxyAffinityRecord, ProxyError> {
+        Ok(self
+            .load_cached_proxy_affinity_record(api_key_id)
+            .await?
+            .record)
+    }
+
+    async fn load_cached_proxy_affinity_record(
+        &self,
+        api_key_id: &str,
+    ) -> Result<CachedForwardProxyAffinityRecord, ProxyError> {
         {
             let cache = self.forward_proxy_affinity.lock().await;
             if let Some(record) = cache.get(api_key_id) {
                 return Ok(record.clone());
             }
         }
-        let record =
+        let persisted =
             forward_proxy::load_forward_proxy_key_affinity(&self.key_store.pool, api_key_id)
-                .await?
-                .unwrap_or_default();
+                .await?;
+        let record = CachedForwardProxyAffinityRecord {
+            record: persisted.clone().unwrap_or_default(),
+            has_persisted_row: persisted.is_some(),
+        };
         let mut cache = self.forward_proxy_affinity.lock().await;
         cache.insert(api_key_id.to_string(), record.clone());
         Ok(record)
@@ -2608,7 +2636,13 @@ impl TavilyProxy {
         forward_proxy::save_forward_proxy_key_affinity(&self.key_store.pool, api_key_id, &record)
             .await?;
         let mut cache = self.forward_proxy_affinity.lock().await;
-        cache.insert(api_key_id.to_string(), record);
+        cache.insert(
+            api_key_id.to_string(),
+            CachedForwardProxyAffinityRecord {
+                record,
+                has_persisted_row: true,
+            },
+        );
         Ok(())
     }
 
@@ -2716,30 +2750,44 @@ impl TavilyProxy {
         ordered
     }
 
-    async fn has_explicit_empty_affinity_marker(
+    async fn load_proxy_affinity_state(
         &self,
         api_key_id: &str,
-    ) -> Result<bool, ProxyError> {
+    ) -> Result<LoadedProxyAffinityState, ProxyError> {
+        let cached = self.load_cached_proxy_affinity_record(api_key_id).await?;
         let (registration_ip, registration_region) =
             self.load_api_key_registration_metadata(api_key_id).await?;
-        if registration_ip.is_some() || registration_region.is_some() {
-            return Ok(false);
-        }
-        let marker =
-            forward_proxy::load_forward_proxy_key_affinity(&self.key_store.pool, api_key_id)
-                .await?;
-        Ok(marker.as_ref().is_some_and(|stored| {
-            stored.primary_proxy_key.is_none() && stored.secondary_proxy_key.is_none()
-        }))
+        let has_registration_metadata = registration_ip.is_some() || registration_region.is_some();
+        let has_explicit_empty_marker = !has_registration_metadata
+            && cached.has_persisted_row
+            && cached.record.primary_proxy_key.is_none()
+            && cached.record.secondary_proxy_key.is_none();
+        Ok(LoadedProxyAffinityState {
+            record: cached.record,
+            registration_ip,
+            registration_region,
+            has_explicit_empty_marker,
+        })
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     async fn reconcile_proxy_affinity_record(
         &self,
         api_key_id: &str,
     ) -> Result<forward_proxy::ForwardProxyAffinityRecord, ProxyError> {
-        let mut record = self.load_proxy_affinity_record(api_key_id).await?;
-        let (registration_ip, registration_region) =
-            self.load_api_key_registration_metadata(api_key_id).await?;
+        let state = self.load_proxy_affinity_state(api_key_id).await?;
+        self.reconcile_proxy_affinity_record_with_state(api_key_id, state)
+            .await
+    }
+
+    async fn reconcile_proxy_affinity_record_with_state(
+        &self,
+        api_key_id: &str,
+        state: LoadedProxyAffinityState,
+    ) -> Result<forward_proxy::ForwardProxyAffinityRecord, ProxyError> {
+        let mut record = state.record;
+        let registration_ip = state.registration_ip;
+        let registration_region = state.registration_region;
         let has_registration_metadata = registration_ip.is_some() || registration_region.is_some();
         let now = Utc::now().timestamp();
         {
@@ -2852,9 +2900,8 @@ impl TavilyProxy {
         api_key_id: &str,
         succeeded_proxy_key: &str,
     ) -> Result<(), ProxyError> {
-        if self.has_explicit_empty_affinity_marker(api_key_id).await? {
-            let (registration_ip, registration_region) =
-                self.load_api_key_registration_metadata(api_key_id).await?;
+        let state = self.load_proxy_affinity_state(api_key_id).await?;
+        if state.has_explicit_empty_marker {
             let mut exclude = HashSet::new();
             exclude.insert(succeeded_proxy_key.to_string());
             let secondary_proxy_key = self
@@ -2862,8 +2909,8 @@ impl TavilyProxy {
                     &format!("{api_key_id}:secondary"),
                     RegistrationAffinityContext {
                         geo_origin: &self.api_key_geo_origin,
-                        registration_ip: registration_ip.as_deref(),
-                        registration_region: registration_region.as_deref(),
+                        registration_ip: state.registration_ip.as_deref(),
+                        registration_region: state.registration_region.as_deref(),
                     },
                     &exclude,
                     true,
@@ -2884,7 +2931,9 @@ impl TavilyProxy {
             .await?;
             return Ok(());
         }
-        let mut record = self.reconcile_proxy_affinity_record(api_key_id).await?;
+        let mut record = self
+            .reconcile_proxy_affinity_record_with_state(api_key_id, state)
+            .await?;
         if record.primary_proxy_key.as_deref() == Some(succeeded_proxy_key) {
             return Ok(());
         }
@@ -3263,13 +3312,15 @@ impl TavilyProxy {
         &self,
         api_key_id: &str,
     ) -> Result<Vec<forward_proxy::SelectedForwardProxy>, ProxyError> {
-        if self.has_explicit_empty_affinity_marker(api_key_id).await? {
-            let marker_record = self.load_proxy_affinity_record(api_key_id).await?;
+        let state = self.load_proxy_affinity_state(api_key_id).await?;
+        if state.has_explicit_empty_marker {
             return self
-                .build_proxy_attempt_plan_for_record(api_key_id, &marker_record)
+                .build_proxy_attempt_plan_for_record(api_key_id, &state.record)
                 .await;
         }
-        let record = self.reconcile_proxy_affinity_record(api_key_id).await?;
+        let record = self
+            .reconcile_proxy_affinity_record_with_state(api_key_id, state)
+            .await?;
         self.build_proxy_attempt_plan_for_record(api_key_id, &record)
             .await
     }
