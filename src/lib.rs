@@ -3044,6 +3044,21 @@ impl TavilyProxy {
         geo_origin: &str,
         endpoints: Vec<forward_proxy::ForwardProxyEndpoint>,
     ) -> Vec<ForwardProxyGeoCandidate> {
+        let cache_complete_for_endpoint =
+            |endpoint: &forward_proxy::ForwardProxyEndpoint,
+             resolved_ips: &[String],
+             regions: &[String]| {
+                if !regions.is_empty() {
+                    return true;
+                }
+                if resolved_ips.is_empty() {
+                    return false;
+                }
+                if endpoint.requires_xray() {
+                    return false;
+                }
+                !resolved_ips.iter().any(|ip| is_global_geo_ip(ip))
+            };
         let cached = {
             let manager = self.forward_proxy.lock().await;
             endpoints
@@ -3069,13 +3084,8 @@ impl TavilyProxy {
                 .get(&endpoint.key)
                 .cloned()
                 .unwrap_or_else(|| (Vec::new(), Vec::new()));
-            let cache_complete = if !cached_regions.is_empty() {
-                true
-            } else if cached_ips.is_empty() {
-                false
-            } else {
-                !cached_ips.iter().any(|ip| is_global_geo_ip(ip))
-            };
+            let cache_complete =
+                cache_complete_for_endpoint(endpoint, &cached_ips, &cached_regions);
             if cache_complete {
                 continue;
             }
@@ -3141,13 +3151,7 @@ impl TavilyProxy {
                     cached
                         .get(&endpoint.key)
                         .is_some_and(|(resolved_ips, regions)| {
-                            if !regions.is_empty() {
-                                true
-                            } else if resolved_ips.is_empty() {
-                                false
-                            } else {
-                                !resolved_ips.iter().any(|ip| is_global_geo_ip(ip))
-                            }
+                            cache_complete_for_endpoint(&endpoint, resolved_ips, regions)
                         });
                 if cache_complete && let Some((resolved_ips, regions)) = cached.get(&endpoint.key) {
                     return ForwardProxyGeoCandidate {
@@ -18740,6 +18744,119 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
         .expect("load refreshed runtime region metadata");
         let resolved_regions: Vec<String> =
             serde_json::from_str(&row).expect("decode refreshed resolved regions");
+        assert_eq!(resolved_regions, vec!["HK".to_string()]);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn select_proxy_affinity_refreshes_stale_loopback_runtime_geo_metadata_for_xray_route() {
+        let db_path = temp_db_path("proxy-runtime-geo-refresh-loopback-xray");
+        let db_str = db_path.to_string_lossy().to_string();
+        let geo_addr = spawn_api_key_geo_mock_server().await;
+        let geo_origin = format!("http://{geo_addr}/geo");
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        let raw_proxy_url =
+            "vless://0688fa59-e971-4278-8c03-4b35821a71dc@1.1.1.1:443?encryption=none#hk";
+        let endpoint_key = {
+            let mut manager = proxy.forward_proxy.lock().await;
+            manager.apply_settings(
+                ForwardProxySettings {
+                    proxy_urls: vec![raw_proxy_url.to_string()],
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: false,
+                }
+                .normalized(),
+            );
+            let endpoint = manager
+                .endpoints
+                .iter_mut()
+                .find(|endpoint| endpoint.raw_url.as_deref() == Some(raw_proxy_url))
+                .expect("xray endpoint");
+            let endpoint_key = endpoint.key.clone();
+            let route_url =
+                Url::parse("socks5h://127.0.0.1:41000").expect("parse local xray route");
+            endpoint.endpoint_url = Some(route_url.clone());
+            let runtime = manager
+                .runtime
+                .get_mut(&endpoint_key)
+                .expect("xray runtime state");
+            runtime.endpoint_url = Some(route_url.to_string());
+            runtime.available = true;
+            runtime.last_error = None;
+            endpoint_key
+        };
+
+        sqlx::query(
+            "UPDATE forward_proxy_runtime SET resolved_ips_json = '[\"127.0.0.1\"]', resolved_regions_json = '[]' WHERE proxy_key = ?",
+        )
+        .bind(&endpoint_key)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("seed stale loopback runtime geo metadata");
+
+        let reloaded = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy reloaded");
+        {
+            let mut manager = reloaded.forward_proxy.lock().await;
+            manager.apply_settings(
+                ForwardProxySettings {
+                    proxy_urls: vec![raw_proxy_url.to_string()],
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: false,
+                }
+                .normalized(),
+            );
+            let endpoint = manager
+                .endpoints
+                .iter_mut()
+                .find(|endpoint| endpoint.raw_url.as_deref() == Some(raw_proxy_url))
+                .expect("reloaded xray endpoint");
+            let route_url =
+                Url::parse("socks5h://127.0.0.1:41000").expect("parse local xray route");
+            endpoint.endpoint_url = Some(route_url.clone());
+            let runtime = manager
+                .runtime
+                .get_mut(&endpoint_key)
+                .expect("reloaded xray runtime state");
+            runtime.endpoint_url = Some(route_url.to_string());
+            runtime.available = true;
+            runtime.last_error = None;
+        }
+
+        let (_record, preview) = reloaded
+            .select_proxy_affinity_preview_for_registration_with_hint(
+                "subject:refresh-runtime-geo-loopback-xray",
+                &geo_origin,
+                Some("1.1.1.1"),
+                Some("HK"),
+                None,
+            )
+            .await
+            .expect("selection should refresh stale loopback runtime geo metadata");
+        assert_eq!(
+            preview.as_ref().map(|item| item.match_kind),
+            Some(AssignedProxyMatchKind::RegistrationIp)
+        );
+
+        let row: (String, String) = sqlx::query_as(
+            "SELECT resolved_ips_json, resolved_regions_json FROM forward_proxy_runtime WHERE proxy_key = ?",
+        )
+        .bind(&endpoint_key)
+        .fetch_one(&reloaded.key_store.pool)
+        .await
+        .expect("load refreshed xray runtime geo metadata");
+        let resolved_ips: Vec<String> =
+            serde_json::from_str(&row.0).expect("decode refreshed xray resolved ips");
+        let resolved_regions: Vec<String> =
+            serde_json::from_str(&row.1).expect("decode refreshed xray resolved regions");
+        assert_eq!(resolved_ips, vec!["1.1.1.1".to_string()]);
         assert_eq!(resolved_regions, vec!["HK".to_string()]);
 
         let _ = std::fs::remove_file(db_path);
