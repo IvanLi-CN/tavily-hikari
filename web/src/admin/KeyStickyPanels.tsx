@@ -267,12 +267,17 @@ function StickyWindowValue({
 }): JSX.Element {
   return (
     <div className="sticky-window-bubbles">
-      <span className="sticky-window-bubble sticky-window-bubble-success">
-        <span className="sticky-window-bubble-label">{successLabel}</span>
+      <span
+        className="sticky-window-bubble sticky-window-bubble-success"
+        aria-label={`${successLabel} ${formatNumber(successValue)}`}
+      >
         <strong className="sticky-window-bubble-value">{formatNumber(successValue)}</strong>
       </span>
-      <span className="sticky-window-bubble sticky-window-bubble-failure">
-        <span className="sticky-window-bubble-label">{failureLabel}</span>
+      <span className="sticky-window-bubble-divider" aria-hidden="true">|</span>
+      <span
+        className="sticky-window-bubble sticky-window-bubble-failure"
+        aria-label={`${failureLabel} ${formatNumber(failureValue)}`}
+      >
         <strong className="sticky-window-bubble-value">{formatNumber(failureValue)}</strong>
       </span>
     </div>

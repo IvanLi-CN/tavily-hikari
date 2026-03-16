@@ -2102,7 +2102,6 @@
 
 .sticky-window-bubbles {
   display: inline-flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
 }
@@ -2110,13 +2109,20 @@
 .sticky-window-bubble {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
   min-height: 1.7rem;
-  padding: 0 9px;
+  min-width: 2.75rem;
+  justify-content: center;
+  padding: 0 10px;
   border-radius: 999px;
   border: 1px solid hsl(var(--border) / 0.84);
   background: hsl(var(--muted) / 0.5);
   line-height: 1;
+}
+
+.sticky-window-bubble-divider {
+  color: hsl(var(--muted-foreground) / 0.5);
+  font-size: 0.84rem;
+  font-weight: 700;
 }
 
 .sticky-window-bubble-success {
@@ -2131,15 +2137,8 @@
   color: hsl(var(--destructive));
 }
 
-.sticky-window-bubble-label {
-  font-size: 0.68rem;
-  font-weight: 700;
-  letter-spacing: 0.01em;
-  opacity: 0.86;
-}
-
 .sticky-window-bubble-value {
-  font-size: 0.78rem;
+  font-size: 0.82rem;
   font-weight: 700;
   color: inherit;
 }

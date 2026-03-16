@@ -1048,8 +1048,6 @@ interface AdminTranslationsShape {
       success: string
       failure: string
       inactive: string
-      windowHint: string
-      valueHint: string
     }
     stickyNodes: {
       title: string
@@ -2224,8 +2222,6 @@ export const translations: Record<Language, TranslationShape> = {
           success: 'Success',
           failure: 'Failure',
           inactive: 'Inactive',
-          windowHint: '{period} charged credits shown as success / failure.',
-          valueHint: '{period} charged credits: success {success}, failure {failure}.',
         },
         stickyNodes: {
           title: 'Sticky Nodes',
@@ -3358,8 +3354,6 @@ export const translations: Record<Language, TranslationShape> = {
           success: '成功',
           failure: '失败',
           inactive: '停用',
-          windowHint: '{period} 已记账 credits，顺序为成功 / 失败。',
-          valueHint: '{period} 已记账 credits：成功 {success}，失败 {failure}。',
         },
         stickyNodes: {
           title: 'Sticky 节点',
