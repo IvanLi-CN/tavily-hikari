@@ -2612,6 +2612,11 @@ impl TavilyProxy {
         Ok(())
     }
 
+    async fn remove_proxy_affinity_record_from_cache(&self, api_key_id: &str) {
+        let mut cache = self.forward_proxy_affinity.lock().await;
+        cache.remove(api_key_id);
+    }
+
     async fn load_api_key_registration_metadata(
         &self,
         api_key_id: &str,
@@ -2848,6 +2853,35 @@ impl TavilyProxy {
         succeeded_proxy_key: &str,
     ) -> Result<(), ProxyError> {
         if self.has_explicit_empty_affinity_marker(api_key_id).await? {
+            let (registration_ip, registration_region) =
+                self.load_api_key_registration_metadata(api_key_id).await?;
+            let mut exclude = HashSet::new();
+            exclude.insert(succeeded_proxy_key.to_string());
+            let secondary_proxy_key = self
+                .rank_registration_aware_candidates(
+                    &format!("{api_key_id}:secondary"),
+                    RegistrationAffinityContext {
+                        geo_origin: &self.api_key_geo_origin,
+                        registration_ip: registration_ip.as_deref(),
+                        registration_region: registration_region.as_deref(),
+                    },
+                    &exclude,
+                    true,
+                    forward_proxy::FORWARD_PROXY_DEFAULT_SECONDARY_CANDIDATE_COUNT,
+                )
+                .await
+                .into_iter()
+                .next()
+                .map(|endpoint| endpoint.key);
+            self.store_proxy_affinity_record(
+                api_key_id,
+                forward_proxy::ForwardProxyAffinityRecord {
+                    primary_proxy_key: Some(succeeded_proxy_key.to_string()),
+                    secondary_proxy_key,
+                    updated_at: Utc::now().timestamp(),
+                },
+            )
+            .await?;
             return Ok(());
         }
         let mut record = self.reconcile_proxy_affinity_record(api_key_id).await?;
@@ -5554,7 +5588,8 @@ impl TavilyProxy {
         } else {
             None
         };
-        self.key_store
+        let result = self
+            .key_store
             .add_or_undelete_key_with_status_in_group_and_registration(
                 api_key,
                 group,
@@ -5563,7 +5598,10 @@ impl TavilyProxy {
                 proxy_affinity.as_ref(),
                 is_hint_only_affinity,
             )
-            .await
+            .await?;
+        self.remove_proxy_affinity_record_from_cache(&result.0)
+            .await;
+        Ok(result)
     }
 
     /// Admin: soft delete a key by ID.
@@ -18787,6 +18825,80 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
     }
 
     #[tokio::test]
+    async fn add_or_undelete_key_with_hint_only_proxy_affinity_refresh_invalidates_cached_record() {
+        let db_path = temp_db_path("proxy-affinity-hint-cache-refresh");
+        let db_str = db_path.to_string_lossy().to_string();
+        let geo_addr = spawn_api_key_geo_mock_server().await;
+        let geo_origin = format!("http://{geo_addr}/geo");
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        {
+            let mut manager = proxy.forward_proxy.lock().await;
+            manager.apply_settings(
+                ForwardProxySettings {
+                    proxy_urls: vec![
+                        "http://18.183.246.69:8080".to_string(),
+                        "http://1.1.1.1:8080".to_string(),
+                    ],
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: false,
+                }
+                .normalized(),
+            );
+        }
+
+        let (key_id, status) = proxy
+            .add_or_undelete_key_with_status_in_group_and_registration_proxy_affinity_hint(
+                "tvly-hint-cache-refresh",
+                None,
+                None,
+                None,
+                &geo_origin,
+                Some("http://1.1.1.1:8080"),
+            )
+            .await
+            .expect("key created with hint-only affinity");
+        assert_eq!(status, ApiKeyUpsertStatus::Created);
+
+        let warmed = proxy
+            .load_proxy_affinity_record(&key_id)
+            .await
+            .expect("warm affinity cache");
+        assert_eq!(
+            warmed.primary_proxy_key.as_deref(),
+            Some("http://1.1.1.1:8080")
+        );
+
+        let (_, refreshed_status) = proxy
+            .add_or_undelete_key_with_status_in_group_and_registration_proxy_affinity_hint(
+                "tvly-hint-cache-refresh",
+                None,
+                None,
+                None,
+                &geo_origin,
+                Some("http://18.183.246.69:8080"),
+            )
+            .await
+            .expect("refresh hint-only affinity");
+        assert_eq!(refreshed_status, ApiKeyUpsertStatus::Existed);
+
+        let refreshed = proxy
+            .load_proxy_affinity_record(&key_id)
+            .await
+            .expect("reload affinity after refresh");
+        assert_eq!(
+            refreshed.primary_proxy_key.as_deref(),
+            Some("http://18.183.246.69:8080"),
+            "re-importing a hinted key should evict stale cache entries before the next request"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn add_or_undelete_key_with_hint_only_direct_affinity_does_not_persist() {
         let db_path = temp_db_path("proxy-affinity-hint-only-direct");
         let db_str = db_path.to_string_lossy().to_string();
@@ -18880,6 +18992,23 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
         assert_eq!(
             marker_updated_at_after, marker_updated_at_before,
             "explicit empty markers should not churn the database on every runtime plan build"
+        );
+
+        proxy
+            .promote_proxy_affinity_secondary(&key_id, "http://18.183.246.69:8080")
+            .await
+            .expect("learn durable affinity after direct hint");
+        let learned_affinity: (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT primary_proxy_key, secondary_proxy_key FROM forward_proxy_key_affinity WHERE key_id = ?",
+        )
+        .bind(&key_id)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("query learned affinity after first successful routed request");
+        assert_eq!(
+            learned_affinity.0.as_deref(),
+            Some("http://18.183.246.69:8080"),
+            "empty affinity markers should be replaceable once a real proxy success is observed"
         );
 
         let _ = std::fs::remove_file(db_path);
