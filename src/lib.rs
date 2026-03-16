@@ -3065,10 +3065,18 @@ impl TavilyProxy {
         let mut host_ips = HashMap::<String, Vec<String>>::new();
         let mut missing = Vec::new();
         for endpoint in &endpoints {
-            if cached
+            let (cached_ips, cached_regions) = cached
                 .get(&endpoint.key)
-                .is_some_and(|(ips, regions)| !ips.is_empty() || !regions.is_empty())
-            {
+                .cloned()
+                .unwrap_or_else(|| (Vec::new(), Vec::new()));
+            let cache_complete = if !cached_regions.is_empty() {
+                true
+            } else if cached_ips.is_empty() {
+                false
+            } else {
+                !cached_ips.iter().any(|ip| is_global_geo_ip(ip))
+            };
+            if cache_complete {
                 continue;
             }
             let Some(host) = forward_proxy::endpoint_host(endpoint) else {
@@ -3081,7 +3089,11 @@ impl TavilyProxy {
             }
             host_ips.insert(
                 host.clone(),
-                Self::resolve_forward_proxy_host_ips(&host).await,
+                if cached_ips.is_empty() {
+                    Self::resolve_forward_proxy_host_ips(&host).await
+                } else {
+                    cached_ips
+                },
             );
         }
 
@@ -3125,9 +3137,19 @@ impl TavilyProxy {
         endpoints
             .into_iter()
             .map(|endpoint| {
-                if let Some((resolved_ips, regions)) = cached.get(&endpoint.key)
-                    && (!resolved_ips.is_empty() || !regions.is_empty())
-                {
+                let cache_complete =
+                    cached
+                        .get(&endpoint.key)
+                        .is_some_and(|(resolved_ips, regions)| {
+                            if !regions.is_empty() {
+                                true
+                            } else if resolved_ips.is_empty() {
+                                false
+                            } else {
+                                !resolved_ips.iter().any(|ip| is_global_geo_ip(ip))
+                            }
+                        });
+                if cache_complete && let Some((resolved_ips, regions)) = cached.get(&endpoint.key) {
                     return ForwardProxyGeoCandidate {
                         endpoint,
                         host_ips: resolved_ips.clone(),
@@ -3366,6 +3388,7 @@ impl TavilyProxy {
         &self,
         subject: &str,
         record: &forward_proxy::ForwardProxyAffinityRecord,
+        allow_direct_fallback: bool,
     ) -> Result<Vec<forward_proxy::SelectedForwardProxy>, ProxyError> {
         let mut plan = Vec::new();
         let mut seen = HashSet::new();
@@ -3404,7 +3427,7 @@ impl TavilyProxy {
                     registration_region: registration_region.as_deref(),
                 },
                 &seen,
-                false,
+                allow_direct_fallback,
                 limit,
             )
             .await
@@ -3425,13 +3448,13 @@ impl TavilyProxy {
         let state = self.load_proxy_affinity_state(api_key_id).await?;
         if state.has_explicit_empty_marker {
             return self
-                .build_proxy_attempt_plan_for_record(api_key_id, &state.record)
+                .build_proxy_attempt_plan_for_record(api_key_id, &state.record, true)
                 .await;
         }
         let record = self
             .reconcile_proxy_affinity_record_with_state(api_key_id, state)
             .await?;
-        self.build_proxy_attempt_plan_for_record(api_key_id, &record)
+        self.build_proxy_attempt_plan_for_record(api_key_id, &record, false)
             .await
     }
 
@@ -3638,7 +3661,7 @@ impl TavilyProxy {
         F: FnMut(Client) -> reqwest::RequestBuilder,
     {
         let plan = self
-            .build_proxy_attempt_plan_for_record(subject, affinity)
+            .build_proxy_attempt_plan_for_record(subject, affinity, false)
             .await
             .unwrap_or_default();
         self.send_with_forward_proxy_plan(subject, None, request_kind, plan, build)
@@ -18567,6 +18590,88 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
     }
 
     #[tokio::test]
+    async fn select_proxy_affinity_refreshes_incomplete_persisted_forward_proxy_runtime_geo_metadata()
+     {
+        let db_path = temp_db_path("proxy-runtime-geo-refresh-incomplete");
+        let db_str = db_path.to_string_lossy().to_string();
+        let geo_addr = spawn_api_key_geo_mock_server().await;
+        let geo_origin = format!("http://{geo_addr}/geo");
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        let settings = ForwardProxySettings {
+            proxy_urls: vec![
+                "http://18.183.246.69:8080".to_string(),
+                "http://1.1.1.1:8080".to_string(),
+            ],
+            subscription_urls: Vec::new(),
+            subscription_update_interval_secs: 3600,
+            insert_direct: false,
+        }
+        .normalized();
+        {
+            let mut manager = proxy.forward_proxy.lock().await;
+            manager.apply_settings(settings.clone());
+        }
+
+        proxy
+            .select_proxy_affinity_preview_for_registration_with_hint(
+                "subject:seed-runtime-geo-incomplete",
+                &geo_origin,
+                Some("1.1.1.1"),
+                Some("HK"),
+                None,
+            )
+            .await
+            .expect("seed persisted runtime geo metadata");
+
+        sqlx::query(
+            "UPDATE forward_proxy_runtime SET resolved_regions_json = '[]' WHERE proxy_key = ?",
+        )
+        .bind("http://1.1.1.1:8080")
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("clear persisted runtime regions");
+
+        let reloaded = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy reloaded");
+        {
+            let mut manager = reloaded.forward_proxy.lock().await;
+            manager.apply_settings(settings);
+        }
+
+        let (_record, preview) = reloaded
+            .select_proxy_affinity_preview_for_registration_with_hint(
+                "subject:refresh-runtime-geo-incomplete",
+                &geo_origin,
+                None,
+                Some("HK"),
+                None,
+            )
+            .await
+            .expect("selection should refresh incomplete persisted runtime geo metadata");
+        assert_eq!(
+            preview.as_ref().map(|item| item.match_kind),
+            Some(AssignedProxyMatchKind::SameRegion)
+        );
+
+        let row: String = sqlx::query_scalar(
+            "SELECT resolved_regions_json FROM forward_proxy_runtime WHERE proxy_key = ?",
+        )
+        .bind("http://1.1.1.1:8080")
+        .fetch_one(&reloaded.key_store.pool)
+        .await
+        .expect("load refreshed runtime region metadata");
+        let resolved_regions: Vec<String> =
+            serde_json::from_str(&row).expect("decode refreshed resolved regions");
+        assert_eq!(resolved_regions, vec!["HK".to_string()]);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn add_or_undelete_key_with_registration_proxy_affinity_persists_and_refreshes() {
         let db_path = temp_db_path("proxy-affinity-registration-persist");
         let db_str = db_path.to_string_lossy().to_string();
@@ -19295,6 +19400,56 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
             Some("http://18.183.246.69:8080"),
             "empty affinity markers should be replaceable once a real proxy success is observed"
         );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn add_or_undelete_key_with_hint_only_direct_affinity_keeps_direct_runtime_fallback() {
+        let db_path = temp_db_path("proxy-affinity-hint-only-direct-fallback");
+        let db_str = db_path.to_string_lossy().to_string();
+        let geo_addr = spawn_api_key_geo_mock_server().await;
+        let geo_origin = format!("http://{geo_addr}/geo");
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        {
+            let mut manager = proxy.forward_proxy.lock().await;
+            manager.apply_settings(
+                ForwardProxySettings {
+                    proxy_urls: Vec::new(),
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: true,
+                }
+                .normalized(),
+            );
+        }
+
+        let (key_id, status) = proxy
+            .add_or_undelete_key_with_status_in_group_and_registration_proxy_affinity_hint(
+                "tvly-hint-direct-fallback",
+                None,
+                None,
+                None,
+                &geo_origin,
+                Some(forward_proxy::FORWARD_PROXY_DIRECT_KEY),
+            )
+            .await
+            .expect("key created with direct-only hint");
+        assert_eq!(status, ApiKeyUpsertStatus::Created);
+
+        let plan = proxy
+            .build_proxy_attempt_plan(&key_id)
+            .await
+            .expect("build attempt plan for direct-only deployment");
+        assert_eq!(
+            plan.len(),
+            1,
+            "direct-only deployments should keep one direct fallback"
+        );
+        assert_eq!(plan[0].key, forward_proxy::FORWARD_PROXY_DIRECT_KEY);
 
         let _ = std::fs::remove_file(db_path);
     }
