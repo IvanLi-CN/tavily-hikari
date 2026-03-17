@@ -4622,6 +4622,96 @@ colo=LAX
     }
 
     #[tokio::test]
+    async fn forward_proxy_geo_refresh_scheduler_rechecks_due_state_without_busy_looping() {
+        let db_path = temp_db_path("forward-proxy-geo-refresh-scheduler-no-busy-loop");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy_url = "http://proxy.invalid:8080".to_string();
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        proxy
+            .update_forward_proxy_settings(
+                ForwardProxySettings {
+                    proxy_urls: vec![proxy_url.clone()],
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: false,
+                },
+                false,
+            )
+            .await
+            .expect("proxy settings updated");
+
+        let options = SqliteConnectOptions::new()
+            .filename(&db_str)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open db pool");
+
+        sqlx::query(
+            "UPDATE forward_proxy_runtime SET resolved_ip_source = 'trace', resolved_ips_json = '[\"127.0.0.1\"]', resolved_regions_json = '[]', geo_refreshed_at = ? WHERE proxy_key = ?",
+        )
+        .bind(chrono::Utc::now().timestamp())
+        .bind(&proxy_url)
+        .execute(&pool)
+        .await
+        .expect("seed due non-global trace runtime state");
+
+        let state = Arc::new(AppState {
+            proxy,
+            static_dir: None,
+            forward_auth: ForwardAuthConfig::new(None, None, None, None),
+            forward_auth_enabled: false,
+            builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+            dev_open_admin: false,
+            usage_base: "http://127.0.0.1:58088".to_string(),
+            api_key_ip_geo_origin: "http://127.0.0.1:9/geo".to_string(),
+        });
+
+        let handle = spawn_forward_proxy_geo_refresh_scheduler(state.clone());
+
+        let mut saw_job = false;
+        for _ in 0..30 {
+            let row = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM scheduled_jobs WHERE job_type = 'forward_proxy_geo_refresh'",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("count geo refresh jobs");
+            if row > 0 {
+                saw_job = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(saw_job, "due GEO state should still trigger a refresh job promptly");
+
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        handle.abort();
+
+        let row = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM scheduled_jobs WHERE job_type = 'forward_proxy_geo_refresh'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("recount geo refresh jobs");
+        assert_eq!(
+            row, 1,
+            "scheduler should wait for the recheck interval after a due run instead of busy-looping"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn forward_proxy_geo_refresh_scheduler_skips_immediate_run_when_runtime_is_fresh() {
         let db_path = temp_db_path("forward-proxy-geo-refresh-scheduler-fresh");
         let db_str = db_path.to_string_lossy().to_string();

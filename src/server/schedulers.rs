@@ -278,19 +278,23 @@ fn spawn_forward_proxy_geo_refresh_scheduler(state: Arc<AppState>) -> tokio::tas
                 .proxy
                 .forward_proxy_geo_refresh_wait_secs(twenty_four_hours_secs())
                 .await;
-            let sleep_secs = wait_secs
-                .max(0)
-                .min(forward_proxy_geo_refresh_recheck_secs()) as u64;
-            if sleep_secs > 0 {
-                tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
+            if wait_secs <= 0 {
+                if state
+                    .proxy
+                    .forward_proxy_geo_refresh_due(twenty_four_hours_secs())
+                    .await
+                {
+                    run_forward_proxy_geo_refresh_job(state.clone()).await;
+                }
+                tokio::time::sleep(Duration::from_secs(
+                    forward_proxy_geo_refresh_recheck_secs() as u64,
+                ))
+                .await;
+                continue;
             }
-            if state
-                .proxy
-                .forward_proxy_geo_refresh_due(twenty_four_hours_secs())
-                .await
-            {
-                run_forward_proxy_geo_refresh_job(state.clone()).await;
-            }
+
+            let sleep_secs = wait_secs.min(forward_proxy_geo_refresh_recheck_secs()) as u64;
+            tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
         }
     })
 }
