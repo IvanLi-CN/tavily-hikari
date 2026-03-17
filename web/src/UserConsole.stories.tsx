@@ -7,7 +7,7 @@ import { userConsoleRouteToHash } from './lib/userConsoleRoutes'
 
 type ConsoleView = 'Console Home' | 'Token Detail'
 type LandingFocus = 'Overview Focus' | 'Token Focus'
-type TokenListState = 'Default List' | 'Empty'
+type TokenListState = 'Single Token' | 'Multiple Tokens' | 'Empty'
 type TokenDetailPreview =
   | 'Overview'
   | 'Token Revealed'
@@ -36,7 +36,7 @@ interface UserConsoleStoryState {
   isAdmin: boolean
   probeMode: ProbeMockMode
   routeHash: string
-  tokenListEmpty: boolean
+  tokenListMode: 'single' | 'multiple' | 'empty'
 }
 
 const PROBE_STEP_DELAY_MS = 900
@@ -73,6 +73,24 @@ const tokenSample: UserTokenSummary = {
   dailySuccess: 301,
   dailyFailure: 17,
   monthlySuccess: 3478,
+}
+
+const tokenSecondarySample: UserTokenSummary = {
+  tokenId: 'c3d4',
+  enabled: true,
+  note: 'backup',
+  lastUsedAt: 1_762_386_100,
+  hourlyAnyUsed: 28,
+  hourlyAnyLimit: 200,
+  quotaHourlyUsed: 12,
+  quotaHourlyLimit: 100,
+  quotaDailyUsed: 84,
+  quotaDailyLimit: 500,
+  quotaMonthlyUsed: 933,
+  quotaMonthlyLimit: 5000,
+  dailySuccess: 76,
+  dailyFailure: 4,
+  monthlySuccess: 827,
 }
 
 const tokenDetailSample: UserTokenSummary = {
@@ -212,6 +230,14 @@ function routeHashFromView(view: ConsoleView, landingFocus: LandingFocus, routeH
 }
 
 function resolveStoryState(args: UserConsoleStoryArgs): UserConsoleStoryState {
+  const tokenListMode = args.consoleView !== 'Console Home'
+    ? 'single'
+    : args.tokenListState === 'Empty'
+      ? 'empty'
+      : args.tokenListState === 'Multiple Tokens'
+        ? 'multiple'
+        : 'single'
+
   return {
     autoProbeTarget: args.consoleView === 'Token Detail'
       ? autoProbeTargetFromPreview(args.tokenDetailPreview)
@@ -222,7 +248,7 @@ function resolveStoryState(args: UserConsoleStoryArgs): UserConsoleStoryState {
       ? probeModeFromPreview(args.tokenDetailPreview)
       : 'none',
     routeHash: routeHashFromView(args.consoleView, args.landingFocus, args.routeHashOverride),
-    tokenListEmpty: args.consoleView === 'Console Home' && args.tokenListState === 'Empty',
+    tokenListMode,
   }
 }
 
@@ -233,6 +259,11 @@ export const __testables = {
 function installUserConsoleFetchMock(state: UserConsoleStoryState): () => void {
   const originalFetch = window.fetch.bind(window)
   const researchRequestId = 'rq-story-001'
+  const tokenList = state.tokenListMode === 'empty'
+    ? []
+    : state.tokenListMode === 'multiple'
+      ? [tokenSample, tokenSecondarySample]
+      : [tokenSample]
 
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const request = input instanceof Request
@@ -253,7 +284,7 @@ function installUserConsoleFetchMock(state: UserConsoleStoryState): () => void {
     }
 
     if (url.pathname === '/api/user/tokens') {
-      return jsonResponse(state.tokenListEmpty ? [] : [tokenSample])
+      return jsonResponse(tokenList)
     }
 
     const tokenRoute = url.pathname.match(/^\/api\/user\/tokens\/([^/]+)(?:\/(secret|logs))?$/)
@@ -456,7 +487,7 @@ function UserConsoleStory(
       window.location.hash = previousHash
       setReady(false)
     }
-  }, [copyRecoveryMode, storyState.isAdmin, storyState.probeMode, storyState.routeHash, storyState.tokenListEmpty])
+  }, [copyRecoveryMode, storyState.isAdmin, storyState.probeMode, storyState.routeHash, storyState.tokenListMode])
 
   useEffect(() => {
     if (!ready || !storyState.autoRevealToken) return
@@ -496,7 +527,7 @@ function UserConsoleStory(
   const storyKey = [
     storyState.routeHash,
     storyState.isAdmin ? 'admin' : 'user',
-    storyState.tokenListEmpty ? 'empty' : 'default',
+    storyState.tokenListMode,
     storyState.autoRevealToken ? 'revealed' : 'hidden',
     storyState.probeMode,
   ].join(':')
@@ -516,7 +547,7 @@ const meta = {
     consoleView: 'Console Home',
     isAdmin: false,
     landingFocus: 'Overview Focus',
-    tokenListState: 'Default List',
+    tokenListState: 'Single Token',
     tokenDetailPreview: 'Overview',
   },
   argTypes: {
@@ -541,7 +572,7 @@ const meta = {
     tokenListState: {
       name: 'Token list state',
       description: 'Pick the token list presentation for the merged landing page.',
-      options: ['Default List', 'Empty'],
+      options: ['Single Token', 'Multiple Tokens', 'Empty'],
       control: { type: 'inline-radio' },
       if: { arg: 'consoleView', eq: 'Console Home' },
     },
@@ -617,7 +648,7 @@ export const ConsoleHomeTokensFocus: Story = {
     consoleView: 'Console Home',
     isAdmin: false,
     landingFocus: 'Token Focus',
-    tokenListState: 'Default List',
+    tokenListState: 'Single Token',
   },
 }
 
@@ -627,7 +658,17 @@ export const ConsoleHomeTokensFocusAdmin: Story = {
     consoleView: 'Console Home',
     isAdmin: true,
     landingFocus: 'Token Focus',
-    tokenListState: 'Default List',
+    tokenListState: 'Single Token',
+  },
+}
+
+export const ConsoleHomeMultipleTokens: Story = {
+  name: 'Console Home Multiple Tokens',
+  args: {
+    consoleView: 'Console Home',
+    isAdmin: false,
+    landingFocus: 'Token Focus',
+    tokenListState: 'Multiple Tokens',
   },
 }
 
@@ -647,7 +688,7 @@ export const ConsoleHomeCopyFailureRecovery: Story = {
     consoleView: 'Console Home',
     isAdmin: false,
     landingFocus: 'Token Focus',
-    tokenListState: 'Default List',
+    tokenListState: 'Single Token',
   },
   render: (args) => <UserConsoleStory {...args} copyRecoveryMode="list-manual-bubble" />,
 }

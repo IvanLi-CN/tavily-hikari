@@ -170,6 +170,20 @@ function tokenLabel(tokenId: string): string {
   return `th-${tokenId}-************************`
 }
 
+function shouldRenderLandingGuide(route: ConsoleRoute, tokenCount: number): boolean {
+  return route.name === 'landing' && tokenCount === 1
+}
+
+function resolveGuideToken(route: ConsoleRoute, tokens: UserTokenSummary[]): string {
+  if (route.name === 'token') {
+    return tokenLabel(route.id)
+  }
+  if (tokens.length === 1) {
+    return tokenLabel(tokens[0].tokenId)
+  }
+  return 'th-xxxx-xxxxxxxxxxxx'
+}
+
 function createProbeButtonModel(total: number): ProbeButtonModel {
   return {
     state: 'idle',
@@ -704,12 +718,7 @@ export default function UserConsole(): JSX.Element {
     return text.subtitle
   }, [profile?.userDisplayName, text.subtitle])
 
-  const guideToken = useMemo(() => {
-    if (route.name === 'token') {
-      return tokenLabel(route.id)
-    }
-    return 'th-xxxx-xxxxxxxxxxxx'
-  }, [route])
+  const guideToken = useMemo(() => resolveGuideToken(route, tokens), [route, tokens])
 
   const detailTokenCopyState = route.name === 'token' ? copyState[route.id] ?? 'idle' : 'idle'
   const detailTokenMatchesRoute = route.name === 'token' && tokenSecretTokenId === route.id
@@ -734,6 +743,7 @@ export default function UserConsole(): JSX.Element {
   const consoleUnavailable = consoleAvailability === 'disabled'
   const showTokenListLoading = loading && tokens.length === 0
   const showEmptyTokens = !loading && tokens.length === 0
+  const showLandingGuide = shouldRenderLandingGuide(route, tokens.length)
 
   const scrollToLandingSection = useCallback((section: UserConsoleLandingSection, behavior: ScrollBehavior = 'auto') => {
     const target = section === 'dashboard' ? dashboardSectionRef.current : tokensSectionRef.current
@@ -1277,6 +1287,75 @@ export default function UserConsole(): JSX.Element {
     return titles.idle
   }, [text.detail.probe])
 
+  const renderGuideSection = useCallback((options?: {
+    sectionTitle?: string
+    sectionDescription?: string
+  }): JSX.Element => (
+    <section className="surface panel public-home-guide">
+      {options?.sectionTitle ? (
+        <div className="panel-header user-console-section-header">
+          <div>
+            <h2>{options.sectionTitle}</h2>
+            {options.sectionDescription ? (
+              <p className="panel-description">{options.sectionDescription}</p>
+            ) : null}
+          </div>
+        </div>
+      ) : (
+        <h2>{publicStrings.guide.title}</h2>
+      )}
+      {isCompactLayout && (
+        <div className="guide-select" aria-label="Client selector (mobile)">
+          <MobileGuideDropdown active={activeGuide} onChange={setActiveGuide} labels={guideTabs} />
+        </div>
+      )}
+      {!isCompactLayout && (
+        <div className="guide-tabs">
+          {guideTabs.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              className={`guide-tab${activeGuide === tab.id ? ' active' : ''}`}
+              onClick={() => setActiveGuide(tab.id)}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="guide-panel">
+        <h3>{guideDescription.title}</h3>
+        <ol>
+          {guideDescription.steps.map((step, index) => (
+            <li key={index}>{step}</li>
+          ))}
+        </ol>
+        {guideDescription.sampleTitle && guideDescription.snippet && (
+          <div className="guide-sample">
+            <p className="guide-sample-title">{guideDescription.sampleTitle}</p>
+            <div className="mockup-code relative guide-code-shell">
+              <span className="guide-lang-badge badge badge-outline badge-sm">
+                {(guideDescription.snippetLanguage ?? 'code').toUpperCase()}
+              </span>
+              <pre>
+                <code dangerouslySetInnerHTML={{ __html: guideDescription.snippet }} />
+              </pre>
+            </div>
+          </div>
+        )}
+        {guideDescription.reference && (
+          <p className="guide-reference">
+            {publicStrings.guide.dataSourceLabel}
+            <a href={guideDescription.reference.url} target="_blank" rel="noreferrer">
+              {guideDescription.reference.label}
+            </a>
+          </p>
+        )}
+      </div>
+      {activeGuide === 'cherryStudio' && <CherryStudioMock apiKeyExample={guideToken} />}
+    </section>
+  ), [activeGuide, guideDescription, guideTabs, guideToken, isCompactLayout, publicStrings.guide.dataSourceLabel, publicStrings.guide.title])
+
   return (
     <main
       ref={pageRef}
@@ -1558,6 +1637,10 @@ export default function UserConsole(): JSX.Element {
               )}
             </div>
           </section>
+          {showLandingGuide && renderGuideSection({
+            sectionTitle: text.detail.guideTitle,
+            sectionDescription: text.detail.guideDescription,
+          })}
         </div>
       )}
 
@@ -1795,58 +1878,7 @@ export default function UserConsole(): JSX.Element {
             </div>
           </section>
 
-          <section className="surface panel public-home-guide">
-            <h2>{publicStrings.guide.title}</h2>
-            {isCompactLayout && (
-              <div className="guide-select" aria-label="Client selector (mobile)">
-                <MobileGuideDropdown active={activeGuide} onChange={setActiveGuide} labels={guideTabs} />
-              </div>
-            )}
-            {!isCompactLayout && (
-              <div className="guide-tabs">
-                {guideTabs.map((tab) => (
-                  <button
-                    key={tab.id}
-                    type="button"
-                    className={`guide-tab${activeGuide === tab.id ? ' active' : ''}`}
-                    onClick={() => setActiveGuide(tab.id)}
-                  >
-                    {tab.label}
-                  </button>
-                ))}
-              </div>
-            )}
-            <div className="guide-panel">
-              <h3>{guideDescription.title}</h3>
-              <ol>
-                {guideDescription.steps.map((step, index) => (
-                  <li key={index}>{step}</li>
-                ))}
-              </ol>
-              {guideDescription.sampleTitle && guideDescription.snippet && (
-                <div className="guide-sample">
-                  <p className="guide-sample-title">{guideDescription.sampleTitle}</p>
-                  <div className="mockup-code relative guide-code-shell">
-                    <span className="guide-lang-badge badge badge-outline badge-sm">
-                      {(guideDescription.snippetLanguage ?? 'code').toUpperCase()}
-                    </span>
-                    <pre>
-                      <code dangerouslySetInnerHTML={{ __html: guideDescription.snippet }} />
-                    </pre>
-                  </div>
-                </div>
-              )}
-              {guideDescription.reference && (
-                <p className="guide-reference">
-                  {publicStrings.guide.dataSourceLabel}
-                  <a href={guideDescription.reference.url} target="_blank" rel="noreferrer">
-                    {guideDescription.reference.label}
-                  </a>
-                </p>
-              )}
-            </div>
-            {activeGuide === 'cherryStudio' && <CherryStudioMock apiKeyExample={guideToken} />}
-          </section>
+          {renderGuideSection()}
 
         </>
       )}
@@ -1863,6 +1895,11 @@ export default function UserConsole(): JSX.Element {
       />
     </main>
   )
+}
+
+export const __testables = {
+  resolveGuideToken,
+  shouldRenderLandingGuide,
 }
 
 function MobileGuideDropdown({

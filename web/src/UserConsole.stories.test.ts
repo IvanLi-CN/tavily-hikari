@@ -8,7 +8,7 @@ describe('UserConsole Storybook acceptance controls', () => {
       consoleView: 'Console Home',
       isAdmin: false,
       landingFocus: 'Overview Focus',
-      tokenListState: 'Default List',
+      tokenListState: 'Single Token',
       tokenDetailPreview: 'Overview',
     })
 
@@ -34,7 +34,7 @@ describe('UserConsole Storybook acceptance controls', () => {
 
     expect(meta.argTypes?.tokenListState).toMatchObject({
       name: 'Token list state',
-      options: ['Default List', 'Empty'],
+      options: ['Single Token', 'Multiple Tokens', 'Empty'],
       control: { type: 'inline-radio' },
       if: { arg: 'consoleView', eq: 'Console Home' },
     })
@@ -80,11 +80,15 @@ describe('UserConsole Storybook acceptance controls', () => {
     })
     expect(userConsoleStories.ConsoleHomeTokensFocus).toMatchObject({
       name: 'Console Home Tokens Focus',
-      args: { consoleView: 'Console Home', isAdmin: false, landingFocus: 'Token Focus', tokenListState: 'Default List' },
+      args: { consoleView: 'Console Home', isAdmin: false, landingFocus: 'Token Focus', tokenListState: 'Single Token' },
     })
     expect(userConsoleStories.ConsoleHomeTokensFocusAdmin).toMatchObject({
       name: 'Console Home Tokens Focus Admin',
-      args: { consoleView: 'Console Home', isAdmin: true, landingFocus: 'Token Focus', tokenListState: 'Default List' },
+      args: { consoleView: 'Console Home', isAdmin: true, landingFocus: 'Token Focus', tokenListState: 'Single Token' },
+    })
+    expect(userConsoleStories.ConsoleHomeMultipleTokens).toMatchObject({
+      name: 'Console Home Multiple Tokens',
+      args: { consoleView: 'Console Home', isAdmin: false, landingFocus: 'Token Focus', tokenListState: 'Multiple Tokens' },
     })
     expect(userConsoleStories.ConsoleHomeEmptyTokens).toMatchObject({
       name: 'Console Home Empty Tokens',
