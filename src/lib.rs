@@ -1839,7 +1839,7 @@ impl TavilyProxy {
                     geo_metadata_targets,
                     ForwardProxyGeoRefreshMode::LazyFillMissing,
                 )
-                .await;
+                .await?;
         }
         self.get_forward_proxy_settings().await
     }
@@ -2877,7 +2877,7 @@ impl TavilyProxy {
         exclude: &HashSet<String>,
         allow_direct: bool,
         limit: usize,
-    ) -> Vec<forward_proxy::ForwardProxyEndpoint> {
+    ) -> Result<Vec<forward_proxy::ForwardProxyEndpoint>, ProxyError> {
         let ranked = {
             let mut manager = self.forward_proxy.lock().await;
             manager.ensure_non_zero_weight();
@@ -2890,7 +2890,7 @@ impl TavilyProxy {
             .filter(|value| !value.is_empty())
             .map(str::to_string);
         if normalized_registration_ip.is_none() && normalized_registration_region.is_none() {
-            return ranked;
+            return Ok(ranked);
         }
 
         let mut direct = Vec::new();
@@ -2903,7 +2903,7 @@ impl TavilyProxy {
             }
         }
         if non_direct.is_empty() {
-            return direct;
+            return Ok(direct);
         }
 
         let geo_candidates = self
@@ -2912,7 +2912,7 @@ impl TavilyProxy {
                 non_direct.clone(),
                 ForwardProxyGeoRefreshMode::LazyFillMissing,
             )
-            .await;
+            .await?;
         let mut exact_keys = HashSet::new();
         let mut region_keys = HashSet::new();
         for candidate in geo_candidates {
@@ -2957,7 +2957,7 @@ impl TavilyProxy {
         if allow_direct {
             ordered.extend(direct);
         }
-        ordered
+        Ok(ordered)
     }
 
     async fn load_proxy_affinity_state(
@@ -3069,7 +3069,7 @@ impl TavilyProxy {
                     true,
                     forward_proxy::FORWARD_PROXY_DEFAULT_PRIMARY_CANDIDATE_COUNT,
                 )
-                .await
+                .await?
                 .into_iter()
                 .next()
             {
@@ -3094,7 +3094,7 @@ impl TavilyProxy {
                     true,
                     forward_proxy::FORWARD_PROXY_DEFAULT_SECONDARY_CANDIDATE_COUNT,
                 )
-                .await
+                .await?
                 .into_iter()
                 .next()
             {
@@ -3138,7 +3138,7 @@ impl TavilyProxy {
                     true,
                     forward_proxy::FORWARD_PROXY_DEFAULT_SECONDARY_CANDIDATE_COUNT,
                 )
-                .await
+                .await?
                 .into_iter()
                 .next()
                 .map(|endpoint| endpoint.key);
@@ -3178,7 +3178,7 @@ impl TavilyProxy {
                     true,
                     forward_proxy::FORWARD_PROXY_DEFAULT_SECONDARY_CANDIDATE_COUNT,
                 )
-                .await
+                .await?
                 .into_iter()
                 .next()
             {
@@ -3226,15 +3226,23 @@ impl TavilyProxy {
     fn is_forward_proxy_geo_cache_complete(
         endpoint: &forward_proxy::ForwardProxyEndpoint,
         source: ForwardProxyGeoSource,
+        resolved_ips: &[String],
+        regions: &[String],
         geo_refreshed_at: i64,
     ) -> bool {
         if endpoint.is_direct() {
             return true;
         }
-        matches!(
-            source,
-            ForwardProxyGeoSource::Trace | ForwardProxyGeoSource::Negative
-        ) && geo_refreshed_at > 0
+        if geo_refreshed_at <= 0 {
+            return false;
+        }
+        match source {
+            ForwardProxyGeoSource::Negative => true,
+            ForwardProxyGeoSource::Trace => {
+                !regions.is_empty() && resolved_ips.iter().any(|ip| is_global_geo_ip(ip))
+            }
+            ForwardProxyGeoSource::Unknown => false,
+        }
     }
 
     async fn resolve_forward_proxy_geo_candidates(
@@ -3242,7 +3250,7 @@ impl TavilyProxy {
         geo_origin: &str,
         endpoints: Vec<forward_proxy::ForwardProxyEndpoint>,
         refresh_mode: ForwardProxyGeoRefreshMode,
-    ) -> Vec<ForwardProxyGeoCandidate> {
+    ) -> Result<Vec<ForwardProxyGeoCandidate>, ProxyError> {
         let cached = {
             let manager = self.forward_proxy.lock().await;
             endpoints
@@ -3272,6 +3280,8 @@ impl TavilyProxy {
             let cache_complete = Self::is_forward_proxy_geo_cache_complete(
                 endpoint,
                 cached_source,
+                &cached_ips,
+                &cached_regions,
                 geo_refreshed_at,
             );
             let should_refresh = match refresh_mode {
@@ -3285,43 +3295,67 @@ impl TavilyProxy {
                     cached_ips,
                     cached_regions,
                     geo_refreshed_at,
+                    cache_complete,
                 ));
             }
         }
 
         let refreshed_at = Utc::now().timestamp();
         let trace_timeout = Duration::from_millis(FORWARD_PROXY_TRACE_TIMEOUT_MS);
-        let resolved_refresh =
-            futures_util::stream::iter(
-                refresh_targets.into_iter().map(
-                    |(
+        let resolved_refresh = futures_util::stream::iter(refresh_targets.into_iter().map(
+            |(
+                endpoint,
+                cached_source,
+                cached_ips,
+                cached_regions,
+                geo_refreshed_at,
+                cache_complete,
+            )| async move {
+                if let Some((ip, _location)) = self
+                    .fetch_forward_proxy_trace(&endpoint, trace_timeout, None)
+                    .await
+                {
+                    return ForwardProxyGeoCandidate {
                         endpoint,
-                        _cached_source,
-                        _cached_ips,
-                        _cached_regions,
-                        _geo_refreshed_at,
-                    )| async move {
-                        let (resolved_ips, source) = if let Some((ip, _location)) = self
-                            .fetch_forward_proxy_trace(&endpoint, trace_timeout, None)
-                            .await
-                        {
-                            (vec![ip], ForwardProxyGeoSource::Trace)
-                        } else {
-                            (Vec::new(), ForwardProxyGeoSource::Negative)
-                        };
-                        (endpoint, resolved_ips, source)
-                    },
-                ),
-            )
-            .buffer_unordered(3)
-            .collect::<Vec<_>>()
-            .await;
+                        host_ips: vec![ip],
+                        regions: Vec::new(),
+                        source: ForwardProxyGeoSource::Trace,
+                        geo_refreshed_at: refreshed_at,
+                    };
+                }
+
+                if refresh_mode == ForwardProxyGeoRefreshMode::ForceRefreshAll
+                    && cache_complete
+                    && cached_source == ForwardProxyGeoSource::Trace
+                {
+                    return ForwardProxyGeoCandidate {
+                        endpoint,
+                        host_ips: cached_ips,
+                        regions: cached_regions,
+                        source: cached_source,
+                        geo_refreshed_at,
+                    };
+                }
+
+                ForwardProxyGeoCandidate {
+                    endpoint,
+                    host_ips: Vec::new(),
+                    regions: Vec::new(),
+                    source: ForwardProxyGeoSource::Negative,
+                    geo_refreshed_at: refreshed_at,
+                }
+            },
+        ))
+        .buffer_unordered(3)
+        .collect::<Vec<_>>()
+        .await;
 
         let geo_lookup_ips = resolved_refresh
             .iter()
-            .flat_map(|(_, resolved_ips, source)| {
-                if *source == ForwardProxyGeoSource::Trace {
-                    resolved_ips
+            .flat_map(|candidate| {
+                if candidate.source == ForwardProxyGeoSource::Trace {
+                    candidate
+                        .host_ips
                         .iter()
                         .filter(|ip| is_global_geo_ip(ip))
                         .cloned()
@@ -3337,33 +3371,29 @@ impl TavilyProxy {
 
         let refreshed_candidates = resolved_refresh
             .into_iter()
-            .map(|(endpoint, resolved_ips, source)| {
-                let mut seen_regions = HashSet::new();
-                let regions = resolved_ips
-                    .iter()
-                    .filter_map(|ip| region_by_ip.get(ip).cloned())
-                    .filter(|region| seen_regions.insert(region.clone()))
-                    .collect::<Vec<_>>();
-                ForwardProxyGeoCandidate {
-                    endpoint,
-                    host_ips: resolved_ips,
-                    regions,
-                    source,
-                    geo_refreshed_at: refreshed_at,
+            .map(|mut candidate| {
+                if candidate.source == ForwardProxyGeoSource::Trace {
+                    let mut seen_regions = HashSet::new();
+                    candidate.regions = candidate
+                        .host_ips
+                        .iter()
+                        .filter_map(|ip| region_by_ip.get(ip).cloned())
+                        .filter(|region| seen_regions.insert(region.clone()))
+                        .collect::<Vec<_>>();
                 }
+                candidate
             })
             .collect::<Vec<_>>();
         if !refreshed_candidates.is_empty() {
-            let _ = self
-                .persist_forward_proxy_geo_candidates(&refreshed_candidates)
-                .await;
+            self.persist_forward_proxy_geo_candidates(&refreshed_candidates)
+                .await?;
         }
         let refreshed_by_key = refreshed_candidates
             .into_iter()
             .map(|candidate| (candidate.endpoint.key.clone(), candidate))
             .collect::<HashMap<_, _>>();
 
-        endpoints
+        Ok(endpoints
             .into_iter()
             .map(|endpoint| {
                 if let Some(candidate) = refreshed_by_key.get(&endpoint.key) {
@@ -3388,7 +3418,7 @@ impl TavilyProxy {
                     geo_refreshed_at: 0,
                 }
             })
-            .collect()
+            .collect())
     }
 
     pub async fn refresh_forward_proxy_geo_metadata(
@@ -3412,7 +3442,7 @@ impl TavilyProxy {
         };
         let candidates = self
             .resolve_forward_proxy_geo_candidates(geo_origin, endpoints, refresh_mode)
-            .await;
+            .await?;
         Ok(candidates.len())
     }
 
@@ -3452,7 +3482,7 @@ impl TavilyProxy {
                 primary_pool.clone(),
                 ForwardProxyGeoRefreshMode::LazyFillMissing,
             )
-            .await;
+            .await?;
         let normalized_registration_ip = registration_ip.and_then(normalize_ip_string);
         let normalized_registration_region = registration_region
             .map(str::trim)
@@ -3544,7 +3574,7 @@ impl TavilyProxy {
                 true,
                 ranked_any.len().max(1),
             )
-            .await
+            .await?
             .into_iter()
             .next()
             .map(|endpoint| endpoint.key);
@@ -3589,12 +3619,12 @@ impl TavilyProxy {
         subject: &str,
         geo_origin: &str,
         preferred_primary_proxy_key: &str,
-    ) -> forward_proxy::ForwardProxyAffinityRecord {
+    ) -> Result<forward_proxy::ForwardProxyAffinityRecord, ProxyError> {
         if preferred_primary_proxy_key == forward_proxy::FORWARD_PROXY_DIRECT_KEY {
-            return forward_proxy::ForwardProxyAffinityRecord {
+            return Ok(forward_proxy::ForwardProxyAffinityRecord {
                 updated_at: Utc::now().timestamp(),
                 ..Default::default()
-            };
+            });
         }
         let (preferred_exists, candidate_limit) = {
             let manager = self.forward_proxy.lock().await;
@@ -3604,10 +3634,10 @@ impl TavilyProxy {
             )
         };
         if !preferred_exists {
-            return forward_proxy::ForwardProxyAffinityRecord {
+            return Ok(forward_proxy::ForwardProxyAffinityRecord {
                 updated_at: Utc::now().timestamp(),
                 ..Default::default()
-            };
+            });
         }
 
         let mut secondary_exclude = HashSet::new();
@@ -3624,16 +3654,16 @@ impl TavilyProxy {
                 true,
                 candidate_limit,
             )
-            .await
+            .await?
             .into_iter()
             .next()
             .map(|endpoint| endpoint.key);
 
-        forward_proxy::ForwardProxyAffinityRecord {
+        Ok(forward_proxy::ForwardProxyAffinityRecord {
             primary_proxy_key: Some(preferred_primary_proxy_key.to_string()),
             secondary_proxy_key,
             updated_at: Utc::now().timestamp(),
-        }
+        })
     }
 
     async fn build_proxy_attempt_plan_for_record(
@@ -3682,7 +3712,7 @@ impl TavilyProxy {
                 allow_direct_fallback,
                 limit,
             )
-            .await
+            .await?
         {
             if seen.insert(endpoint.key.clone()) {
                 plan.push(forward_proxy::SelectedForwardProxy::from_endpoint(
@@ -6089,7 +6119,7 @@ impl TavilyProxy {
                     geo_origin,
                     preferred_primary_proxy_key,
                 )
-                .await,
+                .await?,
             )
         } else {
             None
