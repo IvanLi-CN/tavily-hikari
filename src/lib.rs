@@ -1570,6 +1570,7 @@ const FORWARD_PROXY_LABEL_PROBE_NODES: &str = "Probing nodes";
 const FORWARD_PROXY_LABEL_GENERATE_RESULT: &str = "Preparing result";
 const FORWARD_PROXY_TRACE_URL: &str = "http://cloudflare.com/cdn-cgi/trace";
 const FORWARD_PROXY_TRACE_TIMEOUT_MS: u64 = 900;
+const FORWARD_PROXY_GEO_NEGATIVE_RETRY_COOLDOWN_SECS: i64 = 15 * 60;
 
 fn default_forward_proxy_trace_url() -> Url {
     std::env::var("FORWARD_PROXY_TRACE_URL")
@@ -3245,6 +3246,32 @@ impl TavilyProxy {
         }
     }
 
+    fn is_forward_proxy_geo_request_cache_complete(
+        endpoint: &forward_proxy::ForwardProxyEndpoint,
+        source: ForwardProxyGeoSource,
+        resolved_ips: &[String],
+        regions: &[String],
+        geo_refreshed_at: i64,
+        now: i64,
+    ) -> bool {
+        if endpoint.is_direct() {
+            return true;
+        }
+        if geo_refreshed_at <= 0 {
+            return false;
+        }
+        match source {
+            ForwardProxyGeoSource::Negative => {
+                now.saturating_sub(geo_refreshed_at)
+                    < FORWARD_PROXY_GEO_NEGATIVE_RETRY_COOLDOWN_SECS
+            }
+            ForwardProxyGeoSource::Trace => {
+                !regions.is_empty() && resolved_ips.iter().any(|ip| is_global_geo_ip(ip))
+            }
+            ForwardProxyGeoSource::Unknown => false,
+        }
+    }
+
     async fn resolve_forward_proxy_geo_candidates(
         &self,
         geo_origin: &str,
@@ -3271,19 +3298,34 @@ impl TavilyProxy {
                 .collect::<HashMap<_, _>>()
         };
 
+        let now = Utc::now().timestamp();
         let mut refresh_targets = Vec::new();
         for endpoint in &endpoints {
             let (cached_source, cached_ips, cached_regions, geo_refreshed_at) = cached
                 .get(&endpoint.key)
                 .cloned()
                 .unwrap_or_else(|| (ForwardProxyGeoSource::Unknown, Vec::new(), Vec::new(), 0));
-            let cache_complete = Self::is_forward_proxy_geo_cache_complete(
-                endpoint,
-                cached_source,
-                &cached_ips,
-                &cached_regions,
-                geo_refreshed_at,
-            );
+            let cache_complete = match refresh_mode {
+                ForwardProxyGeoRefreshMode::LazyFillMissing => {
+                    Self::is_forward_proxy_geo_request_cache_complete(
+                        endpoint,
+                        cached_source,
+                        &cached_ips,
+                        &cached_regions,
+                        geo_refreshed_at,
+                        now,
+                    )
+                }
+                ForwardProxyGeoRefreshMode::ForceRefreshAll => {
+                    Self::is_forward_proxy_geo_cache_complete(
+                        endpoint,
+                        cached_source,
+                        &cached_ips,
+                        &cached_regions,
+                        geo_refreshed_at,
+                    )
+                }
+            };
             let should_refresh = match refresh_mode {
                 ForwardProxyGeoRefreshMode::LazyFillMissing => !cache_complete,
                 ForwardProxyGeoRefreshMode::ForceRefreshAll => !endpoint.is_direct(),
@@ -19965,6 +20007,87 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
             second_row.1, first_row.1,
             "negative GEO placeholders should be reused without retracing on each request"
         );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn select_proxy_affinity_retries_stale_negative_forward_proxy_runtime_geo_metadata() {
+        let db_path = temp_db_path("proxy-runtime-geo-retry-stale-negative");
+        let db_str = db_path.to_string_lossy().to_string();
+        let geo_addr = spawn_api_key_geo_mock_server().await;
+        let geo_origin = format!("http://{geo_addr}/geo");
+        let proxy_url = "http://proxy.invalid:8080".to_string();
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        {
+            let mut manager = proxy.forward_proxy.lock().await;
+            manager.apply_settings(
+                ForwardProxySettings {
+                    proxy_urls: vec![proxy_url.clone()],
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: false,
+                }
+                .normalized(),
+            );
+            let runtime = manager
+                .runtime
+                .get_mut(&proxy_url)
+                .expect("runtime state should exist for proxy");
+            runtime.available = true;
+            runtime.last_error = None;
+            runtime.resolved_ip_source = "negative".to_string();
+            runtime.resolved_ips = Vec::new();
+            runtime.resolved_regions = Vec::new();
+            runtime.geo_refreshed_at =
+                Utc::now().timestamp() - (FORWARD_PROXY_GEO_NEGATIVE_RETRY_COOLDOWN_SECS + 1);
+        }
+        let persisted_runtime = {
+            let manager = proxy.forward_proxy.lock().await;
+            manager
+                .runtime
+                .get(&proxy_url)
+                .cloned()
+                .expect("persisted runtime state")
+        };
+        forward_proxy::persist_forward_proxy_runtime_state(
+            &proxy.key_store.pool,
+            &persisted_runtime,
+        )
+        .await
+        .expect("persist stale negative runtime state");
+        proxy
+            .set_forward_proxy_trace_override_for_test(&proxy_url, "1.1.1.1", "TEST / 1.1.1.1")
+            .await;
+
+        let (_record, preview) = proxy
+            .select_proxy_affinity_preview_for_registration_with_hint(
+                "subject:retry-stale-negative-cache",
+                &geo_origin,
+                Some("1.1.1.1"),
+                Some("HK"),
+                None,
+            )
+            .await
+            .expect("selection should retry stale negative placeholders");
+        assert_eq!(
+            preview.as_ref().map(|item| item.match_kind),
+            Some(AssignedProxyMatchKind::RegistrationIp)
+        );
+
+        let row: (String, String, String) = sqlx::query_as(
+            "SELECT resolved_ip_source, resolved_ips_json, resolved_regions_json FROM forward_proxy_runtime WHERE proxy_key = ?",
+        )
+        .bind(&proxy_url)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("load refreshed runtime row");
+        assert_eq!(row.0, "trace");
+        assert_eq!(row.1, "[\"1.1.1.1\"]");
+        assert_eq!(row.2, "[\"HK\"]");
 
         let _ = std::fs::remove_file(db_path);
     }

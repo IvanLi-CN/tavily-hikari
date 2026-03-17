@@ -8,6 +8,10 @@ fn twenty_four_hours_secs() -> i64 {
     24 * 60 * 60
 }
 
+fn forward_proxy_geo_refresh_recheck_secs() -> i64 {
+    60
+}
+
 fn spawn_quota_sync_scheduler(state: Arc<AppState>) {
     tokio::spawn(async move {
         loop {
@@ -269,17 +273,24 @@ async fn run_forward_proxy_geo_refresh_job(state: Arc<AppState>) {
 
 fn spawn_forward_proxy_geo_refresh_scheduler(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let period = Duration::from_secs(twenty_four_hours_secs() as u64);
-        let initial_wait = state
-            .proxy
-            .forward_proxy_geo_refresh_wait_secs(twenty_four_hours_secs())
-            .await;
-        let start_at = tokio::time::Instant::now()
-            + Duration::from_secs(initial_wait.max(0) as u64);
-        let mut interval = tokio::time::interval_at(start_at, period);
         loop {
-            interval.tick().await;
-            run_forward_proxy_geo_refresh_job(state.clone()).await;
+            let wait_secs = state
+                .proxy
+                .forward_proxy_geo_refresh_wait_secs(twenty_four_hours_secs())
+                .await;
+            let sleep_secs = wait_secs
+                .max(0)
+                .min(forward_proxy_geo_refresh_recheck_secs()) as u64;
+            if sleep_secs > 0 {
+                tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
+            }
+            if state
+                .proxy
+                .forward_proxy_geo_refresh_due(twenty_four_hours_secs())
+                .await
+            {
+                run_forward_proxy_geo_refresh_job(state.clone()).await;
+            }
         }
     })
 }

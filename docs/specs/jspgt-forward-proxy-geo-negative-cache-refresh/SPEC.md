@@ -16,7 +16,7 @@
   - `negative`：trace 失败后写入的正式持久化占位缓存；默认不携带可用于匹配的 GEO 数据。
   - `""`：仅兼容历史数据，视为未完成缓存。
 - 请求路径只把“`geo_refreshed_at = 0`、`resolved_ip_source` 为空、或 `trace` 仅有 `resolved_ips` 但还没有 `resolved_regions`”的 runtime 行视为待修复；对最后一种情况，仅当 `resolved_ips` 里仍有可用的 global GEO IP 时，请求路径才只重试 region 补全，否则必须重新 trace。
-- `negative` 且 `geo_refreshed_at > 0` 的 runtime 行视为已完成占位缓存，后续请求直接复用，不再同步 trace。
+- `negative` 且 `geo_refreshed_at > 0` 的 runtime 行会作为占位缓存持久化，但请求路径只在短冷却窗口内直接复用；冷却窗口过后，下一次 registration-aware 请求可再次尝试 trace/GEO 修复。
 
 ### Request-path behavior
 
@@ -29,7 +29,7 @@
 
 - 新增 `forward_proxy_geo_refresh` 定时任务。
 - 周期固定为 24 小时。
-- 服务启动时若现有 non-Direct 节点 GEO 元数据仍缺失/不完整，或已过期（>=24h），需立即补跑首轮刷新；否则必须只等待“剩余 TTL”后再执行首轮刷新，并按固定 24h deadline 调度后续轮次，避免重启或任务耗时把周期漂移。
+- scheduler 需要周期性重算剩余 TTL；若现有 non-Direct 节点 GEO 元数据仍缺失/不完整，或已过期（>=24h），需立即补跑首轮刷新；否则只等待当前剩余 TTL，并在后续通过短周期 recheck 避免新增/变更节点把首轮刷新拖到原先的 24h deadline 之后。
 - 每轮刷新全部非 Direct 节点：
   - trace 成功则写回 `trace` 和新的 `geo_refreshed_at`。
   - trace 失败则写回 `negative`、空 `resolved_ips`/`resolved_regions`，并更新时间戳。
