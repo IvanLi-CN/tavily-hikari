@@ -4348,6 +4348,206 @@ mod tests {
         );
         assert_eq!(row.2.as_deref(), Some("http://1.1.1.1:8080"));
 
+        let runtime_row: (String, i64) = sqlx::query_as(
+            "SELECT resolved_ip_source, geo_refreshed_at FROM forward_proxy_runtime WHERE proxy_key = ?",
+        )
+        .bind("http://1.1.1.1:8080")
+        .fetch_one(&pool)
+        .await
+        .expect("hint-only runtime row");
+        assert!(runtime_row.0.is_empty());
+        assert_eq!(runtime_row.1, 0);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn api_keys_batch_registration_metadata_warms_negative_forward_proxy_geo_cache() {
+        let db_path = temp_db_path("keys-batch-registration-geo-warm");
+        let db_str = db_path.to_string_lossy().to_string();
+        let geo_addr = spawn_api_key_geo_mock_server().await;
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        proxy
+            .update_forward_proxy_settings(
+                ForwardProxySettings {
+                    proxy_urls: vec!["http://127.0.0.1:1".to_string()],
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: false,
+                },
+                false,
+            )
+            .await
+            .expect("proxy settings updated");
+
+        let forward_auth = ForwardAuthConfig::new(
+            Some(HeaderName::from_static("x-forward-user")),
+            Some("admin".to_string()),
+            None,
+            None,
+        );
+        let addr = spawn_keys_admin_server_with_geo_origin(
+            proxy,
+            forward_auth,
+            false,
+            format!("http://{geo_addr}/geo"),
+        )
+        .await;
+
+        let client = Client::new();
+        let url = format!("http://{}/api/keys/batch", addr);
+        let resp = client
+            .post(url)
+            .header("x-forward-user", "admin")
+            .json(&serde_json::json!({
+                "items": [
+                    { "api_key": "tvly-batch-geo-a", "registration_ip": "8.8.8.8" },
+                    { "api_key": "tvly-batch-geo-b", "registration_ip": "1.1.1.1" }
+                ]
+            }))
+            .send()
+            .await
+            .expect("request succeeds");
+
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+        let options = SqliteConnectOptions::new()
+            .filename(&db_str)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open db pool");
+
+        let runtime_row: (String, String, String, i64) = sqlx::query_as(
+            "SELECT resolved_ip_source, resolved_ips_json, resolved_regions_json, geo_refreshed_at FROM forward_proxy_runtime WHERE proxy_key = ?",
+        )
+        .bind("http://127.0.0.1:1")
+        .fetch_one(&pool)
+        .await
+        .expect("registration batch runtime row");
+        assert_eq!(runtime_row.0, "negative");
+        assert_eq!(runtime_row.1, "[]");
+        assert_eq!(runtime_row.2, "[]");
+        assert!(runtime_row.3 > 0);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn forward_proxy_geo_refresh_job_records_scheduled_job_and_skips_direct() {
+        let db_path = temp_db_path("forward-proxy-geo-refresh-job");
+        let db_str = db_path.to_string_lossy().to_string();
+        let geo_addr = spawn_api_key_geo_mock_server().await;
+        let traced_proxy_addr = spawn_fake_forward_proxy_with_body(
+            StatusCode::OK,
+            "ip=1.1.1.1
+loc=US
+colo=LAX
+".to_string(),
+        )
+        .await;
+        let traced_proxy = format!("http://{traced_proxy_addr}");
+        let dead_proxy = "http://127.0.0.1:1".to_string();
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        proxy
+            .update_forward_proxy_settings(
+                ForwardProxySettings {
+                    proxy_urls: vec![traced_proxy.clone(), dead_proxy.clone()],
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: true,
+                },
+                false,
+            )
+            .await
+            .expect("proxy settings updated");
+
+        let state = Arc::new(AppState {
+            proxy,
+            static_dir: None,
+            forward_auth: ForwardAuthConfig::new(None, None, None, None),
+            forward_auth_enabled: false,
+            builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+            dev_open_admin: false,
+            usage_base: "http://127.0.0.1:58088".to_string(),
+            api_key_ip_geo_origin: format!("http://{geo_addr}/geo"),
+        });
+
+        run_forward_proxy_geo_refresh_job(state.clone()).await;
+
+        let options = SqliteConnectOptions::new()
+            .filename(&db_str)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open db pool");
+
+        let job_row: (String, String, Option<String>) = sqlx::query_as(
+            "SELECT job_type, status, message FROM scheduled_jobs ORDER BY id DESC LIMIT 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load geo refresh job row");
+        assert_eq!(job_row.0, "forward_proxy_geo_refresh");
+        assert_eq!(job_row.1, "success");
+        assert!(
+            job_row
+                .2
+                .as_deref()
+                .is_some_and(|message| message.contains("refreshed_candidates=2"))
+        );
+
+        let traced_row: (String, String, String, i64) = sqlx::query_as(
+            "SELECT resolved_ip_source, resolved_ips_json, resolved_regions_json, geo_refreshed_at FROM forward_proxy_runtime WHERE proxy_key = ?",
+        )
+        .bind(&traced_proxy)
+        .fetch_one(&pool)
+        .await
+        .expect("load traced runtime row");
+        assert_eq!(traced_row.0, "trace");
+        assert_eq!(traced_row.1, "[\"1.1.1.1\"]");
+        assert_eq!(traced_row.2, "[\"US Westfield (MA)\"]");
+        assert!(traced_row.3 > 0);
+
+        let dead_row: (String, String, String, i64) = sqlx::query_as(
+            "SELECT resolved_ip_source, resolved_ips_json, resolved_regions_json, geo_refreshed_at FROM forward_proxy_runtime WHERE proxy_key = ?",
+        )
+        .bind(&dead_proxy)
+        .fetch_one(&pool)
+        .await
+        .expect("load dead runtime row");
+        assert_eq!(dead_row.0, "negative");
+        assert_eq!(dead_row.1, "[]");
+        assert_eq!(dead_row.2, "[]");
+        assert!(dead_row.3 > 0);
+
+        let direct_row: (String, i64) = sqlx::query_as(
+            "SELECT resolved_ip_source, geo_refreshed_at FROM forward_proxy_runtime WHERE proxy_key = ?",
+        )
+        .bind("__direct__")
+        .fetch_one(&pool)
+        .await
+        .expect("load direct runtime row");
+        assert!(direct_row.0.is_empty());
+        assert_eq!(direct_row.1, 0);
+
         let _ = std::fs::remove_file(db_path);
     }
 

@@ -233,6 +233,49 @@ fn spawn_request_logs_gc_scheduler(state: Arc<AppState>) {
     });
 }
 
+async fn run_forward_proxy_geo_refresh_job(state: Arc<AppState>) {
+    let job_id = match state
+        .proxy
+        .scheduled_job_start("forward_proxy_geo_refresh", None, 1)
+        .await
+    {
+        Ok(id) => id,
+        Err(err) => {
+            eprintln!("forward-proxy-geo-refresh: start job error: {err}");
+            return;
+        }
+    };
+
+    match state
+        .proxy
+        .refresh_forward_proxy_geo_metadata(&state.api_key_ip_geo_origin, true)
+        .await
+    {
+        Ok(refreshed) => {
+            let msg = format!("refreshed_candidates={refreshed}");
+            let _ = state
+                .proxy
+                .scheduled_job_finish(job_id, "success", Some(&msg))
+                .await;
+        }
+        Err(err) => {
+            let _ = state
+                .proxy
+                .scheduled_job_finish(job_id, "error", Some(&err.to_string()))
+                .await;
+        }
+    }
+}
+
+fn spawn_forward_proxy_geo_refresh_scheduler(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        loop {
+            run_forward_proxy_geo_refresh_job(state.clone()).await;
+            tokio::time::sleep(Duration::from_secs(twenty_four_hours_secs() as u64)).await;
+        }
+    });
+}
+
 fn spawn_forward_proxy_maintenance_scheduler(state: Arc<AppState>) {
     tokio::spawn(async move {
         loop {

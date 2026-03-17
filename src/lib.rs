@@ -783,12 +783,14 @@ struct ForwardProxyGeoCandidate {
     host_ips: Vec<String>,
     regions: Vec<String>,
     source: ForwardProxyGeoSource,
+    geo_refreshed_at: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ForwardProxyGeoSource {
     Unknown,
     Trace,
+    Negative,
 }
 
 impl ForwardProxyGeoSource {
@@ -796,15 +798,23 @@ impl ForwardProxyGeoSource {
         match self {
             Self::Unknown => "",
             Self::Trace => "trace",
+            Self::Negative => "negative",
         }
     }
 
     fn from_runtime(value: &str) -> Self {
         match value.trim() {
             "trace" => Self::Trace,
+            "negative" => Self::Negative,
             _ => Self::Unknown,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ForwardProxyGeoRefreshMode {
+    LazyFillMissing,
+    ForceRefreshAll,
 }
 
 #[derive(Clone, Copy)]
@@ -1827,6 +1837,7 @@ impl TavilyProxy {
                 .resolve_forward_proxy_geo_candidates(
                     &self.api_key_geo_origin,
                     geo_metadata_targets,
+                    ForwardProxyGeoRefreshMode::LazyFillMissing,
                 )
                 .await;
         }
@@ -2896,7 +2907,11 @@ impl TavilyProxy {
         }
 
         let geo_candidates = self
-            .resolve_forward_proxy_geo_candidates(affinity.geo_origin, non_direct.clone())
+            .resolve_forward_proxy_geo_candidates(
+                affinity.geo_origin,
+                non_direct.clone(),
+                ForwardProxyGeoRefreshMode::LazyFillMissing,
+            )
             .await;
         let mut exact_keys = HashSet::new();
         let mut region_keys = HashSet::new();
@@ -3189,12 +3204,14 @@ impl TavilyProxy {
                 if runtime.resolved_ips == candidate.host_ips
                     && runtime.resolved_regions == candidate.regions
                     && runtime.resolved_ip_source == candidate.source.as_str()
+                    && runtime.geo_refreshed_at == candidate.geo_refreshed_at
                 {
                     continue;
                 }
                 runtime.resolved_ips = candidate.host_ips.clone();
                 runtime.resolved_regions = candidate.regions.clone();
                 runtime.resolved_ip_source = candidate.source.as_str().to_string();
+                runtime.geo_refreshed_at = candidate.geo_refreshed_at;
                 changed.push(runtime.clone());
             }
             changed
@@ -3206,30 +3223,26 @@ impl TavilyProxy {
         Ok(())
     }
 
+    fn is_forward_proxy_geo_cache_complete(
+        endpoint: &forward_proxy::ForwardProxyEndpoint,
+        source: ForwardProxyGeoSource,
+        geo_refreshed_at: i64,
+    ) -> bool {
+        if endpoint.is_direct() {
+            return true;
+        }
+        matches!(
+            source,
+            ForwardProxyGeoSource::Trace | ForwardProxyGeoSource::Negative
+        ) && geo_refreshed_at > 0
+    }
+
     async fn resolve_forward_proxy_geo_candidates(
         &self,
         geo_origin: &str,
         endpoints: Vec<forward_proxy::ForwardProxyEndpoint>,
+        refresh_mode: ForwardProxyGeoRefreshMode,
     ) -> Vec<ForwardProxyGeoCandidate> {
-        let cache_complete_for_endpoint =
-            |endpoint: &forward_proxy::ForwardProxyEndpoint,
-             resolved_ips: &[String],
-             regions: &[String],
-             source: ForwardProxyGeoSource| {
-                if endpoint.is_direct() {
-                    return true;
-                }
-                if source != ForwardProxyGeoSource::Trace {
-                    return false;
-                }
-                if resolved_ips.is_empty() {
-                    return false;
-                }
-                if regions.is_empty() {
-                    return false;
-                }
-                resolved_ips.iter().any(|ip| is_global_geo_ip(ip))
-            };
         let cached = {
             let manager = self.forward_proxy.lock().await;
             endpoints
@@ -3242,6 +3255,7 @@ impl TavilyProxy {
                                 ForwardProxyGeoSource::from_runtime(&runtime.resolved_ip_source),
                                 runtime.resolved_ips.clone(),
                                 runtime.resolved_regions.clone(),
+                                runtime.geo_refreshed_at,
                             ),
                         )
                     })
@@ -3249,53 +3263,79 @@ impl TavilyProxy {
                 .collect::<HashMap<_, _>>()
         };
 
-        let mut missing = Vec::new();
+        let mut refresh_targets = Vec::new();
         for endpoint in &endpoints {
-            let (cached_source, cached_ips, cached_regions) = cached
+            let (cached_source, cached_ips, cached_regions, geo_refreshed_at) = cached
                 .get(&endpoint.key)
                 .cloned()
-                .unwrap_or_else(|| (ForwardProxyGeoSource::Unknown, Vec::new(), Vec::new()));
-            let cache_complete =
-                cache_complete_for_endpoint(endpoint, &cached_ips, &cached_regions, cached_source);
-            if cache_complete {
-                continue;
-            }
-            if endpoint.is_direct() {
-                continue;
+                .unwrap_or_else(|| (ForwardProxyGeoSource::Unknown, Vec::new(), Vec::new(), 0));
+            let cache_complete = Self::is_forward_proxy_geo_cache_complete(
+                endpoint,
+                cached_source,
+                geo_refreshed_at,
+            );
+            let should_refresh = match refresh_mode {
+                ForwardProxyGeoRefreshMode::LazyFillMissing => !cache_complete,
+                ForwardProxyGeoRefreshMode::ForceRefreshAll => !endpoint.is_direct(),
             };
-            missing.push((endpoint.clone(), cached_source, cached_ips));
+            if should_refresh && !endpoint.is_direct() {
+                refresh_targets.push((
+                    endpoint.clone(),
+                    cached_source,
+                    cached_ips,
+                    cached_regions,
+                    geo_refreshed_at,
+                ));
+            }
         }
 
+        let refreshed_at = Utc::now().timestamp();
         let trace_timeout = Duration::from_millis(FORWARD_PROXY_TRACE_TIMEOUT_MS);
-        let resolved_missing = futures_util::stream::iter(missing.into_iter().map(
-            |(endpoint, cached_source, cached_ips)| async move {
-                if let Some((ip, _location)) = self
-                    .fetch_forward_proxy_trace(&endpoint, trace_timeout, None)
-                    .await
-                {
-                    return (endpoint, vec![ip], ForwardProxyGeoSource::Trace);
-                }
-                if cached_source == ForwardProxyGeoSource::Trace {
-                    return (endpoint, cached_ips, cached_source);
-                }
-                (endpoint, Vec::new(), ForwardProxyGeoSource::Unknown)
-            },
-        ))
-        .buffer_unordered(3)
-        .collect::<Vec<_>>()
-        .await;
+        let resolved_refresh =
+            futures_util::stream::iter(
+                refresh_targets.into_iter().map(
+                    |(
+                        endpoint,
+                        _cached_source,
+                        _cached_ips,
+                        _cached_regions,
+                        _geo_refreshed_at,
+                    )| async move {
+                        let (resolved_ips, source) = if let Some((ip, _location)) = self
+                            .fetch_forward_proxy_trace(&endpoint, trace_timeout, None)
+                            .await
+                        {
+                            (vec![ip], ForwardProxyGeoSource::Trace)
+                        } else {
+                            (Vec::new(), ForwardProxyGeoSource::Negative)
+                        };
+                        (endpoint, resolved_ips, source)
+                    },
+                ),
+            )
+            .buffer_unordered(3)
+            .collect::<Vec<_>>()
+            .await;
 
-        let geo_lookup_ips = resolved_missing
+        let geo_lookup_ips = resolved_refresh
             .iter()
-            .flat_map(|(_, resolved_ips, _)| resolved_ips)
-            .filter(|ip| is_global_geo_ip(ip))
-            .cloned()
+            .flat_map(|(_, resolved_ips, source)| {
+                if *source == ForwardProxyGeoSource::Trace {
+                    resolved_ips
+                        .iter()
+                        .filter(|ip| is_global_geo_ip(ip))
+                        .cloned()
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                }
+            })
             .collect::<HashSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
         let region_by_ip = resolve_registration_regions(geo_origin, &geo_lookup_ips).await;
 
-        let resolved_missing = resolved_missing
+        let refreshed_candidates = resolved_refresh
             .into_iter()
             .map(|(endpoint, resolved_ips, source)| {
                 let mut seen_regions = HashSet::new();
@@ -3309,15 +3349,16 @@ impl TavilyProxy {
                     host_ips: resolved_ips,
                     regions,
                     source,
+                    geo_refreshed_at: refreshed_at,
                 }
             })
             .collect::<Vec<_>>();
-        if !resolved_missing.is_empty() {
+        if !refreshed_candidates.is_empty() {
             let _ = self
-                .persist_forward_proxy_geo_candidates(&resolved_missing)
+                .persist_forward_proxy_geo_candidates(&refreshed_candidates)
                 .await;
         }
-        let resolved_missing_by_key = resolved_missing
+        let refreshed_by_key = refreshed_candidates
             .into_iter()
             .map(|candidate| (candidate.endpoint.key.clone(), candidate))
             .collect::<HashMap<_, _>>();
@@ -3325,33 +3366,54 @@ impl TavilyProxy {
         endpoints
             .into_iter()
             .map(|endpoint| {
-                let cache_complete =
-                    cached
-                        .get(&endpoint.key)
-                        .is_some_and(|(source, resolved_ips, regions)| {
-                            cache_complete_for_endpoint(&endpoint, resolved_ips, regions, *source)
-                        });
-                if cache_complete
-                    && let Some((_, resolved_ips, regions)) = cached.get(&endpoint.key)
+                if let Some(candidate) = refreshed_by_key.get(&endpoint.key) {
+                    return candidate.clone();
+                }
+                if let Some((source, resolved_ips, regions, geo_refreshed_at)) =
+                    cached.get(&endpoint.key)
                 {
                     return ForwardProxyGeoCandidate {
                         endpoint,
                         host_ips: resolved_ips.clone(),
                         regions: regions.clone(),
-                        source: ForwardProxyGeoSource::Trace,
+                        source: *source,
+                        geo_refreshed_at: *geo_refreshed_at,
                     };
                 }
-                resolved_missing_by_key
-                    .get(&endpoint.key)
-                    .cloned()
-                    .unwrap_or(ForwardProxyGeoCandidate {
-                        endpoint,
-                        host_ips: Vec::new(),
-                        regions: Vec::new(),
-                        source: ForwardProxyGeoSource::Unknown,
-                    })
+                ForwardProxyGeoCandidate {
+                    endpoint,
+                    host_ips: Vec::new(),
+                    regions: Vec::new(),
+                    source: ForwardProxyGeoSource::Unknown,
+                    geo_refreshed_at: 0,
+                }
             })
             .collect()
+    }
+
+    pub async fn refresh_forward_proxy_geo_metadata(
+        &self,
+        geo_origin: &str,
+        force_all: bool,
+    ) -> Result<usize, ProxyError> {
+        let endpoints = {
+            let manager = self.forward_proxy.lock().await;
+            manager
+                .endpoints
+                .iter()
+                .filter(|endpoint| !endpoint.is_direct())
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let refresh_mode = if force_all {
+            ForwardProxyGeoRefreshMode::ForceRefreshAll
+        } else {
+            ForwardProxyGeoRefreshMode::LazyFillMissing
+        };
+        let candidates = self
+            .resolve_forward_proxy_geo_candidates(geo_origin, endpoints, refresh_mode)
+            .await;
+        Ok(candidates.len())
     }
 
     async fn select_proxy_affinity_preview_for_registration_with_hint(
@@ -3385,7 +3447,11 @@ impl TavilyProxy {
             ranked_non_direct.clone()
         };
         let geo_candidates = self
-            .resolve_forward_proxy_geo_candidates(geo_origin, primary_pool.clone())
+            .resolve_forward_proxy_geo_candidates(
+                geo_origin,
+                primary_pool.clone(),
+                ForwardProxyGeoRefreshMode::LazyFillMissing,
+            )
             .await;
         let normalized_registration_ip = registration_ip.and_then(normalize_ip_string);
         let normalized_registration_region = registration_region
@@ -19503,7 +19569,7 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
             .expect("seed persisted runtime geo metadata");
 
         sqlx::query(
-            "UPDATE forward_proxy_runtime SET resolved_regions_json = '[]' WHERE proxy_key = ?",
+            "UPDATE forward_proxy_runtime SET resolved_regions_json = '[]', geo_refreshed_at = 0 WHERE proxy_key = ?",
         )
         .bind("http://1.1.1.1:8080")
         .execute(&proxy.key_store.pool)
@@ -19721,16 +19787,105 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
             Some(AssignedProxyMatchKind::Other)
         );
 
-        let row: String = sqlx::query_scalar(
-            "SELECT resolved_ip_source FROM forward_proxy_runtime WHERE proxy_key = ?",
+        let row: (String, String, String, i64) = sqlx::query_as(
+            "SELECT resolved_ip_source, resolved_ips_json, resolved_regions_json, geo_refreshed_at FROM forward_proxy_runtime WHERE proxy_key = ?",
         )
         .bind(&endpoint_key)
         .fetch_one(&reloaded.key_store.pool)
         .await
         .expect("load stale runtime source");
+        assert_eq!(row.0, "negative");
+        let resolved_ips: Vec<String> =
+            serde_json::from_str(&row.1).expect("decode negative resolved ips");
+        let resolved_regions: Vec<String> =
+            serde_json::from_str(&row.2).expect("decode negative resolved regions");
+        assert!(resolved_ips.is_empty());
+        assert!(resolved_regions.is_empty());
         assert!(
-            row.is_empty(),
-            "trace failures should not relabel legacy host-derived metadata as trace"
+            row.3 > 0,
+            "trace failures should persist a negative geo placeholder timestamp"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn select_proxy_affinity_reuses_negative_forward_proxy_runtime_geo_metadata() {
+        let db_path = temp_db_path("proxy-runtime-geo-reuse-negative");
+        let db_str = db_path.to_string_lossy().to_string();
+        let geo_addr = spawn_api_key_geo_mock_server().await;
+        let geo_origin = format!("http://{geo_addr}/geo");
+        let proxy_url = "http://127.0.0.1:1".to_string();
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        {
+            let mut manager = proxy.forward_proxy.lock().await;
+            manager.apply_settings(
+                ForwardProxySettings {
+                    proxy_urls: vec![proxy_url.clone()],
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: false,
+                }
+                .normalized(),
+            );
+        }
+
+        let (_first_record, first_preview) = proxy
+            .select_proxy_affinity_preview_for_registration_with_hint(
+                "subject:negative-cache-first",
+                &geo_origin,
+                Some("1.1.1.1"),
+                Some("HK"),
+                None,
+            )
+            .await
+            .expect("first selection should persist negative placeholder");
+        assert_eq!(
+            first_preview.as_ref().map(|item| item.match_kind),
+            Some(AssignedProxyMatchKind::Other)
+        );
+
+        let first_row: (String, i64) = sqlx::query_as(
+            "SELECT resolved_ip_source, geo_refreshed_at FROM forward_proxy_runtime WHERE proxy_key = ?",
+        )
+        .bind(&proxy_url)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("load first negative runtime row");
+        assert_eq!(first_row.0, "negative");
+        assert!(first_row.1 > 0);
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        let (_second_record, second_preview) = proxy
+            .select_proxy_affinity_preview_for_registration_with_hint(
+                "subject:negative-cache-second",
+                "http://127.0.0.1:9/geo",
+                Some("1.1.1.1"),
+                Some("HK"),
+                None,
+            )
+            .await
+            .expect("second selection should reuse negative placeholder");
+        assert_eq!(
+            second_preview.as_ref().map(|item| item.match_kind),
+            Some(AssignedProxyMatchKind::Other)
+        );
+
+        let second_row: (String, i64) = sqlx::query_as(
+            "SELECT resolved_ip_source, geo_refreshed_at FROM forward_proxy_runtime WHERE proxy_key = ?",
+        )
+        .bind(&proxy_url)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("load second negative runtime row");
+        assert_eq!(second_row.0, "negative");
+        assert_eq!(
+            second_row.1, first_row.1,
+            "negative GEO placeholders should be reused without retracing on each request"
         );
 
         let _ = std::fs::remove_file(db_path);
