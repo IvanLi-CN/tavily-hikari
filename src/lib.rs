@@ -3209,21 +3209,36 @@ impl TavilyProxy {
                 {
                     continue;
                 }
-                let mut updated = runtime.clone();
-                updated.resolved_ips = candidate.host_ips.clone();
-                updated.resolved_regions = candidate.regions.clone();
-                updated.resolved_ip_source = candidate.source.as_str().to_string();
-                updated.geo_refreshed_at = candidate.geo_refreshed_at;
-                changed.push(updated);
+                changed.push(forward_proxy::ForwardProxyRuntimeGeoMetadataUpdate {
+                    proxy_key: candidate.endpoint.key.clone(),
+                    display_name: runtime.display_name.clone(),
+                    source: runtime.source.clone(),
+                    endpoint_url: runtime.endpoint_url.clone(),
+                    resolved_ip_source: candidate.source.as_str().to_string(),
+                    resolved_ips: candidate.host_ips.clone(),
+                    resolved_regions: candidate.regions.clone(),
+                    geo_refreshed_at: candidate.geo_refreshed_at,
+                    weight: runtime.weight,
+                    success_ema: runtime.success_ema,
+                    latency_ema_ms: runtime.latency_ema_ms,
+                    consecutive_failures: runtime.consecutive_failures,
+                    is_penalized: runtime.is_penalized(),
+                });
             }
             changed
         };
-        forward_proxy::persist_forward_proxy_runtime_states_atomic(&self.key_store.pool, &changed)
-            .await?;
+        forward_proxy::persist_forward_proxy_runtime_geo_metadata_atomic(
+            &self.key_store.pool,
+            &changed,
+        )
+        .await?;
         let mut manager = self.forward_proxy.lock().await;
-        for runtime in changed {
-            if let Some(entry) = manager.runtime.get_mut(&runtime.proxy_key) {
-                *entry = runtime;
+        for update in changed {
+            if let Some(entry) = manager.runtime.get_mut(&update.proxy_key) {
+                entry.resolved_ip_source = update.resolved_ip_source;
+                entry.resolved_ips = update.resolved_ips;
+                entry.resolved_regions = update.resolved_regions;
+                entry.geo_refreshed_at = update.geo_refreshed_at;
             }
         }
         Ok(())
@@ -3494,6 +3509,23 @@ impl TavilyProxy {
         Ok(candidates.len())
     }
 
+    fn forward_proxy_geo_incomplete_retry_wait_secs(
+        source: ForwardProxyGeoSource,
+        resolved_ips: &[String],
+        geo_refreshed_at: i64,
+        now: i64,
+    ) -> Option<i64> {
+        if source != ForwardProxyGeoSource::Trace
+            || resolved_ips.is_empty()
+            || geo_refreshed_at <= 0
+        {
+            return None;
+        }
+        let age = now.saturating_sub(geo_refreshed_at);
+        let remaining = FORWARD_PROXY_GEO_NEGATIVE_RETRY_COOLDOWN_SECS.saturating_sub(age);
+        (remaining > 0).then_some(remaining)
+    }
+
     pub async fn forward_proxy_geo_refresh_wait_secs(&self, max_age_secs: i64) -> i64 {
         let now = Utc::now().timestamp();
         let manager = self.forward_proxy.lock().await;
@@ -3522,6 +3554,15 @@ impl TavilyProxy {
                 &resolved_regions,
                 refreshed_at,
             ) {
+                if let Some(wait_secs) = Self::forward_proxy_geo_incomplete_retry_wait_secs(
+                    source,
+                    &resolved_ips,
+                    refreshed_at,
+                    now,
+                ) {
+                    min_wait = min_wait.min(wait_secs);
+                    continue;
+                }
                 return 0;
             }
             let age = now.saturating_sub(refreshed_at);
@@ -20192,6 +20233,85 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
     }
 
     #[tokio::test]
+    async fn persist_forward_proxy_geo_candidates_preserves_runtime_health_columns() {
+        let db_path = temp_db_path("proxy-runtime-geo-preserve-health");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy_url = "http://1.1.1.1:8080".to_string();
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        proxy
+            .update_forward_proxy_settings(
+                ForwardProxySettings {
+                    proxy_urls: vec![proxy_url.clone()],
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: false,
+                },
+                false,
+            )
+            .await
+            .expect("proxy settings updated");
+
+        let endpoint = {
+            let manager = proxy.forward_proxy.lock().await;
+            manager
+                .endpoints
+                .iter()
+                .find(|endpoint| endpoint.key == proxy_url)
+                .cloned()
+                .expect("forward proxy endpoint")
+        };
+
+        sqlx::query(
+            "UPDATE forward_proxy_runtime SET weight = 9.25, success_ema = 0.11, latency_ema_ms = 321.0, consecutive_failures = 7, is_penalized = 1 WHERE proxy_key = ?",
+        )
+        .bind(&proxy_url)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("seed updated runtime health metrics");
+
+        proxy
+            .persist_forward_proxy_geo_candidates(&[ForwardProxyGeoCandidate {
+                endpoint,
+                host_ips: vec!["1.1.1.1".to_string()],
+                regions: vec!["HK".to_string()],
+                source: ForwardProxyGeoSource::Trace,
+                geo_refreshed_at: Utc::now().timestamp(),
+            }])
+            .await
+            .expect("persist geo metadata only");
+
+        let row: (f64, f64, Option<f64>, i64, i64, String, String, String) = sqlx::query_as(
+            "SELECT weight, success_ema, latency_ema_ms, consecutive_failures, is_penalized, resolved_ip_source, resolved_ips_json, resolved_regions_json FROM forward_proxy_runtime WHERE proxy_key = ?",
+        )
+        .bind(&proxy_url)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("load runtime row after geo-only update");
+        assert_eq!(row.0, 9.25);
+        assert_eq!(row.1, 0.11);
+        assert_eq!(row.2, Some(321.0));
+        assert_eq!(row.3, 7);
+        assert_eq!(row.4, 1);
+        assert_eq!(row.5, "trace");
+        assert_eq!(row.6, "[\"1.1.1.1\"]");
+        assert_eq!(row.7, "[\"HK\"]");
+
+        let manager = proxy.forward_proxy.lock().await;
+        let runtime = manager
+            .runtime(&proxy_url)
+            .expect("runtime state should still exist");
+        assert!(runtime.weight.is_finite());
+        assert_eq!(runtime.resolved_ip_source, "trace");
+        assert_eq!(runtime.resolved_ips, vec!["1.1.1.1".to_string()]);
+        assert_eq!(runtime.resolved_regions, vec!["HK".to_string()]);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn select_proxy_affinity_keeps_in_memory_match_when_runtime_geo_persist_fails() {
         let db_path = temp_db_path("proxy-runtime-geo-persist-fallback");
         let db_str = db_path.to_string_lossy().to_string();
@@ -20451,7 +20571,7 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
     }
 
     #[tokio::test]
-    async fn forward_proxy_geo_refresh_wait_secs_treats_incomplete_trace_cache_as_due() {
+    async fn forward_proxy_geo_refresh_wait_secs_backs_off_recent_incomplete_trace_cache() {
         let db_path = temp_db_path("proxy-runtime-geo-refresh-wait-incomplete");
         let db_str = db_path.to_string_lossy().to_string();
         let proxy_url = "http://proxy.invalid:8080".to_string();
@@ -20486,9 +20606,55 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
         let wait_secs = proxy
             .forward_proxy_geo_refresh_wait_secs(max_age_secs)
             .await;
+        assert!(
+            (1..=FORWARD_PROXY_GEO_NEGATIVE_RETRY_COOLDOWN_SECS).contains(&wait_secs),
+            "recent incomplete trace metadata should back off briefly instead of hot-looping, got {wait_secs}"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn forward_proxy_geo_refresh_wait_secs_retries_stale_incomplete_trace_cache_immediately()
+    {
+        let db_path = temp_db_path("proxy-runtime-geo-refresh-wait-stale-incomplete");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy_url = "http://proxy.invalid:8080".to_string();
+        let max_age_secs = 24 * 3600;
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        {
+            let mut manager = proxy.forward_proxy.lock().await;
+            manager.apply_settings(
+                ForwardProxySettings {
+                    proxy_urls: vec![proxy_url.clone()],
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: false,
+                }
+                .normalized(),
+            );
+            let runtime = manager
+                .runtime
+                .get_mut(&proxy_url)
+                .expect("runtime state should exist for proxy");
+            runtime.available = true;
+            runtime.last_error = None;
+            runtime.resolved_ip_source = "trace".to_string();
+            runtime.resolved_ips = vec!["8.8.8.8".to_string()];
+            runtime.resolved_regions = Vec::new();
+            runtime.geo_refreshed_at =
+                Utc::now().timestamp() - (FORWARD_PROXY_GEO_NEGATIVE_RETRY_COOLDOWN_SECS + 1);
+        }
+
+        let wait_secs = proxy
+            .forward_proxy_geo_refresh_wait_secs(max_age_secs)
+            .await;
         assert_eq!(
             wait_secs, 0,
-            "startup scheduling should immediately refresh incomplete trace GEO metadata"
+            "stale incomplete trace metadata should be retried immediately once the cooldown expires"
         );
 
         let _ = std::fs::remove_file(db_path);
