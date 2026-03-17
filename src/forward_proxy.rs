@@ -1683,8 +1683,33 @@ pub async fn persist_forward_proxy_runtime_snapshot(
     Ok(())
 }
 
+pub async fn persist_forward_proxy_runtime_states_atomic(
+    pool: &SqlitePool,
+    states: &[ForwardProxyRuntimeState],
+) -> Result<(), ProxyError> {
+    if states.is_empty() {
+        return Ok(());
+    }
+    let mut tx = pool.begin().await?;
+    for state in states {
+        persist_forward_proxy_runtime_state_tx(&mut tx, state).await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
 pub async fn persist_forward_proxy_runtime_state(
     pool: &SqlitePool,
+    state: &ForwardProxyRuntimeState,
+) -> Result<(), ProxyError> {
+    let mut tx = pool.begin().await?;
+    persist_forward_proxy_runtime_state_tx(&mut tx, state).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn persist_forward_proxy_runtime_state_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
     state: &ForwardProxyRuntimeState,
 ) -> Result<(), ProxyError> {
     let resolved_ips_json = serde_json::to_string(&state.resolved_ips).map_err(|err| {
@@ -1740,7 +1765,7 @@ pub async fn persist_forward_proxy_runtime_state(
     .bind(state.latency_ema_ms)
     .bind(i64::from(state.consecutive_failures))
     .bind(state.is_penalized() as i64)
-    .execute(pool)
+    .execute(&mut **tx)
     .await?;
     Ok(())
 }

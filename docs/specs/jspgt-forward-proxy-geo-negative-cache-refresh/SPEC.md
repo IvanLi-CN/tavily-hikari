@@ -21,7 +21,7 @@
 ### Request-path behavior
 
 - registration-aware 代理亲和选择继续使用 forward proxy GEO 元数据。
-- `create_api_keys_batch` 在单批内只做一次 forward proxy GEO 预热，随后复用缓存处理该批所有带 registration metadata 的 key。
+- `create_api_keys_batch` 不再额外同步整池 GEO 预热；批内的 registration-aware 选择依赖持久化缓存与短冷却重试机制，避免在 handler 里先做一轮额外全池阻塞工作。
 - hint-only 导入不触发 GEO 预热，也不为节点写入 GEO 占位数据。
 - legacy host-based / 空 source / 无 timestamp 的历史 runtime 行，在首次命中时会被修复成 `trace` 或 `negative`。
 

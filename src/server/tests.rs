@@ -4362,7 +4362,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn api_keys_batch_registration_metadata_warms_negative_forward_proxy_geo_cache() {
+    async fn api_keys_batch_registration_metadata_does_not_eagerly_prewarm_forward_proxy_geo_cache() {
         let db_path = temp_db_path("keys-batch-registration-geo-warm");
         let db_str = db_path.to_string_lossy().to_string();
         let geo_addr = spawn_api_key_geo_mock_server().await;
@@ -4433,10 +4433,10 @@ mod tests {
         .fetch_one(&pool)
         .await
         .expect("registration batch runtime row");
-        assert_eq!(runtime_row.0, "negative");
+        assert!(runtime_row.0.is_empty());
         assert_eq!(runtime_row.1, "[]");
         assert_eq!(runtime_row.2, "[]");
-        assert!(runtime_row.3 > 0);
+        assert_eq!(runtime_row.3, 0);
 
         let _ = std::fs::remove_file(db_path);
     }

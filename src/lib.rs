@@ -3196,10 +3196,10 @@ impl TavilyProxy {
         candidates: &[ForwardProxyGeoCandidate],
     ) -> Result<(), ProxyError> {
         let changed = {
-            let mut manager = self.forward_proxy.lock().await;
+            let manager = self.forward_proxy.lock().await;
             let mut changed = Vec::new();
             for candidate in candidates {
-                let Some(runtime) = manager.runtime.get_mut(&candidate.endpoint.key) else {
+                let Some(runtime) = manager.runtime.get(&candidate.endpoint.key) else {
                     continue;
                 };
                 if runtime.resolved_ips == candidate.host_ips
@@ -3209,17 +3209,22 @@ impl TavilyProxy {
                 {
                     continue;
                 }
-                runtime.resolved_ips = candidate.host_ips.clone();
-                runtime.resolved_regions = candidate.regions.clone();
-                runtime.resolved_ip_source = candidate.source.as_str().to_string();
-                runtime.geo_refreshed_at = candidate.geo_refreshed_at;
-                changed.push(runtime.clone());
+                let mut updated = runtime.clone();
+                updated.resolved_ips = candidate.host_ips.clone();
+                updated.resolved_regions = candidate.regions.clone();
+                updated.resolved_ip_source = candidate.source.as_str().to_string();
+                updated.geo_refreshed_at = candidate.geo_refreshed_at;
+                changed.push(updated);
             }
             changed
         };
+        forward_proxy::persist_forward_proxy_runtime_states_atomic(&self.key_store.pool, &changed)
+            .await?;
+        let mut manager = self.forward_proxy.lock().await;
         for runtime in changed {
-            forward_proxy::persist_forward_proxy_runtime_state(&self.key_store.pool, &runtime)
-                .await?;
+            if let Some(entry) = manager.runtime.get_mut(&runtime.proxy_key) {
+                *entry = runtime;
+            }
         }
         Ok(())
     }

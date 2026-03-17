@@ -1580,12 +1580,6 @@ async fn create_api_keys_batch(
     let mut results = Vec::with_capacity(trimmed.len());
     let mut seen = HashSet::<String>::new();
     let region_by_ip = resolve_registration_regions(&state.api_key_ip_geo_origin, &geo_lookup_ips).await;
-    if trimmed.iter().any(|item| item.registration_ip.is_some()) {
-        let _ = state
-            .proxy
-            .refresh_forward_proxy_geo_metadata(&state.api_key_ip_geo_origin, false)
-            .await;
-    }
 
     for item in trimmed {
         if !seen.insert(item.api_key.clone()) {
