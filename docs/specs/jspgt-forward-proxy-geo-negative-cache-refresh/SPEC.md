@@ -29,7 +29,7 @@
 
 - 新增 `forward_proxy_geo_refresh` 定时任务。
 - 周期固定为 24 小时。
-- 服务启动时若现有 non-Direct 节点 GEO 元数据已缺失或已过期（>=24h），需立即补跑首轮刷新；否则必须只等待“剩余 TTL”后再执行首轮刷新，避免重启把周期漂移到接近 48 小时。
+- 服务启动时若现有 non-Direct 节点 GEO 元数据仍缺失/不完整，或已过期（>=24h），需立即补跑首轮刷新；否则必须只等待“剩余 TTL”后再执行首轮刷新，并按固定 24h deadline 调度后续轮次，避免重启或任务耗时把周期漂移。
 - 每轮刷新全部非 Direct 节点：
   - trace 成功则写回 `trace` 和新的 `geo_refreshed_at`。
   - trace 失败则写回 `negative`、空 `resolved_ips`/`resolved_regions`，并更新时间戳。

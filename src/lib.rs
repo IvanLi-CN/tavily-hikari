@@ -3457,11 +3457,24 @@ impl TavilyProxy {
                 continue;
             }
             saw_non_direct = true;
-            let refreshed_at = manager
+            let (source, resolved_ips, resolved_regions, refreshed_at) = manager
                 .runtime(&endpoint.key)
-                .map(|runtime| runtime.geo_refreshed_at)
-                .unwrap_or_default();
-            if refreshed_at <= 0 {
+                .map(|runtime| {
+                    (
+                        ForwardProxyGeoSource::from_runtime(&runtime.resolved_ip_source),
+                        runtime.resolved_ips.clone(),
+                        runtime.resolved_regions.clone(),
+                        runtime.geo_refreshed_at,
+                    )
+                })
+                .unwrap_or_else(|| (ForwardProxyGeoSource::Unknown, Vec::new(), Vec::new(), 0));
+            if !Self::is_forward_proxy_geo_cache_complete(
+                endpoint,
+                source,
+                &resolved_ips,
+                &resolved_regions,
+                refreshed_at,
+            ) {
                 return 0;
             }
             let age = now.saturating_sub(refreshed_at);
@@ -20304,6 +20317,50 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
         assert!(
             (0..=5).contains(&wait_secs),
             "scheduler should wait only the remaining TTL before the first 24h GEO refresh, got {wait_secs}"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn forward_proxy_geo_refresh_wait_secs_treats_incomplete_trace_cache_as_due() {
+        let db_path = temp_db_path("proxy-runtime-geo-refresh-wait-incomplete");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy_url = "http://proxy.invalid:8080".to_string();
+        let max_age_secs = 24 * 3600;
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        {
+            let mut manager = proxy.forward_proxy.lock().await;
+            manager.apply_settings(
+                ForwardProxySettings {
+                    proxy_urls: vec![proxy_url.clone()],
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: false,
+                }
+                .normalized(),
+            );
+            let runtime = manager
+                .runtime
+                .get_mut(&proxy_url)
+                .expect("runtime state should exist for proxy");
+            runtime.available = true;
+            runtime.last_error = None;
+            runtime.resolved_ip_source = "trace".to_string();
+            runtime.resolved_ips = vec!["8.8.8.8".to_string()];
+            runtime.resolved_regions = Vec::new();
+            runtime.geo_refreshed_at = Utc::now().timestamp();
+        }
+
+        let wait_secs = proxy
+            .forward_proxy_geo_refresh_wait_secs(max_age_secs)
+            .await;
+        assert_eq!(
+            wait_secs, 0,
+            "startup scheduling should immediately refresh incomplete trace GEO metadata"
         );
 
         let _ = std::fs::remove_file(db_path);
