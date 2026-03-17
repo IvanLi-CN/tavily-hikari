@@ -3308,6 +3308,7 @@ impl TavilyProxy {
                     && geo_refreshed_at > 0
                     && !cached_ips.is_empty()
                     && cached_regions.is_empty()
+                    && cached_ips.iter().any(|ip| is_global_geo_ip(ip))
                 {
                     return ForwardProxyGeoCandidate {
                         endpoint,
@@ -3446,22 +3447,38 @@ impl TavilyProxy {
         Ok(candidates.len())
     }
 
-    pub async fn forward_proxy_geo_refresh_due(&self, max_age_secs: i64) -> bool {
+    pub async fn forward_proxy_geo_refresh_wait_secs(&self, max_age_secs: i64) -> i64 {
         let now = Utc::now().timestamp();
         let manager = self.forward_proxy.lock().await;
+        let mut saw_non_direct = false;
+        let mut min_wait = max_age_secs.max(0);
         for endpoint in &manager.endpoints {
             if endpoint.is_direct() {
                 continue;
             }
+            saw_non_direct = true;
             let refreshed_at = manager
                 .runtime(&endpoint.key)
                 .map(|runtime| runtime.geo_refreshed_at)
                 .unwrap_or_default();
-            if refreshed_at <= 0 || now.saturating_sub(refreshed_at) >= max_age_secs {
-                return true;
+            if refreshed_at <= 0 {
+                return 0;
             }
+            let age = now.saturating_sub(refreshed_at);
+            if age >= max_age_secs {
+                return 0;
+            }
+            min_wait = min_wait.min(max_age_secs.saturating_sub(age));
         }
-        false
+        if saw_non_direct {
+            min_wait
+        } else {
+            max_age_secs.max(0)
+        }
+    }
+
+    pub async fn forward_proxy_geo_refresh_due(&self, max_age_secs: i64) -> bool {
+        self.forward_proxy_geo_refresh_wait_secs(max_age_secs).await <= 0
     }
 
     async fn select_proxy_affinity_preview_for_registration_with_hint(
@@ -20155,6 +20172,138 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
         assert!(
             second_row.3 > first_row.3,
             "force refresh failures should replace stale trace data with a fresh negative placeholder timestamp"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn select_proxy_affinity_retraces_non_global_trace_cache_without_regions() {
+        let db_path = temp_db_path("proxy-runtime-geo-retrace-loopback-trace");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy_url = "http://proxy.invalid:8080".to_string();
+        let bad_geo_origin = "http://127.0.0.1:9/geo";
+        let refreshed_at = Utc::now().timestamp();
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        {
+            let mut manager = proxy.forward_proxy.lock().await;
+            manager.apply_settings(
+                ForwardProxySettings {
+                    proxy_urls: vec![proxy_url.clone()],
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: false,
+                }
+                .normalized(),
+            );
+            let runtime = manager
+                .runtime
+                .get_mut(&proxy_url)
+                .expect("runtime state should exist for proxy");
+            runtime.available = true;
+            runtime.last_error = None;
+            runtime.resolved_ip_source = "trace".to_string();
+            runtime.resolved_ips = vec!["127.0.0.1".to_string()];
+            runtime.resolved_regions = Vec::new();
+            runtime.geo_refreshed_at = refreshed_at;
+        }
+        let persisted_runtime = {
+            let manager = proxy.forward_proxy.lock().await;
+            manager
+                .runtime
+                .get(&proxy_url)
+                .cloned()
+                .expect("persisted runtime state")
+        };
+        forward_proxy::persist_forward_proxy_runtime_state(
+            &proxy.key_store.pool,
+            &persisted_runtime,
+        )
+        .await
+        .expect("persist seeded runtime state");
+        proxy
+            .set_forward_proxy_trace_override_for_test(&proxy_url, "8.8.8.8", "TEST / 8.8.8.8")
+            .await;
+
+        let (_record, preview) = proxy
+            .select_proxy_affinity_preview_for_registration_with_hint(
+                "subject:retrace-loopback-trace-cache",
+                bad_geo_origin,
+                Some("8.8.8.8"),
+                Some("US"),
+                None,
+            )
+            .await
+            .expect("selection should retrace non-global cached trace IPs");
+        assert_eq!(
+            preview.as_ref().map(|item| item.match_kind),
+            Some(AssignedProxyMatchKind::RegistrationIp)
+        );
+
+        let row: (String, String, String) = sqlx::query_as(
+            "SELECT resolved_ip_source, resolved_ips_json, resolved_regions_json FROM forward_proxy_runtime WHERE proxy_key = ?",
+        )
+        .bind(&proxy_url)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("load refreshed runtime row");
+        assert_eq!(row.0, "trace");
+        assert_eq!(row.1, "[\"8.8.8.8\"]");
+        assert_eq!(row.2, "[]");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn forward_proxy_geo_refresh_wait_secs_tracks_remaining_ttl() {
+        let db_path = temp_db_path("proxy-runtime-geo-refresh-wait-ttl");
+        let db_str = db_path.to_string_lossy().to_string();
+        let geo_addr = spawn_api_key_geo_mock_server().await;
+        let geo_origin = format!("http://{geo_addr}/geo");
+        let proxy_url = "http://proxy.invalid:8080".to_string();
+        let max_age_secs = 24 * 3600;
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        {
+            let mut manager = proxy.forward_proxy.lock().await;
+            manager.apply_settings(
+                ForwardProxySettings {
+                    proxy_urls: vec![proxy_url.clone()],
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: false,
+                }
+                .normalized(),
+            );
+        }
+        proxy
+            .set_forward_proxy_trace_override_for_test(&proxy_url, "1.1.1.1", "TEST / 1.1.1.1")
+            .await;
+        proxy
+            .refresh_forward_proxy_geo_metadata(&geo_origin, true)
+            .await
+            .expect("seed fresh GEO runtime metadata");
+
+        {
+            let mut manager = proxy.forward_proxy.lock().await;
+            let runtime = manager
+                .runtime
+                .get_mut(&proxy_url)
+                .expect("runtime state should exist for proxy");
+            runtime.geo_refreshed_at = Utc::now().timestamp() - (max_age_secs - 5);
+        }
+
+        let wait_secs = proxy
+            .forward_proxy_geo_refresh_wait_secs(max_age_secs)
+            .await;
+        assert!(
+            (0..=5).contains(&wait_secs),
+            "scheduler should wait only the remaining TTL before the first 24h GEO refresh, got {wait_secs}"
         );
 
         let _ = std::fs::remove_file(db_path);
