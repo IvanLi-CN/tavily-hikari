@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 进行中（4/5）
+- Status: 已完成（5/5）
 - Created: 2026-03-17
 - Last: 2026-03-17
 
@@ -117,7 +117,7 @@
 - [x] M2: 抽出 guide 渲染复用，保持 detail guide 行为不变
 - [x] M3: Storybook 增加 Single / Multiple / Empty token landing 验收态
 - [x] M4: 新增 landing guide helper 测试并通过前端验证
-- [ ] M5: PR 创建并收敛到 merge-ready
+- [x] M5: PR 创建并收敛到 merge-ready
 
 ## 风险 / 假设（Risks / Assumptions）
 
@@ -128,6 +128,7 @@
 
 - 2026-03-17：创建 follow-up spec，冻结“single-token landing 追加 guide、多 token 不显示、detail 维持现状”的边界。
 - 2026-03-17：完成 UserConsole landing 条件渲染、Storybook single/multiple/empty 场景与 helper tests，并通过 `bun test`、`bun run build`、`bun run build-storybook`。
+- 2026-03-17：PR #147 rebased onto `main` 并补齐 `type:patch` + `channel:stable`；CI Pipeline、label gate 与 review-loop 已收敛到 merge-ready。
 
 ## 参考（References）
 
