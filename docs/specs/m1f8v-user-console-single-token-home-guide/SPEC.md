@@ -4,7 +4,7 @@
 
 - Status: 已完成（5/5）
 - Created: 2026-03-17
-- Last: 2026-03-17
+- Last: 2026-03-18
 
 ## 背景 / 问题陈述
 
@@ -110,6 +110,9 @@
 - 2026-03-17：使用本地静态 Storybook（端口 `30100`）验证：
   - `http://127.0.0.1:30100/iframe.html?id=user-console-userconsole--console-home-tokens-focus&viewMode=story`：single-token landing 在 Token 列表后显示 `Client Setup` 区块，示例 token 为 `th-a1b2-************************`。
   - `http://127.0.0.1:30100/iframe.html?id=user-console-userconsole--console-home-multiple-tokens&viewMode=story`：multiple-token landing 仅显示概览与两条 token 记录，不出现 guide 区块。
+- 2026-03-18：补充 single-token landing 的完整 Storybook canvas 截图，证明首页顺序为“概览 → Token 列表 → Client Setup”，且 guide 示例 token 已替换为唯一 token 的 masked id。
+
+![Single-token landing canvas](./assets/console-home-single-token-canvas.png)
 
 ## 实现里程碑（Milestones / Delivery checklist）
 
@@ -129,6 +132,7 @@
 - 2026-03-17：创建 follow-up spec，冻结“single-token landing 追加 guide、多 token 不显示、detail 维持现状”的边界。
 - 2026-03-17：完成 UserConsole landing 条件渲染、Storybook single/multiple/empty 场景与 helper tests，并通过 `bun test`、`bun run build`、`bun run build-storybook`。
 - 2026-03-17：PR #147 rebased onto `main` 并补齐 `type:patch` + `channel:stable`；CI Pipeline、label gate 与 review-loop 已收敛到 merge-ready。
+- 2026-03-18：为 single-token landing 验收态补充完整 Storybook canvas 截图并嵌入 spec。
 
 ## 参考（References）
 
