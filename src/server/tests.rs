@@ -4622,6 +4622,84 @@ colo=LAX
     }
 
     #[tokio::test]
+    async fn forward_proxy_geo_refresh_scheduler_skips_immediate_run_when_runtime_is_fresh() {
+        let db_path = temp_db_path("forward-proxy-geo-refresh-scheduler-fresh");
+        let db_str = db_path.to_string_lossy().to_string();
+        let geo_addr = spawn_api_key_geo_mock_server().await;
+        let traced_proxy_addr = spawn_fake_forward_proxy_with_body(
+            StatusCode::OK,
+            "ip=1.1.1.1
+loc=US
+colo=LAX
+".to_string(),
+        )
+        .await;
+        let traced_proxy = format!("http://{traced_proxy_addr}");
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        proxy
+            .update_forward_proxy_settings(
+                ForwardProxySettings {
+                    proxy_urls: vec![traced_proxy.clone()],
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: false,
+                },
+                false,
+            )
+            .await
+            .expect("proxy settings updated");
+        proxy
+            .refresh_forward_proxy_geo_metadata(&format!("http://{geo_addr}/geo"), true)
+            .await
+            .expect("seed fresh GEO runtime metadata");
+
+        let state = Arc::new(AppState {
+            proxy,
+            static_dir: None,
+            forward_auth: ForwardAuthConfig::new(None, None, None, None),
+            forward_auth_enabled: false,
+            builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+            dev_open_admin: false,
+            usage_base: "http://127.0.0.1:58088".to_string(),
+            api_key_ip_geo_origin: format!("http://{geo_addr}/geo"),
+        });
+
+        let handle = spawn_forward_proxy_geo_refresh_scheduler(state.clone());
+
+        let options = SqliteConnectOptions::new()
+            .filename(&db_str)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open db pool");
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        handle.abort();
+
+        let row = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM scheduled_jobs WHERE job_type = 'forward_proxy_geo_refresh'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count geo refresh jobs");
+        assert_eq!(
+            row, 1,
+            "fresh runtime GEO metadata should not trigger an extra startup refresh job"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn api_keys_batch_structured_items_ignore_stale_assigned_proxy_hint_without_registration_metadata(
     ) {
         let db_path = temp_db_path("keys-batch-stale-assigned-proxy-hint");

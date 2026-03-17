@@ -12,10 +12,11 @@
 
 - `forward_proxy_runtime` 新增 `geo_refreshed_at`，默认值为 `0`。
 - `resolved_ip_source` 语义调整为：
-  - `trace`：已成功拿到出口 IP；可带一个或多个 `resolved_ips` 与 `resolved_regions`。
-  - `negative`：本轮 trace/GEO 解析失败，作为正式持久化占位缓存。
+  - `trace`：已成功拿到出口 IP；可带一个或多个 `resolved_ips` 与 `resolved_regions`；若暂时拿不到 region，允许保留 `resolved_ips` 并在后续懒刷新中继续补 region。
+  - `negative`：trace 失败后写入的正式持久化占位缓存；默认不携带可用于匹配的 GEO 数据。
   - `""`：仅兼容历史数据，视为未完成缓存。
-- 请求路径只把“`geo_refreshed_at = 0` 或 `resolved_ip_source` 为空”的 runtime 行视为待修复；一旦 runtime 行带有 `trace` 或 `negative` 且 `geo_refreshed_at > 0`，后续请求直接复用缓存，不再同步 trace。
+- 请求路径只把“`geo_refreshed_at = 0`、`resolved_ip_source` 为空、或 `trace` 仅有 `resolved_ips` 但还没有 `resolved_regions`”的 runtime 行视为待修复；对最后一种情况，请求路径只重试 region 补全，不重复 trace。
+- `negative` 且 `geo_refreshed_at > 0` 的 runtime 行视为已完成占位缓存，后续请求直接复用，不再同步 trace。
 
 ### Request-path behavior
 
@@ -28,6 +29,7 @@
 
 - 新增 `forward_proxy_geo_refresh` 定时任务。
 - 周期固定为 24 小时。
+- 服务启动时只有在现有 non-Direct 节点 GEO 元数据缺失或已过期（>=24h）时，才补跑首轮刷新；否则直接进入 24h 周期。
 - 每轮刷新全部非 Direct 节点：
   - trace 成功则写回 `trace` 和新的 `geo_refreshed_at`。
   - trace 失败则写回 `negative`、空 `resolved_ips`/`resolved_regions`，并更新时间戳。
