@@ -23,6 +23,7 @@
 
 - registration-aware 代理亲和选择继续使用 forward proxy GEO 元数据。
 - `create_api_keys_batch` 不再额外同步整池 GEO 预热；批内的 registration-aware 选择依赖持久化缓存与短冷却重试机制，避免在 handler 里先做一轮额外全池阻塞工作。
+- lazy request-path 若 GEO 落库暂时失败，进程内 runtime 仍要保留本次解析出的 GEO 结果，避免在 SQLite busy/locked 时把 trace/GEO 请求风暴放大。
 - hint-only 导入不触发 GEO 预热，也不为节点写入 GEO 占位数据。
 - legacy host-based / 空 source / 无 timestamp 的历史 runtime 行，在首次命中时会被修复成 `trace` 或 `negative`。
 
@@ -31,7 +32,7 @@
 - 新增 `forward_proxy_geo_refresh` 定时任务。
 - 周期固定为 24 小时。
 - scheduler 需要周期性重算剩余 TTL；若现有 non-Direct 节点 GEO 元数据仍缺失/不完整，或已过期（>=24h），需立即补跑首轮刷新；否则只等待当前剩余 TTL，并在后续通过短周期 recheck 避免新增/变更节点把首轮刷新拖到原先的 24h deadline 之后。
-- 对“刚刷新过但仍缺 region 的 trace 结果”不能进入无休眠热循环；这类 incomplete runtime 需要遵守短冷却退避，冷却到期后再由 scheduler 重试。
+- 对“刚刷新过但仍缺 region 的 trace 结果”不能进入无休眠热循环；这类 incomplete runtime 只有在仍持有 global GEO IP 时才遵守短冷却退避，loopback/RFC1918 等不可用 trace 结果必须立即重试。
 - 每轮刷新全部非 Direct 节点：
   - trace 成功则写回 `trace` 和新的 `geo_refreshed_at`。
   - trace 失败则写回 `negative`、空 `resolved_ips`/`resolved_regions`，并更新时间戳。

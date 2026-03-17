@@ -1730,6 +1730,64 @@ pub async fn persist_forward_proxy_runtime_geo_metadata_atomic(
     Ok(())
 }
 
+pub async fn persist_forward_proxy_runtime_health_state(
+    pool: &SqlitePool,
+    state: &ForwardProxyRuntimeState,
+) -> Result<(), ProxyError> {
+    let resolved_ips_json = serde_json::to_string(&state.resolved_ips).map_err(|err| {
+        ProxyError::Other(format!("failed to serialize forward proxy ips: {err}"))
+    })?;
+    let resolved_regions_json = serde_json::to_string(&state.resolved_regions).map_err(|err| {
+        ProxyError::Other(format!("failed to serialize forward proxy regions: {err}"))
+    })?;
+    sqlx::query(
+        r#"
+        INSERT INTO forward_proxy_runtime (
+            proxy_key,
+            display_name,
+            source,
+            endpoint_url,
+            resolved_ip_source,
+            resolved_ips_json,
+            resolved_regions_json,
+            geo_refreshed_at,
+            weight,
+            success_ema,
+            latency_ema_ms,
+            consecutive_failures,
+            is_penalized,
+            updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, strftime('%s', 'now'))
+        ON CONFLICT(proxy_key) DO UPDATE SET
+            display_name = excluded.display_name,
+            source = excluded.source,
+            endpoint_url = excluded.endpoint_url,
+            weight = excluded.weight,
+            success_ema = excluded.success_ema,
+            latency_ema_ms = excluded.latency_ema_ms,
+            consecutive_failures = excluded.consecutive_failures,
+            is_penalized = excluded.is_penalized,
+            updated_at = strftime('%s', 'now')
+        "#,
+    )
+    .bind(&state.proxy_key)
+    .bind(&state.display_name)
+    .bind(&state.source)
+    .bind(&state.endpoint_url)
+    .bind(&state.resolved_ip_source)
+    .bind(resolved_ips_json)
+    .bind(resolved_regions_json)
+    .bind(state.geo_refreshed_at)
+    .bind(state.weight)
+    .bind(state.success_ema)
+    .bind(state.latency_ema_ms)
+    .bind(i64::from(state.consecutive_failures))
+    .bind(state.is_penalized() as i64)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 pub async fn persist_forward_proxy_runtime_state(
     pool: &SqlitePool,
     state: &ForwardProxyRuntimeState,
