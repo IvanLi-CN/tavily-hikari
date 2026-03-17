@@ -267,13 +267,14 @@ async fn run_forward_proxy_geo_refresh_job(state: Arc<AppState>) {
     }
 }
 
-fn spawn_forward_proxy_geo_refresh_scheduler(state: Arc<AppState>) {
+fn spawn_forward_proxy_geo_refresh_scheduler(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        run_forward_proxy_geo_refresh_job(state.clone()).await;
         loop {
             tokio::time::sleep(Duration::from_secs(twenty_four_hours_secs() as u64)).await;
             run_forward_proxy_geo_refresh_job(state.clone()).await;
         }
-    });
+    })
 }
 
 fn spawn_forward_proxy_maintenance_scheduler(state: Arc<AppState>) {

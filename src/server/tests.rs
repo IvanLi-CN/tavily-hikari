@@ -4552,6 +4552,76 @@ colo=LAX
     }
 
     #[tokio::test]
+    async fn forward_proxy_geo_refresh_scheduler_runs_immediately_before_24h_sleep() {
+        let db_path = temp_db_path("forward-proxy-geo-refresh-scheduler-immediate");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        proxy
+            .update_forward_proxy_settings(
+                ForwardProxySettings {
+                    proxy_urls: vec!["http://127.0.0.1:1".to_string()],
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: false,
+                },
+                false,
+            )
+            .await
+            .expect("proxy settings updated");
+
+        let state = Arc::new(AppState {
+            proxy,
+            static_dir: None,
+            forward_auth: ForwardAuthConfig::new(None, None, None, None),
+            forward_auth_enabled: false,
+            builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            linuxdo_oauth: LinuxDoOAuthOptions::disabled(),
+            dev_open_admin: false,
+            usage_base: "http://127.0.0.1:58088".to_string(),
+            api_key_ip_geo_origin: "http://127.0.0.1:9/geo".to_string(),
+        });
+
+        let handle = spawn_forward_proxy_geo_refresh_scheduler(state.clone());
+
+        let options = SqliteConnectOptions::new()
+            .filename(&db_str)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open db pool");
+
+        let mut saw_job = false;
+        for _ in 0..30 {
+            let row = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM scheduled_jobs WHERE job_type = 'forward_proxy_geo_refresh'",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("count geo refresh jobs");
+            if row > 0 {
+                saw_job = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        handle.abort();
+
+        assert!(
+            saw_job,
+            "scheduler should run a GEO refresh immediately instead of waiting 24h for the first cycle"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn api_keys_batch_structured_items_ignore_stale_assigned_proxy_hint_without_registration_metadata(
     ) {
         let db_path = temp_db_path("keys-batch-stale-assigned-proxy-hint");

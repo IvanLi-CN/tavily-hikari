@@ -3289,28 +3289,14 @@ impl TavilyProxy {
                 ForwardProxyGeoRefreshMode::ForceRefreshAll => !endpoint.is_direct(),
             };
             if should_refresh && !endpoint.is_direct() {
-                refresh_targets.push((
-                    endpoint.clone(),
-                    cached_source,
-                    cached_ips,
-                    cached_regions,
-                    geo_refreshed_at,
-                    cache_complete,
-                ));
+                refresh_targets.push(endpoint.clone());
             }
         }
 
         let refreshed_at = Utc::now().timestamp();
         let trace_timeout = Duration::from_millis(FORWARD_PROXY_TRACE_TIMEOUT_MS);
-        let resolved_refresh = futures_util::stream::iter(refresh_targets.into_iter().map(
-            |(
-                endpoint,
-                cached_source,
-                cached_ips,
-                cached_regions,
-                geo_refreshed_at,
-                cache_complete,
-            )| async move {
+        let resolved_refresh =
+            futures_util::stream::iter(refresh_targets.into_iter().map(|endpoint| async move {
                 if let Some((ip, _location)) = self
                     .fetch_forward_proxy_trace(&endpoint, trace_timeout, None)
                     .await
@@ -3324,19 +3310,6 @@ impl TavilyProxy {
                     };
                 }
 
-                if refresh_mode == ForwardProxyGeoRefreshMode::ForceRefreshAll
-                    && cache_complete
-                    && cached_source == ForwardProxyGeoSource::Trace
-                {
-                    return ForwardProxyGeoCandidate {
-                        endpoint,
-                        host_ips: cached_ips,
-                        regions: cached_regions,
-                        source: cached_source,
-                        geo_refreshed_at,
-                    };
-                }
-
                 ForwardProxyGeoCandidate {
                     endpoint,
                     host_ips: Vec::new(),
@@ -3344,11 +3317,10 @@ impl TavilyProxy {
                     source: ForwardProxyGeoSource::Negative,
                     geo_refreshed_at: refreshed_at,
                 }
-            },
-        ))
-        .buffer_unordered(3)
-        .collect::<Vec<_>>()
-        .await;
+            }))
+            .buffer_unordered(3)
+            .collect::<Vec<_>>()
+            .await;
 
         let geo_lookup_ips = resolved_refresh
             .iter()
@@ -3380,13 +3352,23 @@ impl TavilyProxy {
                         .filter_map(|ip| region_by_ip.get(ip).cloned())
                         .filter(|region| seen_regions.insert(region.clone()))
                         .collect::<Vec<_>>();
+                    if candidate.regions.is_empty() {
+                        candidate.host_ips.clear();
+                        candidate.source = ForwardProxyGeoSource::Negative;
+                    }
                 }
                 candidate
             })
             .collect::<Vec<_>>();
-        if !refreshed_candidates.is_empty() {
-            self.persist_forward_proxy_geo_candidates(&refreshed_candidates)
-                .await?;
+        if !refreshed_candidates.is_empty()
+            && let Err(err) = self
+                .persist_forward_proxy_geo_candidates(&refreshed_candidates)
+                .await
+        {
+            if refresh_mode == ForwardProxyGeoRefreshMode::ForceRefreshAll {
+                return Err(err);
+            }
+            eprintln!("forward-proxy-geo-persist: {err}");
         }
         let refreshed_by_key = refreshed_candidates
             .into_iter()
@@ -19916,6 +19898,220 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
         assert_eq!(
             second_row.1, first_row.1,
             "negative GEO placeholders should be reused without retracing on each request"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn select_proxy_affinity_marks_trace_without_region_as_negative_placeholder() {
+        let db_path = temp_db_path("proxy-runtime-geo-trace-without-region");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy_url = "http://proxy.invalid:8080".to_string();
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        {
+            let mut manager = proxy.forward_proxy.lock().await;
+            manager.apply_settings(
+                ForwardProxySettings {
+                    proxy_urls: vec![proxy_url.clone()],
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: false,
+                }
+                .normalized(),
+            );
+        }
+        proxy
+            .set_forward_proxy_trace_override_for_test(&proxy_url, "8.8.8.8", "TEST / 8.8.8.8")
+            .await;
+
+        let (_first_record, first_preview) = proxy
+            .select_proxy_affinity_preview_for_registration_with_hint(
+                "subject:trace-without-region-first",
+                "http://127.0.0.1:9/geo",
+                Some("1.1.1.1"),
+                Some("HK"),
+                None,
+            )
+            .await
+            .expect("first selection should persist negative placeholder when GEO lookup is empty");
+        assert_eq!(
+            first_preview.as_ref().map(|item| item.match_kind),
+            Some(AssignedProxyMatchKind::Other)
+        );
+
+        let first_row: (String, String, String, i64) = sqlx::query_as(
+            "SELECT resolved_ip_source, resolved_ips_json, resolved_regions_json, geo_refreshed_at FROM forward_proxy_runtime WHERE proxy_key = ?",
+        )
+        .bind(&proxy_url)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("load negative placeholder for trace without region");
+        assert_eq!(first_row.0, "negative");
+        assert_eq!(first_row.1, "[]");
+        assert_eq!(first_row.2, "[]");
+        assert!(first_row.3 > 0);
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        let (_second_record, second_preview) = proxy
+            .select_proxy_affinity_preview_for_registration_with_hint(
+                "subject:trace-without-region-second",
+                "http://127.0.0.1:9/geo",
+                Some("1.1.1.1"),
+                Some("HK"),
+                None,
+            )
+            .await
+            .expect(
+                "second selection should reuse negative placeholder when GEO lookup stays empty",
+            );
+        assert_eq!(
+            second_preview.as_ref().map(|item| item.match_kind),
+            Some(AssignedProxyMatchKind::Other)
+        );
+
+        let second_row: (String, i64) = sqlx::query_as(
+            "SELECT resolved_ip_source, geo_refreshed_at FROM forward_proxy_runtime WHERE proxy_key = ?",
+        )
+        .bind(&proxy_url)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("reload negative placeholder for trace without region");
+        assert_eq!(second_row.0, "negative");
+        assert_eq!(
+            second_row.1, first_row.3,
+            "trace-without-region placeholders should be reused without retracing"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn select_proxy_affinity_keeps_in_memory_match_when_runtime_geo_persist_fails() {
+        let db_path = temp_db_path("proxy-runtime-geo-persist-fallback");
+        let db_str = db_path.to_string_lossy().to_string();
+        let geo_addr = spawn_api_key_geo_mock_server().await;
+        let geo_origin = format!("http://{geo_addr}/geo");
+        let proxy_url = "http://proxy.invalid:8080".to_string();
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        {
+            let mut manager = proxy.forward_proxy.lock().await;
+            manager.apply_settings(
+                ForwardProxySettings {
+                    proxy_urls: vec![proxy_url.clone()],
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: false,
+                }
+                .normalized(),
+            );
+        }
+        proxy
+            .set_forward_proxy_trace_override_for_test(&proxy_url, "1.0.0.1", "TEST / 1.0.0.1")
+            .await;
+
+        sqlx::query("DROP TABLE forward_proxy_runtime")
+            .execute(&proxy.key_store.pool)
+            .await
+            .expect("drop runtime table to force persist failure");
+
+        let (record, preview) = proxy
+            .select_proxy_affinity_preview_for_registration_with_hint(
+                "subject:runtime-geo-persist-fallback",
+                &geo_origin,
+                Some("1.0.0.1"),
+                Some("HK"),
+                None,
+            )
+            .await
+            .expect("selection should still succeed when runtime geo persistence fails");
+        assert_eq!(
+            record.primary_proxy_key.as_deref(),
+            Some(proxy_url.as_str())
+        );
+        assert_eq!(
+            preview.as_ref().map(|item| item.match_kind),
+            Some(AssignedProxyMatchKind::RegistrationIp)
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn force_refresh_replaces_stale_trace_with_negative_placeholder() {
+        let db_path = temp_db_path("proxy-runtime-geo-force-refresh-negative");
+        let db_str = db_path.to_string_lossy().to_string();
+        let geo_addr = spawn_api_key_geo_mock_server().await;
+        let geo_origin = format!("http://{geo_addr}/geo");
+        let proxy_url = "http://proxy.invalid:8080".to_string();
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        {
+            let mut manager = proxy.forward_proxy.lock().await;
+            manager.apply_settings(
+                ForwardProxySettings {
+                    proxy_urls: vec![proxy_url.clone()],
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: false,
+                }
+                .normalized(),
+            );
+        }
+        proxy
+            .set_forward_proxy_trace_override_for_test(&proxy_url, "1.0.0.1", "TEST / 1.0.0.1")
+            .await;
+        proxy
+            .refresh_forward_proxy_geo_metadata(&geo_origin, true)
+            .await
+            .expect("first force refresh should persist trace metadata");
+
+        let first_row: (String, String, String, i64) = sqlx::query_as(
+            "SELECT resolved_ip_source, resolved_ips_json, resolved_regions_json, geo_refreshed_at FROM forward_proxy_runtime WHERE proxy_key = ?",
+        )
+        .bind(&proxy_url)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("load initial trace runtime row");
+        assert_eq!(first_row.0, "trace");
+        assert_eq!(first_row.1, "[\"1.0.0.1\"]");
+        assert_eq!(first_row.2, "[\"HK\"]");
+        assert!(first_row.3 > 0);
+
+        proxy
+            .forward_proxy_trace_overrides
+            .lock()
+            .await
+            .remove(&proxy_url);
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        proxy
+            .refresh_forward_proxy_geo_metadata(&geo_origin, true)
+            .await
+            .expect("second force refresh should replace stale trace with negative placeholder");
+
+        let second_row: (String, String, String, i64) = sqlx::query_as(
+            "SELECT resolved_ip_source, resolved_ips_json, resolved_regions_json, geo_refreshed_at FROM forward_proxy_runtime WHERE proxy_key = ?",
+        )
+        .bind(&proxy_url)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("load refreshed negative runtime row");
+        assert_eq!(second_row.0, "negative");
+        assert_eq!(second_row.1, "[]");
+        assert_eq!(second_row.2, "[]");
+        assert!(
+            second_row.3 > first_row.3,
+            "force refresh failures should replace stale trace timestamps"
         );
 
         let _ = std::fs::remove_file(db_path);
