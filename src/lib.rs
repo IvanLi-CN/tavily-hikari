@@ -3449,12 +3449,10 @@ impl TavilyProxy {
     pub async fn forward_proxy_geo_refresh_due(&self, max_age_secs: i64) -> bool {
         let now = Utc::now().timestamp();
         let manager = self.forward_proxy.lock().await;
-        let mut saw_non_direct = false;
         for endpoint in &manager.endpoints {
             if endpoint.is_direct() {
                 continue;
             }
-            saw_non_direct = true;
             let refreshed_at = manager
                 .runtime(&endpoint.key)
                 .map(|runtime| runtime.geo_refreshed_at)
@@ -3463,7 +3461,7 @@ impl TavilyProxy {
                 return true;
             }
         }
-        saw_non_direct
+        false
     }
 
     async fn select_proxy_affinity_preview_for_registration_with_hint(

@@ -4692,7 +4692,7 @@ colo=LAX
         .await
         .expect("count geo refresh jobs");
         assert_eq!(
-            row, 1,
+            row, 0,
             "fresh runtime GEO metadata should not trigger an extra startup refresh job"
         );
 
