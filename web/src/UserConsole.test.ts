@@ -90,7 +90,7 @@ describe('UserConsole probe step definitions', () => {
     })).toEqual(['tavily-search', 'tavily-map', 'Acme_Lookup'])
   })
 
-  it('keeps non-Tavily tool calls unmodified and non-billable', async () => {
+  it('skips unsupported tools when building the MCP call sweep', async () => {
     const calls: Array<{ url: string, init?: RequestInit }> = []
     globalThis.fetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
       calls.push({ url: requestUrl(input), init })
@@ -107,15 +107,12 @@ describe('UserConsole probe step definitions', () => {
 
     expect(steps.map((step) => ({ id: step.id, billable: step.billable }))).toEqual([
       { id: 'mcp-tool-call:tavily-search', billable: true },
-      { id: 'mcp-tool-call:Acme_Lookup', billable: false },
     ])
 
     await steps[0]?.run('th-zjvc-secret')
-    await steps[1]?.run('th-zjvc-secret')
 
     expect(calls.map((call) => JSON.parse(String(call.init?.body ?? 'null')).params.name)).toEqual([
       'tavily-search',
-      'Acme_Lookup',
     ])
   })
 

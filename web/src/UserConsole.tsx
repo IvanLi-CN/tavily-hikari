@@ -242,7 +242,7 @@ function isBillableMcpProbeTool(toolName: string): boolean {
   return canonicalMcpProbeToolName(toolName).startsWith('tavily-')
 }
 
-function mcpToolProbeArguments(toolName: string): Record<string, unknown> {
+function mcpToolProbeArguments(toolName: string): Record<string, unknown> | null {
   switch (canonicalMcpProbeToolName(toolName)) {
     case 'tavily-search':
       return {
@@ -265,7 +265,7 @@ function mcpToolProbeArguments(toolName: string): Record<string, unknown> {
         query: 'health check',
       }
     default:
-      return {}
+      return null
   }
 }
 
@@ -323,17 +323,24 @@ function buildMcpToolCallProbeStepDefinitions(
       .filter((toolName) => toolName.length > 0),
   ))
 
-  return canonicalToolNames.map((toolName) => ({
-    id: `mcp-tool-call:${toolName}`,
-    label: formatTemplate(probeText.steps.mcpToolCall, { tool: toolName }),
-    billable: isBillableMcpProbeTool(toolName),
-    run: async (token: string): Promise<McpProbeStepResult | null> => {
-      const payload = await probeMcpToolsCall(token, toolName, mcpToolProbeArguments(toolName))
-      const error = envelopeError(payload)
-      if (error) throw new Error(error)
-      return null
-    },
-  }))
+  return canonicalToolNames.flatMap((toolName) => {
+    const probeArguments = mcpToolProbeArguments(toolName)
+    if (!probeArguments) {
+      return []
+    }
+
+    return [{
+      id: `mcp-tool-call:${toolName}`,
+      label: formatTemplate(probeText.steps.mcpToolCall, { tool: toolName }),
+      billable: isBillableMcpProbeTool(toolName),
+      run: async (token: string): Promise<McpProbeStepResult | null> => {
+        const payload = await probeMcpToolsCall(token, toolName, probeArguments)
+        const error = envelopeError(payload)
+        if (error) throw new Error(error)
+        return null
+      },
+    }]
+  })
 }
 
 function buildApiProbeStepDefinitions(
