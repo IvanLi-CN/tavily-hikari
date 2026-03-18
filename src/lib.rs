@@ -7384,12 +7384,16 @@ fn is_transient_sqlite_write_error(err: &ProxyError) -> bool {
 async fn open_sqlite_pool(
     database_path: &str,
     create_if_missing: bool,
+    read_only: bool,
 ) -> Result<SqlitePool, ProxyError> {
-    let options = SqliteConnectOptions::new()
+    let mut options = SqliteConnectOptions::new()
         .filename(database_path)
         .create_if_missing(create_if_missing)
-        .journal_mode(SqliteJournalMode::Wal)
+        .read_only(read_only)
         .busy_timeout(Duration::from_secs(5));
+    if !read_only {
+        options = options.journal_mode(SqliteJournalMode::Wal);
+    }
 
     SqlitePoolOptions::new()
         .min_connections(1)
@@ -7397,6 +7401,14 @@ async fn open_sqlite_pool(
         .connect_with(options)
         .await
         .map_err(ProxyError::Database)
+}
+
+async fn begin_immediate_sqlite_connection(
+    pool: &SqlitePool,
+) -> Result<sqlx::pool::PoolConnection<Sqlite>, ProxyError> {
+    let mut conn = pool.acquire().await?;
+    sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
+    Ok(conn)
 }
 
 #[derive(Debug)]
@@ -7414,7 +7426,7 @@ struct KeyStore {
 impl KeyStore {
     async fn new(database_path: &str) -> Result<Self, ProxyError> {
         let store = Self {
-            pool: open_sqlite_pool(database_path, true).await?,
+            pool: open_sqlite_pool(database_path, true, false).await?,
             token_binding_cache: RwLock::new(HashMap::new()),
             account_quota_resolution_cache: RwLock::new(HashMap::new()),
             #[cfg(test)]
@@ -17320,7 +17332,7 @@ pub async fn audit_business_quota_ledger(
     database_path: &str,
     now: chrono::DateTime<Utc>,
 ) -> Result<BillingLedgerAuditReport, ProxyError> {
-    let pool = open_sqlite_pool(database_path, false).await?;
+    let pool = open_sqlite_pool(database_path, false, true).await?;
     audit_business_quota_ledger_with_pool(&pool, now).await
 }
 
@@ -17328,7 +17340,7 @@ pub async fn rebase_current_month_business_quota(
     database_path: &str,
     now: chrono::DateTime<Utc>,
 ) -> Result<MonthlyQuotaRebaseReport, ProxyError> {
-    let pool = open_sqlite_pool(database_path, false).await?;
+    let pool = open_sqlite_pool(database_path, false, false).await?;
     rebase_current_month_business_quota_with_pool(
         &pool,
         now,
@@ -17899,101 +17911,120 @@ async fn rebase_current_month_business_quota_with_pool(
     update_meta: bool,
 ) -> Result<MonthlyQuotaRebaseReport, ProxyError> {
     let windows = BillingLedgerWindows::from_now(now);
-    let mut tx = pool.begin().await?;
+    let mut conn = begin_immediate_sqlite_connection(pool).await?;
 
-    ensure_current_month_charged_subjects_are_valid(
-        &mut *tx,
-        windows.month_window_start,
-        windows.generated_at,
-    )
-    .await?;
-
-    let previous_rebase_month_start = get_meta_i64_executor(&mut *tx, meta_key).await?;
-    let (current_month_charged_rows, current_month_charged_credits) =
-        fetch_current_month_charged_totals(
-            &mut *tx,
+    let result = async {
+        ensure_current_month_charged_subjects_are_valid(
+            &mut *conn,
             windows.month_window_start,
             windows.generated_at,
         )
         .await?;
-    let rebased_subjects =
-        fetch_charged_ledger_window(&mut *tx, windows.month_window_start, windows.generated_at)
+
+        let previous_rebase_month_start = get_meta_i64_executor(&mut *conn, meta_key).await?;
+        let (current_month_charged_rows, current_month_charged_credits) =
+            fetch_current_month_charged_totals(
+                &mut *conn,
+                windows.month_window_start,
+                windows.generated_at,
+            )
             .await?;
+        let rebased_subjects = fetch_charged_ledger_window(
+            &mut *conn,
+            windows.month_window_start,
+            windows.generated_at,
+        )
+        .await?;
 
-    let cleared_token_rows =
-        sqlx::query("UPDATE auth_token_quota SET month_start = ?, month_count = 0")
-            .bind(windows.month_window_start)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected() as i64;
-    let cleared_account_rows =
-        sqlx::query("UPDATE account_monthly_quota SET month_start = ?, month_count = 0")
-            .bind(windows.month_window_start)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected() as i64;
+        let cleared_token_rows =
+            sqlx::query("UPDATE auth_token_quota SET month_start = ?, month_count = 0")
+                .bind(windows.month_window_start)
+                .execute(&mut *conn)
+                .await?
+                .rows_affected() as i64;
+        let cleared_account_rows =
+            sqlx::query("UPDATE account_monthly_quota SET month_start = ?, month_count = 0")
+                .bind(windows.month_window_start)
+                .execute(&mut *conn)
+                .await?
+                .rows_affected() as i64;
 
-    let mut rebased_token_subjects = 0_usize;
-    let mut rebased_account_subjects = 0_usize;
-    for (billing_subject, total_credits, _row_count) in rebased_subjects.iter() {
-        match QuotaSubject::from_billing_subject(billing_subject)? {
-            QuotaSubject::Token(token_id) => {
-                sqlx::query(
-                    r#"
-                    INSERT INTO auth_token_quota (token_id, month_start, month_count)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(token_id) DO UPDATE SET
-                        month_start = excluded.month_start,
-                        month_count = excluded.month_count
-                    "#,
-                )
-                .bind(&token_id)
-                .bind(windows.month_window_start)
-                .bind(*total_credits)
-                .execute(&mut *tx)
-                .await?;
-                rebased_token_subjects += 1;
-            }
-            QuotaSubject::Account(user_id) => {
-                sqlx::query(
-                    r#"
-                    INSERT INTO account_monthly_quota (user_id, month_start, month_count)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(user_id) DO UPDATE SET
-                        month_start = excluded.month_start,
-                        month_count = excluded.month_count
-                    "#,
-                )
-                .bind(&user_id)
-                .bind(windows.month_window_start)
-                .bind(*total_credits)
-                .execute(&mut *tx)
-                .await?;
-                rebased_account_subjects += 1;
+        let mut rebased_token_subjects = 0_usize;
+        let mut rebased_account_subjects = 0_usize;
+        for (billing_subject, total_credits, _row_count) in rebased_subjects.iter() {
+            match QuotaSubject::from_billing_subject(billing_subject)? {
+                QuotaSubject::Token(token_id) => {
+                    sqlx::query(
+                        r#"
+                        INSERT INTO auth_token_quota (token_id, month_start, month_count)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(token_id) DO UPDATE SET
+                            month_start = excluded.month_start,
+                            month_count = excluded.month_count
+                        "#,
+                    )
+                    .bind(&token_id)
+                    .bind(windows.month_window_start)
+                    .bind(*total_credits)
+                    .execute(&mut *conn)
+                    .await?;
+                    rebased_token_subjects += 1;
+                }
+                QuotaSubject::Account(user_id) => {
+                    sqlx::query(
+                        r#"
+                        INSERT INTO account_monthly_quota (user_id, month_start, month_count)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(user_id) DO UPDATE SET
+                            month_start = excluded.month_start,
+                            month_count = excluded.month_count
+                        "#,
+                    )
+                    .bind(&user_id)
+                    .bind(windows.month_window_start)
+                    .bind(*total_credits)
+                    .execute(&mut *conn)
+                    .await?;
+                    rebased_account_subjects += 1;
+                }
             }
         }
+
+        let meta_updated =
+            update_meta && previous_rebase_month_start != Some(windows.month_window_start);
+        if update_meta {
+            set_meta_i64_executor(&mut *conn, meta_key, windows.month_window_start).await?;
+        }
+
+        Ok(MonthlyQuotaRebaseReport {
+            current_month_start: windows.month_window_start,
+            previous_rebase_month_start,
+            current_month_charged_rows,
+            current_month_charged_credits,
+            rebased_subject_count: rebased_subjects.len(),
+            rebased_token_subjects,
+            rebased_account_subjects,
+            cleared_token_rows,
+            cleared_account_rows,
+            meta_updated,
+        })
+    }
+    .await;
+
+    let report = match result {
+        Ok(report) => report,
+        Err(err) => {
+            let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+            return Err(err);
+        }
+    };
+
+    if let Err(err) = sqlx::query("COMMIT").execute(&mut *conn).await {
+        let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+        return Err(ProxyError::Database(err));
     }
 
-    let meta_updated =
-        update_meta && previous_rebase_month_start != Some(windows.month_window_start);
-    if update_meta {
-        set_meta_i64_executor(&mut *tx, meta_key, windows.month_window_start).await?;
-    }
-
-    tx.commit().await?;
-
-    Ok(MonthlyQuotaRebaseReport {
-        current_month_start: windows.month_window_start,
-        previous_rebase_month_start,
-        current_month_charged_rows,
-        current_month_charged_credits,
-        rebased_subject_count: rebased_subjects.len(),
-        rebased_token_subjects,
-        rebased_account_subjects,
-        cleared_token_rows,
-        cleared_account_rows,
-        meta_updated,
-    })
+    Ok(report)
 }
 
 fn start_of_day(now: chrono::DateTime<Utc>) -> chrono::DateTime<Utc> {
@@ -28970,5 +29001,102 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
         assert_eq!(charged_stats_after_manual, charged_stats_before);
 
         let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn begin_immediate_sqlite_connection_takes_write_lock_up_front() {
+        use sqlx::Connection;
+
+        let db_path = temp_db_path("monthly-quota-rebase-begin-immediate");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        let mut immediate_conn = begin_immediate_sqlite_connection(&proxy.key_store.pool)
+            .await
+            .expect("begin immediate transaction");
+
+        let writer_options = SqliteConnectOptions::new()
+            .filename(&db_path)
+            .create_if_missing(false)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_millis(20));
+        let mut competing_writer = sqlx::SqliteConnection::connect_with(&writer_options)
+            .await
+            .expect("connect competing writer");
+
+        let write_err = sqlx::query("INSERT INTO meta (key, value) VALUES (?, ?)")
+            .bind(format!("begin-immediate-lock-{}", nanoid!(6)))
+            .bind("1")
+            .execute(&mut competing_writer)
+            .await
+            .expect_err("write should wait on the immediate transaction lock");
+        assert!(is_transient_sqlite_write_error(&ProxyError::Database(
+            write_err
+        )));
+
+        sqlx::query("ROLLBACK")
+            .execute(&mut *immediate_conn)
+            .await
+            .expect("rollback immediate transaction");
+
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+        let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn billing_ledger_audit_reads_read_only_database_copy() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir =
+            std::env::temp_dir().join(format!("billing-ledger-audit-read-only-{}", nanoid!(8)));
+        fs::create_dir_all(&dir).expect("create temp audit dir");
+        let db_path = dir.join("audit.db");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        let token = proxy
+            .create_access_token(Some("audit-read-only-copy"))
+            .await
+            .expect("create token");
+        seed_charged_business_attempt(&proxy, &token.id, 2).await;
+        drop(proxy);
+
+        let original_dir_mode = fs::metadata(&dir)
+            .expect("read dir metadata")
+            .permissions()
+            .mode();
+        let original_db_mode = fs::metadata(&db_path)
+            .expect("read db metadata")
+            .permissions()
+            .mode();
+
+        fs::set_permissions(&db_path, fs::Permissions::from_mode(0o444))
+            .expect("make db read-only");
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).expect("make dir read-only");
+
+        let audit_result = audit_business_quota_ledger(&db_str, Utc::now()).await;
+
+        fs::set_permissions(&dir, fs::Permissions::from_mode(original_dir_mode))
+            .expect("restore dir permissions");
+        fs::set_permissions(&db_path, fs::Permissions::from_mode(original_db_mode))
+            .expect("restore db permissions");
+
+        let audit = audit_result.expect("audit read-only database");
+        assert_eq!(audit.summary.current_month_charged_rows, 1);
+        assert_eq!(audit.summary.current_month_charged_credits, 2);
+        assert_eq!(audit.summary.mismatched_subjects, 0);
+
+        let _ = fs::remove_file(&db_path);
+        let _ = fs::remove_file(dir.join("audit.db-shm"));
+        let _ = fs::remove_file(dir.join("audit.db-wal"));
+        let _ = fs::remove_dir_all(&dir);
     }
 }
