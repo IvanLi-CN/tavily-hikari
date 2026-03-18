@@ -462,6 +462,36 @@ export default function TokenDetail({
   const logsQueryKeyRef = useRef<string | null>(null)
   const rotatedTokenFieldRef = useRef<HTMLTextAreaElement | null>(null)
   const logsQueryBaseKeyRef = useRef<string>('')
+  const logsRequestContextRef = useRef<{
+    tokenId: string
+    sinceIso: string
+    untilIso: string
+    requestKinds: string[]
+    forceEmptyMatch: boolean
+  }>({
+    tokenId: id,
+    sinceIso: '',
+    untilIso: '',
+    requestKinds: [],
+    forceEmptyMatch: false,
+  })
+  const requestKindRefreshContextRef = useRef<{
+    selectedRequestKindsNormalized: string[]
+    requestKindQuickFilters: {
+      billing: TokenLogRequestKindQuickBilling
+      protocol: TokenLogRequestKindQuickProtocol
+    }
+    effectiveSelectedRequestKinds: string[]
+    hasQuickRequestKindEmptyMatch: boolean
+  }>({
+    selectedRequestKindsNormalized: [],
+    requestKindQuickFilters: {
+      billing: 'all',
+      protocol: 'all',
+    },
+    effectiveSelectedRequestKinds: [],
+    hasQuickRequestKindEmptyMatch: false,
+  })
 
   useEffect(() => {
     setInfo(null)
@@ -589,6 +619,19 @@ export default function TokenDetail({
       summaryQueryBaseKey,
     ],
   )
+  logsRequestContextRef.current = {
+    tokenId: id,
+    sinceIso,
+    untilIso,
+    requestKinds: effectiveSelectedRequestKinds,
+    forceEmptyMatch: hasQuickRequestKindEmptyMatch,
+  }
+  requestKindRefreshContextRef.current = {
+    selectedRequestKindsNormalized,
+    requestKindQuickFilters,
+    effectiveSelectedRequestKinds,
+    hasQuickRequestKindEmptyMatch,
+  }
 
   useEffect(() => {
     const preservedHeight = Math.max(320, logsContentRef.current?.offsetHeight ?? 0)
@@ -691,17 +734,19 @@ export default function TokenDetail({
   }
 
   const buildLogsPageUrl = useCallback(
-    (nextPage: number, nextPerPage = perPageRef.current) =>
-      buildTokenLogsPagePath({
-        tokenId: id,
+    (nextPage: number, nextPerPage = perPageRef.current) => {
+      const { tokenId, sinceIso, untilIso, requestKinds, forceEmptyMatch } = logsRequestContextRef.current
+      return buildTokenLogsPagePath({
+        tokenId,
         page: nextPage,
         perPage: nextPerPage,
         sinceIso,
         untilIso,
-        forceEmptyMatch: hasQuickRequestKindEmptyMatch,
-        requestKinds: effectiveSelectedRequestKinds,
-      }),
-    [effectiveSelectedRequestKinds, hasQuickRequestKindEmptyMatch, id, sinceIso, untilIso],
+        forceEmptyMatch,
+        requestKinds,
+      })
+    },
+    [],
   )
   const buildLogsPageUrlForSelection = useCallback(
     (
@@ -709,17 +754,19 @@ export default function TokenDetail({
       requestKinds: string[],
       forceEmptyMatch: boolean,
       nextPerPage = perPageRef.current,
-    ) =>
-      buildTokenLogsPagePath({
-        tokenId: id,
+    ) => {
+      const { tokenId, sinceIso, untilIso } = logsRequestContextRef.current
+      return buildTokenLogsPagePath({
+        tokenId,
         page: nextPage,
         perPage: nextPerPage,
         sinceIso,
         untilIso,
         forceEmptyMatch,
         requestKinds,
-      }),
-    [id, sinceIso, untilIso],
+      })
+    },
+    [],
   )
 
   const syncRequestKindState = useCallback(
@@ -944,12 +991,13 @@ export default function TokenDetail({
         const data = await getJson<TokenLogsPageResponse>(buildLogsPageUrl(1), controller.signal)
         if (controller.signal.aborted || logsQueryBaseKeyRef.current !== requestQueryBaseKey) return
         const nextOptions = data.request_kind_options ?? []
+        const refreshContext = requestKindRefreshContextRef.current
         const refreshedSelection = resolveRequestKindOptionsRefresh(
           nextOptions,
-          selectedRequestKindsNormalized,
-          requestKindQuickFilters,
-          effectiveSelectedRequestKinds,
-          hasQuickRequestKindEmptyMatch,
+          refreshContext.selectedRequestKindsNormalized,
+          refreshContext.requestKindQuickFilters,
+          refreshContext.effectiveSelectedRequestKinds,
+          refreshContext.hasQuickRequestKindEmptyMatch,
         )
         if (refreshedSelection.selectionChanged) {
           logsAbortRef.current?.abort()
@@ -1036,16 +1084,12 @@ export default function TokenDetail({
     buildLogsPageUrl,
     buildLogsPageUrlForSelection,
     debouncedSinceInput,
-    effectiveSelectedRequestKinds,
-    hasQuickRequestKindEmptyMatch,
     id,
     logsQueryBaseKey,
     page,
     period,
     refreshQuickUsage,
     refreshSnapshotUsage,
-    requestKindQuickFilters,
-    selectedRequestKindsNormalized,
     sinceIso,
     syncRequestKindState,
     untilIso,
