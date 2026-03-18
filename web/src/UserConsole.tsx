@@ -338,31 +338,14 @@ function buildMcpToolCallProbeStepDefinitions(
   }
 
   return toolEntries.flatMap(({ requestName, displayName }) => {
-    const probeArguments = mcpToolProbeArguments(displayName)
-    if (!probeArguments) {
-      return [{
-        id: `mcp-tool-call:${displayName}`,
-        label: formatTemplate(probeText.steps.mcpToolCall, { tool: displayName }),
-        billable: isBillableMcpProbeTool(displayName),
-        run: async (): Promise<McpProbeStepResult | null> => ({
-          detail: formatTemplate(probeText.skippedProbeFixture, {
-            tool: displayName,
-          }),
-          stepState: 'skipped',
-        }),
-      }]
-    }
-
-    // Route known Tavily aliases through the canonical `tavily-*` name so the proxy
-    // exercises the same billable/include_usage path as real token traffic.
-    const callName = isBillableMcpProbeTool(displayName) ? displayName : requestName
+    const probeArguments = mcpToolProbeArguments(displayName) ?? {}
 
     return [{
       id: `mcp-tool-call:${displayName}`,
       label: formatTemplate(probeText.steps.mcpToolCall, { tool: displayName }),
       billable: isBillableMcpProbeTool(displayName),
       run: async (token: string): Promise<McpProbeStepResult | null> => {
-        const payload = await probeMcpToolsCall(token, callName, probeArguments)
+        const payload = await probeMcpToolsCall(token, requestName, probeArguments)
         const error = envelopeError(payload) ?? getMcpProbeResultError(payload)
         if (error) throw new Error(error)
         return null

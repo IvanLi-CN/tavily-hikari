@@ -274,11 +274,12 @@ async fn proxy_handler(
                             .trim()
                             .to_string();
 
+                        let normalized_tool = tool.to_ascii_lowercase().replace('_', "-");
                         let supported_billable_tool = matches!(
-                            tool.as_str(),
+                            normalized_tool.as_str(),
                             "tavily-search" | "tavily-extract" | "tavily-crawl" | "tavily-map"
                         );
-                        let is_tavily_tool = tool.starts_with("tavily-");
+                        let is_tavily_tool = normalized_tool.starts_with("tavily-");
 
                         if supported_billable_tool || is_tavily_tool {
                             *any_billable = true;
@@ -286,12 +287,12 @@ async fn proxy_handler(
 
                             if let Some(id_key) = id_key.as_ref() {
                                 billable_mcp_ids.insert(id_key.clone());
-                                if tool == "tavily-search" {
+                                if normalized_tool == "tavily-search" {
                                     billable_search_mcp_ids.insert(id_key.clone());
                                 }
                             } else {
                                 *has_billable_mcp_without_id = true;
-                                if tool == "tavily-search" {
+                                if normalized_tool == "tavily-search" {
                                     *has_search_mcp_without_id = true;
                                 }
                             }
@@ -321,11 +322,12 @@ async fn proxy_handler(
                                 }
                                 *mutated |= injected_include_usage;
 
-                                let reserved = tavily_mcp_reserved_credits(tool.as_str(), args_entry);
+                                let reserved =
+                                    tavily_mcp_reserved_credits(normalized_tool.as_str(), args_entry);
                                 *reserved_billable_total =
                                     (*reserved_billable_total).saturating_add(reserved);
 
-                                if tool == "tavily-search" {
+                                if normalized_tool == "tavily-search" {
                                     let expected = tavily_search_expected_credits(args_entry);
                                     *expected_search_total =
                                         (*expected_search_total).saturating_add(expected);

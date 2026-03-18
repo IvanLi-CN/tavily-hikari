@@ -91,7 +91,7 @@ describe('UserConsole probe step definitions', () => {
     })).toEqual(['tavily_search', 'tavily_map', 'Acme_Lookup'])
   })
 
-  it('keeps unsupported advertised tools in the MCP call sweep and fails them per tool', async () => {
+  it('calls unsupported advertised tools with the discovered name and empty arguments', async () => {
     const calls: Array<{ url: string, init?: RequestInit }> = []
     globalThis.fetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
       calls.push({ url: requestUrl(input), init })
@@ -112,13 +112,20 @@ describe('UserConsole probe step definitions', () => {
     ])
 
     await steps[0]?.run('th-zjvc-secret')
-    await expect(steps[1]?.run('th-zjvc-secret')).resolves.toEqual({
-      detail: '当前本地没有 Acme_Lookup 的检测夹具，已跳过。',
-      stepState: 'skipped',
-    })
+    await steps[1]?.run('th-zjvc-secret')
 
-    expect(calls.map((call) => JSON.parse(String(call.init?.body ?? 'null')).params.name)).toEqual([
-      'tavily-search',
+    expect(calls.map((call) => JSON.parse(String(call.init?.body ?? 'null')).params)).toEqual([
+      {
+        name: 'tavily_search',
+        arguments: {
+          query: 'health check',
+          search_depth: 'basic',
+        },
+      },
+      {
+        name: 'Acme_Lookup',
+        arguments: {},
+      },
     ])
   })
 
@@ -235,10 +242,10 @@ describe('UserConsole probe step definitions', () => {
     expect(calls.slice(2).map((call) => JSON.parse(String(call.init?.body ?? 'null')))).toEqual([
       {
         jsonrpc: '2.0',
-        id: 'probe-tool-call:tavily-search',
+        id: 'probe-tool-call:tavily_search',
         method: 'tools/call',
         params: {
-          name: 'tavily-search',
+          name: 'tavily_search',
           arguments: {
             query: 'health check',
             search_depth: 'basic',
@@ -247,10 +254,10 @@ describe('UserConsole probe step definitions', () => {
       },
       {
         jsonrpc: '2.0',
-        id: 'probe-tool-call:tavily-extract',
+        id: 'probe-tool-call:tavily_extract',
         method: 'tools/call',
         params: {
-          name: 'tavily-extract',
+          name: 'tavily_extract',
           arguments: {
             urls: ['https://example.com'],
           },
@@ -271,10 +278,10 @@ describe('UserConsole probe step definitions', () => {
       },
       {
         jsonrpc: '2.0',
-        id: 'probe-tool-call:tavily-map',
+        id: 'probe-tool-call:tavily_map',
         method: 'tools/call',
         params: {
-          name: 'tavily-map',
+          name: 'tavily_map',
           arguments: {
             url: 'https://example.com',
             max_depth: 1,
@@ -284,16 +291,43 @@ describe('UserConsole probe step definitions', () => {
       },
       {
         jsonrpc: '2.0',
-        id: 'probe-tool-call:tavily-research',
+        id: 'probe-tool-call:tavily_research',
         method: 'tools/call',
         params: {
-          name: 'tavily-research',
+          name: 'tavily_research',
           arguments: {
             query: 'health check',
           },
         },
       },
     ])
+  })
+
+  it('does not silently skip newly advertised Tavily tools without a fixture', async () => {
+    const calls: Array<{ url: string, init?: RequestInit }> = []
+    globalThis.fetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: requestUrl(input), init })
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 'ok', result: { ok: true } }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }) as typeof fetch
+
+    const steps = __testables.buildMcpToolCallProbeStepDefinitions(mcpProbeText, ['tavily_agents'])
+
+    expect(steps).toHaveLength(1)
+    expect(steps[0]?.billable).toBe(true)
+
+    await expect(steps[0]?.run('th-zjvc-secret')).resolves.toBeNull()
+    expect(JSON.parse(String(calls[0]?.init?.body ?? 'null'))).toEqual({
+      jsonrpc: '2.0',
+      id: 'probe-tool-call:tavily_agents',
+      method: 'tools/call',
+      params: {
+        name: 'tavily_agents',
+        arguments: {},
+      },
+    })
   })
 
   it('updates the running MCP progress total after discovering tool call steps', () => {
