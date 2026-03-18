@@ -90,7 +90,7 @@ const requestKindOptionsMock = [
   { key: "mcp:batch", label: "MCP | batch", protocol_group: "mcp", billing_group: "billable" },
   { key: "mcp:tool:acme-lookup", label: "MCP | acme-lookup", protocol_group: "mcp", billing_group: "billable" },
   { key: "mcp:tools/list", label: "MCP | tools/list", protocol_group: "mcp", billing_group: "non_billable" },
-  { key: "mcp:raw:/mcp", label: "MCP | /mcp", protocol_group: "mcp", billing_group: "billable" },
+  { key: "mcp:raw:/mcp", label: "MCP | /mcp", protocol_group: "mcp", billing_group: "non_billable" },
 ];
 
 const logTemplates = [

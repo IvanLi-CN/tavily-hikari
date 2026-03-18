@@ -18250,6 +18250,7 @@ fn token_request_kind_billing_group(key: &str) -> &'static str {
         || normalized.starts_with("mcp:resources/")
         || normalized.starts_with("mcp:prompts/")
         || normalized.starts_with("mcp:notifications/")
+        || normalized == "mcp:raw:/mcp"
         || normalized.starts_with("mcp:raw:/mcp/")
     {
         "non_billable"
@@ -19093,7 +19094,10 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
             token_request_kind_billing_group("mcp:raw:/mcp/sse"),
             "non_billable"
         );
-        assert_eq!(token_request_kind_billing_group("mcp:raw:/mcp"), "billable");
+        assert_eq!(
+            token_request_kind_billing_group("mcp:raw:/mcp"),
+            "non_billable"
+        );
     }
 
     #[test]

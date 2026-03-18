@@ -36,7 +36,7 @@
   - 新增 `uj9hb-admin-token-request-kind-quick-filters` 索引行。
 - `src/lib.rs` / `src/server/dto.rs` / `src/server/tests.rs`
   - `TokenRequestKindOption` 与 `/api/tokens/:id/logs/page` 返回 `protocol_group`、`billing_group`。
-  - 后端使用 request-kind canonical 规则区分 `billable` / `non_billable`、`api` / `mcp`，并覆盖 legacy raw MCP 子路径与 root `/mcp` safe-default。
+  - 后端使用 request-kind canonical 规则区分 `billable` / `non_billable`、`api` / `mcp`，并覆盖 legacy raw MCP 子路径与 root `/mcp` control-plane 流量。
 - `web/src/tokenLogRequestKinds.ts` / `web/src/tokenLogRequestKinds.test.ts`
   - 扩展 option 类型、缓存和 tri-state helper，提供快捷组合生成、手动微调回退与展示摘要能力。
 - `web/src/pages/TokenDetail.tsx` / `web/src/index.css`
@@ -75,8 +75,7 @@
 ### Internal interfaces
 
 - canonical 分组必须由后端按 request-kind 规则提供，前端只消费，不再按 `request_kind_key` 或 `business_credits` 本地重算。
-- `mcp:initialize`、`mcp:ping`、`mcp:tools/list`、`mcp:resources/*`、`mcp:prompts/*`、`mcp:notifications/*`、`mcp:raw:/mcp/*` 视为 `non_billable`。
-- `mcp:raw:/mcp` 仍按 billable safe-default 处理，避免 legacy 根路径 raw 请求把潜在计费调用误归成免费。
+- `mcp:initialize`、`mcp:ping`、`mcp:tools/list`、`mcp:resources/*`、`mcp:prompts/*`、`mcp:notifications/*`、`mcp:raw:/mcp`、`mcp:raw:/mcp/*` 视为 `non_billable`。
 - `api:research-result` 与 `api:usage` 视为 `non_billable`；其余现有 API request kinds 维持 billable safe-default。
 
 ## 验收标准（Acceptance Criteria）
