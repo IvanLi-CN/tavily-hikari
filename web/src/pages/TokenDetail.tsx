@@ -44,8 +44,8 @@ import {
   defaultTokenLogRequestKindQuickFilters,
   hasActiveRequestKindQuickFilters,
   mergeRequestKindOptionsByKey,
+  resolveEffectiveRequestKindSelection,
   resolveManualRequestKindQuickFilters,
-  shouldAutoSyncRequestKindQuickSelection,
   summarizeRequestKindQuickFilters,
   summarizeSelectedRequestKinds,
   toggleRequestKindSelection,
@@ -532,6 +532,15 @@ export default function TokenDetail({
     () => buildRequestKindQuickFilterSelection(requestKindOptions, requestKindQuickFilters),
     [requestKindOptions, requestKindQuickFilters],
   )
+  const effectiveSelectedRequestKinds = useMemo(
+    () =>
+      resolveEffectiveRequestKindSelection(
+        selectedRequestKindsNormalized,
+        requestKindQuickFilters,
+        requestKindQuickSelection,
+      ),
+    [requestKindQuickFilters, requestKindQuickSelection, selectedRequestKindsNormalized],
+  )
   const hasQuickRequestKindEmptyMatch = useMemo(
     () => hasActiveQuickRequestKindFilters && requestKindQuickSelection.length === 0,
     [hasActiveQuickRequestKindFilters, requestKindQuickSelection.length],
@@ -539,15 +548,15 @@ export default function TokenDetail({
   const visibleRequestKindOptions = useMemo(
     () =>
       buildVisibleRequestKindOptions(
-        selectedRequestKindsNormalized,
+        effectiveSelectedRequestKinds,
         requestKindOptions,
         requestKindOptionsByKey,
       ),
-    [requestKindOptionsByKey, requestKindOptions, selectedRequestKindsNormalized],
+    [effectiveSelectedRequestKinds, requestKindOptionsByKey, requestKindOptions],
   )
   const requestKindSummary = useMemo(
-    () => summarizeSelectedRequestKinds(selectedRequestKindsNormalized, visibleRequestKindOptions),
-    [selectedRequestKindsNormalized, visibleRequestKindOptions],
+    () => summarizeSelectedRequestKinds(effectiveSelectedRequestKinds, visibleRequestKindOptions),
+    [effectiveSelectedRequestKinds, visibleRequestKindOptions],
   )
   const requestKindQuickSummary = useMemo(
     () => summarizeRequestKindQuickFilters(requestKindQuickFilters),
@@ -555,14 +564,14 @@ export default function TokenDetail({
   )
   const requestKindTriggerSummary = useMemo(() => {
     if (hasActiveQuickRequestKindFilters) return requestKindQuickSummary
-    if (selectedRequestKindsNormalized.length === 0) return 'All request types'
-    if (selectedRequestKindsNormalized.length <= 2) return requestKindSummary
+    if (effectiveSelectedRequestKinds.length === 0) return 'All request types'
+    if (effectiveSelectedRequestKinds.length <= 2) return requestKindSummary
     return 'Request types'
   }, [
+    effectiveSelectedRequestKinds.length,
     hasActiveQuickRequestKindFilters,
     requestKindQuickSummary,
     requestKindSummary,
-    selectedRequestKindsNormalized.length,
   ])
   const summaryQueryBaseKey = useMemo(
     () => `${id}:${period}:${sinceIso}:${untilIso}`,
@@ -570,8 +579,8 @@ export default function TokenDetail({
   )
   const logsQueryBaseKey = useMemo(
     () =>
-      `${summaryQueryBaseKey}:requestKinds=${selectedRequestKindsNormalized.join(',')}:emptyQuickMatch=${hasQuickRequestKindEmptyMatch ? '1' : '0'}`,
-    [hasQuickRequestKindEmptyMatch, selectedRequestKindsNormalized, summaryQueryBaseKey],
+      `${summaryQueryBaseKey}:requestKinds=${effectiveSelectedRequestKinds.join(',')}:emptyQuickMatch=${hasQuickRequestKindEmptyMatch ? '1' : '0'}`,
+    [effectiveSelectedRequestKinds, hasQuickRequestKindEmptyMatch, summaryQueryBaseKey],
   )
 
   useEffect(() => {
@@ -582,26 +591,6 @@ export default function TokenDetail({
   useEffect(() => {
     logsQueryBaseKeyRef.current = logsQueryBaseKey
   }, [logsQueryBaseKey])
-
-  useEffect(() => {
-    if (
-      !shouldAutoSyncRequestKindQuickSelection(
-        page,
-        requestKindQuickFilters,
-        selectedRequestKindsNormalized,
-        requestKindQuickSelection,
-      )
-    ) {
-      return
-    }
-    setSelectedRequestKinds(requestKindQuickSelection)
-    setExpandedLogs(new Set())
-  }, [
-    page,
-    requestKindQuickFilters,
-    requestKindQuickSelection,
-    selectedRequestKindsNormalized,
-  ])
 
   useLayoutEffect(() => {
     if (logsBlocking) return
@@ -691,9 +680,9 @@ export default function TokenDetail({
         sinceIso,
         untilIso,
         forceEmptyMatch: hasQuickRequestKindEmptyMatch,
-        requestKinds: selectedRequestKindsNormalized,
+        requestKinds: effectiveSelectedRequestKinds,
       }),
-    [hasQuickRequestKindEmptyMatch, id, selectedRequestKindsNormalized, sinceIso, untilIso],
+    [effectiveSelectedRequestKinds, hasQuickRequestKindEmptyMatch, id, sinceIso, untilIso],
   )
 
   const syncRequestKindState = useCallback(
@@ -1038,11 +1027,12 @@ export default function TokenDetail({
 
   const handleToggleRequestKind = useCallback(
     (key: string) => {
-      const nextSelected = toggleRequestKindSelection(selectedRequestKindsNormalized, key)
+      const nextSelected = toggleRequestKindSelection(effectiveSelectedRequestKinds, key)
       const nextQuickFilters = resolveManualRequestKindQuickFilters(
         nextSelected,
         requestKindQuickFilters,
         requestKindQuickSelection,
+        requestKindOptions,
       )
       setSelectedRequestKinds(nextSelected)
       setRequestKindQuickBilling(nextQuickFilters.billing)
@@ -1051,9 +1041,10 @@ export default function TokenDetail({
       setExpandedLogs(new Set())
     },
     [
+      effectiveSelectedRequestKinds,
+      requestKindOptions,
       requestKindQuickFilters,
       requestKindQuickSelection,
-      selectedRequestKindsNormalized,
     ],
   )
 
@@ -1336,8 +1327,8 @@ export default function TokenDetail({
                   <span className="token-request-kind-trigger-content">
                     <span className="token-request-kind-trigger-summary">{requestKindTriggerSummary}</span>
                   </span>
-                  {selectedRequestKindsNormalized.length > 0 ? (
-                    <span className="token-request-kind-count">{selectedRequestKindsNormalized.length}</span>
+                  {effectiveSelectedRequestKinds.length > 0 ? (
+                    <span className="token-request-kind-count">{effectiveSelectedRequestKinds.length}</span>
                   ) : null}
                 </Button>
               </DropdownMenuTrigger>
@@ -1374,7 +1365,7 @@ export default function TokenDetail({
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   className="cursor-pointer"
-                  disabled={selectedRequestKindsNormalized.length === 0 && !hasActiveQuickRequestKindFilters}
+                  disabled={effectiveSelectedRequestKinds.length === 0 && !hasActiveQuickRequestKindFilters}
                   onSelect={(event) => {
                     event.preventDefault()
                     handleClearRequestKinds()
@@ -1390,7 +1381,7 @@ export default function TokenDetail({
                     <DropdownMenuCheckboxItem
                       key={option.key}
                       className="cursor-pointer"
-                      checked={selectedRequestKindsNormalized.includes(option.key)}
+                      checked={effectiveSelectedRequestKinds.includes(option.key)}
                       onSelect={(event) => event.preventDefault()}
                       onCheckedChange={() => handleToggleRequestKind(option.key)}
                     >

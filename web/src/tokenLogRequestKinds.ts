@@ -139,23 +139,21 @@ export function resolveManualRequestKindQuickFilters(
   nextSelected: string[],
   activeFilters: TokenLogRequestKindQuickFilters,
   activeQuickSelection: string[],
+  options: TokenLogRequestKindOption[],
 ): TokenLogRequestKindQuickFilters {
   return requestKindSelectionsMatch(nextSelected, activeQuickSelection)
     ? activeFilters
-    : defaultTokenLogRequestKindQuickFilters
+    : deriveRequestKindQuickFilters(nextSelected, options)
 }
 
-export function shouldAutoSyncRequestKindQuickSelection(
-  page: number,
-  activeFilters: TokenLogRequestKindQuickFilters,
+export function resolveEffectiveRequestKindSelection(
   selected: string[],
-  nextQuickSelection: string[],
-): boolean {
-  return (
-    page === 1
-    && hasActiveRequestKindQuickFilters(activeFilters)
-    && !requestKindSelectionsMatch(selected, nextQuickSelection)
-  )
+  activeFilters: TokenLogRequestKindQuickFilters,
+  quickSelection: string[],
+): string[] {
+  return hasActiveRequestKindQuickFilters(activeFilters)
+    ? uniqueSelectedRequestKinds(quickSelection)
+    : uniqueSelectedRequestKinds(selected)
 }
 
 export function deriveRequestKindQuickFilters(

@@ -8,8 +8,8 @@ import {
   deriveRequestKindQuickFilters,
   mergeRequestKindOptionsByKey,
   requestKindSelectionsMatch,
+  resolveEffectiveRequestKindSelection,
   resolveManualRequestKindQuickFilters,
-  shouldAutoSyncRequestKindQuickSelection,
   summarizeRequestKindQuickFilters,
   summarizeSelectedRequestKinds,
   tokenLogRequestKindEmptySelectionKey,
@@ -180,12 +180,19 @@ describe('token log request kind helpers', () => {
     expect(summarizeRequestKindQuickFilters(defaultTokenLogRequestKindQuickFilters)).toBe('All request types')
   })
 
-  it('resets quick presets after a manual checkbox edit diverges from the active preset', () => {
+  it('preserves or re-derives quick presets after manual checkbox edits', () => {
+    const options = [
+      { key: 'api:search', label: 'API | search', protocol_group: 'api', billing_group: 'billable' },
+      { key: 'mcp:search', label: 'MCP | search', protocol_group: 'mcp', billing_group: 'billable' },
+      { key: 'mcp:tools/list', label: 'MCP | tools/list', protocol_group: 'mcp', billing_group: 'non_billable' },
+    ]
+
     expect(
       resolveManualRequestKindQuickFilters(
         ['mcp:search'],
         { billing: 'billable', protocol: 'mcp' },
         ['mcp:search'],
+        options,
       ),
     ).toEqual({ billing: 'billable', protocol: 'mcp' })
     expect(
@@ -193,42 +200,37 @@ describe('token log request kind helpers', () => {
         ['mcp:search', 'api:search'],
         { billing: 'billable', protocol: 'mcp' },
         ['mcp:search'],
+        options,
       ),
-    ).toEqual(defaultTokenLogRequestKindQuickFilters)
+    ).toEqual({ billing: 'billable', protocol: 'all' })
   })
 
-  it('only auto-syncs quick preset selections while page 1 is live-refreshable', () => {
+  it('uses the derived quick selection as the effective request kind set while a preset is active', () => {
     expect(
-      shouldAutoSyncRequestKindQuickSelection(
-        1,
-        { billing: 'billable', protocol: 'mcp' },
+      resolveEffectiveRequestKindSelection(
         ['mcp:search'],
+        { billing: 'billable', protocol: 'mcp' },
         ['mcp:search', 'mcp:batch'],
       ),
-    ).toBe(true)
+    ).toEqual(['mcp:search', 'mcp:batch'])
     expect(
-      shouldAutoSyncRequestKindQuickSelection(
-        2,
-        { billing: 'billable', protocol: 'mcp' },
+      resolveEffectiveRequestKindSelection(
         ['mcp:search'],
-        ['mcp:search', 'mcp:batch'],
-      ),
-    ).toBe(false)
-    expect(
-      shouldAutoSyncRequestKindQuickSelection(
-        1,
         defaultTokenLogRequestKindQuickFilters,
-        ['mcp:search'],
         ['mcp:search', 'mcp:batch'],
       ),
-    ).toBe(false)
+    ).toEqual(['mcp:search'])
     expect(
-      shouldAutoSyncRequestKindQuickSelection(
-        1,
-        { billing: 'billable', protocol: 'mcp' },
-        ['mcp:batch', 'mcp:search'],
-        ['mcp:search', 'mcp:batch'],
+      resolveManualRequestKindQuickFilters(
+        ['mcp:search'],
+        defaultTokenLogRequestKindQuickFilters,
+        ['api:search'],
+        [
+          { key: 'api:search', label: 'API | search', protocol_group: 'api', billing_group: 'billable' },
+          { key: 'mcp:search', label: 'MCP | search', protocol_group: 'mcp', billing_group: 'billable' },
+          { key: 'mcp:tools/list', label: 'MCP | tools/list', protocol_group: 'mcp', billing_group: 'non_billable' },
+        ],
       ),
-    ).toBe(false)
+    ).toEqual({ billing: 'billable', protocol: 'mcp' })
   })
 })
