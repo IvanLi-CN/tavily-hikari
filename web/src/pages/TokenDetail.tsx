@@ -41,10 +41,11 @@ import {
   buildRequestKindQuickFilterSelection,
   buildVisibleRequestKindOptions,
   buildTokenLogsPagePath,
-  deriveRequestKindQuickFilters,
+  defaultTokenLogRequestKindQuickFilters,
   hasActiveRequestKindQuickFilters,
   mergeRequestKindOptionsByKey,
   requestKindSelectionsMatch,
+  resolveManualRequestKindQuickFilters,
   summarizeRequestKindQuickFilters,
   summarizeSelectedRequestKinds,
   toggleRequestKindSelection,
@@ -1030,9 +1031,11 @@ export default function TokenDetail({
   const handleToggleRequestKind = useCallback(
     (key: string) => {
       const nextSelected = toggleRequestKindSelection(selectedRequestKindsNormalized, key)
-      const nextQuickFilters = requestKindSelectionsMatch(nextSelected, requestKindQuickSelection)
-        ? requestKindQuickFilters
-        : deriveRequestKindQuickFilters(nextSelected, requestKindOptions)
+      const nextQuickFilters = resolveManualRequestKindQuickFilters(
+        nextSelected,
+        requestKindQuickFilters,
+        requestKindQuickSelection,
+      )
       setSelectedRequestKinds(nextSelected)
       setRequestKindQuickBilling(nextQuickFilters.billing)
       setRequestKindQuickProtocol(nextQuickFilters.protocol)
@@ -1040,7 +1043,6 @@ export default function TokenDetail({
       setExpandedLogs(new Set())
     },
     [
-      requestKindOptions,
       requestKindQuickFilters,
       requestKindQuickSelection,
       selectedRequestKindsNormalized,
@@ -1049,8 +1051,8 @@ export default function TokenDetail({
 
   const handleClearRequestKinds = useCallback(() => {
     setSelectedRequestKinds([])
-    setRequestKindQuickBilling('all')
-    setRequestKindQuickProtocol('all')
+    setRequestKindQuickBilling(defaultTokenLogRequestKindQuickFilters.billing)
+    setRequestKindQuickProtocol(defaultTokenLogRequestKindQuickFilters.protocol)
     setPage(1)
     setExpandedLogs(new Set())
   }, [])

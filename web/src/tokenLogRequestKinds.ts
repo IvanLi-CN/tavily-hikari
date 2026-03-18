@@ -135,6 +135,16 @@ export function requestKindSelectionsMatch(left: string[], right: string[]): boo
   return normalizedLeft.every((key) => rightSet.has(key))
 }
 
+export function resolveManualRequestKindQuickFilters(
+  nextSelected: string[],
+  activeFilters: TokenLogRequestKindQuickFilters,
+  activeQuickSelection: string[],
+): TokenLogRequestKindQuickFilters {
+  return requestKindSelectionsMatch(nextSelected, activeQuickSelection)
+    ? activeFilters
+    : defaultTokenLogRequestKindQuickFilters
+}
+
 export function deriveRequestKindQuickFilters(
   selected: string[],
   options: TokenLogRequestKindOption[],

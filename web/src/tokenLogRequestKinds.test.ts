@@ -8,6 +8,7 @@ import {
   deriveRequestKindQuickFilters,
   mergeRequestKindOptionsByKey,
   requestKindSelectionsMatch,
+  resolveManualRequestKindQuickFilters,
   summarizeRequestKindQuickFilters,
   summarizeSelectedRequestKinds,
   tokenLogRequestKindEmptySelectionKey,
@@ -176,5 +177,22 @@ describe('token log request kind helpers', () => {
     expect(summarizeRequestKindQuickFilters({ billing: 'billable', protocol: 'mcp' })).toBe('Paid + MCP')
     expect(summarizeRequestKindQuickFilters({ billing: 'all', protocol: 'api' })).toBe('API request types')
     expect(summarizeRequestKindQuickFilters(defaultTokenLogRequestKindQuickFilters)).toBe('All request types')
+  })
+
+  it('resets quick presets after a manual checkbox edit diverges from the active preset', () => {
+    expect(
+      resolveManualRequestKindQuickFilters(
+        ['mcp:search'],
+        { billing: 'billable', protocol: 'mcp' },
+        ['mcp:search'],
+      ),
+    ).toEqual({ billing: 'billable', protocol: 'mcp' })
+    expect(
+      resolveManualRequestKindQuickFilters(
+        ['mcp:search', 'api:search'],
+        { billing: 'billable', protocol: 'mcp' },
+        ['mcp:search'],
+      ),
+    ).toEqual(defaultTokenLogRequestKindQuickFilters)
   })
 })
