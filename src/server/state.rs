@@ -162,6 +162,8 @@ const BUILTIN_ADMIN_SESSION_MAX_AGE_SECS: u64 = 60 * 60 * 24 * 14;
 const BUILTIN_ADMIN_SESSION_MAX_COUNT: usize = 1024;
 const USER_SESSION_COOKIE_NAME: &str = "hikari_user_session";
 const OAUTH_LOGIN_BINDING_COOKIE_NAME: &str = "hikari_oauth_login_binding";
+const DEV_OPEN_ADMIN_REQUEST_TOKEN: &str = "th-dev-override";
+const DEV_OPEN_ADMIN_REQUEST_TOKEN_ID: &str = "dev";
 
 #[derive(Clone, Debug)]
 struct BuiltinAdminSession {
@@ -421,6 +423,42 @@ fn start_of_month_dt(now: chrono::DateTime<Utc>) -> chrono::DateTime<Utc> {
     Utc.with_ymd_and_hms(now.year(), now.month(), 1, 0, 0, 0)
         .single()
         .expect("valid start of month")
+}
+
+#[derive(Debug, Clone)]
+struct RequestTokenResolution {
+    token: String,
+    auth_token_id: Option<String>,
+    using_dev_open_admin_fallback: bool,
+}
+
+fn auth_token_id_from_secret(token: &str) -> Option<String> {
+    token
+        .strip_prefix("th-")
+        .and_then(|rest| rest.split_once('-').map(|(id, _)| id.to_string()))
+}
+
+fn resolve_request_token(
+    dev_open_admin: bool,
+    candidates: Vec<Option<String>>,
+) -> Option<RequestTokenResolution> {
+    if let Some(token) = candidates.into_iter().flatten().find(|token| !token.is_empty()) {
+        return Some(RequestTokenResolution {
+            auth_token_id: auth_token_id_from_secret(&token),
+            token,
+            using_dev_open_admin_fallback: false,
+        });
+    }
+
+    if dev_open_admin {
+        return Some(RequestTokenResolution {
+            token: DEV_OPEN_ADMIN_REQUEST_TOKEN.to_string(),
+            auth_token_id: Some(DEV_OPEN_ADMIN_REQUEST_TOKEN_ID.to_string()),
+            using_dev_open_admin_fallback: true,
+        });
+    }
+
+    None
 }
 
 #[derive(Debug, Serialize)]

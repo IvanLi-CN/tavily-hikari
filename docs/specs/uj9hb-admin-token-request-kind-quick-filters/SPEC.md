@@ -119,7 +119,7 @@
   - target_program: `mock-only`
   - capture_scope: `element`
   - sensitive_exclusion: `N/A`
-  - submission_gate: `pending-owner-approval`
+  - submission_gate: `approved`
   - evidence_note: 证明 request type 筛选面板顶部已加入 `Billing` 与 `Type` 两组三态快捷筛选，且在可用视口足够时面板会自适应内容高度，一次性展示完整 request kind 列表
   - image:
     ![Admin token request kind quick filters](./assets/request-kind-panel-complete.png)

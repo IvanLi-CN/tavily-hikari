@@ -20,7 +20,7 @@ function withForwardAuth(target: string, forwardAuthValue: string): Partial<Prox
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, rootDir, '')
   const forwardAuthValue = env.VITE_FORWARD_EMAIL || process.env.VITE_FORWARD_EMAIL || 'admin@example.com'
-  const proxyTarget = env.VITE_PROXY_TARGET || process.env.VITE_PROXY_TARGET || 'http://127.0.0.1:30011'
+  const proxyTarget = env.VITE_PROXY_TARGET || process.env.VITE_PROXY_TARGET || 'http://127.0.0.1:58087'
 
   return {
     root: rootDir,

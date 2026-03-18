@@ -314,6 +314,22 @@ interface AdminTranslationsShape {
       manualPlaceholder: string
       manualListEmpty: string
       manualItemFallback: string
+      egressTitle: string
+      egressDescription: string
+      egressEnabled: string
+      egressDisabled: string
+      egressUrlLabel: string
+      egressUrlPlaceholder: string
+      egressUrlHint: string
+      egressLockedHint: string
+      egressRequiredError: string
+      egressErrorTitle: string
+      egressInvalidUrlError: string
+      egressUnknownError: string
+      egressSwitchLabel: string
+      egressSwitchHint: string
+      egressApply: string
+      egressApplying: string
       subscriptionIntervalLabel: string
       subscriptionIntervalHint: string
       invalidInterval: string
@@ -384,6 +400,8 @@ interface AdminTranslationsShape {
       stepCounter: string
       steps: Record<
         | 'save_settings'
+        | 'validate_egress_socks5'
+        | 'apply_egress_socks5'
         | 'refresh_subscription'
         | 'bootstrap_probe'
         | 'normalize_input'
@@ -1466,6 +1484,22 @@ export const translations: Record<Language, TranslationShape> = {
           manualPlaceholder: 'http://127.0.0.1:8080\nsocks5h://127.0.0.1:1080\nvmess://…',
           manualListEmpty: 'No manual proxy URLs yet.',
           manualItemFallback: 'Manual node {index}',
+          egressTitle: 'Global SOCKS5 egress proxy',
+          egressDescription: 'Use one upstream SOCKS5 proxy for every non-direct forward-proxy request so outbound routing stays consistent.',
+          egressEnabled: 'Enabled',
+          egressDisabled: 'Disabled',
+          egressUrlLabel: 'SOCKS5 proxy URL',
+          egressUrlPlaceholder: 'socks5h://user:pass@127.0.0.1:1080',
+          egressUrlHint: 'Accepts socks5:// or socks5h://. The URL remains editable while the proxy is disabled.',
+          egressLockedHint: 'Disable the egress proxy first if you need to edit the URL.',
+          egressRequiredError: 'Enter a SOCKS5 proxy URL before enabling the egress proxy.',
+          egressErrorTitle: 'Unable to enable the SOCKS5 egress proxy',
+          egressInvalidUrlError: 'Use a valid socks5:// or socks5h:// proxy URL.',
+          egressUnknownError: 'The SOCKS5 egress proxy could not be enabled. Check the address and try again.',
+          egressSwitchLabel: 'Enable SOCKS5 egress proxy',
+          egressSwitchHint: 'New non-direct requests switch over only after validation and apply steps finish.',
+          egressApply: 'Apply egress proxy',
+          egressApplying: 'Applying egress proxy…',
           subscriptionIntervalLabel: 'Subscription refresh interval (seconds)',
           subscriptionIntervalHint: 'Used by the backend refresh scheduler. Keep it high enough to avoid noisy churn.',
           invalidInterval: 'Subscription refresh interval must be a positive integer.',
@@ -1520,10 +1554,10 @@ export const translations: Record<Language, TranslationShape> = {
         },
         progress: {
           titleValidate: 'Validation progress',
-          titleSave: 'Add progress',
+          titleSave: 'Save progress',
           titleRevalidate: 'Revalidation progress',
           badgeValidate: 'Validate',
-          badgeSave: 'Add',
+          badgeSave: 'Save',
           badgeRevalidate: 'Revalidate',
           buttonValidatingSubscription: 'Validating subscription…',
           buttonValidatingManual: 'Validating nodes…',
@@ -1536,6 +1570,8 @@ export const translations: Record<Language, TranslationShape> = {
           stepCounter: '{current}/{total}',
           steps: {
             save_settings: 'Save settings',
+            validate_egress_socks5: 'Validate SOCKS5 egress proxy',
+            apply_egress_socks5: 'Apply SOCKS5 egress proxy',
             refresh_subscription: 'Refresh subscription',
             bootstrap_probe: 'Run bootstrap probes',
             normalize_input: 'Normalize input',
@@ -2605,6 +2641,22 @@ export const translations: Record<Language, TranslationShape> = {
           manualPlaceholder: 'http://127.0.0.1:8080\nsocks5h://127.0.0.1:1080\nvmess://…',
           manualListEmpty: '还没有手工节点。',
           manualItemFallback: '手工节点 {index}',
+          egressTitle: '全局 SOCKS5 出口代理',
+          egressDescription: '为所有非直连 forward proxy 请求指定统一的上游 SOCKS5 出口代理，便于集中管理出口网络。',
+          egressEnabled: '已开启',
+          egressDisabled: '已关闭',
+          egressUrlLabel: 'SOCKS5 代理地址',
+          egressUrlPlaceholder: 'socks5h://user:pass@127.0.0.1:1080',
+          egressUrlHint: '支持 socks5:// 与 socks5h://。关闭时可编辑，启用后自动锁定。',
+          egressLockedHint: '如需修改地址，请先关闭 SOCKS5 出口代理。',
+          egressRequiredError: '请先填写 SOCKS5 代理地址，再开启出口代理。',
+          egressErrorTitle: '无法启用 SOCKS5 出口代理',
+          egressInvalidUrlError: '请输入有效的 socks5:// 或 socks5h:// 代理地址。',
+          egressUnknownError: 'SOCKS5 出口代理启用失败，请检查地址后重试。',
+          egressSwitchLabel: '启用 SOCKS5 出口代理',
+          egressSwitchHint: '只有在可用性检测和应用步骤完成后，新请求才会切换到新的出口路径。',
+          egressApply: '应用出口代理',
+          egressApplying: '正在应用出口代理…',
           subscriptionIntervalLabel: '订阅刷新周期（秒）',
           subscriptionIntervalHint: '由后端定时任务使用。周期过短会让节点列表更容易抖动。',
           invalidInterval: '订阅刷新周期必须是大于 0 的整数。',
@@ -2659,10 +2711,10 @@ export const translations: Record<Language, TranslationShape> = {
         },
         progress: {
           titleValidate: '验证进度',
-          titleSave: '添加进度',
+          titleSave: '保存进度',
           titleRevalidate: '全量验证进度',
           badgeValidate: '验证',
-          badgeSave: '添加',
+          badgeSave: '保存',
           badgeRevalidate: '全量验证',
           buttonValidatingSubscription: '正在验证订阅…',
           buttonValidatingManual: '正在验证节点…',
@@ -2675,6 +2727,8 @@ export const translations: Record<Language, TranslationShape> = {
           stepCounter: '{current}/{total}',
           steps: {
             save_settings: '保存配置',
+            validate_egress_socks5: '校验 SOCKS5 出口代理',
+            apply_egress_socks5: '应用 SOCKS5 出口代理',
             refresh_subscription: '刷新订阅',
             bootstrap_probe: '引导探测节点',
             normalize_input: '规范化输入',
@@ -3428,9 +3482,15 @@ export const languageOptions: Array<{ value: Language; labelKey: LanguageOptionK
 export type Translations = TranslationShape
 export type AdminTranslations = TranslationShape['admin']
 
-export function LanguageProvider({ children }: { children: ReactNode }): JSX.Element {
+export function LanguageProvider({
+  children,
+  initialLanguage,
+}: {
+  children: ReactNode
+  initialLanguage?: Language
+}): JSX.Element {
   const [language, setLanguageState] = useState<Language>(
-    () => readStoredLanguage() ?? detectBrowserLanguage() ?? DEFAULT_LANGUAGE,
+    () => initialLanguage ?? readStoredLanguage() ?? detectBrowserLanguage() ?? DEFAULT_LANGUAGE,
   )
 
   const setLanguage = (next: Language) => {

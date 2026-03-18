@@ -573,6 +573,10 @@ struct ForwardProxySettingsUpdatePayload {
     #[serde(default = "default_forward_proxy_insert_direct")]
     insert_direct: bool,
     #[serde(default)]
+    egress_socks5_enabled: bool,
+    #[serde(default)]
+    egress_socks5_url: String,
+    #[serde(default)]
     skip_bootstrap_probe: bool,
 }
 
@@ -739,6 +743,8 @@ async fn put_forward_proxy_settings(
         subscription_urls: payload.subscription_urls,
         subscription_update_interval_secs: payload.subscription_update_interval_secs,
         insert_direct: payload.insert_direct,
+        egress_socks5_enabled: payload.egress_socks5_enabled,
+        egress_socks5_url: payload.egress_socks5_url,
     }
     .normalized();
     let skip_bootstrap_probe = payload.skip_bootstrap_probe;

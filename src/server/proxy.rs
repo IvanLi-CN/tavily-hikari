@@ -170,21 +170,20 @@ async fn proxy_handler(
         .filter(|t| !t.is_empty())
         .map(|t| t.to_string());
 
-    let token = if let Some(t) = header_token {
-        t
-    } else if let Some(t) = query_token {
-        t
-    } else if state.dev_open_admin {
-        "th-dev-override".to_string()
-    } else {
+    let Some(token_resolution) =
+        resolve_request_token(state.dev_open_admin, vec![header_token, query_token])
+    else {
         return Response::builder()
             .status(StatusCode::UNAUTHORIZED)
             .header(CONTENT_TYPE, "application/json; charset=utf-8")
             .body(Body::from("{\"error\":\"missing token\"}"))
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
     };
+    let token = token_resolution.token;
+    let token_id = token_resolution.auth_token_id.clone();
+    let using_dev_open_admin_fallback = token_resolution.using_dev_open_admin_fallback;
 
-    let valid = if state.dev_open_admin {
+    let valid = if using_dev_open_admin_fallback {
         true
     } else {
         state
@@ -488,35 +487,17 @@ async fn proxy_handler(
         }
     }
 
-    let auth_token_id = if state.dev_open_admin {
-        Some("dev".to_string())
-    } else {
-        token
-            .strip_prefix("th-")
-            .and_then(|rest| rest.split_once('-').map(|(id, _)| id))
-            .map(|s| s.to_string())
-    };
-
     let proxy_request = ProxyRequest {
         method: method.clone(),
         path: path.clone(),
         query: query.clone(),
         headers,
         body: forwarded_body.clone(),
-        auth_token_id,
-    };
-
-    let token_id = if state.dev_open_admin {
-        Some("dev".to_string())
-    } else {
-        token
-            .strip_prefix("th-")
-            .and_then(|rest| rest.split('-').next())
-            .map(|s| s.to_string())
+        auth_token_id: token_id.clone(),
     };
 
     // Serialize per-token billable tool calls to keep `peek -> upstream -> charge` consistent.
-    let token_billing_guard = if !state.dev_open_admin
+    let token_billing_guard = if !using_dev_open_admin_fallback
         && billable_flag
         && lockable_tool
         && invalid_mcp_request_message.is_none()
@@ -548,7 +529,7 @@ async fn proxy_handler(
     let mut _quota_verdict: Option<TokenQuotaVerdict> = None;
     if let Some(tid) = token_id.as_deref() {
         // 1) 全量“任意请求”小时限频：所有通过鉴权的请求都会计入。
-        if !state.dev_open_admin {
+        if !using_dev_open_admin_fallback {
             match state.proxy.check_token_hourly_requests(tid).await {
                 Ok(verdict) => {
                     if !verdict.allowed {
@@ -626,7 +607,7 @@ async fn proxy_handler(
                 state.proxy.peek_token_quota(tid).await
             } {
                 Ok(verdict) => {
-                    if !state.dev_open_admin {
+                    if !using_dev_open_admin_fallback {
                         let blocked = if let Some(expected) = reserved_billable_credits {
                             quota_would_exceed(&verdict, expected)
                         } else {
