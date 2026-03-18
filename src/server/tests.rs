@@ -8881,7 +8881,7 @@ colo=LAX
             legacy_option
                 .get("billing_group")
                 .and_then(|value| value.as_str()),
-            Some("non_billable")
+            Some("billable")
         );
         let page_search_log = items
             .iter()
