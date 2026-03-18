@@ -7419,6 +7419,14 @@ async fn begin_immediate_sqlite_connection(
     Ok(conn)
 }
 
+async fn begin_read_snapshot_sqlite_connection(
+    pool: &SqlitePool,
+) -> Result<sqlx::pool::PoolConnection<Sqlite>, ProxyError> {
+    let mut conn = pool.acquire().await?;
+    sqlx::query("BEGIN").execute(&mut *conn).await?;
+    Ok(conn)
+}
+
 #[derive(Debug)]
 struct KeyStore {
     pool: SqlitePool,
@@ -17746,177 +17754,198 @@ async fn audit_business_quota_ledger_with_pool(
     pool: &SqlitePool,
     now: chrono::DateTime<Utc>,
 ) -> Result<BillingLedgerAuditReport, ProxyError> {
+    let mut conn = begin_read_snapshot_sqlite_connection(pool).await?;
     let windows = BillingLedgerWindows::from_now(now);
-    ensure_current_month_charged_subjects_are_valid(
-        pool,
-        windows.month_window_start,
-        windows.generated_at,
-    )
-    .await?;
+    let result = async {
+        ensure_current_month_charged_subjects_are_valid(
+            &mut *conn,
+            windows.month_window_start,
+            windows.generated_at,
+        )
+        .await?;
 
-    let mut subjects: BTreeMap<String, BillingLedgerAccumulator> = BTreeMap::new();
-    let (current_month_charged_rows, current_month_charged_credits) =
-        fetch_current_month_charged_totals(pool, windows.month_window_start, windows.generated_at)
+        let mut subjects: BTreeMap<String, BillingLedgerAccumulator> = BTreeMap::new();
+        let (current_month_charged_rows, current_month_charged_credits) =
+            fetch_current_month_charged_totals(
+                &mut *conn,
+                windows.month_window_start,
+                windows.generated_at,
+            )
             .await?;
 
-    for (subject, total_credits, _row_count) in
-        fetch_charged_ledger_window(pool, windows.hour_window_start, windows.generated_at).await?
-    {
-        subjects.entry(subject).or_default().hour_ledger = total_credits;
-    }
-    for (subject, total_credits, _row_count) in
-        fetch_charged_ledger_window(pool, windows.day_window_start, windows.generated_at).await?
-    {
-        subjects.entry(subject).or_default().day_ledger = total_credits;
-    }
-    for (subject, total_credits, _row_count) in
-        fetch_charged_ledger_window(pool, windows.month_window_start, windows.generated_at).await?
-    {
-        subjects.entry(subject).or_default().month_ledger = total_credits;
-    }
+        for (subject, total_credits, _row_count) in
+            fetch_charged_ledger_window(&mut *conn, windows.hour_window_start, windows.generated_at)
+                .await?
+        {
+            subjects.entry(subject).or_default().hour_ledger = total_credits;
+        }
+        for (subject, total_credits, _row_count) in
+            fetch_charged_ledger_window(&mut *conn, windows.day_window_start, windows.generated_at)
+                .await?
+        {
+            subjects.entry(subject).or_default().day_ledger = total_credits;
+        }
+        for (subject, total_credits, _row_count) in fetch_charged_ledger_window(
+            &mut *conn,
+            windows.month_window_start,
+            windows.generated_at,
+        )
+        .await?
+        {
+            subjects.entry(subject).or_default().month_ledger = total_credits;
+        }
 
-    for (token_id, total_credits) in fetch_token_quota_window(
-        pool,
-        GRANULARITY_MINUTE,
-        windows.hour_window_start,
-        windows.minute_bucket_start,
-    )
-    .await?
-    {
-        subjects
-            .entry(format!("token:{token_id}"))
-            .or_default()
-            .hour_quota = total_credits;
-    }
-    for (user_id, total_credits) in fetch_account_quota_window(
-        pool,
-        GRANULARITY_MINUTE,
-        windows.hour_window_start,
-        windows.minute_bucket_start,
-    )
-    .await?
-    {
-        subjects
-            .entry(format!("account:{user_id}"))
-            .or_default()
-            .hour_quota = total_credits;
-    }
-
-    for (token_id, total_credits) in fetch_token_quota_window(
-        pool,
-        GRANULARITY_HOUR,
-        windows.day_window_start,
-        windows.hour_bucket_start,
-    )
-    .await?
-    {
-        subjects
-            .entry(format!("token:{token_id}"))
-            .or_default()
-            .day_quota = total_credits;
-    }
-    for (user_id, total_credits) in fetch_account_quota_window(
-        pool,
-        GRANULARITY_HOUR,
-        windows.day_window_start,
-        windows.hour_bucket_start,
-    )
-    .await?
-    {
-        subjects
-            .entry(format!("account:{user_id}"))
-            .or_default()
-            .day_quota = total_credits;
-    }
-
-    for (token_id, stored_month_start, month_count) in fetch_token_monthly_quota_rows(pool).await? {
-        let effective_count = if stored_month_start >= windows.month_window_start {
-            month_count
-        } else {
-            0
-        };
-        if effective_count != 0 {
+        for (token_id, total_credits) in fetch_token_quota_window(
+            &mut *conn,
+            GRANULARITY_MINUTE,
+            windows.hour_window_start,
+            windows.minute_bucket_start,
+        )
+        .await?
+        {
             subjects
                 .entry(format!("token:{token_id}"))
                 .or_default()
-                .month_quota = effective_count;
+                .hour_quota = total_credits;
         }
-    }
-    for (user_id, stored_month_start, month_count) in fetch_account_monthly_quota_rows(pool).await?
-    {
-        let effective_count = if stored_month_start >= windows.month_window_start {
-            month_count
-        } else {
-            0
-        };
-        if effective_count != 0 {
+        for (user_id, total_credits) in fetch_account_quota_window(
+            &mut *conn,
+            GRANULARITY_MINUTE,
+            windows.hour_window_start,
+            windows.minute_bucket_start,
+        )
+        .await?
+        {
             subjects
                 .entry(format!("account:{user_id}"))
                 .or_default()
-                .month_quota = effective_count;
-        }
-    }
-
-    let mut entries = Vec::new();
-    let mut mismatched_subjects = 0_usize;
-    let mut hour_only_mismatches = 0_usize;
-    let mut day_only_mismatches = 0_usize;
-    let mut month_only_mismatches = 0_usize;
-    let mut mixed_mismatches = 0_usize;
-
-    for (billing_subject, totals) in subjects {
-        if !totals.has_any_value() {
-            continue;
+                .hour_quota = total_credits;
         }
 
-        let (subject_kind, subject_id) = billing_subject_parts(&billing_subject)?;
-        let subject_kind = subject_kind.to_string();
-        let subject_id = subject_id.to_string();
-        let entry = BillingLedgerAuditEntry {
-            billing_subject,
-            subject_kind,
-            subject_id,
-            hour: BillingLedgerWindowSnapshot::new(totals.hour_ledger, totals.hour_quota),
-            day: BillingLedgerWindowSnapshot::new(totals.day_ledger, totals.day_quota),
-            month: BillingLedgerWindowSnapshot::new(totals.month_ledger, totals.month_quota),
-        };
+        for (token_id, total_credits) in fetch_token_quota_window(
+            &mut *conn,
+            GRANULARITY_HOUR,
+            windows.day_window_start,
+            windows.hour_bucket_start,
+        )
+        .await?
+        {
+            subjects
+                .entry(format!("token:{token_id}"))
+                .or_default()
+                .day_quota = total_credits;
+        }
+        for (user_id, total_credits) in fetch_account_quota_window(
+            &mut *conn,
+            GRANULARITY_HOUR,
+            windows.day_window_start,
+            windows.hour_bucket_start,
+        )
+        .await?
+        {
+            subjects
+                .entry(format!("account:{user_id}"))
+                .or_default()
+                .day_quota = total_credits;
+        }
 
-        let hour_mismatch = !entry.hour.is_match();
-        let day_mismatch = !entry.day.is_match();
-        let month_mismatch = !entry.month.is_match();
-        if entry.has_mismatch() {
-            mismatched_subjects += 1;
-            match (hour_mismatch, day_mismatch, month_mismatch) {
-                (true, false, false) => hour_only_mismatches += 1,
-                (false, true, false) => day_only_mismatches += 1,
-                (false, false, true) => month_only_mismatches += 1,
-                _ => mixed_mismatches += 1,
+        for (token_id, stored_month_start, month_count) in
+            fetch_token_monthly_quota_rows(&mut *conn).await?
+        {
+            let effective_count = if stored_month_start >= windows.month_window_start {
+                month_count
+            } else {
+                0
+            };
+            if effective_count != 0 {
+                subjects
+                    .entry(format!("token:{token_id}"))
+                    .or_default()
+                    .month_quota = effective_count;
             }
         }
-        entries.push(entry);
+        for (user_id, stored_month_start, month_count) in
+            fetch_account_monthly_quota_rows(&mut *conn).await?
+        {
+            let effective_count = if stored_month_start >= windows.month_window_start {
+                month_count
+            } else {
+                0
+            };
+            if effective_count != 0 {
+                subjects
+                    .entry(format!("account:{user_id}"))
+                    .or_default()
+                    .month_quota = effective_count;
+            }
+        }
+
+        let mut entries = Vec::new();
+        let mut mismatched_subjects = 0_usize;
+        let mut hour_only_mismatches = 0_usize;
+        let mut day_only_mismatches = 0_usize;
+        let mut month_only_mismatches = 0_usize;
+        let mut mixed_mismatches = 0_usize;
+
+        for (billing_subject, totals) in subjects {
+            if !totals.has_any_value() {
+                continue;
+            }
+
+            let (subject_kind, subject_id) = billing_subject_parts(&billing_subject)?;
+            let subject_kind = subject_kind.to_string();
+            let subject_id = subject_id.to_string();
+            let entry = BillingLedgerAuditEntry {
+                billing_subject,
+                subject_kind,
+                subject_id,
+                hour: BillingLedgerWindowSnapshot::new(totals.hour_ledger, totals.hour_quota),
+                day: BillingLedgerWindowSnapshot::new(totals.day_ledger, totals.day_quota),
+                month: BillingLedgerWindowSnapshot::new(totals.month_ledger, totals.month_quota),
+            };
+
+            let hour_mismatch = !entry.hour.is_match();
+            let day_mismatch = !entry.day.is_match();
+            let month_mismatch = !entry.month.is_match();
+            if entry.has_mismatch() {
+                mismatched_subjects += 1;
+                match (hour_mismatch, day_mismatch, month_mismatch) {
+                    (true, false, false) => hour_only_mismatches += 1,
+                    (false, true, false) => day_only_mismatches += 1,
+                    (false, false, true) => month_only_mismatches += 1,
+                    _ => mixed_mismatches += 1,
+                }
+            }
+            entries.push(entry);
+        }
+
+        let subject_count = entries.len();
+
+        Ok(BillingLedgerAuditReport {
+            summary: BillingLedgerAuditSummary {
+                generated_at: windows.generated_at,
+                minute_bucket_start: windows.minute_bucket_start,
+                hour_bucket_start: windows.hour_bucket_start,
+                hour_window_start: windows.hour_window_start,
+                day_window_start: windows.day_window_start,
+                month_window_start: windows.month_window_start,
+                current_month_charged_rows,
+                current_month_charged_credits,
+                subject_count,
+                mismatched_subjects,
+                hour_only_mismatches,
+                day_only_mismatches,
+                month_only_mismatches,
+                mixed_mismatches,
+            },
+            entries,
+        })
     }
+    .await;
 
-    let subject_count = entries.len();
+    let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
 
-    Ok(BillingLedgerAuditReport {
-        summary: BillingLedgerAuditSummary {
-            generated_at: windows.generated_at,
-            minute_bucket_start: windows.minute_bucket_start,
-            hour_bucket_start: windows.hour_bucket_start,
-            hour_window_start: windows.hour_window_start,
-            day_window_start: windows.day_window_start,
-            month_window_start: windows.month_window_start,
-            current_month_charged_rows,
-            current_month_charged_credits,
-            subject_count,
-            mismatched_subjects,
-            hour_only_mismatches,
-            day_only_mismatches,
-            month_only_mismatches,
-            mixed_mismatches,
-        },
-        entries,
-    })
+    result
 }
 
 async fn rebase_current_month_business_quota_with_pool(
@@ -17925,8 +17954,9 @@ async fn rebase_current_month_business_quota_with_pool(
     meta_key: &str,
     update_meta: bool,
 ) -> Result<MonthlyQuotaRebaseReport, ProxyError> {
-    let windows = BillingLedgerWindows::from_now(now);
     let mut conn = begin_immediate_sqlite_connection(pool).await?;
+    let locked_now = Utc::now();
+    let windows = BillingLedgerWindows::from_now(if locked_now > now { locked_now } else { now });
 
     let result = async {
         ensure_current_month_charged_subjects_are_valid(
