@@ -531,6 +531,10 @@ export default function TokenDetail({
     () => buildRequestKindQuickFilterSelection(requestKindOptions, requestKindQuickFilters),
     [requestKindOptions, requestKindQuickFilters],
   )
+  const hasQuickRequestKindEmptyMatch = useMemo(
+    () => hasActiveQuickRequestKindFilters && requestKindQuickSelection.length === 0,
+    [hasActiveQuickRequestKindFilters, requestKindQuickSelection.length],
+  )
   const visibleRequestKindOptions = useMemo(
     () =>
       buildVisibleRequestKindOptions(
@@ -564,8 +568,9 @@ export default function TokenDetail({
     [id, period, sinceIso, untilIso],
   )
   const logsQueryBaseKey = useMemo(
-    () => `${summaryQueryBaseKey}:requestKinds=${selectedRequestKindsNormalized.join(',')}`,
-    [selectedRequestKindsNormalized, summaryQueryBaseKey],
+    () =>
+      `${summaryQueryBaseKey}:requestKinds=${selectedRequestKindsNormalized.join(',')}:emptyQuickMatch=${hasQuickRequestKindEmptyMatch ? '1' : '0'}`,
+    [hasQuickRequestKindEmptyMatch, selectedRequestKindsNormalized, summaryQueryBaseKey],
   )
 
   useEffect(() => {
@@ -676,9 +681,10 @@ export default function TokenDetail({
         perPage: nextPerPage,
         sinceIso,
         untilIso,
+        forceEmptyMatch: hasQuickRequestKindEmptyMatch,
         requestKinds: selectedRequestKindsNormalized,
       }),
-    [id, selectedRequestKindsNormalized, sinceIso, untilIso],
+    [hasQuickRequestKindEmptyMatch, id, selectedRequestKindsNormalized, sinceIso, untilIso],
   )
 
   const syncRequestKindState = useCallback(

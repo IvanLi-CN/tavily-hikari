@@ -16,6 +16,7 @@ export interface TokenLogsPagePathInput {
   perPage: number
   sinceIso: string
   untilIso: string
+  forceEmptyMatch?: boolean
   requestKinds: string[]
 }
 
@@ -33,6 +34,8 @@ export const defaultTokenLogRequestKindQuickFilters: TokenLogRequestKindQuickFil
   billing: 'all',
   protocol: 'all',
 }
+
+export const tokenLogRequestKindEmptySelectionKey = '__token_request_kind_empty_selection__'
 
 export function uniqueSelectedRequestKinds(requestKinds: string[]): string[] {
   const seen = new Set<string>()
@@ -174,6 +177,7 @@ export function buildTokenLogsPagePath({
   perPage,
   sinceIso,
   untilIso,
+  forceEmptyMatch = false,
   requestKinds,
 }: TokenLogsPagePathInput): string {
   const search = new URLSearchParams({
@@ -182,7 +186,12 @@ export function buildTokenLogsPagePath({
     since: sinceIso,
     until: untilIso,
   })
-  for (const key of uniqueSelectedRequestKinds(requestKinds)) {
+  const normalizedRequestKinds = uniqueSelectedRequestKinds(requestKinds)
+  const queryRequestKinds =
+    normalizedRequestKinds.length === 0 && forceEmptyMatch
+      ? [tokenLogRequestKindEmptySelectionKey]
+      : normalizedRequestKinds
+  for (const key of queryRequestKinds) {
     search.append('request_kind', key)
   }
   return `/api/tokens/${encodeURIComponent(tokenId)}/logs/page?${search.toString()}`

@@ -10,6 +10,7 @@ import {
   requestKindSelectionsMatch,
   summarizeRequestKindQuickFilters,
   summarizeSelectedRequestKinds,
+  tokenLogRequestKindEmptySelectionKey,
   toggleRequestKindSelection,
   uniqueSelectedRequestKinds,
 } from './tokenLogRequestKinds'
@@ -44,6 +45,22 @@ describe('token log request kind helpers', () => {
       }),
     ).toBe(
       '/api/tokens/ZjvC/logs/page?page=2&per_page=50&since=2026-03-01T00%3A00%3A00%2B08%3A00&until=2026-04-01T00%3A00%3A00%2B08%3A00&request_kind=api%3Asearch&request_kind=mcp%3Asearch',
+    )
+  })
+
+  it('preserves an active zero-match quick filter as an explicit empty query', () => {
+    expect(
+      buildTokenLogsPagePath({
+        tokenId: 'ZjvC',
+        page: 1,
+        perPage: 20,
+        sinceIso: '2026-03-01T00:00:00+08:00',
+        untilIso: '2026-04-01T00:00:00+08:00',
+        forceEmptyMatch: true,
+        requestKinds: [],
+      }),
+    ).toBe(
+      `/api/tokens/ZjvC/logs/page?page=1&per_page=20&since=2026-03-01T00%3A00%3A00%2B08%3A00&until=2026-04-01T00%3A00%3A00%2B08%3A00&request_kind=${encodeURIComponent(tokenLogRequestKindEmptySelectionKey)}`,
     )
   })
 
