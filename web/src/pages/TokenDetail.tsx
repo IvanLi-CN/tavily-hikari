@@ -643,6 +643,8 @@ export default function TokenDetail({
   }, [logsQueryBaseKey])
 
   useEffect(() => {
+    // Page > 1 responses re-sync active quick presets inside the paginated fetch path
+    // so we do not bounce the user back to page 1 here.
     if (page !== 1 || !hasActiveQuickRequestKindFilters) return
     if (requestKindSelectionsMatch(selectedRequestKindsNormalized, requestKindQuickSelection)) return
     setSelectedRequestKinds(requestKindQuickSelection)
@@ -1111,18 +1113,67 @@ export default function TokenDetail({
     setPage(p)
     setExpandedLogs(new Set())
     setError(null)
+    const requestQueryBaseKey = logsQueryBaseKeyRef.current
     try {
       const data = await getJson<TokenLogsPageResponse>(buildLogsPageUrl(p, nextPerPage), controller.signal)
-      if (controller.signal.aborted) return
+      if (controller.signal.aborted || logsQueryBaseKeyRef.current !== requestQueryBaseKey) return
+      const nextOptions = data.request_kind_options ?? []
+      const refreshContext = requestKindRefreshContextRef.current
+      const refreshedSelection = resolveRequestKindOptionsRefresh(
+        nextOptions,
+        refreshContext.selectedRequestKindsNormalized,
+        refreshContext.requestKindQuickFilters,
+        refreshContext.effectiveSelectedRequestKinds,
+        refreshContext.hasQuickRequestKindEmptyMatch,
+      )
+      if (refreshedSelection.selectionChanged) {
+        const loadRefreshedPage = async (nextPage: number, pagePerPage = nextPerPage) =>
+          getJson<TokenLogsPageResponse>(
+            buildLogsPageUrlForSelection(
+              nextPage,
+              refreshedSelection.effectiveSelection,
+              refreshedSelection.hasEmptyMatch,
+              pagePerPage,
+            ),
+            controller.signal,
+          )
+
+        const requestedPage = Math.max(1, p)
+        let refreshedPage = await loadRefreshedPage(requestedPage)
+        if (controller.signal.aborted || logsQueryBaseKeyRef.current !== requestQueryBaseKey) return
+
+        const resolvedPerPage = refreshedPage.per_page ?? refreshedPage.perPage ?? nextPerPage
+        const refreshedPageCount = Math.max(1, Math.ceil(refreshedPage.total / resolvedPerPage) || 1)
+        const clampedPage = Math.min(requestedPage, refreshedPageCount)
+
+        if (clampedPage !== requestedPage) {
+          refreshedPage = await loadRefreshedPage(clampedPage, resolvedPerPage)
+          if (controller.signal.aborted || logsQueryBaseKeyRef.current !== requestQueryBaseKey) return
+        }
+
+        const finalPerPage = refreshedPage.per_page ?? refreshedPage.perPage ?? resolvedPerPage
+        const finalPageCount = Math.max(1, Math.ceil(refreshedPage.total / finalPerPage) || 1)
+        const finalPage = Math.min(clampedPage, finalPageCount)
+        setLogs(refreshedPage.items)
+        setPage(finalPage)
+        setPerPage(finalPerPage)
+        setTotal(refreshedPage.total)
+        syncRequestKindState(refreshedPage.request_kind_options ?? nextOptions)
+        setExpandedLogs(new Set())
+        setLogsLoadState('ready')
+        logsQueryKeyRef.current = `${requestQueryBaseKey}:page=${finalPage}:perPage=${finalPerPage}`
+        return
+      }
+
       const resolvedPerPage = data.per_page ?? data.perPage ?? nextPerPage
       setLogs(data.items)
       setPage(data.page)
       setPerPage(resolvedPerPage)
       setTotal(data.total)
-      syncRequestKindState(data.request_kind_options ?? [])
+      syncRequestKindState(nextOptions)
       setExpandedLogs(new Set())
       setLogsLoadState('ready')
-      logsQueryKeyRef.current = `${logsQueryBaseKey}:page=${data.page}:perPage=${resolvedPerPage}`
+      logsQueryKeyRef.current = `${requestQueryBaseKey}:page=${data.page}:perPage=${resolvedPerPage}`
     } catch (e) {
       if ((e as Error).name === 'AbortError') return
       setError(e instanceof Error ? e.message : 'Failed to load page')
