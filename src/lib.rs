@@ -7381,6 +7381,14 @@ fn is_transient_sqlite_write_error(err: &ProxyError) -> bool {
         || message.contains("database is busy")
 }
 
+fn is_invalid_current_month_billing_subject_error(err: &ProxyError) -> bool {
+    match err {
+        ProxyError::QuotaDataMissing { reason } => reason
+            .contains("charged current-month auth_token_logs rows with invalid billing_subject"),
+        _ => false,
+    }
+}
+
 async fn open_sqlite_pool(
     database_path: &str,
     create_if_missing: bool,
@@ -8310,13 +8318,20 @@ impl KeyStore {
             .await?
             != Some(start_of_month(Utc::now()).timestamp())
         {
-            let _ = rebase_current_month_business_quota_with_pool(
+            match rebase_current_month_business_quota_with_pool(
                 &self.pool,
                 Utc::now(),
                 META_KEY_BUSINESS_QUOTA_MONTHLY_REBASE_V1,
                 true,
             )
-            .await?;
+            .await
+            {
+                Ok(_) => {}
+                Err(err) if is_invalid_current_month_billing_subject_error(&err) => {
+                    eprintln!("startup monthly quota rebase skipped: {err}");
+                }
+                Err(err) => return Err(err),
+            }
         }
 
         Ok(())
@@ -29098,5 +29113,79 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
         let _ = fs::remove_file(dir.join("audit.db-shm"));
         let _ = fs::remove_file(dir.join("audit.db-wal"));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn startup_monthly_rebase_skips_legacy_charged_rows_without_billing_subject() {
+        let db_path = temp_db_path("startup-monthly-rebase-legacy-billing-subject-gap");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        let token = proxy
+            .create_access_token(Some("legacy-billing-subject-gap"))
+            .await
+            .expect("create token");
+
+        seed_charged_business_attempt(&proxy, &token.id, 3).await;
+
+        let month_count_before_restart: i64 = sqlx::query_scalar(
+            "SELECT month_count FROM auth_token_quota WHERE token_id = ? LIMIT 1",
+        )
+        .bind(&token.id)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("read token month count before restart");
+        assert_eq!(month_count_before_restart, 3);
+
+        sqlx::query(
+            r#"
+            UPDATE auth_token_logs
+            SET billing_subject = NULL
+            WHERE token_id = ?
+              AND billing_state = ?
+              AND COALESCE(business_credits, 0) > 0
+            "#,
+        )
+        .bind(&token.id)
+        .bind(BILLING_STATE_CHARGED)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("clear billing subject on legacy charged row");
+        sqlx::query("DELETE FROM meta WHERE key = ?")
+            .bind(META_KEY_BUSINESS_QUOTA_MONTHLY_REBASE_V1)
+            .execute(&proxy.key_store.pool)
+            .await
+            .expect("reset monthly rebase meta");
+        drop(proxy);
+
+        let reopened = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy reopened despite legacy billing_subject gap");
+
+        let month_count_after_restart: i64 = sqlx::query_scalar(
+            "SELECT month_count FROM auth_token_quota WHERE token_id = ? LIMIT 1",
+        )
+        .bind(&token.id)
+        .fetch_one(&reopened.key_store.pool)
+        .await
+        .expect("read token month count after restart");
+        assert_eq!(month_count_after_restart, month_count_before_restart);
+
+        let rebase_meta: Option<i64> =
+            sqlx::query_scalar("SELECT CAST(value AS INTEGER) FROM meta WHERE key = ? LIMIT 1")
+                .bind(META_KEY_BUSINESS_QUOTA_MONTHLY_REBASE_V1)
+                .fetch_optional(&reopened.key_store.pool)
+                .await
+                .expect("read monthly rebase meta after skipped startup");
+        assert_eq!(rebase_meta, None);
+
+        let audit_err = audit_business_quota_ledger_with_pool(&reopened.key_store.pool, Utc::now())
+            .await
+            .expect_err("audit should still surface legacy billing_subject gap");
+        assert!(is_invalid_current_month_billing_subject_error(&audit_err));
+
+        let _ = std::fs::remove_file(db_path);
     }
 }
