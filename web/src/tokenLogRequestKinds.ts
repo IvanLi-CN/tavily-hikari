@@ -145,6 +145,19 @@ export function resolveManualRequestKindQuickFilters(
     : defaultTokenLogRequestKindQuickFilters
 }
 
+export function shouldAutoSyncRequestKindQuickSelection(
+  page: number,
+  activeFilters: TokenLogRequestKindQuickFilters,
+  selected: string[],
+  nextQuickSelection: string[],
+): boolean {
+  return (
+    page === 1
+    && hasActiveRequestKindQuickFilters(activeFilters)
+    && !requestKindSelectionsMatch(selected, nextQuickSelection)
+  )
+}
+
 export function deriveRequestKindQuickFilters(
   selected: string[],
   options: TokenLogRequestKindOption[],

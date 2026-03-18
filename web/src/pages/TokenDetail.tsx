@@ -44,8 +44,8 @@ import {
   defaultTokenLogRequestKindQuickFilters,
   hasActiveRequestKindQuickFilters,
   mergeRequestKindOptionsByKey,
-  requestKindSelectionsMatch,
   resolveManualRequestKindQuickFilters,
+  shouldAutoSyncRequestKindQuickSelection,
   summarizeRequestKindQuickFilters,
   summarizeSelectedRequestKinds,
   toggleRequestKindSelection,
@@ -584,13 +584,21 @@ export default function TokenDetail({
   }, [logsQueryBaseKey])
 
   useEffect(() => {
-    if (!hasActiveQuickRequestKindFilters) return
-    if (requestKindSelectionsMatch(selectedRequestKindsNormalized, requestKindQuickSelection)) return
+    if (
+      !shouldAutoSyncRequestKindQuickSelection(
+        page,
+        requestKindQuickFilters,
+        selectedRequestKindsNormalized,
+        requestKindQuickSelection,
+      )
+    ) {
+      return
+    }
     setSelectedRequestKinds(requestKindQuickSelection)
-    setPage(1)
     setExpandedLogs(new Set())
   }, [
-    hasActiveQuickRequestKindFilters,
+    page,
+    requestKindQuickFilters,
     requestKindQuickSelection,
     selectedRequestKindsNormalized,
   ])

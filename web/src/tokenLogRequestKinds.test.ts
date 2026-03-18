@@ -9,6 +9,7 @@ import {
   mergeRequestKindOptionsByKey,
   requestKindSelectionsMatch,
   resolveManualRequestKindQuickFilters,
+  shouldAutoSyncRequestKindQuickSelection,
   summarizeRequestKindQuickFilters,
   summarizeSelectedRequestKinds,
   tokenLogRequestKindEmptySelectionKey,
@@ -194,5 +195,40 @@ describe('token log request kind helpers', () => {
         ['mcp:search'],
       ),
     ).toEqual(defaultTokenLogRequestKindQuickFilters)
+  })
+
+  it('only auto-syncs quick preset selections while page 1 is live-refreshable', () => {
+    expect(
+      shouldAutoSyncRequestKindQuickSelection(
+        1,
+        { billing: 'billable', protocol: 'mcp' },
+        ['mcp:search'],
+        ['mcp:search', 'mcp:batch'],
+      ),
+    ).toBe(true)
+    expect(
+      shouldAutoSyncRequestKindQuickSelection(
+        2,
+        { billing: 'billable', protocol: 'mcp' },
+        ['mcp:search'],
+        ['mcp:search', 'mcp:batch'],
+      ),
+    ).toBe(false)
+    expect(
+      shouldAutoSyncRequestKindQuickSelection(
+        1,
+        defaultTokenLogRequestKindQuickFilters,
+        ['mcp:search'],
+        ['mcp:search', 'mcp:batch'],
+      ),
+    ).toBe(false)
+    expect(
+      shouldAutoSyncRequestKindQuickSelection(
+        1,
+        { billing: 'billable', protocol: 'mcp' },
+        ['mcp:batch', 'mcp:search'],
+        ['mcp:search', 'mcp:batch'],
+      ),
+    ).toBe(false)
   })
 })
