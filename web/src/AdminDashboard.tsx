@@ -2183,6 +2183,8 @@ function AdminDashboard(): JSX.Element {
           subscriptionUrls: splitMultilineEntries(nextDraft.subscriptionUrlsText),
           subscriptionUpdateIntervalSecs: parsedInterval,
           insertDirect: nextDraft.insertDirect,
+          egressSocks5Enabled: nextDraft.egressSocks5Enabled,
+          egressSocks5Url: nextDraft.egressSocks5Url.trim(),
           skipBootstrapProbe: options?.skipBootstrapProbe ?? false,
         },
         onProgress,

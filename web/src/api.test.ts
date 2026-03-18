@@ -86,6 +86,8 @@ describe('admin user tag api helpers', () => {
             subscriptionUrls: [],
             subscriptionUpdateIntervalSecs: 3600,
             insertDirect: true,
+            egressSocks5Enabled: false,
+            egressSocks5Url: '',
             nodes: [],
           }),
           { status: 200, headers: { 'Content-Type': 'application/json' } },
@@ -100,12 +102,47 @@ describe('admin user tag api helpers', () => {
         subscriptionUrls: [],
         subscriptionUpdateIntervalSecs: 3600,
         insertDirect: true,
+        egressSocks5Enabled: false,
+        egressSocks5Url: '',
       },
       (event) => seen.push(event.type),
     )
 
     expect(payload.proxyUrls).toEqual(['http://127.0.0.1:8080'])
+    expect(payload.egressSocks5Enabled).toBe(false)
     expect(seen).toEqual(['complete'])
+  })
+
+  it('parses new global SOCKS5 save phases from SSE responses', async () => {
+    const phases: string[] = []
+    const fetchMock = mock(() =>
+      Promise.resolve(
+        createSseResponse([
+          'data: {"type":"phase","operation":"save","phaseKey":"validate_egress_socks5","label":"Validate global SOCKS5 relay"}\n\n',
+          'data: {"type":"phase","operation":"save","phaseKey":"apply_egress_socks5","label":"Apply global SOCKS5 relay"}\n\n',
+          'data: {"type":"complete","operation":"save","payload":{"proxyUrls":[],"subscriptionUrls":[],"subscriptionUpdateIntervalSecs":3600,"insertDirect":true,"egressSocks5Enabled":true,"egressSocks5Url":"socks5h://127.0.0.1:1080","nodes":[]}}\n\n',
+        ]),
+      ),
+    )
+    globalThis.fetch = fetchMock as typeof fetch
+
+    const payload = await updateForwardProxySettingsWithProgress(
+      {
+        proxyUrls: [],
+        subscriptionUrls: [],
+        subscriptionUpdateIntervalSecs: 3600,
+        insertDirect: true,
+        egressSocks5Enabled: true,
+        egressSocks5Url: 'socks5h://127.0.0.1:1080',
+      },
+      (event) => {
+        if (event.type === 'phase') phases.push(event.phaseKey)
+      },
+    )
+
+    expect(phases).toEqual(['validate_egress_socks5', 'apply_egress_socks5'])
+    expect(payload.egressSocks5Enabled).toBe(true)
+    expect(payload.egressSocks5Url).toBe('socks5h://127.0.0.1:1080')
   })
 
   it('supports aborting forward proxy validation progress requests', async () => {

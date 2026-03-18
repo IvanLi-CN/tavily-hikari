@@ -22,6 +22,8 @@ const strings = {
     stepCounter: '{current}/{total}',
     steps: {
       save_settings: '保存配置',
+      validate_egress_socks5: '校验全局 SOCKS5 relay',
+      apply_egress_socks5: '应用全局 SOCKS5 relay',
       refresh_subscription: '刷新订阅',
       bootstrap_probe: '引导探测节点',
       normalize_input: '规范化输入',
@@ -158,5 +160,34 @@ describe('ForwardProxySettingsModule progress state helpers', () => {
       status: 'running',
       detail: '1/2 · https://example.com/subscription',
     })
+  })
+
+  it('builds global SOCKS5 enable progress with validation and apply steps', () => {
+    let state = createDialogProgressState(strings.progress, 'egress', 'save', {
+      includeEgressValidation: true,
+    })
+    state = updateDialogProgressState(state, strings.progress, {
+      type: 'phase',
+      operation: 'save',
+      phaseKey: 'validate_egress_socks5',
+      label: 'Validate global SOCKS5 relay',
+    } satisfies ForwardProxyProgressEvent)
+    state = updateDialogProgressState(state, strings.progress, {
+      type: 'phase',
+      operation: 'save',
+      phaseKey: 'apply_egress_socks5',
+      label: 'Apply global SOCKS5 relay',
+    } satisfies ForwardProxyProgressEvent)
+
+    expect(state.steps.map((step) => step.key)).toEqual([
+      'validate_egress_socks5',
+      'save_settings',
+      'apply_egress_socks5',
+      'refresh_subscription',
+      'bootstrap_probe',
+      'refresh_ui',
+    ])
+    expect(state.steps.find((step) => step.key === 'validate_egress_socks5')?.status).toBe('done')
+    expect(state.steps.find((step) => step.key === 'apply_egress_socks5')?.status).toBe('running')
   })
 })

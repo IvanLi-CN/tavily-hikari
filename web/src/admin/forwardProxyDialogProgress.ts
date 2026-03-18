@@ -1,8 +1,12 @@
 import type { ForwardProxyProgressEvent, ForwardProxyProgressPhaseKey } from '../api'
 
-export type ForwardProxyDialogKind = 'subscription' | 'manual' | null
+export type ForwardProxyDialogKind = 'subscription' | 'manual' | 'egress' | null
 export type ForwardProxyDialogAction = 'validate' | 'save' | 'revalidate'
 export type ForwardProxyDialogProgressStatus = 'pending' | 'running' | 'done' | 'error'
+
+interface ForwardProxyProgressOptions {
+  includeEgressValidation?: boolean
+}
 
 export interface ForwardProxyProgressStrings {
   running: string
@@ -47,6 +51,7 @@ function buildProgressSteps(
   strings: ForwardProxyProgressStrings,
   kind: Exclude<ForwardProxyDialogKind, null>,
   action: ForwardProxyDialogAction,
+  options: ForwardProxyProgressOptions = {},
 ): ForwardProxyDialogProgressStep[] {
   const stepKeys: ForwardProxyProgressPhaseKey[] =
     action === 'revalidate'
@@ -55,6 +60,10 @@ function buildProgressSteps(
       ? kind === 'subscription'
         ? ['normalize_input', 'fetch_subscription', 'probe_nodes', 'generate_result']
         : ['parse_input', 'probe_nodes', 'generate_result']
+      : kind === 'egress'
+        ? options.includeEgressValidation
+          ? ['validate_egress_socks5', 'save_settings', 'apply_egress_socks5', 'refresh_subscription', 'bootstrap_probe', 'refresh_ui']
+          : ['save_settings', 'apply_egress_socks5', 'refresh_subscription', 'bootstrap_probe', 'refresh_ui']
       : kind === 'subscription'
         ? ['save_settings', 'refresh_subscription', 'bootstrap_probe', 'refresh_ui']
         : ['save_settings', 'bootstrap_probe', 'refresh_ui']
@@ -71,10 +80,11 @@ export function createDialogProgressState(
   strings: ForwardProxyProgressStrings,
   kind: Exclude<ForwardProxyDialogKind, null>,
   action: ForwardProxyDialogAction,
+  options?: ForwardProxyProgressOptions,
 ): ForwardProxyDialogProgressState {
   return {
     action,
-    steps: buildProgressSteps(strings, kind, action),
+    steps: buildProgressSteps(strings, kind, action, options),
     activeStepKey: null,
     message: null,
   }

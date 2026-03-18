@@ -7796,6 +7796,42 @@ tbody .log-details-row:hover {
   gap: 0.45rem;
 }
 
+.forward-proxy-progress-bubble-shell {
+  position: fixed;
+  z-index: 1300;
+  width: min(22rem, calc(100vw - 24px));
+  max-width: calc(100vw - 24px);
+}
+
+.forward-proxy-progress-bubble-shell::before {
+  content: '';
+  position: absolute;
+  left: var(--forward-proxy-progress-bubble-arrow-left, 50%);
+  width: 14px;
+  height: 14px;
+  border-left: 1px solid hsl(var(--border) / 0.9);
+  border-top: 1px solid hsl(var(--border) / 0.9);
+  background: hsl(var(--popover) / 0.98);
+  transform: translateX(-50%) rotate(45deg);
+}
+
+.forward-proxy-progress-bubble-shell[data-placement='bottom']::before {
+  top: -8px;
+}
+
+.forward-proxy-progress-bubble-shell[data-placement='top']::before {
+  bottom: -8px;
+  transform: translateX(-50%) rotate(225deg);
+}
+
+.forward-proxy-progress-bubble-surface {
+  width: 100%;
+  border-color: hsl(var(--border) / 0.9);
+  background: hsl(var(--popover) / 0.98);
+  box-shadow: 0 24px 60px hsl(222 47% 11% / 0.22);
+  backdrop-filter: blur(16px);
+}
+
 .forward-proxy-field-label {
   font-size: 0.82rem;
   font-weight: 600;

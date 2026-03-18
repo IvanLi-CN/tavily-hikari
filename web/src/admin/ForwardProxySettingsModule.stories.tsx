@@ -6,6 +6,7 @@ import ForwardProxySettingsModule, {
   type ForwardProxyValidationEntry,
 } from './ForwardProxySettingsModule'
 import type { ForwardProxyDialogProgressState } from './forwardProxyDialogProgress'
+import type { ForwardProxySettings } from '../api'
 import {
   forwardProxyStorySavedAt,
   forwardProxyStorySettings,
@@ -232,11 +233,54 @@ const PROGRESS_FAILURE: ForwardProxyDialogProgressState = {
   ],
 }
 
+const EGRESS_ENABLING_PROGRESS: ForwardProxyDialogProgressState = {
+  action: 'save',
+  activeStepKey: 'apply_egress_socks5',
+  message: '正在切换新的全局 relay 出口…',
+  steps: [
+    { key: 'validate_egress_socks5', label: '校验 SOCKS5 relay', status: 'done', detail: '198.51.100.8:1080 可连通' },
+    { key: 'save_settings', label: '保存配置', status: 'done', detail: '已完成' },
+    { key: 'apply_egress_socks5', label: '切换 relay 出口', status: 'running', detail: '新请求会在完成后切换' },
+    { key: 'refresh_subscription', label: '刷新订阅', status: 'pending', detail: null },
+    { key: 'bootstrap_probe', label: '引导探测节点', status: 'pending', detail: null },
+    { key: 'refresh_ui', label: '刷新列表与统计', status: 'pending', detail: null },
+  ],
+}
+
+const EGRESS_ENABLE_FAILURE_PROGRESS: ForwardProxyDialogProgressState = {
+  action: 'save',
+  activeStepKey: 'validate_egress_socks5',
+  message: 'SOCKS5 relay 握手失败：connection reset by peer',
+  steps: [
+    {
+      key: 'validate_egress_socks5',
+      label: '校验 SOCKS5 relay',
+      status: 'error',
+      detail: 'SOCKS5 relay 握手失败：connection reset by peer',
+    },
+    { key: 'save_settings', label: '保存配置', status: 'pending', detail: null },
+    { key: 'apply_egress_socks5', label: '切换 relay 出口', status: 'pending', detail: null },
+    { key: 'refresh_subscription', label: '刷新订阅', status: 'pending', detail: null },
+    { key: 'bootstrap_probe', label: '引导探测节点', status: 'pending', detail: null },
+    { key: 'refresh_ui', label: '刷新列表与统计', status: 'pending', detail: null },
+  ],
+}
+
+const EGRESS_ENABLED_SETTINGS: ForwardProxySettings = {
+  ...forwardProxyStorySettings,
+  egressSocks5Enabled: true,
+  egressSocks5Url: 'socks5h://relay.example.com:1080',
+}
+
 interface StoryCanvasProps {
   dialogPreview?: ForwardProxyDialogPreviewState | null
+  egressPreviewProgress?: ForwardProxyDialogProgressState | null
   revalidateProgress?: ForwardProxyDialogProgressState | null
   revalidateError?: string | null
   revalidating?: boolean
+  settings?: ForwardProxySettings
+  saveError?: string | null
+  saving?: boolean
 }
 
 function wait(ms: number): Promise<void> {
@@ -258,9 +302,13 @@ const REVALIDATE_PROGRESS: ForwardProxyDialogProgressState = {
 
 function StoryCanvas({
   dialogPreview = null,
+  egressPreviewProgress = null,
   revalidateProgress = null,
   revalidateError = null,
   revalidating = false,
+  settings = forwardProxyStorySettings,
+  saveError = null,
+  saving = false,
 }: StoryCanvasProps): JSX.Element {
   const strings = useTranslate().admin.proxySettings
   const [previewOpen, setPreviewOpen] = useState(dialogPreview != null)
@@ -358,13 +406,14 @@ function StoryCanvas({
         statsLoadState="ready"
         settingsError={null}
         statsError={null}
-        saveError={null}
+        saveError={saveError}
         revalidateError={storyRevalidateError}
-        saving={false}
+        saving={saving}
         revalidating={storyRevalidating}
         savedAt={storySavedAt}
         revalidateProgress={storyRevalidateProgress}
-        settings={forwardProxyStorySettings}
+        egressPreviewProgress={egressPreviewProgress}
+        settings={settings}
         stats={forwardProxyStoryStats}
         onPersistDraft={async () => {}}
         onValidateCandidates={async () => []}
@@ -398,6 +447,41 @@ type Story = StoryObj<typeof meta>
 
 export const Default: Story = {
   args: {},
+}
+
+export const GlobalSocks5DisabledEditable: Story = {
+  args: {
+    settings: forwardProxyStorySettings,
+  },
+}
+
+export const GlobalSocks5EnablingProgress: Story = {
+  args: {
+    settings: {
+      ...forwardProxyStorySettings,
+      egressSocks5Url: 'socks5h://relay.example.com:1080',
+    },
+    saving: true,
+    egressPreviewProgress: EGRESS_ENABLING_PROGRESS,
+  },
+}
+
+export const GlobalSocks5EnabledLocked: Story = {
+  args: {
+    settings: EGRESS_ENABLED_SETTINGS,
+  },
+}
+
+export const GlobalSocks5EnableFailed: Story = {
+  args: {
+    settings: {
+      ...forwardProxyStorySettings,
+      egressSocks5Url: 'socks5h://relay.example.com:1080',
+    },
+    saving: true,
+    saveError: 'SOCKS5 relay 握手失败：connection reset by peer',
+    egressPreviewProgress: EGRESS_ENABLE_FAILURE_PROGRESS,
+  },
 }
 
 export const RevalidateProgressBubble: Story = {

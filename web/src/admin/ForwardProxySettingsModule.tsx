@@ -14,6 +14,7 @@ import {
 } from '../components/ui/dialog'
 import { Input } from '../components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select'
+import { Switch } from '../components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table'
 import { Textarea } from '../components/ui/textarea'
 import AdminLoadingRegion from '../components/AdminLoadingRegion'
@@ -36,6 +37,8 @@ import {
   type ForwardProxyDialogProgressState,
   updateDialogProgressState,
 } from './forwardProxyDialogProgress'
+import ForwardProxyEgressControl from './ForwardProxyEgressControl'
+import ForwardProxyProgressBubble from './ForwardProxyProgressBubble'
 import type { QueryLoadState } from './queryLoadState'
 
 const numberFormatter = new Intl.NumberFormat()
@@ -70,6 +73,8 @@ export interface ForwardProxyDraft {
   subscriptionUrlsText: string
   subscriptionUpdateIntervalSecs: string
   insertDirect: boolean
+  egressSocks5Enabled: boolean
+  egressSocks5Url: string
 }
 
 export interface ForwardProxyValidationEntry {
@@ -106,6 +111,7 @@ interface ForwardProxySettingsModuleProps {
   revalidating: boolean
   savedAt: number | null
   revalidateProgress: ForwardProxyDialogProgressState | null
+  egressPreviewProgress?: ForwardProxyDialogProgressState | null
   onPersistDraft: (
     draft: ForwardProxyDraft,
     onProgress?: (event: ForwardProxyProgressEvent) => void,
@@ -157,6 +163,46 @@ function formatPercent(value: number | null | undefined): string {
 function formatLatency(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return '—'
   return `${decimalFormatter.format(value)} ms`
+}
+
+function normalizeEgressErrorMessage(
+  strings: AdminTranslations['proxySettings'],
+  message: string | null | undefined,
+): string {
+  if (!message) return strings.config.egressUnknownError
+
+  const normalized = message.trim()
+  const withoutPrefix = normalized.replace(/^other error:\s*/i, '')
+
+  if (
+    /global SOCKS5 relay must be a valid socks5:\/\/ or socks5h:\/\/ URL/i.test(withoutPrefix)
+  ) {
+    return strings.config.egressInvalidUrlError
+  }
+
+  return withoutPrefix || strings.config.egressUnknownError
+}
+
+function validateEgressUrl(
+  strings: AdminTranslations['proxySettings'],
+  value: string,
+): string | null {
+  const trimmed = value.trim()
+  if (trimmed.length === 0) return null
+
+  let parsed: URL
+  try {
+    parsed = new URL(trimmed)
+  } catch {
+    return strings.config.egressInvalidUrlError
+  }
+
+  const scheme = parsed.protocol.replace(/:$/, '').toLowerCase()
+  if ((scheme !== 'socks5' && scheme !== 'socks5h') || !parsed.hostname || !parsed.port) {
+    return strings.config.egressInvalidUrlError
+  }
+
+  return null
 }
 
 function formatTimeRange(start: string | null | undefined, end: string | null | undefined): string {
@@ -383,6 +429,8 @@ function buildDraftFromSettings(settings: ForwardProxySettings | null): ForwardP
     subscriptionUrlsText: settings?.subscriptionUrls.join('\n') ?? '',
     subscriptionUpdateIntervalSecs: String(settings?.subscriptionUpdateIntervalSecs ?? 3600),
     insertDirect: settings?.insertDirect ?? true,
+    egressSocks5Enabled: settings?.egressSocks5Enabled ?? false,
+    egressSocks5Url: settings?.egressSocks5Url ?? '',
   }
 }
 
@@ -717,95 +765,6 @@ export function formatValidationMessage(
   }
 
   return message || mapValidationErrorLabel(strings, result.errorCode, result.message)
-}
-
-function ForwardProxyProgressBubble({
-  strings,
-  progress,
-}: {
-  strings: AdminTranslations['proxySettings']
-  progress: ForwardProxyDialogProgressState
-}): JSX.Element {
-  const title =
-    progress.action === 'validate'
-      ? strings.progress.titleValidate
-      : progress.action === 'revalidate'
-        ? strings.progress.titleRevalidate
-        : strings.progress.titleSave
-
-  return (
-    <div className="rounded-2xl border border-primary/25 bg-primary/5 px-4 py-3 shadow-[0_16px_40px_-28px_hsl(var(--primary)/0.8)]">
-      <div className="mb-3 flex items-start justify-between gap-3">
-        <div>
-          <p className="text-sm font-semibold text-foreground">{title}</p>
-          <p className="text-xs text-muted-foreground">
-            {progress.message ?? strings.progress.running}
-          </p>
-        </div>
-        <Badge variant="outline" className="border-primary/30 bg-background/70">
-          {progress.action === 'validate'
-            ? strings.progress.badgeValidate
-            : progress.action === 'revalidate'
-              ? strings.progress.badgeRevalidate
-              : strings.progress.badgeSave}
-        </Badge>
-      </div>
-
-      <div className="space-y-2">
-        {progress.steps.map((step) => {
-          const icon =
-            step.status === 'done'
-              ? 'mdi:check-circle'
-              : step.status === 'error'
-                ? 'mdi:alert-circle'
-                : step.status === 'running'
-                  ? 'mdi:loading'
-                  : 'mdi:circle-outline'
-          const toneClass =
-            step.status === 'done'
-              ? 'text-success'
-              : step.status === 'error'
-                ? 'text-destructive'
-                : step.status === 'running'
-                  ? 'text-primary'
-                  : 'text-muted-foreground'
-
-          return (
-            <div
-              key={step.key}
-              className={`flex items-start gap-3 rounded-2xl border px-3 py-2 transition-colors ${
-                step.status === 'running'
-                  ? 'border-primary/35 bg-background/88'
-                  : step.status === 'error'
-                    ? 'border-destructive/30 bg-destructive/5'
-                    : step.status === 'done'
-                      ? 'border-success/25 bg-success/5'
-                      : 'border-border/60 bg-background/70'
-              }`}
-            >
-              <Icon
-                icon={icon}
-                className={`${toneClass} mt-0.5 text-base ${step.status === 'running' ? 'animate-spin' : ''}`}
-              />
-              <div className="min-w-0">
-                <p className="text-sm font-medium text-foreground">{step.label}</p>
-                <p className="text-xs text-muted-foreground">
-                  {step.detail
-                    ?? (step.status === 'done'
-                      ? strings.progress.done
-                      : step.status === 'error'
-                        ? strings.progress.failed
-                        : step.status === 'running'
-                          ? strings.progress.running
-                          : strings.progress.waiting)}
-                </p>
-              </div>
-            </div>
-          )
-        })}
-      </div>
-    </div>
-  )
 }
 
 export interface ForwardProxyValidationNodeRow {
@@ -1497,6 +1456,7 @@ export default function ForwardProxySettingsModule({
   revalidating,
   savedAt,
   revalidateProgress,
+  egressPreviewProgress = null,
   onPersistDraft,
   onValidateCandidates,
   onRefresh,
@@ -1532,6 +1492,10 @@ export default function ForwardProxySettingsModule({
   const manualUrls = settings?.proxyUrls ?? []
   const subscriptionUrls = settings?.subscriptionUrls ?? []
   const draft = buildDraftFromSettings(settings)
+  const [egressSocks5UrlDraft, setEgressSocks5UrlDraft] = useState(draft.egressSocks5Url)
+  const [egressSocks5EnabledDraft, setEgressSocks5EnabledDraft] = useState(draft.egressSocks5Enabled)
+  const [egressProgress, setEgressProgress] = useState<ForwardProxyDialogProgressState | null>(null)
+  const [egressFieldError, setEgressFieldError] = useState<{ message: string; presentation: 'hint' | 'alert' } | null>(null)
   const [dialogKind, setDialogKind] = useState<ForwardProxyDialogKind>(null)
   const [dialogInput, setDialogInput] = useState('')
   const [dialogError, setDialogError] = useState<string | null>(null)
@@ -1573,6 +1537,12 @@ export default function ForwardProxySettingsModule({
       ])
     : normalizeEntries([...manualUrls, ...dialogInputValues])
   const controlsDisabled = saving || revalidating
+  const activeEgressProgress = egressPreviewProgress ?? egressProgress
+  const egressInputLocked = settings?.egressSocks5Enabled ?? false
+  const egressDraftDirty =
+    egressSocks5UrlDraft.trim() !== draft.egressSocks5Url.trim()
+    || egressSocks5EnabledDraft !== draft.egressSocks5Enabled
+  const egressApplyBusy = activeEgressProgress?.action === 'save'
   const canAddSubscription = dialogSubscriptionCandidate != null
     && (!activeDialogValidating || dialogHasLiveImportableSubscription)
   const canAddManualBatch = dialogManualBatchValues.length > manualUrls.length
@@ -1586,6 +1556,12 @@ export default function ForwardProxySettingsModule({
     FORWARD_PROXY_INTERVAL_OPTIONS.find(
       (option) => option.value === String(settings?.subscriptionUpdateIntervalSecs ?? 3600),
     )?.value ?? '3600'
+
+  useEffect(() => {
+    setEgressSocks5UrlDraft(draft.egressSocks5Url)
+    setEgressSocks5EnabledDraft(draft.egressSocks5Enabled)
+    setEgressFieldError(null)
+  }, [draft.egressSocks5Enabled, draft.egressSocks5Url])
 
   const summaryCards = [
     {
@@ -1725,6 +1701,72 @@ export default function ForwardProxySettingsModule({
       })
     } catch {
       // Parent state already exposes the error banner.
+    }
+  }
+
+  const handleToggleEgress = async (nextChecked: boolean) => {
+    const localValidationError = validateEgressUrl(strings, egressSocks5UrlDraft)
+    if (nextChecked && localValidationError) {
+      setEgressFieldError({
+        message: localValidationError,
+        presentation: 'alert',
+      })
+      setEgressSocks5EnabledDraft(false)
+      return
+    }
+
+    setEgressFieldError(null)
+    setEgressSocks5EnabledDraft(nextChecked)
+    try {
+      setEgressProgress(
+        createDialogProgressState(strings.progress, 'egress', 'save', {
+          includeEgressValidation: nextChecked,
+        }),
+      )
+      await persistDraft(
+        {
+          ...draft,
+          egressSocks5Enabled: nextChecked,
+          egressSocks5Url: egressSocks5UrlDraft.trim(),
+        },
+        (event) => {
+          const normalizedEvent =
+            event.type === 'error'
+              ? {
+                  ...event,
+                  message: normalizeEgressErrorMessage(
+                    strings,
+                    event.message || event.detail || strings.config.egressUnknownError,
+                  ),
+                  detail: normalizeEgressErrorMessage(
+                    strings,
+                    event.detail || event.message || strings.config.egressUnknownError,
+                  ),
+                }
+              : event
+
+          if (normalizedEvent.type === 'error') {
+            setEgressFieldError({
+              message: normalizedEvent.message,
+              presentation: 'alert',
+            })
+          }
+          setEgressProgress((current) => {
+            const base =
+              current
+              ?? createDialogProgressState(strings.progress, 'egress', 'save', {
+                includeEgressValidation: nextChecked,
+              })
+            return updateDialogProgressState(base, strings.progress, normalizedEvent)
+          })
+        },
+      )
+    } catch {
+      setEgressFieldError((current) => current ?? {
+        message: normalizeEgressErrorMessage(strings, saveError || strings.config.egressUnknownError),
+        presentation: 'alert',
+      })
+      setEgressSocks5EnabledDraft(draft.egressSocks5Enabled)
     }
   }
 
@@ -2110,7 +2152,7 @@ export default function ForwardProxySettingsModule({
           </div>
         </CardHeader>
         <CardContent className="forward-proxy-panel-content">
-          {saveError && (
+          {saveError && !activeEgressProgress && (
             <div className="alert alert-error" role="alert">
               {saveError}
             </div>
@@ -2128,6 +2170,40 @@ export default function ForwardProxySettingsModule({
             minHeight={220}
           >
             <div className="space-y-3">
+              <ForwardProxyEgressControl
+                strings={strings}
+                enabled={egressSocks5EnabledDraft}
+                url={egressSocks5UrlDraft}
+                loading={egressApplyBusy}
+                controlsDisabled={controlsDisabled}
+                inputLocked={egressInputLocked}
+                errorMessage={egressFieldError?.message ?? null}
+                errorPresentation={egressFieldError?.presentation ?? 'hint'}
+                progress={activeEgressProgress}
+                onToggle={(checked) => void handleToggleEgress(checked)}
+                onUrlChange={(value) => {
+                  setEgressFieldError(null)
+                  setEgressSocks5UrlDraft(value)
+                }}
+                onUrlBlur={() => {
+                  const validationError = validateEgressUrl(strings, egressSocks5UrlDraft)
+                  setEgressFieldError(
+                    validationError
+                      ? {
+                          message: validationError,
+                          presentation: 'alert',
+                        }
+                      : null,
+                  )
+                }}
+                onRequireUrl={() => {
+                  setEgressFieldError({
+                    message: strings.config.egressRequiredError,
+                    presentation: 'hint',
+                  })
+                }}
+              />
+
               <div className="rounded-xl border border-border/70 bg-card/45 px-3.5 py-3">
                 <div className="flex flex-wrap items-center gap-3">
                   <Button type="button" variant="secondary" size="sm" onClick={() => openDialog('manual')} disabled={controlsDisabled}>

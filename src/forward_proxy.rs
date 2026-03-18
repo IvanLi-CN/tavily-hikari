@@ -88,6 +88,10 @@ pub struct ForwardProxySettings {
     pub subscription_update_interval_secs: u64,
     #[serde(default = "default_forward_proxy_insert_direct")]
     pub insert_direct: bool,
+    #[serde(default)]
+    pub egress_socks5_enabled: bool,
+    #[serde(default)]
+    pub egress_socks5_url: String,
 }
 
 impl Default for ForwardProxySettings {
@@ -97,6 +101,8 @@ impl Default for ForwardProxySettings {
             subscription_urls: Vec::new(),
             subscription_update_interval_secs: default_forward_proxy_subscription_interval_secs(),
             insert_direct: default_forward_proxy_insert_direct(),
+            egress_socks5_enabled: false,
+            egress_socks5_url: String::new(),
         }
     }
 }
@@ -110,7 +116,16 @@ impl ForwardProxySettings {
                 .subscription_update_interval_secs
                 .clamp(60, 7 * 24 * 60 * 60),
             insert_direct: self.insert_direct,
+            egress_socks5_enabled: self.egress_socks5_enabled,
+            egress_socks5_url: normalize_egress_socks5_url(self.egress_socks5_url),
         }
+    }
+
+    pub fn effective_egress_socks5_url(&self) -> Option<Url> {
+        if !self.egress_socks5_enabled {
+            return None;
+        }
+        parse_egress_socks5_url(self.egress_socks5_url.trim())
     }
 }
 
@@ -125,6 +140,10 @@ pub struct ForwardProxySettingsUpdateRequest {
     pub subscription_update_interval_secs: u64,
     #[serde(default = "default_forward_proxy_insert_direct")]
     pub insert_direct: bool,
+    #[serde(default)]
+    pub egress_socks5_enabled: bool,
+    #[serde(default)]
+    pub egress_socks5_url: String,
 }
 
 impl From<ForwardProxySettingsUpdateRequest> for ForwardProxySettings {
@@ -134,6 +153,8 @@ impl From<ForwardProxySettingsUpdateRequest> for ForwardProxySettings {
             subscription_urls: value.subscription_urls,
             subscription_update_interval_secs: value.subscription_update_interval_secs,
             insert_direct: value.insert_direct,
+            egress_socks5_enabled: value.egress_socks5_enabled,
+            egress_socks5_url: value.egress_socks5_url,
         }
         .normalized()
     }
@@ -279,6 +300,7 @@ pub struct ForwardProxyEndpoint {
     pub protocol: ForwardProxyProtocol,
     pub endpoint_url: Option<Url>,
     pub raw_url: Option<String>,
+    pub uses_local_relay: bool,
     pub manual_present: bool,
     pub subscription_sources: BTreeSet<String>,
 }
@@ -292,6 +314,7 @@ impl ForwardProxyEndpoint {
             protocol: ForwardProxyProtocol::Direct,
             endpoint_url: None,
             raw_url: None,
+            uses_local_relay: false,
             manual_present: false,
             subscription_sources: BTreeSet::new(),
         }
@@ -311,6 +334,7 @@ impl ForwardProxyEndpoint {
             protocol,
             endpoint_url,
             raw_url,
+            uses_local_relay: false,
             manual_present: true,
             subscription_sources: BTreeSet::new(),
         }
@@ -331,6 +355,7 @@ impl ForwardProxyEndpoint {
             protocol,
             endpoint_url,
             raw_url,
+            uses_local_relay: false,
             manual_present: false,
             subscription_sources: BTreeSet::from([subscription_source]),
         };
@@ -372,23 +397,29 @@ impl ForwardProxyEndpoint {
         )
     }
 
+    pub fn needs_local_relay(&self, egress_socks5_url: Option<&Url>) -> bool {
+        !self.is_direct() && (self.requires_xray() || egress_socks5_url.is_some())
+    }
+
     pub fn absorb_duplicate(&mut self, mut other: ForwardProxyEndpoint) {
         let prefer_other_fields = !self.manual_present && other.manual_present;
         self.manual_present |= other.manual_present;
         self.subscription_sources
             .append(&mut other.subscription_sources);
+        self.uses_local_relay |= other.uses_local_relay;
         if prefer_other_fields {
             self.display_name = other.display_name;
             self.protocol = other.protocol;
             self.endpoint_url = other.endpoint_url;
             self.raw_url = other.raw_url;
+            self.uses_local_relay = other.uses_local_relay;
         }
         self.refresh_source();
     }
 }
 
 pub fn endpoint_host(endpoint: &ForwardProxyEndpoint) -> Option<String> {
-    if endpoint.requires_xray() {
+    if endpoint.requires_xray() || endpoint.uses_local_relay {
         return endpoint
             .raw_url
             .as_deref()
@@ -404,6 +435,15 @@ pub fn endpoint_host(endpoint: &ForwardProxyEndpoint) -> Option<String> {
         return url.host_str().map(ToOwned::to_owned);
     }
     endpoint.raw_url.as_deref().and_then(raw_endpoint_host)
+}
+
+fn endpoint_transport_url(endpoint: &ForwardProxyEndpoint) -> Option<Url> {
+    endpoint
+        .raw_url
+        .as_deref()
+        .and_then(parse_forward_proxy_entry)
+        .and_then(|parsed| parsed.endpoint_url)
+        .or_else(|| endpoint.endpoint_url.clone())
 }
 
 fn raw_endpoint_host(raw: &str) -> Option<String> {
@@ -507,6 +547,8 @@ struct ForwardProxySettingsRow {
     subscription_urls_json: Option<String>,
     subscription_update_interval_secs: Option<i64>,
     insert_direct: Option<i64>,
+    egress_socks5_enabled: Option<i64>,
+    egress_socks5_url: Option<String>,
 }
 
 impl From<ForwardProxySettingsRow> for ForwardProxySettings {
@@ -521,11 +563,15 @@ impl From<ForwardProxySettingsRow> for ForwardProxySettings {
             .insert_direct
             .map(|value| value != 0)
             .unwrap_or_else(default_forward_proxy_insert_direct);
+        let egress_socks5_enabled = value.egress_socks5_enabled.is_some_and(|value| value != 0);
+        let egress_socks5_url = value.egress_socks5_url.unwrap_or_default();
         Self {
             proxy_urls,
             subscription_urls,
             subscription_update_interval_secs: interval,
             insert_direct,
+            egress_socks5_enabled,
+            egress_socks5_url,
         }
         .normalized()
     }
@@ -1105,6 +1151,7 @@ impl SelectedForwardProxy {
 pub struct ForwardProxyClientPool {
     direct_client: Client,
     clients: Arc<RwLock<HashMap<String, Client>>>,
+    egress_clients: Arc<RwLock<HashMap<String, Client>>>,
 }
 
 impl ForwardProxyClientPool {
@@ -1117,6 +1164,7 @@ impl ForwardProxyClientPool {
         Ok(Self {
             direct_client,
             clients: Arc::new(RwLock::new(HashMap::new())),
+            egress_clients: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -1128,21 +1176,39 @@ impl ForwardProxyClientPool {
         let Some(endpoint_url) = endpoint_url else {
             return Ok(self.direct_client());
         };
-        let key = endpoint_url.as_str().to_string();
-        if let Some(client) = self.clients.read().await.get(&key).cloned() {
+        self.cached_client_for_proxy_url(endpoint_url, &self.clients)
+            .await
+    }
+
+    pub async fn direct_client_via_egress(
+        &self,
+        egress_socks5_url: Option<&Url>,
+    ) -> Result<Client, ProxyError> {
+        let Some(egress_socks5_url) = egress_socks5_url else {
+            return Ok(self.direct_client());
+        };
+        self.cached_client_for_proxy_url(egress_socks5_url, &self.egress_clients)
+            .await
+    }
+
+    async fn cached_client_for_proxy_url(
+        &self,
+        proxy_url: &Url,
+        cache: &Arc<RwLock<HashMap<String, Client>>>,
+    ) -> Result<Client, ProxyError> {
+        let key = proxy_url.as_str().to_string();
+        if let Some(client) = cache.read().await.get(&key).cloned() {
             return Ok(client);
         }
         let built = Client::builder()
             .pool_idle_timeout(Duration::from_secs(90))
             .redirect(reqwest::redirect::Policy::none())
-            .proxy(Proxy::all(endpoint_url.as_str()).map_err(|err| {
-                ProxyError::Other(format!(
-                    "invalid forward proxy endpoint {endpoint_url}: {err}"
-                ))
+            .proxy(Proxy::all(proxy_url.as_str()).map_err(|err| {
+                ProxyError::Other(format!("invalid forward proxy endpoint {proxy_url}: {err}"))
             })?)
             .build()
             .map_err(ProxyError::Http)?;
-        self.clients.write().await.insert(key, built.clone());
+        cache.write().await.insert(key, built.clone());
         Ok(built)
     }
 }
@@ -1229,6 +1295,8 @@ pub struct ForwardProxySettingsResponse {
     pub subscription_urls: Vec<String>,
     pub subscription_update_interval_secs: u64,
     pub insert_direct: bool,
+    pub egress_socks5_enabled: bool,
+    pub egress_socks5_url: String,
     pub nodes: Vec<ForwardProxyNodeResponse>,
 }
 
@@ -1299,9 +1367,16 @@ pub struct ForwardProxyLiveStatsResponse {
 
 #[derive(Debug)]
 struct XrayInstance {
+    route_key: String,
     local_proxy_url: Url,
     config_path: PathBuf,
     child: Child,
+}
+
+#[derive(Debug)]
+struct RetiringXrayInstance {
+    remove_after: Instant,
+    instance: XrayInstance,
 }
 
 #[derive(Debug, Default)]
@@ -1309,6 +1384,7 @@ pub struct XraySupervisor {
     pub binary: String,
     pub runtime_dir: PathBuf,
     instances: HashMap<String, XrayInstance>,
+    retiring_instances: Vec<RetiringXrayInstance>,
 }
 
 impl XraySupervisor {
@@ -1317,73 +1393,100 @@ impl XraySupervisor {
             binary,
             runtime_dir,
             instances: HashMap::new(),
+            retiring_instances: Vec::new(),
         }
     }
 
     pub async fn sync_endpoints(
         &mut self,
         endpoints: &mut [ForwardProxyEndpoint],
+        egress_socks5_url: Option<&Url>,
     ) -> Result<(), ProxyError> {
         let _ = fs::create_dir_all(&self.runtime_dir);
+        self.reap_retiring_instances().await;
         let desired_keys = endpoints
             .iter()
-            .filter(|endpoint| endpoint.requires_xray())
-            .map(|endpoint| endpoint.key.clone())
+            .filter(|endpoint| endpoint.needs_local_relay(egress_socks5_url))
+            .map(|endpoint| build_xray_route_key(endpoint, egress_socks5_url))
             .collect::<HashSet<_>>();
         let stale_keys = self
             .instances
             .keys()
+            .filter(|key| !key.starts_with("__validate_xray__"))
             .filter(|key| !desired_keys.contains(*key))
             .cloned()
             .collect::<Vec<_>>();
 
         for endpoint in endpoints {
-            if !endpoint.requires_xray() {
+            if !endpoint.needs_local_relay(egress_socks5_url) {
+                endpoint.endpoint_url = endpoint_transport_url(endpoint);
+                endpoint.uses_local_relay = false;
                 continue;
             }
-            match self.ensure_instance(endpoint).await {
-                Ok(route_url) => endpoint.endpoint_url = Some(route_url),
-                Err(_) => endpoint.endpoint_url = None,
+            match self.ensure_instance(endpoint, egress_socks5_url).await {
+                Ok(route_url) => {
+                    endpoint.endpoint_url = Some(route_url);
+                    endpoint.uses_local_relay = true;
+                }
+                Err(_) => {
+                    endpoint.endpoint_url = None;
+                    endpoint.uses_local_relay = true;
+                }
             }
         }
 
         for key in stale_keys {
-            self.remove_instance(&key).await;
+            self.retire_instance(&key).await;
         }
         Ok(())
     }
 
     pub async fn shutdown_all(&mut self) {
+        self.reap_retiring_instances().await;
         let keys = self.instances.keys().cloned().collect::<Vec<_>>();
         for key in keys {
             self.remove_instance(&key).await;
+        }
+        while let Some(mut retiring) = self.retiring_instances.pop() {
+            let _ =
+                terminate_child_process(&mut retiring.instance.child, Duration::from_secs(2)).await;
+            let _ = fs::remove_file(&retiring.instance.config_path);
         }
     }
 
     pub async fn ensure_instance(
         &mut self,
         endpoint: &ForwardProxyEndpoint,
+        egress_socks5_url: Option<&Url>,
     ) -> Result<Url, ProxyError> {
-        if let Some(instance) = self.instances.get_mut(&endpoint.key) {
+        self.reap_retiring_instances().await;
+        let route_key = build_xray_route_key(endpoint, egress_socks5_url);
+        if let Some(instance) = self.instances.get_mut(&route_key) {
             match instance.child.try_wait() {
                 Ok(None) => return Ok(instance.local_proxy_url.clone()),
                 Ok(Some(_)) => {}
                 Err(_) => {}
             }
         }
-        self.remove_instance(&endpoint.key).await;
-        self.spawn_instance(endpoint).await
+        self.remove_instance(&route_key).await;
+        self.spawn_instance(&route_key, endpoint, egress_socks5_url)
+            .await
     }
 
-    async fn spawn_instance(&mut self, endpoint: &ForwardProxyEndpoint) -> Result<Url, ProxyError> {
-        let outbound = build_xray_outbound_for_endpoint(endpoint)?;
+    async fn spawn_instance(
+        &mut self,
+        route_key: &str,
+        endpoint: &ForwardProxyEndpoint,
+        egress_socks5_url: Option<&Url>,
+    ) -> Result<Url, ProxyError> {
+        let outbound = build_xray_outbound_for_endpoint(endpoint, egress_socks5_url)?;
         let local_port = pick_unused_local_port()?;
         let _ = fs::create_dir_all(&self.runtime_dir);
         let config_path = self.runtime_dir.join(format!(
             "forward-proxy-{:016x}.json",
-            stable_hash_u64(&endpoint.key)
+            stable_hash_u64(route_key)
         ));
-        let config = build_xray_instance_config(local_port, outbound);
+        let config = build_xray_instance_config(local_port, outbound, egress_socks5_url);
         let serialized = serde_json::to_vec_pretty(&config)
             .map_err(|err| ProxyError::Other(format!("failed to serialize xray config: {err}")))?;
         fs::write(&config_path, serialized).map_err(|err| {
@@ -1447,8 +1550,9 @@ impl XraySupervisor {
                 ProxyError::Other(format!("failed to build local xray socks endpoint: {err}"))
             })?;
         self.instances.insert(
-            endpoint.key.clone(),
+            route_key.to_string(),
             XrayInstance {
+                route_key: route_key.to_string(),
                 local_proxy_url: local_proxy_url.clone(),
                 config_path,
                 child,
@@ -1458,9 +1562,35 @@ impl XraySupervisor {
     }
 
     pub async fn remove_instance(&mut self, key: &str) {
+        self.reap_retiring_instances().await;
         if let Some(mut instance) = self.instances.remove(key) {
             let _ = terminate_child_process(&mut instance.child, Duration::from_secs(2)).await;
             let _ = fs::remove_file(&instance.config_path);
+        }
+    }
+
+    async fn retire_instance(&mut self, key: &str) {
+        self.reap_retiring_instances().await;
+        if let Some(instance) = self.instances.remove(key) {
+            self.retiring_instances.push(RetiringXrayInstance {
+                remove_after: Instant::now() + Duration::from_secs(30),
+                instance,
+            });
+        }
+    }
+
+    async fn reap_retiring_instances(&mut self) {
+        let now = Instant::now();
+        let mut index = 0usize;
+        while index < self.retiring_instances.len() {
+            if self.retiring_instances[index].remove_after > now {
+                index += 1;
+                continue;
+            }
+            let mut retiring = self.retiring_instances.swap_remove(index);
+            let _ =
+                terminate_child_process(&mut retiring.instance.child, Duration::from_secs(2)).await;
+            let _ = fs::remove_file(&retiring.instance.config_path);
         }
     }
 }
@@ -1474,12 +1604,23 @@ pub async fn ensure_forward_proxy_schema(pool: &SqlitePool) -> Result<(), ProxyE
             subscription_urls_json TEXT NOT NULL DEFAULT '[]',
             subscription_update_interval_secs INTEGER NOT NULL DEFAULT 3600,
             insert_direct INTEGER NOT NULL DEFAULT 1,
+            egress_socks5_enabled INTEGER NOT NULL DEFAULT 0,
+            egress_socks5_url TEXT NOT NULL DEFAULT '',
             updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
         )
         "#,
     )
     .execute(pool)
     .await?;
+
+    ensure_forward_proxy_settings_column(
+        pool,
+        "egress_socks5_enabled",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
+    ensure_forward_proxy_settings_column(pool, "egress_socks5_url", "TEXT NOT NULL DEFAULT ''")
+        .await?;
 
     sqlx::query(
         r#"
@@ -1594,8 +1735,10 @@ pub async fn ensure_forward_proxy_schema(pool: &SqlitePool) -> Result<(), ProxyE
             subscription_urls_json,
             subscription_update_interval_secs,
             insert_direct,
+            egress_socks5_enabled,
+            egress_socks5_url,
             updated_at
-        ) VALUES (?1, '[]', '[]', ?2, ?3, strftime('%s', 'now'))
+        ) VALUES (?1, '[]', '[]', ?2, ?3, 0, '', strftime('%s', 'now'))
         "#,
     )
     .bind(FORWARD_PROXY_SETTINGS_SINGLETON_ID)
@@ -1612,7 +1755,13 @@ pub async fn load_forward_proxy_settings(
 ) -> Result<ForwardProxySettings, ProxyError> {
     let row = sqlx::query_as::<_, ForwardProxySettingsRow>(
         r#"
-        SELECT proxy_urls_json, subscription_urls_json, subscription_update_interval_secs, insert_direct
+        SELECT
+            proxy_urls_json,
+            subscription_urls_json,
+            subscription_update_interval_secs,
+            insert_direct,
+            egress_socks5_enabled,
+            egress_socks5_url
         FROM forward_proxy_settings
         WHERE id = ?1
         LIMIT 1
@@ -1645,14 +1794,18 @@ pub async fn save_forward_proxy_settings(
             subscription_urls_json = ?2,
             subscription_update_interval_secs = ?3,
             insert_direct = ?4,
+            egress_socks5_enabled = ?5,
+            egress_socks5_url = ?6,
             updated_at = strftime('%s', 'now')
-        WHERE id = ?5
+        WHERE id = ?7
         "#,
     )
     .bind(proxy_urls_json)
     .bind(subscription_urls_json)
     .bind(normalized.subscription_update_interval_secs as i64)
     .bind(normalized.insert_direct as i64)
+    .bind(normalized.egress_socks5_enabled as i64)
+    .bind(normalized.egress_socks5_url)
     .bind(FORWARD_PROXY_SETTINGS_SINGLETON_ID)
     .execute(pool)
     .await?;
@@ -1928,6 +2081,27 @@ async fn ensure_forward_proxy_runtime_column(
     if exists == 0 {
         sqlx::query(&format!(
             "ALTER TABLE forward_proxy_runtime ADD COLUMN {column_name} {column_def}"
+        ))
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
+}
+
+async fn ensure_forward_proxy_settings_column(
+    pool: &SqlitePool,
+    column_name: &str,
+    column_def: &str,
+) -> Result<(), ProxyError> {
+    let exists = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM pragma_table_info('forward_proxy_settings') WHERE name = ?1",
+    )
+    .bind(column_name)
+    .fetch_one(pool)
+    .await?;
+    if exists == 0 {
+        sqlx::query(&format!(
+            "ALTER TABLE forward_proxy_settings ADD COLUMN {column_name} {column_def}"
         ))
         .execute(pool)
         .await?;
@@ -2375,6 +2549,8 @@ pub async fn build_forward_proxy_settings_response(
         subscription_urls: settings.subscription_urls,
         subscription_update_interval_secs: settings.subscription_update_interval_secs,
         insert_direct: settings.insert_direct,
+        egress_socks5_enabled: settings.egress_socks5_enabled,
+        egress_socks5_url: settings.egress_socks5_url,
         nodes,
     })
 }
@@ -2524,6 +2700,27 @@ fn decode_string_vec_json(raw: Option<&str>) -> Vec<String> {
         Some(serialized) => serde_json::from_str::<Vec<String>>(serialized).unwrap_or_default(),
         None => Vec::new(),
     }
+}
+
+fn normalize_egress_socks5_url(raw: String) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    parse_egress_socks5_url(trimmed)
+        .map(|url| url.to_string())
+        .unwrap_or_else(|| trimmed.to_string())
+}
+
+fn parse_egress_socks5_url(raw: &str) -> Option<Url> {
+    let parsed = parse_forward_proxy_entry(raw)?;
+    if !matches!(
+        parsed.protocol,
+        ForwardProxyProtocol::Socks5 | ForwardProxyProtocol::Socks5h
+    ) {
+        return None;
+    }
+    parsed.endpoint_url
 }
 
 pub fn normalize_subscription_entries(raw_entries: Vec<String>) -> Vec<String> {
@@ -3267,7 +3464,7 @@ pub async fn probe_forward_proxy_endpoint(
     probe_url: &Url,
     timeout_budget: Duration,
 ) -> Result<f64, ProxyError> {
-    if endpoint.requires_xray() && endpoint.endpoint_url.is_none() {
+    if (endpoint.requires_xray() || endpoint.uses_local_relay) && endpoint.endpoint_url.is_none() {
         return Err(ProxyError::Other("xray_missing".to_string()));
     }
     let client = client_pool
@@ -3382,7 +3579,39 @@ pub fn stable_hash_u64(raw: &str) -> u64 {
     hasher.finish()
 }
 
-fn build_xray_instance_config(local_port: u16, outbound: Value) -> Value {
+fn build_xray_route_key(
+    endpoint: &ForwardProxyEndpoint,
+    egress_socks5_url: Option<&Url>,
+) -> String {
+    let mut key = String::with_capacity(endpoint.key.len() + 64);
+    key.push_str(&endpoint.key);
+    key.push('|');
+    if let Some(raw_url) = endpoint.raw_url.as_deref() {
+        key.push_str(raw_url);
+    } else if let Some(endpoint_url) = endpoint.endpoint_url.as_ref() {
+        key.push_str(endpoint_url.as_str());
+    }
+    key.push('|');
+    if let Some(egress_socks5_url) = egress_socks5_url {
+        key.push_str(egress_socks5_url.as_str());
+    }
+    if endpoint.key.starts_with("__validate_xray__") {
+        endpoint.key.clone()
+    } else {
+        format!("relay::{:016x}", stable_hash_u64(&key))
+    }
+}
+
+fn build_xray_instance_config(
+    local_port: u16,
+    outbound: Value,
+    egress_socks5_url: Option<&Url>,
+) -> Value {
+    let mut outbounds = vec![outbound];
+    if let Some(egress_outbound) = build_xray_egress_outbound(egress_socks5_url) {
+        outbounds.push(egress_outbound);
+    }
+    outbounds.push(json!({ "tag": "direct", "protocol": "freedom" }));
     json!({
         "log": { "loglevel": "warning" },
         "inbounds": [{
@@ -3392,7 +3621,7 @@ fn build_xray_instance_config(local_port: u16, outbound: Value) -> Value {
             "protocol": "socks",
             "settings": { "auth": "noauth", "udp": false }
         }],
-        "outbounds": [outbound, { "tag": "direct", "protocol": "freedom" }],
+        "outbounds": outbounds,
         "routing": {
             "domainStrategy": "AsIs",
             "rules": [{ "type": "field", "inboundTag": ["inbound-local-socks"], "outboundTag": "proxy" }]
@@ -3400,19 +3629,129 @@ fn build_xray_instance_config(local_port: u16, outbound: Value) -> Value {
     })
 }
 
-fn build_xray_outbound_for_endpoint(endpoint: &ForwardProxyEndpoint) -> Result<Value, ProxyError> {
-    let raw = endpoint
-        .raw_url
-        .as_deref()
-        .ok_or_else(|| ProxyError::Other("xray endpoint missing share link url".to_string()))?;
-    match endpoint.protocol {
-        ForwardProxyProtocol::Vmess => build_vmess_xray_outbound(raw),
-        ForwardProxyProtocol::Vless => build_vless_xray_outbound(raw),
-        ForwardProxyProtocol::Trojan => build_trojan_xray_outbound(raw),
-        ForwardProxyProtocol::Shadowsocks => build_shadowsocks_xray_outbound(raw),
-        _ => Err(ProxyError::Other(
-            "unsupported xray protocol for endpoint".to_string(),
-        )),
+fn build_xray_outbound_for_endpoint(
+    endpoint: &ForwardProxyEndpoint,
+    egress_socks5_url: Option<&Url>,
+) -> Result<Value, ProxyError> {
+    let raw = endpoint.raw_url.as_deref();
+    let native_url = endpoint_transport_url(endpoint);
+    let mut outbound = match endpoint.protocol {
+        ForwardProxyProtocol::Http => {
+            build_http_xray_outbound(native_url.as_ref().ok_or_else(|| {
+                ProxyError::Other("xray endpoint missing native proxy url".to_string())
+            })?)?
+        }
+        ForwardProxyProtocol::Https => {
+            build_http_xray_outbound(native_url.as_ref().ok_or_else(|| {
+                ProxyError::Other("xray endpoint missing native proxy url".to_string())
+            })?)?
+        }
+        ForwardProxyProtocol::Socks5 | ForwardProxyProtocol::Socks5h => {
+            build_socks_xray_outbound(native_url.as_ref().ok_or_else(|| {
+                ProxyError::Other("xray endpoint missing native proxy url".to_string())
+            })?)?
+        }
+        ForwardProxyProtocol::Vmess => build_vmess_xray_outbound(raw.ok_or_else(|| {
+            ProxyError::Other("xray endpoint missing share link url".to_string())
+        })?)?,
+        ForwardProxyProtocol::Vless => build_vless_xray_outbound(raw.ok_or_else(|| {
+            ProxyError::Other("xray endpoint missing share link url".to_string())
+        })?)?,
+        ForwardProxyProtocol::Trojan => build_trojan_xray_outbound(raw.ok_or_else(|| {
+            ProxyError::Other("xray endpoint missing share link url".to_string())
+        })?)?,
+        ForwardProxyProtocol::Shadowsocks => {
+            build_shadowsocks_xray_outbound(raw.ok_or_else(|| {
+                ProxyError::Other("xray endpoint missing share link url".to_string())
+            })?)?
+        }
+        _ => {
+            return Err(ProxyError::Other(
+                "unsupported xray protocol for endpoint".to_string(),
+            ));
+        }
+    };
+    if egress_socks5_url.is_some() {
+        attach_xray_proxy_settings(&mut outbound, "egress-socks");
+    }
+    Ok(outbound)
+}
+
+fn build_http_xray_outbound(proxy_url: &Url) -> Result<Value, ProxyError> {
+    let host = proxy_url
+        .host_str()
+        .ok_or_else(|| ProxyError::Other("http proxy host missing".to_string()))?;
+    let port = proxy_url
+        .port_or_known_default()
+        .ok_or_else(|| ProxyError::Other("http proxy port missing".to_string()))?;
+    let mut outbound = json!({
+        "tag": "proxy",
+        "protocol": "http",
+        "settings": {
+            "servers": [{
+                "address": host,
+                "port": port,
+            }]
+        }
+    });
+    if !proxy_url.username().is_empty() || proxy_url.password().is_some() {
+        outbound["settings"]["servers"][0]["users"] = json!([{
+            "user": percent_decode_once_lossy(proxy_url.username()),
+            "pass": proxy_url.password().map(percent_decode_once_lossy).unwrap_or_default(),
+        }]);
+    }
+    if proxy_url.scheme() == "https" {
+        outbound["streamSettings"] = json!({
+            "security": "tls",
+            "tlsSettings": {
+                "serverName": host,
+            }
+        });
+    }
+    Ok(outbound)
+}
+
+fn build_socks_xray_outbound(proxy_url: &Url) -> Result<Value, ProxyError> {
+    let host = proxy_url
+        .host_str()
+        .ok_or_else(|| ProxyError::Other("socks proxy host missing".to_string()))?;
+    let port = proxy_url
+        .port_or_known_default()
+        .ok_or_else(|| ProxyError::Other("socks proxy port missing".to_string()))?;
+    let mut outbound = json!({
+        "tag": "proxy",
+        "protocol": "socks",
+        "settings": {
+            "servers": [{
+                "address": host,
+                "port": port,
+            }]
+        }
+    });
+    if !proxy_url.username().is_empty() || proxy_url.password().is_some() {
+        outbound["settings"]["servers"][0]["users"] = json!([{
+            "user": percent_decode_once_lossy(proxy_url.username()),
+            "pass": proxy_url.password().map(percent_decode_once_lossy).unwrap_or_default(),
+        }]);
+    }
+    if proxy_url.scheme() == "socks5" {
+        outbound["targetStrategy"] = Value::String("UseIP".to_string());
+    }
+    Ok(outbound)
+}
+
+fn build_xray_egress_outbound(egress_socks5_url: Option<&Url>) -> Option<Value> {
+    let egress_socks5_url = egress_socks5_url?;
+    let mut outbound = build_socks_xray_outbound(egress_socks5_url).ok()?;
+    if let Some(object) = outbound.as_object_mut() {
+        object.insert("tag".to_string(), Value::String("egress-socks".to_string()));
+    }
+    Some(outbound)
+}
+
+fn attach_xray_proxy_settings(outbound: &mut Value, tag: &str) {
+    if let Some(object) = outbound.as_object_mut() {
+        object.insert("proxySettings".to_string(), json!({ "tag": tag }));
     }
 }
 
@@ -3855,6 +4194,8 @@ rule-providers:
             ),
             manual_present: true,
             subscription_sources: BTreeSet::new(),
+
+            uses_local_relay: false,
         };
 
         assert_eq!(endpoint_host(&endpoint).as_deref(), Some("1.1.1.1"));
@@ -3871,9 +4212,31 @@ rule-providers:
             raw_url: Some("http://example.com:8080".to_string()),
             manual_present: true,
             subscription_sources: BTreeSet::new(),
+
+            uses_local_relay: false,
         };
 
         assert_eq!(endpoint_host(&endpoint).as_deref(), Some("127.0.0.1"));
+    }
+
+    #[test]
+    fn parse_egress_socks5_url_requires_supported_scheme_and_explicit_port() {
+        assert!(
+            parse_egress_socks5_url("socks5h://user:pass@127.0.0.1:1080").is_some(),
+            "complete socks5h URLs should remain valid",
+        );
+        assert!(
+            parse_egress_socks5_url("socks5://127.0.0.1").is_none(),
+            "missing ports should be rejected for egress URLs",
+        );
+        assert!(
+            parse_egress_socks5_url("socks5h://user:pass@127").is_none(),
+            "hostname-only values without an explicit port should be rejected",
+        );
+        assert!(
+            parse_egress_socks5_url("http://127.0.0.1:1080").is_none(),
+            "non-SOCKS egress URLs should be rejected",
+        );
     }
 
     #[test]
@@ -3885,6 +4248,9 @@ rule-providers:
             subscription_urls: vec![subscription_url.clone()],
             subscription_update_interval_secs: 3600,
             insert_direct: false,
+
+            egress_socks5_enabled: false,
+            egress_socks5_url: String::new(),
         };
         let mut manager = ForwardProxyManager::new(settings.clone(), Vec::new());
         let fetched = HashMap::from([(subscription_url.clone(), vec![endpoint_url.clone()])]);
@@ -3934,6 +4300,9 @@ rule-providers:
                 subscription_urls: Vec::new(),
                 subscription_update_interval_secs: 3600,
                 insert_direct: false,
+
+                egress_socks5_enabled: false,
+                egress_socks5_url: String::new(),
             },
             Vec::new(),
         );
@@ -3944,6 +4313,9 @@ rule-providers:
                 subscription_urls: vec![subscription_url.clone()],
                 subscription_update_interval_secs: 3600,
                 insert_direct: false,
+
+                egress_socks5_enabled: false,
+                egress_socks5_url: String::new(),
             },
             &HashMap::from([(subscription_url, vec![endpoint_url])]),
         );

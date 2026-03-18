@@ -145,6 +145,8 @@ export const forwardProxyStorySettings: ForwardProxySettings = {
   subscriptionUrls: ['https://example.com/subscription.base64', 'https://mirror.example.com/proxy-feed.txt'],
   subscriptionUpdateIntervalSecs: 3600,
   insertDirect: true,
+  egressSocks5Enabled: false,
+  egressSocks5Url: 'socks5h://127.0.0.1:2080',
   nodes: [
     {
       key: 'node-tokyo-a',
