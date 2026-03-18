@@ -30,6 +30,13 @@ export interface TokenLogRequestKindQuickFilters {
   protocol: TokenLogRequestKindQuickProtocol
 }
 
+export interface TokenLogRequestKindOptionsRefreshResolution {
+  quickSelection: string[]
+  effectiveSelection: string[]
+  hasEmptyMatch: boolean
+  selectionChanged: boolean
+}
+
 export const defaultTokenLogRequestKindQuickFilters: TokenLogRequestKindQuickFilters = {
   billing: 'all',
   protocol: 'all',
@@ -154,6 +161,26 @@ export function resolveEffectiveRequestKindSelection(
   return hasActiveRequestKindQuickFilters(activeFilters)
     ? uniqueSelectedRequestKinds(quickSelection)
     : uniqueSelectedRequestKinds(selected)
+}
+
+export function resolveRequestKindOptionsRefresh(
+  options: TokenLogRequestKindOption[],
+  selected: string[],
+  activeFilters: TokenLogRequestKindQuickFilters,
+  currentEffectiveSelection: string[],
+  currentHasEmptyMatch: boolean,
+): TokenLogRequestKindOptionsRefreshResolution {
+  const quickSelection = buildRequestKindQuickFilterSelection(options, activeFilters)
+  const hasEmptyMatch = hasActiveRequestKindQuickFilters(activeFilters) && quickSelection.length === 0
+  const effectiveSelection = resolveEffectiveRequestKindSelection(selected, activeFilters, quickSelection)
+  return {
+    quickSelection,
+    effectiveSelection,
+    hasEmptyMatch,
+    selectionChanged:
+      !requestKindSelectionsMatch(effectiveSelection, currentEffectiveSelection) ||
+      hasEmptyMatch !== currentHasEmptyMatch,
+  }
 }
 
 export function deriveRequestKindQuickFilters(

@@ -45,6 +45,7 @@ import {
   hasActiveRequestKindQuickFilters,
   mergeRequestKindOptionsByKey,
   resolveEffectiveRequestKindSelection,
+  resolveRequestKindOptionsRefresh,
   resolveManualRequestKindQuickFilters,
   requestKindSelectionsMatch,
   summarizeRequestKindQuickFilters,
@@ -702,6 +703,24 @@ export default function TokenDetail({
       }),
     [effectiveSelectedRequestKinds, hasQuickRequestKindEmptyMatch, id, sinceIso, untilIso],
   )
+  const buildLogsPageUrlForSelection = useCallback(
+    (
+      nextPage: number,
+      requestKinds: string[],
+      forceEmptyMatch: boolean,
+      nextPerPage = perPageRef.current,
+    ) =>
+      buildTokenLogsPagePath({
+        tokenId: id,
+        page: nextPage,
+        perPage: nextPerPage,
+        sinceIso,
+        untilIso,
+        forceEmptyMatch,
+        requestKinds,
+      }),
+    [id, sinceIso, untilIso],
+  )
 
   const syncRequestKindState = useCallback(
     (nextOptions: TokenLogRequestKindOption[]) => {
@@ -924,9 +943,61 @@ export default function TokenDetail({
       try {
         const data = await getJson<TokenLogsPageResponse>(buildLogsPageUrl(1), controller.signal)
         if (controller.signal.aborted || logsQueryBaseKeyRef.current !== requestQueryBaseKey) return
+        const nextOptions = data.request_kind_options ?? []
+        const refreshedSelection = resolveRequestKindOptionsRefresh(
+          nextOptions,
+          selectedRequestKindsNormalized,
+          requestKindQuickFilters,
+          effectiveSelectedRequestKinds,
+          hasQuickRequestKindEmptyMatch,
+        )
+        if (refreshedSelection.selectionChanged) {
+          logsAbortRef.current?.abort()
+          const logsController = new AbortController()
+          logsAbortRef.current = logsController
+          setLogsLoadState(getRefreshingLoadState(logsQueryKeyRef.current != null))
+
+          const loadRefreshedPage = async (nextPage: number, nextPerPage = perPageRef.current) =>
+            getJson<TokenLogsPageResponse>(
+              buildLogsPageUrlForSelection(
+                nextPage,
+                refreshedSelection.effectiveSelection,
+                refreshedSelection.hasEmptyMatch,
+                nextPerPage,
+              ),
+              logsController.signal,
+            )
+
+          const resolvedPage = Math.max(1, page)
+          let refreshedPage = await loadRefreshedPage(resolvedPage)
+          if (logsController.signal.aborted || logsQueryBaseKeyRef.current !== requestQueryBaseKey) return
+
+          const resolvedPerPage = refreshedPage.per_page ?? refreshedPage.perPage ?? perPageRef.current
+          const pageCount = Math.max(1, Math.ceil(refreshedPage.total / resolvedPerPage) || 1)
+          const clampedPage = Math.min(resolvedPage, pageCount)
+
+          if (clampedPage !== resolvedPage) {
+            refreshedPage = await loadRefreshedPage(clampedPage, resolvedPerPage)
+            if (logsController.signal.aborted || logsQueryBaseKeyRef.current !== requestQueryBaseKey) return
+          }
+
+          const finalPerPage = refreshedPage.per_page ?? refreshedPage.perPage ?? resolvedPerPage
+          const finalPageCount = Math.max(1, Math.ceil(refreshedPage.total / finalPerPage) || 1)
+          const finalPage = Math.min(clampedPage, finalPageCount)
+          setLogs(refreshedPage.items)
+          setPage(finalPage)
+          setPerPage(finalPerPage)
+          setTotal(refreshedPage.total)
+          syncRequestKindState(refreshedPage.request_kind_options ?? nextOptions)
+          setExpandedLogs(new Set())
+          setLogsLoadState('ready')
+          logsQueryKeyRef.current = `${requestQueryBaseKey}:page=${finalPage}:perPage=${finalPerPage}`
+          return
+        }
+
         setTotal(data.total)
         setPerPage(data.per_page ?? data.perPage ?? perPageRef.current)
-        syncRequestKindState(data.request_kind_options ?? [])
+        syncRequestKindState(nextOptions)
       } catch {
         // ignore
       }
@@ -961,7 +1032,24 @@ export default function TokenDetail({
     es.onopen = () => setSseConnected(true)
     es.onerror = () => { setSseConnected(false) }
     return () => { try { es.close() } catch {} setSseConnected(false) }
-  }, [buildLogsPageUrl, debouncedSinceInput, id, logsQueryBaseKey, page, period, refreshQuickUsage, refreshSnapshotUsage, sinceIso, syncRequestKindState, untilIso])
+  }, [
+    buildLogsPageUrl,
+    buildLogsPageUrlForSelection,
+    debouncedSinceInput,
+    effectiveSelectedRequestKinds,
+    hasQuickRequestKindEmptyMatch,
+    id,
+    logsQueryBaseKey,
+    page,
+    period,
+    refreshQuickUsage,
+    refreshSnapshotUsage,
+    requestKindQuickFilters,
+    selectedRequestKindsNormalized,
+    sinceIso,
+    syncRequestKindState,
+    untilIso,
+  ])
 
   useEffect(() => {
     ;(window as typeof window & { __TOKEN_PERIOD__?: Period }).__TOKEN_PERIOD__ = period

@@ -9,6 +9,7 @@ import {
   mergeRequestKindOptionsByKey,
   requestKindSelectionsMatch,
   resolveEffectiveRequestKindSelection,
+  resolveRequestKindOptionsRefresh,
   resolveManualRequestKindQuickFilters,
   summarizeRequestKindQuickFilters,
   summarizeSelectedRequestKinds,
@@ -232,5 +233,38 @@ describe('token log request kind helpers', () => {
         ],
       ),
     ).toEqual({ billing: 'billable', protocol: 'mcp' })
+  })
+
+  it('detects when refreshed options expand an active quick preset selection', () => {
+    const refreshed = resolveRequestKindOptionsRefresh(
+      [
+        { key: 'mcp:search', label: 'MCP | search', protocol_group: 'mcp', billing_group: 'billable' },
+        { key: 'mcp:extract', label: 'MCP | extract', protocol_group: 'mcp', billing_group: 'billable' },
+      ],
+      ['mcp:search'],
+      { billing: 'billable', protocol: 'mcp' },
+      ['mcp:search'],
+      false,
+    )
+
+    expect(refreshed.quickSelection).toEqual(['mcp:search', 'mcp:extract'])
+    expect(refreshed.effectiveSelection).toEqual(['mcp:search', 'mcp:extract'])
+    expect(refreshed.hasEmptyMatch).toBe(false)
+    expect(refreshed.selectionChanged).toBe(true)
+  })
+
+  it('preserves a zero-match quick preset when refreshed options still have no matches', () => {
+    const refreshed = resolveRequestKindOptionsRefresh(
+      [{ key: 'api:search', label: 'API | search', protocol_group: 'api', billing_group: 'billable' }],
+      [],
+      { billing: 'non_billable', protocol: 'mcp' },
+      [],
+      true,
+    )
+
+    expect(refreshed.quickSelection).toEqual([])
+    expect(refreshed.effectiveSelection).toEqual([])
+    expect(refreshed.hasEmptyMatch).toBe(true)
+    expect(refreshed.selectionChanged).toBe(false)
   })
 })

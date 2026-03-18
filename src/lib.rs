@@ -14746,12 +14746,17 @@ impl KeyStore {
         since: i64,
         until: Option<i64>,
     ) -> Result<Vec<TokenRequestKindOption>, ProxyError> {
+        type RequestKindOptionRow = (String, String, i64, i64);
         let fallback_key_sql = token_request_kind_fallback_key_sql();
         let fallback_label_sql = token_request_kind_fallback_label_sql();
         let needs_fallback_sql = token_request_kind_needs_fallback_sql();
         let mut stored_query = QueryBuilder::<Sqlite>::new(
             r#"
-            SELECT DISTINCT request_kind_key, request_kind_label
+            SELECT
+                request_kind_key,
+                request_kind_label,
+                MAX(CASE WHEN counts_business_quota = 1 THEN 1 ELSE 0 END) AS has_billable,
+                MAX(CASE WHEN counts_business_quota = 0 THEN 1 ELSE 0 END) AS has_non_billable
             FROM auth_token_logs
             WHERE token_id =
             "#,
@@ -14773,74 +14778,96 @@ impl KeyStore {
             "#,
         );
         stored_query.push(token_request_kind_needs_fallback_sql());
-        stored_query.push(")");
+        stored_query.push(") GROUP BY request_kind_key, request_kind_label");
 
         let options = stored_query
-            .build_query_as::<(String, String)>()
+            .build_query_as::<RequestKindOptionRow>()
             .fetch_all(&self.pool)
             .await?;
 
         let legacy_fallback_query = if until.is_some() {
             format!(
                 r#"
-                SELECT DISTINCT
+                SELECT
                     {fallback_key_sql} AS request_kind_key,
-                    {fallback_label_sql} AS request_kind_label
+                    {fallback_label_sql} AS request_kind_label,
+                    MAX(CASE WHEN counts_business_quota = 1 THEN 1 ELSE 0 END) AS has_billable,
+                    MAX(CASE WHEN counts_business_quota = 0 THEN 1 ELSE 0 END) AS has_non_billable
                 FROM auth_token_logs
                 WHERE token_id = ?
                   AND created_at >= ?
                   AND created_at < ?
                   AND {needs_fallback_sql}
+                GROUP BY 1, 2
                 "#
             )
         } else {
             format!(
                 r#"
-                SELECT DISTINCT
+                SELECT
                     {fallback_key_sql} AS request_kind_key,
-                    {fallback_label_sql} AS request_kind_label
+                    {fallback_label_sql} AS request_kind_label,
+                    MAX(CASE WHEN counts_business_quota = 1 THEN 1 ELSE 0 END) AS has_billable,
+                    MAX(CASE WHEN counts_business_quota = 0 THEN 1 ELSE 0 END) AS has_non_billable
                 FROM auth_token_logs
                 WHERE token_id = ?
                   AND created_at >= ?
                   AND {needs_fallback_sql}
+                GROUP BY 1, 2
                 "#
             )
         };
         let legacy_options = if let Some(until) = until {
-            sqlx::query_as::<_, (String, String)>(legacy_fallback_query.as_str())
+            sqlx::query_as::<_, RequestKindOptionRow>(legacy_fallback_query.as_str())
                 .bind(token_id)
                 .bind(since)
                 .bind(until)
                 .fetch_all(&self.pool)
                 .await?
         } else {
-            sqlx::query_as::<_, (String, String)>(legacy_fallback_query.as_str())
+            sqlx::query_as::<_, RequestKindOptionRow>(legacy_fallback_query.as_str())
                 .bind(token_id)
                 .bind(since)
                 .fetch_all(&self.pool)
                 .await?
         };
-        let mut options_by_key = BTreeMap::<String, String>::new();
-        for (key, label) in options.into_iter().chain(legacy_options.into_iter()) {
+        let mut options_by_key = BTreeMap::<String, (String, bool, bool)>::new();
+        for (key, label, has_billable, has_non_billable) in
+            options.into_iter().chain(legacy_options.into_iter())
+        {
             match options_by_key.get_mut(&key) {
-                Some(current_label) if prefer_request_kind_label(current_label, &label) => {
+                Some((current_label, current_has_billable, current_has_non_billable))
+                    if prefer_request_kind_label(current_label, &label) =>
+                {
                     *current_label = label;
+                    *current_has_billable |= has_billable != 0;
+                    *current_has_non_billable |= has_non_billable != 0;
                 }
-                Some(_) => {}
+                Some((_, current_has_billable, current_has_non_billable)) => {
+                    *current_has_billable |= has_billable != 0;
+                    *current_has_non_billable |= has_non_billable != 0;
+                }
                 None => {
-                    options_by_key.insert(key, label);
+                    options_by_key.insert(key, (label, has_billable != 0, has_non_billable != 0));
                 }
             }
         }
 
         let mut normalized_options = options_by_key
             .into_iter()
-            .map(|(key, label)| TokenRequestKindOption {
-                protocol_group: token_request_kind_protocol_group(&key).to_string(),
-                billing_group: token_request_kind_billing_group(&key).to_string(),
-                key,
-                label,
-            })
+            .map(
+                |(key, (label, has_billable, has_non_billable))| TokenRequestKindOption {
+                    protocol_group: token_request_kind_protocol_group(&key).to_string(),
+                    billing_group: token_request_kind_option_billing_group(
+                        &key,
+                        has_billable,
+                        has_non_billable,
+                    )
+                    .to_string(),
+                    key,
+                    label,
+                },
+            )
             .collect::<Vec<_>>();
         normalized_options.sort_by(|left, right| {
             left.label
@@ -19134,6 +19161,19 @@ fn token_request_kind_billing_group(key: &str) -> &'static str {
     }
 }
 
+fn token_request_kind_option_billing_group(
+    key: &str,
+    has_billable: bool,
+    has_non_billable: bool,
+) -> &'static str {
+    let normalized = key.trim();
+    if normalized == "mcp:batch" && !has_billable && has_non_billable {
+        "non_billable"
+    } else {
+        token_request_kind_billing_group(normalized)
+    }
+}
+
 fn derive_token_request_kind_fallback(
     _method: &str,
     path: &str,
@@ -19978,6 +20018,20 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
             "billable"
         );
         assert_eq!(token_request_kind_billing_group("mcp:raw:/mcp"), "billable");
+        assert_eq!(token_request_kind_billing_group("mcp:batch"), "billable");
+
+        assert_eq!(
+            token_request_kind_option_billing_group("mcp:batch", false, true),
+            "non_billable"
+        );
+        assert_eq!(
+            token_request_kind_option_billing_group("mcp:batch", true, true),
+            "billable"
+        );
+        assert_eq!(
+            token_request_kind_option_billing_group("api:search", false, true),
+            "billable"
+        );
     }
 
     #[test]
@@ -20216,6 +20270,54 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
             .find(|option| option.key == "api:search")
             .expect("api search option exists");
         assert_eq!(api_search_option.billing_group, "billable");
+
+        sqlx::query(
+            r#"
+            INSERT INTO auth_token_logs (
+                token_id, method, path, query, http_status, mcp_status, request_kind_key,
+                request_kind_label, result_status, error_message, created_at, counts_business_quota
+            ) VALUES (?, 'POST', '/mcp', NULL, 200, 200, 'mcp:batch', 'MCP | batch', 'success', NULL, ?, 0)
+            "#,
+        )
+        .bind(&token.id)
+        .bind(Utc::now().timestamp() + 3)
+        .execute(&repaired.key_store.pool)
+        .await
+        .expect("insert non-billable mcp batch option row");
+
+        let options_with_non_billable_batch = repaired
+            .token_log_request_kind_options(&token.id, 0, None)
+            .await
+            .expect("query request kind options with non-billable mcp batch row");
+        let batch_option = options_with_non_billable_batch
+            .iter()
+            .find(|option| option.key == "mcp:batch")
+            .expect("mcp batch option exists");
+        assert_eq!(batch_option.billing_group, "non_billable");
+
+        sqlx::query(
+            r#"
+            INSERT INTO auth_token_logs (
+                token_id, method, path, query, http_status, mcp_status, request_kind_key,
+                request_kind_label, result_status, error_message, created_at, counts_business_quota
+            ) VALUES (?, 'POST', '/mcp', NULL, 200, 200, 'mcp:batch', 'MCP | batch', 'success', NULL, ?, 1)
+            "#,
+        )
+        .bind(&token.id)
+        .bind(Utc::now().timestamp() + 4)
+        .execute(&repaired.key_store.pool)
+        .await
+        .expect("insert billable mcp batch option row");
+
+        let options_with_mixed_batch = repaired
+            .token_log_request_kind_options(&token.id, 0, None)
+            .await
+            .expect("query request kind options with mixed mcp batch rows");
+        let mixed_batch_option = options_with_mixed_batch
+            .iter()
+            .find(|option| option.key == "mcp:batch")
+            .expect("mixed mcp batch option exists");
+        assert_eq!(mixed_batch_option.billing_group, "billable");
 
         let _ = std::fs::remove_file(db_path);
     }
