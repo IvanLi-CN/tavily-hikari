@@ -28,6 +28,15 @@ const meta = {
   title: 'Admin/Wrappers/AdminTablePagination',
   component: AdminTablePagination,
   parameters: {
+    docs: {
+      description: {
+        component: [
+          'Shared admin pagination footer for list views that need page count, page size, and previous/next controls.',
+          '',
+          'Public docs: [Configuration & Access](../configuration-access.html) · [Storybook Guide](../storybook-guide.html)',
+        ].join('\n'),
+      },
+    },
     layout: 'padded',
   },
   args: {

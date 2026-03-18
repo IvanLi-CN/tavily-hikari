@@ -7,6 +7,15 @@ const meta = {
   title: 'Admin/Wrappers/AdminTableShell',
   component: AdminTableShell,
   parameters: {
+    docs: {
+      description: {
+        component: [
+          'Shared table shell used by admin data views to keep width, loading treatment, and table framing consistent.',
+          '',
+          'Public docs: [Deployment & Anonymity](../deployment-anonymity.html) · [Storybook Guide](../storybook-guide.html)',
+        ].join('\n'),
+      },
+    },
     layout: 'padded',
   },
   args: {

@@ -83,7 +83,18 @@ function ModalHarness(props: { initial: KeysValidationState }): JSX.Element {
 const meta = {
   title: "Admin/Components/ApiKeysValidationDialog",
   component: ModalHarness,
-  parameters: { layout: "fullscreen" },
+  parameters: {
+    layout: "fullscreen",
+    docs: {
+      description: {
+        component: [
+          'Validation and import dialog for bulk Tavily key intake, including quota and retry states.',
+          '',
+          'Public docs: [Configuration & Access](../configuration-access.html) · [Deployment & Anonymity](../deployment-anonymity.html) · [Storybook Guide](../storybook-guide.html)',
+        ].join('\n'),
+      },
+    },
+  },
   render: (args) => <ModalHarness {...args} />,
 } satisfies Meta<typeof ModalHarness>;
 

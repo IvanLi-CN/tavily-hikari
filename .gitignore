@@ -19,7 +19,10 @@ web/storybook-static
 web/*.tsbuildinfo
 web/vite.config.js
 web/vite.config.d.ts
+docs-site/node_modules
+docs-site/doc_build
 .serena/
 logs/
 downloads/
 data/
+.tmp/

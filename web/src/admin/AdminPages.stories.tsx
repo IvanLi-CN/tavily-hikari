@@ -2999,6 +2999,15 @@ function ProxySettingsPageCanvas(): JSX.Element {
 const meta = {
   title: 'Admin/Pages',
   parameters: {
+    docs: {
+      description: {
+        component: [
+          'Route-level admin review surface covering dashboard, keys, tokens, users, jobs, and forward proxy settings.',
+          '',
+          'Public docs: [Configuration & Access](../configuration-access.html) · [Deployment & Anonymity](../deployment-anonymity.html) · [Storybook Guide](../storybook-guide.html)',
+        ].join('\n'),
+      },
+    },
     layout: 'fullscreen',
   },
   decorators: [

@@ -540,6 +540,15 @@ const meta = {
   excludeStories: ['__testables'],
   parameters: {
     controls: { expanded: true },
+    docs: {
+      description: {
+        component: [
+          'Merged user-console acceptance surface for the dashboard landing and token-detail preview flows.',
+          '',
+          'Public docs: [Quick Start](../quick-start.html) · [Configuration & Access](../configuration-access.html) · [Storybook Guide](../storybook-guide.html)',
+        ].join('\n'),
+      },
+    },
     layout: 'fullscreen',
     viewport: { defaultViewport: '1440-device-desktop' },
   },

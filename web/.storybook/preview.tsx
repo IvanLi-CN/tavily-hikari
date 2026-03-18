@@ -6,6 +6,186 @@ import '../src/index.css'
 import { LanguageProvider, type Language, useLanguage } from '../src/i18n'
 import { ThemeProvider, type ThemeMode, useTheme } from '../src/theme'
 
+const DEFAULT_LOCAL_DOCS_SITE_ORIGIN = 'http://127.0.0.1:56007'
+const DOCS_ORIGIN_STORAGE_KEY = 'tavily-hikari.docs-origin'
+const LOCAL_DOCS_SITE_PATHS = new Set([
+  '/',
+  '/index.html',
+  '/quick-start.html',
+  '/configuration-access.html',
+  '/http-api-guide.html',
+  '/deployment-anonymity.html',
+  '/development.html',
+  '/storybook.html',
+  '/storybook-guide.html',
+  '/zh/',
+  '/zh/index.html',
+  '/zh/quick-start.html',
+  '/zh/configuration-access.html',
+  '/zh/http-api-guide.html',
+  '/zh/deployment-anonymity.html',
+  '/zh/development.html',
+  '/zh/storybook.html',
+  '/zh/storybook-guide.html',
+])
+
+declare global {
+  var __tavilyHikariStorybookDocsLinkSyncInstalled: boolean | undefined
+}
+
+const observedDocsRoots = new WeakSet<Document | ShadowRoot>()
+
+function isValidOrigin(rawValue: string | null): rawValue is string {
+  if (!rawValue) return false
+  try {
+    new URL(rawValue)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function getLocalDocsSiteOrigin(): string {
+  if (typeof window === 'undefined') return DEFAULT_LOCAL_DOCS_SITE_ORIGIN
+
+  const docsOriginFromUrl = new URLSearchParams(window.location.search).get('docsOrigin')
+  if (isValidOrigin(docsOriginFromUrl)) {
+    window.localStorage.setItem(DOCS_ORIGIN_STORAGE_KEY, docsOriginFromUrl)
+    return docsOriginFromUrl
+  }
+
+  const docsOriginFromStorage = window.localStorage.getItem(DOCS_ORIGIN_STORAGE_KEY)
+  if (isValidOrigin(docsOriginFromStorage)) return docsOriginFromStorage
+
+  return import.meta.env.VITE_DOCS_SITE_ORIGIN || DEFAULT_LOCAL_DOCS_SITE_ORIGIN
+}
+
+function isDocsSitePath(pathname: string): boolean {
+  for (const candidate of LOCAL_DOCS_SITE_PATHS) {
+    if (pathname === candidate || pathname.endsWith(candidate)) return true
+  }
+  return false
+}
+
+function resolveDocsSiteLink(url: URL): URL | null {
+  if (url.origin !== window.location.origin) return null
+  if (!isDocsSitePath(url.pathname)) return null
+  if (import.meta.env.DEV && LOCAL_DOCS_SITE_PATHS.has(url.pathname)) {
+    return new URL(`${url.pathname}${url.search}${url.hash}`, getLocalDocsSiteOrigin())
+  }
+  return url
+}
+
+function getDocsSiteTarget(anchor: HTMLAnchorElement): URL | null {
+  const cachedTarget = anchor.dataset.hikariDocsTarget
+  if (isValidOrigin(cachedTarget)) return new URL(cachedTarget)
+  return resolveDocsSiteLink(new URL(anchor.href, window.location.origin))
+}
+
+function redirectToDocsSite(event: MouseEvent, anchor: HTMLAnchorElement): void {
+  if (event.defaultPrevented) return
+  if (event.button !== 0) return
+  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+
+  const rewrittenTarget = getDocsSiteTarget(anchor)
+  if (!rewrittenTarget) return
+
+  event.preventDefault()
+  event.stopPropagation()
+  event.stopImmediatePropagation()
+  window.top?.location.assign(rewrittenTarget.toString())
+}
+
+function rewriteDocsLinks(root: Document | ShadowRoot): void {
+  for (const anchor of root.querySelectorAll<HTMLAnchorElement>('a[href]')) {
+    const rewrittenTarget = resolveDocsSiteLink(new URL(anchor.href, window.location.origin))
+    if (!rewrittenTarget) continue
+    anchor.href = rewrittenTarget.toString()
+    anchor.dataset.hikariDocsTarget = rewrittenTarget.toString()
+    anchor.target = '_top'
+    const relParts = new Set(anchor.rel.split(/\s+/).filter(Boolean))
+    relParts.add('noopener')
+    relParts.add('noreferrer')
+    anchor.rel = Array.from(relParts).join(' ')
+    anchor.onclick = (event) => {
+      redirectToDocsSite(event, anchor)
+    }
+    if (anchor.dataset.hikariDocsLinkBound !== 'true') {
+      anchor.addEventListener('click', (event) => redirectToDocsSite(event, anchor), true)
+      anchor.dataset.hikariDocsLinkBound = 'true'
+    }
+  }
+}
+
+function installDocsNavigationInterception(targetDocument: Document): void {
+  const interceptDocumentClick = (event: MouseEvent) => {
+    if (event.defaultPrevented) return
+    if (event.button !== 0) return
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+
+    const rawTarget = event.target
+    if (!(rawTarget instanceof Element)) return
+
+    const anchor = rawTarget.closest<HTMLAnchorElement>('a[href]')
+    if (!anchor) return
+
+    redirectToDocsSite(event, anchor)
+  }
+
+  targetDocument.addEventListener('click', interceptDocumentClick, true)
+}
+
+function observeStorybookDocument(targetDocument: Document): void {
+  if (observedDocsRoots.has(targetDocument)) {
+    rewriteDocsLinks(targetDocument)
+    return
+  }
+
+  const sync = () => rewriteDocsLinks(targetDocument)
+  sync()
+  installDocsNavigationInterception(targetDocument)
+  new MutationObserver(sync).observe(targetDocument, {
+    childList: true,
+    subtree: true,
+  })
+  observedDocsRoots.add(targetDocument)
+}
+
+function installDocsLinkSync(): void {
+  if (
+    typeof document === 'undefined'
+    || globalThis.__tavilyHikariStorybookDocsLinkSyncInstalled
+  ) {
+    return
+  }
+
+  observeStorybookDocument(document)
+
+  const syncPreviewIframe = () => {
+    const previewIframe = document.querySelector<HTMLIFrameElement>('#storybook-preview-iframe')
+    if (!previewIframe) return
+    const previewDocument = previewIframe.contentDocument
+    if (previewDocument) observeStorybookDocument(previewDocument)
+    if (previewIframe.dataset.hikariDocsSyncBound !== 'true') {
+      previewIframe.addEventListener('load', syncPreviewIframe)
+      previewIframe.dataset.hikariDocsSyncBound = 'true'
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener(
+      'DOMContentLoaded',
+      () => {
+        syncPreviewIframe()
+      },
+      { once: true },
+    )
+  }
+
+  syncPreviewIframe()
+  globalThis.__tavilyHikariStorybookDocsLinkSyncInstalled = true
+}
+
 function SyncGlobals(props: {
   language: Language
   themeMode: ThemeMode
@@ -125,6 +305,7 @@ const preview: Preview = {
     (Story, context) => {
       const language = (context.globals.language ?? 'en') as Language
       const themeMode = (context.globals.themeMode ?? 'dark') as ThemeMode
+      if (typeof document !== 'undefined') installDocsLinkSync()
       return (
         <LanguageProvider>
           <ThemeProvider>

@@ -4,11 +4,19 @@
 [![CI Pipeline](https://github.com/IvanLi-CN/tavily-hikari/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/IvanLi-CN/tavily-hikari/actions/workflows/ci.yml)
 [![Rust](https://img.shields.io/badge/Rust-1.91%2B-orange?logo=rust)](rust-toolchain.toml)
 [![Frontend](https://img.shields.io/badge/Vite-5.x-646CFF?logo=vite&logoColor=white)](web/package.json)
+[![Docs](https://img.shields.io/badge/docs-github--pages-1f6feb)](https://ivanli-cn.github.io/tavily-hikari/)
 [![Docs-zh](https://img.shields.io/badge/docs-zh--CN-blue)](README.zh-CN.md)
 
 Tavily Hikari is a Rust + Axum proxy for Tavily's MCP endpoint. It multiplexes multiple API keys, anonymizes upstream traffic, stores full audit logs in SQLite, and ships with a React + Vite web console for realtime visibility.
 
 > Looking for the Chinese documentation? Check [`README.zh-CN.md`](README.zh-CN.md).
+
+## Docs & Storybook
+
+- Public docs site: [ivanli-cn.github.io/tavily-hikari](https://ivanli-cn.github.io/tavily-hikari/)
+- Storybook guide: [ivanli-cn.github.io/tavily-hikari/storybook-guide.html](https://ivanli-cn.github.io/tavily-hikari/storybook-guide.html)
+- Local docs-site: `cd docs-site && bun install --frozen-lockfile && bun run dev`
+- Local Storybook: `cd web && bun install --frozen-lockfile && bun run storybook`
 
 ## Why Tavily Hikari
 

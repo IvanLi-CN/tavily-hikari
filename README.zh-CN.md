@@ -4,8 +4,16 @@
 [![CI Pipeline](https://github.com/IvanLi-CN/tavily-hikari/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/IvanLi-CN/tavily-hikari/actions/workflows/ci.yml)
 [![Rust](https://img.shields.io/badge/Rust-1.91%2B-orange?logo=rust)](rust-toolchain.toml)
 [![Frontend](https://img.shields.io/badge/Vite-5.x-646CFF?logo=vite&logoColor=white)](web/package.json)
+[![Docs](https://img.shields.io/badge/docs-github--pages-1f6feb)](https://ivanli-cn.github.io/tavily-hikari/)
 
 Tavily Hikari 是一个面向 MCP (Model Context Protocol) 的 Tavily 代理层，基于 Rust + Axum 构建，具备多密钥轮询、匿名透传与细粒度审计能力。后端通过 SQLite 维护密钥状态与请求日志，前端使用 React + Vite 提供实时的可视化运维界面，可直接查看 Key 健康、告警与历史流量。
+
+## 文档站与 Storybook
+
+- 公开文档站：[ivanli-cn.github.io/tavily-hikari](https://ivanli-cn.github.io/tavily-hikari/)
+- Storybook 导览：[ivanli-cn.github.io/tavily-hikari/storybook-guide.html](https://ivanli-cn.github.io/tavily-hikari/storybook-guide.html)
+- 本地 docs-site：`cd docs-site && bun install --frozen-lockfile && bun run dev`
+- 本地 Storybook：`cd web && bun install --frozen-lockfile && bun run storybook`
 
 ## 功能亮点
 

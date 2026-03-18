@@ -114,6 +114,15 @@ const meta = {
   title: 'Public/PublicHome',
   parameters: {
     layout: 'fullscreen',
+    docs: {
+      description: {
+        component: [
+          'Public landing surface that brings together Linux DO login, token access, and the optional admin entry.',
+          '',
+          'Public docs: [Quick Start](../quick-start.html) · [Configuration & Access](../configuration-access.html) · [Storybook Guide](../storybook-guide.html)',
+        ].join('\n'),
+      },
+    },
   },
   render: (args) => <PublicHomeTokenModalStory {...args} />,
 } satisfies Meta<PublicHomeStoryArgs>
