@@ -11171,8 +11171,28 @@ colo=LAX
             .create_access_token(Some("http-research-result"))
             .await
             .expect("create token");
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let api_key_id: String = sqlx::query_scalar("SELECT id FROM api_keys LIMIT 1")
+            .fetch_one(&pool)
+            .await
+            .expect("api key id");
 
         let request_id = "req-test-123";
+        sqlx::query(
+            r#"
+            INSERT INTO research_requests (request_id, key_id, token_id, expires_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(request_id)
+        .bind(&api_key_id)
+        .bind(&access_token.id)
+        .bind(Utc::now().timestamp() + 3600)
+        .bind(Utc::now().timestamp())
+        .bind(Utc::now().timestamp())
+        .execute(&pool)
+        .await
+        .expect("seed research request owner");
         let upstream_addr = spawn_http_research_result_mock_asserting_bearer(
             expected_api_key.to_string(),
             request_id.to_string(),
@@ -11220,8 +11240,28 @@ colo=LAX
             .create_access_token(Some("http-research-result-encoded-path"))
             .await
             .expect("create token");
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let api_key_id: String = sqlx::query_scalar("SELECT id FROM api_keys LIMIT 1")
+            .fetch_one(&pool)
+            .await
+            .expect("api key id");
 
         let request_id = "req/segment";
+        sqlx::query(
+            r#"
+            INSERT INTO research_requests (request_id, key_id, token_id, expires_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(request_id)
+        .bind(&api_key_id)
+        .bind(&access_token.id)
+        .bind(Utc::now().timestamp() + 3600)
+        .bind(Utc::now().timestamp())
+        .bind(Utc::now().timestamp())
+        .execute(&pool)
+        .await
+        .expect("seed research request owner");
         let upstream_addr = spawn_http_research_result_mock_asserting_bearer(
             expected_api_key.to_string(),
             request_id.to_string(),
