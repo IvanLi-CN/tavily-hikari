@@ -19127,8 +19127,6 @@ fn token_request_kind_billing_group(key: &str) -> &'static str {
         || normalized.starts_with("mcp:resources/")
         || normalized.starts_with("mcp:prompts/")
         || normalized.starts_with("mcp:notifications/")
-        || normalized == "mcp:raw:/mcp"
-        || normalized.starts_with("mcp:raw:/mcp/")
     {
         "non_billable"
     } else {
@@ -19977,12 +19975,9 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
         );
         assert_eq!(
             token_request_kind_billing_group("mcp:raw:/mcp/sse"),
-            "non_billable"
+            "billable"
         );
-        assert_eq!(
-            token_request_kind_billing_group("mcp:raw:/mcp"),
-            "non_billable"
-        );
+        assert_eq!(token_request_kind_billing_group("mcp:raw:/mcp"), "billable");
     }
 
     #[test]
@@ -20136,7 +20131,7 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
         assert_eq!(options[0].key, "mcp:raw:/mcp/sse");
         assert_eq!(options[0].label, "MCP | /mcp/sse");
         assert_eq!(options[0].protocol_group, "mcp");
-        assert_eq!(options[0].billing_group, "non_billable");
+        assert_eq!(options[0].billing_group, "billable");
 
         sqlx::query(
             r#"
@@ -20196,7 +20191,7 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
             .iter()
             .find(|option| option.key == "mcp:raw:/mcp")
             .expect("raw root option exists");
-        assert_eq!(raw_root_option.billing_group, "non_billable");
+        assert_eq!(raw_root_option.billing_group, "billable");
 
         sqlx::query(
             r#"

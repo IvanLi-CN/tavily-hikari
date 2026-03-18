@@ -91,7 +91,7 @@ describe('token log request kind helpers', () => {
             key: 'mcp:raw:/mcp/sse',
             label: 'MCP | /mcp/sse',
             protocol_group: 'mcp',
-            billing_group: 'non_billable',
+            billing_group: 'billable',
           },
         },
         [{ key: 'api:search', label: 'API | search', protocol_group: 'api', billing_group: 'billable' }],
@@ -107,7 +107,7 @@ describe('token log request kind helpers', () => {
         key: 'mcp:raw:/mcp/sse',
         label: 'MCP | /mcp/sse',
         protocol_group: 'mcp',
-        billing_group: 'non_billable',
+        billing_group: 'billable',
       },
     })
   })
@@ -122,13 +122,13 @@ describe('token log request kind helpers', () => {
             key: 'mcp:raw:/mcp/sse',
             label: 'MCP | /mcp/sse',
             protocol_group: 'mcp',
-            billing_group: 'non_billable',
+            billing_group: 'billable',
           },
         },
       ),
     ).toEqual([
       { key: 'api:search', label: 'API | search', protocol_group: 'api', billing_group: 'billable' },
-      { key: 'mcp:raw:/mcp/sse', label: 'MCP | /mcp/sse', protocol_group: 'mcp', billing_group: 'non_billable' },
+      { key: 'mcp:raw:/mcp/sse', label: 'MCP | /mcp/sse', protocol_group: 'mcp', billing_group: 'billable' },
     ])
   })
 

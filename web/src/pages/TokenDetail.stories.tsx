@@ -90,7 +90,7 @@ const requestKindOptionsMock = [
   { key: "api:research", label: "API | research", protocol_group: "api", billing_group: "billable" },
   { key: "api:research-result", label: "API | research result", protocol_group: "api", billing_group: "non_billable" },
   { key: "api:search", label: "API | search", protocol_group: "api", billing_group: "billable" },
-  { key: "mcp:raw:/mcp", label: "MCP | /mcp", protocol_group: "mcp", billing_group: "non_billable" },
+  { key: "mcp:raw:/mcp", label: "MCP | /mcp", protocol_group: "mcp", billing_group: "billable" },
   { key: "mcp:extract", label: "MCP | extract", protocol_group: "mcp", billing_group: "billable" },
   { key: "mcp:initialize", label: "MCP | initialize", protocol_group: "mcp", billing_group: "non_billable" },
   {

@@ -75,7 +75,7 @@
 ### Internal interfaces
 
 - canonical 分组必须由后端按 request-kind 规则提供，前端只消费，不再按 `request_kind_key` 或 `business_credits` 本地重算。
-- `mcp:initialize`、`mcp:ping`、`mcp:tools/list`、`mcp:resources/*`、`mcp:prompts/*`、`mcp:notifications/*`、`mcp:raw:/mcp`、`mcp:raw:/mcp/*` 视为 `non_billable`。
+- `mcp:initialize`、`mcp:ping`、`mcp:tools/list`、`mcp:resources/*`、`mcp:prompts/*`、`mcp:notifications/*` 视为 `non_billable`；raw `mcp:raw:/mcp*` fallback 维持 billable safe-default。
 - `api:research-result` 与 `api:usage` 视为 `non_billable`；其余现有 API request kinds 维持 billable safe-default。
 
 ## 验收标准（Acceptance Criteria）

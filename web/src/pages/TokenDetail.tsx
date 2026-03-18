@@ -46,6 +46,7 @@ import {
   mergeRequestKindOptionsByKey,
   resolveEffectiveRequestKindSelection,
   resolveManualRequestKindQuickFilters,
+  requestKindSelectionsMatch,
   summarizeRequestKindQuickFilters,
   summarizeSelectedRequestKinds,
   toggleRequestKindSelection,
@@ -579,8 +580,13 @@ export default function TokenDetail({
   )
   const logsQueryBaseKey = useMemo(
     () =>
-      `${summaryQueryBaseKey}:requestKinds=${effectiveSelectedRequestKinds.join(',')}:emptyQuickMatch=${hasQuickRequestKindEmptyMatch ? '1' : '0'}`,
-    [effectiveSelectedRequestKinds, hasQuickRequestKindEmptyMatch, summaryQueryBaseKey],
+      `${summaryQueryBaseKey}:quick=${requestKindQuickBilling}:${requestKindQuickProtocol}:requestKinds=${selectedRequestKindsNormalized.join(',')}`,
+    [
+      requestKindQuickBilling,
+      requestKindQuickProtocol,
+      selectedRequestKindsNormalized,
+      summaryQueryBaseKey,
+    ],
   )
 
   useEffect(() => {
@@ -591,6 +597,18 @@ export default function TokenDetail({
   useEffect(() => {
     logsQueryBaseKeyRef.current = logsQueryBaseKey
   }, [logsQueryBaseKey])
+
+  useEffect(() => {
+    if (page !== 1 || !hasActiveQuickRequestKindFilters) return
+    if (requestKindSelectionsMatch(selectedRequestKindsNormalized, requestKindQuickSelection)) return
+    setSelectedRequestKinds(requestKindQuickSelection)
+    setExpandedLogs(new Set())
+  }, [
+    hasActiveQuickRequestKindFilters,
+    page,
+    requestKindQuickSelection,
+    selectedRequestKindsNormalized,
+  ])
 
   useLayoutEffect(() => {
     if (logsBlocking) return
