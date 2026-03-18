@@ -221,6 +221,7 @@ async fn tavily_http_usage(
         .filter(|t| !t.is_empty())
         .map(|t| t.to_string());
 
+    let using_dev_open_admin_fallback = header_token.is_none() && state.dev_open_admin;
     let token_str = match (state.dev_open_admin, header_token) {
         // Normal path: Authorization header present.
         (_, Some(t)) => t,
@@ -239,7 +240,7 @@ async fn tavily_http_usage(
     };
 
     // Validate token when not in dev-open-admin mode.
-    if !state.dev_open_admin {
+    if !using_dev_open_admin_fallback {
         let valid = state
             .proxy
             .validate_access_token(&token_str)
@@ -259,7 +260,7 @@ async fn tavily_http_usage(
         if trimmed.is_empty() {
             return Err(StatusCode::BAD_REQUEST);
         }
-        if !state.dev_open_admin
+        if !using_dev_open_admin_fallback
             && token_id_from_token
                 .as_ref()
                 .is_some_and(|from_token| trimmed != from_token)
