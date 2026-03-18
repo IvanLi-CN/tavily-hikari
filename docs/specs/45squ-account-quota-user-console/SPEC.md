@@ -109,7 +109,7 @@ Storybook `User Console/UserConsole/Token Detail Overview`: verifies the MCP pro
 
 ## 变更记录
 
-- 2026-03-18: 补充 Token Detail probe 实调回归覆盖；将 MCP/API 检测步骤抽成共享定义，并用请求级测试锁定 `/mcp` 与 `/api/tavily/*` 的真实调用与 payload。
+- 2026-03-18: 补充 Token Detail probe 实调回归覆盖；前端将 MCP/API 检测步骤抽成共享定义并用请求级测试锁定浏览器侧调用，后端再新增真实合同测试，直接拉起 Hikari 验证 `/mcp ping|tools/list` 与 `/api/tavily/search|extract|crawl|map|research|research/:id` 会命中 mock upstream。
 - 2026-03-09: 修复 Token Detail 探测气泡的暗色主题表面配色，并补充 Storybook 暗色/浅色双截图作为最新验收依据。
 - 2026-03-07: 补充 Storybook 视觉证据，固定 `Quota Blocked` 场景截图到 spec 资产，用于 PR 合并前验收。
 - 2026-03-06: 修复用户控制台 MCP 探测合同：浏览器 probe 显式发送双 Accept，兼容 SSE `tools/list`（含通知夹杂场景）并拒绝格式损坏的 2xx 成功体，同时在 token 配额耗尽时前置标记为受阻而非误报全失败，并在缓存配额可能过期时先复核最新 detail。
