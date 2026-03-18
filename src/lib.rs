@@ -14751,10 +14751,7 @@ impl KeyStore {
         let needs_fallback_sql = token_request_kind_needs_fallback_sql();
         let mut stored_query = QueryBuilder::<Sqlite>::new(
             r#"
-            SELECT
-                request_kind_key,
-                request_kind_label,
-                MAX(counts_business_quota) AS max_counts_business_quota
+            SELECT DISTINCT request_kind_key, request_kind_label
             FROM auth_token_logs
             WHERE token_id =
             "#,
@@ -14776,87 +14773,71 @@ impl KeyStore {
             "#,
         );
         stored_query.push(token_request_kind_needs_fallback_sql());
-        stored_query.push(") GROUP BY request_kind_key, request_kind_label");
+        stored_query.push(")");
 
         let options = stored_query
-            .build_query_as::<(String, String, i64)>()
+            .build_query_as::<(String, String)>()
             .fetch_all(&self.pool)
             .await?;
 
         let legacy_fallback_query = if until.is_some() {
             format!(
                 r#"
-                SELECT
+                SELECT DISTINCT
                     {fallback_key_sql} AS request_kind_key,
-                    {fallback_label_sql} AS request_kind_label,
-                    MAX(counts_business_quota) AS max_counts_business_quota
+                    {fallback_label_sql} AS request_kind_label
                 FROM auth_token_logs
                 WHERE token_id = ?
                   AND created_at >= ?
                   AND created_at < ?
                   AND {needs_fallback_sql}
-                GROUP BY {fallback_key_sql}, {fallback_label_sql}
                 "#
             )
         } else {
             format!(
                 r#"
-                SELECT
+                SELECT DISTINCT
                     {fallback_key_sql} AS request_kind_key,
-                    {fallback_label_sql} AS request_kind_label,
-                    MAX(counts_business_quota) AS max_counts_business_quota
+                    {fallback_label_sql} AS request_kind_label
                 FROM auth_token_logs
                 WHERE token_id = ?
                   AND created_at >= ?
                   AND {needs_fallback_sql}
-                GROUP BY {fallback_key_sql}, {fallback_label_sql}
                 "#
             )
         };
         let legacy_options = if let Some(until) = until {
-            sqlx::query_as::<_, (String, String, i64)>(legacy_fallback_query.as_str())
+            sqlx::query_as::<_, (String, String)>(legacy_fallback_query.as_str())
                 .bind(token_id)
                 .bind(since)
                 .bind(until)
                 .fetch_all(&self.pool)
                 .await?
         } else {
-            sqlx::query_as::<_, (String, String, i64)>(legacy_fallback_query.as_str())
+            sqlx::query_as::<_, (String, String)>(legacy_fallback_query.as_str())
                 .bind(token_id)
                 .bind(since)
                 .fetch_all(&self.pool)
                 .await?
         };
-        let mut options_by_key = BTreeMap::<String, (String, bool)>::new();
-        for (key, label, max_counts_business_quota) in
-            options.into_iter().chain(legacy_options.into_iter())
-        {
-            let observed_billable = max_counts_business_quota > 0;
+        let mut options_by_key = BTreeMap::<String, String>::new();
+        for (key, label) in options.into_iter().chain(legacy_options.into_iter()) {
             match options_by_key.get_mut(&key) {
-                Some((current_label, current_billable))
-                    if prefer_request_kind_label(current_label, &label) =>
-                {
+                Some(current_label) if prefer_request_kind_label(current_label, &label) => {
                     *current_label = label;
-                    *current_billable |= observed_billable;
                 }
-                Some((_, current_billable)) => {
-                    *current_billable |= observed_billable;
-                }
+                Some(_) => {}
                 None => {
-                    options_by_key.insert(key, (label, observed_billable));
+                    options_by_key.insert(key, label);
                 }
             }
         }
 
         let mut normalized_options = options_by_key
             .into_iter()
-            .map(|(key, (label, observed_billable))| TokenRequestKindOption {
+            .map(|(key, label)| TokenRequestKindOption {
                 protocol_group: token_request_kind_protocol_group(&key).to_string(),
-                billing_group: if observed_billable {
-                    "billable".to_string()
-                } else {
-                    "non_billable".to_string()
-                },
+                billing_group: token_request_kind_billing_group(&key).to_string(),
                 key,
                 label,
             })
@@ -19135,7 +19116,6 @@ fn token_request_kind_protocol_group(key: &str) -> &'static str {
     }
 }
 
-#[cfg(test)]
 fn token_request_kind_billing_group(key: &str) -> &'static str {
     let normalized = key.trim();
     if normalized == "api:research-result"
@@ -20195,48 +20175,48 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
             INSERT INTO auth_token_logs (
                 token_id, method, path, query, http_status, mcp_status, request_kind_key,
                 request_kind_label, result_status, error_message, created_at, counts_business_quota
-            ) VALUES (?, 'POST', '/mcp', NULL, 200, 200, 'mcp:raw:/mcp', 'MCP | /mcp', 'success', NULL, ?, 0)
+            ) VALUES (?, 'POST', '/mcp', NULL, 429, NULL, 'mcp:raw:/mcp', 'MCP | /mcp', 'quota_exhausted', NULL, ?, 0)
             "#,
         )
         .bind(&token.id)
         .bind(Utc::now().timestamp() + 1)
         .execute(&repaired.key_store.pool)
         .await
-        .expect("insert observed non-billable raw root option row");
+        .expect("insert failed billable raw root option row");
 
-        let observed_non_billable_raw = repaired
+        let canonicalized_with_failed_billable_raw = repaired
             .token_log_request_kind_options(&token.id, 0, None)
             .await
-            .expect("query non-billable raw root request kind options");
-        let raw_root_option = observed_non_billable_raw
+            .expect("query request kind options with failed raw root billable row");
+        let raw_root_option = canonicalized_with_failed_billable_raw
             .iter()
             .find(|option| option.key == "mcp:raw:/mcp")
             .expect("raw root option exists");
-        assert_eq!(raw_root_option.billing_group, "non_billable");
+        assert_eq!(raw_root_option.billing_group, "billable");
 
         sqlx::query(
             r#"
             INSERT INTO auth_token_logs (
                 token_id, method, path, query, http_status, mcp_status, request_kind_key,
                 request_kind_label, result_status, error_message, created_at, counts_business_quota
-            ) VALUES (?, 'POST', '/mcp', NULL, 200, 200, 'mcp:raw:/mcp', 'MCP | /mcp', 'success', NULL, ?, 1)
+            ) VALUES (?, 'POST', '/api/tavily/search', NULL, 429, NULL, 'api:search', 'API | search', 'quota_exhausted', NULL, ?, 0)
             "#,
         )
         .bind(&token.id)
         .bind(Utc::now().timestamp() + 2)
         .execute(&repaired.key_store.pool)
         .await
-        .expect("insert observed billable raw root option row");
+        .expect("insert failed api search option row");
 
-        let observed_billable_raw = repaired
+        let canonicalized_with_failed_search = repaired
             .token_log_request_kind_options(&token.id, 0, None)
             .await
-            .expect("query billable raw root request kind options");
-        let raw_root_option = observed_billable_raw
+            .expect("query request kind options with failed api search row");
+        let api_search_option = canonicalized_with_failed_search
             .iter()
-            .find(|option| option.key == "mcp:raw:/mcp")
-            .expect("billable raw root option exists");
-        assert_eq!(raw_root_option.billing_group, "billable");
+            .find(|option| option.key == "api:search")
+            .expect("api search option exists");
+        assert_eq!(api_search_option.billing_group, "billable");
 
         let _ = std::fs::remove_file(db_path);
     }
