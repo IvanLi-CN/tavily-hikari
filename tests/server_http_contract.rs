@@ -174,10 +174,18 @@ async fn assert_upstream_rewrite_contract(
     upstream_path: &'static str,
     request_body: Value,
 ) {
+    const CONTRACT_TOKEN_ID: &str = "demo";
+    const CONTRACT_TOKEN_SECRET: &str = "abcdefghijkl";
+
     let (upstream_addr, rx) = spawn_mock_upstream("tvly-test-key".to_string(), upstream_path).await;
 
     let db_path = temp_db_path("server-http-contract-endpoint");
-    let (_backend, port) = spawn_backend_ready(upstream_addr, db_path, true).await;
+    let (_backend, port) = spawn_backend_ready(upstream_addr, db_path.clone(), true).await;
+    insert_auth_token(&db_path, CONTRACT_TOKEN_ID, CONTRACT_TOKEN_SECRET).await;
+
+    let mut request_body = request_body;
+    request_body["api_key"] =
+        Value::String(format!("th-{CONTRACT_TOKEN_ID}-{CONTRACT_TOKEN_SECRET}"));
 
     let resp = Client::new()
         .post(format!("http://127.0.0.1:{port}{api_path}"))
