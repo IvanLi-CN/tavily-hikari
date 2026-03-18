@@ -284,11 +284,8 @@ async fn tavily_http_research_result(
         .filter(|t| !t.is_empty())
         .map(ToOwned::to_owned);
 
-    let token = if let Some(t) = header_token {
-        t
-    } else if state.dev_open_admin {
-        "th-dev-override".to_string()
-    } else {
+    let Some(token_resolution) = resolve_request_token(state.dev_open_admin, vec![header_token])
+    else {
         let resp = Response::builder()
             .status(StatusCode::UNAUTHORIZED)
             .header(CONTENT_TYPE, "application/json; charset=utf-8")
@@ -296,8 +293,11 @@ async fn tavily_http_research_result(
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         return Ok(resp);
     };
+    let token = token_resolution.token;
+    let auth_token_id = token_resolution.auth_token_id;
+    let using_dev_open_admin_fallback = token_resolution.using_dev_open_admin_fallback;
 
-    let valid = if state.dev_open_admin {
+    let valid = if using_dev_open_admin_fallback {
         true
     } else {
         state
@@ -315,16 +315,8 @@ async fn tavily_http_research_result(
         return Ok(resp);
     }
 
-    let auth_token_id = if state.dev_open_admin {
-        Some("dev".to_string())
-    } else {
-        token
-            .strip_prefix("th-")
-            .and_then(|rest| rest.split_once('-').map(|(id, _)| id.to_string()))
-    };
-
     if let Some(ref tid) = auth_token_id
-        && !state.dev_open_admin
+        && !using_dev_open_admin_fallback
     {
         match state.proxy.check_token_hourly_requests(tid).await {
             Ok(verdict) => {
@@ -380,7 +372,7 @@ async fn tavily_http_research_result(
         }
     }
 
-    if !state.dev_open_admin {
+    if !using_dev_open_admin_fallback {
         match state
             .proxy
             .is_research_request_owned_by(&request_id, auth_token_id.as_deref())
@@ -563,13 +555,9 @@ async fn proxy_tavily_http_endpoint(
         .filter(|v| !v.is_empty())
         .map(ToOwned::to_owned);
 
-    let token = if let Some(t) = header_token {
-        t
-    } else if let Some(t) = body_token {
-        t
-    } else if state.dev_open_admin {
-        "th-dev-override".to_string()
-    } else {
+    let Some(token_resolution) =
+        resolve_request_token(state.dev_open_admin, vec![header_token, body_token])
+    else {
         let resp = Response::builder()
             .status(StatusCode::UNAUTHORIZED)
             .header(CONTENT_TYPE, "application/json; charset=utf-8")
@@ -577,8 +565,11 @@ async fn proxy_tavily_http_endpoint(
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         return Ok(resp);
     };
+    let token = token_resolution.token;
+    let auth_token_id = token_resolution.auth_token_id;
+    let using_dev_open_admin_fallback = token_resolution.using_dev_open_admin_fallback;
 
-    let valid = if state.dev_open_admin {
+    let valid = if using_dev_open_admin_fallback {
         true
     } else {
         state
@@ -595,14 +586,6 @@ async fn proxy_tavily_http_endpoint(
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         return Ok(resp);
     }
-
-    let auth_token_id = if state.dev_open_admin {
-        Some("dev".to_string())
-    } else {
-        token
-            .strip_prefix("th-")
-            .and_then(|rest| rest.split_once('-').map(|(id, _)| id.to_string()))
-    };
 
     if let Value::Object(ref mut map) = options {
         map.remove("api_key");
@@ -634,7 +617,7 @@ async fn proxy_tavily_http_endpoint(
 
     // Serialize billable requests per quota subject so `peek -> upstream -> charge` stays
     // consistent across local concurrency and other instances sharing the same SQLite database.
-    let token_billing_guard = if !state.dev_open_admin {
+    let token_billing_guard = if !using_dev_open_admin_fallback {
         if let Some(tid) = auth_token_id.as_deref() {
             Some(
                 state
@@ -664,7 +647,7 @@ async fn proxy_tavily_http_endpoint(
 
     if config.enforce_hourly_any_limit
         && let Some(ref tid) = auth_token_id
-        && !state.dev_open_admin
+        && !using_dev_open_admin_fallback
     {
         match state.proxy.check_token_hourly_requests(tid).await {
             Ok(verdict) => {
@@ -727,7 +710,7 @@ async fn proxy_tavily_http_endpoint(
             state.proxy.peek_token_quota(tid).await
         } {
             Ok(verdict) => {
-                if !state.dev_open_admin {
+                if !using_dev_open_admin_fallback {
                     let blocked = quota_would_exceed(&verdict, reserved_credits);
 
                     if blocked {

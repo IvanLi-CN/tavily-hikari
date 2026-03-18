@@ -16,7 +16,10 @@ RUN mkdir -p src \
 
 COPY src ./src
 ENV APP_EFFECTIVE_VERSION=${APP_EFFECTIVE_VERSION}
-RUN cargo build --release --locked
+RUN cargo build --release --locked \
+    --bin tavily-hikari \
+    --bin billing_ledger_audit \
+    --bin monthly_quota_rebase
 
 ########## Stage 2: create a slim runtime image ##########
 FROM debian:bookworm-slim AS xray-downloader
@@ -49,6 +52,8 @@ RUN apt-get update \
 WORKDIR /srv/app
 
 COPY --from=builder /app/target/release/tavily-hikari /usr/local/bin/tavily-hikari
+COPY --from=builder /app/target/release/billing_ledger_audit /usr/local/bin/billing_ledger_audit
+COPY --from=builder /app/target/release/monthly_quota_rebase /usr/local/bin/monthly_quota_rebase
 COPY --from=xray-downloader /usr/local/bin/xray /usr/local/bin/xray
 COPY --from=xray-downloader /usr/local/share/licenses/xray-core/LICENSE /usr/local/share/licenses/xray-core/LICENSE
 # Copy prebuilt web assets (produced by CI before Docker build)

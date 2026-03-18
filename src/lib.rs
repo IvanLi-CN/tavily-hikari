@@ -24,7 +24,7 @@ use reqwest::{
 use serde::Serialize;
 use serde_json::Value;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
-use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
+use sqlx::{Executor, QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 use thiserror::Error;
 use tokio::sync::{Mutex, Notify, RwLock};
 use url::form_urlencoded;
@@ -395,6 +395,7 @@ const META_KEY_API_KEY_CREATED_AT_BACKFILL_V1: &str = "api_key_created_at_backfi
 // We cannot retroactively convert legacy request counts into credits, so we reset the
 // lightweight counters once and start charging by upstream credits going forward.
 const META_KEY_BUSINESS_QUOTA_CREDITS_CUTOVER_V1: &str = "business_quota_credits_cutover_v1";
+const META_KEY_BUSINESS_QUOTA_MONTHLY_REBASE_V1: &str = "business_quota_monthly_rebase_v1";
 const API_KEY_UPSERT_TRANSIENT_RETRY_BACKOFF_MS: [u64; 2] = [20, 50];
 const TOKEN_USAGE_ROLLUP_TRANSIENT_RETRY_BACKOFF_MS: [u64; 3] = [20, 50, 100];
 
@@ -7380,6 +7381,24 @@ fn is_transient_sqlite_write_error(err: &ProxyError) -> bool {
         || message.contains("database is busy")
 }
 
+async fn open_sqlite_pool(
+    database_path: &str,
+    create_if_missing: bool,
+) -> Result<SqlitePool, ProxyError> {
+    let options = SqliteConnectOptions::new()
+        .filename(database_path)
+        .create_if_missing(create_if_missing)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_secs(5));
+
+    SqlitePoolOptions::new()
+        .min_connections(1)
+        .max_connections(5)
+        .connect_with(options)
+        .await
+        .map_err(ProxyError::Database)
+}
+
 #[derive(Debug)]
 struct KeyStore {
     pool: SqlitePool,
@@ -7394,20 +7413,8 @@ struct KeyStore {
 
 impl KeyStore {
     async fn new(database_path: &str) -> Result<Self, ProxyError> {
-        let options = SqliteConnectOptions::new()
-            .filename(database_path)
-            .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Wal)
-            .busy_timeout(Duration::from_secs(5));
-
-        let pool = SqlitePoolOptions::new()
-            .min_connections(1)
-            .max_connections(5)
-            .connect_with(options)
-            .await?;
-
         let store = Self {
-            pool,
+            pool: open_sqlite_pool(database_path, true).await?,
             token_binding_cache: RwLock::new(HashMap::new()),
             account_quota_resolution_cache: RwLock::new(HashMap::new()),
             #[cfg(test)]
@@ -8286,6 +8293,19 @@ impl KeyStore {
             .await?;
         self.backfill_linuxdo_user_tag_bindings().await?;
         self.sync_account_quota_limits_with_defaults().await?;
+        if self
+            .get_meta_i64(META_KEY_BUSINESS_QUOTA_MONTHLY_REBASE_V1)
+            .await?
+            != Some(start_of_month(Utc::now()).timestamp())
+        {
+            let _ = rebase_current_month_business_quota_with_pool(
+                &self.pool,
+                Utc::now(),
+                META_KEY_BUSINESS_QUOTA_MONTHLY_REBASE_V1,
+                true,
+            )
+            .await?;
+        }
 
         Ok(())
     }
@@ -16726,6 +16746,92 @@ impl TokenQuotaVerdict {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BillingLedgerWindowSnapshot {
+    pub ledger_credits: i64,
+    pub quota_credits: i64,
+    pub diff_credits: i64,
+}
+
+impl BillingLedgerWindowSnapshot {
+    fn new(ledger_credits: i64, quota_credits: i64) -> Self {
+        Self {
+            ledger_credits,
+            quota_credits,
+            diff_credits: quota_credits - ledger_credits,
+        }
+    }
+
+    fn is_match(&self) -> bool {
+        self.diff_credits == 0
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BillingLedgerAuditEntry {
+    pub billing_subject: String,
+    pub subject_kind: String,
+    pub subject_id: String,
+    pub hour: BillingLedgerWindowSnapshot,
+    pub day: BillingLedgerWindowSnapshot,
+    pub month: BillingLedgerWindowSnapshot,
+}
+
+impl BillingLedgerAuditEntry {
+    fn has_mismatch(&self) -> bool {
+        !(self.hour.is_match() && self.day.is_match() && self.month.is_match())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BillingLedgerAuditSummary {
+    pub generated_at: i64,
+    pub minute_bucket_start: i64,
+    pub hour_bucket_start: i64,
+    pub hour_window_start: i64,
+    pub day_window_start: i64,
+    pub month_window_start: i64,
+    pub current_month_charged_rows: i64,
+    pub current_month_charged_credits: i64,
+    pub subject_count: usize,
+    pub mismatched_subjects: usize,
+    pub hour_only_mismatches: usize,
+    pub day_only_mismatches: usize,
+    pub month_only_mismatches: usize,
+    pub mixed_mismatches: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BillingLedgerAuditReport {
+    pub summary: BillingLedgerAuditSummary,
+    pub entries: Vec<BillingLedgerAuditEntry>,
+}
+
+impl BillingLedgerAuditReport {
+    pub fn has_mismatches(&self) -> bool {
+        self.summary.mismatched_subjects > 0
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MonthlyQuotaRebaseReport {
+    pub current_month_start: i64,
+    pub previous_rebase_month_start: Option<i64>,
+    pub current_month_charged_rows: i64,
+    pub current_month_charged_credits: i64,
+    pub rebased_subject_count: usize,
+    pub rebased_token_subjects: usize,
+    pub rebased_account_subjects: usize,
+    pub cleared_token_rows: i64,
+    pub cleared_account_rows: i64,
+    pub meta_updated: bool,
+}
+
 /// Lightweight verdict for the per-token hourly raw request limiter.
 #[derive(Debug, Clone)]
 pub struct TokenHourlyRequestVerdict {
@@ -17210,6 +17316,28 @@ pub enum ProxyError {
     Other(String),
 }
 
+pub async fn audit_business_quota_ledger(
+    database_path: &str,
+    now: chrono::DateTime<Utc>,
+) -> Result<BillingLedgerAuditReport, ProxyError> {
+    let pool = open_sqlite_pool(database_path, false).await?;
+    audit_business_quota_ledger_with_pool(&pool, now).await
+}
+
+pub async fn rebase_current_month_business_quota(
+    database_path: &str,
+    now: chrono::DateTime<Utc>,
+) -> Result<MonthlyQuotaRebaseReport, ProxyError> {
+    let pool = open_sqlite_pool(database_path, false).await?;
+    rebase_current_month_business_quota_with_pool(
+        &pool,
+        now,
+        META_KEY_BUSINESS_QUOTA_MONTHLY_REBASE_V1,
+        true,
+    )
+    .await
+}
+
 fn map_forward_proxy_validation_error_code(error: &ProxyError) -> String {
     match error {
         ProxyError::Http(err) => {
@@ -17300,6 +17428,572 @@ fn start_of_next_month(current_month_start: chrono::DateTime<Utc>) -> chrono::Da
     Utc.with_ymd_and_hms(year, month, 1, 0, 0, 0)
         .single()
         .expect("valid start of next month")
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BillingLedgerWindows {
+    generated_at: i64,
+    minute_bucket_start: i64,
+    hour_bucket_start: i64,
+    hour_window_start: i64,
+    day_window_start: i64,
+    month_window_start: i64,
+}
+
+impl BillingLedgerWindows {
+    fn from_now(now: chrono::DateTime<Utc>) -> Self {
+        let generated_at = now.timestamp();
+        let minute_bucket_start = generated_at - (generated_at % SECS_PER_MINUTE);
+        let hour_bucket_start = generated_at - (generated_at % SECS_PER_HOUR);
+        Self {
+            generated_at,
+            minute_bucket_start,
+            hour_bucket_start,
+            hour_window_start: minute_bucket_start - 59 * SECS_PER_MINUTE,
+            day_window_start: hour_bucket_start - 23 * SECS_PER_HOUR,
+            month_window_start: start_of_month(now).timestamp(),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct BillingLedgerAccumulator {
+    hour_ledger: i64,
+    day_ledger: i64,
+    month_ledger: i64,
+    hour_quota: i64,
+    day_quota: i64,
+    month_quota: i64,
+}
+
+impl BillingLedgerAccumulator {
+    fn has_any_value(&self) -> bool {
+        self.hour_ledger != 0
+            || self.day_ledger != 0
+            || self.month_ledger != 0
+            || self.hour_quota != 0
+            || self.day_quota != 0
+            || self.month_quota != 0
+    }
+}
+
+fn billing_subject_parts(subject: &str) -> Result<(&'static str, &str), ProxyError> {
+    if let Some(user_id) = subject.strip_prefix("account:") {
+        Ok(("account", user_id))
+    } else if let Some(token_id) = subject.strip_prefix("token:") {
+        Ok(("token", token_id))
+    } else {
+        Err(ProxyError::QuotaDataMissing {
+            reason: format!("invalid billing subject: {subject}"),
+        })
+    }
+}
+
+async fn get_meta_i64_executor<'e, E>(executor: E, key: &str) -> Result<Option<i64>, ProxyError>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let value = sqlx::query_scalar::<_, String>("SELECT value FROM meta WHERE key = ? LIMIT 1")
+        .bind(key)
+        .fetch_optional(executor)
+        .await?;
+    Ok(value.and_then(|raw| raw.parse::<i64>().ok()))
+}
+
+async fn set_meta_i64_executor<'e, E>(executor: E, key: &str, value: i64) -> Result<(), ProxyError>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        r#"
+        INSERT INTO meta (key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        "#,
+    )
+    .bind(key)
+    .bind(value.to_string())
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+async fn ensure_current_month_charged_subjects_are_valid<'e, E>(
+    executor: E,
+    current_month_start: i64,
+    generated_at: i64,
+) -> Result<(), ProxyError>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let invalid_count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM auth_token_logs
+        WHERE billing_state = ?
+          AND COALESCE(business_credits, 0) > 0
+          AND created_at >= ?
+          AND created_at <= ?
+          AND (
+            billing_subject IS NULL
+            OR (
+                billing_subject NOT LIKE 'token:%'
+                AND billing_subject NOT LIKE 'account:%'
+            )
+          )
+        "#,
+    )
+    .bind(BILLING_STATE_CHARGED)
+    .bind(current_month_start)
+    .bind(generated_at)
+    .fetch_one(executor)
+    .await?;
+
+    if invalid_count > 0 {
+        return Err(ProxyError::QuotaDataMissing {
+            reason: format!(
+                "found {invalid_count} charged current-month auth_token_logs rows with invalid billing_subject"
+            ),
+        });
+    }
+
+    Ok(())
+}
+
+async fn fetch_current_month_charged_totals<'e, E>(
+    executor: E,
+    current_month_start: i64,
+    generated_at: i64,
+) -> Result<(i64, i64), ProxyError>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let row = sqlx::query_as::<_, (i64, i64)>(
+        r#"
+        SELECT
+            COUNT(*) AS charged_rows,
+            COALESCE(SUM(business_credits), 0) AS charged_credits
+        FROM auth_token_logs
+        WHERE billing_state = ?
+          AND COALESCE(business_credits, 0) > 0
+          AND created_at >= ?
+          AND created_at <= ?
+        "#,
+    )
+    .bind(BILLING_STATE_CHARGED)
+    .bind(current_month_start)
+    .bind(generated_at)
+    .fetch_one(executor)
+    .await?;
+    Ok(row)
+}
+
+async fn fetch_charged_ledger_window<'e, E>(
+    executor: E,
+    window_start: i64,
+    generated_at: i64,
+) -> Result<Vec<(String, i64, i64)>, ProxyError>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as::<_, (String, i64, i64)>(
+        r#"
+        SELECT
+            billing_subject,
+            COALESCE(SUM(business_credits), 0) AS total_credits,
+            COUNT(*) AS charged_rows
+        FROM auth_token_logs
+        WHERE billing_state = ?
+          AND COALESCE(business_credits, 0) > 0
+          AND created_at >= ?
+          AND created_at <= ?
+        GROUP BY billing_subject
+        ORDER BY billing_subject ASC
+        "#,
+    )
+    .bind(BILLING_STATE_CHARGED)
+    .bind(window_start)
+    .bind(generated_at)
+    .fetch_all(executor)
+    .await
+    .map_err(ProxyError::Database)
+}
+
+async fn fetch_token_quota_window<'e, E>(
+    executor: E,
+    granularity: &str,
+    window_start: i64,
+    window_end: i64,
+) -> Result<Vec<(String, i64)>, ProxyError>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as::<_, (String, i64)>(
+        r#"
+        SELECT
+            token_id,
+            COALESCE(SUM(count), 0) AS total_credits
+        FROM token_usage_buckets
+        WHERE granularity = ?
+          AND bucket_start >= ?
+          AND bucket_start <= ?
+        GROUP BY token_id
+        ORDER BY token_id ASC
+        "#,
+    )
+    .bind(granularity)
+    .bind(window_start)
+    .bind(window_end)
+    .fetch_all(executor)
+    .await
+    .map_err(ProxyError::Database)
+}
+
+async fn fetch_account_quota_window<'e, E>(
+    executor: E,
+    granularity: &str,
+    window_start: i64,
+    window_end: i64,
+) -> Result<Vec<(String, i64)>, ProxyError>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as::<_, (String, i64)>(
+        r#"
+        SELECT
+            user_id,
+            COALESCE(SUM(count), 0) AS total_credits
+        FROM account_usage_buckets
+        WHERE granularity = ?
+          AND bucket_start >= ?
+          AND bucket_start <= ?
+        GROUP BY user_id
+        ORDER BY user_id ASC
+        "#,
+    )
+    .bind(granularity)
+    .bind(window_start)
+    .bind(window_end)
+    .fetch_all(executor)
+    .await
+    .map_err(ProxyError::Database)
+}
+
+async fn fetch_token_monthly_quota_rows<'e, E>(
+    executor: E,
+) -> Result<Vec<(String, i64, i64)>, ProxyError>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as::<_, (String, i64, i64)>(
+        r#"
+        SELECT token_id, month_start, month_count
+        FROM auth_token_quota
+        ORDER BY token_id ASC
+        "#,
+    )
+    .fetch_all(executor)
+    .await
+    .map_err(ProxyError::Database)
+}
+
+async fn fetch_account_monthly_quota_rows<'e, E>(
+    executor: E,
+) -> Result<Vec<(String, i64, i64)>, ProxyError>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as::<_, (String, i64, i64)>(
+        r#"
+        SELECT user_id, month_start, month_count
+        FROM account_monthly_quota
+        ORDER BY user_id ASC
+        "#,
+    )
+    .fetch_all(executor)
+    .await
+    .map_err(ProxyError::Database)
+}
+
+async fn audit_business_quota_ledger_with_pool(
+    pool: &SqlitePool,
+    now: chrono::DateTime<Utc>,
+) -> Result<BillingLedgerAuditReport, ProxyError> {
+    let windows = BillingLedgerWindows::from_now(now);
+    ensure_current_month_charged_subjects_are_valid(
+        pool,
+        windows.month_window_start,
+        windows.generated_at,
+    )
+    .await?;
+
+    let mut subjects: BTreeMap<String, BillingLedgerAccumulator> = BTreeMap::new();
+    let (current_month_charged_rows, current_month_charged_credits) =
+        fetch_current_month_charged_totals(pool, windows.month_window_start, windows.generated_at)
+            .await?;
+
+    for (subject, total_credits, _row_count) in
+        fetch_charged_ledger_window(pool, windows.hour_window_start, windows.generated_at).await?
+    {
+        subjects.entry(subject).or_default().hour_ledger = total_credits;
+    }
+    for (subject, total_credits, _row_count) in
+        fetch_charged_ledger_window(pool, windows.day_window_start, windows.generated_at).await?
+    {
+        subjects.entry(subject).or_default().day_ledger = total_credits;
+    }
+    for (subject, total_credits, _row_count) in
+        fetch_charged_ledger_window(pool, windows.month_window_start, windows.generated_at).await?
+    {
+        subjects.entry(subject).or_default().month_ledger = total_credits;
+    }
+
+    for (token_id, total_credits) in fetch_token_quota_window(
+        pool,
+        GRANULARITY_MINUTE,
+        windows.hour_window_start,
+        windows.minute_bucket_start,
+    )
+    .await?
+    {
+        subjects
+            .entry(format!("token:{token_id}"))
+            .or_default()
+            .hour_quota = total_credits;
+    }
+    for (user_id, total_credits) in fetch_account_quota_window(
+        pool,
+        GRANULARITY_MINUTE,
+        windows.hour_window_start,
+        windows.minute_bucket_start,
+    )
+    .await?
+    {
+        subjects
+            .entry(format!("account:{user_id}"))
+            .or_default()
+            .hour_quota = total_credits;
+    }
+
+    for (token_id, total_credits) in fetch_token_quota_window(
+        pool,
+        GRANULARITY_HOUR,
+        windows.day_window_start,
+        windows.hour_bucket_start,
+    )
+    .await?
+    {
+        subjects
+            .entry(format!("token:{token_id}"))
+            .or_default()
+            .day_quota = total_credits;
+    }
+    for (user_id, total_credits) in fetch_account_quota_window(
+        pool,
+        GRANULARITY_HOUR,
+        windows.day_window_start,
+        windows.hour_bucket_start,
+    )
+    .await?
+    {
+        subjects
+            .entry(format!("account:{user_id}"))
+            .or_default()
+            .day_quota = total_credits;
+    }
+
+    for (token_id, stored_month_start, month_count) in fetch_token_monthly_quota_rows(pool).await? {
+        let effective_count = if stored_month_start >= windows.month_window_start {
+            month_count
+        } else {
+            0
+        };
+        if effective_count != 0 {
+            subjects
+                .entry(format!("token:{token_id}"))
+                .or_default()
+                .month_quota = effective_count;
+        }
+    }
+    for (user_id, stored_month_start, month_count) in fetch_account_monthly_quota_rows(pool).await?
+    {
+        let effective_count = if stored_month_start >= windows.month_window_start {
+            month_count
+        } else {
+            0
+        };
+        if effective_count != 0 {
+            subjects
+                .entry(format!("account:{user_id}"))
+                .or_default()
+                .month_quota = effective_count;
+        }
+    }
+
+    let mut entries = Vec::new();
+    let mut mismatched_subjects = 0_usize;
+    let mut hour_only_mismatches = 0_usize;
+    let mut day_only_mismatches = 0_usize;
+    let mut month_only_mismatches = 0_usize;
+    let mut mixed_mismatches = 0_usize;
+
+    for (billing_subject, totals) in subjects {
+        if !totals.has_any_value() {
+            continue;
+        }
+
+        let (subject_kind, subject_id) = billing_subject_parts(&billing_subject)?;
+        let subject_kind = subject_kind.to_string();
+        let subject_id = subject_id.to_string();
+        let entry = BillingLedgerAuditEntry {
+            billing_subject,
+            subject_kind,
+            subject_id,
+            hour: BillingLedgerWindowSnapshot::new(totals.hour_ledger, totals.hour_quota),
+            day: BillingLedgerWindowSnapshot::new(totals.day_ledger, totals.day_quota),
+            month: BillingLedgerWindowSnapshot::new(totals.month_ledger, totals.month_quota),
+        };
+
+        let hour_mismatch = !entry.hour.is_match();
+        let day_mismatch = !entry.day.is_match();
+        let month_mismatch = !entry.month.is_match();
+        if entry.has_mismatch() {
+            mismatched_subjects += 1;
+            match (hour_mismatch, day_mismatch, month_mismatch) {
+                (true, false, false) => hour_only_mismatches += 1,
+                (false, true, false) => day_only_mismatches += 1,
+                (false, false, true) => month_only_mismatches += 1,
+                _ => mixed_mismatches += 1,
+            }
+        }
+        entries.push(entry);
+    }
+
+    let subject_count = entries.len();
+
+    Ok(BillingLedgerAuditReport {
+        summary: BillingLedgerAuditSummary {
+            generated_at: windows.generated_at,
+            minute_bucket_start: windows.minute_bucket_start,
+            hour_bucket_start: windows.hour_bucket_start,
+            hour_window_start: windows.hour_window_start,
+            day_window_start: windows.day_window_start,
+            month_window_start: windows.month_window_start,
+            current_month_charged_rows,
+            current_month_charged_credits,
+            subject_count,
+            mismatched_subjects,
+            hour_only_mismatches,
+            day_only_mismatches,
+            month_only_mismatches,
+            mixed_mismatches,
+        },
+        entries,
+    })
+}
+
+async fn rebase_current_month_business_quota_with_pool(
+    pool: &SqlitePool,
+    now: chrono::DateTime<Utc>,
+    meta_key: &str,
+    update_meta: bool,
+) -> Result<MonthlyQuotaRebaseReport, ProxyError> {
+    let windows = BillingLedgerWindows::from_now(now);
+    let mut tx = pool.begin().await?;
+
+    ensure_current_month_charged_subjects_are_valid(
+        &mut *tx,
+        windows.month_window_start,
+        windows.generated_at,
+    )
+    .await?;
+
+    let previous_rebase_month_start = get_meta_i64_executor(&mut *tx, meta_key).await?;
+    let (current_month_charged_rows, current_month_charged_credits) =
+        fetch_current_month_charged_totals(
+            &mut *tx,
+            windows.month_window_start,
+            windows.generated_at,
+        )
+        .await?;
+    let rebased_subjects =
+        fetch_charged_ledger_window(&mut *tx, windows.month_window_start, windows.generated_at)
+            .await?;
+
+    let cleared_token_rows =
+        sqlx::query("UPDATE auth_token_quota SET month_start = ?, month_count = 0")
+            .bind(windows.month_window_start)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected() as i64;
+    let cleared_account_rows =
+        sqlx::query("UPDATE account_monthly_quota SET month_start = ?, month_count = 0")
+            .bind(windows.month_window_start)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected() as i64;
+
+    let mut rebased_token_subjects = 0_usize;
+    let mut rebased_account_subjects = 0_usize;
+    for (billing_subject, total_credits, _row_count) in rebased_subjects.iter() {
+        match QuotaSubject::from_billing_subject(billing_subject)? {
+            QuotaSubject::Token(token_id) => {
+                sqlx::query(
+                    r#"
+                    INSERT INTO auth_token_quota (token_id, month_start, month_count)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(token_id) DO UPDATE SET
+                        month_start = excluded.month_start,
+                        month_count = excluded.month_count
+                    "#,
+                )
+                .bind(&token_id)
+                .bind(windows.month_window_start)
+                .bind(*total_credits)
+                .execute(&mut *tx)
+                .await?;
+                rebased_token_subjects += 1;
+            }
+            QuotaSubject::Account(user_id) => {
+                sqlx::query(
+                    r#"
+                    INSERT INTO account_monthly_quota (user_id, month_start, month_count)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(user_id) DO UPDATE SET
+                        month_start = excluded.month_start,
+                        month_count = excluded.month_count
+                    "#,
+                )
+                .bind(&user_id)
+                .bind(windows.month_window_start)
+                .bind(*total_credits)
+                .execute(&mut *tx)
+                .await?;
+                rebased_account_subjects += 1;
+            }
+        }
+    }
+
+    let meta_updated =
+        update_meta && previous_rebase_month_start != Some(windows.month_window_start);
+    if update_meta {
+        set_meta_i64_executor(&mut *tx, meta_key, windows.month_window_start).await?;
+    }
+
+    tx.commit().await?;
+
+    Ok(MonthlyQuotaRebaseReport {
+        current_month_start: windows.month_window_start,
+        previous_rebase_month_start,
+        current_month_charged_rows,
+        current_month_charged_credits,
+        rebased_subject_count: rebased_subjects.len(),
+        rebased_token_subjects,
+        rebased_account_subjects,
+        cleared_token_rows,
+        cleared_account_rows,
+        meta_updated,
+    })
 }
 
 fn start_of_day(now: chrono::DateTime<Utc>) -> chrono::DateTime<Utc> {
@@ -27900,6 +28594,380 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
             .find(|item| item.key_id.is_none())
             .expect("cleanup job present");
         assert_eq!(cleanup_job.key_group, None);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    async fn seed_charged_business_attempt(proxy: &TavilyProxy, token_id: &str, credits: i64) {
+        let log_id = proxy
+            .record_pending_billing_attempt(
+                token_id,
+                &Method::POST,
+                "/api/tavily/search",
+                None,
+                Some(StatusCode::OK.as_u16() as i64),
+                Some(200),
+                true,
+                OUTCOME_SUCCESS,
+                Some("seed charged business attempt"),
+                credits,
+                None,
+            )
+            .await
+            .expect("record pending billing attempt");
+        let outcome = proxy
+            .settle_pending_billing_attempt(log_id)
+            .await
+            .expect("settle pending billing attempt");
+        assert_eq!(outcome, PendingBillingSettleOutcome::Charged);
+    }
+
+    async fn current_month_charged_stats(pool: &SqlitePool) -> (i64, i64) {
+        let now = Utc::now();
+        let month_start = start_of_month(now).timestamp();
+        sqlx::query_as::<_, (i64, i64)>(
+            r#"
+            SELECT
+                COUNT(*) AS charged_rows,
+                COALESCE(SUM(business_credits), 0) AS charged_credits
+            FROM auth_token_logs
+            WHERE billing_state = ?
+              AND COALESCE(business_credits, 0) > 0
+              AND created_at >= ?
+            "#,
+        )
+        .bind(BILLING_STATE_CHARGED)
+        .bind(month_start)
+        .fetch_one(pool)
+        .await
+        .expect("read current month charged stats")
+    }
+
+    async fn account_business_window_sums(pool: &SqlitePool, user_id: &str) -> (i64, i64) {
+        let minute_sum: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(count), 0) FROM account_usage_buckets WHERE user_id = ? AND granularity = ?",
+        )
+        .bind(user_id)
+        .bind(GRANULARITY_MINUTE)
+        .fetch_one(pool)
+        .await
+        .expect("read account minute usage");
+        let hour_sum: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(count), 0) FROM account_usage_buckets WHERE user_id = ? AND granularity = ?",
+        )
+        .bind(user_id)
+        .bind(GRANULARITY_HOUR)
+        .fetch_one(pool)
+        .await
+        .expect("read account hour usage");
+        (minute_sum, hour_sum)
+    }
+
+    #[tokio::test]
+    async fn billing_ledger_audit_detects_bound_token_month_residue_and_rebase_preserves_hour_day()
+    {
+        let db_path = temp_db_path("monthly-quota-rebase-bound-token");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        let user = proxy
+            .upsert_oauth_account(&OAuthAccountProfile {
+                provider: "linuxdo".to_string(),
+                provider_user_id: "monthly-rebase-bound-user".to_string(),
+                username: Some("monthly_bound".to_string()),
+                name: Some("Monthly Bound".to_string()),
+                avatar_template: None,
+                active: true,
+                trust_level: Some(2),
+                raw_payload_json: None,
+            })
+            .await
+            .expect("upsert user");
+        let token = proxy
+            .ensure_user_token_binding(&user.user_id, Some("linuxdo:monthly_bound"))
+            .await
+            .expect("bind token");
+
+        for _ in 0..5 {
+            seed_charged_business_attempt(&proxy, &token.id, 1).await;
+        }
+
+        let current_month_start = start_of_month(Utc::now()).timestamp();
+        let baseline_verdict = proxy
+            .peek_token_quota(&token.id)
+            .await
+            .expect("peek bound quota");
+        assert_eq!(baseline_verdict.hourly_used, 5);
+        assert_eq!(baseline_verdict.daily_used, 5);
+        assert_eq!(baseline_verdict.monthly_used, 5);
+
+        let baseline_window_sums =
+            account_business_window_sums(&proxy.key_store.pool, &user.user_id).await;
+        let baseline_charged_stats = current_month_charged_stats(&proxy.key_store.pool).await;
+
+        sqlx::query(
+            r#"
+            INSERT INTO account_monthly_quota (user_id, month_start, month_count)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                month_start = excluded.month_start,
+                month_count = excluded.month_count
+            "#,
+        )
+        .bind(&user.user_id)
+        .bind(current_month_start)
+        .bind(1_350_i64)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("corrupt account month quota");
+        sqlx::query(
+            r#"
+            INSERT INTO auth_token_quota (token_id, month_start, month_count)
+            VALUES (?, ?, ?)
+            ON CONFLICT(token_id) DO UPDATE SET
+                month_start = excluded.month_start,
+                month_count = excluded.month_count
+            "#,
+        )
+        .bind(&token.id)
+        .bind(current_month_start)
+        .bind(1_959_i64)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("corrupt token month quota");
+
+        let audit_before = audit_business_quota_ledger_with_pool(&proxy.key_store.pool, Utc::now())
+            .await
+            .expect("audit before rebase");
+        assert_eq!(audit_before.summary.hour_only_mismatches, 0);
+        assert_eq!(audit_before.summary.day_only_mismatches, 0);
+        assert_eq!(audit_before.summary.month_only_mismatches, 2);
+        assert_eq!(audit_before.summary.mixed_mismatches, 0);
+
+        let token_subject = format!("token:{}", token.id);
+        let token_entry = audit_before
+            .entries
+            .iter()
+            .find(|entry| entry.billing_subject == token_subject)
+            .expect("bound token entry present");
+        assert_eq!(token_entry.hour.diff_credits, 0);
+        assert_eq!(token_entry.day.diff_credits, 0);
+        assert_eq!(token_entry.month.ledger_credits, 0);
+        assert_eq!(token_entry.month.quota_credits, 1_959);
+
+        let account_subject = format!("account:{}", user.user_id);
+        let account_entry = audit_before
+            .entries
+            .iter()
+            .find(|entry| entry.billing_subject == account_subject)
+            .expect("bound account entry present");
+        assert_eq!(account_entry.hour.diff_credits, 0);
+        assert_eq!(account_entry.day.diff_credits, 0);
+        assert_eq!(account_entry.month.ledger_credits, 5);
+        assert_eq!(account_entry.month.quota_credits, 1_350);
+        assert_eq!(account_entry.month.diff_credits, 1_345);
+
+        let rebase_report = rebase_current_month_business_quota_with_pool(
+            &proxy.key_store.pool,
+            Utc::now(),
+            META_KEY_BUSINESS_QUOTA_MONTHLY_REBASE_V1,
+            true,
+        )
+        .await
+        .expect("rebase current month");
+        assert_eq!(rebase_report.current_month_charged_rows, 5);
+        assert_eq!(rebase_report.current_month_charged_credits, 5);
+        assert_eq!(rebase_report.rebased_subject_count, 1);
+        assert_eq!(rebase_report.rebased_account_subjects, 1);
+        assert_eq!(rebase_report.rebased_token_subjects, 0);
+        assert!(rebase_report.cleared_token_rows >= 1);
+        assert!(rebase_report.cleared_account_rows >= 1);
+
+        let audit_after = audit_business_quota_ledger_with_pool(&proxy.key_store.pool, Utc::now())
+            .await
+            .expect("audit after rebase");
+        assert_eq!(audit_after.summary.mismatched_subjects, 0);
+
+        let token_month_row: (i64, i64) = sqlx::query_as(
+            "SELECT month_start, month_count FROM auth_token_quota WHERE token_id = ? LIMIT 1",
+        )
+        .bind(&token.id)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("read bound token monthly row");
+        assert_eq!(token_month_row, (current_month_start, 0));
+
+        let account_month_row: (i64, i64) = sqlx::query_as(
+            "SELECT month_start, month_count FROM account_monthly_quota WHERE user_id = ? LIMIT 1",
+        )
+        .bind(&user.user_id)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("read account monthly row");
+        assert_eq!(account_month_row, (current_month_start, 5));
+
+        let charged_stats_after = current_month_charged_stats(&proxy.key_store.pool).await;
+        assert_eq!(charged_stats_after, baseline_charged_stats);
+
+        let post_window_sums =
+            account_business_window_sums(&proxy.key_store.pool, &user.user_id).await;
+        assert_eq!(post_window_sums, baseline_window_sums);
+
+        let verdict_after = proxy
+            .peek_token_quota(&token.id)
+            .await
+            .expect("peek bound quota after");
+        assert_eq!(verdict_after.hourly_used, 5);
+        assert_eq!(verdict_after.daily_used, 5);
+        assert_eq!(verdict_after.monthly_used, 5);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn monthly_quota_rebase_startup_gate_runs_once_and_manual_rebase_remains_idempotent() {
+        let db_path = temp_db_path("monthly-quota-rebase-startup-gate");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        let token = proxy
+            .create_access_token(Some("monthly-rebase-unbound"))
+            .await
+            .expect("create unbound token");
+
+        for _ in 0..3 {
+            seed_charged_business_attempt(&proxy, &token.id, 2).await;
+        }
+
+        let current_month_start = start_of_month(Utc::now()).timestamp();
+        let charged_stats_before = current_month_charged_stats(&proxy.key_store.pool).await;
+        assert_eq!(charged_stats_before, (3, 6));
+
+        sqlx::query(
+            r#"
+            INSERT INTO auth_token_quota (token_id, month_start, month_count)
+            VALUES (?, ?, ?)
+            ON CONFLICT(token_id) DO UPDATE SET
+                month_start = excluded.month_start,
+                month_count = excluded.month_count
+            "#,
+        )
+        .bind(&token.id)
+        .bind(current_month_start)
+        .bind(17_i64)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("corrupt token month quota");
+        sqlx::query("DELETE FROM meta WHERE key = ?")
+            .bind(META_KEY_BUSINESS_QUOTA_MONTHLY_REBASE_V1)
+            .execute(&proxy.key_store.pool)
+            .await
+            .expect("reset monthly rebase meta");
+
+        let audit_before = audit_business_quota_ledger_with_pool(&proxy.key_store.pool, Utc::now())
+            .await
+            .expect("audit before startup rebase");
+        assert_eq!(audit_before.summary.month_only_mismatches, 1);
+
+        drop(proxy);
+
+        let proxy_after =
+            TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+                .await
+                .expect("proxy reopened");
+
+        let audit_after_startup =
+            audit_business_quota_ledger_with_pool(&proxy_after.key_store.pool, Utc::now())
+                .await
+                .expect("audit after startup rebase");
+        assert_eq!(audit_after_startup.summary.mismatched_subjects, 0);
+
+        let token_month_count_after_startup: i64 = sqlx::query_scalar(
+            "SELECT month_count FROM auth_token_quota WHERE token_id = ? LIMIT 1",
+        )
+        .bind(&token.id)
+        .fetch_one(&proxy_after.key_store.pool)
+        .await
+        .expect("read token month after startup rebase");
+        assert_eq!(token_month_count_after_startup, 6);
+
+        let meta_value_after_startup: i64 =
+            sqlx::query_scalar("SELECT CAST(value AS INTEGER) FROM meta WHERE key = ? LIMIT 1")
+                .bind(META_KEY_BUSINESS_QUOTA_MONTHLY_REBASE_V1)
+                .fetch_one(&proxy_after.key_store.pool)
+                .await
+                .expect("read startup rebase meta");
+        assert_eq!(meta_value_after_startup, current_month_start);
+
+        sqlx::query("UPDATE auth_token_quota SET month_count = ? WHERE token_id = ?")
+            .bind(9_i64)
+            .bind(&token.id)
+            .execute(&proxy_after.key_store.pool)
+            .await
+            .expect("corrupt token month after startup rebase");
+        drop(proxy_after);
+
+        let proxy_third =
+            TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+                .await
+                .expect("proxy reopened third time");
+        let token_month_count_after_third_start: i64 = sqlx::query_scalar(
+            "SELECT month_count FROM auth_token_quota WHERE token_id = ? LIMIT 1",
+        )
+        .bind(&token.id)
+        .fetch_one(&proxy_third.key_store.pool)
+        .await
+        .expect("read token month after third start");
+        assert_eq!(
+            token_month_count_after_third_start, 9,
+            "startup gate should not rerun once current-month meta is already set"
+        );
+
+        let audit_after_third_start =
+            audit_business_quota_ledger_with_pool(&proxy_third.key_store.pool, Utc::now())
+                .await
+                .expect("audit after third start");
+        assert_eq!(audit_after_third_start.summary.month_only_mismatches, 1);
+
+        let manual_rebase_report = rebase_current_month_business_quota_with_pool(
+            &proxy_third.key_store.pool,
+            Utc::now(),
+            META_KEY_BUSINESS_QUOTA_MONTHLY_REBASE_V1,
+            true,
+        )
+        .await
+        .expect("manual rebase after startup gate");
+        assert_eq!(
+            manual_rebase_report.previous_rebase_month_start,
+            Some(current_month_start)
+        );
+        assert!(!manual_rebase_report.meta_updated);
+        assert_eq!(manual_rebase_report.rebased_subject_count, 1);
+        assert_eq!(manual_rebase_report.rebased_token_subjects, 1);
+        assert_eq!(manual_rebase_report.rebased_account_subjects, 0);
+
+        let token_month_count_after_manual: i64 = sqlx::query_scalar(
+            "SELECT month_count FROM auth_token_quota WHERE token_id = ? LIMIT 1",
+        )
+        .bind(&token.id)
+        .fetch_one(&proxy_third.key_store.pool)
+        .await
+        .expect("read token month after manual rebase");
+        assert_eq!(token_month_count_after_manual, 6);
+
+        let audit_after_manual =
+            audit_business_quota_ledger_with_pool(&proxy_third.key_store.pool, Utc::now())
+                .await
+                .expect("audit after manual rebase");
+        assert_eq!(audit_after_manual.summary.mismatched_subjects, 0);
+
+        let charged_stats_after_manual =
+            current_month_charged_stats(&proxy_third.key_store.pool).await;
+        assert_eq!(charged_stats_after_manual, charged_stats_before);
 
         let _ = std::fs::remove_file(db_path);
     }

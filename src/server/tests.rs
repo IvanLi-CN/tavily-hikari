@@ -30,6 +30,20 @@ mod tests {
         std::env::temp_dir().join(file)
     }
 
+    async fn connect_sqlite_test_pool(db_str: &str) -> sqlx::SqlitePool {
+        let options = SqliteConnectOptions::new()
+            .filename(db_str)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(5)
+            .connect_with(options)
+            .await
+            .expect("connect to sqlite")
+    }
+
     fn env_var_test_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
@@ -3522,6 +3536,102 @@ mod tests {
 
         let body: serde_json::Value = resp.json().await.expect("parse json body");
         assert_eq!(body.get("status").and_then(|v| v.as_i64()), Some(200));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn tavily_http_search_dev_open_admin_explicit_token_charges_bound_account() {
+        let db_path = temp_db_path("http-search-dev-open-admin-explicit-token");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let expected_api_key = "tvly-http-search-dev-open-admin-explicit-token-key";
+        let (upstream_addr, hits) =
+            spawn_http_search_mock_with_usage(expected_api_key.to_string()).await;
+        let usage_base = format!("http://{}", upstream_addr);
+
+        let proxy = TavilyProxy::with_endpoint(
+            vec![expected_api_key.to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+        let user = proxy
+            .upsert_oauth_account(&OAuthAccountProfile {
+                provider: "linuxdo".to_string(),
+                provider_user_id: "dev-open-admin-explicit-token-user".to_string(),
+                username: Some("devopenadmin".to_string()),
+                name: Some("Dev Open Admin".to_string()),
+                avatar_template: None,
+                active: true,
+                trust_level: Some(2),
+                raw_payload_json: None,
+            })
+            .await
+            .expect("upsert user");
+        let access_token = proxy
+            .ensure_user_token_binding(&user.user_id, Some("linuxdo:dev-open-admin-explicit"))
+            .await
+            .expect("bind token");
+
+        let proxy_addr = spawn_proxy_server_with_dev(proxy.clone(), usage_base, true).await;
+        let client = Client::new();
+        let url = format!("http://{}/api/tavily/search", proxy_addr);
+        let resp = client
+            .post(url)
+            .header("Authorization", format!("Bearer {}", access_token.token))
+            .json(&serde_json::json!({
+                "query": "dev-open-admin explicit token",
+                "search_depth": "basic"
+            }))
+            .send()
+            .await
+            .expect("request to proxy succeeds");
+
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let row = sqlx::query(
+            r#"
+            SELECT token_id, billing_subject, billing_state, business_credits
+            FROM auth_token_logs
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("token log row exists");
+
+        let token_id: String = row.try_get("token_id").expect("token_id");
+        let billing_subject: Option<String> = row.try_get("billing_subject").expect("subject");
+        let billing_state: String = row.try_get("billing_state").expect("state");
+        let business_credits: Option<i64> = row.try_get("business_credits").expect("credits");
+        let expected_subject = format!("account:{}", user.user_id);
+        assert_eq!(token_id, access_token.id);
+        assert_eq!(billing_subject.as_deref(), Some(expected_subject.as_str()));
+        assert_eq!(billing_state, "charged");
+        assert_eq!(business_credits, Some(1));
+
+        let account_month: (i64, i64) = sqlx::query_as(
+            "SELECT month_start, month_count FROM account_monthly_quota WHERE user_id = ? LIMIT 1",
+        )
+        .bind(&user.user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("account monthly quota exists");
+        assert_eq!(account_month.1, 1);
+
+        let token_month: Option<(i64, i64)> = sqlx::query_as(
+            "SELECT month_start, month_count FROM auth_token_quota WHERE token_id = ? LIMIT 1",
+        )
+        .bind(&access_token.id)
+        .fetch_optional(&pool)
+        .await
+        .expect("fetch token monthly quota");
+        assert_eq!(token_month.map(|(_, month_count)| month_count).unwrap_or(0), 0);
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -12932,6 +13042,97 @@ colo=LAX
         let body: Value = resp.json().await.expect("response json");
         assert_eq!(body.get("window").and_then(|v| v.as_str()), Some("hour"));
         assert_eq!(hits.load(Ordering::SeqCst), 0);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_dev_open_admin_explicit_token_charges_bound_account() {
+        let db_path = temp_db_path("mcp-dev-open-admin-explicit-token");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let expected_api_key = "tvly-mcp-dev-open-admin-explicit-token-key";
+        let (upstream_addr, hits) =
+            spawn_mock_mcp_upstream_for_tavily_search(expected_api_key.to_string()).await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy =
+            TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
+        let user = proxy
+            .upsert_oauth_account(&OAuthAccountProfile {
+                provider: "linuxdo".to_string(),
+                provider_user_id: "mcp-dev-open-admin-explicit-token-user".to_string(),
+                username: Some("mcpdevopenadmin".to_string()),
+                name: Some("MCP Dev Open Admin".to_string()),
+                avatar_template: None,
+                active: true,
+                trust_level: Some(2),
+                raw_payload_json: None,
+            })
+            .await
+            .expect("upsert user");
+        let access_token = proxy
+            .ensure_user_token_binding(&user.user_id, Some("linuxdo:mcp-dev-open-admin-explicit"))
+            .await
+            .expect("bind token");
+
+        let proxy_addr = spawn_proxy_server_with_dev(proxy.clone(), upstream.clone(), true).await;
+        let client = Client::new();
+        let url = format!("http://{}/mcp", proxy_addr);
+        let resp = client
+            .post(url)
+            .header("Authorization", format!("Bearer {}", access_token.token))
+            .json(&serde_json::json!({
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "tavily-search",
+                    "arguments": {
+                        "query": "mcp dev-open-admin explicit token",
+                        "search_depth": "basic"
+                    }
+                }
+            }))
+            .send()
+            .await
+            .expect("request to proxy succeeds");
+
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let row = sqlx::query(
+            r#"
+            SELECT token_id, billing_subject, billing_state, business_credits
+            FROM auth_token_logs
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("token log row exists");
+
+        let token_id: String = row.try_get("token_id").expect("token_id");
+        let billing_subject: Option<String> = row.try_get("billing_subject").expect("subject");
+        let billing_state: String = row.try_get("billing_state").expect("state");
+        let business_credits: Option<i64> = row.try_get("business_credits").expect("credits");
+        let expected_subject = format!("account:{}", user.user_id);
+        assert_eq!(token_id, access_token.id);
+        assert_eq!(billing_subject.as_deref(), Some(expected_subject.as_str()));
+        assert_eq!(billing_state, "charged");
+        assert_eq!(business_credits, Some(1));
+
+        let account_month: (i64, i64) = sqlx::query_as(
+            "SELECT month_start, month_count FROM account_monthly_quota WHERE user_id = ? LIMIT 1",
+        )
+        .bind(&user.user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("account monthly quota exists");
+        assert_eq!(account_month.1, 1);
 
         let _ = std::fs::remove_file(db_path);
     }
