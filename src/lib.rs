@@ -7383,8 +7383,9 @@ fn is_transient_sqlite_write_error(err: &ProxyError) -> bool {
 
 fn is_invalid_current_month_billing_subject_error(err: &ProxyError) -> bool {
     match err {
-        ProxyError::QuotaDataMissing { reason } => reason
-            .contains("charged current-month auth_token_logs rows with invalid billing_subject"),
+        ProxyError::QuotaDataMissing { reason } => {
+            reason.contains("charged auth_token_logs rows with invalid billing_subject")
+        }
         _ => false,
     }
 }
@@ -17553,9 +17554,9 @@ where
     Ok(())
 }
 
-async fn ensure_current_month_charged_subjects_are_valid<'e, E>(
+async fn ensure_charged_subjects_are_valid<'e, E>(
     executor: E,
-    current_month_start: i64,
+    window_start: i64,
     generated_at: i64,
 ) -> Result<(), ProxyError>
 where
@@ -17579,7 +17580,7 @@ where
         "#,
     )
     .bind(BILLING_STATE_CHARGED)
-    .bind(current_month_start)
+    .bind(window_start)
     .bind(generated_at)
     .fetch_one(executor)
     .await?;
@@ -17587,7 +17588,7 @@ where
     if invalid_count > 0 {
         return Err(ProxyError::QuotaDataMissing {
             reason: format!(
-                "found {invalid_count} charged current-month auth_token_logs rows with invalid billing_subject"
+                "found {invalid_count} charged auth_token_logs rows with invalid billing_subject between {window_start} and {generated_at}"
             ),
         });
     }
@@ -17757,9 +17758,9 @@ async fn audit_business_quota_ledger_with_pool(
     let mut conn = begin_read_snapshot_sqlite_connection(pool).await?;
     let windows = BillingLedgerWindows::from_now(now);
     let result = async {
-        ensure_current_month_charged_subjects_are_valid(
+        ensure_charged_subjects_are_valid(
             &mut *conn,
-            windows.month_window_start,
+            std::cmp::min(windows.day_window_start, windows.month_window_start),
             windows.generated_at,
         )
         .await?;
@@ -17959,7 +17960,7 @@ async fn rebase_current_month_business_quota_with_pool(
     let windows = BillingLedgerWindows::from_now(if locked_now > now { locked_now } else { now });
 
     let result = async {
-        ensure_current_month_charged_subjects_are_valid(
+        ensure_charged_subjects_are_valid(
             &mut *conn,
             windows.month_window_start,
             windows.generated_at,
