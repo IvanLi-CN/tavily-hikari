@@ -414,6 +414,8 @@ impl From<TokenLogRecord> for TokenLogView {
 struct TokenRequestKindOptionView {
     key: String,
     label: String,
+    protocol_group: String,
+    billing_group: String,
 }
 
 impl From<TokenRequestKindOption> for TokenRequestKindOptionView {
@@ -421,6 +423,8 @@ impl From<TokenRequestKindOption> for TokenRequestKindOptionView {
         Self {
             key: value.key,
             label: value.label,
+            protocol_group: value.protocol_group,
+            billing_group: value.billing_group,
         }
     }
 }

@@ -30,6 +30,7 @@ import {
 } from '../components/ui/dropdown-menu'
 import { Input } from '../components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select'
+import SegmentedTabs from '../components/ui/SegmentedTabs'
 import { TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table'
 import { Textarea } from '../components/ui/textarea'
 import { useTranslate } from '../i18n'
@@ -37,11 +38,18 @@ import { ADMIN_USER_CONSOLE_HREF } from '../lib/adminUserConsoleEntry'
 import { copyText, selectAllReadonlyText } from '../lib/clipboard'
 import { useResponsiveModes } from '../lib/responsive'
 import {
+  buildRequestKindQuickFilterSelection,
   buildVisibleRequestKindOptions,
   buildTokenLogsPagePath,
-  mergeRequestKindLabels,
+  deriveRequestKindQuickFilters,
+  hasActiveRequestKindQuickFilters,
+  mergeRequestKindOptionsByKey,
+  requestKindSelectionsMatch,
+  summarizeRequestKindQuickFilters,
   summarizeSelectedRequestKinds,
   toggleRequestKindSelection,
+  type TokenLogRequestKindQuickBilling,
+  type TokenLogRequestKindQuickProtocol,
   type TokenLogRequestKindOption,
   uniqueSelectedRequestKinds,
 } from '../tokenLogRequestKinds'
@@ -109,6 +117,18 @@ interface UsageBar {
   system: number
   external: number
 }
+
+const requestKindBillingQuickFilterOptions = [
+  { value: 'all', label: 'Any' },
+  { value: 'billable', label: 'Paid' },
+  { value: 'non_billable', label: 'Free' },
+] as const
+
+const requestKindProtocolQuickFilterOptions = [
+  { value: 'all', label: 'Any' },
+  { value: 'mcp', label: 'MCP' },
+  { value: 'api', label: 'API' },
+] as const
 
 const numberFormatter = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 })
 const dateTimeFormatter = new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'medium' })
@@ -405,8 +425,10 @@ export default function TokenDetail({
   const [perPage, setPerPage] = useState(20)
   const [total, setTotal] = useState(0)
   const [requestKindOptions, setRequestKindOptions] = useState<TokenLogRequestKindOption[]>([])
-  const [requestKindLabelsByKey, setRequestKindLabelsByKey] = useState<Record<string, string>>({})
+  const [requestKindOptionsByKey, setRequestKindOptionsByKey] = useState<Record<string, TokenLogRequestKindOption>>({})
   const [selectedRequestKinds, setSelectedRequestKinds] = useState<string[]>([])
+  const [requestKindQuickBilling, setRequestKindQuickBilling] = useState<TokenLogRequestKindQuickBilling>('all')
+  const [requestKindQuickProtocol, setRequestKindQuickProtocol] = useState<TokenLogRequestKindQuickProtocol>('all')
   const [summaryLoadState, setSummaryLoadState] = useState<QueryLoadState>('initial_loading')
   const [logsLoadState, setLogsLoadState] = useState<QueryLoadState>('initial_loading')
   const [quickUsage, setQuickUsage] = useState<UsageBar[]>([])
@@ -446,8 +468,10 @@ export default function TokenDetail({
     setPage(1)
     setTotal(0)
     setRequestKindOptions([])
-    setRequestKindLabelsByKey({})
+    setRequestKindOptionsByKey({})
     setSelectedRequestKinds([])
+    setRequestKindQuickBilling('all')
+    setRequestKindQuickProtocol('all')
     setWarning(null)
     setQuickUsage([])
     setQuickUsageLoading(true)
@@ -492,24 +516,49 @@ export default function TokenDetail({
     () => uniqueSelectedRequestKinds(selectedRequestKinds),
     [selectedRequestKinds],
   )
+  const requestKindQuickFilters = useMemo(
+    () => ({
+      billing: requestKindQuickBilling,
+      protocol: requestKindQuickProtocol,
+    }),
+    [requestKindQuickBilling, requestKindQuickProtocol],
+  )
+  const hasActiveQuickRequestKindFilters = useMemo(
+    () => hasActiveRequestKindQuickFilters(requestKindQuickFilters),
+    [requestKindQuickFilters],
+  )
+  const requestKindQuickSelection = useMemo(
+    () => buildRequestKindQuickFilterSelection(requestKindOptions, requestKindQuickFilters),
+    [requestKindOptions, requestKindQuickFilters],
+  )
   const visibleRequestKindOptions = useMemo(
     () =>
       buildVisibleRequestKindOptions(
         selectedRequestKindsNormalized,
         requestKindOptions,
-        requestKindLabelsByKey,
+        requestKindOptionsByKey,
       ),
-    [requestKindLabelsByKey, requestKindOptions, selectedRequestKindsNormalized],
+    [requestKindOptionsByKey, requestKindOptions, selectedRequestKindsNormalized],
   )
   const requestKindSummary = useMemo(
     () => summarizeSelectedRequestKinds(selectedRequestKindsNormalized, visibleRequestKindOptions),
     [selectedRequestKindsNormalized, visibleRequestKindOptions],
   )
+  const requestKindQuickSummary = useMemo(
+    () => summarizeRequestKindQuickFilters(requestKindQuickFilters),
+    [requestKindQuickFilters],
+  )
   const requestKindTriggerSummary = useMemo(() => {
+    if (hasActiveQuickRequestKindFilters) return requestKindQuickSummary
     if (selectedRequestKindsNormalized.length === 0) return 'All request types'
     if (selectedRequestKindsNormalized.length <= 2) return requestKindSummary
     return 'Request types'
-  }, [requestKindSummary, selectedRequestKindsNormalized.length])
+  }, [
+    hasActiveQuickRequestKindFilters,
+    requestKindQuickSummary,
+    requestKindSummary,
+    selectedRequestKindsNormalized.length,
+  ])
   const summaryQueryBaseKey = useMemo(
     () => `${id}:${period}:${sinceIso}:${untilIso}`,
     [id, period, sinceIso, untilIso],
@@ -527,6 +576,18 @@ export default function TokenDetail({
   useEffect(() => {
     logsQueryBaseKeyRef.current = logsQueryBaseKey
   }, [logsQueryBaseKey])
+
+  useEffect(() => {
+    if (!hasActiveQuickRequestKindFilters) return
+    if (requestKindSelectionsMatch(selectedRequestKindsNormalized, requestKindQuickSelection)) return
+    setSelectedRequestKinds(requestKindQuickSelection)
+    setPage(1)
+    setExpandedLogs(new Set())
+  }, [
+    hasActiveQuickRequestKindFilters,
+    requestKindQuickSelection,
+    selectedRequestKindsNormalized,
+  ])
 
   useLayoutEffect(() => {
     if (logsBlocking) return
@@ -621,9 +682,9 @@ export default function TokenDetail({
   )
 
   const syncRequestKindState = useCallback(
-    (nextOptions: TokenLogRequestKindOption[], nextLogs: TokenLog[] = []) => {
+    (nextOptions: TokenLogRequestKindOption[]) => {
       setRequestKindOptions(nextOptions)
-      setRequestKindLabelsByKey((prev) => mergeRequestKindLabels(prev, nextOptions, nextLogs))
+      setRequestKindOptionsByKey((prev) => mergeRequestKindOptionsByKey(prev, nextOptions))
     },
     [],
   )
@@ -780,7 +841,7 @@ export default function TokenDetail({
         setPage(1)
         setPerPage(resolvedPerPage)
         setTotal(logsRes.total)
-        syncRequestKindState(logsRes.request_kind_options ?? [], logsRes.items)
+        syncRequestKindState(logsRes.request_kind_options ?? [])
         setExpandedLogs(new Set())
         setError(null)
         setLogsLoadState('ready')
@@ -821,7 +882,7 @@ export default function TokenDetail({
         setLogs(data.items)
         setTotal(data.total)
         setPerPage(resolvedPerPage)
-        syncRequestKindState(data.request_kind_options ?? [], data.items)
+        syncRequestKindState(data.request_kind_options ?? [])
         setPage(1)
         setExpandedLogs(new Set())
         setLogsLoadState('ready')
@@ -843,7 +904,7 @@ export default function TokenDetail({
         if (controller.signal.aborted || logsQueryBaseKeyRef.current !== requestQueryBaseKey) return
         setTotal(data.total)
         setPerPage(data.per_page ?? data.perPage ?? perPageRef.current)
-        syncRequestKindState(data.request_kind_options ?? [], data.items)
+        syncRequestKindState(data.request_kind_options ?? [])
       } catch {
         // ignore
       }
@@ -904,7 +965,7 @@ export default function TokenDetail({
       setPage(data.page)
       setPerPage(resolvedPerPage)
       setTotal(data.total)
-      syncRequestKindState(data.request_kind_options ?? [], data.items)
+      syncRequestKindState(data.request_kind_options ?? [])
       setExpandedLogs(new Set())
       setLogsLoadState('ready')
       logsQueryKeyRef.current = `${logsQueryBaseKey}:page=${data.page}:perPage=${resolvedPerPage}`
@@ -934,7 +995,7 @@ export default function TokenDetail({
       setPage(1)
       setPerPage(resolvedPerPage)
       setTotal(data.total)
-      syncRequestKindState(data.request_kind_options ?? [], data.items)
+      syncRequestKindState(data.request_kind_options ?? [])
       setExpandedLogs(new Set())
       setLogsLoadState('ready')
       logsQueryKeyRef.current = `${logsQueryBaseKey}:page=1:perPage=${resolvedPerPage}`
@@ -945,14 +1006,45 @@ export default function TokenDetail({
     }
   }
 
-  const handleToggleRequestKind = useCallback((key: string) => {
-    setSelectedRequestKinds((prev) => toggleRequestKindSelection(prev, key))
-    setPage(1)
-    setExpandedLogs(new Set())
-  }, [])
+  const applyRequestKindQuickFilters = useCallback(
+    (nextBilling: TokenLogRequestKindQuickBilling, nextProtocol: TokenLogRequestKindQuickProtocol) => {
+      const nextFilters = {
+        billing: nextBilling,
+        protocol: nextProtocol,
+      }
+      setRequestKindQuickBilling(nextBilling)
+      setRequestKindQuickProtocol(nextProtocol)
+      setSelectedRequestKinds(buildRequestKindQuickFilterSelection(requestKindOptions, nextFilters))
+      setPage(1)
+      setExpandedLogs(new Set())
+    },
+    [requestKindOptions],
+  )
+
+  const handleToggleRequestKind = useCallback(
+    (key: string) => {
+      const nextSelected = toggleRequestKindSelection(selectedRequestKindsNormalized, key)
+      const nextQuickFilters = requestKindSelectionsMatch(nextSelected, requestKindQuickSelection)
+        ? requestKindQuickFilters
+        : deriveRequestKindQuickFilters(nextSelected, requestKindOptions)
+      setSelectedRequestKinds(nextSelected)
+      setRequestKindQuickBilling(nextQuickFilters.billing)
+      setRequestKindQuickProtocol(nextQuickFilters.protocol)
+      setPage(1)
+      setExpandedLogs(new Set())
+    },
+    [
+      requestKindOptions,
+      requestKindQuickFilters,
+      requestKindQuickSelection,
+      selectedRequestKindsNormalized,
+    ],
+  )
 
   const handleClearRequestKinds = useCallback(() => {
     setSelectedRequestKinds([])
+    setRequestKindQuickBilling('all')
+    setRequestKindQuickProtocol('all')
     setPage(1)
     setExpandedLogs(new Set())
   }, [])
@@ -1222,7 +1314,7 @@ export default function TokenDetail({
                   type="button"
                   variant="outline"
                   className="token-request-kind-trigger"
-                  aria-label={`Filter request types: ${requestKindSummary}`}
+                  aria-label={`Filter request types: ${requestKindTriggerSummary}`}
                 >
                   <Icon icon="mdi:filter-variant" width={16} height={16} aria-hidden="true" />
                   <span className="token-request-kind-trigger-content">
@@ -1233,11 +1325,40 @@ export default function TokenDetail({
                   ) : null}
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="token-request-kind-menu w-72">
+              <DropdownMenuContent align="end" className="token-request-kind-menu w-80">
                 <DropdownMenuLabel>Filter request types</DropdownMenuLabel>
+                <div className="token-request-quick-filters">
+                  <div className="token-request-quick-filter-row">
+                    <span className="token-request-quick-filter-label">Billing</span>
+                    <SegmentedTabs
+                      value={requestKindQuickBilling}
+                      onChange={(next) =>
+                        applyRequestKindQuickFilters(next as TokenLogRequestKindQuickBilling, requestKindQuickProtocol)
+                      }
+                      options={requestKindBillingQuickFilterOptions}
+                      ariaLabel="Billing request type filter"
+                      className="token-request-quick-segmented"
+                      disabled={filterControlsDisabled}
+                    />
+                  </div>
+                  <div className="token-request-quick-filter-row">
+                    <span className="token-request-quick-filter-label">Type</span>
+                    <SegmentedTabs
+                      value={requestKindQuickProtocol}
+                      onChange={(next) =>
+                        applyRequestKindQuickFilters(requestKindQuickBilling, next as TokenLogRequestKindQuickProtocol)
+                      }
+                      options={requestKindProtocolQuickFilterOptions}
+                      ariaLabel="Protocol request type filter"
+                      className="token-request-quick-segmented"
+                      disabled={filterControlsDisabled}
+                    />
+                  </div>
+                </div>
+                <DropdownMenuSeparator />
                 <DropdownMenuItem
                   className="cursor-pointer"
-                  disabled={selectedRequestKindsNormalized.length === 0}
+                  disabled={selectedRequestKindsNormalized.length === 0 && !hasActiveQuickRequestKindFilters}
                   onSelect={(event) => {
                     event.preventDefault()
                     handleClearRequestKinds()

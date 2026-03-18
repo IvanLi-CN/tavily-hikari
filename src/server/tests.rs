@@ -8706,13 +8706,53 @@ colo=LAX
             .get("items")
             .and_then(|value| value.as_array())
             .expect("logs page items");
+        let request_kind_options = page_body
+            .get("request_kind_options")
+            .and_then(|value| value.as_array())
+            .expect("request kind options array");
         assert_eq!(items.len(), 3);
+        assert_eq!(request_kind_options.len(), 3);
+        let search_option = request_kind_options
+            .iter()
+            .find(|value| {
+                value
+                    .get("key")
+                    .and_then(|kind| kind.as_str())
+                    .is_some_and(|kind| kind == "mcp:search")
+            })
+            .expect("mcp search option");
         assert_eq!(
-            page_body
-                .get("request_kind_options")
-                .and_then(|value| value.as_array())
-                .map(|values| values.len()),
-            Some(3)
+            search_option
+                .get("protocol_group")
+                .and_then(|value| value.as_str()),
+            Some("mcp")
+        );
+        assert_eq!(
+            search_option
+                .get("billing_group")
+                .and_then(|value| value.as_str()),
+            Some("billable")
+        );
+        let legacy_option = request_kind_options
+            .iter()
+            .find(|value| {
+                value
+                    .get("key")
+                    .and_then(|kind| kind.as_str())
+                    .is_some_and(|kind| kind == "mcp:raw:/mcp/sse")
+            })
+            .expect("legacy mcp raw option");
+        assert_eq!(
+            legacy_option
+                .get("protocol_group")
+                .and_then(|value| value.as_str()),
+            Some("mcp")
+        );
+        assert_eq!(
+            legacy_option
+                .get("billing_group")
+                .and_then(|value| value.as_str()),
+            Some("non_billable")
         );
         let page_search_log = items
             .iter()

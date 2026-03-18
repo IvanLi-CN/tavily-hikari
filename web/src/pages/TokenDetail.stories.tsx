@@ -84,12 +84,13 @@ const denseMetricsMock = {
 };
 
 const requestKindOptionsMock = [
-  { key: "api:search", label: "API | search" },
-  { key: "api:research-result", label: "API | research result" },
-  { key: "mcp:search", label: "MCP | search" },
-  { key: "mcp:batch", label: "MCP | batch" },
-  { key: "mcp:tool:acme-lookup", label: "MCP | acme-lookup" },
-  { key: "mcp:raw:/mcp", label: "MCP | /mcp" },
+  { key: "api:search", label: "API | search", protocol_group: "api", billing_group: "billable" },
+  { key: "api:research-result", label: "API | research result", protocol_group: "api", billing_group: "non_billable" },
+  { key: "mcp:search", label: "MCP | search", protocol_group: "mcp", billing_group: "billable" },
+  { key: "mcp:batch", label: "MCP | batch", protocol_group: "mcp", billing_group: "billable" },
+  { key: "mcp:tool:acme-lookup", label: "MCP | acme-lookup", protocol_group: "mcp", billing_group: "billable" },
+  { key: "mcp:tools/list", label: "MCP | tools/list", protocol_group: "mcp", billing_group: "non_billable" },
+  { key: "mcp:raw:/mcp", label: "MCP | /mcp", protocol_group: "mcp", billing_group: "billable" },
 ];
 
 const logTemplates = [
@@ -141,6 +142,19 @@ const logTemplates = [
     business_credits: null,
     request_kind_key: "mcp:tool:acme-lookup",
     request_kind_label: "MCP | acme-lookup",
+    request_kind_detail: null,
+    result_status: "success",
+    error_message: null,
+  },
+  {
+    method: "POST",
+    path: "/mcp",
+    query: null,
+    http_status: 200,
+    mcp_status: 200,
+    business_credits: null,
+    request_kind_key: "mcp:tools/list",
+    request_kind_label: "MCP | tools/list",
     request_kind_detail: null,
     result_status: "success",
     error_message: null,

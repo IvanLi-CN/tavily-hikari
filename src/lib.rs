@@ -14674,7 +14674,12 @@ impl KeyStore {
 
         let mut normalized_options = options_by_key
             .into_iter()
-            .map(|(key, label)| TokenRequestKindOption { key, label })
+            .map(|(key, label)| TokenRequestKindOption {
+                protocol_group: token_request_kind_protocol_group(&key).to_string(),
+                billing_group: token_request_kind_billing_group(&key).to_string(),
+                key,
+                label,
+            })
             .collect::<Vec<_>>();
         normalized_options.sort_by(|left, right| {
             left.label
@@ -17138,6 +17143,8 @@ impl TokenRequestKind {
 pub struct TokenRequestKindOption {
     pub key: String,
     pub label: String,
+    pub protocol_group: String,
+    pub billing_group: String,
 }
 
 /// Per-token log for detail UI
@@ -18225,6 +18232,32 @@ fn token_request_kind_needs_fallback_sql() -> &'static str {
     "#
 }
 
+fn token_request_kind_protocol_group(key: &str) -> &'static str {
+    if key.trim().starts_with("mcp:") {
+        "mcp"
+    } else {
+        "api"
+    }
+}
+
+fn token_request_kind_billing_group(key: &str) -> &'static str {
+    let normalized = key.trim();
+    if normalized == "api:research-result"
+        || normalized == "api:usage"
+        || normalized.starts_with("mcp:initialize")
+        || normalized.starts_with("mcp:ping")
+        || normalized.starts_with("mcp:tools/list")
+        || normalized.starts_with("mcp:resources/")
+        || normalized.starts_with("mcp:prompts/")
+        || normalized.starts_with("mcp:notifications/")
+        || normalized.starts_with("mcp:raw:/mcp/")
+    {
+        "non_billable"
+    } else {
+        "billable"
+    }
+}
+
 fn derive_token_request_kind_fallback(
     _method: &str,
     path: &str,
@@ -19042,6 +19075,28 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
     }
 
     #[test]
+    fn token_request_kind_option_groups_match_protocol_and_billing_contract() {
+        assert_eq!(token_request_kind_protocol_group("api:search"), "api");
+        assert_eq!(token_request_kind_protocol_group("mcp:search"), "mcp");
+
+        assert_eq!(token_request_kind_billing_group("api:search"), "billable");
+        assert_eq!(
+            token_request_kind_billing_group("api:research-result"),
+            "non_billable"
+        );
+        assert_eq!(token_request_kind_billing_group("mcp:search"), "billable");
+        assert_eq!(
+            token_request_kind_billing_group("mcp:tools/list"),
+            "non_billable"
+        );
+        assert_eq!(
+            token_request_kind_billing_group("mcp:raw:/mcp/sse"),
+            "non_billable"
+        );
+        assert_eq!(token_request_kind_billing_group("mcp:raw:/mcp"), "billable");
+    }
+
+    #[test]
     fn request_logs_env_settings_enforce_minimums_and_defaults() {
         let lock = env_lock();
         let _guard = lock.blocking_lock();
@@ -19191,6 +19246,8 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
         assert_eq!(options.len(), 1);
         assert_eq!(options[0].key, "mcp:raw:/mcp/sse");
         assert_eq!(options[0].label, "MCP | /mcp/sse");
+        assert_eq!(options[0].protocol_group, "mcp");
+        assert_eq!(options[0].billing_group, "non_billable");
 
         sqlx::query(
             r#"
@@ -19225,6 +19282,8 @@ data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"oop
         assert_eq!(canonicalized_options.len(), 1);
         assert_eq!(canonicalized_options[0].key, "mcp:tool:acme-lookup");
         assert_eq!(canonicalized_options[0].label, "MCP | Acme Lookup");
+        assert_eq!(canonicalized_options[0].protocol_group, "mcp");
+        assert_eq!(canonicalized_options[0].billing_group, "billable");
 
         let _ = std::fs::remove_file(db_path);
     }

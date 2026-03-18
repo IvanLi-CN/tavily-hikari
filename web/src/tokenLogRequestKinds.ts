@@ -1,6 +1,13 @@
+export type TokenLogRequestKindProtocolGroup = 'api' | 'mcp'
+export type TokenLogRequestKindBillingGroup = 'billable' | 'non_billable'
+export type TokenLogRequestKindQuickBilling = 'all' | TokenLogRequestKindBillingGroup
+export type TokenLogRequestKindQuickProtocol = 'all' | TokenLogRequestKindProtocolGroup
+
 export interface TokenLogRequestKindOption {
   key: string
   label: string
+  protocol_group: TokenLogRequestKindProtocolGroup | ''
+  billing_group: TokenLogRequestKindBillingGroup | ''
 }
 
 export interface TokenLogsPagePathInput {
@@ -17,6 +24,16 @@ export interface TokenLogRequestKindLabelSource {
   request_kind_label: string
 }
 
+export interface TokenLogRequestKindQuickFilters {
+  billing: TokenLogRequestKindQuickBilling
+  protocol: TokenLogRequestKindQuickProtocol
+}
+
+export const defaultTokenLogRequestKindQuickFilters: TokenLogRequestKindQuickFilters = {
+  billing: 'all',
+  protocol: 'all',
+}
+
 export function uniqueSelectedRequestKinds(requestKinds: string[]): string[] {
   const seen = new Set<string>()
   const normalized: string[] = []
@@ -29,21 +46,14 @@ export function uniqueSelectedRequestKinds(requestKinds: string[]): string[] {
   return normalized
 }
 
-export function mergeRequestKindLabels(
-  current: Record<string, string>,
+export function mergeRequestKindOptionsByKey(
+  current: Record<string, TokenLogRequestKindOption>,
   options: TokenLogRequestKindOption[],
-  logs: TokenLogRequestKindLabelSource[] = [],
-): Record<string, string> {
+): Record<string, TokenLogRequestKindOption> {
   const next = { ...current }
   for (const option of options) {
     const key = option.key.trim()
-    const label = option.label.trim()
-    if (key && label) next[key] = label
-  }
-  for (const log of logs) {
-    const key = log.request_kind_key.trim()
-    const label = log.request_kind_label.trim()
-    if (key && label) next[key] = label
+    if (key) next[key] = option
   }
   return next
 }
@@ -51,12 +61,20 @@ export function mergeRequestKindLabels(
 export function buildVisibleRequestKindOptions(
   selected: string[],
   options: TokenLogRequestKindOption[],
-  labelsByKey: Record<string, string>,
+  optionsByKey: Record<string, TokenLogRequestKindOption>,
 ): TokenLogRequestKindOption[] {
   const byKey = new Map(options.map((option) => [option.key, option]))
   for (const key of uniqueSelectedRequestKinds(selected)) {
     if (byKey.has(key)) continue
-    byKey.set(key, { key, label: labelsByKey[key] ?? key })
+    byKey.set(
+      key,
+      optionsByKey[key] ?? {
+        key,
+        label: key,
+        protocol_group: '',
+        billing_group: '',
+      },
+    )
   }
   return Array.from(byKey.values()).sort((left, right) => left.label.localeCompare(right.label) || left.key.localeCompare(right.key))
 }
@@ -84,6 +102,70 @@ export function summarizeSelectedRequestKinds(
     return labels.join(' + ')
   }
   return `${labels.length} selected`
+}
+
+export function hasActiveRequestKindQuickFilters(filters: TokenLogRequestKindQuickFilters): boolean {
+  return filters.billing !== 'all' || filters.protocol !== 'all'
+}
+
+export function buildRequestKindQuickFilterSelection(
+  options: TokenLogRequestKindOption[],
+  filters: TokenLogRequestKindQuickFilters,
+): string[] {
+  if (!hasActiveRequestKindQuickFilters(filters)) return []
+  return uniqueSelectedRequestKinds(
+    options
+      .filter((option) => {
+        const billingMatches = filters.billing === 'all' || option.billing_group === filters.billing
+        const protocolMatches = filters.protocol === 'all' || option.protocol_group === filters.protocol
+        return billingMatches && protocolMatches
+      })
+      .map((option) => option.key),
+  )
+}
+
+export function requestKindSelectionsMatch(left: string[], right: string[]): boolean {
+  const normalizedLeft = uniqueSelectedRequestKinds(left)
+  const normalizedRight = uniqueSelectedRequestKinds(right)
+  if (normalizedLeft.length !== normalizedRight.length) return false
+  const rightSet = new Set(normalizedRight)
+  return normalizedLeft.every((key) => rightSet.has(key))
+}
+
+export function deriveRequestKindQuickFilters(
+  selected: string[],
+  options: TokenLogRequestKindOption[],
+): TokenLogRequestKindQuickFilters {
+  const normalized = uniqueSelectedRequestKinds(selected)
+  if (normalized.length === 0) return defaultTokenLogRequestKindQuickFilters
+
+  const candidates: TokenLogRequestKindQuickFilters[] = [
+    { billing: 'billable', protocol: 'api' },
+    { billing: 'billable', protocol: 'mcp' },
+    { billing: 'non_billable', protocol: 'api' },
+    { billing: 'non_billable', protocol: 'mcp' },
+    { billing: 'billable', protocol: 'all' },
+    { billing: 'non_billable', protocol: 'all' },
+    { billing: 'all', protocol: 'api' },
+    { billing: 'all', protocol: 'mcp' },
+  ]
+  const matches = candidates.filter((candidate) =>
+    requestKindSelectionsMatch(normalized, buildRequestKindQuickFilterSelection(options, candidate)),
+  )
+  return matches.length === 1 ? matches[0] : defaultTokenLogRequestKindQuickFilters
+}
+
+export function summarizeRequestKindQuickFilters(filters: TokenLogRequestKindQuickFilters): string {
+  if (!hasActiveRequestKindQuickFilters(filters)) return 'All request types'
+
+  const billingLabel =
+    filters.billing === 'all' ? 'All' : filters.billing === 'billable' ? 'Paid' : 'Free'
+  const protocolLabel =
+    filters.protocol === 'all' ? 'Request types' : filters.protocol === 'api' ? 'API' : 'MCP'
+
+  if (filters.billing === 'all') return `${protocolLabel} request types`
+  if (filters.protocol === 'all') return `${billingLabel} request types`
+  return `${billingLabel} + ${protocolLabel}`
 }
 
 export function buildTokenLogsPagePath({

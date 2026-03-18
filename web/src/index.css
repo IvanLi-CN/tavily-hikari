@@ -3000,6 +3000,36 @@ button:disabled {
   line-height: 1.7;
 }
 
+.token-request-quick-filters {
+  display: grid;
+  gap: 12px;
+  padding: 8px 8px 6px;
+}
+
+.token-request-quick-filter-row {
+  display: grid;
+  gap: 6px;
+}
+
+.token-request-quick-filter-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: hsl(var(--muted-foreground));
+}
+
+.token-request-quick-segmented.segmented-tabs {
+  display: flex;
+  width: 100%;
+}
+
+.token-request-quick-segmented.segmented-tabs .segmented-tab {
+  flex: 1 1 0;
+  justify-content: center;
+  padding-inline: 12px;
+}
+
 .token-request-kind-menu {
   max-height: min(24rem, 70vh);
   overflow-y: auto;
