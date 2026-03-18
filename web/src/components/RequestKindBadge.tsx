@@ -24,6 +24,7 @@ export type RequestKindBadgeTone =
   | 'mcp-notification'
   | 'mcp-ping'
   | 'mcp-resource'
+  | 'mcp-resource-template'
   | 'mcp-tools-list'
   | 'mcp-system'
   | 'mcp-raw'
@@ -76,6 +77,9 @@ export function resolveRequestKindBadgeTone(
   if (key.startsWith('mcp:initialize') || label === 'mcp | initialize') return 'mcp-initialize'
   if (key.startsWith('mcp:notifications/') || label.startsWith('mcp | notifications/')) return 'mcp-notification'
   if (key.startsWith('mcp:ping') || label === 'mcp | ping') return 'mcp-ping'
+  if (key.startsWith('mcp:resources/templates/') || label.startsWith('mcp | resources/templates/')) {
+    return 'mcp-resource-template'
+  }
   if (key.startsWith('mcp:resources/') || label.startsWith('mcp | resources/')) return 'mcp-resource'
   if (key.startsWith('mcp:tools/list') || label === 'mcp | tools/list') return 'mcp-tools-list'
   if (

@@ -3041,6 +3041,7 @@ button:disabled {
   --request-kind-bg-start: hsl(210 33% 97%);
   --request-kind-bg-end: hsl(214 28% 92%);
   --request-kind-chip: hsl(0 0% 100% / 0.72);
+  --request-kind-chip-border: hsl(0 0% 100% / 0.16);
   display: inline-flex;
   align-items: center;
   gap: 0.42rem;
@@ -3073,6 +3074,8 @@ button:disabled {
   padding: 0.16rem 0.42rem;
   border-radius: 999px;
   background: var(--request-kind-chip);
+  border: 1px solid var(--request-kind-chip-border);
+  box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.08);
   font-size: 0.68em;
   font-weight: 800;
   letter-spacing: 0.08em;
@@ -3098,6 +3101,8 @@ button:disabled {
   --request-kind-border: hsl(218 24% 78% / 0.88);
   --request-kind-bg-start: hsl(210 33% 97%);
   --request-kind-bg-end: hsl(214 28% 92%);
+  --request-kind-chip: hsl(217 28% 84% / 0.48);
+  --request-kind-chip-border: hsl(217 24% 54% / 0.2);
 }
 
 .request-kind-badge--api {
@@ -3105,6 +3110,8 @@ button:disabled {
   --request-kind-border: hsl(214 88% 56% / 0.28);
   --request-kind-bg-start: hsl(212 100% 97%);
   --request-kind-bg-end: hsl(210 100% 92%);
+  --request-kind-chip: hsl(213 88% 74% / 0.28);
+  --request-kind-chip-border: hsl(214 78% 52% / 0.22);
 }
 
 .request-kind-badge--api-search {
@@ -3112,6 +3119,8 @@ button:disabled {
   --request-kind-border: hsl(214 88% 56% / 0.34);
   --request-kind-bg-start: hsl(212 100% 97%);
   --request-kind-bg-end: hsl(208 100% 91%);
+  --request-kind-chip: hsl(213 92% 69% / 0.32);
+  --request-kind-chip-border: hsl(214 82% 50% / 0.24);
 }
 
 .request-kind-badge--api-extract {
@@ -3119,6 +3128,8 @@ button:disabled {
   --request-kind-border: hsl(184 86% 45% / 0.34);
   --request-kind-bg-start: hsl(180 100% 96%);
   --request-kind-bg-end: hsl(185 90% 90%);
+  --request-kind-chip: hsl(184 78% 62% / 0.3);
+  --request-kind-chip-border: hsl(184 70% 42% / 0.22);
 }
 
 .request-kind-badge--api-crawl {
@@ -3126,6 +3137,8 @@ button:disabled {
   --request-kind-border: hsl(34 96% 54% / 0.34);
   --request-kind-bg-start: hsl(44 100% 96%);
   --request-kind-bg-end: hsl(38 100% 90%);
+  --request-kind-chip: hsl(36 96% 62% / 0.32);
+  --request-kind-chip-border: hsl(34 84% 48% / 0.24);
 }
 
 .request-kind-badge--api-map {
@@ -3133,6 +3146,8 @@ button:disabled {
   --request-kind-border: hsl(152 66% 44% / 0.32);
   --request-kind-bg-start: hsl(148 70% 95%);
   --request-kind-bg-end: hsl(152 72% 89%);
+  --request-kind-chip: hsl(150 62% 58% / 0.32);
+  --request-kind-chip-border: hsl(150 58% 38% / 0.22);
 }
 
 .request-kind-badge--api-research {
@@ -3140,6 +3155,8 @@ button:disabled {
   --request-kind-border: hsl(334 84% 56% / 0.3);
   --request-kind-bg-start: hsl(332 100% 97%);
   --request-kind-bg-end: hsl(338 100% 93%);
+  --request-kind-chip: hsl(334 84% 70% / 0.3);
+  --request-kind-chip-border: hsl(334 68% 48% / 0.22);
 }
 
 .request-kind-badge--api-research-result {
@@ -3147,6 +3164,8 @@ button:disabled {
   --request-kind-border: hsl(350 84% 58% / 0.32);
   --request-kind-bg-start: hsl(350 100% 97%);
   --request-kind-bg-end: hsl(352 100% 93%);
+  --request-kind-chip: hsl(351 86% 72% / 0.32);
+  --request-kind-chip-border: hsl(351 74% 52% / 0.24);
 }
 
 .request-kind-badge--api-usage {
@@ -3154,6 +3173,8 @@ button:disabled {
   --request-kind-border: hsl(223 24% 56% / 0.3);
   --request-kind-bg-start: hsl(220 24% 96%);
   --request-kind-bg-end: hsl(220 24% 91%);
+  --request-kind-chip: hsl(223 30% 68% / 0.28);
+  --request-kind-chip-border: hsl(223 22% 46% / 0.2);
 }
 
 .request-kind-badge--api-raw {
@@ -3161,6 +3182,8 @@ button:disabled {
   --request-kind-border: hsl(236 64% 60% / 0.28);
   --request-kind-bg-start: hsl(238 100% 97%);
   --request-kind-bg-end: hsl(236 100% 93%);
+  --request-kind-chip: hsl(238 76% 72% / 0.3);
+  --request-kind-chip-border: hsl(238 60% 50% / 0.22);
 }
 
 .request-kind-badge--mcp {
@@ -3168,6 +3191,8 @@ button:disabled {
   --request-kind-border: hsl(195 90% 49% / 0.28);
   --request-kind-bg-start: hsl(191 100% 96%);
   --request-kind-bg-end: hsl(191 94% 91%);
+  --request-kind-chip: hsl(197 88% 68% / 0.28);
+  --request-kind-chip-border: hsl(196 74% 48% / 0.22);
 }
 
 .request-kind-badge--mcp-extract {
@@ -3175,6 +3200,8 @@ button:disabled {
   --request-kind-border: hsl(221 84% 58% / 0.34);
   --request-kind-bg-start: hsl(220 100% 97%);
   --request-kind-bg-end: hsl(223 96% 92%);
+  --request-kind-chip: hsl(220 86% 70% / 0.3);
+  --request-kind-chip-border: hsl(221 72% 50% / 0.24);
 }
 
 .request-kind-badge--mcp-search {
@@ -3182,6 +3209,8 @@ button:disabled {
   --request-kind-border: hsl(195 94% 49% / 0.34);
   --request-kind-bg-start: hsl(191 100% 96%);
   --request-kind-bg-end: hsl(190 100% 90%);
+  --request-kind-chip: hsl(192 88% 64% / 0.3);
+  --request-kind-chip-border: hsl(192 78% 46% / 0.22);
 }
 
 .request-kind-badge--mcp-batch {
@@ -3189,6 +3218,8 @@ button:disabled {
   --request-kind-border: hsl(22 92% 58% / 0.34);
   --request-kind-bg-start: hsl(20 100% 96%);
   --request-kind-bg-end: hsl(28 100% 91%);
+  --request-kind-chip: hsl(24 96% 66% / 0.3);
+  --request-kind-chip-border: hsl(24 80% 46% / 0.22);
 }
 
 .request-kind-badge--mcp-tool {
@@ -3196,6 +3227,8 @@ button:disabled {
   --request-kind-border: hsl(92 60% 44% / 0.34);
   --request-kind-bg-start: hsl(88 100% 96%);
   --request-kind-bg-end: hsl(94 82% 90%);
+  --request-kind-chip: hsl(96 72% 62% / 0.3);
+  --request-kind-chip-border: hsl(95 58% 40% / 0.22);
 }
 
 .request-kind-badge--mcp-initialize {
@@ -3203,6 +3236,8 @@ button:disabled {
   --request-kind-border: hsl(35 90% 54% / 0.34);
   --request-kind-bg-start: hsl(42 100% 97%);
   --request-kind-bg-end: hsl(40 96% 91%);
+  --request-kind-chip: hsl(40 92% 68% / 0.3);
+  --request-kind-chip-border: hsl(38 76% 48% / 0.22);
 }
 
 .request-kind-badge--mcp-notification {
@@ -3210,6 +3245,8 @@ button:disabled {
   --request-kind-border: hsl(320 76% 56% / 0.34);
   --request-kind-bg-start: hsl(320 100% 97%);
   --request-kind-bg-end: hsl(320 92% 92%);
+  --request-kind-chip: hsl(320 86% 70% / 0.3);
+  --request-kind-chip-border: hsl(320 72% 50% / 0.22);
 }
 
 .request-kind-badge--mcp-ping {
@@ -3217,6 +3254,8 @@ button:disabled {
   --request-kind-border: hsl(164 62% 46% / 0.34);
   --request-kind-bg-start: hsl(156 86% 96%);
   --request-kind-bg-end: hsl(162 72% 90%);
+  --request-kind-chip: hsl(163 72% 62% / 0.3);
+  --request-kind-chip-border: hsl(163 58% 42% / 0.22);
 }
 
 .request-kind-badge--mcp-resource {
@@ -3224,13 +3263,26 @@ button:disabled {
   --request-kind-border: hsl(277 68% 58% / 0.34);
   --request-kind-bg-start: hsl(276 100% 97%);
   --request-kind-bg-end: hsl(280 88% 93%);
+  --request-kind-chip: hsl(278 78% 72% / 0.3);
+  --request-kind-chip-border: hsl(277 62% 52% / 0.22);
+}
+
+.request-kind-badge--mcp-resource-template {
+  --request-kind-ink: hsl(258 64% 34%);
+  --request-kind-border: hsl(257 72% 58% / 0.34);
+  --request-kind-bg-start: hsl(256 100% 97%);
+  --request-kind-bg-end: hsl(260 90% 93%);
+  --request-kind-chip: hsl(258 84% 74% / 0.3);
+  --request-kind-chip-border: hsl(257 66% 54% / 0.22);
 }
 
 .request-kind-badge--mcp-tools-list {
-  --request-kind-ink: hsl(246 56% 36%);
-  --request-kind-border: hsl(246 64% 60% / 0.34);
-  --request-kind-bg-start: hsl(244 100% 97%);
-  --request-kind-bg-end: hsl(246 82% 93%);
+  --request-kind-ink: hsl(233 62% 36%);
+  --request-kind-border: hsl(232 72% 60% / 0.34);
+  --request-kind-bg-start: hsl(230 100% 97%);
+  --request-kind-bg-end: hsl(234 86% 93%);
+  --request-kind-chip: hsl(232 84% 72% / 0.3);
+  --request-kind-chip-border: hsl(232 66% 52% / 0.22);
 }
 
 .request-kind-badge--mcp-system {
@@ -3238,6 +3290,8 @@ button:disabled {
   --request-kind-border: hsl(254 70% 62% / 0.32);
   --request-kind-bg-start: hsl(252 100% 97%);
   --request-kind-bg-end: hsl(255 100% 94%);
+  --request-kind-chip: hsl(254 74% 72% / 0.28);
+  --request-kind-chip-border: hsl(254 60% 54% / 0.2);
 }
 
 .request-kind-badge--mcp-raw {
@@ -3245,6 +3299,8 @@ button:disabled {
   --request-kind-border: hsl(214 18% 63% / 0.32);
   --request-kind-bg-start: hsl(210 20% 96%);
   --request-kind-bg-end: hsl(214 18% 91%);
+  --request-kind-chip: hsl(214 18% 68% / 0.28);
+  --request-kind-chip-border: hsl(214 16% 48% / 0.2);
 }
 
 .dark .request-kind-badge {
@@ -3253,6 +3309,7 @@ button:disabled {
   --request-kind-bg-start: hsl(219 24% 24% / 0.96);
   --request-kind-bg-end: hsl(219 22% 18% / 0.98);
   --request-kind-chip: hsl(0 0% 100% / 0.12);
+  --request-kind-chip-border: hsl(0 0% 100% / 0.08);
   box-shadow:
     inset 0 1px 0 hsl(0 0% 100% / 0.08),
     0 18px 34px -28px hsl(0 0% 0% / 0.7);

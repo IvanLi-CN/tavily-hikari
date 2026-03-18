@@ -29,6 +29,7 @@ const requestKindSections = [
       { requestKindKey: 'mcp:notifications/initialized', requestKindLabel: 'MCP | notifications/initialized' },
       { requestKindKey: 'mcp:ping', requestKindLabel: 'MCP | ping' },
       { requestKindKey: 'mcp:resources/list', requestKindLabel: 'MCP | resources/list' },
+      { requestKindKey: 'mcp:resources/templates/list', requestKindLabel: 'MCP | resources/templates/list' },
       { requestKindKey: 'mcp:tools/list', requestKindLabel: 'MCP | tools/list' },
       { requestKindKey: 'mcp:resources/subscribe', requestKindLabel: 'MCP | resources/subscribe' },
       { requestKindKey: 'mcp:raw:/mcp/sse', requestKindLabel: 'MCP | /mcp/sse' },
