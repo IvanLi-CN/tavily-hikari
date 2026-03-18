@@ -2206,17 +2206,17 @@ export default function ForwardProxySettingsModule({
 
               <div className="rounded-xl border border-border/70 bg-card/45 px-3.5 py-3">
                 <div className="flex flex-wrap items-center gap-3">
-                  <Button type="button" variant="secondary" size="sm" onClick={() => openDialog('manual')} disabled={controlsDisabled}>
-                    {strings.config.addManual}
-                  </Button>
-                  <span className="text-xs text-muted-foreground">
-                    {strings.config.manualCount.replace('{count}', formatNumber(manualUrls.length))}
-                  </span>
                   <Button type="button" variant="secondary" size="sm" onClick={() => openDialog('subscription')} disabled={controlsDisabled}>
                     {strings.config.addSubscription}
                   </Button>
                   <span className="text-xs text-muted-foreground">
                     {strings.config.subscriptionCount.replace('{count}', formatNumber(subscriptionUrls.length))}
+                  </span>
+                  <Button type="button" variant="secondary" size="sm" onClick={() => openDialog('manual')} disabled={controlsDisabled}>
+                    {strings.config.addManual}
+                  </Button>
+                  <span className="text-xs text-muted-foreground">
+                    {strings.config.manualCount.replace('{count}', formatNumber(manualUrls.length))}
                   </span>
                 </div>
               </div>

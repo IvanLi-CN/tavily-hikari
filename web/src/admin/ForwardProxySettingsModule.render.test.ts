@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'bun:test'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 
 import {
   buildValidationNodeRows,
@@ -8,6 +10,8 @@ import {
   type ForwardProxyValidationEntry,
 } from './ForwardProxySettingsModule'
 import { translations } from '../i18n'
+import ForwardProxySettingsModule from './ForwardProxySettingsModule'
+import { forwardProxyStorySavedAt, forwardProxyStorySettings, forwardProxyStoryStats } from './forwardProxyStoryData'
 
 const strings = translations.zh.admin.proxySettings
 
@@ -175,5 +179,41 @@ describe('ForwardProxySettingsModule dialog helpers', () => {
         message: '',
       },
     ])).toBe(false)
+  })
+
+  it('renders the subscription action group before the manual action group', () => {
+    const markup = renderToStaticMarkup(
+      createElement(ForwardProxySettingsModule, {
+        strings,
+        settings: forwardProxyStorySettings,
+        stats: forwardProxyStoryStats,
+        settingsLoadState: 'ready',
+        statsLoadState: 'ready',
+        settingsError: null,
+        statsError: null,
+        saveError: null,
+        revalidateError: null,
+        saving: false,
+        revalidating: false,
+        savedAt: forwardProxyStorySavedAt,
+        revalidateProgress: null,
+        egressPreviewProgress: null,
+        onPersistDraft: async () => {},
+        onValidateCandidates: async () => [],
+        onRefresh: () => {},
+        onRevalidate: () => {},
+        dialogPreview: null,
+        onDialogPreviewClose: () => {},
+      }),
+    )
+
+    expect(markup.indexOf(strings.config.addSubscription)).toBeGreaterThan(-1)
+    expect(markup.indexOf(strings.config.addManual)).toBeGreaterThan(-1)
+    expect(markup.indexOf(strings.config.subscriptionCount.replace('{count}', '2'))).toBeGreaterThan(-1)
+    expect(markup.indexOf(strings.config.manualCount.replace('{count}', '3'))).toBeGreaterThan(-1)
+    expect(markup.indexOf(strings.config.addSubscription)).toBeLessThan(markup.indexOf(strings.config.addManual))
+    expect(markup.indexOf(strings.config.subscriptionCount.replace('{count}', '2'))).toBeLessThan(
+      markup.indexOf(strings.config.manualCount.replace('{count}', '3')),
+    )
   })
 })
