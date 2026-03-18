@@ -3031,7 +3031,10 @@ button:disabled {
 }
 
 .token-request-kind-menu {
-  max-height: min(24rem, 70vh);
+  max-height: min(
+    var(--radix-dropdown-menu-content-available-height, calc(100dvh - 1rem)),
+    calc(100dvh - 1rem)
+  );
   overflow-y: auto;
 }
 

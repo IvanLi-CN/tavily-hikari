@@ -111,6 +111,19 @@
 - 假设：快捷三态仍使用英文 UI 文案，与当前 token detail 英文界面保持一致。
 - 假设：保留原有 request-kind checkbox OR 语义，不新增“反选”“仅显示命中项计数”等额外行为。
 
+## Visual Evidence (PR)
+
+- source_type=storybook_canvas
+  - story_id_or_title: `Admin Pages/TokenDetail / Dense Request Records`
+  - state: `request kind dropdown expanded`
+  - target_program: `mock-only`
+  - capture_scope: `element`
+  - sensitive_exclusion: `N/A`
+  - submission_gate: `pending-owner-approval`
+  - evidence_note: 证明 request type 筛选面板顶部已加入 `Billing` 与 `Type` 两组三态快捷筛选，且在可用视口足够时面板会自适应内容高度，一次性展示完整 request kind 列表
+  - image:
+    ![Admin token request kind quick filters](./assets/request-kind-panel-complete.png)
+
 ## 变更记录（Change log）
 
 - 2026-03-18: 初始化 follow-up spec，冻结 canonical option 分组字段、tri-state 交互和 legacy/raw request kind 的计费分组边界。
