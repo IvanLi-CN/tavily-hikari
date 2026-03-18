@@ -41,15 +41,7 @@ describe('UserConsole Storybook acceptance controls', () => {
 
     expect(meta.argTypes?.tokenDetailPreview).toMatchObject({
       name: 'Token detail preview',
-      options: [
-        'Overview',
-        'Token Revealed',
-        'API Check Running',
-        'All Checks Pass',
-        'Partial Availability',
-        'Authentication Failed',
-        'Quota Blocked',
-      ],
+      options: ['Overview', 'Token Revealed'],
       control: { type: 'select' },
       if: { arg: 'consoleView', eq: 'Token Detail' },
     })
@@ -60,7 +52,7 @@ describe('UserConsole Storybook acceptance controls', () => {
     })
   })
 
-  it('keeps business-readable preset stories and drops legacy scenario exports', () => {
+  it('keeps business-readable preset stories and drops probe-only full-page exports', () => {
     expect(userConsoleStories.ConsoleHome.args).toMatchObject({
       consoleView: 'Console Home',
       isAdmin: false,
@@ -106,26 +98,6 @@ describe('UserConsole Storybook acceptance controls', () => {
       name: 'Token Detail Admin',
       args: { consoleView: 'Token Detail', isAdmin: true, landingFocus: 'Overview Focus', tokenDetailPreview: 'Overview' },
     })
-    expect(userConsoleStories.ApiCheckRunning).toMatchObject({
-      name: 'API Check Running',
-      args: { consoleView: 'Token Detail', landingFocus: 'Overview Focus', tokenDetailPreview: 'API Check Running' },
-    })
-    expect(userConsoleStories.AllChecksPass).toMatchObject({
-      name: 'All Checks Pass',
-      args: { consoleView: 'Token Detail', landingFocus: 'Overview Focus', tokenDetailPreview: 'All Checks Pass' },
-    })
-    expect(userConsoleStories.PartialAvailability).toMatchObject({
-      name: 'Partial Availability',
-      args: { consoleView: 'Token Detail', landingFocus: 'Overview Focus', tokenDetailPreview: 'Partial Availability' },
-    })
-    expect(userConsoleStories.AuthenticationFailed).toMatchObject({
-      name: 'Authentication Failed',
-      args: { consoleView: 'Token Detail', landingFocus: 'Overview Focus', tokenDetailPreview: 'Authentication Failed' },
-    })
-    expect(userConsoleStories.QuotaBlocked).toMatchObject({
-      name: 'Quota Blocked',
-      args: { consoleView: 'Token Detail', landingFocus: 'Overview Focus', tokenDetailPreview: 'Quota Blocked' },
-    })
 
     expect(userConsoleStories).not.toHaveProperty('Dashboard')
     expect(userConsoleStories).not.toHaveProperty('DashboardAdmin')
@@ -133,6 +105,11 @@ describe('UserConsole Storybook acceptance controls', () => {
     expect(userConsoleStories).not.toHaveProperty('Tokens')
     expect(userConsoleStories).not.toHaveProperty('TokensAdmin')
     expect(userConsoleStories).not.toHaveProperty('TokensEmpty')
+    expect(userConsoleStories).not.toHaveProperty('ApiCheckRunning')
+    expect(userConsoleStories).not.toHaveProperty('AllChecksPass')
+    expect(userConsoleStories).not.toHaveProperty('PartialAvailability')
+    expect(userConsoleStories).not.toHaveProperty('AuthenticationFailed')
+    expect(userConsoleStories).not.toHaveProperty('QuotaBlocked')
   })
 
   it('covers the no-hash console root as the merged landing default', () => {

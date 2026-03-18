@@ -208,6 +208,7 @@ fn tavily_mcp_reserved_credits(tool: &str, options: &Value) -> i64 {
         "tavily-extract" => tavily_extract_expected_credits(options),
         "tavily-crawl" => tavily_crawl_expected_credits(options),
         "tavily-map" => tavily_map_expected_credits(options),
+        "tavily-research" => tavily_research_min_credits(options),
         _ => 1,
     }
 }

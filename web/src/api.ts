@@ -807,6 +807,25 @@ export async function probeMcpToolsList(token: string): Promise<ProbeMcpResponse
   })
 }
 
+export async function probeMcpToolsCall(
+  token: string,
+  toolName: string,
+  argumentsPayload: unknown,
+): Promise<ProbeMcpResponse> {
+  return requestMcpProbeWithToken<ProbeMcpResponse>('/mcp', token, {
+    method: 'POST',
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: `probe-tool-call:${toolName}`,
+      method: 'tools/call',
+      params: {
+        name: toolName,
+        arguments: argumentsPayload,
+      },
+    }),
+  })
+}
+
 export interface TavilyResearchCreateResponse {
   request_id?: string
   requestId?: string

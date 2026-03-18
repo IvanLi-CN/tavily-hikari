@@ -8,18 +8,9 @@ import { userConsoleRouteToHash } from './lib/userConsoleRoutes'
 type ConsoleView = 'Console Home' | 'Token Detail'
 type LandingFocus = 'Overview Focus' | 'Token Focus'
 type TokenListState = 'Single Token' | 'Multiple Tokens' | 'Empty'
-type TokenDetailPreview =
-  | 'Overview'
-  | 'Token Revealed'
-  | 'API Check Running'
-  | 'All Checks Pass'
-  | 'Partial Availability'
-  | 'Authentication Failed'
-  | 'Quota Blocked'
+type TokenDetailPreview = 'Overview' | 'Token Revealed'
 
 type CopyRecoveryMode = 'none' | 'list-manual-bubble' | 'detail-inline'
-
-type ProbeMockMode = 'none' | 'running' | 'success' | 'partial' | 'auth-fail' | 'exhausted'
 
 interface UserConsoleStoryArgs {
   consoleView: ConsoleView
@@ -31,15 +22,12 @@ interface UserConsoleStoryArgs {
 }
 
 interface UserConsoleStoryState {
-  autoProbeTarget: 'mcp' | 'api' | null
   autoRevealToken: boolean
   isAdmin: boolean
-  probeMode: ProbeMockMode
   routeHash: string
   tokenListMode: 'single' | 'multiple' | 'empty'
 }
 
-const PROBE_STEP_DELAY_MS = 900
 const TOKEN_DETAIL_HASH = '#/tokens/a1b2'
 
 const dashboardSample: UserDashboard = {
@@ -102,16 +90,6 @@ const tokenDetailSample: UserTokenSummary = {
   dailySuccess: 315,
   dailyFailure: 19,
   monthlySuccess: 3510,
-}
-
-const tokenDetailExhaustedSample: UserTokenSummary = {
-  ...tokenSample,
-  quotaHourlyUsed: 100,
-  quotaHourlyLimit: 100,
-  quotaDailyUsed: 500,
-  quotaDailyLimit: 500,
-  quotaMonthlyUsed: 4188,
-  quotaMonthlyLimit: 5000,
 }
 
 interface ServerPublicTokenLogMock {
@@ -190,36 +168,6 @@ function jsonResponse(data: unknown, status = 200): Response {
   })
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    window.setTimeout(resolve, ms)
-  })
-}
-
-function probeModeFromPreview(preview: TokenDetailPreview): ProbeMockMode {
-  if (preview === 'Token Revealed') return 'none'
-  if (preview === 'API Check Running') return 'running'
-  if (preview === 'All Checks Pass') return 'success'
-  if (preview === 'Partial Availability') return 'partial'
-  if (preview === 'Authentication Failed') return 'auth-fail'
-  if (preview === 'Quota Blocked') return 'exhausted'
-  return 'none'
-}
-
-function autoProbeTargetFromPreview(preview: TokenDetailPreview): 'mcp' | 'api' | null {
-  if (
-    preview === 'API Check Running'
-    || preview === 'All Checks Pass'
-    || preview === 'Partial Availability'
-  ) {
-    return 'api'
-  }
-  if (preview === 'Authentication Failed' || preview === 'Quota Blocked') {
-    return 'mcp'
-  }
-  return null
-}
-
 function routeHashFromView(view: ConsoleView, landingFocus: LandingFocus, routeHashOverride?: string): string {
   if (view === 'Token Detail') return TOKEN_DETAIL_HASH
   if (typeof routeHashOverride === 'string') return routeHashOverride
@@ -239,14 +187,8 @@ function resolveStoryState(args: UserConsoleStoryArgs): UserConsoleStoryState {
         : 'single'
 
   return {
-    autoProbeTarget: args.consoleView === 'Token Detail'
-      ? autoProbeTargetFromPreview(args.tokenDetailPreview)
-      : null,
     autoRevealToken: args.consoleView === 'Token Detail' && args.tokenDetailPreview === 'Token Revealed',
     isAdmin: args.isAdmin,
-    probeMode: args.consoleView === 'Token Detail'
-      ? probeModeFromPreview(args.tokenDetailPreview)
-      : 'none',
     routeHash: routeHashFromView(args.consoleView, args.landingFocus, args.routeHashOverride),
     tokenListMode,
   }
@@ -304,30 +246,14 @@ function installUserConsoleFetchMock(state: UserConsoleStoryState): () => void {
         return jsonResponse(tokenLogsSample)
       }
 
-      return jsonResponse(state.probeMode === 'exhausted' ? tokenDetailExhaustedSample : tokenDetailSample)
+      return jsonResponse(tokenDetailSample)
     }
 
     if (url.pathname === '/mcp') {
-      if (state.probeMode === 'auth-fail') {
-        return jsonResponse({ error: 'invalid or disabled token' }, 401)
-      }
-      if (state.probeMode !== 'none') {
-        await sleep(PROBE_STEP_DELAY_MS)
-      }
       const payload = await request.clone().json().catch(() => ({}))
       const method = typeof payload?.method === 'string' ? payload.method : ''
       const accept = request.headers.get('Accept') ?? ''
       const acceptsProbeFormats = accept.includes('application/json') && accept.includes('text/event-stream')
-
-      if (state.probeMode === 'exhausted' && method === 'ping') {
-        return jsonResponse({
-          error: 'quota_exceeded',
-          window: 'day',
-          hourly: { limit: 100, used: 100 },
-          daily: { limit: 500, used: 500 },
-          monthly: { limit: 5000, used: 4188 },
-        }, 429)
-      }
 
       if (method === 'tools/list' && !acceptsProbeFormats) {
         return jsonResponse({
@@ -340,17 +266,19 @@ function installUserConsoleFetchMock(state: UserConsoleStoryState): () => void {
         }, 406)
       }
 
-      if (state.probeMode === 'partial' && method === 'tools/list') {
-        return jsonResponse({ error: { code: -32001, message: 'tools/list unavailable' } })
-      }
-
       if (method === 'tools/list') {
         return new Response(
           `event: message\ndata: ${JSON.stringify({
             jsonrpc: '2.0',
             id: payload?.id ?? null,
             result: {
-              tools: [{ name: 'tavily_search' }],
+              tools: [
+                { name: 'tavily-search' },
+                { name: 'tavily-extract' },
+                { name: 'tavily-crawl' },
+                { name: 'tavily-map' },
+                { name: 'tavily-research' },
+              ],
             },
           })}\n\n`,
           {
@@ -358,6 +286,17 @@ function installUserConsoleFetchMock(state: UserConsoleStoryState): () => void {
             headers: { 'Content-Type': 'text/event-stream' },
           },
         )
+      }
+
+      if (method === 'tools/call') {
+        return jsonResponse({
+          jsonrpc: '2.0',
+          id: payload?.id ?? null,
+          result: {
+            ok: true,
+            tool: payload?.params?.name ?? null,
+          },
+        })
       }
 
       return jsonResponse({
@@ -371,17 +310,7 @@ function installUserConsoleFetchMock(state: UserConsoleStoryState): () => void {
     }
 
     if (url.pathname.startsWith('/api/tavily/')) {
-      if (state.probeMode === 'auth-fail') {
-        return jsonResponse({ error: 'invalid or disabled token' }, 401)
-      }
-      if (state.probeMode !== 'none') {
-        await sleep(PROBE_STEP_DELAY_MS)
-      }
-
       if (url.pathname === '/api/tavily/search') {
-        if (state.probeMode === 'running') {
-          await sleep(60_000)
-        }
         return jsonResponse({ status: 200, results: [] })
       }
       if (url.pathname === '/api/tavily/extract') {
@@ -391,9 +320,6 @@ function installUserConsoleFetchMock(state: UserConsoleStoryState): () => void {
         return jsonResponse({ status: 200, results: [] })
       }
       if (url.pathname === '/api/tavily/map') {
-        if (state.probeMode === 'partial') {
-          return jsonResponse({ error: 'map endpoint timeout' }, 500)
-        }
         return jsonResponse({ status: 200, results: [] })
       }
       if (url.pathname === '/api/tavily/research') {
@@ -487,7 +413,7 @@ function UserConsoleStory(
       window.location.hash = previousHash
       setReady(false)
     }
-  }, [copyRecoveryMode, storyState.isAdmin, storyState.probeMode, storyState.routeHash, storyState.tokenListMode])
+  }, [copyRecoveryMode, storyState.isAdmin, storyState.routeHash, storyState.tokenListMode])
 
   useEffect(() => {
     if (!ready || !storyState.autoRevealToken) return
@@ -497,16 +423,6 @@ function UserConsoleStory(
     }, 80)
     return () => window.clearTimeout(timer)
   }, [ready, storyState.autoRevealToken])
-
-  useEffect(() => {
-    if (!ready || !storyState.autoProbeTarget) return
-    const timer = window.setTimeout(() => {
-      const selector = `[data-probe-kind="${storyState.autoProbeTarget}"]`
-      const button = document.querySelector<HTMLButtonElement>(selector)
-      button?.click()
-    }, 80)
-    return () => window.clearTimeout(timer)
-  }, [ready, storyState.autoProbeTarget])
 
   useEffect(() => {
     if (!ready || copyRecoveryMode === 'none') return
@@ -529,7 +445,6 @@ function UserConsoleStory(
     storyState.isAdmin ? 'admin' : 'user',
     storyState.tokenListMode,
     storyState.autoRevealToken ? 'revealed' : 'hidden',
-    storyState.probeMode,
   ].join(':')
 
   return <UserConsole key={storyKey} />
@@ -578,16 +493,8 @@ const meta = {
     },
     tokenDetailPreview: {
       name: 'Token detail preview',
-      description: 'Pick the overview or special state to preview on the Token Detail page.',
-      options: [
-        'Overview',
-        'Token Revealed',
-        'API Check Running',
-        'All Checks Pass',
-        'Partial Availability',
-        'Authentication Failed',
-        'Quota Blocked',
-      ],
+      description: 'Pick the standard token detail page or the revealed-token variant.',
+      options: ['Overview', 'Token Revealed'],
       control: { type: 'select' },
       if: { arg: 'consoleView', eq: 'Token Detail' },
     },
@@ -730,55 +637,5 @@ export const TokenDetailAdmin: Story = {
     isAdmin: true,
     landingFocus: 'Overview Focus',
     tokenDetailPreview: 'Overview',
-  },
-}
-
-export const ApiCheckRunning: Story = {
-  name: 'API Check Running',
-  args: {
-    consoleView: 'Token Detail',
-    isAdmin: false,
-    landingFocus: 'Overview Focus',
-    tokenDetailPreview: 'API Check Running',
-  },
-}
-
-export const AllChecksPass: Story = {
-  name: 'All Checks Pass',
-  args: {
-    consoleView: 'Token Detail',
-    isAdmin: false,
-    landingFocus: 'Overview Focus',
-    tokenDetailPreview: 'All Checks Pass',
-  },
-}
-
-export const PartialAvailability: Story = {
-  name: 'Partial Availability',
-  args: {
-    consoleView: 'Token Detail',
-    isAdmin: false,
-    landingFocus: 'Overview Focus',
-    tokenDetailPreview: 'Partial Availability',
-  },
-}
-
-export const AuthenticationFailed: Story = {
-  name: 'Authentication Failed',
-  args: {
-    consoleView: 'Token Detail',
-    isAdmin: false,
-    landingFocus: 'Overview Focus',
-    tokenDetailPreview: 'Authentication Failed',
-  },
-}
-
-export const QuotaBlocked: Story = {
-  name: 'Quota Blocked',
-  args: {
-    consoleView: 'Token Detail',
-    isAdmin: false,
-    landingFocus: 'Overview Focus',
-    tokenDetailPreview: 'Quota Blocked',
   },
 }

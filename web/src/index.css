@@ -6438,6 +6438,10 @@ tbody .log-details-row:hover {
   color: #d97706;
 }
 
+.user-console-probe-bubble-item-icon-status-skipped {
+  color: #64748b;
+}
+
 .user-console-probe-bubble-item-copy {
   display: flex;
   flex-direction: column;

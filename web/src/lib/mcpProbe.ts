@@ -1,5 +1,5 @@
 export type ProbeQuotaWindow = 'hour' | 'day' | 'month'
-export type McpProbeStepState = 'success' | 'failed' | 'blocked'
+export type McpProbeStepState = 'success' | 'failed' | 'blocked' | 'skipped'
 
 export const MCP_PROBE_ACCEPT_HEADER = 'application/json, text/event-stream'
 
@@ -121,6 +121,79 @@ export function getProbeEnvelopeError(payload: unknown): string | null {
   return null
 }
 
+function numericStatus(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value !== 'string') return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function extractProbeErrorText(payload: Record<string, unknown>): string | null {
+  const directError = payload.error
+  if (typeof directError === 'string' && directError.trim().length > 0) {
+    return directError
+  }
+  const directErrorObject = asRecord(directError)
+  const directErrorMessage = directErrorObject?.message
+  if (typeof directErrorMessage === 'string' && directErrorMessage.trim().length > 0) {
+    return directErrorMessage
+  }
+
+  const message = payload.message
+  if (typeof message === 'string' && message.trim().length > 0) {
+    return message
+  }
+
+  const content = Array.isArray(payload.content) ? payload.content : []
+  for (const item of content) {
+    const contentItem = asRecord(item)
+    if (!contentItem) continue
+    if (contentItem.type === 'error') {
+      const text = contentItem.text
+      if (typeof text === 'string' && text.trim().length > 0) {
+        return text
+      }
+      return 'Request failed'
+    }
+  }
+
+  const detail = asRecord(payload.detail)
+  return detail ? extractProbeErrorText(detail) : null
+}
+
+function extractProbeStatusCode(payload: Record<string, unknown>): number | null {
+  const directStatus = numericStatus(payload.status)
+  if (directStatus !== null) return directStatus
+
+  const detail = asRecord(payload.detail)
+  return detail ? extractProbeStatusCode(detail) : null
+}
+
+export function getMcpProbeResultError(payload: unknown): string | null {
+  const result = asRecord(asRecord(payload)?.result)
+  if (!result) return null
+
+  const directError = extractProbeErrorText(result)
+  if (directError) return directError
+
+  const structuredContent = asRecord(result.structuredContent)
+  if (structuredContent) {
+    const structuredError = extractProbeErrorText(structuredContent)
+    if (structuredError) return structuredError
+
+    const structuredStatus = extractProbeStatusCode(structuredContent)
+    if (structuredStatus !== null && (structuredStatus < 200 || structuredStatus >= 300)) {
+      return `Request failed with status ${structuredStatus}`
+    }
+  }
+
+  if (result.isError === true) {
+    return 'Request failed'
+  }
+
+  return null
+}
+
 export function getQuotaExceededWindow(payload: unknown): ProbeQuotaWindow | null {
   const map = asRecord(payload)
   if (!map) return null
@@ -161,8 +234,10 @@ export async function revalidateBlockedQuotaWindow<T extends QuotaSnapshotLike |
 }
 
 export function resolveMcpProbeButtonState(stepStates: readonly McpProbeStepState[]): 'success' | 'partial' | 'failed' {
+  const failing = stepStates.filter((state) => state === 'failed' || state === 'blocked').length
+  const skipped = stepStates.filter((state) => state === 'skipped').length
   const passed = stepStates.filter((state) => state === 'success').length
-  if (passed === stepStates.length) return 'success'
+  if (failing === 0 && skipped === 0) return 'success'
   if (passed === 0) return 'failed'
   return 'partial'
 }

@@ -1,11 +1,15 @@
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use axum::extract::Json;
+use axum::extract::{Json, Path as AxumPath, Query};
 use axum::http::HeaderMap;
-use axum::routing::{any, post};
+use axum::response::IntoResponse;
+use axum::routing::{any, get, post};
 use axum::{Router, body::Body, http::StatusCode};
 use chrono::Utc;
 use nanoid::nanoid;
@@ -224,6 +228,450 @@ async fn insert_auth_token(db_path: &Path, id: &str, secret: &str) {
     pool.close().await;
 }
 
+fn assert_forwarded_bearer_auth(headers: &HeaderMap, expected_api_key: &str, endpoint: &str) {
+    let forwarded_auth = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    assert_eq!(
+        forwarded_auth,
+        format!("Bearer {expected_api_key}"),
+        "upstream Authorization for {endpoint} should use Tavily key"
+    );
+    assert!(
+        !forwarded_auth.starts_with("Bearer th-"),
+        "upstream Authorization for {endpoint} must not leak Hikari token"
+    );
+}
+
+fn assert_probe_http_auth(
+    headers: &HeaderMap,
+    body: &Value,
+    expected_api_key: &str,
+    endpoint: &str,
+) {
+    assert_forwarded_bearer_auth(headers, expected_api_key, endpoint);
+
+    let forwarded_api_key = body
+        .get("api_key")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    assert_eq!(
+        forwarded_api_key, expected_api_key,
+        "upstream api_key for {endpoint} should use Tavily key"
+    );
+    assert!(
+        !forwarded_api_key.starts_with("th-"),
+        "upstream api_key for {endpoint} must not leak Hikari token"
+    );
+}
+
+async fn spawn_mock_mcp_probe_upstream(
+    expected_api_key: String,
+) -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let app = Router::new().route(
+        "/mcp",
+        any({
+            let calls = calls.clone();
+            move |headers: HeaderMap,
+                  Query(params): Query<HashMap<String, String>>,
+                  Json(body): Json<Value>| {
+                let calls = calls.clone();
+                let expected_api_key = expected_api_key.clone();
+                async move {
+                    let forwarded_api_key = params.get("tavilyApiKey").cloned().unwrap_or_default();
+                    assert_eq!(
+                        forwarded_api_key, expected_api_key,
+                        "upstream /mcp should receive the Tavily API key via query string"
+                    );
+
+                    let accept = headers
+                        .get(axum::http::header::ACCEPT)
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or_default();
+                    assert!(
+                        accept.contains("application/json"),
+                        "browser probe Accept header should preserve application/json"
+                    );
+                    assert!(
+                        accept.contains("text/event-stream"),
+                        "browser probe Accept header should preserve text/event-stream"
+                    );
+
+                    let method = body
+                        .get("method")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    calls.lock().expect("mcp probe calls lock poisoned").push(method.clone());
+
+                    match method.as_str() {
+                        "ping" => (
+                            StatusCode::OK,
+                            axum::Json(serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": body.get("id").cloned().unwrap_or_else(|| serde_json::json!("probe-ping")),
+                                "result": { "ok": true }
+                            })),
+                        )
+                            .into_response(),
+                        "tools/list" => {
+                            let payload = serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": body.get("id").cloned().unwrap_or_else(|| serde_json::json!("probe-tools-list")),
+                                "result": { "tools": [{ "name": "tavily_search" }] }
+                            });
+                            (
+                                StatusCode::OK,
+                                [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                                format!("event: message\ndata: {}\n\n", payload),
+                            )
+                                .into_response()
+                        }
+                        other => (
+                            StatusCode::BAD_REQUEST,
+                            Body::from(format!("unexpected MCP method: {other}")),
+                        )
+                            .into_response(),
+                    }
+                }
+            }
+        }),
+    );
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
+    });
+    (addr, calls)
+}
+
+async fn spawn_mock_mcp_tools_contract_upstream(
+    expected_api_key: String,
+    advertised_tools: Vec<&'static str>,
+) -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let app = Router::new().route(
+        "/mcp",
+        any({
+            let calls = calls.clone();
+            move |Query(params): Query<HashMap<String, String>>, Json(body): Json<Value>| {
+                let calls = calls.clone();
+                let expected_api_key = expected_api_key.clone();
+                let advertised_tools = advertised_tools.clone();
+                async move {
+                    let forwarded_api_key = params.get("tavilyApiKey").cloned().unwrap_or_default();
+                    assert_eq!(
+                        forwarded_api_key, expected_api_key,
+                        "upstream /mcp should receive the Tavily API key via query string"
+                    );
+
+                    let method = body
+                        .get("method")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    calls.lock().expect("mcp tools contract calls lock poisoned").push(method.clone());
+
+                    match method.as_str() {
+                        "tools/list" => (
+                            StatusCode::OK,
+                            axum::Json(serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": body.get("id").cloned().unwrap_or_else(|| serde_json::json!("probe-tools-list")),
+                                "result": {
+                                    "tools": advertised_tools
+                                        .iter()
+                                        .map(|name| serde_json::json!({ "name": name }))
+                                        .collect::<Vec<_>>()
+                                }
+                            })),
+                        )
+                            .into_response(),
+                        "tools/call" => {
+                            let tool_name = body
+                                .get("params")
+                                .and_then(|params| params.get("name"))
+                                .and_then(|value| value.as_str())
+                                .unwrap_or_default();
+                            assert!(
+                                advertised_tools.contains(&tool_name),
+                                "unexpected advertised tool call: {tool_name}"
+                            );
+
+                            let include_usage = body
+                                .get("params")
+                                .and_then(|params| params.get("arguments"))
+                                .and_then(|arguments| arguments.get("include_usage"))
+                                .and_then(|value| value.as_bool());
+                            let normalized_tool_name = tool_name.to_ascii_lowercase().replace('_', "-");
+                            if matches!(
+                                normalized_tool_name.as_str(),
+                                "tavily-search" | "tavily-extract" | "tavily-crawl" | "tavily-map"
+                            ) {
+                                assert_eq!(
+                                    include_usage,
+                                    Some(true),
+                                    "supported Tavily tool {tool_name} should inject include_usage=true"
+                                );
+                            } else {
+                                assert_eq!(
+                                    include_usage,
+                                    None,
+                                    "unsupported Tavily tool {tool_name} should not inject include_usage"
+                                );
+                            }
+
+                            calls
+                                .lock()
+                                .expect("mcp tools contract calls lock poisoned")
+                                .push(format!("tools/call:{tool_name}"));
+
+                            (
+                                StatusCode::OK,
+                                axum::Json(serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": body.get("id").cloned().unwrap_or_else(|| serde_json::json!("tool-call")),
+                                    "result": {
+                                        "structuredContent": {
+                                            "status": 200,
+                                            "usage": { "credits": 1 }
+                                        }
+                                    }
+                                })),
+                            )
+                                .into_response()
+                        }
+                        other => (
+                            StatusCode::BAD_REQUEST,
+                            Body::from(format!("unexpected MCP method: {other}")),
+                        )
+                            .into_response(),
+                    }
+                }
+            }
+        }),
+    );
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
+    });
+    (addr, calls)
+}
+
+async fn spawn_mock_api_probe_upstream(
+    expected_api_key: String,
+) -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let usage_calls = Arc::new(AtomicUsize::new(0));
+    let app = Router::new()
+        .route(
+            "/search",
+            post({
+                let calls = calls.clone();
+                let expected_api_key = expected_api_key.clone();
+                move |headers: HeaderMap, Json(body): Json<Value>| {
+                    let calls = calls.clone();
+                    let expected_api_key = expected_api_key.clone();
+                    async move {
+                        assert_probe_http_auth(&headers, &body, &expected_api_key, "/search");
+                        calls
+                            .lock()
+                            .expect("api probe calls lock poisoned")
+                            .push("search".to_string());
+                        (
+                            StatusCode::OK,
+                            axum::Json(serde_json::json!({
+                                "status": 200,
+                                "results": [],
+                                "usage": { "credits": 1 }
+                            })),
+                        )
+                    }
+                }
+            }),
+        )
+        .route(
+            "/extract",
+            post({
+                let calls = calls.clone();
+                let expected_api_key = expected_api_key.clone();
+                move |headers: HeaderMap, Json(body): Json<Value>| {
+                    let calls = calls.clone();
+                    let expected_api_key = expected_api_key.clone();
+                    async move {
+                        assert_probe_http_auth(&headers, &body, &expected_api_key, "/extract");
+                        calls
+                            .lock()
+                            .expect("api probe calls lock poisoned")
+                            .push("extract".to_string());
+                        (
+                            StatusCode::OK,
+                            axum::Json(serde_json::json!({
+                                "status": 200,
+                                "results": [],
+                                "usage": { "credits": 1 }
+                            })),
+                        )
+                    }
+                }
+            }),
+        )
+        .route(
+            "/crawl",
+            post({
+                let calls = calls.clone();
+                let expected_api_key = expected_api_key.clone();
+                move |headers: HeaderMap, Json(body): Json<Value>| {
+                    let calls = calls.clone();
+                    let expected_api_key = expected_api_key.clone();
+                    async move {
+                        assert_probe_http_auth(&headers, &body, &expected_api_key, "/crawl");
+                        calls
+                            .lock()
+                            .expect("api probe calls lock poisoned")
+                            .push("crawl".to_string());
+                        (
+                            StatusCode::OK,
+                            axum::Json(serde_json::json!({
+                                "status": 200,
+                                "results": [],
+                                "usage": { "credits": 1 }
+                            })),
+                        )
+                    }
+                }
+            }),
+        )
+        .route(
+            "/map",
+            post({
+                let calls = calls.clone();
+                let expected_api_key = expected_api_key.clone();
+                move |headers: HeaderMap, Json(body): Json<Value>| {
+                    let calls = calls.clone();
+                    let expected_api_key = expected_api_key.clone();
+                    async move {
+                        assert_probe_http_auth(&headers, &body, &expected_api_key, "/map");
+                        calls
+                            .lock()
+                            .expect("api probe calls lock poisoned")
+                            .push("map".to_string());
+                        (
+                            StatusCode::OK,
+                            axum::Json(serde_json::json!({
+                                "status": 200,
+                                "results": [],
+                                "usage": { "credits": 1 }
+                            })),
+                        )
+                    }
+                }
+            }),
+        )
+        .route(
+            "/usage",
+            get({
+                let calls = calls.clone();
+                let usage_calls = usage_calls.clone();
+                let expected_api_key = expected_api_key.clone();
+                move |headers: HeaderMap| {
+                    let calls = calls.clone();
+                    let usage_calls = usage_calls.clone();
+                    let expected_api_key = expected_api_key.clone();
+                    async move {
+                        assert_forwarded_bearer_auth(&headers, &expected_api_key, "/usage");
+                        calls
+                            .lock()
+                            .expect("api probe calls lock poisoned")
+                            .push("usage".to_string());
+                        let call_index = usage_calls.fetch_add(1, Ordering::SeqCst);
+                        let research_usage = if call_index == 0 { 10 } else { 11 };
+                        (
+                            StatusCode::OK,
+                            axum::Json(serde_json::json!({
+                                "key": { "research_usage": research_usage }
+                            })),
+                        )
+                    }
+                }
+            }),
+        )
+        .route(
+            "/research",
+            post({
+                let calls = calls.clone();
+                let expected_api_key = expected_api_key.clone();
+                move |headers: HeaderMap, Json(body): Json<Value>| {
+                    let calls = calls.clone();
+                    let expected_api_key = expected_api_key.clone();
+                    async move {
+                        assert_probe_http_auth(&headers, &body, &expected_api_key, "/research");
+                        calls
+                            .lock()
+                            .expect("api probe calls lock poisoned")
+                            .push("research".to_string());
+                        (
+                            StatusCode::OK,
+                            axum::Json(serde_json::json!({
+                                "request_id": "probe-research-request",
+                                "status": "pending"
+                            })),
+                        )
+                    }
+                }
+            }),
+        )
+        .route(
+            "/research/:request_id",
+            get({
+                let calls = calls.clone();
+                let expected_api_key = expected_api_key.clone();
+                move |headers: HeaderMap, AxumPath(request_id): AxumPath<String>| {
+                    let calls = calls.clone();
+                    let expected_api_key = expected_api_key.clone();
+                    async move {
+                        assert_eq!(request_id, "probe-research-request");
+                        assert_forwarded_bearer_auth(
+                            &headers,
+                            &expected_api_key,
+                            "/research/:request_id",
+                        );
+                        calls
+                            .lock()
+                            .expect("api probe calls lock poisoned")
+                            .push(format!("research-result:{request_id}"));
+                        (
+                            StatusCode::OK,
+                            axum::Json(serde_json::json!({
+                                "request_id": request_id,
+                                "status": "completed"
+                            })),
+                        )
+                    }
+                }
+            }),
+        )
+        .route("/mcp", any(|| async { (StatusCode::OK, Body::from("{}")) }));
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
+    });
+    (addr, calls)
+}
+
 #[tokio::test]
 async fn health_endpoint_is_stable_after_modularization() {
     let (upstream_addr, _rx) = spawn_mock_upstream("tvly-test-key".to_string(), "/search").await;
@@ -319,4 +767,428 @@ async fn search_endpoint_requires_valid_token_when_dev_open_admin_disabled() {
         .await
         .expect("valid token request");
     assert_eq!(valid.status(), reqwest::StatusCode::OK);
+}
+
+#[tokio::test]
+async fn mcp_probe_requests_with_authorization_header_reach_upstream() {
+    let (upstream_addr, calls) = spawn_mock_mcp_probe_upstream("tvly-test-key".to_string()).await;
+
+    let db_path = temp_db_path("server-http-contract-mcp-probe");
+    let (_backend, port) = spawn_backend_ready(upstream_addr, db_path.clone(), false).await;
+    insert_auth_token(&db_path, "zjvc", "abcdefghijkl").await;
+
+    let client = Client::new();
+    let token = "th-zjvc-abcdefghijkl";
+    let mcp_url = format!("http://127.0.0.1:{port}/mcp");
+
+    let ping = client
+        .post(&mcp_url)
+        .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(
+            axum::http::header::ACCEPT,
+            "application/json, text/event-stream",
+        )
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "probe-ping",
+            "method": "ping",
+            "params": {}
+        }))
+        .send()
+        .await
+        .expect("mcp ping request");
+    assert_eq!(ping.status(), reqwest::StatusCode::OK);
+
+    let tools_list = client
+        .post(&mcp_url)
+        .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(
+            axum::http::header::ACCEPT,
+            "application/json, text/event-stream",
+        )
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "probe-tools-list",
+            "method": "tools/list",
+            "params": {}
+        }))
+        .send()
+        .await
+        .expect("mcp tools/list request");
+    assert_eq!(tools_list.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        tools_list
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("text/event-stream"),
+    );
+    let tools_list_body = tools_list.text().await.expect("read tools/list body");
+    assert!(
+        tools_list_body.contains("tavily_search"),
+        "expected SSE probe response body to include tool discovery payload"
+    );
+
+    let upstream_calls = calls.lock().expect("mcp probe calls lock poisoned").clone();
+    assert_eq!(
+        upstream_calls,
+        vec!["ping".to_string(), "tools/list".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn mcp_tools_list_advertised_tools_can_all_be_called_via_authorization_header() {
+    let advertised_tools = vec![
+        "tavily-search",
+        "tavily-extract",
+        "tavily-crawl",
+        "tavily-map",
+        "tavily-research",
+    ];
+    let (upstream_addr, calls) = spawn_mock_mcp_tools_contract_upstream(
+        "tvly-test-key".to_string(),
+        advertised_tools.clone(),
+    )
+    .await;
+
+    let db_path = temp_db_path("server-http-contract-mcp-tools");
+    let (_backend, port) = spawn_backend_ready(upstream_addr, db_path.clone(), false).await;
+    insert_auth_token(&db_path, "zjvc", "abcdefghijkl").await;
+
+    let client = Client::new();
+    let token = "th-zjvc-abcdefghijkl";
+    let mcp_url = format!("http://127.0.0.1:{port}/mcp");
+
+    let tools_list = client
+        .post(&mcp_url)
+        .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "probe-tools-list",
+            "method": "tools/list",
+            "params": {}
+        }))
+        .send()
+        .await
+        .expect("mcp tools/list request");
+    assert_eq!(tools_list.status(), reqwest::StatusCode::OK);
+
+    let tools_list_body: Value = tools_list.json().await.expect("parse tools/list response");
+    let tools = tools_list_body
+        .get("result")
+        .and_then(|result| result.get("tools"))
+        .and_then(Value::as_array)
+        .expect("tools/list should return tools array");
+    let discovered_tool_names = tools
+        .iter()
+        .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    assert_eq!(discovered_tool_names, advertised_tools);
+
+    for tool_name in &discovered_tool_names {
+        let arguments = match *tool_name {
+            "tavily-search" => serde_json::json!({
+                "query": "health check",
+                "search_depth": "basic"
+            }),
+            "tavily-extract" => serde_json::json!({
+                "urls": ["https://example.com"]
+            }),
+            "tavily-crawl" => serde_json::json!({
+                "url": "https://example.com",
+                "max_depth": 1,
+                "limit": 1
+            }),
+            "tavily-map" => serde_json::json!({
+                "url": "https://example.com",
+                "max_depth": 1,
+                "limit": 1
+            }),
+            "tavily-research" => serde_json::json!({
+                "input": "health check"
+            }),
+            other => panic!("unexpected tool name in test fixture: {other}"),
+        };
+
+        let response = client
+            .post(&mcp_url)
+            .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": format!("call-{tool_name}"),
+                "method": "tools/call",
+                "params": {
+                    "name": tool_name,
+                    "arguments": arguments
+                }
+            }))
+            .send()
+            .await
+            .expect("mcp tools/call request");
+        assert_eq!(
+            response.status(),
+            reqwest::StatusCode::OK,
+            "expected tools/call to succeed for advertised tool {tool_name}"
+        );
+    }
+
+    let upstream_calls = calls
+        .lock()
+        .expect("mcp tools contract calls lock poisoned")
+        .clone();
+    assert!(
+        upstream_calls.iter().any(|call| call == "tools/list"),
+        "expected a tools/list discovery call"
+    );
+    for tool_name in &advertised_tools {
+        let expected_call = format!("tools/call:{tool_name}");
+        assert!(
+            upstream_calls.iter().any(|call| call == &expected_call),
+            "expected advertised tool {tool_name} to be exercised through /mcp tools/call"
+        );
+    }
+}
+
+#[tokio::test]
+async fn mcp_tools_list_legacy_underscore_tools_still_apply_supported_tavily_metadata() {
+    let advertised_tools = vec![
+        "tavily_search",
+        "tavily_extract",
+        "tavily_crawl",
+        "tavily_map",
+        "tavily_research",
+    ];
+    let (upstream_addr, calls) = spawn_mock_mcp_tools_contract_upstream(
+        "tvly-test-key".to_string(),
+        advertised_tools.clone(),
+    )
+    .await;
+
+    let db_path = temp_db_path("server-http-contract-mcp-tools-underscore");
+    let (_backend, port) = spawn_backend_ready(upstream_addr, db_path.clone(), false).await;
+    insert_auth_token(&db_path, "zjvc", "abcdefghijkl").await;
+
+    let client = Client::new();
+    let token = "th-zjvc-abcdefghijkl";
+    let mcp_url = format!("http://127.0.0.1:{port}/mcp");
+
+    let tools_list = client
+        .post(&mcp_url)
+        .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "probe-tools-list",
+            "method": "tools/list",
+            "params": {}
+        }))
+        .send()
+        .await
+        .expect("mcp tools/list request");
+    assert_eq!(tools_list.status(), reqwest::StatusCode::OK);
+
+    let tools_list_body: Value = tools_list.json().await.expect("parse tools/list response");
+    let tools = tools_list_body
+        .get("result")
+        .and_then(|result| result.get("tools"))
+        .and_then(Value::as_array)
+        .expect("tools/list should return tools array");
+    let discovered_tool_names = tools
+        .iter()
+        .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    assert_eq!(discovered_tool_names, advertised_tools);
+
+    for tool_name in &discovered_tool_names {
+        let arguments = match tool_name.to_ascii_lowercase().replace('_', "-").as_str() {
+            "tavily-search" => serde_json::json!({
+                "query": "health check",
+                "search_depth": "basic"
+            }),
+            "tavily-extract" => serde_json::json!({
+                "urls": ["https://example.com"]
+            }),
+            "tavily-crawl" => serde_json::json!({
+                "url": "https://example.com",
+                "max_depth": 1,
+                "limit": 1
+            }),
+            "tavily-map" => serde_json::json!({
+                "url": "https://example.com",
+                "max_depth": 1,
+                "limit": 1
+            }),
+            "tavily-research" => serde_json::json!({
+                "input": "health check"
+            }),
+            other => panic!("unexpected tool name in test fixture: {other}"),
+        };
+
+        let response = client
+            .post(&mcp_url)
+            .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": format!("call-{tool_name}"),
+                "method": "tools/call",
+                "params": {
+                    "name": tool_name,
+                    "arguments": arguments
+                }
+            }))
+            .send()
+            .await
+            .expect("mcp tools/call request");
+        assert_eq!(
+            response.status(),
+            reqwest::StatusCode::OK,
+            "expected tools/call to succeed for advertised tool {tool_name}"
+        );
+    }
+
+    let upstream_calls = calls
+        .lock()
+        .expect("mcp tools contract calls lock poisoned")
+        .clone();
+    assert!(
+        upstream_calls.iter().any(|call| call == "tools/list"),
+        "expected a tools/list discovery call"
+    );
+    for tool_name in &advertised_tools {
+        let expected_call = format!("tools/call:{tool_name}");
+        assert!(
+            upstream_calls.iter().any(|call| call == &expected_call),
+            "expected advertised tool {tool_name} to be exercised through /mcp tools/call"
+        );
+    }
+}
+
+#[tokio::test]
+async fn api_probe_requests_with_authorization_header_reach_upstream() {
+    let (upstream_addr, calls) = spawn_mock_api_probe_upstream("tvly-test-key".to_string()).await;
+
+    let db_path = temp_db_path("server-http-contract-api-probe");
+    let (_backend, port) = spawn_backend_ready(upstream_addr, db_path.clone(), false).await;
+    insert_auth_token(&db_path, "zjvc", "abcdefghijkl").await;
+
+    let client = Client::new();
+    let token = "th-zjvc-abcdefghijkl";
+    let auth_header = format!("Bearer {token}");
+    let base = format!("http://127.0.0.1:{port}");
+
+    let search = client
+        .post(format!("{base}/api/tavily/search"))
+        .header(axum::http::header::AUTHORIZATION, &auth_header)
+        .json(&serde_json::json!({
+            "query": "health check",
+            "max_results": 1,
+            "search_depth": "basic",
+            "include_answer": false,
+            "include_raw_content": false,
+            "include_images": false
+        }))
+        .send()
+        .await
+        .expect("search probe request");
+    assert_eq!(search.status(), reqwest::StatusCode::OK);
+
+    let extract = client
+        .post(format!("{base}/api/tavily/extract"))
+        .header(axum::http::header::AUTHORIZATION, &auth_header)
+        .json(&serde_json::json!({
+            "urls": ["https://example.com"],
+            "include_images": false
+        }))
+        .send()
+        .await
+        .expect("extract probe request");
+    assert_eq!(extract.status(), reqwest::StatusCode::OK);
+
+    let crawl = client
+        .post(format!("{base}/api/tavily/crawl"))
+        .header(axum::http::header::AUTHORIZATION, &auth_header)
+        .json(&serde_json::json!({
+            "url": "https://example.com",
+            "max_depth": 1,
+            "limit": 1
+        }))
+        .send()
+        .await
+        .expect("crawl probe request");
+    assert_eq!(crawl.status(), reqwest::StatusCode::OK);
+
+    let map = client
+        .post(format!("{base}/api/tavily/map"))
+        .header(axum::http::header::AUTHORIZATION, &auth_header)
+        .json(&serde_json::json!({
+            "url": "https://example.com",
+            "max_depth": 1,
+            "limit": 1
+        }))
+        .send()
+        .await
+        .expect("map probe request");
+    assert_eq!(map.status(), reqwest::StatusCode::OK);
+
+    let research = client
+        .post(format!("{base}/api/tavily/research"))
+        .header(axum::http::header::AUTHORIZATION, &auth_header)
+        .json(&serde_json::json!({
+            "input": "health check",
+            "model": "mini",
+            "citation_format": "numbered"
+        }))
+        .send()
+        .await
+        .expect("research probe request");
+    assert_eq!(research.status(), reqwest::StatusCode::OK);
+    let research_body: Value = research.json().await.expect("parse research response");
+    assert_eq!(
+        research_body
+            .get("request_id")
+            .and_then(|value| value.as_str()),
+        Some("probe-research-request"),
+    );
+
+    let research_result = client
+        .get(format!("{base}/api/tavily/research/probe-research-request"))
+        .header(axum::http::header::AUTHORIZATION, &auth_header)
+        .send()
+        .await
+        .expect("research result probe request");
+    assert_eq!(research_result.status(), reqwest::StatusCode::OK);
+    let research_result_body: Value = research_result
+        .json()
+        .await
+        .expect("parse research result response");
+    assert_eq!(
+        research_result_body
+            .get("status")
+            .and_then(|value| value.as_str()),
+        Some("completed"),
+    );
+
+    let upstream_calls = calls.lock().expect("api probe calls lock poisoned").clone();
+    assert_eq!(
+        upstream_calls.len(),
+        8,
+        "expected probe flow to hit every upstream endpoint once, with two usage probes"
+    );
+    assert_eq!(
+        upstream_calls
+            .iter()
+            .filter(|call| call.as_str() == "usage")
+            .count(),
+        2,
+        "research probe should perform pre/post usage reads"
+    );
+    assert!(upstream_calls.iter().any(|call| call == "search"));
+    assert!(upstream_calls.iter().any(|call| call == "extract"));
+    assert!(upstream_calls.iter().any(|call| call == "crawl"));
+    assert!(upstream_calls.iter().any(|call| call == "map"));
+    assert!(upstream_calls.iter().any(|call| call == "research"));
+    assert!(
+        upstream_calls
+            .iter()
+            .any(|call| call == "research-result:probe-research-request")
+    );
 }

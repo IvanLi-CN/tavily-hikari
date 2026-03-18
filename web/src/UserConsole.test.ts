@@ -1,6 +1,48 @@
-import { describe, expect, it } from 'bun:test'
+import { afterEach, describe, expect, it, mock } from 'bun:test'
 
 import { __testables } from './UserConsole'
+
+const originalFetch = globalThis.fetch
+
+const mcpProbeText: Parameters<typeof __testables.buildMcpProbeStepDefinitions>[0] = {
+  steps: {
+    mcpPing: 'MCP 服务连通',
+    mcpToolsList: 'MCP 工具发现',
+    mcpToolCall: 'MCP 工具调用 · {tool}',
+  },
+  skippedProbeFixture: '当前本地没有 {tool} 的检测夹具，已跳过。',
+  errors: {
+    missingAdvertisedTools: 'MCP tools/list 没有返回任何工具',
+  },
+}
+
+const apiProbeText: Parameters<typeof __testables.buildApiProbeStepDefinitions>[0] = {
+  steps: {
+    apiSearch: 'Search API',
+    apiExtract: 'Extract API',
+    apiCrawl: 'Crawl API',
+    apiMap: 'Map API',
+    apiResearch: 'Research API',
+    apiResearchResult: 'Research Result API',
+  },
+  errors: {
+    missingRequestId: 'Missing research request id',
+    researchFailed: 'Research failed',
+    researchUnexpectedStatus: 'Unexpected research status: {status}',
+  },
+  researchPendingAccepted: 'Research still processing',
+  researchStatus: 'Research status: {status}',
+}
+
+afterEach(() => {
+  globalThis.fetch = originalFetch
+})
+
+function requestUrl(input: RequestInfo | URL): string {
+  if (typeof input === 'string') return input
+  if (input instanceof URL) return input.toString()
+  return input.url
+}
 
 describe('UserConsole landing guide helpers', () => {
   it('shows the landing guide only when exactly one token is visible on the merged landing page', () => {
@@ -23,5 +65,459 @@ describe('UserConsole landing guide helpers', () => {
       { name: 'landing', section: 'dashboard' },
       [{ tokenId: 'a1b2' } as any, { tokenId: 'c3d4' } as any],
     )).toBe('th-xxxx-xxxxxxxxxxxx')
+  })
+})
+
+describe('UserConsole probe step definitions', () => {
+  it('keeps MCP ping non-billable so exhausted tokens can still test connectivity', () => {
+    const steps = __testables.buildMcpProbeStepDefinitions(mcpProbeText)
+
+    expect(steps[0]?.id).toBe('mcp-ping')
+    expect(steps[0]?.billable).toBe(false)
+    expect(steps[1]?.id).toBe('mcp-tools-list')
+    expect(steps[1]?.billable).toBeUndefined()
+  })
+
+  it('preserves every advertised MCP tool name, including legacy aliases', () => {
+    expect(__testables.extractAdvertisedMcpTools({
+      result: {
+        tools: [
+          { name: ' tavily_search ' },
+          { name: 'tavily-search' },
+          { name: 'tavily_map' },
+          { name: ' Acme_Lookup ' },
+        ],
+      },
+    })).toEqual([
+      { requestName: 'tavily_search', displayName: 'tavily-search', inputSchema: null },
+      { requestName: 'tavily-search', displayName: 'tavily-search', inputSchema: null },
+      { requestName: 'tavily_map', displayName: 'tavily-map', inputSchema: null },
+      { requestName: 'Acme_Lookup', displayName: 'Acme_Lookup', inputSchema: null },
+    ])
+  })
+
+  it('does not execute schema-backed non-Tavily tools during the sweep', async () => {
+    const calls: Array<{ url: string, init?: RequestInit }> = []
+    globalThis.fetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: requestUrl(input), init })
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 'ok', result: { ok: true } }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }) as typeof fetch
+
+    const steps = __testables.buildMcpToolCallProbeStepDefinitions(mcpProbeText, [
+      ' tavily_search ',
+      'tavily-search',
+      {
+        requestName: 'Acme_Lookup',
+        displayName: 'Acme_Lookup',
+        inputSchema: {
+          type: 'object',
+          required: ['query', 'target_url', 'include_images'],
+          properties: {
+            query: { type: 'string' },
+            target_url: { type: 'string', format: 'uri' },
+            include_images: { type: 'boolean' },
+          },
+        },
+      },
+    ])
+
+    expect(steps.map((step) => ({ id: step.id, billable: step.billable }))).toEqual([
+      { id: 'mcp-tool-call:tavily_search', billable: true },
+      { id: 'mcp-tool-call:tavily-search', billable: true },
+      { id: 'mcp-tool-call:Acme_Lookup', billable: false },
+    ])
+
+    await expect(steps[0]?.run('th-zjvc-secret')).resolves.toBeNull()
+    await expect(steps[1]?.run('th-zjvc-secret')).resolves.toBeNull()
+    await expect(steps[2]?.run('th-zjvc-secret')).resolves.toEqual({
+      detail: '当前本地没有 Acme_Lookup 的检测夹具，已跳过。',
+      stepState: 'skipped',
+    })
+
+    expect(calls.map((call) => JSON.parse(String(call.init?.body ?? 'null')).params)).toEqual([
+      {
+        name: 'tavily_search',
+        arguments: {
+          query: 'health check',
+          search_depth: 'basic',
+        },
+      },
+      {
+        name: 'tavily-search',
+        arguments: {
+          query: 'health check',
+          search_depth: 'basic',
+        },
+      },
+    ])
+  })
+
+  it('keeps tools/list successful even when it advertises a tool without a probe fixture', async () => {
+    globalThis.fetch = mock(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as { id?: string }
+      return new Response(JSON.stringify({
+        jsonrpc: '2.0',
+        id: body.id ?? 'unknown',
+        result: {
+          tools: [
+            { name: 'tavily-search' },
+            { name: 'Acme_Lookup' },
+          ],
+        },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }) as typeof fetch
+
+    const steps = __testables.buildMcpProbeStepDefinitions(mcpProbeText)
+
+    await expect(steps[1]?.run('th-zjvc-secret')).resolves.toEqual({
+      discoveredTools: [
+        { requestName: 'tavily-search', displayName: 'tavily-search', inputSchema: null },
+        { requestName: 'Acme_Lookup', displayName: 'Acme_Lookup', inputSchema: null },
+      ],
+    })
+  })
+
+  it('skips advertised tools only when discovery provides no fixture and no input schema', async () => {
+    const steps = __testables.buildMcpToolCallProbeStepDefinitions(mcpProbeText, [{
+      requestName: 'Acme_Lookup',
+      displayName: 'Acme_Lookup',
+      inputSchema: null,
+    }])
+
+    await expect(steps[0]?.run('th-zjvc-secret')).resolves.toEqual({
+      detail: '当前本地没有 Acme_Lookup 的检测夹具，已跳过。',
+      stepState: 'skipped',
+    })
+  })
+
+  it('treats tools/call JSON-RPC result envelopes with failing statuses as probe failures', async () => {
+    globalThis.fetch = mock(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as { id?: string }
+      return new Response(JSON.stringify({
+        jsonrpc: '2.0',
+        id: body.id ?? 'unknown',
+        result: {
+          isError: true,
+          structuredContent: {
+            detail: { status: 500 },
+          },
+        },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }) as typeof fetch
+
+    const steps = __testables.buildMcpToolCallProbeStepDefinitions(mcpProbeText, ['tavily-search'])
+
+    await expect(steps[0]?.run('th-zjvc-secret')).rejects.toThrow('Request failed with status 500')
+  })
+
+  it('executes live MCP probe calls with the expected JSON-RPC payloads', async () => {
+    const calls: Array<{ url: string, init?: RequestInit }> = []
+    globalThis.fetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: requestUrl(input), init })
+      const body = JSON.parse(String(init?.body ?? '{}')) as { id?: string; method?: string }
+      return new Response(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: body.id ?? 'unknown',
+          result: body.method === 'tools/list'
+            ? {
+                tools: [
+                  { name: 'tavily_search' },
+                  { name: 'tavily_extract' },
+                  { name: 'tavily-crawl' },
+                  { name: 'tavily_map' },
+                  { name: 'tavily_research' },
+                ],
+              }
+            : { ok: true },
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      )
+    }) as typeof fetch
+
+    const token = 'th-zjvc-secret'
+    const baseSteps = __testables.buildMcpProbeStepDefinitions(mcpProbeText)
+    await baseSteps[0]?.run(token)
+    const toolsListResult = await baseSteps[1]?.run(token)
+    const toolSteps = __testables.buildMcpToolCallProbeStepDefinitions(
+      mcpProbeText,
+      toolsListResult?.discoveredTools ?? [],
+    )
+
+    for (const step of toolSteps) {
+      await step.run(token)
+    }
+
+    expect(calls).toHaveLength(7)
+    expect(calls.every((call) => call.url === '/mcp')).toBe(true)
+
+    const firstHeaders = new Headers(calls[0]?.init?.headers ?? {})
+    const secondHeaders = new Headers(calls[1]?.init?.headers ?? {})
+    expect(firstHeaders.get('Authorization')).toBe('Bearer th-zjvc-secret')
+    expect(secondHeaders.get('Authorization')).toBe('Bearer th-zjvc-secret')
+
+    expect(JSON.parse(String(calls[0]?.init?.body ?? 'null'))).toEqual({
+      jsonrpc: '2.0',
+      id: 'probe-ping',
+      method: 'ping',
+      params: {},
+    })
+    expect(JSON.parse(String(calls[1]?.init?.body ?? 'null'))).toEqual({
+      jsonrpc: '2.0',
+      id: 'probe-tools-list',
+      method: 'tools/list',
+      params: {},
+    })
+
+    expect(calls.slice(2).map((call) => JSON.parse(String(call.init?.body ?? 'null')))).toEqual([
+      {
+        jsonrpc: '2.0',
+        id: 'probe-tool-call:tavily_search',
+        method: 'tools/call',
+        params: {
+          name: 'tavily_search',
+          arguments: {
+            query: 'health check',
+            search_depth: 'basic',
+          },
+        },
+      },
+      {
+        jsonrpc: '2.0',
+        id: 'probe-tool-call:tavily_extract',
+        method: 'tools/call',
+        params: {
+          name: 'tavily_extract',
+          arguments: {
+            urls: ['https://example.com'],
+          },
+        },
+      },
+      {
+        jsonrpc: '2.0',
+        id: 'probe-tool-call:tavily-crawl',
+        method: 'tools/call',
+        params: {
+          name: 'tavily-crawl',
+          arguments: {
+            url: 'https://example.com',
+            max_depth: 1,
+            limit: 1,
+          },
+        },
+      },
+      {
+        jsonrpc: '2.0',
+        id: 'probe-tool-call:tavily_map',
+        method: 'tools/call',
+        params: {
+          name: 'tavily_map',
+          arguments: {
+            url: 'https://example.com',
+            max_depth: 1,
+            limit: 1,
+          },
+        },
+      },
+      {
+        jsonrpc: '2.0',
+        id: 'probe-tool-call:tavily_research',
+        method: 'tools/call',
+        params: {
+          name: 'tavily_research',
+          arguments: {
+            input: 'health check',
+          },
+        },
+      },
+    ])
+  })
+
+  it('does not silently skip newly advertised Tavily tools when discovery exposes an input schema', async () => {
+    const calls: Array<{ url: string, init?: RequestInit }> = []
+    globalThis.fetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: requestUrl(input), init })
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 'ok', result: { ok: true } }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }) as typeof fetch
+
+    const steps = __testables.buildMcpToolCallProbeStepDefinitions(mcpProbeText, [{
+      requestName: 'tavily_agents',
+      displayName: 'tavily-agents',
+      inputSchema: {
+        type: 'object',
+        required: ['query'],
+        properties: {
+          query: { type: 'string' },
+        },
+      },
+    }])
+
+    expect(steps).toHaveLength(1)
+    expect(steps[0]?.billable).toBe(true)
+
+    await expect(steps[0]?.run('th-zjvc-secret')).resolves.toBeNull()
+    expect(JSON.parse(String(calls[0]?.init?.body ?? 'null'))).toEqual({
+      jsonrpc: '2.0',
+      id: 'probe-tool-call:tavily_agents',
+      method: 'tools/call',
+      params: {
+        name: 'tavily_agents',
+        arguments: {
+          query: 'health check',
+        },
+      },
+    })
+  })
+
+  it('skips Tavily tools when required schema fields cannot be synthesized safely', async () => {
+    const calls: Array<{ url: string, init?: RequestInit }> = []
+    globalThis.fetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: requestUrl(input), init })
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 'ok', result: { ok: true } }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }) as typeof fetch
+
+    const steps = __testables.buildMcpToolCallProbeStepDefinitions(mcpProbeText, [{
+      requestName: 'tavily-new',
+      displayName: 'tavily-new',
+      inputSchema: {
+        type: 'object',
+        required: ['query'],
+      },
+    }])
+
+    expect(steps).toHaveLength(1)
+    expect(steps[0]?.billable).toBe(true)
+    await expect(steps[0]?.run('th-zjvc-secret')).resolves.toEqual({
+      detail: '当前本地没有 tavily-new 的检测夹具，已跳过。',
+      stepState: 'skipped',
+    })
+    expect(calls).toHaveLength(0)
+  })
+
+  it('updates the running MCP progress total after discovering tool call steps', () => {
+    const baseSteps = __testables.buildMcpProbeStepDefinitions(mcpProbeText)
+    const toolSteps = __testables.buildMcpToolCallProbeStepDefinitions(mcpProbeText, [
+      'tavily-search',
+      'tavily-extract',
+      'tavily-crawl',
+      'tavily-map',
+      'tavily-research',
+    ])
+
+    const stepDefinitions = [...baseSteps, ...toolSteps]
+    const nextModel = __testables.nextRunningMcpProbeModel(
+      { state: 'running', completed: 2, total: 2 },
+      stepDefinitions,
+      3,
+    )
+
+    expect(nextModel).toEqual({
+      state: 'running',
+      completed: 3,
+      total: 7,
+    })
+  })
+
+  it('executes every API probe call with the expected endpoint and payload', async () => {
+    const calls: Array<{ url: string, init?: RequestInit }> = []
+    globalThis.fetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = requestUrl(input)
+      calls.push({ url, init })
+
+      if (url === '/api/tavily/research') {
+        return new Response(JSON.stringify({ request_id: 'req-health-check' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+
+      if (url === '/api/tavily/research/req-health-check') {
+        return new Response(JSON.stringify({ status: 'completed' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }) as typeof fetch
+
+    const steps = __testables.buildApiProbeStepDefinitions(apiProbeText)
+    let requestId: string | null = null
+    let researchResultDetail: string | null = null
+
+    for (const step of steps) {
+      const result = await step.run('th-zjvc-secret', { requestId })
+      if (step.id === 'api-research') {
+        requestId = result
+      }
+      if (step.id === 'api-research-result') {
+        researchResultDetail = result
+      }
+    }
+
+    expect(calls).toHaveLength(6)
+    expect(calls.map((call) => [call.url, call.init?.method ?? 'GET'])).toEqual([
+      ['/api/tavily/search', 'POST'],
+      ['/api/tavily/extract', 'POST'],
+      ['/api/tavily/crawl', 'POST'],
+      ['/api/tavily/map', 'POST'],
+      ['/api/tavily/research', 'POST'],
+      ['/api/tavily/research/req-health-check', 'GET'],
+    ])
+
+    for (const call of calls) {
+      const headers = new Headers(call.init?.headers ?? {})
+      expect(headers.get('Authorization')).toBe('Bearer th-zjvc-secret')
+    }
+
+    expect(JSON.parse(String(calls[0]?.init?.body ?? 'null'))).toEqual({
+      query: 'health check',
+      max_results: 1,
+      search_depth: 'basic',
+      include_answer: false,
+      include_raw_content: false,
+      include_images: false,
+    })
+    expect(JSON.parse(String(calls[1]?.init?.body ?? 'null'))).toEqual({
+      urls: ['https://example.com'],
+      include_images: false,
+    })
+    expect(JSON.parse(String(calls[2]?.init?.body ?? 'null'))).toEqual({
+      url: 'https://example.com',
+      max_depth: 1,
+      limit: 1,
+    })
+    expect(JSON.parse(String(calls[3]?.init?.body ?? 'null'))).toEqual({
+      url: 'https://example.com',
+      max_depth: 1,
+      limit: 1,
+    })
+    expect(JSON.parse(String(calls[4]?.init?.body ?? 'null'))).toEqual({
+      input: 'health check',
+      model: 'mini',
+      citation_format: 'numbered',
+    })
+    expect(researchResultDetail).toBe('Research status: completed')
   })
 })
