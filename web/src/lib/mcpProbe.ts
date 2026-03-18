@@ -235,8 +235,9 @@ export async function revalidateBlockedQuotaWindow<T extends QuotaSnapshotLike |
 
 export function resolveMcpProbeButtonState(stepStates: readonly McpProbeStepState[]): 'success' | 'partial' | 'failed' {
   const failing = stepStates.filter((state) => state === 'failed' || state === 'blocked').length
+  const skipped = stepStates.filter((state) => state === 'skipped').length
   const passed = stepStates.filter((state) => state === 'success').length
-  if (failing === 0) return 'success'
+  if (failing === 0 && skipped === 0) return 'success'
   if (passed === 0) return 'failed'
   return 'partial'
 }

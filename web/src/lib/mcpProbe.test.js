@@ -83,7 +83,7 @@ describe('mcpProbe helpers', () => {
     expect(resolveMcpProbeButtonState(['blocked', 'success'])).toBe('partial')
     expect(resolveMcpProbeButtonState(['blocked', 'failed'])).toBe('failed')
     expect(resolveMcpProbeButtonState(['success', 'success'])).toBe('success')
-    expect(resolveMcpProbeButtonState(['success', 'skipped'])).toBe('success')
+    expect(resolveMcpProbeButtonState(['success', 'skipped'])).toBe('partial')
   })
 
   it('revalidates blocked snapshots against a fresh quota read', async () => {
