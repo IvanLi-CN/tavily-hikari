@@ -16,9 +16,15 @@ export type RequestKindBadgeTone =
   | 'api-usage'
   | 'api-raw'
   | 'mcp'
+  | 'mcp-extract'
   | 'mcp-search'
   | 'mcp-batch'
   | 'mcp-tool'
+  | 'mcp-initialize'
+  | 'mcp-notification'
+  | 'mcp-ping'
+  | 'mcp-resource'
+  | 'mcp-tools-list'
   | 'mcp-system'
   | 'mcp-raw'
 
@@ -63,16 +69,17 @@ export function resolveRequestKindBadgeTone(
   if (key.startsWith('api:usage') || label === 'api | usage') return 'api-usage'
   if (key.startsWith('api:raw:')) return 'api-raw'
 
+  if (key.startsWith('mcp:extract') || label === 'mcp | extract') return 'mcp-extract'
   if (key.startsWith('mcp:search') || label === 'mcp | search') return 'mcp-search'
   if (key.startsWith('mcp:batch') || label === 'mcp | batch') return 'mcp-batch'
   if (key.startsWith('mcp:tool:')) return 'mcp-tool'
+  if (key.startsWith('mcp:initialize') || label === 'mcp | initialize') return 'mcp-initialize'
+  if (key.startsWith('mcp:notifications/') || label.startsWith('mcp | notifications/')) return 'mcp-notification'
+  if (key.startsWith('mcp:ping') || label === 'mcp | ping') return 'mcp-ping'
+  if (key.startsWith('mcp:resources/') || label.startsWith('mcp | resources/')) return 'mcp-resource'
+  if (key.startsWith('mcp:tools/list') || label === 'mcp | tools/list') return 'mcp-tools-list'
   if (
-    key.startsWith('mcp:initialize')
-    || key.startsWith('mcp:ping')
-    || key.startsWith('mcp:tools/list')
-    || key.startsWith('mcp:resources/')
-    || key.startsWith('mcp:prompts/')
-    || key.startsWith('mcp:notifications/')
+    key.startsWith('mcp:prompts/')
   ) {
     return 'mcp-system'
   }
