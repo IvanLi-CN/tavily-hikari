@@ -40,19 +40,12 @@ import { LanguageProvider, useTranslate, type AdminTranslations } from '../i18n'
 import AdminShell, { type AdminNavItem } from './AdminShell'
 import DashboardOverview, { type DashboardMetricCard } from './DashboardOverview'
 import ForwardProxySettingsModule from './ForwardProxySettingsModule'
-import KeyStickyPanels from './KeyStickyPanels'
 import ModulePlaceholder from './ModulePlaceholder'
 import {
   forwardProxyStorySavedAt,
   forwardProxyStorySettings,
   forwardProxyStoryStats,
 } from './forwardProxyStoryData'
-import {
-  stickyNodesStoryData,
-  stickyUsersStoryData,
-  stickyUsersStoryPerPage,
-  stickyUsersStoryTotal,
-} from './keyStickyStoryData'
 import {
   buildQuotaSliderTrack,
   clampQuotaSliderStageIndex,
@@ -361,26 +354,6 @@ const MOCK_KEYS: ApiKeyStats[] = [
     quota_exhausted_count: 129,
     quarantine: null,
   },
-]
-
-const MOCK_KEYS_WITH_QUARANTINE: ApiKeyStats[] = [
-  {
-    ...MOCK_KEYS[0],
-    id: 'Qn8R',
-    status: 'active',
-    group: 'production',
-    quota_limit: 12_000,
-    quota_remaining: 0,
-    quarantine: {
-      source: '/api/tavily/search',
-      reasonSummary: 'Tavily account deactivated (HTTP 401)',
-      reasonDetail:
-        'The account associated with this API key has been deactivated. Please contact Tavily support to restore access.',
-      reasonCode: 'account_deactivated',
-      createdAt: now - 540,
-    },
-  },
-  ...MOCK_KEYS.slice(1),
 ]
 
 const MOCK_REQUESTS: RequestLog[] = [
@@ -1522,28 +1495,21 @@ function TokensPageCanvas(): JSX.Element {
 }
 
 function KeysPageCanvas({
-  keys = MOCK_KEYS,
-  selectedKeyId,
   initialRegistrationIp = '',
   initialRegions = [],
-  showStickyPanels = false,
 }: {
-  keys?: ApiKeyStats[]
-  selectedKeyId?: string
   initialRegistrationIp?: string
   initialRegions?: string[]
-  showStickyPanels?: boolean
 } = {}): JSX.Element {
   const admin = useTranslate().admin
   const keyStrings = admin.keys
-  const keyDetailsStrings = admin.keyDetails
   const [selectedGroups, setSelectedGroups] = useState<string[]>([])
   const [selectedStatuses, setSelectedStatuses] = useState<string[]>([])
   const [selectedRegistrationIp, setSelectedRegistrationIp] = useState(initialRegistrationIp)
   const [selectedRegions, setSelectedRegions] = useState<string[]>(initialRegions)
   const [page, setPage] = useState(1)
   const [perPage, setPerPage] = useState(20)
-  const [quarantineDetailExpanded, setQuarantineDetailExpanded] = useState(false)
+  const keys = MOCK_KEYS
   const groupOptions = Array.from(
     keys.reduce((map, item) => {
       const key = (item.group ?? '').trim()
@@ -1597,10 +1563,6 @@ function KeysPageCanvas({
   const totalPages = Math.max(1, Math.ceil(filteredKeys.length / perPage))
   const safePage = Math.min(page, totalPages)
   const pagedKeys = filteredKeys.slice((safePage - 1) * perPage, safePage * perPage)
-  const selectedKey = selectedKeyId ? filteredKeys.find((item) => item.id === selectedKeyId) ?? null : null
-  const quarantineDetailId = `story-key-quarantine-detail-${selectedKey?.id ?? 'unknown'}`
-  const quarantineRawDetail = selectedKey?.quarantine?.reasonDetail?.trim() ?? ''
-  const hasQuarantineRawDetail = quarantineRawDetail.length > 0
   const groupSummary = summarizeFilterSelection(
     keyStrings.groups.label,
     groupOptions.filter((option) => selectedGroups.includes(option.value)).map((option) => option.label),
@@ -1944,103 +1906,6 @@ function KeysPageCanvas({
           />
         ) : null}
       </section>
-
-      {selectedKey ? (
-        <section className="surface panel" style={{ marginTop: 16 }}>
-          <div className="panel-header">
-            <div>
-              <h2>{keyDetailsStrings.metadata.title}</h2>
-              <p className="panel-description">{keyDetailsStrings.metadata.description}</p>
-            </div>
-          </div>
-          <div className="admin-mobile-kv">
-            <span>{keyDetailsStrings.metadata.group}</span>
-            <strong>{formatKeyGroupName(selectedKey.group, keyStrings.groups.ungrouped)}</strong>
-          </div>
-          <div className="admin-mobile-kv">
-            <span>{keyDetailsStrings.metadata.registrationIp}</span>
-            <strong>{formatRegistrationValue(selectedKey.registration_ip)}</strong>
-          </div>
-          <div className="admin-mobile-kv">
-            <span>{keyDetailsStrings.metadata.registrationRegion}</span>
-            <strong>{formatRegistrationValue(selectedKey.registration_region)}</strong>
-          </div>
-        </section>
-      ) : null}
-
-      {selectedKey?.quarantine ? (
-        <section className="surface panel" style={{ marginTop: 16 }}>
-          <div className="panel-header">
-            <div>
-              <h2>{keyDetailsStrings.quarantine.title}</h2>
-              <p className="panel-description">{keyDetailsStrings.quarantine.description}</p>
-            </div>
-            <Button type="button" variant="warning">
-              {keyDetailsStrings.quarantine.clearAction}
-            </Button>
-          </div>
-          <div className="admin-mobile-kv">
-            <span>{keyDetailsStrings.quarantine.source}</span>
-            <strong>{selectedKey.quarantine.source}</strong>
-          </div>
-          <div className="admin-mobile-kv">
-            <span>{keyDetailsStrings.quarantine.reason}</span>
-            <strong>{selectedKey.quarantine.reasonSummary}</strong>
-          </div>
-          <div className="admin-mobile-kv">
-            <span>{keyDetailsStrings.quarantine.createdAt}</span>
-            <strong>{formatTimestamp(selectedKey.quarantine.createdAt)}</strong>
-          </div>
-          {hasQuarantineRawDetail ? (
-            <div className="quarantine-detail-block">
-              <div className="quarantine-detail-header">
-                <div className="panel-description">{keyDetailsStrings.quarantine.detail}</div>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="quarantine-detail-toggle"
-                  aria-expanded={quarantineDetailExpanded}
-                  aria-controls={quarantineDetailId}
-                  onClick={() => setQuarantineDetailExpanded((current) => !current)}
-                >
-                  <Icon
-                    icon={quarantineDetailExpanded ? 'mdi:chevron-up' : 'mdi:chevron-down'}
-                    width={18}
-                    height={18}
-                    aria-hidden="true"
-                  />
-                  {quarantineDetailExpanded
-                    ? keyDetailsStrings.quarantine.hideDetail
-                    : keyDetailsStrings.quarantine.showDetail}
-                </Button>
-              </div>
-              <pre
-                id={quarantineDetailId}
-                className="log-details-pre"
-                hidden={!quarantineDetailExpanded}
-                aria-hidden={!quarantineDetailExpanded}
-              >
-                {quarantineRawDetail}
-              </pre>
-            </div>
-          ) : null}
-        </section>
-      ) : null}
-
-      {selectedKey && showStickyPanels ? (
-        <div style={{ marginTop: 16 }}>
-          <KeyStickyPanels
-            stickyUsers={stickyUsersStoryData}
-            stickyUsersLoadState="ready"
-            stickyUsersPage={1}
-            stickyUsersTotal={stickyUsersStoryTotal}
-            stickyUsersPerPage={stickyUsersStoryPerPage}
-            stickyNodes={stickyNodesStoryData}
-            stickyNodesLoadState="ready"
-          />
-        </div>
-      ) : null}
     </AdminPageFrame>
   )
 }
@@ -3065,27 +2930,6 @@ export const KeysRegistrationFilters: Story = {
       initialRegions={['US']}
     />
   ),
-  parameters: {
-    viewport: { defaultViewport: '1440-device-desktop' },
-  },
-}
-
-export const KeysRegistrationMetadata: Story = {
-  render: () => <KeysPageCanvas selectedKeyId="MZli" />,
-  parameters: {
-    viewport: { defaultViewport: '1440-device-desktop' },
-  },
-}
-
-export const KeysStickyDetails: Story = {
-  render: () => <KeysPageCanvas selectedKeyId="MZli" showStickyPanels />,
-  parameters: {
-    viewport: { defaultViewport: '1440-device-desktop' },
-  },
-}
-
-export const KeysQuarantined: Story = {
-  render: () => <KeysPageCanvas keys={MOCK_KEYS_WITH_QUARANTINE} selectedKeyId="Qn8R" />,
   parameters: {
     viewport: { defaultViewport: '1440-device-desktop' },
   },

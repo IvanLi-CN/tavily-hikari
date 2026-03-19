@@ -199,17 +199,6 @@
   image:
   ![Sticky key detail panels fragment](./assets/sticky-panels-fragment.png)
 
-- source_type: storybook_canvas
-  story_id_or_title: admin-pages--keys-sticky-details
-  state: page-context
-  target_program: mock-only
-  capture_scope: browser-viewport
-  sensitive_exclusion: N/A
-  submission_gate: approved
-  evidence_note: verifies the key detail page places the sticky users and sticky nodes panels under registration metadata without layout overflow in the admin page context.
-  image:
-  ![Sticky key detail page context](./assets/sticky-panels-page.png)
-
 ## 实现里程碑（Milestones / Delivery checklist）
 
 - [x] M1: docs/spec 与 contracts 冻结
