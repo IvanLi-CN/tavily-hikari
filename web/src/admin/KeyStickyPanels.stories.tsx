@@ -13,11 +13,12 @@ function StickyPanelsCanvas(props: {
   stickyNodesError?: string | null
   stickyUsers?: typeof stickyUsersStoryData
   stickyNodes?: typeof stickyNodesStoryData
+  maxWidth?: number
 }): JSX.Element {
   const [page, setPage] = useState(props.stickyUsersPage ?? 1)
 
   return (
-    <div style={{ maxWidth: 1280, margin: '0 auto', display: 'grid', gap: 16 }}>
+    <div style={{ maxWidth: props.maxWidth ?? 1280, margin: '0 auto', display: 'grid', gap: 16 }}>
       <KeyStickyPanels
         stickyUsers={props.stickyUsers ?? stickyUsersStoryData}
         stickyUsersLoadState={props.stickyUsersLoadState ?? 'ready'}
@@ -88,6 +89,10 @@ export const ErrorState: Story = {
 
 export const Paginated: Story = {
   render: () => <StickyPanelsCanvas stickyUsersTotal={43} stickyUsersPage={2} />,
+}
+
+export const NarrowLayout: Story = {
+  render: () => <StickyPanelsCanvas maxWidth={960} />,
 }
 
 export const Gallery: Story = {

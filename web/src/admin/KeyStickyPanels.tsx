@@ -1,9 +1,6 @@
 import { useMemo } from 'react'
 
 import type {
-  ForwardProxyActivityBucket,
-  ForwardProxyStatsNode,
-  ForwardProxyWeightBucket,
   StickyNode,
   StickyUserDailyBucket,
   StickyUserRow,
@@ -17,18 +14,7 @@ import type { QueryLoadState } from './queryLoadState'
 import { isBlockingLoadState, isRefreshingLoadState } from './queryLoadState'
 
 const numberFormatter = new Intl.NumberFormat('en-US')
-const percentageFormatter = new Intl.NumberFormat('en-US', {
-  style: 'percent',
-  maximumFractionDigits: 0,
-})
 const timestampFormatter = new Intl.DateTimeFormat('zh-CN', {
-  month: '2-digit',
-  day: '2-digit',
-  hour: '2-digit',
-  minute: '2-digit',
-  hour12: false,
-})
-const timeRangeFormatter = new Intl.DateTimeFormat('zh-CN', {
   month: '2-digit',
   day: '2-digit',
   hour: '2-digit',
@@ -41,11 +27,6 @@ const dateFormatter = new Intl.DateTimeFormat('zh-CN', {
 })
 
 type StickyUserIdentityLike = StickyUserRow['user']
-
-type WeightTrendScale = {
-  minValue: number
-  maxValue: number
-}
 
 export interface KeyStickyPanelsProps {
   stickyUsers: StickyUserRow[]
@@ -73,10 +54,6 @@ function formatTimestamp(value: number | null): string {
 
 function formatDateOnly(value: number): string {
   return dateFormatter.format(new Date(value * 1000))
-}
-
-function formatTrendTimeRange(startIso: string, endIso: string): string {
-  return `${timeRangeFormatter.format(new Date(startIso))} - ${timeRangeFormatter.format(new Date(endIso))}`
 }
 
 function stickyUserPrimary(user: StickyUserIdentityLike): string {
@@ -157,103 +134,6 @@ function StickyCreditsTrendCell({
   )
 }
 
-function ProxyActivityTrendCell({
-  buckets,
-  scaleMax,
-}: {
-  buckets: ForwardProxyActivityBucket[]
-  scaleMax: number
-}): JSX.Element {
-  if (buckets.length === 0) return <span className="token-owner-empty">—</span>
-
-  return (
-    <div className="flex h-10 items-end gap-px">
-      {buckets.map((bucket) => {
-        const total = bucket.successCount + bucket.failureCount
-        const heights = buildVisibleBarHeights(bucket.successCount, bucket.failureCount, scaleMax, 40)
-        return (
-          <div
-            key={bucket.bucketStart}
-            className="relative flex h-10 min-w-0 flex-1 flex-col overflow-hidden rounded-[3px] border border-border/40 bg-muted/35"
-            title={`${formatTrendTimeRange(bucket.bucketStart, bucket.bucketEnd)} · ${bucket.successCount}/${bucket.failureCount}`}
-          >
-            <div style={{ height: `${heights.empty}px` }} />
-            <div className={total > 0 ? 'bg-destructive/80' : 'bg-transparent'} style={{ height: `${heights.failure}px` }} />
-            <div className={total > 0 ? 'bg-success/85' : 'bg-transparent'} style={{ height: `${heights.success}px` }} />
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-
-function buildWeightTrendGeometry(buckets: ForwardProxyWeightBucket[], scale: WeightTrendScale) {
-  if (buckets.length === 0) return null
-
-  const chartWidth = 216
-  const chartHeight = 40
-  const span = Math.max(scale.maxValue - scale.minValue, Number.EPSILON)
-  const bucketWidth = chartWidth / buckets.length
-  const points = buckets.map((bucket, index) => {
-    const ratio = Math.max(0, Math.min(1, (bucket.lastWeight - scale.minValue) / span))
-    const x = bucketWidth * index + bucketWidth / 2
-    const y = chartHeight - ratio * chartHeight
-    return { x, y }
-  })
-  const firstPoint = points[0]
-  const lastPoint = points[points.length - 1]
-  if (!firstPoint || !lastPoint) return null
-
-  const zeroRatio = (0 - scale.minValue) / span
-  const zeroY = chartHeight - Math.max(0, Math.min(1, zeroRatio)) * chartHeight
-  const linePath = points
-    .map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
-    .join(' ')
-  const areaPath = `${linePath} L ${lastPoint.x.toFixed(2)} ${zeroY.toFixed(2)} L ${firstPoint.x.toFixed(2)} ${zeroY.toFixed(2)} Z`
-
-  return { chartWidth, chartHeight, linePath, areaPath, zeroY }
-}
-
-function ProxyWeightTrendCell({ buckets, scale }: { buckets: ForwardProxyWeightBucket[]; scale: WeightTrendScale }): JSX.Element {
-  const geometry = buildWeightTrendGeometry(buckets, scale)
-  if (!geometry) return <span className="token-owner-empty">—</span>
-
-  return (
-    <svg
-      viewBox={`0 0 ${geometry.chartWidth} ${geometry.chartHeight}`}
-      className="block h-10 w-full rounded-md border border-border/55 bg-background/45"
-      aria-hidden="true"
-    >
-      <line x1={0} y1={geometry.zeroY} x2={geometry.chartWidth} y2={geometry.zeroY} stroke="hsl(var(--foreground) / 0.14)" strokeWidth="1" />
-      <path d={geometry.areaPath} fill="hsl(var(--success) / 0.18)" />
-      <path d={geometry.linePath} fill="none" stroke="hsl(var(--success))" strokeWidth="1.8" strokeLinejoin="round" strokeLinecap="round" />
-    </svg>
-  )
-}
-
-function resolveStickyNodeWeightBuckets(node: ForwardProxyStatsNode): ForwardProxyWeightBucket[] {
-  if (node.weight24h.length > 0) return node.weight24h
-  if (node.last24h.length === 0) return []
-  return node.last24h.map((bucket) => ({
-    bucketStart: bucket.bucketStart,
-    bucketEnd: bucket.bucketEnd,
-    sampleCount: 0,
-    minWeight: node.weight,
-    maxWeight: node.weight,
-    avgWeight: node.weight,
-    lastWeight: node.weight,
-  }))
-}
-
-function stickyNodeWindowSummary(node: StickyNode): string {
-  const attempts = node.stats.oneDay.attempts
-  const successRate = node.stats.oneDay.successRate
-  const latency = node.stats.oneDay.avgLatencyMs
-  const rateLabel = successRate == null ? '—' : percentageFormatter.format(successRate)
-  const latencyLabel = latency == null ? '—' : `${Math.round(latency)} ms`
-  return `${formatNumber(attempts)} · ${rateLabel} · ${latencyLabel}`
-}
-
 function StickyWindowValue({
   successValue,
   failureValue,
@@ -309,22 +189,6 @@ export default function KeyStickyPanels({
     () => Math.max(...stickyUsers.flatMap((item) => item.dailyBuckets.map((bucket) => bucket.successCredits + bucket.failureCredits)), 0),
     [stickyUsers],
   )
-  const stickyNodeScaleMax = useMemo(
-    () => Math.max(...stickyNodes.flatMap((node) => node.last24h.map((bucket) => bucket.successCount + bucket.failureCount)), 0),
-    [stickyNodes],
-  )
-  const stickyNodeWeightScale = useMemo(() => {
-    const weightValues = stickyNodes.flatMap((node) =>
-      resolveStickyNodeWeightBuckets(node).flatMap((bucket) => [bucket.minWeight, bucket.maxWeight, bucket.lastWeight]),
-    )
-    const minWeightValue = Math.min(...weightValues, 0)
-    const maxWeightValue = Math.max(...weightValues, 0)
-    const weightPadding = Math.max((maxWeightValue - minWeightValue) * 0.08, 0.2)
-    return {
-      minValue: minWeightValue - weightPadding,
-      maxValue: maxWeightValue + weightPadding,
-    }
-  }, [stickyNodes])
   const stickyUsersBlocking = isBlockingLoadState(stickyUsersLoadState)
   const stickyUsersRefreshing = isRefreshingLoadState(stickyUsersLoadState)
   const stickyUsersLoadingLabel = stickyUsersRefreshing ? loadingStateStrings.refreshing : loadingStateStrings.switching
@@ -524,33 +388,27 @@ export default function KeyStickyPanels({
             <Table>
               <thead>
                 <tr>
-                  <th>{keyDetailsStrings.stickyNodes.role}</th>
                   <th>{keyDetailsStrings.stickyNodes.node}</th>
-                  <th>{keyDetailsStrings.stickyNodes.window}</th>
-                  <th>{keyDetailsStrings.stickyNodes.activity}</th>
-                  <th>{keyDetailsStrings.stickyNodes.weight}</th>
+                  <th>{keyDetailsStrings.stickyNodes.primaryAssignmentCount}</th>
+                  <th>{keyDetailsStrings.stickyNodes.secondaryAssignmentCount}</th>
+                  <th>{keyDetailsStrings.stickyNodes.role}</th>
                 </tr>
               </thead>
               <tbody>
                 {stickyNodes.map((node) => (
                   <tr key={`${node.role}:${node.key}`}>
                     <td>
-                      <StatusBadge tone={node.role === 'primary' ? 'success' : 'info'}>
-                        {node.role === 'primary' ? keyDetailsStrings.stickyNodes.primary : keyDetailsStrings.stickyNodes.secondary}
-                      </StatusBadge>
-                    </td>
-                    <td>
                       <div style={{ display: 'grid', gap: 4 }}>
                         <strong>{node.displayName}</strong>
                         <span className="token-owner-empty">{node.key}</span>
                       </div>
                     </td>
-                    <td>{stickyNodeWindowSummary(node)}</td>
-                    <td style={{ minWidth: 180 }}>
-                      <ProxyActivityTrendCell buckets={node.last24h} scaleMax={stickyNodeScaleMax} />
-                    </td>
-                    <td style={{ minWidth: 180 }}>
-                      <ProxyWeightTrendCell buckets={resolveStickyNodeWeightBuckets(node)} scale={stickyNodeWeightScale} />
+                    <td>{formatNumber(node.primaryAssignmentCount)}</td>
+                    <td>{formatNumber(node.secondaryAssignmentCount)}</td>
+                    <td>
+                      <StatusBadge tone={node.role === 'primary' ? 'success' : 'info'}>
+                        {node.role === 'primary' ? keyDetailsStrings.stickyNodes.primary : keyDetailsStrings.stickyNodes.secondary}
+                      </StatusBadge>
                     </td>
                   </tr>
                 ))}
@@ -571,26 +429,22 @@ export default function KeyStickyPanels({
             stickyNodes.map((node) => (
               <article key={`${node.role}:${node.key}`} className="admin-mobile-card">
                 <div className="admin-mobile-kv">
-                  <span>{keyDetailsStrings.stickyNodes.role}</span>
-                  <StatusBadge tone={node.role === 'primary' ? 'success' : 'info'}>
-                    {node.role === 'primary' ? keyDetailsStrings.stickyNodes.primary : keyDetailsStrings.stickyNodes.secondary}
-                  </StatusBadge>
-                </div>
-                <div className="admin-mobile-kv">
                   <span>{keyDetailsStrings.stickyNodes.node}</span>
                   <strong>{node.displayName}</strong>
                 </div>
                 <div className="admin-mobile-kv">
-                  <span>{keyDetailsStrings.stickyNodes.activity}</span>
-                  <div style={{ width: '100%' }}>
-                    <ProxyActivityTrendCell buckets={node.last24h} scaleMax={stickyNodeScaleMax} />
-                  </div>
+                  <span>{keyDetailsStrings.stickyNodes.primaryAssignmentCount}</span>
+                  <strong>{formatNumber(node.primaryAssignmentCount)}</strong>
                 </div>
                 <div className="admin-mobile-kv">
-                  <span>{keyDetailsStrings.stickyNodes.weight}</span>
-                  <div style={{ width: '100%' }}>
-                    <ProxyWeightTrendCell buckets={resolveStickyNodeWeightBuckets(node)} scale={stickyNodeWeightScale} />
-                  </div>
+                  <span>{keyDetailsStrings.stickyNodes.secondaryAssignmentCount}</span>
+                  <strong>{formatNumber(node.secondaryAssignmentCount)}</strong>
+                </div>
+                <div className="admin-mobile-kv">
+                  <span>{keyDetailsStrings.stickyNodes.role}</span>
+                  <StatusBadge tone={node.role === 'primary' ? 'success' : 'info'}>
+                    {node.role === 'primary' ? keyDetailsStrings.stickyNodes.primary : keyDetailsStrings.stickyNodes.secondary}
+                  </StatusBadge>
                 </div>
               </article>
             ))

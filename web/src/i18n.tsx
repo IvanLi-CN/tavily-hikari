@@ -1080,11 +1080,10 @@ interface AdminTranslationsShape {
       empty: string
       role: string
       node: string
-      activity: string
-      weight: string
+      primaryAssignmentCount: string
+      secondaryAssignmentCount: string
       primary: string
       secondary: string
-      window: string
     }
     logsTitle: string
     logsDescription: string
@@ -2275,15 +2274,14 @@ export const translations: Record<Language, TranslationShape> = {
         },
         stickyNodes: {
           title: 'Sticky Nodes',
-          description: 'Current primary and secondary proxy nodes for this key.',
+          description: 'Current sticky nodes for this key and how many upstream keys rely on each node as primary or secondary.',
           empty: 'No sticky nodes are currently assigned.',
           role: 'Role',
           node: 'Node',
-          activity: '24h activity',
-          weight: '24h weight',
+          primaryAssignmentCount: 'Primary for keys',
+          secondaryAssignmentCount: 'Secondary for keys',
           primary: 'Primary',
           secondary: 'Secondary',
-          window: 'Window',
         },
         logsTitle: 'Recent Requests',
         logsDescription: 'Up to the latest 200 for this key.',
@@ -3432,15 +3430,14 @@ export const translations: Record<Language, TranslationShape> = {
         },
         stickyNodes: {
           title: 'Sticky 节点',
-          description: '这把密钥当前的主备代理节点，与实时统计保持同款图表。',
+          description: '这把密钥当前的 sticky 节点，以及每个节点作为多少把 key 的主节点或备节点。',
           empty: '当前没有 sticky 节点。',
           role: '角色',
           node: '节点',
-          activity: '24h 活动',
-          weight: '24h 权重',
+          primaryAssignmentCount: '作为主节点的 key 数',
+          secondaryAssignmentCount: '作为备节点的 key 数',
           primary: '主节点',
           secondary: '备节点',
-          window: '窗口',
         },
         logsTitle: '近期请求',
         logsDescription: '最多展示该密钥的 200 条请求。',
