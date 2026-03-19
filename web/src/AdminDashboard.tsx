@@ -21,6 +21,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from './components/ui/dialog'
+import {
+  Drawer,
+  DrawerContent,
+} from './components/ui/drawer'
 import { Input } from './components/ui/input'
 import {
   DropdownMenu,
@@ -852,6 +856,97 @@ function formatErrorMessage(log: RequestLog, errorsStrings: AdminTranslations['l
   return errorsStrings.none
 }
 
+function failureKindGuidance(kind: string | null | undefined, language: 'en' | 'zh'): string | null {
+  switch (kind) {
+    case 'upstream_gateway_5xx':
+      return language === 'zh'
+        ? '这是上游网关临时故障，建议稍后重试，并检查上游连通性或代理节点健康。'
+        : 'This is a temporary upstream gateway failure. Retry later and inspect upstream connectivity or proxy health.'
+    case 'upstream_rate_limited_429':
+      return language === 'zh'
+        ? '这是 Tavily 限流，建议降低频率、切换其他 Key，或等待限流窗口恢复。'
+        : 'Tavily is rate limiting this traffic. Reduce request rate, switch keys, or wait for the limit window to reset.'
+    case 'upstream_account_deactivated_401':
+      return language === 'zh'
+        ? '该 Key 可能已失效、被撤销或账户停用，建议更换可用 Key 并检查 Tavily 后台状态。'
+        : 'The key may be invalid, revoked, or tied to a deactivated account. Replace it and check the Tavily account state.'
+    case 'transport_send_error':
+      return language === 'zh'
+        ? '这是链路发送失败，建议检查 DNS、TLS、代理链路和上游可达性。'
+        : 'This request failed before getting an upstream response. Check DNS, TLS, proxy routing, and upstream reachability.'
+    case 'mcp_accept_406':
+      return language === 'zh'
+        ? '客户端需要同时接受 application/json 与 text/event-stream，请修正 Accept 请求头。'
+        : 'The client must accept both application/json and text/event-stream. Fix the Accept header negotiation.'
+    default:
+      return null
+  }
+}
+
+function formatKeyEffectSummary(
+  log: RequestLog,
+  strings: AdminTranslations,
+  language: 'en' | 'zh',
+): string {
+  const summary = log.key_effect_summary?.trim()
+  switch ((log.key_effect_code ?? '').trim()) {
+    case 'quarantined':
+      return language === 'zh' ? '系统已自动隔离该 Key' : 'The system automatically quarantined this key'
+    case 'marked_exhausted':
+      return language === 'zh' ? '系统已自动将该 Key 标记为耗尽' : 'The system automatically marked this key as exhausted'
+    case 'restored_active':
+      return language === 'zh'
+        ? '系统已自动将 exhausted Key 恢复为 active'
+        : 'The system automatically restored this exhausted key to active'
+    case 'cleared_quarantine':
+      return language === 'zh' ? '管理员已解除该 Key 的隔离' : 'An admin cleared the quarantine on this key'
+    case 'none':
+      return strings.logDetails.noKeyEffect
+    default:
+      return summary && summary.length > 0 ? summary : strings.logDetails.noKeyEffect
+  }
+}
+
+function formatRequestStatusPair(httpStatus: number | null, mcpStatus: number | null): string {
+  return `${httpStatus ?? '—'} / ${mcpStatus ?? '—'}`
+}
+
+function formatRequestStatusTooltip(log: RequestLog, strings: AdminTranslations): string {
+  return `${strings.logs.table.httpStatus}: ${log.http_status ?? '—'} · ${strings.logs.table.mcpStatus}: ${log.mcp_status ?? '—'}`
+}
+
+function keyEffectTone(code: string | null | undefined): StatusTone {
+  switch ((code ?? '').trim()) {
+    case 'quarantined':
+      return 'error'
+    case 'marked_exhausted':
+      return 'warning'
+    case 'restored_active':
+    case 'cleared_quarantine':
+      return 'success'
+    default:
+      return 'neutral'
+  }
+}
+
+function keyEffectBadgeLabel(log: RequestLog, strings: AdminTranslations): string {
+  switch ((log.key_effect_code ?? '').trim()) {
+    case 'quarantined':
+      return strings.logs.keyEffects.quarantined
+    case 'marked_exhausted':
+      return strings.logs.keyEffects.markedExhausted
+    case 'restored_active':
+      return strings.logs.keyEffects.restoredActive
+    case 'cleared_quarantine':
+      return strings.logs.keyEffects.clearedQuarantine
+    case 'none':
+    case '':
+      return strings.logs.keyEffects.none
+    default:
+      return strings.logs.keyEffects.unknown
+  }
+}
+
 interface ManualCopyBubbleState {
   anchorEl: HTMLElement | null
   title: string
@@ -925,6 +1020,7 @@ function AdminDashboard(): JSX.Element {
   const [logResultFilter, setLogResultFilter] = useState<'all' | 'success' | 'error' | 'quota_exhausted'>('all')
   const [requestsLoadState, setRequestsLoadState] = useState<QueryLoadState>('initial_loading')
   const [requestsError, setRequestsError] = useState<string | null>(null)
+  const [requestEntityDrawer, setRequestEntityDrawer] = useState<{ kind: 'key' | 'token'; id: string } | null>(null)
   const [jobs, setJobs] = useState<JobLogView[]>([])
   const [dashboardJobs, setDashboardJobs] = useState<JobLogView[]>([])
   const [jobFilter, setJobFilter] = useState<'all' | 'quota' | 'usage' | 'logs' | 'geo'>('all')
@@ -2958,6 +3054,18 @@ function AdminDashboard(): JSX.Element {
     },
     [navigateToPath],
   )
+
+  const openRequestKeyDrawer = useCallback((id: string) => {
+    setRequestEntityDrawer({ kind: 'key', id })
+  }, [])
+
+  const openRequestTokenDrawer = useCallback((id: string) => {
+    setRequestEntityDrawer({ kind: 'token', id })
+  }, [])
+
+  const closeRequestEntityDrawer = useCallback(() => {
+    setRequestEntityDrawer(null)
+  }, [])
 
   const navigateUser = useCallback(
     (id: string, options?: { preserveUsersContext?: boolean }) => {
@@ -7369,7 +7477,7 @@ function AdminDashboard(): JSX.Element {
         </div>
         <AdminTableShell
           className="jobs-table-wrapper admin-responsive-up"
-          tableClassName="admin-logs-table"
+          tableClassName="admin-logs-table admin-request-logs-table"
           loadState={requestsLoadState}
           loadingLabel={requestsRefreshing ? loadingStateStrings.refreshing : logStrings.empty.loading}
           errorLabel={requestsError ?? loadingStateStrings.error}
@@ -7390,9 +7498,9 @@ function AdminDashboard(): JSX.Element {
                   <th>{logStrings.table.time}</th>
                   <th>{logStrings.table.key}</th>
                   <th>{logStrings.table.token}</th>
-                  <th>{logStrings.table.httpStatus}</th>
-                  <th>{logStrings.table.mcpStatus}</th>
+                  <th>Status</th>
                   <th>{logStrings.table.result}</th>
+                  <th>{logStrings.table.keyEffect}</th>
                   <th>{logStrings.table.error}</th>
                 </tr>
               </thead>
@@ -7404,8 +7512,9 @@ function AdminDashboard(): JSX.Element {
                     expanded={expandedLogs.has(log.id)}
                     onToggle={toggleLogExpansion}
                     strings={adminStrings}
-                    onOpenKey={navigateKey}
-                    onOpenToken={navigateToken}
+                    language={language}
+                    onOpenKey={openRequestKeyDrawer}
+                    onOpenToken={openRequestTokenDrawer}
                   />
                 ))}
               </tbody>
@@ -7430,28 +7539,62 @@ function AdminDashboard(): JSX.Element {
                 </div>
                 <div className="admin-mobile-kv">
                   <span>{logStrings.table.key}</span>
-                  <strong>
-                    <code>{log.key_id ?? '—'}</code>
-                  </strong>
+                  <button
+                    type="button"
+                    className="request-entity-button admin-mobile-request-entity-button"
+                    onClick={() => log.key_id && openRequestKeyDrawer(log.key_id)}
+                  >
+                    <strong>
+                      <code>{log.key_id ?? '—'}</code>
+                    </strong>
+                  </button>
                 </div>
                 <div className="admin-mobile-kv">
                   <span>{logStrings.table.token}</span>
-                  <strong>
-                    <code>{log.auth_token_id ?? '—'}</code>
-                  </strong>
+                  {log.auth_token_id ? (
+                    <button
+                      type="button"
+                      className="request-entity-button admin-mobile-request-entity-button"
+                      onClick={() => {
+                        if (!log.auth_token_id) return
+                        openRequestTokenDrawer(log.auth_token_id)
+                      }}
+                    >
+                      <strong>
+                        <code>{log.auth_token_id}</code>
+                      </strong>
+                    </button>
+                  ) : (
+                    <strong>
+                      <code>—</code>
+                    </strong>
+                  )}
                 </div>
                 <div className="admin-mobile-kv">
-                  <span>{logStrings.table.httpStatus}</span>
-                  <strong>{log.http_status ?? '—'}</strong>
-                </div>
-                <div className="admin-mobile-kv">
-                  <span>{logStrings.table.mcpStatus}</span>
-                  <strong>{log.mcp_status ?? '—'}</strong>
+                  <span>Status</span>
+                  <span className="tooltip" data-tip={formatRequestStatusTooltip(log, adminStrings)}>
+                    <button
+                      type="button"
+                      className="status-pair-trigger"
+                      aria-label={formatRequestStatusTooltip(log, adminStrings)}
+                    >
+                      <strong>{formatRequestStatusPair(log.http_status, log.mcp_status)}</strong>
+                    </button>
+                  </span>
                 </div>
                 <div className="admin-mobile-kv">
                   <span>{logStrings.table.result}</span>
                   <StatusBadge tone={statusTone(log.result_status)}>
                     {statusLabel(log.result_status, adminStrings)}
+                  </StatusBadge>
+                </div>
+                <div className="admin-mobile-kv admin-mobile-kv--stacked">
+                  <span>{logStrings.table.keyEffect}</span>
+                  <StatusBadge
+                    tone={keyEffectTone(log.key_effect_code)}
+                    title={formatKeyEffectSummary(log, adminStrings, language)}
+                  >
+                    {keyEffectBadgeLabel(log, adminStrings)}
                   </StatusBadge>
                 </div>
                 <div className="admin-mobile-kv">
@@ -8116,6 +8259,35 @@ function AdminDashboard(): JSX.Element {
         />
       )}
 
+      <Drawer
+        open={requestEntityDrawer != null}
+        onOpenChange={(open) => {
+          if (!open) closeRequestEntityDrawer()
+        }}
+        shouldScaleBackground={false}
+      >
+        <DrawerContent className="request-entity-drawer-content">
+          <div className="request-entity-drawer-body">
+            {requestEntityDrawer?.kind === 'key' ? (
+              <KeyDetails
+                key={`drawer-key-${requestEntityDrawer.id}`}
+                id={requestEntityDrawer.id}
+                onBack={closeRequestEntityDrawer}
+                onOpenUser={navigateUser}
+              />
+            ) : requestEntityDrawer?.kind === 'token' ? (
+              <TokenDetail
+                key={`drawer-token-${requestEntityDrawer.id}`}
+                id={requestEntityDrawer.id}
+                onBack={closeRequestEntityDrawer}
+                onOpenUser={navigateUser}
+                onSecretRotated={handleTokenSecretRotated}
+              />
+            ) : null}
+          </div>
+        </DrawerContent>
+      </Drawer>
+
       <div className="app-footer">
         <span>{footerStrings.title}</span>
         <span className="footer-meta">
@@ -8487,11 +8659,12 @@ interface LogRowProps {
   expanded: boolean
   onToggle: (id: number) => void
   strings: AdminTranslations
+  language: 'en' | 'zh'
   onOpenKey?: (id: string) => void
   onOpenToken?: (id: string) => void
 }
 
-function LogRow({ log, expanded, onToggle, strings, onOpenKey, onOpenToken }: LogRowProps): JSX.Element {
+function LogRow({ log, expanded, onToggle, strings, language, onOpenKey, onOpenToken }: LogRowProps): JSX.Element {
   const requestButtonLabel = expanded ? strings.logs.toggles.hide : strings.logs.toggles.show
   const tokenId = log.auth_token_id ?? null
   const timeLabel = formatClockTime(log.created_at)
@@ -8516,45 +8689,42 @@ function LogRow({ log, expanded, onToggle, strings, onOpenKey, onOpenToken }: Lo
           </div>
         </td>
         <td>
-          <a
-            href={keyDetailPath(log.key_id)}
-            className="log-key-pill"
+          <button
+            type="button"
+            className="log-key-pill request-entity-button"
             title={strings.keys.actions.details}
             aria-label={strings.keys.actions.details}
-            onClick={(event) => {
-              if (!onOpenKey) return
-              if (event.defaultPrevented) return
-              if (event.button !== 0 || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return
-              event.preventDefault()
-              onOpenKey(log.key_id)
-            }}
+            onClick={() => onOpenKey?.(log.key_id)}
           >
             <code>{log.key_id}</code>
-          </a>
+          </button>
         </td>
         <td>
           {tokenId ? (
-            <a
-              href={tokenDetailPath(tokenId)}
-              className="link-button log-token-link"
+            <button
+              type="button"
+              className="link-button log-token-link request-entity-button"
               title={strings.tokens.table.id}
               aria-label={strings.tokens.table.id}
-              onClick={(event) => {
-                if (!onOpenToken) return
-                if (event.defaultPrevented) return
-                if (event.button !== 0 || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return
-                event.preventDefault()
-                onOpenToken(tokenId)
-              }}
+              onClick={() => onOpenToken?.(tokenId)}
             >
               <code>{tokenId}</code>
-            </a>
+            </button>
           ) : (
             '—'
           )}
         </td>
-        <td>{log.http_status ?? '—'}</td>
-        <td>{log.mcp_status ?? '—'}</td>
+        <td>
+          <span className="tooltip" data-tip={formatRequestStatusTooltip(log, strings)}>
+            <button
+              type="button"
+              className="status-pair-trigger"
+              aria-label={formatRequestStatusTooltip(log, strings)}
+            >
+              {formatRequestStatusPair(log.http_status, log.mcp_status)}
+            </button>
+          </span>
+        </td>
         <td>
           <button
             type="button"
@@ -8571,12 +8741,20 @@ function LogRow({ log, expanded, onToggle, strings, onOpenKey, onOpenToken }: Lo
             <Icon icon={expanded ? 'mdi:chevron-up' : 'mdi:chevron-down'} width={18} height={18} className="log-result-icon" />
           </button>
         </td>
+        <td>
+          <StatusBadge
+            tone={keyEffectTone(log.key_effect_code)}
+            title={formatKeyEffectSummary(log, strings, language)}
+          >
+            {keyEffectBadgeLabel(log, strings)}
+          </StatusBadge>
+        </td>
         <td>{formatErrorMessage(log, strings.logs.errors)}</td>
       </tr>
       {expanded && (
         <tr className="log-details-row">
           <td colSpan={7} id={`log-details-${log.id}`}>
-            <LogDetails log={log} strings={strings} />
+            <LogDetails log={log} strings={strings} language={language} />
           </td>
         </tr>
       )}
@@ -8584,7 +8762,15 @@ function LogRow({ log, expanded, onToggle, strings, onOpenKey, onOpenToken }: Lo
   )
 }
 
-function LogDetails({ log, strings }: { log: RequestLog; strings: AdminTranslations }): JSX.Element {
+function LogDetails({
+  log,
+  strings,
+  language,
+}: {
+  log: RequestLog
+  strings: AdminTranslations
+  language: 'en' | 'zh'
+}): JSX.Element {
   const query = log.query ? `?${log.query}` : ''
   const requestLine = `${log.method} ${log.path}${query}`
   const forwarded = (log.forwarded_headers ?? []).filter((value) => value.trim().length > 0)
@@ -8593,6 +8779,8 @@ function LogDetails({ log, strings }: { log: RequestLog; strings: AdminTranslati
   const mcpLabel = `${strings.logs.table.mcpStatus}: ${log.mcp_status ?? strings.logs.errors.none}`
   const requestBody = log.request_body ?? strings.logDetails.noBody
   const responseBody = log.response_body ?? strings.logDetails.noBody
+  const keyEffect = formatKeyEffectSummary(log, strings, language)
+  const guidance = failureKindGuidance(log.failure_kind, language)
 
   return (
     <div className="log-details-panel">
@@ -8612,6 +8800,10 @@ function LogDetails({ log, strings }: { log: RequestLog; strings: AdminTranslati
           <span className="log-details-label">{strings.logDetails.outcome}</span>
           <span className="log-details-value">{statusLabel(log.result_status, strings)}</span>
         </div>
+        <div>
+          <span className="log-details-label">{strings.logDetails.keyEffect}</span>
+          <span className="log-details-value">{keyEffect}</span>
+        </div>
       </div>
       <div className="log-details-body">
         <div className="log-details-section">
@@ -8622,6 +8814,12 @@ function LogDetails({ log, strings }: { log: RequestLog; strings: AdminTranslati
           <header>{strings.logDetails.responseBody}</header>
           <pre>{responseBody}</pre>
         </div>
+        {guidance ? (
+          <div className="log-details-section">
+            <header>{strings.logDetails.solution}</header>
+            <pre>{guidance}</pre>
+          </div>
+        ) : null}
       </div>
       {(forwarded.length > 0 || dropped.length > 0) && (
         <div className="log-details-headers">
@@ -8651,7 +8849,7 @@ function LogDetails({ log, strings }: { log: RequestLog; strings: AdminTranslati
   )
 }
 
-function KeyDetails({ id, onBack, onOpenUser }: { id: string; onBack: () => void; onOpenUser: (userId: string) => void }): JSX.Element {
+export function KeyDetails({ id, onBack, onOpenUser }: { id: string; onBack: () => void; onOpenUser: (userId: string) => void }): JSX.Element {
   const translations = useTranslate()
   const adminStrings = translations.admin
   const keyStrings = adminStrings.keys

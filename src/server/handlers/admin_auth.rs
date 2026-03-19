@@ -160,7 +160,10 @@ async fn delete_api_key_quarantine(
 
     state
         .proxy
-        .clear_key_quarantine_by_id(&id)
+        .clear_key_quarantine_by_id_with_actor(
+            &id,
+            admin_maintenance_actor(state.as_ref(), &headers, None).await,
+        )
         .await
         .map(|_| StatusCode::NO_CONTENT)
         .map_err(|err| {

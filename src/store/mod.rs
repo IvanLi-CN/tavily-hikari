@@ -127,6 +127,7 @@ impl KeyStore {
 
         self.upgrade_api_keys_schema().await?;
         self.ensure_api_key_quarantines_schema().await?;
+        self.ensure_api_key_maintenance_records_schema().await?;
 
         sqlx::query(
             r#"
@@ -141,6 +142,9 @@ impl KeyStore {
                 tavily_status_code INTEGER,
                 error_message TEXT,
                 result_status TEXT NOT NULL DEFAULT 'unknown',
+                failure_kind TEXT,
+                key_effect_code TEXT NOT NULL DEFAULT 'none',
+                key_effect_summary TEXT,
                 request_body BLOB,
                 response_body BLOB,
                 forwarded_headers TEXT,
@@ -438,6 +442,9 @@ impl KeyStore {
                 request_kind_detail TEXT,
                 result_status TEXT NOT NULL,
                 error_message TEXT,
+                failure_kind TEXT,
+                key_effect_code TEXT NOT NULL DEFAULT 'none',
+                key_effect_summary TEXT,
                 counts_business_quota INTEGER NOT NULL DEFAULT 1,
                 business_credits INTEGER,
                 billing_subject TEXT,
@@ -462,6 +469,35 @@ impl KeyStore {
             .await?
         {
             sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN mcp_status INTEGER")
+                .execute(&self.pool)
+                .await?;
+        }
+
+        if !self
+            .table_column_exists("auth_token_logs", "failure_kind")
+            .await?
+        {
+            sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN failure_kind TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
+
+        if !self
+            .table_column_exists("auth_token_logs", "key_effect_code")
+            .await?
+        {
+            sqlx::query(
+                "ALTER TABLE auth_token_logs ADD COLUMN key_effect_code TEXT NOT NULL DEFAULT 'none'",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
+
+        if !self
+            .table_column_exists("auth_token_logs", "key_effect_summary")
+            .await?
+        {
+            sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN key_effect_summary TEXT")
                 .execute(&self.pool)
                 .await?;
         }
@@ -2359,6 +2395,7 @@ impl KeyStore {
                 .execute(&self.pool)
                 .await?;
         }
+
         Ok(())
     }
 
@@ -2772,6 +2809,29 @@ impl KeyStore {
                 .await?;
         }
 
+        if !self.request_logs_column_exists("failure_kind").await? {
+            sqlx::query("ALTER TABLE request_logs ADD COLUMN failure_kind TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
+
+        if !self.request_logs_column_exists("key_effect_code").await? {
+            sqlx::query(
+                "ALTER TABLE request_logs ADD COLUMN key_effect_code TEXT NOT NULL DEFAULT 'none'",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
+
+        if !self
+            .request_logs_column_exists("key_effect_summary")
+            .await?
+        {
+            sqlx::query("ALTER TABLE request_logs ADD COLUMN key_effect_summary TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
+
         self.ensure_request_logs_key_ids().await?;
 
         Ok(())
@@ -2811,6 +2871,9 @@ impl KeyStore {
                     tavily_status_code INTEGER,
                     error_message TEXT,
                     result_status TEXT NOT NULL DEFAULT 'unknown',
+                    failure_kind TEXT,
+                    key_effect_code TEXT NOT NULL DEFAULT 'none',
+                    key_effect_summary TEXT,
                     request_body BLOB,
                     response_body BLOB,
                     forwarded_headers TEXT,
@@ -2836,6 +2899,9 @@ impl KeyStore {
                     tavily_status_code,
                     error_message,
                     result_status,
+                    NULL AS failure_kind,
+                    'none' AS key_effect_code,
+                    NULL AS key_effect_summary,
                     request_body,
                     response_body,
                     forwarded_headers,
@@ -2990,26 +3056,11 @@ impl KeyStore {
     ) -> Result<Vec<RequestLogRecord>, ProxyError> {
         let limit = limit.clamp(1, 500) as i64;
         let rows = if let Some(since_ts) = since {
-            sqlx::query_as::<_, (
-                i64,
-                String,
-                Option<String>,
-                String,
-                String,
-                Option<String>,
-                Option<i64>,
-                Option<i64>,
-                Option<String>,
-                String,
-                Vec<u8>,
-                Vec<u8>,
-                i64,
-                String,
-                String,
-            )>(
+            sqlx::query(
                 r#"
                 SELECT id, api_key_id, auth_token_id, method, path, query, status_code, tavily_status_code, error_message,
-                       result_status, request_body, response_body, created_at, forwarded_headers, dropped_headers
+                       result_status, failure_kind, key_effect_code, key_effect_summary,
+                       request_body, response_body, created_at, forwarded_headers, dropped_headers
                 FROM request_logs
                 WHERE api_key_id = ? AND created_at >= ?
                 ORDER BY created_at DESC
@@ -3022,26 +3073,11 @@ impl KeyStore {
             .fetch_all(&self.pool)
             .await?
         } else {
-            sqlx::query_as::<_, (
-                i64,
-                String,
-                Option<String>,
-                String,
-                String,
-                Option<String>,
-                Option<i64>,
-                Option<i64>,
-                Option<String>,
-                String,
-                Vec<u8>,
-                Vec<u8>,
-                i64,
-                String,
-                String,
-            )>(
+            sqlx::query(
                 r#"
                 SELECT id, api_key_id, auth_token_id, method, path, query, status_code, tavily_status_code, error_message,
-                       result_status, request_body, response_body, created_at, forwarded_headers, dropped_headers
+                       result_status, failure_kind, key_effect_code, key_effect_summary,
+                       request_body, response_body, created_at, forwarded_headers, dropped_headers
                 FROM request_logs
                 WHERE api_key_id = ?
                 ORDER BY created_at DESC
@@ -3056,50 +3092,37 @@ impl KeyStore {
 
         Ok(rows
             .into_iter()
-            .map(
-                |(
-                    id,
-                    key_id,
-                    auth_token_id,
-                    method,
-                    path,
-                    query,
-                    status_code,
-                    tavily_status_code,
-                    error_message,
-                    result_status,
-                    request_body,
-                    response_body,
-                    created_at,
-                    forwarded_headers,
-                    dropped_headers,
-                )| RequestLogRecord {
-                    id,
-                    key_id,
-                    auth_token_id,
-                    method,
-                    path,
-                    query,
-                    status_code,
-                    tavily_status_code,
-                    error_message,
-                    result_status,
-                    request_body,
-                    response_body,
-                    created_at,
-                    forwarded_headers: forwarded_headers
-                        .split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect(),
-                    dropped_headers: dropped_headers
-                        .split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect(),
-                },
-            )
-            .collect())
+            .map(|row| -> Result<RequestLogRecord, sqlx::Error> {
+                Ok(RequestLogRecord {
+                    id: row.try_get("id")?,
+                    key_id: row.try_get("api_key_id")?,
+                    auth_token_id: row.try_get("auth_token_id")?,
+                    method: row.try_get("method")?,
+                    path: row.try_get("path")?,
+                    query: row.try_get("query")?,
+                    status_code: row.try_get("status_code")?,
+                    tavily_status_code: row.try_get("tavily_status_code")?,
+                    error_message: row.try_get("error_message")?,
+                    result_status: row.try_get("result_status")?,
+                    failure_kind: row.try_get("failure_kind")?,
+                    key_effect_code: row.try_get("key_effect_code")?,
+                    key_effect_summary: row.try_get("key_effect_summary")?,
+                    request_body: row
+                        .try_get::<Option<Vec<u8>>, _>("request_body")?
+                        .unwrap_or_default(),
+                    response_body: row
+                        .try_get::<Option<Vec<u8>>, _>("response_body")?
+                        .unwrap_or_default(),
+                    created_at: row.try_get("created_at")?,
+                    forwarded_headers: parse_header_list(
+                        row.try_get::<Option<String>, _>("forwarded_headers")?,
+                    ),
+                    dropped_headers: parse_header_list(
+                        row.try_get::<Option<String>, _>("dropped_headers")?,
+                    ),
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?)
     }
 
     pub(crate) async fn sync_keys(&self, keys: &[String]) -> Result<(), ProxyError> {
@@ -3302,6 +3325,60 @@ impl KeyStore {
             .bind(now)
             .execute(&self.pool)
             .await?;
+
+        Ok(())
+    }
+
+    async fn ensure_api_key_maintenance_records_schema(&self) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS api_key_maintenance_records (
+                id TEXT PRIMARY KEY,
+                key_id TEXT NOT NULL,
+                source TEXT NOT NULL,
+                operation_code TEXT NOT NULL,
+                operation_summary TEXT NOT NULL,
+                reason_code TEXT,
+                reason_summary TEXT,
+                reason_detail TEXT,
+                request_log_id INTEGER,
+                auth_token_log_id INTEGER,
+                auth_token_id TEXT,
+                actor_user_id TEXT,
+                actor_display_name TEXT,
+                status_before TEXT,
+                status_after TEXT,
+                quarantine_before INTEGER NOT NULL DEFAULT 0,
+                quarantine_after INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                FOREIGN KEY (key_id) REFERENCES api_keys(id),
+                FOREIGN KEY (auth_token_id) REFERENCES auth_tokens(id),
+                FOREIGN KEY (request_log_id) REFERENCES request_logs(id),
+                FOREIGN KEY (auth_token_log_id) REFERENCES auth_token_logs(id)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_api_key_maintenance_records_key_created
+               ON api_key_maintenance_records(key_id, created_at DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_api_key_maintenance_records_request_log
+               ON api_key_maintenance_records(request_log_id)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_api_key_maintenance_records_auth_token_log
+               ON api_key_maintenance_records(auth_token_log_id)"#,
+        )
+        .execute(&self.pool)
+        .await?;
 
         Ok(())
     }
@@ -6502,16 +6579,24 @@ impl KeyStore {
         result_status: &str,
         error_message: Option<&str>,
         request_kind: &TokenRequestKind,
+        failure_kind: Option<&str>,
+        key_effect_code: &str,
+        key_effect_summary: Option<&str>,
     ) -> Result<(), ProxyError> {
         let created_at = Utc::now().timestamp();
         let counts_business_quota = if counts_business_quota { 1i64 } else { 0i64 };
+        let failure_kind = failure_kind
+            .map(str::to_string)
+            .or_else(|| classify_failure_kind(path, http_status, mcp_status, error_message, &[]));
+        let key_effect_summary = key_effect_summary.map(str::to_string);
         sqlx::query(
             r#"
             INSERT INTO auth_token_logs (
                 token_id, method, path, query, http_status, mcp_status,
                 request_kind_key, request_kind_label, request_kind_detail,
-                result_status, error_message, counts_business_quota, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                result_status, error_message, failure_kind, key_effect_code, key_effect_summary,
+                counts_business_quota, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(token_id)
@@ -6525,6 +6610,9 @@ impl KeyStore {
         .bind(request_kind.detail.as_deref())
         .bind(result_status)
         .bind(error_message)
+        .bind(failure_kind)
+        .bind(key_effect_code)
+        .bind(key_effect_summary)
         .bind(counts_business_quota)
         .bind(created_at)
         .execute(&self.pool)
@@ -6557,9 +6645,16 @@ impl KeyStore {
         billing_subject: &str,
         request_kind: &TokenRequestKind,
         api_key_id: Option<&str>,
+        failure_kind: Option<&str>,
+        key_effect_code: &str,
+        key_effect_summary: Option<&str>,
     ) -> Result<i64, ProxyError> {
         let created_at = Utc::now().timestamp();
         let counts_business_quota = if counts_business_quota { 1i64 } else { 0i64 };
+        let failure_kind = failure_kind
+            .map(str::to_string)
+            .or_else(|| classify_failure_kind(path, http_status, mcp_status, error_message, &[]));
+        let key_effect_summary = key_effect_summary.map(str::to_string);
         let log_id: i64 = sqlx::query_scalar(
             r#"
             INSERT INTO auth_token_logs (
@@ -6574,13 +6669,16 @@ impl KeyStore {
                 request_kind_detail,
                 result_status,
                 error_message,
+                failure_kind,
+                key_effect_code,
+                key_effect_summary,
                 counts_business_quota,
                 business_credits,
                 billing_subject,
                 billing_state,
                 api_key_id,
                 created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
             "#,
         )
@@ -6595,6 +6693,9 @@ impl KeyStore {
         .bind(request_kind.detail.as_deref())
         .bind(result_status)
         .bind(error_message)
+        .bind(failure_kind)
+        .bind(key_effect_code)
+        .bind(key_effect_summary)
         .bind(counts_business_quota)
         .bind(business_credits)
         .bind(billing_subject)
@@ -7015,6 +7116,9 @@ impl KeyStore {
             Option<String>,
             String,
             Option<String>,
+            Option<String>,
+            String,
+            Option<String>,
             i64,
         );
         let rows = if let Some(bid) = before_id {
@@ -7023,7 +7127,8 @@ impl KeyStore {
                 SELECT id, method, path, query, http_status, mcp_status,
                        CASE WHEN billing_state = 'charged' THEN business_credits ELSE NULL END,
                        request_kind_key, request_kind_label, request_kind_detail,
-                       result_status, error_message, created_at
+                       result_status, error_message, failure_kind, key_effect_code,
+                       key_effect_summary, created_at
                 FROM auth_token_logs
                 WHERE token_id = ? AND id < ?
                 ORDER BY created_at DESC, id DESC
@@ -7041,7 +7146,8 @@ impl KeyStore {
                 SELECT id, method, path, query, http_status, mcp_status,
                        CASE WHEN billing_state = 'charged' THEN business_credits ELSE NULL END,
                        request_kind_key, request_kind_label, request_kind_detail,
-                       result_status, error_message, created_at
+                       result_status, error_message, failure_kind, key_effect_code,
+                       key_effect_summary, created_at
                 FROM auth_token_logs
                 WHERE token_id = ?
                 ORDER BY created_at DESC, id DESC
@@ -7070,6 +7176,9 @@ impl KeyStore {
                     request_kind_detail,
                     result_status,
                     error_message,
+                    failure_kind,
+                    key_effect_code,
+                    key_effect_summary,
                     created_at,
                 )| {
                     let request_kind = finalize_token_request_kind(
@@ -7093,6 +7202,9 @@ impl KeyStore {
                         request_kind_detail: request_kind.detail,
                         result_status,
                         error_message,
+                        failure_kind,
+                        key_effect_code,
+                        key_effect_summary,
                         created_at,
                     }
                 },
@@ -7194,6 +7306,9 @@ impl KeyStore {
             Option<String>,
             String,
             Option<String>,
+            Option<String>,
+            String,
+            Option<String>,
             i64,
         );
         let filtered_request_kinds: Vec<&str> = request_kinds
@@ -7248,7 +7363,8 @@ impl KeyStore {
                    request_kind_key,
                    request_kind_label,
                    request_kind_detail,
-                   result_status, error_message, created_at
+                   result_status, error_message, failure_kind, key_effect_code,
+                   key_effect_summary, created_at
             FROM auth_token_logs
             WHERE token_id =
             "#
@@ -7309,6 +7425,9 @@ impl KeyStore {
                     request_kind_detail,
                     result_status,
                     error_message,
+                    failure_kind,
+                    key_effect_code,
+                    key_effect_summary,
                     created_at,
                 )| {
                     let request_kind = finalize_token_request_kind(
@@ -7332,6 +7451,9 @@ impl KeyStore {
                         request_kind_detail: request_kind.detail,
                         result_status,
                         error_message,
+                        failure_kind,
+                        key_effect_code,
+                        key_effect_summary,
                         created_at,
                     }
                 },
@@ -7673,7 +7795,7 @@ impl KeyStore {
             r#"
             UPDATE api_keys
             SET status = ?, status_changed_at = ?, last_used_at = ?
-            WHERE api_key = ? AND status <> ? AND deleted_at IS NULL
+            WHERE api_key = ? AND status NOT IN (?, ?) AND deleted_at IS NULL
             "#,
         )
         .bind(STATUS_EXHAUSTED)
@@ -7681,14 +7803,15 @@ impl KeyStore {
         .bind(now)
         .bind(key)
         .bind(STATUS_DISABLED)
+        .bind(STATUS_EXHAUSTED)
         .execute(&self.pool)
         .await?;
         Ok(res.rows_affected() > 0)
     }
 
-    pub(crate) async fn restore_active_status(&self, key: &str) -> Result<(), ProxyError> {
+    pub(crate) async fn restore_active_status(&self, key: &str) -> Result<bool, ProxyError> {
         let now = Utc::now().timestamp();
-        sqlx::query(
+        let res = sqlx::query(
             r#"
             UPDATE api_keys
             SET status = ?, status_changed_at = ?
@@ -7701,7 +7824,7 @@ impl KeyStore {
         .bind(STATUS_EXHAUSTED)
         .execute(&self.pool)
         .await?;
-        Ok(())
+        Ok(res.rows_affected() > 0)
     }
 
     pub(crate) async fn quarantine_key_by_id(
@@ -7711,7 +7834,7 @@ impl KeyStore {
         reason_code: &str,
         reason_summary: &str,
         reason_detail: &str,
-    ) -> Result<(), ProxyError> {
+    ) -> Result<bool, ProxyError> {
         let now = Utc::now().timestamp();
         let quarantine_id = nanoid!(12);
         let insert_result = sqlx::query(
@@ -7748,14 +7871,18 @@ impl KeyStore {
             .bind(key_id)
             .execute(&self.pool)
             .await?;
+            return Ok(false);
         }
 
-        Ok(())
+        Ok(true)
     }
 
-    pub(crate) async fn clear_key_quarantine_by_id(&self, key_id: &str) -> Result<(), ProxyError> {
+    pub(crate) async fn clear_key_quarantine_by_id(
+        &self,
+        key_id: &str,
+    ) -> Result<bool, ProxyError> {
         let now = Utc::now().timestamp();
-        sqlx::query(
+        let res = sqlx::query(
             r#"
             UPDATE api_key_quarantines
             SET cleared_at = ?
@@ -7766,7 +7893,7 @@ impl KeyStore {
         .bind(key_id)
         .execute(&self.pool)
         .await?;
-        Ok(())
+        Ok(res.rows_affected() > 0)
     }
 
     // Admin ops: add/undelete key by secret
@@ -8085,6 +8212,16 @@ impl KeyStore {
     pub(crate) async fn log_attempt(&self, entry: AttemptLog<'_>) -> Result<(), ProxyError> {
         let created_at = Utc::now().timestamp();
         let status_code = entry.status.map(|code| code.as_u16() as i64);
+        let failure_kind = entry.failure_kind.map(str::to_string).or_else(|| {
+            classify_failure_kind(
+                entry.path,
+                status_code,
+                entry.tavily_status_code,
+                entry.error,
+                entry.response_body,
+            )
+        });
+        let key_effect_summary = entry.key_effect_summary.map(str::to_string);
 
         let forwarded_json =
             serde_json::to_string(entry.forwarded_headers).unwrap_or_else(|_| "[]".to_string());
@@ -8113,12 +8250,15 @@ impl KeyStore {
                 tavily_status_code,
                 error_message,
                 result_status,
+                failure_kind,
+                key_effect_code,
+                key_effect_summary,
                 request_body,
                 response_body,
                 forwarded_headers,
                 dropped_headers,
                 created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(entry.key_id)
@@ -8130,6 +8270,9 @@ impl KeyStore {
         .bind(entry.tavily_status_code)
         .bind(entry.error)
         .bind(entry.outcome)
+        .bind(failure_kind)
+        .bind(entry.key_effect_code)
+        .bind(key_effect_summary)
         .bind(entry.request_body)
         .bind(entry.response_body)
         .bind(forwarded_json)
@@ -8698,6 +8841,9 @@ impl KeyStore {
                 tavily_status_code,
                 error_message,
                 result_status,
+                failure_kind,
+                key_effect_code,
+                key_effect_summary,
                 request_body,
                 response_body,
                 forwarded_headers,
@@ -8732,6 +8878,9 @@ impl KeyStore {
                     tavily_status_code: row.try_get("tavily_status_code")?,
                     error_message: row.try_get("error_message")?,
                     result_status: row.try_get("result_status")?,
+                    failure_kind: row.try_get("failure_kind")?,
+                    key_effect_code: row.try_get("key_effect_code")?,
+                    key_effect_summary: row.try_get("key_effect_summary")?,
                     created_at: row.try_get("created_at")?,
                     request_body: request_body.unwrap_or_default(),
                     response_body: response_body.unwrap_or_default(),
@@ -8779,6 +8928,9 @@ impl KeyStore {
                     tavily_status_code,
                     error_message,
                     result_status,
+                    failure_kind,
+                    key_effect_code,
+                    key_effect_summary,
                     request_body,
                     response_body,
                     forwarded_headers,
@@ -8858,6 +9010,9 @@ impl KeyStore {
                     tavily_status_code: row.try_get("tavily_status_code")?,
                     error_message: row.try_get("error_message")?,
                     result_status: row.try_get("result_status")?,
+                    failure_kind: row.try_get("failure_kind")?,
+                    key_effect_code: row.try_get("key_effect_code")?,
+                    key_effect_summary: row.try_get("key_effect_summary")?,
                     created_at: row.try_get("created_at")?,
                     request_body: request_body.unwrap_or_default(),
                     response_body: response_body.unwrap_or_default(),
@@ -8881,6 +9036,108 @@ impl KeyStore {
                 .await?;
 
         Ok(secret)
+    }
+
+    pub(crate) async fn fetch_api_key_id_by_secret(
+        &self,
+        secret: &str,
+    ) -> Result<Option<String>, ProxyError> {
+        sqlx::query_scalar::<_, String>(
+            "SELECT id FROM api_keys WHERE api_key = ? AND deleted_at IS NULL LIMIT 1",
+        )
+        .bind(secret)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(ProxyError::from)
+    }
+
+    pub(crate) async fn fetch_key_state_snapshot(
+        &self,
+        key_id: &str,
+    ) -> Result<KeyStateSnapshot, ProxyError> {
+        let status = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT status FROM api_keys WHERE id = ? AND deleted_at IS NULL LIMIT 1",
+        )
+        .bind(key_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .flatten();
+        let quarantined = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT 1
+            FROM api_key_quarantines
+            WHERE key_id = ? AND cleared_at IS NULL
+            LIMIT 1
+            "#,
+        )
+        .bind(key_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .is_some();
+        Ok(KeyStateSnapshot {
+            status,
+            quarantined,
+        })
+    }
+
+    pub(crate) async fn insert_api_key_maintenance_record(
+        &self,
+        record: ApiKeyMaintenanceRecord,
+    ) -> Result<(), ProxyError> {
+        let auth_token_id = if let Some(auth_token_id) = record.auth_token_id.as_deref() {
+            sqlx::query_scalar::<_, i64>("SELECT 1 FROM auth_tokens WHERE id = ? LIMIT 1")
+                .bind(auth_token_id)
+                .fetch_optional(&self.pool)
+                .await?
+                .map(|_| auth_token_id.to_string())
+        } else {
+            None
+        };
+        sqlx::query(
+            r#"
+            INSERT INTO api_key_maintenance_records (
+                id,
+                key_id,
+                source,
+                operation_code,
+                operation_summary,
+                reason_code,
+                reason_summary,
+                reason_detail,
+                request_log_id,
+                auth_token_log_id,
+                auth_token_id,
+                actor_user_id,
+                actor_display_name,
+                status_before,
+                status_after,
+                quarantine_before,
+                quarantine_after,
+                created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(record.id)
+        .bind(record.key_id)
+        .bind(record.source)
+        .bind(record.operation_code)
+        .bind(record.operation_summary)
+        .bind(record.reason_code)
+        .bind(record.reason_summary)
+        .bind(record.reason_detail)
+        .bind(record.request_log_id)
+        .bind(record.auth_token_log_id)
+        .bind(auth_token_id)
+        .bind(record.actor_user_id)
+        .bind(record.actor_display_name)
+        .bind(record.status_before)
+        .bind(record.status_after)
+        .bind(i64::from(record.quarantine_before))
+        .bind(i64::from(record.quarantine_after))
+        .bind(record.created_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     pub(crate) async fn update_quota_for_key(

@@ -460,7 +460,7 @@ async fn tavily_http_research_result(
                 let http_code = resp.status.as_u16() as i64;
                 let _ = state
                     .proxy
-                    .record_token_attempt(
+                    .record_token_attempt_metadata(
                         tid,
                         &method,
                         &path,
@@ -470,6 +470,9 @@ async fn tavily_http_research_result(
                         false,
                         analysis.status,
                         None,
+                        analysis.failure_kind.as_deref(),
+                        Some(analysis.key_effect.code.as_str()),
+                        analysis.key_effect.summary.as_deref(),
                     )
                     .await;
             }
@@ -808,7 +811,7 @@ async fn proxy_tavily_http_endpoint(
                         match if let Some(subject) = billing_subject.as_deref() {
                             state
                                 .proxy
-                                .record_pending_billing_attempt_for_subject(
+                                .record_pending_billing_attempt_for_subject_metadata(
                                     tid,
                                     &method,
                                     &path,
@@ -821,12 +824,15 @@ async fn proxy_tavily_http_endpoint(
                                     credits,
                                     subject,
                                     analysis.api_key_id.as_deref(),
+                                    analysis.failure_kind.as_deref(),
+                                    Some(analysis.key_effect.code.as_str()),
+                                    analysis.key_effect.summary.as_deref(),
                                 )
                                 .await
                         } else {
                             state
                                 .proxy
-                                .record_pending_billing_attempt(
+                                .record_pending_billing_attempt_metadata(
                                     tid,
                                     &method,
                                     &path,
@@ -838,6 +844,9 @@ async fn proxy_tavily_http_endpoint(
                                     None,
                                     credits,
                                     analysis.api_key_id.as_deref(),
+                                    analysis.failure_kind.as_deref(),
+                                    Some(analysis.key_effect.code.as_str()),
+                                    analysis.key_effect.summary.as_deref(),
                                 )
                                 .await
                         }
@@ -909,7 +918,7 @@ async fn proxy_tavily_http_endpoint(
                     let http_code = resp.status.as_u16() as i64;
                     let _ = state
                         .proxy
-                        .record_token_attempt(
+                        .record_token_attempt_metadata(
                             tid,
                             &method,
                             &path,
@@ -919,6 +928,9 @@ async fn proxy_tavily_http_endpoint(
                             true,
                             analysis.status,
                             billing_error.as_deref(),
+                            analysis.failure_kind.as_deref(),
+                            Some(analysis.key_effect.code.as_str()),
+                            analysis.key_effect.summary.as_deref(),
                         )
                         .await;
                 }
@@ -1027,7 +1039,7 @@ async fn proxy_tavily_http_endpoint(
                     match if let Some(subject) = billing_subject.as_deref() {
                         state
                             .proxy
-                            .record_pending_billing_attempt_for_subject(
+                            .record_pending_billing_attempt_for_subject_metadata(
                                 tid,
                                 &method,
                                 &path,
@@ -1040,12 +1052,15 @@ async fn proxy_tavily_http_endpoint(
                                 credits,
                                 subject,
                                 analysis.api_key_id.as_deref(),
+                                analysis.failure_kind.as_deref(),
+                                Some(analysis.key_effect.code.as_str()),
+                                analysis.key_effect.summary.as_deref(),
                             )
                             .await
                     } else {
                         state
                             .proxy
-                            .record_pending_billing_attempt(
+                            .record_pending_billing_attempt_metadata(
                                 tid,
                                 &method,
                                 &path,
@@ -1057,6 +1072,9 @@ async fn proxy_tavily_http_endpoint(
                                 None,
                                 credits,
                                 analysis.api_key_id.as_deref(),
+                                analysis.failure_kind.as_deref(),
+                                Some(analysis.key_effect.code.as_str()),
+                                analysis.key_effect.summary.as_deref(),
                             )
                             .await
                     }
@@ -1122,7 +1140,7 @@ async fn proxy_tavily_http_endpoint(
                 let http_code = resp.status.as_u16() as i64;
                 let _ = state
                     .proxy
-                    .record_token_attempt(
+                    .record_token_attempt_metadata(
                         tid,
                         &method,
                         &path,
@@ -1132,6 +1150,9 @@ async fn proxy_tavily_http_endpoint(
                         true,
                         analysis.status,
                         billing_error.as_deref(),
+                        analysis.failure_kind.as_deref(),
+                        Some(analysis.key_effect.code.as_str()),
+                        analysis.key_effect.summary.as_deref(),
                     )
                     .await;
             }

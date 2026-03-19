@@ -1586,6 +1586,7 @@ async fn create_api_keys_batch(
     let mut results = Vec::with_capacity(trimmed.len());
     let mut seen = HashSet::<String>::new();
     let region_by_ip = resolve_registration_regions(&state.api_key_ip_geo_origin, &geo_lookup_ips).await;
+    let maintenance_actor = admin_maintenance_actor(state.as_ref(), &headers, None).await;
 
     for item in trimmed {
         if !seen.insert(item.api_key.clone()) {
@@ -1628,7 +1629,10 @@ async fn create_api_keys_batch(
                 if exhausted_set.contains(&item.api_key) {
                     marked_exhausted = match state
                         .proxy
-                        .mark_key_quota_exhausted_by_secret(&item.api_key)
+                        .mark_key_quota_exhausted_by_secret_with_actor(
+                            &item.api_key,
+                            maintenance_actor.clone(),
+                        )
                         .await
                     {
                         Ok(changed) => Some(changed),

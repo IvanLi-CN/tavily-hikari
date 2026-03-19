@@ -397,13 +397,30 @@
     opacity: 0;
     pointer-events: none;
     transition: opacity 0.15s ease;
-    z-index: 40;
+    z-index: 120;
   }
 
   .tooltip[data-tip]:hover::after,
-  .tooltip[data-tip]:focus-within::after {
-    opacity: 1;
-  }
+.tooltip[data-tip]:focus-within::after {
+  opacity: 1;
+}
+
+.status-pair-trigger {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  line-height: inherit;
+  cursor: help;
+}
+
+.status-pair-trigger:focus-visible {
+  outline: 2px solid hsl(var(--ring) / 0.5);
+  outline-offset: 4px;
+  border-radius: 0.5rem;
+}
 
   .toggle {
     @apply h-5 w-9 appearance-none rounded-full border border-input bg-muted/70 transition-colors;
@@ -3624,6 +3641,7 @@ button:disabled {
 
 .jobs-table-wrapper {
   overflow-x: auto;
+  overflow-y: visible;
 }
 
 table {
@@ -3656,23 +3674,23 @@ table {
   min-width: 8ch;
   text-align: center;
 }
-.token-detail-table th:nth-child(6),
-.token-detail-table td:nth-child(6) {
+.token-detail-table th:nth-child(5),
+.token-detail-table td:nth-child(5) {
   text-align: right;
   min-width: 12ch;
 }
-.token-detail-table td:nth-child(6) .status-badge {
+.token-detail-table td:nth-child(5) .status-badge {
   white-space: nowrap;
   display: inline-flex;
 }
 
 /* 让“Result”列的按钮组整体靠右，箭头不会拥挤 */
-.token-detail-table td:nth-child(6) .log-result-button {
+.token-detail-table td:nth-child(5) .log-result-button {
   width: 100%;
   justify-content: flex-end;
 }
-.token-detail-table th:nth-child(7),
-.token-detail-table td:nth-child(7) {
+.token-detail-table th:nth-child(6),
+.token-detail-table td:nth-child(6) {
   min-width: 18ch;
   max-width: 32ch;
   overflow: hidden;
@@ -3692,6 +3710,37 @@ table {
   max-width: 100%;
 }
 
+.token-detail-request-records-table th:nth-child(3),
+.token-detail-request-records-table td:nth-child(3) {
+  min-width: 14ch;
+}
+
+.token-detail-request-records-table th:nth-child(4),
+.token-detail-request-records-table td:nth-child(4) {
+  min-width: 9ch;
+}
+
+.token-detail-request-records-table th:nth-child(5),
+.token-detail-request-records-table td:nth-child(5) {
+  min-width: 12ch;
+}
+
+.token-detail-request-records-table th:nth-child(6),
+.token-detail-request-records-table td:nth-child(6) {
+  min-width: 22ch;
+  max-width: 30ch;
+  white-space: normal;
+  line-height: 1.3;
+  text-overflow: clip;
+  overflow: hidden;
+}
+
+.token-detail-request-records-table th:nth-child(7),
+.token-detail-request-records-table td:nth-child(7) {
+  min-width: 18ch;
+  max-width: 28ch;
+}
+
 /* Admin Recent Requests table: prioritize in-cell fitting over horizontal scroll */
 .admin-logs-table {
   table-layout: fixed;
@@ -3707,43 +3756,58 @@ table {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.admin-logs-table th:nth-child(1),
-.admin-logs-table td:nth-child(1) {
+.admin-request-logs-table th:nth-child(1),
+.admin-request-logs-table td:nth-child(1) {
   width: 13ch;
 }
-.admin-logs-table th:nth-child(2),
-.admin-logs-table td:nth-child(2),
-.admin-logs-table th:nth-child(3),
-.admin-logs-table td:nth-child(3) {
-  width: 9ch;
+.admin-request-logs-table th:nth-child(2),
+.admin-request-logs-table td:nth-child(2),
+.admin-request-logs-table th:nth-child(3),
+.admin-request-logs-table td:nth-child(3) {
+  width: 7ch;
 }
-.admin-logs-table th:nth-child(4),
-.admin-logs-table td:nth-child(4),
-.admin-logs-table th:nth-child(5),
-.admin-logs-table td:nth-child(5) {
-  width: 12ch;
+.admin-request-logs-table th:nth-child(4),
+.admin-request-logs-table td:nth-child(4) {
+  width: 11ch;
+  text-align: center;
+  overflow: visible;
+  position: relative;
+  z-index: 2;
 }
-.admin-logs-table th:nth-child(6),
-.admin-logs-table td:nth-child(6) {
-  width: 14ch;
+.admin-request-logs-table th:nth-child(5),
+.admin-request-logs-table td:nth-child(5) {
+  width: 16ch;
 }
-.admin-logs-table th:last-child,
-.admin-logs-table td:last-child {
+.admin-request-logs-table th:nth-child(6),
+.admin-request-logs-table td:nth-child(6) {
+  width: 18ch;
+}
+.admin-request-logs-table th:nth-child(7),
+.admin-request-logs-table td:nth-child(7) {
   color: hsl(var(--muted-foreground));
   width: 24ch;
 }
-/* 确保“结果”列徽章不换行并右对齐（兼容 4/5 列位置） */
-.admin-logs-table td:nth-child(6) .status-badge,
-.admin-logs-table td:nth-child(5) .status-badge,
-.admin-logs-table td:nth-child(4) .status-badge {
+.admin-request-logs-table td:nth-child(5),
+.admin-request-logs-table td:nth-child(6) {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
+}
+.admin-request-logs-table td:nth-child(5) .status-badge {
   white-space: nowrap;
   display: inline-flex;
 }
-.admin-logs-table td:nth-child(6) .log-result-button,
-.admin-logs-table td:nth-child(5) .log-result-button,
-.admin-logs-table td:nth-child(4) .log-result-button {
-  width: 100%;
-  justify-content: flex-end;
+.admin-request-logs-table td:nth-child(4):hover,
+.admin-request-logs-table td:nth-child(4):focus-within {
+  z-index: 20;
+}
+.admin-request-logs-table td:nth-child(5) .log-result-button {
+  width: auto;
+  justify-content: flex-start;
+}
+.admin-request-logs-table td:nth-child(6) .status-badge {
+  white-space: nowrap;
+  display: inline-flex;
 }
 
 /* token leaderboard styles consolidated near dedicated section below */
@@ -3760,8 +3824,26 @@ table {
   font-size: 0.95rem;
 }
 
+.request-entity-button {
+  border: 0;
+  cursor: pointer;
+}
+
 .admin-logs-table .log-key-pill code {
   color: inherit;
+}
+
+.admin-mobile-request-entity-button {
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.request-entity-button:focus-visible {
+  outline: 2px solid hsl(var(--ring) / 0.5);
+  outline-offset: 3px;
 }
 
 .log-time-cell {
@@ -4287,6 +4369,26 @@ table {
   gap: 12px;
   flex-wrap: wrap;
   border-top: 1px solid hsl(var(--border) / 0.76);
+}
+
+.request-entity-drawer-content {
+  margin-top: 0;
+  height: min(100dvh, 92dvh);
+  max-height: 100dvh;
+  padding: 0;
+  overflow: hidden;
+}
+
+.request-entity-drawer-header {
+  border-bottom: 1px solid hsl(var(--border) / 0.72);
+  flex-shrink: 0;
+}
+
+.request-entity-drawer-body {
+  min-height: 0;
+  height: 100%;
+  overflow: auto;
+  padding-bottom: calc(18px + env(safe-area-inset-bottom, 0px));
 }
 .table-pagination span {
   font-size: 0.92rem;

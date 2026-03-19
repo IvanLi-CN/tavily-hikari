@@ -574,7 +574,7 @@ function openStoryInManager(storyId: string): void {
   addons.getChannel().emit(SELECT_STORY, { storyId });
 }
 
-function TokenDetailStoryCanvas({
+export function TokenDetailStoryCanvas({
   detail = tokenDetailMock,
   mode = "default",
   dataset = "default",

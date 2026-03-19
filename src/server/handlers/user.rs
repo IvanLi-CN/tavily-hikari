@@ -692,6 +692,7 @@ async fn get_user_token_logs(
         return Err(StatusCode::NOT_FOUND);
     }
     let limit = q.limit.unwrap_or(20).clamp(1, 20);
+    let language = ui_language_from_headers(&headers);
     let items = state
         .proxy
         .token_recent_logs(&id, limit, None)
@@ -702,7 +703,7 @@ async fn get_user_token_logs(
         })?;
     let mapped = items
         .into_iter()
-        .map(PublicTokenLogView::from)
+        .map(|record| PublicTokenLogView::from_record(record, language))
         .map(|mut v| {
             if let Some(err) = v.error_message.as_ref() {
                 v.error_message = Some(redact_sensitive(err));

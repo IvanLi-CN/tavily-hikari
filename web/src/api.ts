@@ -153,6 +153,9 @@ export interface RequestLog {
   result_status: string
   created_at: number
   error_message: string | null
+  failure_kind?: string | null
+  key_effect_code?: string
+  key_effect_summary?: string | null
   request_body: string | null
   response_body: string | null
   forwarded_headers: string[]

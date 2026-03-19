@@ -357,6 +357,85 @@ async fn resolve_user_session(
     }
 }
 
+async fn admin_maintenance_actor(
+    state: &AppState,
+    headers: &HeaderMap,
+    auth_token_id: Option<&str>,
+) -> tavily_hikari::MaintenanceActor {
+    let mut actor = tavily_hikari::MaintenanceActor {
+        auth_token_id: auth_token_id.map(str::to_string),
+        actor_user_id: None,
+        actor_display_name: None,
+    };
+
+    if let Some(session) = resolve_user_session(state, headers).await {
+        actor.actor_user_id = Some(session.user.user_id);
+        actor.actor_display_name = session
+            .user
+            .display_name
+            .or(session.user.username)
+            .or(Some(session.user.provider));
+        return actor;
+    }
+
+    if state.dev_open_admin {
+        actor.actor_display_name = Some("dev-open-admin".to_string());
+        return actor;
+    }
+
+    if state.forward_auth_enabled {
+        actor.actor_display_name = state
+            .forward_auth
+            .nickname_value(headers)
+            .or_else(|| state.forward_auth.user_value(headers).map(str::to_string))
+            .or_else(|| state.forward_auth.admin_override_name().map(str::to_string));
+        return actor;
+    }
+
+    if state.builtin_admin.is_admin(headers) {
+        actor.actor_display_name = Some("builtin-admin".to_string());
+    }
+
+    actor
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum UiLanguage {
+    En,
+    Zh,
+}
+
+fn ui_language_from_headers(headers: &HeaderMap) -> UiLanguage {
+    headers
+        .get(axum::http::header::ACCEPT_LANGUAGE)
+        .and_then(|value| value.to_str().ok())
+        .map(|raw| {
+            raw.split(',')
+                .map(|segment| segment.trim().to_ascii_lowercase())
+                .find(|segment| !segment.is_empty())
+                .filter(|segment| segment.starts_with("zh"))
+                .map(|_| UiLanguage::Zh)
+                .unwrap_or(UiLanguage::En)
+        })
+        .unwrap_or(UiLanguage::En)
+}
+
+fn append_solution_guidance_to_error(
+    error_message: Option<String>,
+    failure_kind: Option<&str>,
+    language: UiLanguage,
+) -> Option<String> {
+    let guidance = failure_kind
+        .filter(|kind| tavily_hikari::should_append_solution_guidance(kind))
+        .and_then(|kind| {
+            tavily_hikari::failure_kind_solution_guidance(kind, matches!(language, UiLanguage::Zh))
+        })?;
+    match error_message {
+        Some(message) if !message.trim().is_empty() => Some(format!("{message}\n\n{guidance}")),
+        _ => Some(guidance.to_string()),
+    }
+}
+
 fn parse_iso_timestamp(value: &str) -> Option<i64> {
     DateTime::parse_from_rfc3339(value)
         .map(|dt| dt.with_timezone(&Utc).timestamp())

@@ -825,12 +825,15 @@ async fn proxy_handler(
                                     subject,
                                     &request_kind,
                                     api_key_id,
+                                    analysis.failure_kind.as_deref(),
+                                    Some(resp.key_effect_code.as_str()),
+                                    resp.key_effect_summary.as_deref(),
                                 )
                                 .await
                         } else {
                             state
                                 .proxy
-                                .record_pending_billing_attempt_with_kind(
+                                .record_pending_billing_attempt_with_kind_metadata(
                                     tid,
                                     &method,
                                     &path,
@@ -843,6 +846,9 @@ async fn proxy_handler(
                                     credits,
                                     &request_kind,
                                     api_key_id,
+                                    analysis.failure_kind.as_deref(),
+                                    Some(resp.key_effect_code.as_str()),
+                                    resp.key_effect_summary.as_deref(),
                                 )
                                 .await
                         }
@@ -905,7 +911,7 @@ async fn proxy_handler(
                     let http_code = resp.status.as_u16() as i64;
                     let _ = state
                         .proxy
-                        .record_token_attempt_with_kind(
+                        .record_token_attempt_with_kind_metadata(
                             tid,
                             &method,
                             &path,
@@ -916,6 +922,9 @@ async fn proxy_handler(
                             result_status,
                             billing_error.as_deref(),
                             &request_kind,
+                            analysis.failure_kind.as_deref(),
+                            Some(resp.key_effect_code.as_str()),
+                            resp.key_effect_summary.as_deref(),
                         )
                         .await;
                 }
@@ -1120,6 +1129,9 @@ impl From<RequestLogRecord> for RequestLogView {
             result_status: record.result_status,
             created_at: record.created_at,
             error_message: record.error_message,
+            failure_kind: record.failure_kind,
+            key_effect_code: record.key_effect_code,
+            key_effect_summary: record.key_effect_summary,
             request_body: decode_body(&record.request_body),
             response_body: decode_body(&record.response_body),
             forwarded_headers: record.forwarded_headers,

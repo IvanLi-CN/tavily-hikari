@@ -2,7 +2,7 @@ import { Icon } from '../lib/icons'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { addons } from 'storybook/preview-api'
 import { SELECT_STORY } from 'storybook/internal/core-events'
-import { Fragment, type ReactNode, useEffect, useState } from 'react'
+import { Fragment, type ReactNode, useEffect, useLayoutEffect, useState } from 'react'
 
 import type {
   AdminUserDetail,
@@ -23,6 +23,10 @@ import { StatusBadge, type StatusTone } from '../components/StatusBadge'
 import SegmentedTabs from '../components/ui/SegmentedTabs'
 import { Button } from '../components/ui/button'
 import {
+  Drawer,
+  DrawerContent,
+} from '../components/ui/drawer'
+import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
@@ -35,7 +39,9 @@ import { Input } from '../components/ui/input'
 import { Card } from '../components/ui/card'
 import { Badge } from '../components/ui/badge'
 import { Switch } from '../components/ui/switch'
-import { LanguageProvider, useTranslate, type AdminTranslations } from '../i18n'
+import { LanguageProvider, useLanguage, useTranslate, type AdminTranslations } from '../i18n'
+import { KeyDetails } from '../AdminDashboard'
+import { TokenDetailStoryCanvas } from '../pages/TokenDetail.stories'
 
 import AdminShell, { type AdminNavItem } from './AdminShell'
 import DashboardOverview, { type DashboardMetricCard } from './DashboardOverview'
@@ -46,6 +52,11 @@ import {
   forwardProxyStorySettings,
   forwardProxyStoryStats,
 } from './forwardProxyStoryData'
+import {
+  stickyNodesStoryData,
+  stickyUsersStoryData,
+  stickyUsersStoryTotal,
+} from './keyStickyStoryData'
 import {
   buildQuotaSliderTrack,
   clampQuotaSliderStageIndex,
@@ -356,21 +367,50 @@ const MOCK_KEYS: ApiKeyStats[] = [
   },
 ]
 
+const MOCK_KEYS_WITH_QUARANTINE: ApiKeyStats[] = [
+  {
+    id: 'Qn8R',
+    status: 'active',
+    group: 'ops',
+    registration_ip: '1.0.0.1',
+    registration_region: 'HK',
+    status_changed_at: now - 5_400,
+    last_used_at: now - 196,
+    deleted_at: null,
+    quota_limit: 9_000,
+    quota_remaining: 2_410,
+    quota_synced_at: now - 240,
+    total_requests: 12_008,
+    success_count: 11_302,
+    error_count: 622,
+    quota_exhausted_count: 84,
+    quarantine: {
+      source: '/mcp',
+      reasonCode: 'account_deactivated',
+      reasonSummary: 'Tavily account deactivated (HTTP 401)',
+      reasonDetail: 'The account associated with this API key has been deactivated.',
+      createdAt: now - 196,
+    },
+  },
+]
+
 const MOCK_REQUESTS: RequestLog[] = [
   {
     id: 9501,
     key_id: 'MZli',
     auth_token_id: '9vsN',
     method: 'POST',
-    path: '/mcp',
+    path: '/api/tavily/search',
     query: null,
     http_status: 200,
-    mcp_status: 0,
+    mcp_status: 200,
     result_status: 'success',
     created_at: now - 20,
     error_message: null,
-    request_body: '{"tool":"search"}',
-    response_body: '{"ok":true}',
+    key_effect_code: 'none',
+    key_effect_summary: 'No automatic key state change',
+    request_body: '{"query":"tavily observability"}',
+    response_body: '{"status":200}',
     forwarded_headers: ['x-request-id', 'x-forwarded-for'],
     dropped_headers: ['authorization'],
   },
@@ -381,11 +421,14 @@ const MOCK_REQUESTS: RequestLog[] = [
     method: 'POST',
     path: '/mcp',
     query: null,
-    http_status: 429,
-    mcp_status: -1,
-    result_status: 'quota_exhausted',
+    http_status: 200,
+    mcp_status: 429,
+    result_status: 'error',
     created_at: now - 74,
-    error_message: 'Upstream quota exhausted',
+    error_message: 'Your request has been blocked due to excessive requests.',
+    failure_kind: 'upstream_rate_limited_429',
+    key_effect_code: 'none',
+    key_effect_summary: 'No automatic key state change',
     request_body: '{"tool":"crawl"}',
     response_body: null,
     forwarded_headers: ['x-request-id'],
@@ -396,32 +439,37 @@ const MOCK_REQUESTS: RequestLog[] = [
     key_id: 'U2vK',
     auth_token_id: 'M8kQ',
     method: 'POST',
-    path: '/mcp',
+    path: '/api/tavily/search',
     query: null,
-    http_status: 502,
-    mcp_status: -32000,
-    result_status: 'error',
+    http_status: 200,
+    mcp_status: 432,
+    result_status: 'quota_exhausted',
     created_at: now - 118,
-    error_message: 'Bad gateway from upstream',
-    request_body: '{"tool":"extract"}',
-    response_body: null,
+    error_message: 'Quota exhausted for this API key',
+    key_effect_code: 'marked_exhausted',
+    key_effect_summary: 'Automatically marked this key as exhausted',
+    request_body: '{"query":"site reliability playbook"}',
+    response_body: '{"status":432}',
     forwarded_headers: ['x-request-id'],
     dropped_headers: ['cookie'],
   },
   {
     id: 9498,
-    key_id: 'MZli',
+    key_id: 'Qn8R',
     auth_token_id: 'Q4sE',
     method: 'POST',
     path: '/mcp',
     query: null,
     http_status: 200,
-    mcp_status: 0,
-    result_status: 'success',
+    mcp_status: 401,
+    result_status: 'error',
     created_at: now - 196,
-    error_message: null,
+    error_message: 'The account associated with this API key has been deactivated.',
+    failure_kind: 'upstream_account_deactivated_401',
+    key_effect_code: 'quarantined',
+    key_effect_summary: 'Automatically quarantined this key',
     request_body: '{"tool":"map"}',
-    response_body: '{"ok":true}',
+    response_body: '{"status":401}',
     forwarded_headers: ['x-request-id'],
     dropped_headers: [],
   },
@@ -430,15 +478,18 @@ const MOCK_REQUESTS: RequestLog[] = [
     key_id: 'J1nW',
     auth_token_id: '9vsN',
     method: 'POST',
-    path: '/mcp',
+    path: '/api/tavily/extract',
     query: null,
-    http_status: 200,
-    mcp_status: 0,
-    result_status: 'success',
+    http_status: 502,
+    mcp_status: 502,
+    result_status: 'error',
     created_at: now - 310,
-    error_message: null,
-    request_body: '{"tool":"search"}',
-    response_body: '{"ok":true}',
+    error_message: 'Bad gateway from upstream',
+    failure_kind: 'upstream_gateway_5xx',
+    key_effect_code: 'none',
+    key_effect_summary: 'No automatic key state change',
+    request_body: '{"urls":["https://example.com"]}',
+    response_body: null,
     forwarded_headers: ['x-request-id'],
     dropped_headers: [],
   },
@@ -1170,6 +1221,181 @@ function requestErrorText(log: RequestLog, strings: AdminTranslations): string {
   if (status === 'quota_exhausted') return strings.logs.errors.quotaExhausted
   if (status === 'error') return strings.logs.errors.requestFailedGeneric
   return strings.logs.errors.none
+}
+
+function requestKeyEffectText(log: RequestLog, strings: AdminTranslations): string {
+  const summary = log.key_effect_summary?.trim()
+  if (summary) return summary
+  return strings.logDetails.noKeyEffect
+}
+
+function requestStatusPair(log: RequestLog): string {
+  return `${log.http_status ?? '—'} / ${log.mcp_status ?? '—'}`
+}
+
+function requestStatusTip(log: RequestLog, strings: AdminTranslations): string {
+  return `${strings.logs.table.httpStatus}: ${log.http_status ?? '—'} · ${strings.logs.table.mcpStatus}: ${log.mcp_status ?? '—'}`
+}
+
+function jsonStoryResponse(data: unknown, status = 200): Response {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+function buildRequestStoryTokenDetail(id: string): {
+  id: string
+  enabled: boolean
+  note: string | null
+  owner: { userId: string; displayName: string; username: string } | null
+  total_requests: number
+  created_at: number
+  last_used_at: number
+  quota_state: string
+  quota_hourly_used: number
+  quota_hourly_limit: number
+  quota_daily_used: number
+  quota_daily_limit: number
+  quota_monthly_used: number
+  quota_monthly_limit: number
+  quota_hourly_reset_at: number
+  quota_daily_reset_at: number
+  quota_monthly_reset_at: number
+} {
+  const token = MOCK_TOKENS.find((item) => item.id === id) ?? MOCK_TOKENS[0]
+  return {
+    id: token.id,
+    enabled: token.enabled,
+    note: token.note,
+    owner: token.owner
+      ? {
+          userId: token.owner.userId,
+          displayName: token.owner.displayName ?? token.owner.username ?? token.owner.userId,
+          username: token.owner.username ?? token.owner.userId,
+        }
+      : null,
+    total_requests: token.total_requests,
+    created_at: token.created_at,
+    last_used_at: token.last_used_at ?? token.created_at,
+    quota_state: token.quota_state,
+    quota_hourly_used: token.quota_hourly_used ?? 0,
+    quota_hourly_limit: token.quota_hourly_limit ?? 0,
+    quota_daily_used: token.quota_daily_used ?? 0,
+    quota_daily_limit: token.quota_daily_limit ?? 0,
+    quota_monthly_used: token.quota_monthly_used ?? 0,
+    quota_monthly_limit: token.quota_monthly_limit ?? 0,
+    quota_hourly_reset_at: token.quota_hourly_reset_at ?? token.created_at,
+    quota_daily_reset_at: token.quota_daily_reset_at ?? token.created_at,
+    quota_monthly_reset_at: token.quota_monthly_reset_at ?? token.created_at,
+  }
+}
+
+function StoryKeyDetailsCanvas({ id, logs }: { id: string; logs: RequestLog[] }): JSX.Element {
+  useLayoutEffect(() => {
+    const originalFetch = window.fetch.bind(window)
+    const key = [...MOCK_KEYS_WITH_QUARANTINE, ...MOCK_KEYS].find((item) => item.id === id) ?? MOCK_KEYS[0]
+    const keyLogs = logs.filter((item) => item.key_id === id)
+    const keySummary = {
+      total_requests: key.total_requests,
+      success_count: key.success_count,
+      error_count: key.error_count,
+      quota_exhausted_count: key.quota_exhausted_count,
+      active_keys: key.status === 'active' ? 1 : 0,
+      exhausted_keys: key.status === 'exhausted' ? 1 : 0,
+      last_activity: key.last_used_at,
+    }
+
+    window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      if (url.includes(`/api/keys/${encodeURIComponent(id)}/metrics`)) {
+        return jsonStoryResponse(keySummary)
+      }
+      if (url.includes(`/api/keys/${encodeURIComponent(id)}/logs`)) {
+        return jsonStoryResponse(keyLogs)
+      }
+      if (url.endsWith(`/api/keys/${encodeURIComponent(id)}`)) {
+        return jsonStoryResponse(key)
+      }
+      if (url.includes(`/api/keys/${encodeURIComponent(id)}/sticky-users`)) {
+        return jsonStoryResponse({ items: stickyUsersStoryData, total: stickyUsersStoryTotal })
+      }
+      if (url.includes(`/api/keys/${encodeURIComponent(id)}/sticky-nodes`)) {
+        return jsonStoryResponse({
+          rangeStart: '2026-03-10T00:00:00Z',
+          rangeEnd: '2026-03-17T00:00:00Z',
+          bucketSeconds: 86400,
+          nodes: stickyNodesStoryData,
+        })
+      }
+      return originalFetch(input, init)
+    }) as typeof window.fetch
+
+    return () => {
+      window.fetch = originalFetch
+    }
+  }, [id, logs])
+
+  return <KeyDetails id={id} onBack={() => undefined} onOpenUser={() => undefined} />
+}
+
+function requestKeyEffectTone(code: string | null | undefined): StatusTone {
+  switch ((code ?? '').trim()) {
+    case 'quarantined':
+      return 'error'
+    case 'marked_exhausted':
+      return 'warning'
+    case 'restored_active':
+    case 'cleared_quarantine':
+      return 'success'
+    default:
+      return 'neutral'
+  }
+}
+
+function requestKeyEffectBadgeLabel(log: RequestLog, strings: AdminTranslations): string {
+  switch ((log.key_effect_code ?? '').trim()) {
+    case 'quarantined':
+      return strings.logs.keyEffects.quarantined
+    case 'marked_exhausted':
+      return strings.logs.keyEffects.markedExhausted
+    case 'restored_active':
+      return strings.logs.keyEffects.restoredActive
+    case 'cleared_quarantine':
+      return strings.logs.keyEffects.clearedQuarantine
+    case 'none':
+    case '':
+      return strings.logs.keyEffects.none
+    default:
+      return strings.logs.keyEffects.unknown
+  }
+}
+
+function requestFailureGuidance(kind: string | null | undefined, language: 'en' | 'zh'): string | null {
+  switch (kind) {
+    case 'upstream_gateway_5xx':
+      return language === 'zh'
+        ? '上游网关暂时不可用，建议稍后重试，并检查上游健康状态与超时设置。'
+        : 'The upstream gateway is temporarily unavailable. Retry later and verify upstream health and timeout settings.'
+    case 'upstream_rate_limited_429':
+      return language === 'zh'
+        ? '这是上游限流，建议降低请求速率、切换其他 Key，或等待冷却后再试。'
+        : 'This is upstream rate limiting. Reduce request rate, switch to another key, or retry after cooldown.'
+    case 'upstream_account_deactivated_401':
+      return language === 'zh'
+        ? '该 Key 对应账户已停用，建议联系 Tavily 支持并停止继续分配该 Key。'
+        : 'The account behind this key is deactivated. Contact Tavily support and stop assigning this key.'
+    case 'transport_send_error':
+      return language === 'zh'
+        ? '这是链路发送失败，建议检查 DNS、TLS、代理和网络连通性。'
+        : 'This is a transport send failure. Check DNS, TLS, proxy settings, and network connectivity.'
+    case 'mcp_accept_406':
+      return language === 'zh'
+        ? '客户端需要同时接受 application/json 和 text/event-stream。'
+        : 'The client must accept both application/json and text/event-stream.'
+    default:
+      return null
+  }
 }
 
 function buildNavItems(strings: AdminTranslations): AdminNavItem[] {
@@ -1923,8 +2149,11 @@ function KeysPageCanvas({
 
 function RequestsPageCanvas(): JSX.Element {
   const admin = useTranslate().admin
+  const { language } = useLanguage()
   const logStrings = admin.logs
-  const [expandedLogs, setExpandedLogs] = useState<Set<number>>(() => new Set([9499]))
+  const logDetailsStrings = admin.logDetails
+  const [expandedLogs, setExpandedLogs] = useState<Set<number>>(() => new Set([9499, 9498]))
+  const [drawerTarget, setDrawerTarget] = useState<{ kind: 'key' | 'token'; id: string } | null>(null)
 
   const toggleLog = (id: number) => {
     setExpandedLogs((prev) => {
@@ -1962,15 +2191,15 @@ function RequestsPageCanvas(): JSX.Element {
         </div>
 
         <div className="table-wrapper jobs-table-wrapper">
-          <table className="admin-logs-table">
+          <table className="admin-logs-table admin-request-logs-table">
             <thead>
               <tr>
                 <th>{logStrings.table.time}</th>
                 <th>{logStrings.table.key}</th>
                 <th>{logStrings.table.token}</th>
-                <th>{logStrings.table.httpStatus}</th>
-                <th>{logStrings.table.mcpStatus}</th>
+                <th>Status</th>
                 <th>{logStrings.table.result}</th>
+                <th>{logStrings.table.keyEffect}</th>
                 <th>{logStrings.table.error}</th>
               </tr>
             </thead>
@@ -1978,23 +2207,61 @@ function RequestsPageCanvas(): JSX.Element {
               {MOCK_REQUESTS.map((log) => {
                 const expanded = expandedLogs.has(log.id)
                 const errorText = requestErrorText(log, admin)
-                const hasDetails = errorText !== logStrings.errors.none
+                const keyEffectText = requestKeyEffectText(log, admin)
+                const guidance = requestFailureGuidance(log.failure_kind, language)
+                const hasDetails =
+                  errorText !== logStrings.errors.none ||
+                  keyEffectText !== logDetailsStrings.noKeyEffect ||
+                  guidance != null
 
                 return (
                   <Fragment key={log.id}>
                     <tr>
                       <td>{formatTimestamp(log.created_at)}</td>
                       <td>
-                        <code>{log.key_id}</code>
+                        <button
+                          type="button"
+                          className="log-key-pill request-entity-button"
+                          onClick={() => setDrawerTarget({ kind: 'key', id: log.key_id })}
+                        >
+                          <code>{log.key_id}</code>
+                        </button>
                       </td>
                       <td>
-                        <code>{log.auth_token_id ?? '—'}</code>
+                        {log.auth_token_id ? (
+                          <button
+                            type="button"
+                            className="link-button log-token-link request-entity-button"
+                            onClick={() => setDrawerTarget({ kind: 'token', id: log.auth_token_id! })}
+                          >
+                            <code>{log.auth_token_id}</code>
+                          </button>
+                        ) : (
+                          <code>—</code>
+                        )}
                       </td>
-                      <td>{log.http_status ?? '—'}</td>
-                      <td>{log.mcp_status ?? '—'}</td>
+                      <td>
+                        <span className="tooltip" data-tip={requestStatusTip(log, admin)}>
+                          <button
+                            type="button"
+                            className="status-pair-trigger"
+                            aria-label={requestStatusTip(log, admin)}
+                          >
+                            {requestStatusPair(log)}
+                          </button>
+                        </span>
+                      </td>
                       <td>
                         <StatusBadge tone={logResultTone(log.result_status)}>
                           {admin.statuses[log.result_status] ?? log.result_status}
+                        </StatusBadge>
+                      </td>
+                      <td>
+                        <StatusBadge
+                          tone={requestKeyEffectTone(log.key_effect_code)}
+                          title={keyEffectText}
+                        >
+                          {requestKeyEffectBadgeLabel(log, admin)}
                         </StatusBadge>
                       </td>
                       <td>
@@ -2034,10 +2301,20 @@ function RequestsPageCanvas(): JSX.Element {
                                 <div className="log-details-value">{admin.statuses[log.result_status] ?? log.result_status}</div>
                               </div>
                               <div>
+                                <div className="log-details-label">{logDetailsStrings.keyEffect}</div>
+                                <div className="log-details-value">{keyEffectText}</div>
+                              </div>
+                              <div>
                                 <div className="log-details-label">{logStrings.table.error}</div>
                                 <div className="log-details-value">{errorText}</div>
                               </div>
                             </div>
+                            {guidance ? (
+                              <div className="log-details-block">
+                                <div className="log-details-label">{logDetailsStrings.solution}</div>
+                                <pre className="log-details-pre">{guidance}</pre>
+                              </div>
+                            ) : null}
                           </div>
                         </td>
                       </tr>
@@ -2061,6 +2338,24 @@ function RequestsPageCanvas(): JSX.Element {
           </div>
         </div>
       </section>
+
+      <Drawer
+        open={drawerTarget != null}
+        onOpenChange={(open) => {
+          if (!open) setDrawerTarget(null)
+        }}
+        shouldScaleBackground={false}
+      >
+        <DrawerContent className="request-entity-drawer-content">
+          <div className="request-entity-drawer-body">
+            {drawerTarget?.kind === 'key' ? (
+              <StoryKeyDetailsCanvas id={drawerTarget.id} logs={MOCK_REQUESTS} />
+            ) : drawerTarget?.kind === 'token' ? (
+              <TokenDetailStoryCanvas detail={buildRequestStoryTokenDetail(drawerTarget.id)} />
+            ) : null}
+          </div>
+        </DrawerContent>
+      </Drawer>
     </AdminPageFrame>
   )
 }

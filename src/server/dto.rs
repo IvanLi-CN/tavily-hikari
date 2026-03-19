@@ -201,6 +201,9 @@ struct RequestLogView {
     result_status: String,
     created_at: i64,
     error_message: Option<String>,
+    failure_kind: Option<String>,
+    key_effect_code: String,
+    key_effect_summary: Option<String>,
     request_body: Option<String>,
     response_body: Option<String>,
     forwarded_headers: Vec<String>,
@@ -387,6 +390,9 @@ struct TokenLogView {
     request_kind_detail: Option<String>,
     result_status: String,
     error_message: Option<String>,
+    failure_kind: Option<String>,
+    key_effect_code: String,
+    key_effect_summary: Option<String>,
     created_at: i64,
 }
 
@@ -405,6 +411,9 @@ impl From<TokenLogRecord> for TokenLogView {
             request_kind_detail: r.request_kind_detail,
             result_status: r.result_status,
             error_message: r.error_message,
+            failure_kind: r.failure_kind,
+            key_effect_code: r.key_effect_code,
+            key_effect_summary: r.key_effect_summary,
             created_at: r.created_at,
         }
     }

@@ -6520,6 +6520,88 @@ colo=LAX
         let _ = std::fs::remove_file(db_path);
     }
 
+    #[test]
+    fn public_token_log_view_keeps_original_field_shape_and_appends_guidance() {
+        let record = TokenLogRecord {
+            id: 1,
+            method: "POST".to_string(),
+            path: "/mcp".to_string(),
+            query: Some("token=secret".to_string()),
+            http_status: Some(200),
+            mcp_status: Some(429),
+            business_credits: None,
+            request_kind_key: "mcp:search".to_string(),
+            request_kind_label: "MCP | search".to_string(),
+            request_kind_detail: None,
+            result_status: "error".to_string(),
+            error_message: Some("Search failed".to_string()),
+            failure_kind: Some("upstream_rate_limited_429".to_string()),
+            key_effect_code: "none".to_string(),
+            key_effect_summary: None,
+            created_at: 1_700_000_000,
+        };
+        let view = PublicTokenLogView::from_record(record.clone(), UiLanguage::En);
+
+        let json = serde_json::to_value(&view).expect("serialize public token log view");
+        let object = json.as_object().expect("public token log should serialize to object");
+        assert!(object.get("failureKind").is_none());
+        assert!(object.get("keyEffectCode").is_none());
+        assert!(object.get("keyEffectSummary").is_none());
+        assert!(
+            object
+                .get("errorMessage")
+                .and_then(|value| value.as_str())
+                .is_some_and(|value| value.contains("Suggested handling: Tavily is rate limiting")),
+        );
+
+        let zh_view = PublicTokenLogView::from_record(record, UiLanguage::Zh);
+        assert!(
+            serde_json::to_value(&zh_view)
+                .ok()
+                .and_then(|value| value.get("errorMessage").and_then(|inner| inner.as_str()).map(str::to_string))
+                .is_some_and(|value| value.contains("建议：这是 Tavily 限流")),
+        );
+    }
+
+    #[test]
+    fn admin_token_log_view_exposes_failure_kind_and_key_effect_fields() {
+        let view = TokenLogView::from(TokenLogRecord {
+            id: 2,
+            method: "POST".to_string(),
+            path: "/api/tavily/search".to_string(),
+            query: None,
+            http_status: Some(401),
+            mcp_status: Some(401),
+            business_credits: Some(1),
+            request_kind_key: "api:search".to_string(),
+            request_kind_label: "API | search".to_string(),
+            request_kind_detail: None,
+            result_status: "error".to_string(),
+            error_message: Some("account deactivated".to_string()),
+            failure_kind: Some("upstream_account_deactivated_401".to_string()),
+            key_effect_code: "quarantined".to_string(),
+            key_effect_summary: Some("The system automatically quarantined this key".to_string()),
+            created_at: 1_700_000_001,
+        });
+
+        let json = serde_json::to_value(&view).expect("serialize admin token log view");
+        let object = json.as_object().expect("admin token log should serialize to object");
+        assert_eq!(
+            object.get("failure_kind").and_then(|value| value.as_str()),
+            Some("upstream_account_deactivated_401"),
+        );
+        assert_eq!(
+            object.get("key_effect_code").and_then(|value| value.as_str()),
+            Some("quarantined"),
+        );
+        assert_eq!(
+            object
+                .get("key_effect_summary")
+                .and_then(|value| value.as_str()),
+            Some("The system automatically quarantined this key"),
+        );
+    }
+
     #[tokio::test]
     async fn api_key_detail_requires_admin_auth() {
         let db_path = temp_db_path("api-key-detail-auth");

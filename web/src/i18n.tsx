@@ -990,6 +990,7 @@ interface AdminTranslationsShape {
       httpStatus: string
       mcpStatus: string
       result: string
+      keyEffect: string
       error: string
     }
     toggles: {
@@ -1006,15 +1007,26 @@ interface AdminTranslationsShape {
       httpStatus: string
       none: string
     }
+    keyEffects: {
+      none: string
+      quarantined: string
+      markedExhausted: string
+      restoredActive: string
+      clearedQuarantine: string
+      unknown: string
+    }
   }
   statuses: Record<string, string>
   logDetails: {
     request: string
     response: string
     outcome: string
+    keyEffect: string
+    solution: string
     requestBody: string
     responseBody: string
     noBody: string
+    noKeyEffect: string
     forwardedHeaders: string
     droppedHeaders: string
   }
@@ -2136,6 +2148,7 @@ export const translations: Record<Language, TranslationShape> = {
           httpStatus: 'HTTP Status',
           mcpStatus: 'Tavily Status',
           result: 'Result',
+          keyEffect: 'Key Effect',
           error: 'Error',
         },
         toggles: {
@@ -2151,6 +2164,14 @@ export const translations: Record<Language, TranslationShape> = {
           requestFailedGeneric: 'Request failed',
           httpStatus: 'HTTP {http}',
           none: '—',
+        },
+        keyEffects: {
+          none: 'No Change',
+          quarantined: 'Quarantined',
+          markedExhausted: 'Exhausted',
+          restoredActive: 'Restored',
+          clearedQuarantine: 'Cleared',
+          unknown: 'Updated',
         },
       },
       jobs: {
@@ -2213,9 +2234,12 @@ export const translations: Record<Language, TranslationShape> = {
         request: 'Request',
         response: 'Response',
         outcome: 'Outcome',
+        keyEffect: 'Key Effect',
+        solution: 'Suggested Handling',
         requestBody: 'Request Body',
         responseBody: 'Response Body',
         noBody: 'No body captured.',
+        noKeyEffect: 'No automatic key state change',
         forwardedHeaders: 'Forwarded Headers',
         droppedHeaders: 'Dropped Headers',
       },
@@ -3295,6 +3319,7 @@ export const translations: Record<Language, TranslationShape> = {
           httpStatus: 'HTTP 状态码',
           mcpStatus: 'Tavily 状态',
           result: '结果',
+          keyEffect: 'Key 影响',
           error: '错误',
         },
         toggles: {
@@ -3310,6 +3335,14 @@ export const translations: Record<Language, TranslationShape> = {
           requestFailedGeneric: '请求失败',
           httpStatus: 'HTTP {http}',
           none: '—',
+        },
+        keyEffects: {
+          none: '无变更',
+          quarantined: '已隔离',
+          markedExhausted: '已耗尽',
+          restoredActive: '已恢复',
+          clearedQuarantine: '已清除',
+          unknown: '已更新',
         },
       },
       jobs: {
@@ -3372,9 +3405,12 @@ export const translations: Record<Language, TranslationShape> = {
         request: '请求',
         response: '响应',
         outcome: '结果',
+        keyEffect: 'Key 影响',
+        solution: '建议处理',
         requestBody: '请求体',
         responseBody: '响应体',
         noBody: '未捕获内容。',
+        noKeyEffect: '无自动状态变更',
         forwardedHeaders: '转发的 Header',
         droppedHeaders: '被丢弃的 Header',
       },

@@ -10,7 +10,8 @@ pub use analysis::{
     analyze_http_attempt, analyze_mcp_attempt, classify_token_request_kind,
     extract_mcp_has_error_by_id_from_bytes, extract_mcp_usage_credits_by_id_from_bytes,
     extract_usage_credits_from_json_bytes, extract_usage_credits_total_from_json_bytes,
-    mcp_response_has_any_error, mcp_response_has_any_success,
+    failure_kind_solution_guidance, mcp_response_has_any_error, mcp_response_has_any_success,
+    should_append_solution_guidance,
 };
 pub use forward_proxy::{
     ForwardProxyHourlyBucketResponse, ForwardProxyLiveNodeResponse, ForwardProxyLiveStatsResponse,
@@ -271,6 +272,31 @@ const OUTCOME_SUCCESS: &str = "success";
 const OUTCOME_ERROR: &str = "error";
 const OUTCOME_QUOTA_EXHAUSTED: &str = "quota_exhausted";
 const OUTCOME_UNKNOWN: &str = "unknown";
+const FAILURE_KIND_UPSTREAM_GATEWAY_5XX: &str = "upstream_gateway_5xx";
+const FAILURE_KIND_UPSTREAM_RATE_LIMITED_429: &str = "upstream_rate_limited_429";
+const FAILURE_KIND_UPSTREAM_ACCOUNT_DEACTIVATED_401: &str = "upstream_account_deactivated_401";
+const FAILURE_KIND_TRANSPORT_SEND_ERROR: &str = "transport_send_error";
+const FAILURE_KIND_MCP_ACCEPT_406: &str = "mcp_accept_406";
+const FAILURE_KIND_MCP_METHOD_405: &str = "mcp_method_405";
+const FAILURE_KIND_MCP_PATH_404: &str = "mcp_path_404";
+const FAILURE_KIND_TOOL_ARGUMENT_VALIDATION: &str = "tool_argument_validation";
+const FAILURE_KIND_UNKNOWN_TOOL_NAME: &str = "unknown_tool_name";
+const FAILURE_KIND_INVALID_SEARCH_DEPTH: &str = "invalid_search_depth";
+const FAILURE_KIND_INVALID_COUNTRY_SEARCH_DEPTH_COMBO: &str = "invalid_country_search_depth_combo";
+const FAILURE_KIND_RESEARCH_PAYLOAD_422: &str = "research_payload_422";
+const FAILURE_KIND_QUERY_TOO_LONG: &str = "query_too_long";
+const FAILURE_KIND_OTHER: &str = "other";
+const KEY_EFFECT_NONE: &str = "none";
+const KEY_EFFECT_QUARANTINED: &str = "quarantined";
+const KEY_EFFECT_MARKED_EXHAUSTED: &str = "marked_exhausted";
+const KEY_EFFECT_RESTORED_ACTIVE: &str = "restored_active";
+const MAINTENANCE_SOURCE_SYSTEM: &str = "system";
+const MAINTENANCE_SOURCE_ADMIN: &str = "admin";
+const MAINTENANCE_OP_AUTO_QUARANTINE: &str = "auto_quarantine";
+const MAINTENANCE_OP_AUTO_MARK_EXHAUSTED: &str = "auto_mark_exhausted";
+const MAINTENANCE_OP_AUTO_RESTORE_ACTIVE: &str = "auto_restore_active";
+const MAINTENANCE_OP_MANUAL_CLEAR_QUARANTINE: &str = "manual_clear_quarantine";
+const MAINTENANCE_OP_MANUAL_MARK_EXHAUSTED: &str = "manual_mark_exhausted";
 const API_KEY_IP_GEO_BATCH_FIELDS: &str = "?fields=city,subdivision,asn";
 const API_KEY_IP_GEO_BATCH_SIZE: usize = 100;
 const API_KEY_IP_GEO_HTTP_TIMEOUT_SECS: u64 = 10;

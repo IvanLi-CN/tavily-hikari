@@ -33,7 +33,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import SegmentedTabs from '../components/ui/SegmentedTabs'
 import { TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table'
 import { Textarea } from '../components/ui/textarea'
-import { useTranslate } from '../i18n'
+import { useLanguage, useTranslate } from '../i18n'
 import { ADMIN_USER_CONSOLE_HREF } from '../lib/adminUserConsoleEntry'
 import { copyText, selectAllReadonlyText } from '../lib/clipboard'
 import { useResponsiveModes } from '../lib/responsive'
@@ -102,6 +102,9 @@ interface TokenLog {
   request_kind_detail: string | null
   result_status: string
   error_message: string | null
+  failure_kind?: string | null
+  key_effect_code?: string
+  key_effect_summary?: string | null
   created_at: number
 }
 
@@ -172,6 +175,85 @@ function statusLabel(status: string): string {
     case 'error': return 'Error'
     case 'quota_exhausted': return 'Quota Exhausted'
     default: return status
+  }
+}
+
+function formatTokenKeyEffectSummary(log: TokenLog, language: 'en' | 'zh'): string {
+  const summary = log.key_effect_summary?.trim()
+  switch ((log.key_effect_code ?? '').trim()) {
+    case 'quarantined':
+      return language === 'zh' ? '系统已自动隔离该 Key' : 'The system automatically quarantined this key'
+    case 'marked_exhausted':
+      return language === 'zh' ? '系统已自动将该 Key 标记为耗尽' : 'The system automatically marked this key as exhausted'
+    case 'restored_active':
+      return language === 'zh'
+        ? '系统已自动将 exhausted Key 恢复为 active'
+        : 'The system automatically restored this exhausted key to active'
+    case 'cleared_quarantine':
+      return language === 'zh' ? '管理员已解除该 Key 的隔离' : 'An admin cleared the quarantine on this key'
+    case 'none':
+      return language === 'zh' ? '无自动状态变更' : 'No automatic key state change'
+    default:
+      return summary && summary.length > 0 ? summary : language === 'zh' ? '无自动状态变更' : 'No automatic key state change'
+  }
+}
+
+function tokenKeyEffectTone(code: string | null | undefined): StatusTone {
+  switch ((code ?? '').trim()) {
+    case 'quarantined':
+      return 'error'
+    case 'marked_exhausted':
+      return 'warning'
+    case 'restored_active':
+    case 'cleared_quarantine':
+      return 'success'
+    default:
+      return 'neutral'
+  }
+}
+
+function tokenKeyEffectBadgeLabel(log: TokenLog, language: 'en' | 'zh'): string {
+  switch ((log.key_effect_code ?? '').trim()) {
+    case 'quarantined':
+      return language === 'zh' ? '已隔离' : 'Quarantined'
+    case 'marked_exhausted':
+      return language === 'zh' ? '已耗尽' : 'Exhausted'
+    case 'restored_active':
+      return language === 'zh' ? '已恢复' : 'Restored'
+    case 'cleared_quarantine':
+      return language === 'zh' ? '已清除' : 'Cleared'
+    case 'none':
+    case '':
+      return language === 'zh' ? '无变更' : 'No Change'
+    default:
+      return language === 'zh' ? '已更新' : 'Updated'
+  }
+}
+
+function tokenFailureGuidance(kind: string | null | undefined, language: 'en' | 'zh'): string | null {
+  switch (kind) {
+    case 'upstream_gateway_5xx':
+      return language === 'zh'
+        ? '这是上游网关临时故障，建议稍后重试，并检查上游连通性或代理节点健康。'
+        : 'This is a temporary upstream gateway failure. Retry later and inspect upstream connectivity or proxy health.'
+    case 'upstream_rate_limited_429':
+      return language === 'zh'
+        ? '这是 Tavily 限流，建议降低频率、切换其他 Key，或等待限流窗口恢复。'
+        : 'Tavily is rate limiting this traffic. Reduce request rate, switch keys, or wait for the limit window to reset.'
+    case 'upstream_account_deactivated_401':
+      return language === 'zh'
+        ? '该 Key 可能已失效、被撤销或账户停用，建议更换可用 Key 并检查 Tavily 后台状态。'
+        : 'The key may be invalid, revoked, or tied to a deactivated account. Replace it and check the Tavily account state.'
+    case 'transport_send_error':
+      return language === 'zh'
+        ? '这是链路发送失败，建议检查 DNS、TLS、代理链路和上游可达性。'
+        : 'This request failed before getting an upstream response. Check DNS, TLS, proxy routing, and upstream reachability.'
+    case 'mcp_accept_406':
+      return language === 'zh'
+        ? '客户端需要同时接受 application/json 与 text/event-stream，请修正 Accept 请求头。'
+        : 'The client must accept both application/json and text/event-stream. Fix the Accept header negotiation.'
+    default:
+      return null
   }
 }
 
@@ -409,6 +491,7 @@ export default function TokenDetail({
   onSecretRotated?: (id: string, token: string) => void
 }): JSX.Element {
   const translations = useTranslate()
+  const { language } = useLanguage()
   const tokenStrings = translations.admin.tokens
   const loadingStateStrings = translations.admin.loadingStates
   const pageRef = useRef<HTMLDivElement>(null)
@@ -1597,7 +1680,7 @@ export default function TokenDetail({
         <div ref={logsContentRef} style={{ minHeight: logsContentMinHeight }}>
           <AdminTableShell
             className="token-detail-md-up"
-            tableClassName="token-detail-table"
+            tableClassName="token-detail-table token-detail-request-records-table"
             loadState={logsLoadState}
             loadingLabel={logsRefreshing ? loadingStateStrings.refreshing : loadingStateStrings.switching}
             minHeight={logsContentMinHeight}
@@ -1606,10 +1689,10 @@ export default function TokenDetail({
               <TableRow>
                 <TableHead>Time</TableHead>
                 <TableHead>Request Type</TableHead>
-                <TableHead>HTTP Status</TableHead>
-                <TableHead>Tavily Status</TableHead>
+                <TableHead>Status</TableHead>
                 <TableHead>Charged Credits</TableHead>
                 <TableHead>Result</TableHead>
+                <TableHead>Key Effect</TableHead>
                 <TableHead>Error</TableHead>
               </TableRow>
             </TableHeader>
@@ -1625,8 +1708,17 @@ export default function TokenDetail({
                         size="sm"
                       />
                     </TableCell>
-                    <TableCell>{l.http_status ?? '—'}</TableCell>
-                    <TableCell>{l.mcp_status ?? '—'}</TableCell>
+                    <TableCell>
+                      <span className="tooltip" data-tip={formatTokenStatusTip(l.http_status, l.mcp_status)}>
+                        <button
+                          type="button"
+                          className="status-pair-trigger"
+                          aria-label={formatTokenStatusTip(l.http_status, l.mcp_status)}
+                        >
+                          {formatTokenStatusPair(l.http_status, l.mcp_status)}
+                        </button>
+                      </span>
+                    </TableCell>
                     <TableCell>{formatChargedCredits(l.business_credits)}</TableCell>
                     <TableCell>
                       <Button
@@ -1649,12 +1741,20 @@ export default function TokenDetail({
                         />
                       </Button>
                     </TableCell>
+                    <TableCell>
+                      <StatusBadge
+                        tone={tokenKeyEffectTone(l.key_effect_code)}
+                        title={formatTokenKeyEffectSummary(l, language)}
+                      >
+                        {tokenKeyEffectBadgeLabel(l, language)}
+                      </StatusBadge>
+                    </TableCell>
                     <TableCell>{l.error_message ?? '—'}</TableCell>
                   </TableRow>
                   {expandedLogs.has(l.id) && (
                     <TableRow className="log-details-row">
                       <TableCell colSpan={7} id={`token-log-details-${l.id}`}>
-                        <TokenLogDetails log={l} period={period} />
+                        <TokenLogDetails log={l} period={period} language={language} />
                       </TableCell>
                     </TableRow>
                   )}
@@ -1704,12 +1804,16 @@ export default function TokenDetail({
                     </div>
                   ) : null}
                   <div className="user-console-mobile-kv">
-                    <span>HTTP Status</span>
-                    <strong>{log.http_status ?? '—'}</strong>
-                  </div>
-                  <div className="user-console-mobile-kv">
-                    <span>Tavily Status</span>
-                    <strong>{log.mcp_status ?? '—'}</strong>
+                    <span>HTTP / Tavily</span>
+                    <span className="tooltip" data-tip={formatTokenStatusTip(log.http_status, log.mcp_status)}>
+                      <button
+                        type="button"
+                        className="status-pair-trigger"
+                        aria-label={formatTokenStatusTip(log.http_status, log.mcp_status)}
+                      >
+                        <strong>{formatTokenStatusPair(log.http_status, log.mcp_status)}</strong>
+                      </button>
+                    </span>
                   </div>
                   <div className="user-console-mobile-kv">
                     <span>Charged Credits</span>
@@ -1719,6 +1823,16 @@ export default function TokenDetail({
                     <span>Result</span>
                     <StatusBadge className="user-console-mobile-status" tone={statusTone(log.result_status)}>
                       {statusLabel(log.result_status)}
+                    </StatusBadge>
+                  </div>
+                  <div className="user-console-mobile-kv user-console-mobile-kv--stacked">
+                    <span>Key Effect</span>
+                    <StatusBadge
+                      className="user-console-mobile-status"
+                      tone={tokenKeyEffectTone(log.key_effect_code)}
+                      title={formatTokenKeyEffectSummary(log, language)}
+                    >
+                      {tokenKeyEffectBadgeLabel(log, language)}
                     </StatusBadge>
                   </div>
                   <div className="user-console-mobile-kv">
@@ -1820,16 +1934,33 @@ function formatChargedCredits(value: number | null): string {
   return value != null ? String(value) : '—'
 }
 
+function formatTokenStatusPair(httpStatus: number | null, mcpStatus: number | null): string {
+  return `${httpStatus ?? '—'} / ${mcpStatus ?? '—'}`
+}
+
+function formatTokenStatusTip(httpStatus: number | null, mcpStatus: number | null): string {
+  return `HTTP: ${httpStatus ?? '—'} · Tavily: ${mcpStatus ?? '—'}`
+}
+
 function formatRequestLine(log: TokenLog): string {
   const query = log.query ? `?${log.query}` : ''
   return `${log.method} ${log.path}${query}`
 }
 
-function TokenLogDetails({ log, period }: { log: TokenLog; period: Period }) {
+function TokenLogDetails({
+  log,
+  period,
+  language,
+}: {
+  log: TokenLog
+  period: Period
+  language: 'en' | 'zh'
+}) {
   const requestLine = formatRequestLine(log)
   const errorText = (log.error_message ?? '').trim() || 'No error reported.'
   const httpStatus = log.http_status != null ? `HTTP ${log.http_status}` : 'HTTP —'
   const tavilyStatus = log.mcp_status != null ? `Tavily ${log.mcp_status}` : 'Tavily —'
+  const guidance = tokenFailureGuidance(log.failure_kind, language)
 
   return (
     <div className="log-details-panel">
@@ -1860,6 +1991,10 @@ function TokenLogDetails({ log, period }: { log: TokenLog; period: Period }) {
           <span className="log-details-label">Outcome</span>
           <span className="log-details-value">{statusLabel(log.result_status)}</span>
         </div>
+        <div>
+          <span className="log-details-label">Key Effect</span>
+          <span className="log-details-value">{formatTokenKeyEffectSummary(log, language)}</span>
+        </div>
       </div>
       <div className="log-details-body">
         <div className="log-details-section">
@@ -1876,6 +2011,12 @@ function TokenLogDetails({ log, period }: { log: TokenLog; period: Period }) {
           <header>Error Message</header>
           <pre>{errorText}</pre>
         </div>
+        {guidance ? (
+          <div className="log-details-section">
+            <header>Suggested Handling</header>
+            <pre>{guidance}</pre>
+          </div>
+        ) : null}
       </div>
     </div>
   )

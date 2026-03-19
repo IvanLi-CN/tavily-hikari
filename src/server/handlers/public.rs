@@ -318,6 +318,12 @@ struct PublicTokenLogView {
 
 impl From<TokenLogRecord> for PublicTokenLogView {
     fn from(r: TokenLogRecord) -> Self {
+        Self::from_record(r, UiLanguage::En)
+    }
+}
+
+impl PublicTokenLogView {
+    fn from_record(r: TokenLogRecord, language: UiLanguage) -> Self {
         Self {
             id: r.id,
             method: r.method,
@@ -326,7 +332,11 @@ impl From<TokenLogRecord> for PublicTokenLogView {
             http_status: r.http_status,
             mcp_status: r.mcp_status,
             result_status: r.result_status,
-            error_message: r.error_message,
+            error_message: append_solution_guidance_to_error(
+                r.error_message,
+                r.failure_kind.as_deref(),
+                language,
+            ),
             created_at: r.created_at,
         }
     }
@@ -388,6 +398,7 @@ fn redact_sensitive(input: &str) -> String {
 
 async fn get_public_logs(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Query(q): Query<PublicLogsQuery>,
 ) -> Result<Json<Vec<PublicTokenLogView>>, StatusCode> {
     // Validate full token first
@@ -408,6 +419,7 @@ async fn get_public_logs(
         .ok_or(StatusCode::BAD_REQUEST)?;
 
     let limit = q.limit.unwrap_or(20).clamp(1, 20);
+    let language = ui_language_from_headers(&headers);
 
     state
         .proxy
@@ -416,7 +428,7 @@ async fn get_public_logs(
         .map(|items| {
             let mapped: Vec<PublicTokenLogView> = items
                 .into_iter()
-                .map(PublicTokenLogView::from)
+                .map(|record| PublicTokenLogView::from_record(record, language))
                 .map(|mut v| {
                     // Redact sensitive patterns across error_message, path and query
                     if let Some(err) = v.error_message.as_ref() {

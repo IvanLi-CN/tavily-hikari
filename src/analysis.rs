@@ -3,12 +3,21 @@ use crate::*;
 
 pub(crate) fn analyze_attempt(status: StatusCode, body: &[u8]) -> AttemptAnalysis {
     if !status.is_success() {
+        let tavily_status_code = Some(status.as_u16() as i64);
         return AttemptAnalysis {
             status: OUTCOME_ERROR,
-            tavily_status_code: Some(status.as_u16() as i64),
-            key_health_action: classify_quarantine_reason(Some(status.as_u16() as i64), body)
+            tavily_status_code,
+            key_health_action: classify_quarantine_reason(tavily_status_code, body)
                 .map(KeyHealthAction::Quarantine)
                 .unwrap_or(KeyHealthAction::None),
+            failure_kind: classify_failure_kind(
+                "/mcp",
+                tavily_status_code,
+                tavily_status_code,
+                None,
+                body,
+            ),
+            key_effect: KeyEffect::none(),
             api_key_id: None,
         };
     }
@@ -20,6 +29,8 @@ pub(crate) fn analyze_attempt(status: StatusCode, body: &[u8]) -> AttemptAnalysi
                 status: OUTCOME_UNKNOWN,
                 tavily_status_code: None,
                 key_health_action: KeyHealthAction::None,
+                failure_kind: None,
+                key_effect: KeyEffect::none(),
                 api_key_id: None,
             };
         }
@@ -51,6 +62,11 @@ pub(crate) fn analyze_attempt(status: StatusCode, body: &[u8]) -> AttemptAnalysi
                         status: OUTCOME_QUOTA_EXHAUSTED,
                         tavily_status_code: code.or(detected_code),
                         key_health_action: KeyHealthAction::MarkExhausted,
+                        failure_kind: None,
+                        key_effect: KeyEffect::new(
+                            KEY_EFFECT_MARKED_EXHAUSTED,
+                            "The system automatically marked this key as exhausted",
+                        ),
                         api_key_id: None,
                     };
                 }
@@ -69,6 +85,14 @@ pub(crate) fn analyze_attempt(status: StatusCode, body: &[u8]) -> AttemptAnalysi
             key_health_action: classify_quarantine_reason(detected_code, body)
                 .map(KeyHealthAction::Quarantine)
                 .unwrap_or(KeyHealthAction::None),
+            failure_kind: classify_failure_kind(
+                "/mcp",
+                Some(status.as_u16() as i64),
+                detected_code,
+                None,
+                body,
+            ),
+            key_effect: KeyEffect::none(),
             api_key_id: None,
         };
     }
@@ -78,6 +102,8 @@ pub(crate) fn analyze_attempt(status: StatusCode, body: &[u8]) -> AttemptAnalysi
             status: OUTCOME_SUCCESS,
             tavily_status_code: detected_code,
             key_health_action: KeyHealthAction::None,
+            failure_kind: None,
+            key_effect: KeyEffect::none(),
             api_key_id: None,
         };
     }
@@ -86,6 +112,8 @@ pub(crate) fn analyze_attempt(status: StatusCode, body: &[u8]) -> AttemptAnalysi
         status: OUTCOME_UNKNOWN,
         tavily_status_code: detected_code,
         key_health_action: KeyHealthAction::None,
+        failure_kind: None,
+        key_effect: KeyEffect::none(),
         api_key_id: None,
     }
 }
@@ -138,6 +166,19 @@ pub fn analyze_http_attempt(status: StatusCode, body: &[u8]) -> AttemptAnalysis 
         status: status_str,
         tavily_status_code: Some(effective),
         key_health_action,
+        failure_kind: if matches!(outcome, MessageOutcome::Error) {
+            classify_failure_kind("/api/tavily", Some(http_code), Some(effective), None, body)
+        } else {
+            None
+        },
+        key_effect: if matches!(outcome, MessageOutcome::QuotaExhausted) {
+            KeyEffect::new(
+                KEY_EFFECT_MARKED_EXHAUSTED,
+                "The system automatically marked this key as exhausted",
+            )
+        } else {
+            KeyEffect::none()
+        },
         api_key_id: None,
     }
 }
@@ -146,6 +187,162 @@ pub fn analyze_http_attempt(status: StatusCode, body: &[u8]) -> AttemptAnalysis 
 /// as the core proxy request logger (supports JSON-RPC envelopes and SSE message streams).
 pub fn analyze_mcp_attempt(status: StatusCode, body: &[u8]) -> AttemptAnalysis {
     analyze_attempt(status, body)
+}
+
+fn combined_failure_text(error_message: Option<&str>, body: &[u8]) -> String {
+    let mut combined = String::new();
+    if let Some(message) = error_message
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        combined.push_str(message);
+    }
+    if !body.is_empty()
+        && let Ok(text) = std::str::from_utf8(body)
+    {
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            if !combined.is_empty() {
+                combined.push('\n');
+            }
+            combined.push_str(trimmed);
+        }
+    }
+    combined
+}
+
+pub(crate) fn classify_failure_kind(
+    path: &str,
+    http_status: Option<i64>,
+    tavily_status: Option<i64>,
+    error_message: Option<&str>,
+    body: &[u8],
+) -> Option<String> {
+    let normalized_path = path.trim().to_ascii_lowercase();
+    let combined = combined_failure_text(error_message, body);
+    let normalized = combined.to_ascii_lowercase();
+    let effective_status = tavily_status.or(http_status);
+
+    if normalized.contains("error sending request for url")
+        || normalized.contains("dns error")
+        || normalized.contains("connection refused")
+        || normalized.contains("tls handshake")
+    {
+        return Some(FAILURE_KIND_TRANSPORT_SEND_ERROR.to_string());
+    }
+
+    if matches!(http_status, Some(502..=504)) {
+        return Some(FAILURE_KIND_UPSTREAM_GATEWAY_5XX.to_string());
+    }
+
+    if tavily_status == Some(429)
+        || (http_status == Some(429) && normalized.contains("excessive requests"))
+    {
+        return Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429.to_string());
+    }
+
+    if matches!(effective_status, Some(401 | 403))
+        && (normalized.contains("deactivated")
+            || normalized.contains("revoked")
+            || normalized.contains("invalid api key")
+            || normalized.contains("api key is invalid"))
+    {
+        return Some(FAILURE_KIND_UPSTREAM_ACCOUNT_DEACTIVATED_401.to_string());
+    }
+
+    if http_status == Some(406)
+        || normalized.contains("must accept both application/json and text/event-stream")
+    {
+        return Some(FAILURE_KIND_MCP_ACCEPT_406.to_string());
+    }
+
+    if http_status == Some(405) {
+        return Some(FAILURE_KIND_MCP_METHOD_405.to_string());
+    }
+
+    if http_status == Some(404) && normalized_path.starts_with("/mcp") {
+        return Some(FAILURE_KIND_MCP_PATH_404.to_string());
+    }
+
+    if normalized.contains("unknown tool") {
+        return Some(FAILURE_KIND_UNKNOWN_TOOL_NAME.to_string());
+    }
+
+    if normalized.contains("unexpected keyword argument")
+        || normalized.contains("input should be a valid")
+        || normalized.contains("validation error")
+    {
+        return Some(FAILURE_KIND_TOOL_ARGUMENT_VALIDATION.to_string());
+    }
+
+    if normalized.contains("search depth")
+        && (normalized.contains("ultra-fast")
+            || normalized.contains("advanced")
+            || normalized.contains("basic"))
+    {
+        return Some(FAILURE_KIND_INVALID_SEARCH_DEPTH.to_string());
+    }
+
+    if normalized.contains("country parameter is not supported for fast or ultra-fast search_depth")
+    {
+        return Some(FAILURE_KIND_INVALID_COUNTRY_SEARCH_DEPTH_COMBO.to_string());
+    }
+
+    if http_status == Some(422) && normalized_path == "/api/tavily/research" {
+        return Some(FAILURE_KIND_RESEARCH_PAYLOAD_422.to_string());
+    }
+
+    if normalized.contains("max query length is") || normalized.contains("query is too long") {
+        return Some(FAILURE_KIND_QUERY_TOO_LONG.to_string());
+    }
+
+    if effective_status.is_some() || !normalized.is_empty() {
+        return Some(FAILURE_KIND_OTHER.to_string());
+    }
+
+    None
+}
+
+pub fn failure_kind_solution_guidance(kind: &str, prefer_zh: bool) -> Option<&'static str> {
+    match kind {
+        FAILURE_KIND_UPSTREAM_GATEWAY_5XX => Some(if prefer_zh {
+            "建议：这是上游网关临时故障，可稍后重试；若持续出现，请检查上游连通性与代理健康状态。"
+        } else {
+            "Suggested handling: this is a temporary upstream gateway failure. Retry later and inspect upstream connectivity or proxy health."
+        }),
+        FAILURE_KIND_UPSTREAM_RATE_LIMITED_429 => Some(if prefer_zh {
+            "建议：这是 Tavily 限流，请降低请求频率或切换其他 Key，稍后再试。"
+        } else {
+            "Suggested handling: Tavily is rate limiting this traffic. Reduce request rate, switch keys, or retry after cooldown."
+        }),
+        FAILURE_KIND_UPSTREAM_ACCOUNT_DEACTIVATED_401 => Some(if prefer_zh {
+            "建议：该 Key 可能已失效、被撤销或账户停用，请更换可用 Key 并检查 Tavily 后台状态。"
+        } else {
+            "Suggested handling: this key may be invalid, revoked, or tied to a deactivated account. Replace it and verify the Tavily account state."
+        }),
+        FAILURE_KIND_TRANSPORT_SEND_ERROR => Some(if prefer_zh {
+            "建议：这是链路/网络发送失败，请检查 DNS、TLS、代理链路或上游可达性。"
+        } else {
+            "Suggested handling: this request failed before getting an upstream response. Check DNS, TLS, proxy routing, and upstream reachability."
+        }),
+        FAILURE_KIND_MCP_ACCEPT_406 => Some(if prefer_zh {
+            "建议：客户端需要同时接受 application/json 与 text/event-stream，请修正 Accept 请求头。"
+        } else {
+            "Suggested handling: the client must accept both application/json and text/event-stream. Fix the Accept header negotiation."
+        }),
+        _ => None,
+    }
+}
+
+pub fn should_append_solution_guidance(kind: &str) -> bool {
+    matches!(
+        kind,
+        FAILURE_KIND_UPSTREAM_GATEWAY_5XX
+            | FAILURE_KIND_UPSTREAM_RATE_LIMITED_429
+            | FAILURE_KIND_UPSTREAM_ACCOUNT_DEACTIVATED_401
+            | FAILURE_KIND_TRANSPORT_SEND_ERROR
+            | FAILURE_KIND_MCP_ACCEPT_406
+    )
 }
 
 /// Best-effort detection of whether a Tavily MCP response contains *any* error.

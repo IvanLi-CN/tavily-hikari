@@ -19,6 +19,9 @@ pub(crate) struct AttemptLog<'a> {
     pub(crate) request_body: &'a [u8],
     pub(crate) response_body: &'a [u8],
     pub(crate) outcome: &'a str,
+    pub(crate) failure_kind: Option<&'a str>,
+    pub(crate) key_effect_code: &'a str,
+    pub(crate) key_effect_summary: Option<&'a str>,
     pub(crate) forwarded_headers: &'a [String],
     pub(crate) dropped_headers: &'a [String],
 }
@@ -41,6 +44,8 @@ pub struct ProxyResponse {
     pub headers: HeaderMap,
     pub body: Bytes,
     pub api_key_id: Option<String>,
+    pub key_effect_code: String,
+    pub key_effect_summary: Option<String>,
 }
 
 /// Token quota verdict used by the HTTP layer to decide whether to forward.
@@ -329,6 +334,63 @@ pub struct ApiKeyQuarantine {
     pub created_at: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyEffect {
+    pub code: String,
+    pub summary: Option<String>,
+}
+
+impl KeyEffect {
+    pub(crate) fn none() -> Self {
+        Self {
+            code: KEY_EFFECT_NONE.to_string(),
+            summary: None,
+        }
+    }
+
+    pub(crate) fn new(code: &str, summary: impl Into<String>) -> Self {
+        Self {
+            code: code.to_string(),
+            summary: Some(summary.into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ApiKeyMaintenanceRecord {
+    pub id: String,
+    pub key_id: String,
+    pub source: String,
+    pub operation_code: String,
+    pub operation_summary: String,
+    pub reason_code: Option<String>,
+    pub reason_summary: Option<String>,
+    pub reason_detail: Option<String>,
+    pub request_log_id: Option<i64>,
+    pub auth_token_log_id: Option<i64>,
+    pub auth_token_id: Option<String>,
+    pub actor_user_id: Option<String>,
+    pub actor_display_name: Option<String>,
+    pub status_before: Option<String>,
+    pub status_after: Option<String>,
+    pub quarantine_before: bool,
+    pub quarantine_after: bool,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MaintenanceActor {
+    pub auth_token_id: Option<String>,
+    pub actor_user_id: Option<String>,
+    pub actor_display_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct KeyStateSnapshot {
+    pub status: Option<String>,
+    pub quarantined: bool,
+}
+
 /// 单条请求日志记录的关键信息。
 #[derive(Debug, Clone)]
 pub struct RequestLogRecord {
@@ -342,6 +404,9 @@ pub struct RequestLogRecord {
     pub tavily_status_code: Option<i64>,
     pub error_message: Option<String>,
     pub result_status: String,
+    pub failure_kind: Option<String>,
+    pub key_effect_code: String,
+    pub key_effect_summary: Option<String>,
     pub request_body: Vec<u8>,
     pub response_body: Vec<u8>,
     pub created_at: i64,
@@ -673,6 +738,9 @@ pub struct TokenLogRecord {
     pub request_kind_detail: Option<String>,
     pub result_status: String,
     pub error_message: Option<String>,
+    pub failure_kind: Option<String>,
+    pub key_effect_code: String,
+    pub key_effect_summary: Option<String>,
     pub created_at: i64,
 }
 
@@ -1611,6 +1679,8 @@ pub struct AttemptAnalysis {
     pub status: &'static str,
     pub tavily_status_code: Option<i64>,
     pub key_health_action: KeyHealthAction,
+    pub failure_kind: Option<String>,
+    pub key_effect: KeyEffect,
     pub api_key_id: Option<String>,
 }
 

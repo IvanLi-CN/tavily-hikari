@@ -3220,15 +3220,84 @@ impl TavilyProxy {
         lease: &ApiKeyLease,
         source: &str,
         analysis: &AttemptAnalysis,
-    ) -> Result<(), ProxyError> {
+        auth_token_id: Option<&str>,
+    ) -> Result<KeyEffect, ProxyError> {
         match &analysis.key_health_action {
-            KeyHealthAction::None => self.key_store.restore_active_status(&lease.secret).await,
+            KeyHealthAction::None => {
+                if analysis.status != OUTCOME_SUCCESS {
+                    return Ok(KeyEffect::none());
+                }
+                let before = self.key_store.fetch_key_state_snapshot(&lease.id).await?;
+                let changed = self.key_store.restore_active_status(&lease.secret).await?;
+                if !changed {
+                    return Ok(KeyEffect::none());
+                }
+                let after = self.key_store.fetch_key_state_snapshot(&lease.id).await?;
+                self.key_store
+                    .insert_api_key_maintenance_record(ApiKeyMaintenanceRecord {
+                        id: nanoid!(12),
+                        key_id: lease.id.clone(),
+                        source: MAINTENANCE_SOURCE_SYSTEM.to_string(),
+                        operation_code: MAINTENANCE_OP_AUTO_RESTORE_ACTIVE.to_string(),
+                        operation_summary: "自动恢复为 active".to_string(),
+                        reason_code: None,
+                        reason_summary: Some("成功请求触发从 exhausted 恢复".to_string()),
+                        reason_detail: Some(format!("source={source}")),
+                        request_log_id: None,
+                        auth_token_log_id: None,
+                        auth_token_id: auth_token_id.map(str::to_string),
+                        actor_user_id: None,
+                        actor_display_name: None,
+                        status_before: before.status,
+                        status_after: after.status,
+                        quarantine_before: before.quarantined,
+                        quarantine_after: after.quarantined,
+                        created_at: Utc::now().timestamp(),
+                    })
+                    .await?;
+                Ok(KeyEffect::new(
+                    KEY_EFFECT_RESTORED_ACTIVE,
+                    "The system automatically restored this exhausted key to active",
+                ))
+            }
             KeyHealthAction::MarkExhausted => {
-                let _changed = self.key_store.mark_quota_exhausted(&lease.secret).await?;
-                Ok(())
+                let before = self.key_store.fetch_key_state_snapshot(&lease.id).await?;
+                let changed = self.key_store.mark_quota_exhausted(&lease.secret).await?;
+                if !changed {
+                    return Ok(KeyEffect::none());
+                }
+                let after = self.key_store.fetch_key_state_snapshot(&lease.id).await?;
+                self.key_store
+                    .insert_api_key_maintenance_record(ApiKeyMaintenanceRecord {
+                        id: nanoid!(12),
+                        key_id: lease.id.clone(),
+                        source: MAINTENANCE_SOURCE_SYSTEM.to_string(),
+                        operation_code: MAINTENANCE_OP_AUTO_MARK_EXHAUSTED.to_string(),
+                        operation_summary: "自动标记为 exhausted".to_string(),
+                        reason_code: Some("quota_exhausted".to_string()),
+                        reason_summary: Some("上游额度耗尽".to_string()),
+                        reason_detail: Some(format!("source={source}")),
+                        request_log_id: None,
+                        auth_token_log_id: None,
+                        auth_token_id: auth_token_id.map(str::to_string),
+                        actor_user_id: None,
+                        actor_display_name: None,
+                        status_before: before.status,
+                        status_after: after.status,
+                        quarantine_before: before.quarantined,
+                        quarantine_after: after.quarantined,
+                        created_at: Utc::now().timestamp(),
+                    })
+                    .await?;
+                Ok(KeyEffect::new(
+                    KEY_EFFECT_MARKED_EXHAUSTED,
+                    "The system automatically marked this key as exhausted",
+                ))
             }
             KeyHealthAction::Quarantine(decision) => {
-                self.key_store
+                let before = self.key_store.fetch_key_state_snapshot(&lease.id).await?;
+                let inserted = self
+                    .key_store
                     .quarantine_key_by_id(
                         &lease.id,
                         source,
@@ -3236,7 +3305,37 @@ impl TavilyProxy {
                         &decision.reason_summary,
                         &decision.reason_detail,
                     )
-                    .await
+                    .await?;
+                if !inserted {
+                    return Ok(KeyEffect::none());
+                }
+                let after = self.key_store.fetch_key_state_snapshot(&lease.id).await?;
+                self.key_store
+                    .insert_api_key_maintenance_record(ApiKeyMaintenanceRecord {
+                        id: nanoid!(12),
+                        key_id: lease.id.clone(),
+                        source: MAINTENANCE_SOURCE_SYSTEM.to_string(),
+                        operation_code: MAINTENANCE_OP_AUTO_QUARANTINE.to_string(),
+                        operation_summary: "自动隔离 Key".to_string(),
+                        reason_code: Some(decision.reason_code.clone()),
+                        reason_summary: Some(decision.reason_summary.clone()),
+                        reason_detail: Some(decision.reason_detail.clone()),
+                        request_log_id: None,
+                        auth_token_log_id: None,
+                        auth_token_id: auth_token_id.map(str::to_string),
+                        actor_user_id: None,
+                        actor_display_name: None,
+                        status_before: before.status,
+                        status_after: after.status,
+                        quarantine_before: before.quarantined,
+                        quarantine_after: after.quarantined,
+                        created_at: Utc::now().timestamp(),
+                    })
+                    .await?;
+                Ok(KeyEffect::new(
+                    KEY_EFFECT_QUARANTINED,
+                    "The system automatically quarantined this key",
+                ))
             }
         }
     }
@@ -3255,7 +3354,9 @@ impl TavilyProxy {
         else {
             return Ok(());
         };
-        self.key_store
+        let before = self.key_store.fetch_key_state_snapshot(key_id).await?;
+        let inserted = self
+            .key_store
             .quarantine_key_by_id(
                 key_id,
                 source,
@@ -3263,7 +3364,33 @@ impl TavilyProxy {
                 &decision.reason_summary,
                 &decision.reason_detail,
             )
-            .await
+            .await?;
+        if inserted {
+            let after = self.key_store.fetch_key_state_snapshot(key_id).await?;
+            self.key_store
+                .insert_api_key_maintenance_record(ApiKeyMaintenanceRecord {
+                    id: nanoid!(12),
+                    key_id: key_id.to_string(),
+                    source: MAINTENANCE_SOURCE_SYSTEM.to_string(),
+                    operation_code: MAINTENANCE_OP_AUTO_QUARANTINE.to_string(),
+                    operation_summary: "自动隔离 Key".to_string(),
+                    reason_code: Some(decision.reason_code),
+                    reason_summary: Some(decision.reason_summary),
+                    reason_detail: Some(decision.reason_detail),
+                    request_log_id: None,
+                    auth_token_log_id: None,
+                    auth_token_id: None,
+                    actor_user_id: None,
+                    actor_display_name: None,
+                    status_before: before.status,
+                    status_after: after.status,
+                    quarantine_before: before.quarantined,
+                    quarantine_after: after.quarantined,
+                    created_at: Utc::now().timestamp(),
+                })
+                .await?;
+        }
+        Ok(())
     }
 
     /// 将请求透传到 Tavily upstream 并记录日志。
@@ -3322,6 +3449,15 @@ impl TavilyProxy {
                     status,
                 );
 
+                let key_effect = self
+                    .reconcile_key_health(
+                        &lease,
+                        request.path.as_str(),
+                        &outcome,
+                        request.auth_token_id.as_deref(),
+                    )
+                    .await?;
+
                 self.key_store
                     .log_attempt(AttemptLog {
                         key_id: &lease.id,
@@ -3335,12 +3471,12 @@ impl TavilyProxy {
                         request_body: &request.body,
                         response_body: &body_bytes,
                         outcome: outcome.status,
+                        failure_kind: outcome.failure_kind.as_deref(),
+                        key_effect_code: key_effect.code.as_str(),
+                        key_effect_summary: key_effect.summary.as_deref(),
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
                     })
-                    .await?;
-
-                self.reconcile_key_health(&lease, request.path.as_str(), &outcome)
                     .await?;
 
                 Ok(ProxyResponse {
@@ -3348,6 +3484,8 @@ impl TavilyProxy {
                     headers,
                     body: body_bytes,
                     api_key_id: Some(lease.id.clone()),
+                    key_effect_code: key_effect.code,
+                    key_effect_summary: key_effect.summary,
                 })
             }
             Err(err) => {
@@ -3371,6 +3509,9 @@ impl TavilyProxy {
                         request_body: &request.body,
                         response_body: &[],
                         outcome: OUTCOME_ERROR,
+                        failure_kind: None,
+                        key_effect_code: KEY_EFFECT_NONE,
+                        key_effect_summary: None,
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
                     })
@@ -3469,6 +3610,15 @@ impl TavilyProxy {
 
                 let mut analysis = analyze_http_attempt(status, &body_bytes);
                 analysis.api_key_id = Some(lease.id.clone());
+                if analysis.failure_kind.is_none() && analysis.status == OUTCOME_ERROR {
+                    analysis.failure_kind = classify_failure_kind(
+                        display_path,
+                        Some(status.as_u16() as i64),
+                        analysis.tavily_status_code,
+                        None,
+                        &body_bytes,
+                    );
+                }
                 let redacted_response_body = redact_api_key_bytes(&body_bytes);
                 if status.is_success()
                     && upstream_path == "/research"
@@ -3478,6 +3628,10 @@ impl TavilyProxy {
                     self.record_research_request_affinity(&request_id, &lease.id, token_id)
                         .await?;
                 }
+
+                let key_effect = self
+                    .reconcile_key_health(&lease, display_path, &analysis, auth_token_id)
+                    .await?;
 
                 self.key_store
                     .log_attempt(AttemptLog {
@@ -3492,13 +3646,14 @@ impl TavilyProxy {
                         request_body: &redacted_request_body,
                         response_body: &redacted_response_body,
                         outcome: analysis.status,
+                        failure_kind: analysis.failure_kind.as_deref(),
+                        key_effect_code: key_effect.code.as_str(),
+                        key_effect_summary: key_effect.summary.as_deref(),
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
                     })
                     .await?;
-
-                self.reconcile_key_health(&lease, display_path, &analysis)
-                    .await?;
+                analysis.key_effect = key_effect.clone();
 
                 Ok((
                     ProxyResponse {
@@ -3506,6 +3661,8 @@ impl TavilyProxy {
                         headers,
                         body: body_bytes,
                         api_key_id: Some(lease.id.clone()),
+                        key_effect_code: key_effect.code,
+                        key_effect_summary: key_effect.summary,
                     },
                     analysis,
                 ))
@@ -3526,6 +3683,9 @@ impl TavilyProxy {
                         request_body: &redacted_request_body,
                         response_body: &redacted_empty,
                         outcome: OUTCOME_ERROR,
+                        failure_kind: None,
+                        key_effect_code: KEY_EFFECT_NONE,
+                        key_effect_summary: None,
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
                     })
@@ -3636,6 +3796,15 @@ impl TavilyProxy {
 
                 let mut analysis = analyze_http_attempt(status, &body_bytes);
                 analysis.api_key_id = Some(lease.id.clone());
+                if analysis.failure_kind.is_none() && analysis.status == OUTCOME_ERROR {
+                    analysis.failure_kind = classify_failure_kind(
+                        display_path,
+                        Some(status.as_u16() as i64),
+                        analysis.tavily_status_code,
+                        None,
+                        &body_bytes,
+                    );
+                }
                 let redacted_response_body = redact_api_key_bytes(&body_bytes);
                 if status.is_success()
                     && let Some(request_id) = extract_research_request_id(&body_bytes)
@@ -3644,6 +3813,10 @@ impl TavilyProxy {
                     self.record_research_request_affinity(&request_id, &lease.id, token_id)
                         .await?;
                 }
+
+                let key_effect = self
+                    .reconcile_key_health(&lease, display_path, &analysis, auth_token_id)
+                    .await?;
 
                 self.key_store
                     .log_attempt(AttemptLog {
@@ -3658,13 +3831,14 @@ impl TavilyProxy {
                         request_body: &redacted_request_body,
                         response_body: &redacted_response_body,
                         outcome: analysis.status,
+                        failure_kind: analysis.failure_kind.as_deref(),
+                        key_effect_code: key_effect.code.as_str(),
+                        key_effect_summary: key_effect.summary.as_deref(),
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
                     })
                     .await?;
-
-                self.reconcile_key_health(&lease, display_path, &analysis)
-                    .await?;
+                analysis.key_effect = key_effect.clone();
 
                 let after_usage = match self
                     .fetch_research_usage_for_secret_with_retries(
@@ -3697,6 +3871,8 @@ impl TavilyProxy {
                         headers,
                         body: body_bytes,
                         api_key_id: Some(lease.id.clone()),
+                        key_effect_code: key_effect.code,
+                        key_effect_summary: key_effect.summary,
                     },
                     analysis,
                     delta,
@@ -3718,6 +3894,9 @@ impl TavilyProxy {
                         request_body: &redacted_request_body,
                         response_body: &redacted_empty,
                         outcome: OUTCOME_ERROR,
+                        failure_kind: None,
+                        key_effect_code: KEY_EFFECT_NONE,
+                        key_effect_summary: None,
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
                     })
@@ -3785,6 +3964,15 @@ impl TavilyProxy {
 
                 let mut analysis = analyze_http_attempt(status, &body_bytes);
                 analysis.api_key_id = Some(lease.id.clone());
+                if analysis.failure_kind.is_none() && analysis.status == OUTCOME_ERROR {
+                    analysis.failure_kind = classify_failure_kind(
+                        display_path,
+                        Some(status.as_u16() as i64),
+                        analysis.tavily_status_code,
+                        None,
+                        &body_bytes,
+                    );
+                }
                 let redacted_response_body = redact_api_key_bytes(&body_bytes);
                 if status.is_success()
                     && let Some(request_id) = research_request_id.as_deref()
@@ -3793,6 +3981,10 @@ impl TavilyProxy {
                     self.record_research_request_affinity(request_id, &lease.id, token_id)
                         .await?;
                 }
+
+                let key_effect = self
+                    .reconcile_key_health(&lease, display_path, &analysis, auth_token_id)
+                    .await?;
 
                 self.key_store
                     .log_attempt(AttemptLog {
@@ -3807,13 +3999,14 @@ impl TavilyProxy {
                         request_body: &redacted_request_body,
                         response_body: &redacted_response_body,
                         outcome: analysis.status,
+                        failure_kind: analysis.failure_kind.as_deref(),
+                        key_effect_code: key_effect.code.as_str(),
+                        key_effect_summary: key_effect.summary.as_deref(),
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
                     })
                     .await?;
-
-                self.reconcile_key_health(&lease, display_path, &analysis)
-                    .await?;
+                analysis.key_effect = key_effect.clone();
 
                 Ok((
                     ProxyResponse {
@@ -3821,6 +4014,8 @@ impl TavilyProxy {
                         headers,
                         body: body_bytes,
                         api_key_id: Some(lease.id.clone()),
+                        key_effect_code: key_effect.code,
+                        key_effect_summary: key_effect.summary,
                     },
                     analysis,
                 ))
@@ -3841,6 +4036,9 @@ impl TavilyProxy {
                         request_body: &redacted_request_body,
                         response_body: &redacted_empty,
                         outcome: OUTCOME_ERROR,
+                        failure_kind: None,
+                        key_effect_code: KEY_EFFECT_NONE,
+                        key_effect_summary: None,
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
                     })
@@ -4603,8 +4801,41 @@ impl TavilyProxy {
         result_status: &str,
         error_message: Option<&str>,
     ) -> Result<(), ProxyError> {
+        self.record_token_attempt_metadata(
+            token_id,
+            method,
+            path,
+            query,
+            http_status,
+            mcp_status,
+            counts_business_quota,
+            result_status,
+            error_message,
+            None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_token_attempt_metadata(
+        &self,
+        token_id: &str,
+        method: &Method,
+        path: &str,
+        query: Option<&str>,
+        http_status: Option<i64>,
+        mcp_status: Option<i64>,
+        counts_business_quota: bool,
+        result_status: &str,
+        error_message: Option<&str>,
+        failure_kind: Option<&str>,
+        key_effect_code: Option<&str>,
+        key_effect_summary: Option<&str>,
+    ) -> Result<(), ProxyError> {
         let request_kind = classify_token_request_kind(path, None);
-        self.record_token_attempt_with_kind(
+        self.record_token_attempt_with_kind_metadata(
             token_id,
             method,
             path,
@@ -4615,6 +4846,9 @@ impl TavilyProxy {
             result_status,
             error_message,
             &request_kind,
+            failure_kind,
+            key_effect_code,
+            key_effect_summary,
         )
         .await
     }
@@ -4633,6 +4867,41 @@ impl TavilyProxy {
         error_message: Option<&str>,
         request_kind: &TokenRequestKind,
     ) -> Result<(), ProxyError> {
+        self.record_token_attempt_with_kind_metadata(
+            token_id,
+            method,
+            path,
+            query,
+            http_status,
+            mcp_status,
+            counts_business_quota,
+            result_status,
+            error_message,
+            request_kind,
+            None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_token_attempt_with_kind_metadata(
+        &self,
+        token_id: &str,
+        method: &Method,
+        path: &str,
+        query: Option<&str>,
+        http_status: Option<i64>,
+        mcp_status: Option<i64>,
+        counts_business_quota: bool,
+        result_status: &str,
+        error_message: Option<&str>,
+        request_kind: &TokenRequestKind,
+        failure_kind: Option<&str>,
+        key_effect_code: Option<&str>,
+        key_effect_summary: Option<&str>,
+    ) -> Result<(), ProxyError> {
         self.key_store
             .insert_token_log(
                 token_id,
@@ -4645,6 +4914,9 @@ impl TavilyProxy {
                 result_status,
                 error_message,
                 request_kind,
+                failure_kind,
+                key_effect_code.unwrap_or(KEY_EFFECT_NONE),
+                key_effect_summary,
             )
             .await
     }
@@ -4666,8 +4938,45 @@ impl TavilyProxy {
         business_credits: i64,
         api_key_id: Option<&str>,
     ) -> Result<i64, ProxyError> {
+        self.record_pending_billing_attempt_metadata(
+            token_id,
+            method,
+            path,
+            query,
+            http_status,
+            mcp_status,
+            counts_business_quota,
+            result_status,
+            error_message,
+            business_credits,
+            api_key_id,
+            None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_pending_billing_attempt_metadata(
+        &self,
+        token_id: &str,
+        method: &Method,
+        path: &str,
+        query: Option<&str>,
+        http_status: Option<i64>,
+        mcp_status: Option<i64>,
+        counts_business_quota: bool,
+        result_status: &str,
+        error_message: Option<&str>,
+        business_credits: i64,
+        api_key_id: Option<&str>,
+        failure_kind: Option<&str>,
+        key_effect_code: Option<&str>,
+        key_effect_summary: Option<&str>,
+    ) -> Result<i64, ProxyError> {
         let request_kind = classify_token_request_kind(path, None);
-        self.record_pending_billing_attempt_with_kind(
+        self.record_pending_billing_attempt_with_kind_metadata(
             token_id,
             method,
             path,
@@ -4680,6 +4989,9 @@ impl TavilyProxy {
             business_credits,
             &request_kind,
             api_key_id,
+            failure_kind,
+            key_effect_code,
+            key_effect_summary,
         )
         .await
     }
@@ -4700,6 +5012,45 @@ impl TavilyProxy {
         request_kind: &TokenRequestKind,
         api_key_id: Option<&str>,
     ) -> Result<i64, ProxyError> {
+        self.record_pending_billing_attempt_with_kind_metadata(
+            token_id,
+            method,
+            path,
+            query,
+            http_status,
+            mcp_status,
+            counts_business_quota,
+            result_status,
+            error_message,
+            business_credits,
+            request_kind,
+            api_key_id,
+            None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_pending_billing_attempt_with_kind_metadata(
+        &self,
+        token_id: &str,
+        method: &Method,
+        path: &str,
+        query: Option<&str>,
+        http_status: Option<i64>,
+        mcp_status: Option<i64>,
+        counts_business_quota: bool,
+        result_status: &str,
+        error_message: Option<&str>,
+        business_credits: i64,
+        request_kind: &TokenRequestKind,
+        api_key_id: Option<&str>,
+        failure_kind: Option<&str>,
+        key_effect_code: Option<&str>,
+        key_effect_summary: Option<&str>,
+    ) -> Result<i64, ProxyError> {
         let billing_subject = self.billing_subject_for_token(token_id).await?;
         self.record_pending_billing_attempt_for_subject_with_kind(
             token_id,
@@ -4715,6 +5066,9 @@ impl TavilyProxy {
             &billing_subject,
             request_kind,
             api_key_id,
+            failure_kind,
+            key_effect_code,
+            key_effect_summary,
         )
         .await
     }
@@ -4735,6 +5089,45 @@ impl TavilyProxy {
         billing_subject: &str,
         api_key_id: Option<&str>,
     ) -> Result<i64, ProxyError> {
+        self.record_pending_billing_attempt_for_subject_metadata(
+            token_id,
+            method,
+            path,
+            query,
+            http_status,
+            mcp_status,
+            counts_business_quota,
+            result_status,
+            error_message,
+            business_credits,
+            billing_subject,
+            api_key_id,
+            None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_pending_billing_attempt_for_subject_metadata(
+        &self,
+        token_id: &str,
+        method: &Method,
+        path: &str,
+        query: Option<&str>,
+        http_status: Option<i64>,
+        mcp_status: Option<i64>,
+        counts_business_quota: bool,
+        result_status: &str,
+        error_message: Option<&str>,
+        business_credits: i64,
+        billing_subject: &str,
+        api_key_id: Option<&str>,
+        failure_kind: Option<&str>,
+        key_effect_code: Option<&str>,
+        key_effect_summary: Option<&str>,
+    ) -> Result<i64, ProxyError> {
         let request_kind = classify_token_request_kind(path, None);
         self.record_pending_billing_attempt_for_subject_with_kind(
             token_id,
@@ -4750,6 +5143,9 @@ impl TavilyProxy {
             billing_subject,
             &request_kind,
             api_key_id,
+            failure_kind,
+            key_effect_code,
+            key_effect_summary,
         )
         .await
     }
@@ -4770,6 +5166,9 @@ impl TavilyProxy {
         billing_subject: &str,
         request_kind: &TokenRequestKind,
         api_key_id: Option<&str>,
+        failure_kind: Option<&str>,
+        key_effect_code: Option<&str>,
+        key_effect_summary: Option<&str>,
     ) -> Result<i64, ProxyError> {
         self.key_store
             .insert_token_log_pending_billing(
@@ -4786,6 +5185,9 @@ impl TavilyProxy {
                 billing_subject,
                 request_kind,
                 api_key_id,
+                failure_kind,
+                key_effect_code.unwrap_or(KEY_EFFECT_NONE),
+                key_effect_summary,
             )
             .await
     }
@@ -5115,7 +5517,44 @@ impl TavilyProxy {
 
     /// Admin: clear the active quarantine record for a key.
     pub async fn clear_key_quarantine_by_id(&self, key_id: &str) -> Result<(), ProxyError> {
-        self.key_store.clear_key_quarantine_by_id(key_id).await
+        self.clear_key_quarantine_by_id_with_actor(key_id, MaintenanceActor::default())
+            .await
+    }
+
+    /// Admin: clear the active quarantine record for a key and append an audit record when changed.
+    pub async fn clear_key_quarantine_by_id_with_actor(
+        &self,
+        key_id: &str,
+        actor: MaintenanceActor,
+    ) -> Result<(), ProxyError> {
+        let before = self.key_store.fetch_key_state_snapshot(key_id).await?;
+        let changed = self.key_store.clear_key_quarantine_by_id(key_id).await?;
+        if changed {
+            let after = self.key_store.fetch_key_state_snapshot(key_id).await?;
+            self.key_store
+                .insert_api_key_maintenance_record(ApiKeyMaintenanceRecord {
+                    id: nanoid!(12),
+                    key_id: key_id.to_string(),
+                    source: MAINTENANCE_SOURCE_ADMIN.to_string(),
+                    operation_code: MAINTENANCE_OP_MANUAL_CLEAR_QUARANTINE.to_string(),
+                    operation_summary: "管理员手动解除隔离".to_string(),
+                    reason_code: None,
+                    reason_summary: Some("管理员解除当前 quarantine".to_string()),
+                    reason_detail: None,
+                    request_log_id: None,
+                    auth_token_log_id: None,
+                    auth_token_id: actor.auth_token_id,
+                    actor_user_id: actor.actor_user_id,
+                    actor_display_name: actor.actor_display_name,
+                    status_before: before.status,
+                    status_after: after.status,
+                    quarantine_before: before.quarantined,
+                    quarantine_after: after.quarantined,
+                    created_at: Utc::now().timestamp(),
+                })
+                .await?;
+        }
+        Ok(())
     }
 
     /// 获取整体运行情况汇总。
@@ -5896,7 +6335,46 @@ impl TavilyProxy {
         &self,
         api_key: &str,
     ) -> Result<bool, ProxyError> {
-        self.key_store.mark_quota_exhausted(api_key).await
+        self.mark_key_quota_exhausted_by_secret_with_actor(api_key, MaintenanceActor::default())
+            .await
+    }
+
+    pub async fn mark_key_quota_exhausted_by_secret_with_actor(
+        &self,
+        api_key: &str,
+        actor: MaintenanceActor,
+    ) -> Result<bool, ProxyError> {
+        let Some(key_id) = self.key_store.fetch_api_key_id_by_secret(api_key).await? else {
+            return Ok(false);
+        };
+        let before = self.key_store.fetch_key_state_snapshot(&key_id).await?;
+        let changed = self.key_store.mark_quota_exhausted(api_key).await?;
+        if changed {
+            let after = self.key_store.fetch_key_state_snapshot(&key_id).await?;
+            self.key_store
+                .insert_api_key_maintenance_record(ApiKeyMaintenanceRecord {
+                    id: nanoid!(12),
+                    key_id,
+                    source: MAINTENANCE_SOURCE_ADMIN.to_string(),
+                    operation_code: MAINTENANCE_OP_MANUAL_MARK_EXHAUSTED.to_string(),
+                    operation_summary: "管理员手动标记 exhausted".to_string(),
+                    reason_code: Some("manual_mark_exhausted".to_string()),
+                    reason_summary: Some("管理员确认该 Key 额度耗尽".to_string()),
+                    reason_detail: None,
+                    request_log_id: None,
+                    auth_token_log_id: None,
+                    auth_token_id: actor.auth_token_id,
+                    actor_user_id: actor.actor_user_id,
+                    actor_display_name: actor.actor_display_name,
+                    status_before: before.status,
+                    status_after: after.status,
+                    quarantine_before: before.quarantined,
+                    quarantine_after: after.quarantined,
+                    created_at: Utc::now().timestamp(),
+                })
+                .await?;
+        }
+        Ok(changed)
     }
 
     pub(crate) async fn fetch_usage_quota_for_secret(

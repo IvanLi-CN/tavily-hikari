@@ -6,6 +6,7 @@ use crate::*;
 
 use axum::{
     Json, Router,
+    http::StatusCode,
     routing::{any, get, post},
 };
 use std::net::SocketAddr;
@@ -10030,6 +10031,369 @@ async fn startup_monthly_rebase_skips_legacy_charged_rows_without_billing_subjec
         .await
         .expect_err("audit should still surface legacy billing_subject gap");
     assert!(is_invalid_current_month_billing_subject_error(&audit_err));
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn manual_key_maintenance_actions_append_audit_records() {
+    let db_path = temp_db_path("maintenance-manual");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-maintenance-manual".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let (key_id, api_key): (String, String) =
+        sqlx::query_as("SELECT id, api_key FROM api_keys LIMIT 1")
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("fetch key");
+
+    proxy
+        .key_store
+        .quarantine_key_by_id(
+            &key_id,
+            "/mcp",
+            "account_deactivated",
+            "Tavily account deactivated (HTTP 401)",
+            "deactivated",
+        )
+        .await
+        .expect("seed quarantine");
+
+    proxy
+        .clear_key_quarantine_by_id_with_actor(
+            &key_id,
+            MaintenanceActor {
+                auth_token_id: None,
+                actor_user_id: Some("user-1".to_string()),
+                actor_display_name: Some("Admin One".to_string()),
+            },
+        )
+        .await
+        .expect("clear quarantine with audit");
+    proxy
+        .mark_key_quota_exhausted_by_secret_with_actor(
+            &api_key,
+            MaintenanceActor {
+                auth_token_id: None,
+                actor_user_id: Some("user-1".to_string()),
+                actor_display_name: Some("Admin One".to_string()),
+            },
+        )
+        .await
+        .expect("mark exhausted with audit");
+
+    let rows = sqlx::query_as::<_, (String, Option<String>, Option<String>, i64, i64)>(
+        r#"
+        SELECT operation_code, actor_user_id, actor_display_name, quarantine_before, quarantine_after
+        FROM api_key_maintenance_records
+        WHERE key_id = ?
+        ORDER BY operation_code ASC
+        "#,
+    )
+    .bind(&key_id)
+    .fetch_all(&proxy.key_store.pool)
+    .await
+    .expect("fetch maintenance rows");
+
+    assert_eq!(rows.len(), 2);
+    let clear_row = rows
+        .iter()
+        .find(|row| row.0 == MAINTENANCE_OP_MANUAL_CLEAR_QUARANTINE)
+        .expect("clear quarantine row");
+    assert_eq!(clear_row.1.as_deref(), Some("user-1"));
+    assert_eq!(clear_row.2.as_deref(), Some("Admin One"));
+    assert_eq!(clear_row.3, 1);
+    assert_eq!(clear_row.4, 0);
+    assert!(
+        rows.iter()
+            .any(|row| row.0 == MAINTENANCE_OP_MANUAL_MARK_EXHAUSTED)
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn auto_key_health_actions_append_audit_records() {
+    let db_path = temp_db_path("maintenance-auto");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-maintenance-auto".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let (key_id, secret): (String, String) =
+        sqlx::query_as("SELECT id, api_key FROM api_keys LIMIT 1")
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("fetch key");
+    let lease = ApiKeyLease {
+        id: key_id.clone(),
+        secret: secret.clone(),
+    };
+
+    let quarantine_effect = proxy
+        .reconcile_key_health(
+            &lease,
+            "/mcp",
+            &AttemptAnalysis {
+                status: OUTCOME_ERROR,
+                tavily_status_code: Some(401),
+                key_health_action: KeyHealthAction::Quarantine(QuarantineDecision {
+                    reason_code: "account_deactivated".to_string(),
+                    reason_summary: "Tavily account deactivated (HTTP 401)".to_string(),
+                    reason_detail: "deactivated".to_string(),
+                }),
+                failure_kind: Some(FAILURE_KIND_UPSTREAM_ACCOUNT_DEACTIVATED_401.to_string()),
+                key_effect: KeyEffect::none(),
+                api_key_id: Some(key_id.clone()),
+            },
+            None,
+        )
+        .await
+        .expect("auto quarantine");
+    assert_eq!(quarantine_effect.code, KEY_EFFECT_QUARANTINED);
+
+    proxy
+        .key_store
+        .mark_quota_exhausted(&secret)
+        .await
+        .expect("seed exhausted");
+    let restore_effect = proxy
+        .reconcile_key_health(
+            &lease,
+            "/api/tavily/search",
+            &AttemptAnalysis {
+                status: OUTCOME_SUCCESS,
+                tavily_status_code: Some(200),
+                key_health_action: KeyHealthAction::None,
+                failure_kind: None,
+                key_effect: KeyEffect::none(),
+                api_key_id: Some(key_id.clone()),
+            },
+            None,
+        )
+        .await
+        .expect("auto restore");
+    assert_eq!(restore_effect.code, KEY_EFFECT_RESTORED_ACTIVE);
+
+    let ops = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT operation_code
+        FROM api_key_maintenance_records
+        WHERE key_id = ?
+        ORDER BY created_at ASC, id ASC
+        "#,
+    )
+    .bind(&key_id)
+    .fetch_all(&proxy.key_store.pool)
+    .await
+    .expect("fetch operation codes");
+
+    assert!(ops.contains(&MAINTENANCE_OP_AUTO_QUARANTINE.to_string()));
+    assert!(ops.contains(&MAINTENANCE_OP_AUTO_RESTORE_ACTIVE.to_string()));
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn reconcile_key_health_reports_none_when_state_already_changed() {
+    let db_path = temp_db_path("maintenance-repeat-noop");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-maintenance-repeat-noop".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let (key_id, secret): (String, String) =
+        sqlx::query_as("SELECT id, api_key FROM api_keys LIMIT 1")
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("fetch key");
+    let lease = ApiKeyLease {
+        id: key_id.clone(),
+        secret: secret.clone(),
+    };
+
+    proxy
+        .key_store
+        .mark_quota_exhausted(&secret)
+        .await
+        .expect("seed exhausted");
+    let exhausted_effect = proxy
+        .reconcile_key_health(
+            &lease,
+            "/api/tavily/search",
+            &AttemptAnalysis {
+                status: OUTCOME_QUOTA_EXHAUSTED,
+                tavily_status_code: Some(432),
+                key_health_action: KeyHealthAction::MarkExhausted,
+                failure_kind: None,
+                key_effect: KeyEffect::none(),
+                api_key_id: Some(key_id.clone()),
+            },
+            None,
+        )
+        .await
+        .expect("repeat exhausted");
+    assert_eq!(exhausted_effect.code, KEY_EFFECT_NONE);
+
+    proxy
+        .key_store
+        .quarantine_key_by_id(
+            &key_id,
+            "/mcp",
+            "account_deactivated",
+            "Tavily account deactivated (HTTP 401)",
+            "deactivated",
+        )
+        .await
+        .expect("seed quarantine");
+    let quarantine_effect = proxy
+        .reconcile_key_health(
+            &lease,
+            "/mcp",
+            &AttemptAnalysis {
+                status: OUTCOME_ERROR,
+                tavily_status_code: Some(401),
+                key_health_action: KeyHealthAction::Quarantine(QuarantineDecision {
+                    reason_code: "account_deactivated".to_string(),
+                    reason_summary: "Tavily account deactivated (HTTP 401)".to_string(),
+                    reason_detail: "deactivated".to_string(),
+                }),
+                failure_kind: Some(FAILURE_KIND_UPSTREAM_ACCOUNT_DEACTIVATED_401.to_string()),
+                key_effect: KeyEffect::none(),
+                api_key_id: Some(key_id.clone()),
+            },
+            None,
+        )
+        .await
+        .expect("repeat quarantine");
+    assert_eq!(quarantine_effect.code, KEY_EFFECT_NONE);
+
+    let maintenance_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM api_key_maintenance_records WHERE key_id = ?")
+            .bind(&key_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("count maintenance records");
+    assert_eq!(maintenance_count, 0);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn reconcile_key_health_does_not_restore_exhausted_key_on_error() {
+    let db_path = temp_db_path("maintenance-no-restore-on-error");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-maintenance-no-restore".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let (key_id, secret): (String, String) =
+        sqlx::query_as("SELECT id, api_key FROM api_keys LIMIT 1")
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("fetch key");
+    let lease = ApiKeyLease {
+        id: key_id.clone(),
+        secret: secret.clone(),
+    };
+
+    proxy
+        .key_store
+        .mark_quota_exhausted(&secret)
+        .await
+        .expect("seed exhausted");
+
+    let effect = proxy
+        .reconcile_key_health(
+            &lease,
+            "/mcp",
+            &AttemptAnalysis {
+                status: OUTCOME_ERROR,
+                tavily_status_code: Some(429),
+                key_health_action: KeyHealthAction::None,
+                failure_kind: Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429.to_string()),
+                key_effect: KeyEffect::none(),
+                api_key_id: Some(key_id.clone()),
+            },
+            None,
+        )
+        .await
+        .expect("error should not restore");
+    assert_eq!(effect.code, KEY_EFFECT_NONE);
+
+    let status: String = sqlx::query_scalar("SELECT status FROM api_keys WHERE id = ? LIMIT 1")
+        .bind(&key_id)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("read key status");
+    assert_eq!(status, STATUS_EXHAUSTED);
+
+    let maintenance_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM api_key_maintenance_records WHERE key_id = ?")
+            .bind(&key_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("count maintenance records");
+    assert_eq!(maintenance_count, 0);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn usage_error_quarantine_appends_audit_record() {
+    let db_path = temp_db_path("maintenance-usage-quarantine");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-maintenance-usage-quarantine".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let key_id: String = sqlx::query_scalar("SELECT id FROM api_keys LIMIT 1")
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("fetch key id");
+
+    proxy
+        .maybe_quarantine_usage_error(
+            &key_id,
+            "/api/tavily/usage",
+            &ProxyError::UsageHttp {
+                status: StatusCode::UNAUTHORIZED,
+                body: "The account associated with this API key has been deactivated.".to_string(),
+            },
+        )
+        .await
+        .expect("usage quarantine");
+
+    let op_codes = sqlx::query_scalar::<_, String>(
+        "SELECT operation_code FROM api_key_maintenance_records WHERE key_id = ?",
+    )
+    .bind(&key_id)
+    .fetch_all(&proxy.key_store.pool)
+    .await
+    .expect("fetch maintenance operations");
+    assert_eq!(op_codes, vec![MAINTENANCE_OP_AUTO_QUARANTINE.to_string()]);
 
     let _ = std::fs::remove_file(db_path);
 }
