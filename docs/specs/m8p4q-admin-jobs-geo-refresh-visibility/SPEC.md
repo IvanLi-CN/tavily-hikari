@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 进行中（快车道）
+- Status: 已完成（merge-ready）
 - Created: 2026-03-19
 - Last: 2026-03-19
 
@@ -81,12 +81,19 @@
 
 - `cargo test jobs_list_key_group -- --nocapture`
 - `cargo test forward_proxy_geo_refresh_job_records_scheduled_job_and_skips_direct -- --nocapture`
-- `cd web && bun test web/src/api.test.ts`
+- `cd web && bun test ./src/api.test.ts`
 - `cd web && bun run build`
+
+## Visual Evidence (PR)
+
+- Storybook canvas: `Admin/Pages/Jobs`
+- 证据说明：证明管理台 jobs 区块已显示独立的 `Node IP/GEO refresh` 筛选，并且列表中的 GEO 刷新任务已使用本地化可读文案展示。
+
+![Admin jobs geo refresh story](./assets/admin-jobs-geo-refresh-story.png)
 
 ## 里程碑
 
 - [x] M1: 冻结 jobs GEO refresh 可见性规格
 - [x] M2: 扩展后端 `geo` 分组与回归测试
 - [x] M3: 前端筛选、文案与 stories 补齐
-- [ ] M4: PR / review-loop 收敛到 merge-ready
+- [x] M4: PR / review-loop 收敛到 merge-ready
