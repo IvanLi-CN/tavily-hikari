@@ -1097,6 +1097,9 @@ interface AdminTranslationsShape {
       weight: string
       primary: string
       secondary: string
+      assignmentSummary: string
+      primaryAssignments: string
+      secondaryAssignments: string
       window: string
     }
     logsTitle: string
@@ -2310,6 +2313,9 @@ export const translations: Record<Language, TranslationShape> = {
           weight: '24h weight',
           primary: 'Primary',
           secondary: 'Secondary',
+          assignmentSummary: 'P{primary} · S{secondary}',
+          primaryAssignments: 'Primary for {count} keys',
+          secondaryAssignments: 'Secondary for {count} keys',
           window: 'Window',
         },
         logsTitle: 'Recent Requests',
@@ -3481,6 +3487,9 @@ export const translations: Record<Language, TranslationShape> = {
           weight: '24h 权重',
           primary: '主节点',
           secondary: '备节点',
+          assignmentSummary: '主{primary} · 备{secondary}',
+          primaryAssignments: '作为 {count} 个 key 的主节点',
+          secondaryAssignments: '作为 {count} 个 key 的备节点',
           window: '窗口',
         },
         logsTitle: '近期请求',

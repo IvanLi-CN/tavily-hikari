@@ -2148,6 +2148,73 @@
   font-weight: 700;
 }
 
+.key-sticky-panels-stack {
+  display: grid;
+  gap: 24px;
+}
+
+.sticky-node-summary {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.sticky-node-summary-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sticky-node-summary-meta {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.sticky-node-summary-chip {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  padding: 0 9px;
+  border-radius: 999px;
+  border: 1px solid hsl(var(--border) / 0.8);
+  background: hsl(var(--muted) / 0.54);
+  color: hsl(var(--muted-foreground));
+  font-size: 0.76rem;
+  font-weight: 600;
+  line-height: 1.75rem;
+  white-space: nowrap;
+}
+
+.key-sticky-nodes-table {
+  width: 100%;
+  min-width: 0;
+  table-layout: fixed;
+}
+
+.key-sticky-nodes-table th,
+.key-sticky-nodes-table td {
+  vertical-align: top;
+}
+
+.key-sticky-nodes-table th:nth-child(1),
+.key-sticky-nodes-table td:nth-child(1) {
+  width: 112px;
+}
+
+.key-sticky-nodes-table th:nth-child(2),
+.key-sticky-nodes-table td:nth-child(2) {
+  width: 26%;
+  min-width: 0;
+}
+
+.key-sticky-nodes-role-cell,
+.key-sticky-nodes-node-cell {
+  min-width: 0;
+}
+
 .token-usage-header-context-line {
   display: none;
   align-items: center;

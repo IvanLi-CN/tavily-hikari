@@ -102,6 +102,8 @@ export const stickyUsersStoryData: StickyUserRow[] = [
   },
 ]
 
+export const stickyUsersEmptyStoryData: StickyUserRow[] = []
+
 export const stickyNodesStoryData: StickyNode[] = [
   {
     ...forwardProxyStoryStats.nodes[0],
@@ -109,6 +111,41 @@ export const stickyNodesStoryData: StickyNode[] = [
   },
   {
     ...forwardProxyStoryStats.nodes[1],
+    role: 'secondary',
+  },
+]
+
+export const stickyNodesReviewStoryData: StickyNode[] = [
+  {
+    ...forwardProxyStoryStats.nodes[0],
+    key: 'sg-02-primary',
+    displayName: '🇸🇬 新加坡 02 | 电信联通推荐',
+    primaryAssignmentCount: 7,
+    secondaryAssignmentCount: 2,
+    stats: {
+      ...forwardProxyStoryStats.nodes[0].stats,
+      oneDay: {
+        attempts: 1_433,
+        successRate: 0.98,
+        avgLatencyMs: 3_825,
+      },
+    },
+    role: 'primary',
+  },
+  {
+    ...forwardProxyStoryStats.nodes[1],
+    key: 'us-sj-02-secondary',
+    displayName: '🇺🇸 美国圣何塞 02 | 0.1 倍',
+    primaryAssignmentCount: 1,
+    secondaryAssignmentCount: 6,
+    stats: {
+      ...forwardProxyStoryStats.nodes[1].stats,
+      oneDay: {
+        attempts: 1_642,
+        successRate: 0.98,
+        avgLatencyMs: 2_489,
+      },
+    },
     role: 'secondary',
   },
 ]

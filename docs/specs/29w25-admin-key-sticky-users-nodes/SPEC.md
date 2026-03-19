@@ -4,7 +4,7 @@
 
 - Status: 已完成（快车道）
 - Created: 2026-03-16
-- Last: 2026-03-17
+- Last: 2026-03-19
 
 ## 背景 / 问题陈述
 
@@ -170,7 +170,7 @@
   Then 响应只返回当前 primary / secondary 节点，图表字段与 `/api/stats/forward-proxy` 同形。
 - Given 管理员打开 `/admin/keys/:id`
   When desktop 或 mobile 渲染
-  Then 新面板不会横向溢出，且 loading / error / empty state 各自独立。
+  Then 新面板不会横向溢出，且 sticky nodes 面板使用节点展示名与“作为几个 key 的主节点 / 备节点”摘要替代原始代理 URI，loading / error / empty state 各自独立。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
 
@@ -183,6 +183,7 @@
 ### UI / Browser
 
 - sticky nodes 复用 forward proxy live stats 同款 activity / weight 图。
+- sticky nodes 的节点信息块只显示 `displayName` 与 primary/secondary assignment 摘要，不暴露原始代理 URI 或 proxy key 长串文本。
 - sticky users 7 日图使用 success/failure stacked bar，与节点 activity 图保持一致视觉语义。
 - 浏览器验收只连接本地或 mock upstream / proxy。
 
@@ -198,6 +199,17 @@
   evidence_note: verifies the extracted sticky panels render the charged-credit windows as plain green/red values and reuse the forward-proxy activity and weight charts in one isolated review surface.
   image:
   ![Sticky key detail panels fragment](./assets/sticky-panels-fragment.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: admin-pages-keydetailroute--c-bo-x-review
+  state: real-route page context
+  target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  evidence_note: verifies the real AdminShell plus KeyDetails route for `/admin/keys/CBoX` keeps the sticky users empty state and sticky node assignment summary aligned with the reviewed production-like layout.
+  image:
+  ![Key detail route review](./assets/sticky-panels-page.png)
 
 ## 实现里程碑（Milestones / Delivery checklist）
 
@@ -218,3 +230,4 @@
 
 - 2026-03-16: 创建快车道 spec，冻结 sticky users / sticky nodes、many-to-many current binding、recent-success-first routing 与 post-launch exact credits 口径。
 - 2026-03-17: 同步 Storybook 视觉证据、plain-value sticky usage UI，并收口 spec 索引与交付里程碑状态。
+- 2026-03-19: 跟进真实 `/admin/keys/:id` 回归，明确 sticky nodes 面板不得展示原始代理 URI，改为主/备 assignment 摘要以消除横向溢出。
