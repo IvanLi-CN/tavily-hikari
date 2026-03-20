@@ -838,11 +838,7 @@ function AdminUsersSortableHeader({
 }): JSX.Element {
   const isActive = activeField === field
   const ariaSort = !isActive ? 'none' : activeOrder === 'asc' ? 'ascending' : 'descending'
-  const icon = !isActive
-    ? 'mdi:unfold-more-horizontal'
-    : activeOrder === 'asc'
-      ? 'mdi:arrow-up'
-      : 'mdi:arrow-down'
+  const indicator = !isActive ? '↕' : activeOrder === 'asc' ? '↑' : '↓'
   return (
     <th aria-sort={ariaSort}>
       <button
@@ -852,7 +848,7 @@ function AdminUsersSortableHeader({
         aria-label={label}
       >
         <span>{label}</span>
-        <Icon icon={icon} width={16} height={16} aria-hidden="true" />
+        <span className="admin-table-sort-indicator" aria-hidden="true">{indicator}</span>
       </button>
     </th>
   )

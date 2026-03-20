@@ -4681,6 +4681,15 @@ tbody tr:hover {
   border-radius: 0.35rem;
 }
 
+.admin-table-sort-indicator {
+  flex: 0 0 auto;
+  min-width: 1em;
+  text-align: center;
+  line-height: 1;
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
 .admin-table-value-stack {
   min-width: 0;
   display: flex;
