@@ -332,7 +332,7 @@ async fn handle_http_json(
     };
 
     if entry.remaining <= 0 {
-        return quota_response("quota_exhausted", 432);
+        return quota_response(None, "quota_exhausted", 432);
     }
 
     entry.remaining -= 1;
@@ -516,16 +516,16 @@ async fn handle_mcp(
             return (StatusCode::OK, Json(custom));
         }
         let structured_status = force.structured_status.unwrap_or(200);
+        let request_body = body.as_ref().map(|Json(value)| value);
         return (
             StatusCode::OK,
-            Json(json!({
-                "result": {
-                    "structuredContent": {
-                        "status": structured_status,
-                        "forced": true
-                    }
-                }
-            })),
+            Json(build_mcp_structured_response(
+                request_body,
+                json!({
+                    "status": structured_status,
+                    "forced": true
+                }),
+            )),
         );
     }
 
@@ -541,7 +541,8 @@ async fn handle_mcp(
     };
 
     if entry.remaining <= 0 {
-        return quota_response("quota_exhausted", 432);
+        let request_body = body.as_ref().map(|Json(value)| value);
+        return quota_response(request_body, "quota_exhausted", 432);
     }
 
     entry.remaining -= 1;
@@ -549,31 +550,105 @@ async fn handle_mcp(
     let structured_status = query.status.unwrap_or(200);
     let mut payload = Map::new();
     payload.insert("status".into(), Value::Number(structured_status.into()));
-    if let Some(Json(body_value)) = body {
-        payload.insert("echo".into(), body_value);
+    if let Some(Json(body_value)) = body.as_ref() {
+        payload.insert("echo".into(), body_value.clone());
     }
     payload.insert("remaining".into(), Value::Number(entry.remaining.into()));
 
+    let request_body = body.as_ref().map(|Json(value)| value);
     (
         StatusCode::OK,
-        Json(json!({
-            "result": {
-                "structuredContent": Value::Object(payload)
-            }
-        })),
+        Json(build_mcp_structured_response(
+            request_body,
+            Value::Object(payload),
+        )),
     )
 }
 
-fn quota_response(reason: &str, status: i64) -> (StatusCode, Json<Value>) {
+fn build_mcp_structured_response(request_body: Option<&Value>, structured_content: Value) -> Value {
+    let mut response = Map::new();
+    if let Some(request_body) = request_body {
+        if let Some(jsonrpc) = request_body.get("jsonrpc") {
+            response.insert("jsonrpc".into(), jsonrpc.clone());
+        }
+        if let Some(id) = request_body.get("id") {
+            response.insert("id".into(), id.clone());
+        }
+    }
+    response.insert(
+        "result".into(),
+        json!({
+            "structuredContent": structured_content
+        }),
+    );
+    Value::Object(response)
+}
+
+fn quota_response(
+    request_body: Option<&Value>,
+    reason: &str,
+    status: i64,
+) -> (StatusCode, Json<Value>) {
     (
         StatusCode::OK,
-        Json(json!({
-            "result": {
-                "structuredContent": {
-                    "status": status,
-                    "error": reason
-                }
-            }
-        })),
+        Json(build_mcp_structured_response(
+            request_body,
+            json!({
+                "status": status,
+                "error": reason
+            }),
+        )),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_mcp_structured_response;
+    use serde_json::json;
+
+    #[test]
+    fn build_mcp_structured_response_echoes_jsonrpc_and_id() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": "release-smoke-search",
+            "method": "tools/call"
+        });
+
+        let response = build_mcp_structured_response(
+            Some(&request),
+            json!({
+                "status": 200,
+                "forced": true
+            }),
+        );
+
+        assert_eq!(response["jsonrpc"], json!("2.0"));
+        assert_eq!(response["id"], json!("release-smoke-search"));
+        assert_eq!(
+            response["result"]["structuredContent"]["status"],
+            json!(200)
+        );
+        assert_eq!(
+            response["result"]["structuredContent"]["forced"],
+            json!(true)
+        );
+    }
+
+    #[test]
+    fn build_mcp_structured_response_omits_jsonrpc_and_id_when_missing() {
+        let response = build_mcp_structured_response(
+            None,
+            json!({
+                "status": 432,
+                "error": "quota_exhausted"
+            }),
+        );
+
+        assert!(response.get("jsonrpc").is_none());
+        assert!(response.get("id").is_none());
+        assert_eq!(
+            response["result"]["structuredContent"]["error"],
+            json!("quota_exhausted")
+        );
+    }
 }
