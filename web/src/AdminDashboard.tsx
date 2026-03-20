@@ -8248,7 +8248,7 @@ function AdminDashboard(): JSX.Element {
               {users.length === 0 ? (
                 <tbody>
                   <tr>
-                    <td colSpan={13}>
+                    <td colSpan={12}>
                       <div className="empty-state alert">{usersStrings.empty.none}</div>
                     </td>
                   </tr>
@@ -8259,7 +8259,6 @@ function AdminDashboard(): JSX.Element {
                     <tr>
                       <th>{usersStrings.table.user}</th>
                       <th>{usersStrings.table.status}</th>
-                      <th>{usersStrings.table.tokenCount}</th>
                       <th>{usersStrings.table.tags}</th>
                       <AdminUsersSortableHeader
                         label={usersStrings.table.hourlyAny}
@@ -8344,7 +8343,6 @@ function AdminDashboard(): JSX.Element {
                             {item.active ? usersStrings.status.active : usersStrings.status.inactive}
                           </StatusBadge>
                         </td>
-                        <td>{formatNumber(item.tokenCount)}</td>
                         <td className="admin-users-tags-cell">
                           <UserTagBadgeList
                             tags={item.tags}
@@ -8416,10 +8414,6 @@ function AdminDashboard(): JSX.Element {
                       <StatusBadge tone={item.active ? 'success' : 'neutral'}>
                         {item.active ? usersStrings.status.active : usersStrings.status.inactive}
                       </StatusBadge>
-                    </div>
-                    <div className="admin-mobile-kv">
-                      <span>{usersStrings.table.tokenCount}</span>
-                      <strong>{formatNumber(item.tokenCount)}</strong>
                     </div>
                     <div className="admin-mobile-kv">
                       <span>{usersStrings.table.tags}</span>

@@ -4613,7 +4613,7 @@ tbody tr:hover {
 
 .jobs-table.admin-users-list-table th:nth-child(1),
 .jobs-table.admin-users-list-table td:nth-child(1) {
-  width: 17%;
+  width: 18%;
 }
 
 .jobs-table.admin-users-list-table th:nth-child(2),
@@ -4623,14 +4623,11 @@ tbody tr:hover {
 
 .jobs-table.admin-users-list-table th:nth-child(3),
 .jobs-table.admin-users-list-table td:nth-child(3) {
-  width: 6%;
+  width: 15%;
 }
 
 .jobs-table.admin-users-list-table th:nth-child(4),
-.jobs-table.admin-users-list-table td:nth-child(4) {
-  width: 12%;
-}
-
+.jobs-table.admin-users-list-table td:nth-child(4),
 .jobs-table.admin-users-list-table th:nth-child(5),
 .jobs-table.admin-users-list-table td:nth-child(5),
 .jobs-table.admin-users-list-table th:nth-child(6),
@@ -4640,17 +4637,15 @@ tbody tr:hover {
 .jobs-table.admin-users-list-table th:nth-child(8),
 .jobs-table.admin-users-list-table td:nth-child(8),
 .jobs-table.admin-users-list-table th:nth-child(9),
-.jobs-table.admin-users-list-table td:nth-child(9),
-.jobs-table.admin-users-list-table th:nth-child(10),
-.jobs-table.admin-users-list-table td:nth-child(10) {
-  width: 6.5%;
+.jobs-table.admin-users-list-table td:nth-child(9) {
+  width: 6.25%;
 }
 
+.jobs-table.admin-users-list-table th:nth-child(10),
+.jobs-table.admin-users-list-table td:nth-child(10),
 .jobs-table.admin-users-list-table th:nth-child(11),
-.jobs-table.admin-users-list-table td:nth-child(11),
-.jobs-table.admin-users-list-table th:nth-child(12),
-.jobs-table.admin-users-list-table td:nth-child(12) {
-  width: 8%;
+.jobs-table.admin-users-list-table td:nth-child(11) {
+  width: 8.75%;
 }
 
 .admin-table-sort-button {
@@ -4720,7 +4715,8 @@ tbody tr:hover {
 }
 
 .admin-users-tags-cell {
-  overflow-wrap: anywhere;
+  overflow-wrap: normal;
+  word-break: normal;
 }
 
 .jobs-table.admin-users-list-table th:last-child,
@@ -5107,6 +5103,7 @@ tbody tr:hover {
 .user-tag-pill {
   display: inline-flex;
   align-items: center;
+  flex-wrap: nowrap;
   gap: 6px;
   padding: 6px 10px;
   border-radius: 999px;
@@ -5118,6 +5115,9 @@ tbody tr:hover {
   letter-spacing: 0;
   line-height: 1;
   text-transform: none;
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: keep-all;
 }
 
 .user-tag-pill-overflow {
@@ -5148,6 +5148,9 @@ tbody tr:hover {
   background: hsl(var(--background) / 0.8);
   color: hsl(var(--muted-foreground));
   font-size: 0.72rem;
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: keep-all;
 }
 
 .user-tag-binding-toolbar {

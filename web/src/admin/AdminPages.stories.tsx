@@ -2891,7 +2891,6 @@ function UsersPageCanvas(): JSX.Element {
                 <tr>
                   <th>{users.table.user}</th>
                   <th>{users.table.status}</th>
-                  <th>{users.table.tokenCount}</th>
                   <th>{users.table.tags}</th>
                   <StoryAdminUsersSortableHeader
                     label={users.table.hourlyAny}
@@ -2978,7 +2977,6 @@ function UsersPageCanvas(): JSX.Element {
                         {item.active ? users.status.active : users.status.inactive}
                       </StatusBadge>
                     </td>
-                    <td>{formatNumber(item.tokenCount)}</td>
                     <td className="admin-users-tags-cell">
                       <StoryUserTagBadgeList tags={item.tags} users={users} emptyLabel={users.userTags.empty} />
                     </td>
