@@ -44,6 +44,7 @@ import { Table } from './components/ui/table'
 import { Textarea } from './components/ui/textarea'
 import TokenUsageHeader from './components/TokenUsageHeader'
 import TokenDetail from './pages/TokenDetail'
+import { ArrowDown, ArrowUp, ArrowUpDown } from 'lucide-react'
 import AdminShell, { type AdminNavItem } from './admin/AdminShell'
 import DashboardOverview from './admin/DashboardOverview'
 import ForwardProxySettingsModule, {
@@ -838,18 +839,20 @@ function AdminUsersSortableHeader({
 }): JSX.Element {
   const isActive = activeField === field
   const ariaSort = !isActive ? 'none' : activeOrder === 'asc' ? 'ascending' : 'descending'
-  const indicator = !isActive ? '↕' : activeOrder === 'asc' ? '↑' : '↓'
+  const SortIndicatorIcon = !isActive ? ArrowUpDown : activeOrder === 'asc' ? ArrowUp : ArrowDown
   return (
     <th aria-sort={ariaSort}>
-      <button
+      <Button
         type="button"
+        variant="ghost"
+        size="sm"
         className={`admin-table-sort-button${isActive ? ' is-active' : ''}`}
         onClick={() => onToggle(field)}
         aria-label={label}
       >
         <span>{label}</span>
-        <span className="admin-table-sort-indicator" aria-hidden="true">{indicator}</span>
-      </button>
+        <SortIndicatorIcon className="admin-table-sort-indicator" aria-hidden="true" />
+      </Button>
     </th>
   )
 }

@@ -4655,15 +4655,14 @@ tbody tr:hover {
 
 .admin-table-sort-button {
   width: 100%;
-  display: inline-flex;
-  align-items: center;
   justify-content: space-between;
   gap: 0.4rem;
-  border: 0;
-  background: transparent;
-  padding: 0;
-  color: inherit;
-  font: inherit;
+  min-height: 0;
+  height: auto;
+  padding: 0 !important;
+  color: inherit !important;
+  background: transparent !important;
+  box-shadow: none !important;
   text-align: left;
   opacity: 0.78;
   cursor: pointer;
@@ -4683,11 +4682,9 @@ tbody tr:hover {
 
 .admin-table-sort-indicator {
   flex: 0 0 auto;
-  min-width: 1em;
-  text-align: center;
-  line-height: 1;
-  font-size: 0.95rem;
-  font-weight: 700;
+  width: 1rem;
+  height: 1rem;
+  stroke-width: 2.1;
 }
 
 .admin-table-value-stack {

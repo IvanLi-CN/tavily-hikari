@@ -2,6 +2,7 @@ import { Icon } from '../lib/icons'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { addons } from 'storybook/preview-api'
 import { SELECT_STORY } from 'storybook/internal/core-events'
+import { ArrowDown, ArrowUp, ArrowUpDown } from 'lucide-react'
 import { Fragment, type ReactNode, useEffect, useLayoutEffect, useState } from 'react'
 
 import type {
@@ -1145,18 +1146,20 @@ function StoryAdminUsersSortableHeader({
 }): JSX.Element {
   const isActive = activeField === field
   const ariaSort = !isActive ? 'none' : activeOrder === 'asc' ? 'ascending' : 'descending'
-  const indicator = !isActive ? '↕' : activeOrder === 'asc' ? '↑' : '↓'
+  const SortIndicatorIcon = !isActive ? ArrowUpDown : activeOrder === 'asc' ? ArrowUp : ArrowDown
   return (
     <th aria-sort={ariaSort}>
-      <button
+      <Button
         type="button"
+        variant="ghost"
+        size="sm"
         className={`admin-table-sort-button${isActive ? ' is-active' : ''}`}
         onClick={() => onToggle(field)}
         aria-label={label}
       >
         <span>{label}</span>
-        <span className="admin-table-sort-indicator" aria-hidden="true">{indicator}</span>
-      </button>
+        <SortIndicatorIcon className="admin-table-sort-indicator" aria-hidden="true" />
+      </Button>
     </th>
   )
 }
