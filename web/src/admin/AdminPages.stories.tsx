@@ -737,6 +737,7 @@ const MOCK_USERS: AdminUserSummary[] = [
     dailySuccess: 4_998,
     dailyFailure: 203,
     monthlySuccess: 129_442,
+    monthlyFailure: 3_180,
     lastActivity: now - 25,
   },
   {
@@ -758,6 +759,7 @@ const MOCK_USERS: AdminUserSummary[] = [
     dailySuccess: 9_800,
     dailyFailure: 209,
     monthlySuccess: 201_402,
+    monthlyFailure: 8_614,
     lastActivity: now - 38,
   },
   {
@@ -779,6 +781,7 @@ const MOCK_USERS: AdminUserSummary[] = [
     dailySuccess: 0,
     dailyFailure: 0,
     monthlySuccess: 122,
+    monthlyFailure: 7,
     lastActivity: null,
   },
 ]
@@ -921,6 +924,32 @@ function formatTimestamp(value: number | null): string {
   return dateTimeFormatter.format(new Date(value * 1000))
 }
 
+function formatClockTime(value: number | null): string {
+  if (!value) return '—'
+  return new Intl.DateTimeFormat(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).format(new Date(value * 1000))
+}
+
+function formatDateOnly(value: number | null, language: 'en' | 'zh'): string {
+  if (!value) return '—'
+  const date = new Date(value * 1000)
+  if (language === 'zh') {
+    const year = date.getFullYear()
+    const month = String(date.getMonth() + 1).padStart(2, '0')
+    const day = String(date.getDate()).padStart(2, '0')
+    return `${year}-${month}-${day}`
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+  }).format(date)
+}
+
 function clampDisplayedQuota(value: number): number {
   return Math.max(0, value)
 }
@@ -931,6 +960,32 @@ function formatQuotaLimitValue(value: number): string {
 
 function formatQuotaUsagePair(used: number, limit: number): string {
   return `${formatNumber(Math.max(0, used))} / ${formatQuotaLimitValue(limit)}`
+}
+
+function formatQuotaStackValue(used: number, limit: number): { primary: string; secondary: string } {
+  return {
+    primary: formatNumber(Math.max(0, used)),
+    secondary: formatQuotaLimitValue(limit),
+  }
+}
+
+function formatSuccessRateStackValue(
+  success: number,
+  failure: number,
+  language: 'en' | 'zh',
+): { primary: string; secondary: string } {
+  return {
+    primary: success + failure > 0 ? formatPercent(success, success + failure) : '—',
+    secondary: language === 'zh' ? `失败 ${formatNumber(failure)}` : `Fail ${formatNumber(failure)}`,
+  }
+}
+
+function formatStackedTimestamp(value: number | null, language: 'en' | 'zh'): { primary: string; secondary?: string } {
+  if (!value) return { primary: '—' }
+  return {
+    primary: formatDateOnly(value, language),
+    secondary: formatClockTime(value),
+  }
 }
 
 function formatSignedQuotaDelta(value: number): string {
@@ -2527,6 +2582,7 @@ function JobsPageCanvas(): JSX.Element {
 
 function UsersPageCanvas(): JSX.Element {
   const admin = useTranslate().admin
+  const { language } = useLanguage()
   const users = admin.users
   const [query, setQuery] = useState('')
   const [allowRegistration, setAllowRegistration] = useState(true)
@@ -2640,21 +2696,64 @@ function UsersPageCanvas(): JSX.Element {
                   <th>{users.table.status}</th>
                   <th>{users.table.tokenCount}</th>
                   <th>{users.table.tags}</th>
-                  <th>{users.table.hourlyAny}</th>
-                  <th>{users.table.hourly}</th>
-                  <th>{users.table.daily}</th>
-                  <th>{users.table.monthly}</th>
-                  <th>{users.table.successDaily}</th>
-                  <th>{users.table.successMonthly}</th>
-                  <th>{users.table.lastActivity}</th>
-                  <th>{users.table.lastLogin}</th>
+                  <th>
+                    <button type="button" className="admin-table-sort-button">
+                      <span>{users.table.hourlyAny}</span>
+                      <Icon icon="mdi:unfold-more-horizontal" width={16} height={16} aria-hidden="true" />
+                    </button>
+                  </th>
+                  <th>
+                    <button type="button" className="admin-table-sort-button">
+                      <span>{users.table.hourly}</span>
+                      <Icon icon="mdi:unfold-more-horizontal" width={16} height={16} aria-hidden="true" />
+                    </button>
+                  </th>
+                  <th>
+                    <button type="button" className="admin-table-sort-button">
+                      <span>{users.table.daily}</span>
+                      <Icon icon="mdi:unfold-more-horizontal" width={16} height={16} aria-hidden="true" />
+                    </button>
+                  </th>
+                  <th>
+                    <button type="button" className="admin-table-sort-button">
+                      <span>{users.table.monthly}</span>
+                      <Icon icon="mdi:unfold-more-horizontal" width={16} height={16} aria-hidden="true" />
+                    </button>
+                  </th>
+                  <th>
+                    <button type="button" className="admin-table-sort-button">
+                      <span>{users.table.successDaily}</span>
+                      <Icon icon="mdi:unfold-more-horizontal" width={16} height={16} aria-hidden="true" />
+                    </button>
+                  </th>
+                  <th>
+                    <button type="button" className="admin-table-sort-button">
+                      <span>{users.table.successMonthly}</span>
+                      <Icon icon="mdi:unfold-more-horizontal" width={16} height={16} aria-hidden="true" />
+                    </button>
+                  </th>
+                  <th>
+                    <button type="button" className="admin-table-sort-button">
+                      <span>{users.table.lastActivity}</span>
+                      <Icon icon="mdi:unfold-more-horizontal" width={16} height={16} aria-hidden="true" />
+                    </button>
+                  </th>
+                  <th>
+                    <button type="button" className="admin-table-sort-button is-active">
+                      <span>{users.table.lastLogin}</span>
+                      <Icon icon="mdi:arrow-down" width={16} height={16} aria-hidden="true" />
+                    </button>
+                  </th>
                   <th>{users.table.actions}</th>
                 </tr>
               </thead>
               <tbody>
-                {filteredUsers.map((item) => (
+                {filteredUsers.map((item) => {
+                  const dailyMetric = formatSuccessRateStackValue(item.dailySuccess, item.dailyFailure, language)
+                  const monthlyMetric = formatSuccessRateStackValue(item.monthlySuccess, item.monthlyFailure, language)
+                  return (
                   <tr key={item.userId}>
-                    <td>
+                    <td className="admin-users-identity-cell">
                       <button type="button" className="link-button">
                         <strong>{item.displayName || item.username || item.userId}</strong>
                       </button>
@@ -2669,24 +2768,68 @@ function UsersPageCanvas(): JSX.Element {
                       </StatusBadge>
                     </td>
                     <td>{formatNumber(item.tokenCount)}</td>
-                    <td>
+                    <td className="admin-users-tags-cell">
                       <StoryUserTagBadgeList tags={item.tags} users={users} emptyLabel={users.userTags.empty} />
                     </td>
-                    <td>{formatQuotaUsagePair(item.hourlyAnyUsed, item.hourlyAnyLimit)}</td>
-                    <td>{formatQuotaUsagePair(item.quotaHourlyUsed, item.quotaHourlyLimit)}</td>
-                    <td>{formatQuotaUsagePair(item.quotaDailyUsed, item.quotaDailyLimit)}</td>
-                    <td>{formatQuotaUsagePair(item.quotaMonthlyUsed, item.quotaMonthlyLimit)}</td>
-                    <td>{formatNumber(item.dailySuccess)} / {formatNumber(item.dailyFailure)}</td>
-                    <td>{formatNumber(item.monthlySuccess)}</td>
-                    <td>{formatTimestamp(item.lastActivity)}</td>
-                    <td>{formatTimestamp(item.lastLoginAt)}</td>
+                    <td className="admin-users-compact-cell">
+                      <div className="admin-table-value-stack">
+                        <span className="admin-table-value-primary">{formatQuotaStackValue(item.hourlyAnyUsed, item.hourlyAnyLimit).primary}</span>
+                        <span className="admin-table-value-secondary">{formatQuotaStackValue(item.hourlyAnyUsed, item.hourlyAnyLimit).secondary}</span>
+                      </div>
+                    </td>
+                    <td className="admin-users-compact-cell">
+                      <div className="admin-table-value-stack">
+                        <span className="admin-table-value-primary">{formatQuotaStackValue(item.quotaHourlyUsed, item.quotaHourlyLimit).primary}</span>
+                        <span className="admin-table-value-secondary">{formatQuotaStackValue(item.quotaHourlyUsed, item.quotaHourlyLimit).secondary}</span>
+                      </div>
+                    </td>
+                    <td className="admin-users-compact-cell">
+                      <div className="admin-table-value-stack">
+                        <span className="admin-table-value-primary">{formatQuotaStackValue(item.quotaDailyUsed, item.quotaDailyLimit).primary}</span>
+                        <span className="admin-table-value-secondary">{formatQuotaStackValue(item.quotaDailyUsed, item.quotaDailyLimit).secondary}</span>
+                      </div>
+                    </td>
+                    <td className="admin-users-compact-cell">
+                      <div className="admin-table-value-stack">
+                        <span className="admin-table-value-primary">{formatQuotaStackValue(item.quotaMonthlyUsed, item.quotaMonthlyLimit).primary}</span>
+                        <span className="admin-table-value-secondary">{formatQuotaStackValue(item.quotaMonthlyUsed, item.quotaMonthlyLimit).secondary}</span>
+                      </div>
+                    </td>
+                    <td className="admin-users-compact-cell">
+                      <div className="admin-table-value-stack">
+                        <span className="admin-table-value-primary">{dailyMetric.primary}</span>
+                        <span className="admin-table-value-secondary">{dailyMetric.secondary}</span>
+                      </div>
+                    </td>
+                    <td className="admin-users-compact-cell">
+                      <div className="admin-table-value-stack">
+                        <span className="admin-table-value-primary">{monthlyMetric.primary}</span>
+                        <span className="admin-table-value-secondary">{monthlyMetric.secondary}</span>
+                      </div>
+                    </td>
+                    <td className="admin-users-compact-cell">
+                      <div className="admin-table-value-stack">
+                        <span className="admin-table-value-primary">{formatStackedTimestamp(item.lastActivity, language).primary}</span>
+                        {formatStackedTimestamp(item.lastActivity, language).secondary && (
+                          <span className="admin-table-value-secondary">{formatStackedTimestamp(item.lastActivity, language).secondary}</span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="admin-users-compact-cell">
+                      <div className="admin-table-value-stack">
+                        <span className="admin-table-value-primary">{formatStackedTimestamp(item.lastLoginAt, language).primary}</span>
+                        {formatStackedTimestamp(item.lastLoginAt, language).secondary && (
+                          <span className="admin-table-value-secondary">{formatStackedTimestamp(item.lastLoginAt, language).secondary}</span>
+                        )}
+                      </div>
+                    </td>
                     <td>
                       <button type="button" className="btn btn-circle btn-ghost btn-sm" aria-label={users.actions.view}>
                         <Icon icon="mdi:open-in-new" width={16} height={16} />
                       </button>
                     </td>
                   </tr>
-                ))}
+                )})}
               </tbody>
             </table>
           )}

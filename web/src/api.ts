@@ -657,8 +657,21 @@ export interface AdminUserSummary {
   dailySuccess: number
   dailyFailure: number
   monthlySuccess: number
+  monthlyFailure: number
   lastActivity: number | null
 }
+
+export type AdminUsersSortField =
+  | 'hourlyAnyUsed'
+  | 'quotaHourlyUsed'
+  | 'quotaDailyUsed'
+  | 'quotaMonthlyUsed'
+  | 'dailySuccessRate'
+  | 'monthlySuccessRate'
+  | 'lastActivity'
+  | 'lastLoginAt'
+
+export type SortDirection = 'asc' | 'desc'
 
 export interface AdminUserTokenSummary {
   tokenId: string
@@ -1182,6 +1195,8 @@ export function fetchAdminUsers(
   perPage = 20,
   query?: string,
   tagId?: string | null,
+  sort?: AdminUsersSortField | null,
+  order?: SortDirection | null,
   signal?: AbortSignal,
 ): Promise<Paginated<AdminUserSummary>> {
   const params = new URLSearchParams({
@@ -1193,6 +1208,10 @@ export function fetchAdminUsers(
   }
   if (tagId && tagId.trim().length > 0) {
     params.set('tagId', tagId.trim())
+  }
+  if (sort) {
+    params.set('sort', sort)
+    params.set('order', order ?? 'desc')
   }
   return requestJson(`/api/users?${params.toString()}`, { signal })
 }

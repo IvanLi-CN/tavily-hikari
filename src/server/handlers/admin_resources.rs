@@ -1801,6 +1801,37 @@ struct ListUsersQuery {
     q: Option<String>,
     #[serde(rename = "tagId")]
     tag_id: Option<String>,
+    sort: Option<AdminUsersSortField>,
+    order: Option<AdminUsersSortDirection>,
+}
+
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum AdminUsersSortField {
+    HourlyAnyUsed,
+    QuotaHourlyUsed,
+    QuotaDailyUsed,
+    QuotaMonthlyUsed,
+    DailySuccessRate,
+    MonthlySuccessRate,
+    LastActivity,
+    LastLoginAt,
+}
+
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum AdminUsersSortDirection {
+    Asc,
+    Desc,
+}
+
+impl AdminUsersSortDirection {
+    fn apply(self, ordering: std::cmp::Ordering) -> std::cmp::Ordering {
+        match self {
+            Self::Asc => ordering,
+            Self::Desc => ordering.reverse(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -1880,6 +1911,7 @@ struct AdminUserSummaryView {
     daily_success: i64,
     daily_failure: i64,
     monthly_success: i64,
+    monthly_failure: i64,
     last_activity: Option<i64>,
     tags: Vec<AdminUserTagBindingView>,
 }
@@ -1939,6 +1971,7 @@ struct AdminUserDetailView {
     daily_success: i64,
     daily_failure: i64,
     monthly_success: i64,
+    monthly_failure: i64,
     last_activity: Option<i64>,
     tags: Vec<AdminUserTagBindingView>,
     quota_base: AdminQuotaView,
@@ -1973,6 +2006,12 @@ struct UserTagMutationRequest {
 #[serde(rename_all = "camelCase")]
 struct BindUserTagRequest {
     tag_id: String,
+}
+
+#[derive(Debug, Clone)]
+struct AdminUserSummaryRow {
+    user: tavily_hikari::AdminUserIdentity,
+    summary: tavily_hikari::UserDashboardSummary,
 }
 
 fn build_admin_quota_view(quota: &tavily_hikari::AdminQuotaLimitSet) -> AdminQuotaView {
@@ -2079,9 +2118,153 @@ fn build_admin_user_summary_view(
         daily_success: summary.daily_success,
         daily_failure: summary.daily_failure,
         monthly_success: summary.monthly_success,
+        monthly_failure: summary.monthly_failure,
         last_activity: summary.last_activity,
         tags: tags.iter().map(build_admin_user_tag_binding_view).collect(),
     }
+}
+
+fn empty_user_dashboard_summary() -> tavily_hikari::UserDashboardSummary {
+    tavily_hikari::UserDashboardSummary {
+        hourly_any_used: 0,
+        hourly_any_limit: 0,
+        quota_hourly_used: 0,
+        quota_hourly_limit: 0,
+        quota_daily_used: 0,
+        quota_daily_limit: 0,
+        quota_monthly_used: 0,
+        quota_monthly_limit: 0,
+        daily_success: 0,
+        daily_failure: 0,
+        monthly_success: 0,
+        monthly_failure: 0,
+        last_activity: None,
+    }
+}
+
+fn compare_optional_timestamp(
+    left: Option<i64>,
+    right: Option<i64>,
+    direction: AdminUsersSortDirection,
+) -> std::cmp::Ordering {
+    match (left, right) {
+        (Some(left), Some(right)) => direction.apply(left.cmp(&right)),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
+}
+
+fn compare_quota_usage(
+    left_used: i64,
+    left_limit: i64,
+    right_used: i64,
+    right_limit: i64,
+    direction: AdminUsersSortDirection,
+) -> std::cmp::Ordering {
+    let used_order = direction.apply(left_used.cmp(&right_used));
+    if used_order != std::cmp::Ordering::Equal {
+        return used_order;
+    }
+    direction.apply(left_limit.cmp(&right_limit))
+}
+
+fn compare_success_rate(
+    left_success: i64,
+    left_failure: i64,
+    right_success: i64,
+    right_failure: i64,
+    direction: AdminUsersSortDirection,
+) -> std::cmp::Ordering {
+    let left_total = left_success + left_failure;
+    let right_total = right_success + right_failure;
+    match (left_total == 0, right_total == 0) {
+        (true, true) => return std::cmp::Ordering::Equal,
+        (true, false) => return std::cmp::Ordering::Greater,
+        (false, true) => return std::cmp::Ordering::Less,
+        (false, false) => {}
+    }
+
+    let left_ratio = i128::from(left_success) * i128::from(right_total);
+    let right_ratio = i128::from(right_success) * i128::from(left_total);
+    let ratio_order = direction.apply(left_ratio.cmp(&right_ratio));
+    if ratio_order != std::cmp::Ordering::Equal {
+        return ratio_order;
+    }
+
+    direction.apply(left_failure.cmp(&right_failure))
+}
+
+fn compare_admin_user_rows(
+    left: &AdminUserSummaryRow,
+    right: &AdminUserSummaryRow,
+    sort: Option<AdminUsersSortField>,
+    order: Option<AdminUsersSortDirection>,
+) -> std::cmp::Ordering {
+    let (sort_field, direction) = match sort {
+        Some(field) => (field, order.unwrap_or(AdminUsersSortDirection::Desc)),
+        None => (AdminUsersSortField::LastLoginAt, AdminUsersSortDirection::Desc),
+    };
+
+    let ordering = match sort_field {
+        AdminUsersSortField::HourlyAnyUsed => compare_quota_usage(
+            left.summary.hourly_any_used,
+            left.summary.hourly_any_limit,
+            right.summary.hourly_any_used,
+            right.summary.hourly_any_limit,
+            direction,
+        ),
+        AdminUsersSortField::QuotaHourlyUsed => compare_quota_usage(
+            left.summary.quota_hourly_used,
+            left.summary.quota_hourly_limit,
+            right.summary.quota_hourly_used,
+            right.summary.quota_hourly_limit,
+            direction,
+        ),
+        AdminUsersSortField::QuotaDailyUsed => compare_quota_usage(
+            left.summary.quota_daily_used,
+            left.summary.quota_daily_limit,
+            right.summary.quota_daily_used,
+            right.summary.quota_daily_limit,
+            direction,
+        ),
+        AdminUsersSortField::QuotaMonthlyUsed => compare_quota_usage(
+            left.summary.quota_monthly_used,
+            left.summary.quota_monthly_limit,
+            right.summary.quota_monthly_used,
+            right.summary.quota_monthly_limit,
+            direction,
+        ),
+        AdminUsersSortField::DailySuccessRate => compare_success_rate(
+            left.summary.daily_success,
+            left.summary.daily_failure,
+            right.summary.daily_success,
+            right.summary.daily_failure,
+            direction,
+        ),
+        AdminUsersSortField::MonthlySuccessRate => compare_success_rate(
+            left.summary.monthly_success,
+            left.summary.monthly_failure,
+            right.summary.monthly_success,
+            right.summary.monthly_failure,
+            direction,
+        ),
+        AdminUsersSortField::LastActivity => compare_optional_timestamp(
+            left.summary.last_activity,
+            right.summary.last_activity,
+            direction,
+        ),
+        AdminUsersSortField::LastLoginAt => compare_optional_timestamp(
+            left.user.last_login_at,
+            right.user.last_login_at,
+            direction,
+        ),
+    };
+    if ordering != std::cmp::Ordering::Equal {
+        return ordering;
+    }
+
+    left.user.user_id.cmp(&right.user.user_id)
 }
 
 async fn list_user_tags(
@@ -2250,35 +2433,61 @@ async fn list_users(
     }
     let page = q.page.unwrap_or(1).max(1);
     let per_page = q.per_page.unwrap_or(20).clamp(1, 100);
-    let (users, total) = state
+    let users = state
         .proxy
-        .list_admin_users_paged(page, per_page, q.q.as_deref(), q.tag_id.as_deref())
+        .list_admin_users_filtered(q.q.as_deref(), q.tag_id.as_deref())
         .await
         .map_err(|err| {
             eprintln!("list admin users error: {err}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
     let user_ids: Vec<String> = users.iter().map(|user| user.user_id.clone()).collect();
-    let mut user_tags = state
+    let summaries = state
         .proxy
-        .list_user_tag_bindings_for_users(&user_ids)
+        .user_dashboard_summaries_for_users(&user_ids)
         .await
         .map_err(|err| {
-            eprintln!("list admin user tags error: {err}");
+            eprintln!("list admin users dashboard summaries error: {err}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
-    let mut items = Vec::with_capacity(users.len());
-    for user in users {
-        let summary = state
+    let mut rows: Vec<AdminUserSummaryRow> = users
+        .into_iter()
+        .map(|user| AdminUserSummaryRow {
+            summary: summaries
+                .get(&user.user_id)
+                .cloned()
+                .unwrap_or_else(empty_user_dashboard_summary),
+            user,
+        })
+        .collect();
+    rows.sort_by(|left, right| compare_admin_user_rows(left, right, q.sort, q.order));
+    let total = rows.len() as i64;
+    let offset = ((page - 1) * per_page) as usize;
+    let paged_rows: Vec<AdminUserSummaryRow> = rows
+        .into_iter()
+        .skip(offset)
+        .take(per_page as usize)
+        .collect();
+    let page_user_ids: Vec<String> = paged_rows
+        .iter()
+        .map(|row| row.user.user_id.clone())
+        .collect();
+    let mut user_tags = if page_user_ids.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        state
             .proxy
-            .user_dashboard_summary(&user.user_id)
+            .list_user_tag_bindings_for_users(&page_user_ids)
             .await
             .map_err(|err| {
-                eprintln!("list admin users dashboard summary error: {err}");
+                eprintln!("list admin user tags error: {err}");
                 StatusCode::INTERNAL_SERVER_ERROR
-            })?;
-        let tags = user_tags.remove(&user.user_id).unwrap_or_default();
-        items.push(build_admin_user_summary_view(&user, &summary, tags));
+            })?
+    };
+    let mut items = Vec::with_capacity(paged_rows.len());
+    for row in paged_rows {
+        let tags = user_tags.remove(&row.user.user_id).unwrap_or_default();
+        items.push(build_admin_user_summary_view(&row.user, &row.summary, tags));
     }
     Ok(Json(ListUsersResponse {
         items,
@@ -2404,6 +2613,7 @@ async fn get_user_detail(
         daily_success: summary.daily_success,
         daily_failure: summary.daily_failure,
         monthly_success: summary.monthly_success,
+        monthly_failure: summary.monthly_failure,
         last_activity: summary.last_activity,
         tags: quota_details
             .tags
@@ -2831,6 +3041,48 @@ async fn create_tokens_batch(
 mod admin_resources_tests {
     use super::*;
 
+    fn mock_user(user_id: &str, last_login_at: Option<i64>) -> tavily_hikari::AdminUserIdentity {
+        tavily_hikari::AdminUserIdentity {
+            user_id: user_id.to_string(),
+            display_name: Some(user_id.to_string()),
+            username: Some(user_id.to_string()),
+            active: true,
+            last_login_at,
+            token_count: 1,
+        }
+    }
+
+    fn mock_summary() -> tavily_hikari::UserDashboardSummary {
+        tavily_hikari::UserDashboardSummary {
+            hourly_any_used: 0,
+            hourly_any_limit: 0,
+            quota_hourly_used: 0,
+            quota_hourly_limit: 0,
+            quota_daily_used: 0,
+            quota_daily_limit: 0,
+            quota_monthly_used: 0,
+            quota_monthly_limit: 0,
+            daily_success: 0,
+            daily_failure: 0,
+            monthly_success: 0,
+            monthly_failure: 0,
+            last_activity: None,
+        }
+    }
+
+    fn mock_row(
+        user_id: &str,
+        last_login_at: Option<i64>,
+        configure: impl FnOnce(&mut tavily_hikari::UserDashboardSummary),
+    ) -> AdminUserSummaryRow {
+        let mut summary = mock_summary();
+        configure(&mut summary);
+        AdminUserSummaryRow {
+            user: mock_user(user_id, last_login_at),
+            summary,
+        }
+    }
+
     #[test]
     fn build_forward_proxy_validation_view_preserves_readable_display_name() {
         let view = build_forward_proxy_validation_view(tavily_hikari::ForwardProxyValidationResponse {
@@ -2867,5 +3119,75 @@ mod admin_resources_tests {
 
         let payload = serde_json::to_value(&view).expect("serialize view");
         assert_eq!(payload["nodes"][0]["displayName"].as_str(), Some("香港 🇭🇰"));
+    }
+
+    #[test]
+    fn admin_user_rows_default_to_last_login_desc_with_nulls_last() {
+        let mut rows = vec![
+            mock_row("usr_none", None, |_| {}),
+            mock_row("usr_old", Some(10), |_| {}),
+            mock_row("usr_new", Some(20), |_| {}),
+        ];
+
+        rows.sort_by(|left, right| compare_admin_user_rows(left, right, None, None));
+
+        let ordered_ids: Vec<&str> = rows.iter().map(|row| row.user.user_id.as_str()).collect();
+        assert_eq!(ordered_ids, vec!["usr_new", "usr_old", "usr_none"]);
+    }
+
+    #[test]
+    fn success_rate_sort_keeps_zero_sample_rows_last() {
+        let mut rows = vec![
+            mock_row("usr_zero", Some(10), |summary| {
+                summary.daily_success = 0;
+                summary.daily_failure = 0;
+            }),
+            mock_row("usr_mid", Some(11), |summary| {
+                summary.daily_success = 6;
+                summary.daily_failure = 2;
+            }),
+            mock_row("usr_best", Some(12), |summary| {
+                summary.daily_success = 9;
+                summary.daily_failure = 1;
+            }),
+        ];
+
+        rows.sort_by(|left, right| {
+            compare_admin_user_rows(
+                left,
+                right,
+                Some(AdminUsersSortField::DailySuccessRate),
+                Some(AdminUsersSortDirection::Desc),
+            )
+        });
+
+        let ordered_ids: Vec<&str> = rows.iter().map(|row| row.user.user_id.as_str()).collect();
+        assert_eq!(ordered_ids, vec!["usr_best", "usr_mid", "usr_zero"]);
+    }
+
+    #[test]
+    fn quota_sort_uses_limit_as_secondary_tiebreaker() {
+        let mut rows = vec![
+            mock_row("usr_b", Some(10), |summary| {
+                summary.quota_hourly_used = 40;
+                summary.quota_hourly_limit = 200;
+            }),
+            mock_row("usr_a", Some(12), |summary| {
+                summary.quota_hourly_used = 40;
+                summary.quota_hourly_limit = 100;
+            }),
+        ];
+
+        rows.sort_by(|left, right| {
+            compare_admin_user_rows(
+                left,
+                right,
+                Some(AdminUsersSortField::QuotaHourlyUsed),
+                Some(AdminUsersSortDirection::Asc),
+            )
+        });
+
+        let ordered_ids: Vec<&str> = rows.iter().map(|row| row.user.user_id.as_str()).collect();
+        assert_eq!(ordered_ids, vec!["usr_a", "usr_b"]);
     }
 }

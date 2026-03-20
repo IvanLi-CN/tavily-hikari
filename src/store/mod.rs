@@ -4271,6 +4271,197 @@ impl KeyStore {
         Ok((items, total))
     }
 
+    pub(crate) async fn list_admin_users_filtered(
+        &self,
+        query: Option<&str>,
+        tag_id: Option<&str>,
+    ) -> Result<Vec<AdminUserIdentity>, ProxyError> {
+        let search = query
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| format!("%{value}%"));
+        let tag_id = tag_id.map(str::trim).filter(|value| !value.is_empty());
+
+        let rows = match (search.as_ref(), tag_id) {
+            (Some(search), Some(tag_id)) => {
+                sqlx::query_as::<
+                    _,
+                    (
+                        String,
+                        Option<String>,
+                        Option<String>,
+                        i64,
+                        Option<i64>,
+                        i64,
+                    ),
+                >(
+                    r#"SELECT
+                         u.id,
+                         u.display_name,
+                         u.username,
+                         u.active,
+                         u.last_login_at,
+                         COALESCE(COUNT(b.token_id), 0) AS token_count
+                       FROM users u
+                       LEFT JOIN user_token_bindings b ON b.user_id = u.id
+                       WHERE EXISTS (
+                               SELECT 1
+                               FROM user_tag_bindings utb
+                               WHERE utb.user_id = u.id
+                                 AND utb.tag_id = ?
+                           )
+                         AND (
+                               u.id LIKE ?
+                               OR COALESCE(u.display_name, '') LIKE ?
+                               OR COALESCE(u.username, '') LIKE ?
+                               OR EXISTS (
+                                   SELECT 1
+                                   FROM user_tag_bindings utb
+                                   JOIN user_tags ut ON ut.id = utb.tag_id
+                                   WHERE utb.user_id = u.id
+                                     AND (
+                                         ut.name LIKE ?
+                                         OR COALESCE(ut.display_name, '') LIKE ?
+                                     )
+                               )
+                           )
+                       GROUP BY u.id, u.display_name, u.username, u.active, u.last_login_at
+                       ORDER BY (u.last_login_at IS NULL) ASC, u.last_login_at DESC, u.id ASC"#,
+                )
+                .bind(tag_id)
+                .bind(search)
+                .bind(search)
+                .bind(search)
+                .bind(search)
+                .bind(search)
+                .fetch_all(&self.pool)
+                .await?
+            }
+            (Some(search), None) => {
+                sqlx::query_as::<
+                    _,
+                    (
+                        String,
+                        Option<String>,
+                        Option<String>,
+                        i64,
+                        Option<i64>,
+                        i64,
+                    ),
+                >(
+                    r#"SELECT
+                         u.id,
+                         u.display_name,
+                         u.username,
+                         u.active,
+                         u.last_login_at,
+                         COALESCE(COUNT(b.token_id), 0) AS token_count
+                       FROM users u
+                       LEFT JOIN user_token_bindings b ON b.user_id = u.id
+                       WHERE u.id LIKE ?
+                          OR COALESCE(u.display_name, '') LIKE ?
+                          OR COALESCE(u.username, '') LIKE ?
+                          OR EXISTS (
+                               SELECT 1
+                               FROM user_tag_bindings utb
+                               JOIN user_tags ut ON ut.id = utb.tag_id
+                               WHERE utb.user_id = u.id
+                                 AND (
+                                   ut.name LIKE ?
+                                   OR COALESCE(ut.display_name, '') LIKE ?
+                                 )
+                           )
+                       GROUP BY u.id, u.display_name, u.username, u.active, u.last_login_at
+                       ORDER BY (u.last_login_at IS NULL) ASC, u.last_login_at DESC, u.id ASC"#,
+                )
+                .bind(search)
+                .bind(search)
+                .bind(search)
+                .bind(search)
+                .bind(search)
+                .fetch_all(&self.pool)
+                .await?
+            }
+            (None, Some(tag_id)) => {
+                sqlx::query_as::<
+                    _,
+                    (
+                        String,
+                        Option<String>,
+                        Option<String>,
+                        i64,
+                        Option<i64>,
+                        i64,
+                    ),
+                >(
+                    r#"SELECT
+                         u.id,
+                         u.display_name,
+                         u.username,
+                         u.active,
+                         u.last_login_at,
+                         COALESCE(COUNT(b.token_id), 0) AS token_count
+                       FROM users u
+                       LEFT JOIN user_token_bindings b ON b.user_id = u.id
+                       WHERE EXISTS (
+                           SELECT 1
+                           FROM user_tag_bindings utb
+                           WHERE utb.user_id = u.id
+                             AND utb.tag_id = ?
+                       )
+                       GROUP BY u.id, u.display_name, u.username, u.active, u.last_login_at
+                       ORDER BY (u.last_login_at IS NULL) ASC, u.last_login_at DESC, u.id ASC"#,
+                )
+                .bind(tag_id)
+                .fetch_all(&self.pool)
+                .await?
+            }
+            (None, None) => {
+                sqlx::query_as::<
+                    _,
+                    (
+                        String,
+                        Option<String>,
+                        Option<String>,
+                        i64,
+                        Option<i64>,
+                        i64,
+                    ),
+                >(
+                    r#"SELECT
+                         u.id,
+                         u.display_name,
+                         u.username,
+                         u.active,
+                         u.last_login_at,
+                         COALESCE(COUNT(b.token_id), 0) AS token_count
+                       FROM users u
+                       LEFT JOIN user_token_bindings b ON b.user_id = u.id
+                       GROUP BY u.id, u.display_name, u.username, u.active, u.last_login_at
+                       ORDER BY (u.last_login_at IS NULL) ASC, u.last_login_at DESC, u.id ASC"#,
+                )
+                .fetch_all(&self.pool)
+                .await?
+            }
+        };
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(user_id, display_name, username, active, last_login_at, token_count)| {
+                    AdminUserIdentity {
+                        user_id,
+                        display_name,
+                        username,
+                        active: active == 1,
+                        last_login_at,
+                        token_count,
+                    }
+                },
+            )
+            .collect())
+    }
+
     pub(crate) async fn get_admin_user_identity(
         &self,
         user_id: &str,
@@ -5744,54 +5935,86 @@ impl KeyStore {
         Ok(resolution)
     }
 
-    pub(crate) async fn fetch_user_success_failure(
+    pub(crate) async fn fetch_user_log_metrics_bulk(
         &self,
-        user_id: &str,
-    ) -> Result<(i64, i64, i64), ProxyError> {
+        user_ids: &[String],
+    ) -> Result<HashMap<String, UserLogMetricsSummary>, ProxyError> {
+        if user_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
         let now = Utc::now();
         let month_start = start_of_month(now).timestamp();
         let day_start = start_of_day(now).timestamp();
-        let row = sqlx::query(
+
+        let mut builder = QueryBuilder::new(
             r#"
             SELECT
-              COALESCE(SUM(CASE WHEN l.result_status = ? AND l.created_at >= ? THEN 1 ELSE 0 END), 0) AS monthly_success,
-              COALESCE(SUM(CASE WHEN l.result_status = ? AND l.created_at >= ? THEN 1 ELSE 0 END), 0) AS daily_success,
-              COALESCE(SUM(CASE WHEN l.result_status = ? AND l.created_at >= ? THEN 1 ELSE 0 END), 0) AS daily_failure
-            FROM auth_token_logs l
-            JOIN user_token_bindings b ON b.token_id = l.token_id
-            WHERE b.user_id = ?
-            "#,
-        )
-        .bind(OUTCOME_SUCCESS)
-        .bind(month_start)
-        .bind(OUTCOME_SUCCESS)
-        .bind(day_start)
-        .bind(OUTCOME_ERROR)
-        .bind(day_start)
-        .bind(user_id)
-        .fetch_one(&self.pool)
-        .await?;
-        Ok((
-            row.try_get("monthly_success")?,
-            row.try_get("daily_success")?,
-            row.try_get("daily_failure")?,
-        ))
-    }
+              b.user_id,
+              COALESCE(SUM(CASE WHEN l.result_status = "#,
+        );
+        builder.push_bind(OUTCOME_SUCCESS);
+        builder.push(" AND l.created_at >= ");
+        builder.push_bind(day_start);
+        builder.push(" THEN 1 ELSE 0 END), 0) AS daily_success, ");
+        builder.push("COALESCE(SUM(CASE WHEN l.result_status = ");
+        builder.push_bind(OUTCOME_ERROR);
+        builder.push(" AND l.created_at >= ");
+        builder.push_bind(day_start);
+        builder.push(" THEN 1 ELSE 0 END), 0) AS daily_failure, ");
+        builder.push("COALESCE(SUM(CASE WHEN l.result_status = ");
+        builder.push_bind(OUTCOME_SUCCESS);
+        builder.push(" AND l.created_at >= ");
+        builder.push_bind(month_start);
+        builder.push(" THEN 1 ELSE 0 END), 0) AS monthly_success, ");
+        builder.push("COALESCE(SUM(CASE WHEN l.result_status = ");
+        builder.push_bind(OUTCOME_ERROR);
+        builder.push(" AND l.created_at >= ");
+        builder.push_bind(month_start);
+        builder.push(" THEN 1 ELSE 0 END), 0) AS monthly_failure, ");
+        builder.push(
+            r#"MAX(l.created_at) AS last_activity
+            FROM user_token_bindings b
+            LEFT JOIN auth_token_logs l ON l.token_id = b.token_id
+            WHERE b.user_id IN ("#,
+        );
+        {
+            let mut separated = builder.separated(", ");
+            for user_id in user_ids {
+                separated.push_bind(user_id);
+            }
+        }
+        builder.push(") GROUP BY b.user_id");
 
-    pub(crate) async fn fetch_user_last_activity(
-        &self,
-        user_id: &str,
-    ) -> Result<Option<i64>, ProxyError> {
-        let row = sqlx::query_scalar::<_, Option<i64>>(
-            r#"SELECT MAX(l.created_at)
-               FROM auth_token_logs l
-               JOIN user_token_bindings b ON b.token_id = l.token_id
-               WHERE b.user_id = ?"#,
-        )
-        .bind(user_id)
-        .fetch_one(&self.pool)
-        .await?;
-        Ok(row)
+        let rows = builder
+            .build_query_as::<(String, i64, i64, i64, i64, Option<i64>)>()
+            .fetch_all(&self.pool)
+            .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(
+                    user_id,
+                    daily_success,
+                    daily_failure,
+                    monthly_success,
+                    monthly_failure,
+                    last_activity,
+                )| {
+                    (
+                        user_id,
+                        UserLogMetricsSummary {
+                            daily_success,
+                            daily_failure,
+                            monthly_success,
+                            monthly_failure,
+                            last_activity,
+                        },
+                    )
+                },
+            )
+            .collect())
     }
 
     pub(crate) async fn insert_oauth_login_state(

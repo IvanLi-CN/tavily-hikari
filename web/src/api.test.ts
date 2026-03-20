@@ -218,7 +218,7 @@ describe('admin user tag api helpers', () => {
     expect(init.body).toBe(JSON.stringify({ tagId: 'team_lead' }))
   })
 
-  it('sends exact tag filters when listing admin users', async () => {
+  it('sends exact tag filters and sort params when listing admin users', async () => {
     const fetchMock = mock(() =>
       Promise.resolve(
         new Response(
@@ -234,11 +234,11 @@ describe('admin user tag api helpers', () => {
     )
     globalThis.fetch = fetchMock as typeof fetch
 
-    await fetchAdminUsers(1, 20, 'L2', 'linuxdo_l2')
+    await fetchAdminUsers(1, 20, 'L2', 'linuxdo_l2', 'monthlySuccessRate', 'asc')
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
     const [input] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(input).toBe('/api/users?page=1&per_page=20&q=L2&tagId=linuxdo_l2')
+    expect(input).toBe('/api/users?page=1&per_page=20&q=L2&tagId=linuxdo_l2&sort=monthlySuccessRate&order=asc')
   })
 
   it('sends repeated key group and status filters when listing paginated api keys', async () => {

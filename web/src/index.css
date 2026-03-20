@@ -4593,26 +4593,137 @@ tbody tr:hover {
   border-radius: 999px;
 }
 
-/* Admin users tables: prefer horizontal scroll over cramped fixed-layout columns. */
 .jobs-table.admin-users-table {
-  table-layout: auto;
-  min-width: 1240px;
+  width: 100%;
 }
 
 .jobs-table.admin-users-table th,
 .jobs-table.admin-users-table td {
-  white-space: nowrap;
   vertical-align: middle;
+}
+
+.jobs-table.admin-users-list-table {
+  table-layout: fixed;
+}
+
+.jobs-table.admin-users-list-table th,
+.jobs-table.admin-users-list-table td {
+  white-space: normal;
 }
 
 .jobs-table.admin-users-list-table th:nth-child(1),
 .jobs-table.admin-users-list-table td:nth-child(1) {
-  min-width: 18rem;
-  white-space: normal;
+  width: 17%;
+}
+
+.jobs-table.admin-users-list-table th:nth-child(2),
+.jobs-table.admin-users-list-table td:nth-child(2) {
+  width: 7%;
+}
+
+.jobs-table.admin-users-list-table th:nth-child(3),
+.jobs-table.admin-users-list-table td:nth-child(3) {
+  width: 6%;
+}
+
+.jobs-table.admin-users-list-table th:nth-child(4),
+.jobs-table.admin-users-list-table td:nth-child(4) {
+  width: 12%;
+}
+
+.jobs-table.admin-users-list-table th:nth-child(5),
+.jobs-table.admin-users-list-table td:nth-child(5),
+.jobs-table.admin-users-list-table th:nth-child(6),
+.jobs-table.admin-users-list-table td:nth-child(6),
+.jobs-table.admin-users-list-table th:nth-child(7),
+.jobs-table.admin-users-list-table td:nth-child(7),
+.jobs-table.admin-users-list-table th:nth-child(8),
+.jobs-table.admin-users-list-table td:nth-child(8),
+.jobs-table.admin-users-list-table th:nth-child(9),
+.jobs-table.admin-users-list-table td:nth-child(9),
+.jobs-table.admin-users-list-table th:nth-child(10),
+.jobs-table.admin-users-list-table td:nth-child(10) {
+  width: 6.5%;
+}
+
+.jobs-table.admin-users-list-table th:nth-child(11),
+.jobs-table.admin-users-list-table td:nth-child(11),
+.jobs-table.admin-users-list-table th:nth-child(12),
+.jobs-table.admin-users-list-table td:nth-child(12) {
+  width: 8%;
+}
+
+.admin-table-sort-button {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  opacity: 0.78;
+  cursor: pointer;
+}
+
+.admin-table-sort-button:hover,
+.admin-table-sort-button:focus-visible,
+.admin-table-sort-button.is-active {
+  opacity: 1;
+}
+
+.admin-table-sort-button:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 3px;
+  border-radius: 0.35rem;
+}
+
+.admin-table-value-stack {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.18rem;
+}
+
+.admin-table-value-primary,
+.admin-table-value-secondary {
+  white-space: nowrap;
+}
+
+.admin-table-value-primary {
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.admin-table-value-secondary {
+  font-size: 0.82rem;
+  line-height: 1.2;
+  color: hsl(var(--muted-foreground));
+}
+
+.admin-users-compact-cell {
+  text-align: left;
+}
+
+.admin-users-identity-cell code {
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+.admin-users-tags-cell {
+  overflow-wrap: anywhere;
 }
 
 .jobs-table.admin-users-list-table th:last-child,
-.jobs-table.admin-users-list-table td:last-child,
+.jobs-table.admin-users-list-table td:last-child {
+  width: 72px;
+  min-width: 72px;
+  text-align: center;
+}
+
 .jobs-table.admin-user-tokens-table th:last-child,
 .jobs-table.admin-user-tokens-table td:last-child {
   width: 86px;

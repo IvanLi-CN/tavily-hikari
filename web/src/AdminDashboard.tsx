@@ -143,6 +143,7 @@ import {
   syncApiKeyUsage,
   fetchJobs,
   fetchTokenGroups,
+  type AdminUsersSortField,
   type TokenGroup,
   fetchAdminUsers,
   fetchAdminUserDetail,
@@ -159,6 +160,7 @@ import {
   type AdminUserDetail,
   type AdminUserTag,
   type AdminUserTagBinding,
+  type SortDirection,
   type ForwardProxySettings,
   type ForwardProxyStatsResponse,
   type ForwardProxyDashboardSummaryResponse,
@@ -198,6 +200,18 @@ const DASHBOARD_TOKENS_PAGE_SIZE = 100
 const DASHBOARD_TOKENS_MAX_PAGES = 10
 const USER_TAG_DISPLAY_LIMIT = 3
 const NEW_USER_TAG_CARD_ID = '__new__'
+const ADMIN_USERS_DEFAULT_SORT_FIELD: AdminUsersSortField = 'lastLoginAt'
+const ADMIN_USERS_DEFAULT_SORT_ORDER: SortDirection = 'desc'
+const ADMIN_USERS_SORT_FIELDS: readonly AdminUsersSortField[] = [
+  'hourlyAnyUsed',
+  'quotaHourlyUsed',
+  'quotaDailyUsed',
+  'quotaMonthlyUsed',
+  'dailySuccessRate',
+  'monthlySuccessRate',
+  'lastActivity',
+  'lastLoginAt',
+]
 
 type UserQuotaSnapshot = Record<QuotaSliderField, QuotaSliderSeed>
 
@@ -268,6 +282,54 @@ function formatQuotaLimitValue(value: number): string {
 
 function formatQuotaUsagePair(used: number, limit: number): string {
   return `${formatNumber(Math.max(0, used))} / ${formatQuotaLimitValue(limit)}`
+}
+
+type AdminTableStackedValue = {
+  primary: string
+  secondary?: string | null
+}
+
+function formatQuotaStackValue(used: number, limit: number): AdminTableStackedValue {
+  return {
+    primary: formatNumber(Math.max(0, used)),
+    secondary: formatQuotaLimitValue(limit),
+  }
+}
+
+function formatSuccessRateStackValue(
+  success: number,
+  failure: number,
+  language: 'en' | 'zh',
+): AdminTableStackedValue {
+  const total = success + failure
+  return {
+    primary: formatPercent(success, total),
+    secondary: language === 'zh' ? `失败 ${formatNumber(failure)}` : `Fail ${formatNumber(failure)}`,
+  }
+}
+
+function formatCompactSuccessRateValue(success: number, failure: number, language: 'en' | 'zh'): string {
+  const total = success + failure
+  const rate = formatPercent(success, total)
+  const failureLabel = language === 'zh' ? '失败' : 'Fail'
+  return `${rate} · ${failureLabel} ${formatNumber(failure)}`
+}
+
+function formatStackedTimestamp(
+  value: number | null,
+  language: 'en' | 'zh',
+): AdminTableStackedValue {
+  if (!value) {
+    return { primary: '—' }
+  }
+  return {
+    primary: language === 'zh' ? formatDateOnly(value) : dateOnlyFormatter.format(new Date(value * 1000)),
+    secondary: formatClockTime(value),
+  }
+}
+
+function isAdminUsersSortField(value: string | null): value is AdminUsersSortField {
+  return value != null && ADMIN_USERS_SORT_FIELDS.includes(value as AdminUsersSortField)
 }
 
 function formatKeyGroupName(group: string | null | undefined, ungroupedLabel: string): string {
@@ -384,6 +446,17 @@ function getAdminUsersPageFromLocation(): number {
   const rawPage = new URLSearchParams(window.location.search).get('page')?.trim() ?? ''
   const parsedPage = Number.parseInt(rawPage, 10)
   return Number.isFinite(parsedPage) && parsedPage > 1 ? parsedPage : 1
+}
+
+function getAdminUsersSortFromLocation(): AdminUsersSortField | null {
+  const rawSort = new URLSearchParams(window.location.search).get('sort')?.trim() ?? ''
+  return isAdminUsersSortField(rawSort) ? rawSort : null
+}
+
+function getAdminUsersSortDirectionFromLocation(): SortDirection | null {
+  if (getAdminUsersSortFromLocation() == null) return null
+  const rawOrder = new URLSearchParams(window.location.search).get('order')?.trim()
+  return rawOrder === 'asc' ? 'asc' : 'desc'
 }
 
 function getAdminKeysPageFromLocation(): number {
@@ -733,6 +806,58 @@ function TokenOwnerValue({
   )
 }
 
+function AdminTableValueStack({
+  primary,
+  secondary,
+  className,
+}: {
+  primary: string
+  secondary?: string | null
+  className?: string
+}): JSX.Element {
+  return (
+    <div className={`admin-table-value-stack${className ? ` ${className}` : ''}`}>
+      <span className="admin-table-value-primary">{primary}</span>
+      {secondary ? <span className="admin-table-value-secondary">{secondary}</span> : null}
+    </div>
+  )
+}
+
+function AdminUsersSortableHeader({
+  label,
+  field,
+  activeField,
+  activeOrder,
+  onToggle,
+}: {
+  label: string
+  field: AdminUsersSortField
+  activeField: AdminUsersSortField | null
+  activeOrder: SortDirection | null
+  onToggle: (field: AdminUsersSortField) => void
+}): JSX.Element {
+  const isActive = activeField === field
+  const ariaSort = !isActive ? 'none' : activeOrder === 'asc' ? 'ascending' : 'descending'
+  const icon = !isActive
+    ? 'mdi:unfold-more-horizontal'
+    : activeOrder === 'asc'
+      ? 'mdi:arrow-up'
+      : 'mdi:arrow-down'
+  return (
+    <th aria-sort={ariaSort}>
+      <button
+        type="button"
+        className={`admin-table-sort-button${isActive ? ' is-active' : ''}`}
+        onClick={() => onToggle(field)}
+        aria-label={label}
+      >
+        <span>{label}</span>
+        <Icon icon={icon} width={16} height={16} aria-hidden="true" />
+      </button>
+    </th>
+  )
+}
+
 function statusTone(status: string): StatusTone {
   const normalized = status.toLowerCase()
   if (normalized === 'active' || normalized === 'success' || normalized === 'completed') return 'success'
@@ -1031,10 +1156,12 @@ function AdminDashboard(): JSX.Element {
   const [jobsError, setJobsError] = useState<string | null>(null)
   const [users, setUsers] = useState<AdminUserSummary[]>([])
   const [usersTotal, setUsersTotal] = useState(0)
-  const [usersPage, setUsersPage] = useState(1)
-  const [usersQueryInput, setUsersQueryInput] = useState('')
-  const [usersQuery, setUsersQuery] = useState('')
-  const [usersTagFilterId, setUsersTagFilterId] = useState<string | null>(null)
+  const [usersPage, setUsersPage] = useState(() => getAdminUsersPageFromLocation())
+  const [usersQueryInput, setUsersQueryInput] = useState(() => getAdminUsersQueryFromLocation())
+  const [usersQuery, setUsersQuery] = useState(() => getAdminUsersQueryFromLocation())
+  const [usersTagFilterId, setUsersTagFilterId] = useState<string | null>(() => getAdminUsersTagFilterFromLocation())
+  const [usersSort, setUsersSort] = useState<AdminUsersSortField | null>(() => getAdminUsersSortFromLocation())
+  const [usersSortOrder, setUsersSortOrder] = useState<SortDirection | null>(() => getAdminUsersSortDirectionFromLocation())
   const [usersLoadState, setUsersLoadState] = useState<QueryLoadState>('initial_loading')
   const [usersError, setUsersError] = useState<string | null>(null)
   const [allowRegistration, setAllowRegistration] = useState<boolean | null>(null)
@@ -2641,7 +2768,13 @@ function AdminDashboard(): JSX.Element {
     if (!usersRouteActive) return
 
     const request = beginManagedRequest(usersAbortRef)
-    const nextQueryKey = `${usersPage}:${usersQuery}:${usersTagFilterId ?? ''}`
+    const nextQueryKey = [
+      usersPage,
+      usersQuery,
+      usersTagFilterId ?? '',
+      usersSort ?? '',
+      usersSortOrder ?? '',
+    ].join(':')
     const sameQueryRefresh = usersLoadedRef.current && usersQueryKeyRef.current === nextQueryKey
     setUsersLoadState(
       sameQueryRefresh ? getRefreshingLoadState(true) : getBlockingLoadState(usersLoadedRef.current),
@@ -2651,7 +2784,7 @@ function AdminDashboard(): JSX.Element {
       setUsers([])
       setUsersTotal(0)
     }
-    fetchAdminUsers(usersPage, USERS_PER_PAGE, usersQuery, usersTagFilterId, request.signal)
+    fetchAdminUsers(usersPage, USERS_PER_PAGE, usersQuery, usersTagFilterId, usersSort, usersSortOrder, request.signal)
       .then((result) => {
         if (request.signal.aborted) return
         setUsers(result.items)
@@ -2676,7 +2809,7 @@ function AdminDashboard(): JSX.Element {
       request.abort()
       request.cleanup()
     }
-  }, [beginManagedRequest, route, usersPage, usersQuery, usersTagFilterId])
+  }, [beginManagedRequest, route, usersPage, usersQuery, usersSort, usersSortOrder, usersTagFilterId])
 
   useEffect(() => {
     const userTagRouteActive =
@@ -2749,10 +2882,14 @@ function AdminDashboard(): JSX.Element {
     const locationQuery = getAdminUsersQueryFromLocation()
     const locationTagFilterId = getAdminUsersTagFilterFromLocation()
     const locationPage = getAdminUsersPageFromLocation()
+    const locationSort = getAdminUsersSortFromLocation()
+    const locationSortOrder = getAdminUsersSortDirectionFromLocation()
     setUsersPage((previous) => (previous === locationPage ? previous : locationPage))
     setUsersQueryInput((previous) => (previous === locationQuery ? previous : locationQuery))
     setUsersQuery((previous) => (previous === locationQuery ? previous : locationQuery))
     setUsersTagFilterId((previous) => (previous === locationTagFilterId ? previous : locationTagFilterId))
+    setUsersSort((previous) => (previous === locationSort ? previous : locationSort))
+    setUsersSortOrder((previous) => (previous === locationSortOrder ? previous : locationSortOrder))
   }, [route])
 
   useEffect(() => {
@@ -3070,26 +3207,44 @@ function AdminDashboard(): JSX.Element {
   const navigateUser = useCallback(
     (id: string, options?: { preserveUsersContext?: boolean }) => {
       if (options?.preserveUsersContext) {
-        navigateToPath(userDetailPath(id, usersQuery, usersTagFilterId, usersPage))
+        navigateToPath(userDetailPath(id, usersQuery, usersTagFilterId, usersPage, usersSort, usersSortOrder))
         return
       }
       navigateToPath(userDetailPath(id))
     },
-    [navigateToPath, usersPage, usersQuery, usersTagFilterId],
+    [navigateToPath, usersPage, usersQuery, usersSort, usersSortOrder, usersTagFilterId],
   )
 
   const navigateUsersSearch = useCallback(
-    (query: string, options?: { tagId?: string | null; page?: number | null }) => {
+    (
+      query: string,
+      options?: {
+        tagId?: string | null
+        page?: number | null
+        sort?: AdminUsersSortField | null
+        order?: SortDirection | null
+      },
+    ) => {
       const normalized = query.trim()
       const normalizedTagId = options?.tagId?.trim() ?? null
       const normalizedPage = options?.page != null ? Math.max(1, options.page) : 1
+      const hasExplicitSort = options != null && Object.prototype.hasOwnProperty.call(options, 'sort')
+      const hasExplicitOrder = options != null && Object.prototype.hasOwnProperty.call(options, 'order')
+      const normalizedSort = hasExplicitSort ? options?.sort ?? null : usersSort
+      const normalizedOrder = normalizedSort
+        ? hasExplicitOrder
+          ? options?.order ?? ADMIN_USERS_DEFAULT_SORT_ORDER
+          : usersSortOrder ?? ADMIN_USERS_DEFAULT_SORT_ORDER
+        : null
       setUsersPage(normalizedPage)
       setUsersQueryInput(normalized)
       setUsersQuery(normalized)
       setUsersTagFilterId(normalizedTagId)
-      navigateToPath(buildAdminUsersPath(normalized, normalizedTagId, normalizedPage))
+      setUsersSort(normalizedSort)
+      setUsersSortOrder(normalizedOrder)
+      navigateToPath(buildAdminUsersPath(normalized, normalizedTagId, normalizedPage, normalizedSort, normalizedOrder))
     },
-    [navigateToPath],
+    [navigateToPath, usersSort, usersSortOrder],
   )
 
   const navigateKeysList = useCallback(
@@ -3165,8 +3320,10 @@ function AdminDashboard(): JSX.Element {
       ? usersTagFilterId
       : getAdminUsersTagFilterFromLocation()
     const page = route.name === 'module' && route.module === 'users' ? usersPage : getAdminUsersPageFromLocation()
-    navigateToPath(userTagsPath(query, tagId, page))
-  }, [navigateToPath, route, usersPage, usersQuery, usersTagFilterId])
+    const sort = route.name === 'module' && route.module === 'users' ? usersSort : getAdminUsersSortFromLocation()
+    const order = route.name === 'module' && route.module === 'users' ? usersSortOrder : getAdminUsersSortDirectionFromLocation()
+    navigateToPath(userTagsPath(query, tagId, page, sort, order))
+  }, [navigateToPath, route, usersPage, usersQuery, usersSort, usersSortOrder, usersTagFilterId])
 
   const navigateUserTagCreate = useCallback(() => {
     setActiveUserTagEditorId(NEW_USER_TAG_CARD_ID)
@@ -3177,6 +3334,8 @@ function AdminDashboard(): JSX.Element {
         getAdminUsersQueryFromLocation(),
         getAdminUsersTagFilterFromLocation(),
         getAdminUsersPageFromLocation(),
+        getAdminUsersSortFromLocation(),
+        getAdminUsersSortDirectionFromLocation(),
       ),
     )
   }, [navigateToPath])
@@ -3195,6 +3354,8 @@ function AdminDashboard(): JSX.Element {
           getAdminUsersQueryFromLocation(),
           getAdminUsersTagFilterFromLocation(),
           getAdminUsersPageFromLocation(),
+          getAdminUsersSortFromLocation(),
+          getAdminUsersSortDirectionFromLocation(),
         ),
       )
     },
@@ -3263,7 +3424,15 @@ function AdminDashboard(): JSX.Element {
       setUsersLoadState(getRefreshingLoadState(usersLoadedRef.current))
       setUsersError(null)
       tasks.push(
-        fetchAdminUsers(usersPage, USERS_PER_PAGE, usersQuery, usersTagFilterId, request.signal).then((result) => {
+        fetchAdminUsers(
+          usersPage,
+          USERS_PER_PAGE,
+          usersQuery,
+          usersTagFilterId,
+          usersSort,
+          usersSortOrder,
+          request.signal,
+        ).then((result) => {
           if (request.signal.aborted) return
           setUsers(result.items)
           setUsersTotal(result.total)
@@ -3888,6 +4057,8 @@ function AdminDashboard(): JSX.Element {
   const jobsRefreshing = isRefreshingLoadState(jobsLoadState)
   const usersBlocking = isBlockingLoadState(usersLoadState)
   const usersRefreshing = isRefreshingLoadState(usersLoadState)
+  const effectiveUsersSort = usersSort ?? ADMIN_USERS_DEFAULT_SORT_FIELD
+  const effectiveUsersSortOrder = usersSortOrder ?? ADMIN_USERS_DEFAULT_SORT_ORDER
   const tokenLeaderboardBlocking = isBlockingLoadState(tokenLeaderboardLoadState)
   const tokenLeaderboardRefreshing = isRefreshingLoadState(tokenLeaderboardLoadState)
   const forwardProxySettingsBlocking = isBlockingLoadState(forwardProxySettingsLoadState)
@@ -4351,20 +4522,46 @@ function AdminDashboard(): JSX.Element {
   }
 
   const goPrevUsersPage = () => {
-    navigateUsersSearch(usersQuery, { tagId: usersTagFilterId, page: usersPage - 1 })
+    navigateUsersSearch(usersQuery, {
+      tagId: usersTagFilterId,
+      page: usersPage - 1,
+      sort: usersSort,
+      order: usersSortOrder,
+    })
   }
 
   const goNextUsersPage = () => {
-    navigateUsersSearch(usersQuery, { tagId: usersTagFilterId, page: usersPage + 1 })
+    navigateUsersSearch(usersQuery, {
+      tagId: usersTagFilterId,
+      page: usersPage + 1,
+      sort: usersSort,
+      order: usersSortOrder,
+    })
   }
 
   const applyUserSearch = () => {
-    navigateUsersSearch(usersQueryInput, { tagId: usersTagFilterId, page: 1 })
+    navigateUsersSearch(usersQueryInput, { tagId: usersTagFilterId, page: 1, sort: usersSort, order: usersSortOrder })
   }
 
   const resetUserSearch = () => {
-    navigateUsersSearch('', { tagId: null, page: 1 })
+    navigateUsersSearch('', { tagId: null, page: 1, sort: usersSort, order: usersSortOrder })
   }
+
+  const toggleUsersSort = useCallback(
+    (field: AdminUsersSortField) => {
+      const isActive = effectiveUsersSort === field
+      let nextSort: AdminUsersSortField | null = field
+      let nextOrder: SortDirection | null = ADMIN_USERS_DEFAULT_SORT_ORDER
+      if (isActive && effectiveUsersSortOrder === 'desc') {
+        nextOrder = 'asc'
+      } else if (isActive && effectiveUsersSortOrder === 'asc') {
+        nextSort = null
+        nextOrder = null
+      }
+      navigateUsersSearch(usersQuery, { tagId: usersTagFilterId, page: 1, sort: nextSort, order: nextOrder })
+    },
+    [effectiveUsersSort, effectiveUsersSortOrder, navigateUsersSearch, usersQuery, usersTagFilterId],
+  )
 
   const goPrevKeysPage = () => {
     navigateKeysList({
@@ -4453,7 +4650,14 @@ function AdminDashboard(): JSX.Element {
     }
   }
   const refreshUsersList = async () => {
-    const pagedUsers = await fetchAdminUsers(usersPage, USERS_PER_PAGE, usersQuery, usersTagFilterId)
+    const pagedUsers = await fetchAdminUsers(
+      usersPage,
+      USERS_PER_PAGE,
+      usersQuery,
+      usersTagFilterId,
+      usersSort,
+      usersSortOrder,
+    )
     setUsers(pagedUsers.items)
     setUsersTotal(pagedUsers.total)
     return pagedUsers
@@ -5315,7 +5519,9 @@ function AdminDashboard(): JSX.Element {
             variant="secondary"
             size="xs"
             className="user-tag-catalog-users user-tag-catalog-users-button"
-            onClick={() => tag && navigateUsersSearch(tag.displayName, { tagId: tag.id })}
+            onClick={() =>
+              tag && navigateUsersSearch(tag.displayName, { tagId: tag.id, sort: usersSort, order: usersSortOrder })
+            }
             disabled={isNewCard}
           >
             <span className="user-tag-catalog-users-label">{usersStrings.catalog.columns.users}</span>
@@ -5383,6 +5589,8 @@ function AdminDashboard(): JSX.Element {
                     getAdminUsersQueryFromLocation(),
                     getAdminUsersTagFilterFromLocation(),
                     getAdminUsersPageFromLocation(),
+                    getAdminUsersSortFromLocation(),
+                    getAdminUsersSortDirectionFromLocation(),
                   ),
                 )
               }
@@ -5537,6 +5745,8 @@ function AdminDashboard(): JSX.Element {
                       getAdminUsersQueryFromLocation(),
                       getAdminUsersTagFilterFromLocation(),
                       getAdminUsersPageFromLocation(),
+                      getAdminUsersSortFromLocation(),
+                      getAdminUsersSortDirectionFromLocation(),
                     ),
                   )
                 }
@@ -8052,21 +8262,72 @@ function AdminDashboard(): JSX.Element {
                       <th>{usersStrings.table.status}</th>
                       <th>{usersStrings.table.tokenCount}</th>
                       <th>{usersStrings.table.tags}</th>
-                      <th>{usersStrings.table.hourlyAny}</th>
-                      <th>{usersStrings.table.hourly}</th>
-                      <th>{usersStrings.table.daily}</th>
-                      <th>{usersStrings.table.monthly}</th>
-                      <th>{usersStrings.table.successDaily}</th>
-                      <th>{usersStrings.table.successMonthly}</th>
-                      <th>{usersStrings.table.lastActivity}</th>
-                      <th>{usersStrings.table.lastLogin}</th>
+                      <AdminUsersSortableHeader
+                        label={usersStrings.table.hourlyAny}
+                        field="hourlyAnyUsed"
+                        activeField={effectiveUsersSort}
+                        activeOrder={effectiveUsersSortOrder}
+                        onToggle={toggleUsersSort}
+                      />
+                      <AdminUsersSortableHeader
+                        label={usersStrings.table.hourly}
+                        field="quotaHourlyUsed"
+                        activeField={effectiveUsersSort}
+                        activeOrder={effectiveUsersSortOrder}
+                        onToggle={toggleUsersSort}
+                      />
+                      <AdminUsersSortableHeader
+                        label={usersStrings.table.daily}
+                        field="quotaDailyUsed"
+                        activeField={effectiveUsersSort}
+                        activeOrder={effectiveUsersSortOrder}
+                        onToggle={toggleUsersSort}
+                      />
+                      <AdminUsersSortableHeader
+                        label={usersStrings.table.monthly}
+                        field="quotaMonthlyUsed"
+                        activeField={effectiveUsersSort}
+                        activeOrder={effectiveUsersSortOrder}
+                        onToggle={toggleUsersSort}
+                      />
+                      <AdminUsersSortableHeader
+                        label={usersStrings.table.successDaily}
+                        field="dailySuccessRate"
+                        activeField={effectiveUsersSort}
+                        activeOrder={effectiveUsersSortOrder}
+                        onToggle={toggleUsersSort}
+                      />
+                      <AdminUsersSortableHeader
+                        label={usersStrings.table.successMonthly}
+                        field="monthlySuccessRate"
+                        activeField={effectiveUsersSort}
+                        activeOrder={effectiveUsersSortOrder}
+                        onToggle={toggleUsersSort}
+                      />
+                      <AdminUsersSortableHeader
+                        label={usersStrings.table.lastActivity}
+                        field="lastActivity"
+                        activeField={effectiveUsersSort}
+                        activeOrder={effectiveUsersSortOrder}
+                        onToggle={toggleUsersSort}
+                      />
+                      <AdminUsersSortableHeader
+                        label={usersStrings.table.lastLogin}
+                        field="lastLoginAt"
+                        activeField={effectiveUsersSort}
+                        activeOrder={effectiveUsersSortOrder}
+                        onToggle={toggleUsersSort}
+                      />
                       <th>{usersStrings.table.actions}</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {users.map((item) => (
+                    {users.map((item) => {
+                      const dailyMetric = formatSuccessRateStackValue(item.dailySuccess, item.dailyFailure, language)
+                      const monthlyMetric = formatSuccessRateStackValue(item.monthlySuccess, item.monthlyFailure, language)
+                      return (
                       <tr key={item.userId}>
-                        <td>
+                        <td className="admin-users-identity-cell">
                           <button
                             type="button"
                             className="link-button"
@@ -8085,21 +8346,37 @@ function AdminDashboard(): JSX.Element {
                           </StatusBadge>
                         </td>
                         <td>{formatNumber(item.tokenCount)}</td>
-                        <td>
+                        <td className="admin-users-tags-cell">
                           <UserTagBadgeList
                             tags={item.tags}
                             usersStrings={usersStrings}
                             emptyLabel={usersStrings.userTags.empty}
                           />
                         </td>
-                        <td>{formatQuotaUsagePair(item.hourlyAnyUsed, item.hourlyAnyLimit)}</td>
-                        <td>{formatQuotaUsagePair(item.quotaHourlyUsed, item.quotaHourlyLimit)}</td>
-                        <td>{formatQuotaUsagePair(item.quotaDailyUsed, item.quotaDailyLimit)}</td>
-                        <td>{formatQuotaUsagePair(item.quotaMonthlyUsed, item.quotaMonthlyLimit)}</td>
-                        <td>{formatNumber(item.dailySuccess)} / {formatNumber(item.dailyFailure)}</td>
-                        <td>{formatNumber(item.monthlySuccess)}</td>
-                        <td>{formatTimestamp(item.lastActivity)}</td>
-                        <td>{formatTimestamp(item.lastLoginAt)}</td>
+                        <td className="admin-users-compact-cell">
+                          <AdminTableValueStack {...formatQuotaStackValue(item.hourlyAnyUsed, item.hourlyAnyLimit)} />
+                        </td>
+                        <td className="admin-users-compact-cell">
+                          <AdminTableValueStack {...formatQuotaStackValue(item.quotaHourlyUsed, item.quotaHourlyLimit)} />
+                        </td>
+                        <td className="admin-users-compact-cell">
+                          <AdminTableValueStack {...formatQuotaStackValue(item.quotaDailyUsed, item.quotaDailyLimit)} />
+                        </td>
+                        <td className="admin-users-compact-cell">
+                          <AdminTableValueStack {...formatQuotaStackValue(item.quotaMonthlyUsed, item.quotaMonthlyLimit)} />
+                        </td>
+                        <td className="admin-users-compact-cell">
+                          <AdminTableValueStack {...dailyMetric} />
+                        </td>
+                        <td className="admin-users-compact-cell">
+                          <AdminTableValueStack {...monthlyMetric} />
+                        </td>
+                        <td className="admin-users-compact-cell">
+                          <AdminTableValueStack {...formatStackedTimestamp(item.lastActivity, language)} />
+                        </td>
+                        <td className="admin-users-compact-cell">
+                          <AdminTableValueStack {...formatStackedTimestamp(item.lastLoginAt, language)} />
+                        </td>
                         <td>
                           <Button
                             type="button"
@@ -8114,7 +8391,7 @@ function AdminDashboard(): JSX.Element {
                           </Button>
                         </td>
                       </tr>
-                    ))}
+                    )})}
                   </tbody>
                 </>
               )}
@@ -8171,11 +8448,11 @@ function AdminDashboard(): JSX.Element {
                     </div>
                     <div className="admin-mobile-kv">
                       <span>{usersStrings.table.successDaily}</span>
-                      <strong>{`${formatNumber(item.dailySuccess)} / ${formatNumber(item.dailyFailure)}`}</strong>
+                      <strong>{formatCompactSuccessRateValue(item.dailySuccess, item.dailyFailure, language)}</strong>
                     </div>
                     <div className="admin-mobile-kv">
                       <span>{usersStrings.table.successMonthly}</span>
-                      <strong>{formatNumber(item.monthlySuccess)}</strong>
+                      <strong>{formatCompactSuccessRateValue(item.monthlySuccess, item.monthlyFailure, language)}</strong>
                     </div>
                     <div className="admin-mobile-kv">
                       <span>{usersStrings.table.lastActivity}</span>
