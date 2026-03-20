@@ -2893,20 +2893,6 @@ function UsersPageCanvas(): JSX.Element {
                   <th>{users.table.status}</th>
                   <th>{users.table.tags}</th>
                   <StoryAdminUsersSortableHeader
-                    label={users.table.hourlyAny}
-                    field="hourlyAnyUsed"
-                    activeField={effectiveSortField}
-                    activeOrder={effectiveSortOrder}
-                    onToggle={toggleSort}
-                  />
-                  <StoryAdminUsersSortableHeader
-                    label={users.table.hourly}
-                    field="quotaHourlyUsed"
-                    activeField={effectiveSortField}
-                    activeOrder={effectiveSortOrder}
-                    onToggle={toggleSort}
-                  />
-                  <StoryAdminUsersSortableHeader
                     label={users.table.daily}
                     field="quotaDailyUsed"
                     activeField={effectiveSortField}
@@ -2916,13 +2902,6 @@ function UsersPageCanvas(): JSX.Element {
                   <StoryAdminUsersSortableHeader
                     label={users.table.monthly}
                     field="quotaMonthlyUsed"
-                    activeField={effectiveSortField}
-                    activeOrder={effectiveSortOrder}
-                    onToggle={toggleSort}
-                  />
-                  <StoryAdminUsersSortableHeader
-                    label={users.table.successMonthly}
-                    field="monthlySuccessRate"
                     activeField={effectiveSortField}
                     activeOrder={effectiveSortOrder}
                     onToggle={toggleSort}
@@ -2946,9 +2925,6 @@ function UsersPageCanvas(): JSX.Element {
               </thead>
               <tbody>
                 {sortedUsers.map((item) => {
-                  const monthlyMetric = formatSuccessRateStackValue(item.monthlySuccess, item.monthlyFailure, language)
-                  const hourlyAnyMetric = formatQuotaStackValue(item.hourlyAnyUsed, item.hourlyAnyLimit)
-                  const hourlyMetric = formatQuotaStackValue(item.quotaHourlyUsed, item.quotaHourlyLimit)
                   const dailyQuotaMetric = formatQuotaStackValue(item.quotaDailyUsed, item.quotaDailyLimit)
                   const monthlyQuotaMetric = formatQuotaStackValue(item.quotaMonthlyUsed, item.quotaMonthlyLimit)
                   const lastActivityMetric = formatStackedTimestamp(item.lastActivity, language)
@@ -2974,18 +2950,6 @@ function UsersPageCanvas(): JSX.Element {
                     </td>
                     <td className="admin-users-compact-cell">
                       <div className="admin-table-value-stack">
-                        <span className="admin-table-value-primary">{hourlyAnyMetric.primary}</span>
-                        <span className="admin-table-value-secondary">{hourlyAnyMetric.secondary}</span>
-                      </div>
-                    </td>
-                    <td className="admin-users-compact-cell">
-                      <div className="admin-table-value-stack">
-                        <span className="admin-table-value-primary">{hourlyMetric.primary}</span>
-                        <span className="admin-table-value-secondary">{hourlyMetric.secondary}</span>
-                      </div>
-                    </td>
-                    <td className="admin-users-compact-cell">
-                      <div className="admin-table-value-stack">
                         <span className="admin-table-value-primary">{dailyQuotaMetric.primary}</span>
                         <span className="admin-table-value-secondary">{dailyQuotaMetric.secondary}</span>
                       </div>
@@ -2994,12 +2958,6 @@ function UsersPageCanvas(): JSX.Element {
                       <div className="admin-table-value-stack">
                         <span className="admin-table-value-primary">{monthlyQuotaMetric.primary}</span>
                         <span className="admin-table-value-secondary">{monthlyQuotaMetric.secondary}</span>
-                      </div>
-                    </td>
-                    <td className="admin-users-compact-cell">
-                      <div className="admin-table-value-stack">
-                        <span className="admin-table-value-primary">{monthlyMetric.primary}</span>
-                        <span className="admin-table-value-secondary">{monthlyMetric.secondary}</span>
                       </div>
                     </td>
                     <td className="admin-users-compact-cell">

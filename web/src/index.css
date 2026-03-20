@@ -4613,37 +4613,31 @@ tbody tr:hover {
 
 .jobs-table.admin-users-list-table th:nth-child(1),
 .jobs-table.admin-users-list-table td:nth-child(1) {
-  width: 18%;
+  width: 24%;
 }
 
 .jobs-table.admin-users-list-table th:nth-child(2),
 .jobs-table.admin-users-list-table td:nth-child(2) {
-  width: 7%;
+  width: 8%;
 }
 
 .jobs-table.admin-users-list-table th:nth-child(3),
 .jobs-table.admin-users-list-table td:nth-child(3) {
-  width: 15%;
+  width: 24%;
 }
 
 .jobs-table.admin-users-list-table th:nth-child(4),
 .jobs-table.admin-users-list-table td:nth-child(4),
 .jobs-table.admin-users-list-table th:nth-child(5),
-.jobs-table.admin-users-list-table td:nth-child(5),
+.jobs-table.admin-users-list-table td:nth-child(5) {
+  width: 8.5%;
+}
+
 .jobs-table.admin-users-list-table th:nth-child(6),
 .jobs-table.admin-users-list-table td:nth-child(6),
 .jobs-table.admin-users-list-table th:nth-child(7),
-.jobs-table.admin-users-list-table td:nth-child(7),
-.jobs-table.admin-users-list-table th:nth-child(8),
-.jobs-table.admin-users-list-table td:nth-child(8) {
-  width: 7%;
-}
-
-.jobs-table.admin-users-list-table th:nth-child(9),
-.jobs-table.admin-users-list-table td:nth-child(9),
-.jobs-table.admin-users-list-table th:nth-child(10),
-.jobs-table.admin-users-list-table td:nth-child(10) {
-  width: 9%;
+.jobs-table.admin-users-list-table td:nth-child(7) {
+  width: 12%;
 }
 
 .admin-table-sort-button {

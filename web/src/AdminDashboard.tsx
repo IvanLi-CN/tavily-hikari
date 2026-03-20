@@ -8248,7 +8248,7 @@ function AdminDashboard(): JSX.Element {
               {users.length === 0 ? (
                 <tbody>
                   <tr>
-                    <td colSpan={11}>
+                    <td colSpan={8}>
                       <div className="empty-state alert">{usersStrings.empty.none}</div>
                     </td>
                   </tr>
@@ -8261,20 +8261,6 @@ function AdminDashboard(): JSX.Element {
                       <th>{usersStrings.table.status}</th>
                       <th>{usersStrings.table.tags}</th>
                       <AdminUsersSortableHeader
-                        label={usersStrings.table.hourlyAny}
-                        field="hourlyAnyUsed"
-                        activeField={effectiveUsersSort}
-                        activeOrder={effectiveUsersSortOrder}
-                        onToggle={toggleUsersSort}
-                      />
-                      <AdminUsersSortableHeader
-                        label={usersStrings.table.hourly}
-                        field="quotaHourlyUsed"
-                        activeField={effectiveUsersSort}
-                        activeOrder={effectiveUsersSortOrder}
-                        onToggle={toggleUsersSort}
-                      />
-                      <AdminUsersSortableHeader
                         label={usersStrings.table.daily}
                         field="quotaDailyUsed"
                         activeField={effectiveUsersSort}
@@ -8284,13 +8270,6 @@ function AdminDashboard(): JSX.Element {
                       <AdminUsersSortableHeader
                         label={usersStrings.table.monthly}
                         field="quotaMonthlyUsed"
-                        activeField={effectiveUsersSort}
-                        activeOrder={effectiveUsersSortOrder}
-                        onToggle={toggleUsersSort}
-                      />
-                      <AdminUsersSortableHeader
-                        label={usersStrings.table.successMonthly}
-                        field="monthlySuccessRate"
                         activeField={effectiveUsersSort}
                         activeOrder={effectiveUsersSortOrder}
                         onToggle={toggleUsersSort}
@@ -8313,9 +8292,7 @@ function AdminDashboard(): JSX.Element {
                     </tr>
                   </thead>
                   <tbody>
-                    {users.map((item) => {
-                      const monthlyMetric = formatSuccessRateStackValue(item.monthlySuccess, item.monthlyFailure, language)
-                      return (
+                    {users.map((item) => (
                       <tr key={item.userId}>
                         <td className="admin-users-identity-cell">
                           <button
@@ -8343,19 +8320,10 @@ function AdminDashboard(): JSX.Element {
                           />
                         </td>
                         <td className="admin-users-compact-cell">
-                          <AdminTableValueStack {...formatQuotaStackValue(item.hourlyAnyUsed, item.hourlyAnyLimit)} />
-                        </td>
-                        <td className="admin-users-compact-cell">
-                          <AdminTableValueStack {...formatQuotaStackValue(item.quotaHourlyUsed, item.quotaHourlyLimit)} />
-                        </td>
-                        <td className="admin-users-compact-cell">
                           <AdminTableValueStack {...formatQuotaStackValue(item.quotaDailyUsed, item.quotaDailyLimit)} />
                         </td>
                         <td className="admin-users-compact-cell">
                           <AdminTableValueStack {...formatQuotaStackValue(item.quotaMonthlyUsed, item.quotaMonthlyLimit)} />
-                        </td>
-                        <td className="admin-users-compact-cell">
-                          <AdminTableValueStack {...monthlyMetric} />
                         </td>
                         <td className="admin-users-compact-cell">
                           <AdminTableValueStack {...formatStackedTimestamp(item.lastActivity, language)} />
@@ -8377,7 +8345,7 @@ function AdminDashboard(): JSX.Element {
                           </Button>
                         </td>
                       </tr>
-                    )})}
+                    ))}
                   </tbody>
                 </>
               )}
@@ -8413,24 +8381,12 @@ function AdminDashboard(): JSX.Element {
                       />
                     </div>
                     <div className="admin-mobile-kv">
-                      <span>{usersStrings.table.hourlyAny}</span>
-                      <strong>{formatQuotaUsagePair(item.hourlyAnyUsed, item.hourlyAnyLimit)}</strong>
-                    </div>
-                    <div className="admin-mobile-kv">
-                      <span>{usersStrings.table.hourly}</span>
-                      <strong>{formatQuotaUsagePair(item.quotaHourlyUsed, item.quotaHourlyLimit)}</strong>
-                    </div>
-                    <div className="admin-mobile-kv">
                       <span>{usersStrings.table.daily}</span>
                       <strong>{formatQuotaUsagePair(item.quotaDailyUsed, item.quotaDailyLimit)}</strong>
                     </div>
                     <div className="admin-mobile-kv">
                       <span>{usersStrings.table.monthly}</span>
                       <strong>{formatQuotaUsagePair(item.quotaMonthlyUsed, item.quotaMonthlyLimit)}</strong>
-                    </div>
-                    <div className="admin-mobile-kv">
-                      <span>{usersStrings.table.successMonthly}</span>
-                      <strong>{formatCompactSuccessRateValue(item.monthlySuccess, item.monthlyFailure, language)}</strong>
                     </div>
                     <div className="admin-mobile-kv">
                       <span>{usersStrings.table.lastActivity}</span>
