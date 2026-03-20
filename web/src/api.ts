@@ -645,6 +645,7 @@ export interface AdminUserSummary {
   active: boolean
   lastLoginAt: number | null
   tokenCount: number
+  apiKeyCount: number
   tags: AdminUserTagBinding[]
   hourlyAnyUsed: number
   hourlyAnyLimit: number

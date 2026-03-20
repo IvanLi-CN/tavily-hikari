@@ -1900,6 +1900,7 @@ struct AdminUserSummaryView {
     active: bool,
     last_login_at: Option<i64>,
     token_count: i64,
+    api_key_count: i64,
     hourly_any_used: i64,
     hourly_any_limit: i64,
     quota_hourly_used: i64,
@@ -1960,6 +1961,7 @@ struct AdminUserDetailView {
     active: bool,
     last_login_at: Option<i64>,
     token_count: i64,
+    api_key_count: i64,
     hourly_any_used: i64,
     hourly_any_limit: i64,
     quota_hourly_used: i64,
@@ -2098,6 +2100,7 @@ fn normalize_optional_text(value: Option<String>) -> Option<String> {
 fn build_admin_user_summary_view(
     user: &tavily_hikari::AdminUserIdentity,
     summary: &tavily_hikari::UserDashboardSummary,
+    api_key_count: i64,
     tags: Vec<tavily_hikari::AdminUserTagBinding>,
 ) -> AdminUserSummaryView {
     AdminUserSummaryView {
@@ -2107,6 +2110,7 @@ fn build_admin_user_summary_view(
         active: user.active,
         last_login_at: user.last_login_at,
         token_count: user.token_count,
+        api_key_count,
         hourly_any_used: summary.hourly_any_used,
         hourly_any_limit: summary.hourly_any_limit,
         quota_hourly_used: summary.quota_hourly_used,
@@ -2523,9 +2527,30 @@ async fn list_users(
             })?
     };
     let mut items = Vec::with_capacity(paged_rows.len());
+    let api_key_counts = if page_user_ids.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        state
+            .proxy
+            .list_api_key_binding_counts_for_users(&page_user_ids)
+            .await
+            .map_err(|err| {
+                eprintln!("list admin user api key counts error: {err}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+    };
     for row in paged_rows {
         let tags = user_tags.remove(&row.user.user_id).unwrap_or_default();
-        items.push(build_admin_user_summary_view(&row.user, &row.summary, tags));
+        let api_key_count = api_key_counts
+            .get(&row.user.user_id)
+            .copied()
+            .unwrap_or_default();
+        items.push(build_admin_user_summary_view(
+            &row.user,
+            &row.summary,
+            api_key_count,
+            tags,
+        ));
     }
     Ok(Json(ListUsersResponse {
         items,
@@ -2575,6 +2600,17 @@ async fn get_user_detail(
             eprintln!("get admin user dashboard summary error: {err}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
+    let api_key_count = state
+        .proxy
+        .list_api_key_binding_counts_for_users(std::slice::from_ref(&user.user_id))
+        .await
+        .map_err(|err| {
+            eprintln!("get admin user api key counts error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .get(&user.user_id)
+        .copied()
+        .unwrap_or_default();
     let tokens = state
         .proxy
         .list_user_tokens(&user.user_id)
@@ -2640,6 +2676,7 @@ async fn get_user_detail(
         active: user.active,
         last_login_at: user.last_login_at,
         token_count: user.token_count,
+        api_key_count,
         hourly_any_used: summary.hourly_any_used,
         hourly_any_limit: summary.hourly_any_limit,
         quota_hourly_used: summary.quota_hourly_used,

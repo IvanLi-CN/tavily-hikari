@@ -730,6 +730,7 @@ const MOCK_USERS: AdminUserSummary[] = [
     active: true,
     lastLoginAt: now - 420,
     tokenCount: 2,
+    apiKeyCount: 3,
     tags: MOCK_ALICE_TAGS,
     hourlyAnyUsed: 312,
     hourlyAnyLimit: 1_770,
@@ -752,6 +753,7 @@ const MOCK_USERS: AdminUserSummary[] = [
     active: true,
     lastLoginAt: now - 2_700,
     tokenCount: 1,
+    apiKeyCount: 2,
     tags: MOCK_BOB_TAGS,
     hourlyAnyUsed: 611,
     hourlyAnyLimit: 0,
@@ -774,6 +776,7 @@ const MOCK_USERS: AdminUserSummary[] = [
     active: false,
     lastLoginAt: now - 86_400 * 6,
     tokenCount: 0,
+    apiKeyCount: 0,
     tags: [],
     hourlyAnyUsed: 0,
     hourlyAnyLimit: 600,
@@ -2838,6 +2841,9 @@ function UsersPageCanvas(): JSX.Element {
             <h2>{users.title}</h2>
             <p className="panel-description">{users.description}</p>
           </div>
+          <button type="button" className="btn btn-outline" onClick={() => openAdminStory('admin-pages--users-usage')}>
+            {users.usage.open}
+          </button>
           <div
             className="rounded-xl border border-border/60 bg-background/55 px-4 py-3 shadow-sm backdrop-blur"
             style={{
@@ -2983,6 +2989,221 @@ function UsersPageCanvas(): JSX.Element {
                     </td>
                   </tr>
                 )})}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </section>
+    </AdminPageFrame>
+  )
+}
+
+function UsersUsagePageCanvas(): JSX.Element {
+  const admin = useTranslate().admin
+  const { language } = useLanguage()
+  const users = admin.users
+  const [query, setQuery] = useState('')
+  const [sortField, setSortField] = useState<AdminUsersSortField | null>(null)
+  const [sortOrder, setSortOrder] = useState<SortDirection | null>(null)
+  const normalizedQuery = query.trim().toLowerCase()
+  const effectiveSortField = sortField ?? ADMIN_USERS_DEFAULT_SORT_FIELD
+  const effectiveSortOrder = sortOrder ?? ADMIN_USERS_DEFAULT_SORT_ORDER
+  const filteredUsers = MOCK_USERS.filter((item) => {
+    if (!normalizedQuery) return true
+    const displayName = item.displayName?.toLowerCase() ?? ''
+    const username = item.username?.toLowerCase() ?? ''
+    return (
+      item.userId.toLowerCase().includes(normalizedQuery)
+      || displayName.includes(normalizedQuery)
+      || username.includes(normalizedQuery)
+    )
+  })
+  const sortedUsers = [...filteredUsers].sort((left, right) =>
+    compareAdminUserSummaryRows(left, right, sortField, sortOrder)
+  )
+
+  const toggleSort = (field: AdminUsersSortField) => {
+    const isActive = effectiveSortField === field
+    let nextSort: AdminUsersSortField | null = field
+    let nextOrder: SortDirection | null = ADMIN_USERS_DEFAULT_SORT_ORDER
+    if (isActive && effectiveSortOrder === 'desc') {
+      nextOrder = 'asc'
+    } else if (isActive && effectiveSortOrder === 'asc') {
+      nextSort = null
+      nextOrder = null
+    }
+    setSortField(nextSort)
+    setSortOrder(nextOrder)
+  }
+
+  return (
+    <AdminPageFrame activeModule="users">
+      <section className="surface panel">
+        <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
+          <div>
+            <h2>{users.usage.title}</h2>
+            <p className="panel-description">{users.usage.description}</p>
+          </div>
+          <div className="admin-inline-actions" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <button type="button" className="btn btn-outline" onClick={() => openAdminStory('admin-pages--users')}>
+              {users.usage.back}
+            </button>
+            <div className="users-search-controls">
+              <input
+                type="text"
+                className="input input-bordered users-search-input"
+                placeholder={users.searchPlaceholder}
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+              />
+              <button type="button" className="btn btn-outline">
+                {users.search}
+              </button>
+              {query.length > 0 && (
+                <button type="button" className="btn btn-ghost" onClick={() => setQuery('')}>
+                  {users.clear}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="table-wrapper jobs-table-wrapper">
+          {filteredUsers.length === 0 ? (
+            <div className="empty-state alert">{users.empty.none}</div>
+          ) : (
+            <table className="jobs-table admin-users-table admin-users-usage-table">
+              <thead>
+                <tr>
+                  <th>{users.usage.table.user}</th>
+                  <th>{users.usage.table.status}</th>
+                  <StoryAdminUsersSortableHeader
+                    label={users.usage.table.hourlyAny}
+                    field="hourlyAnyUsed"
+                    activeField={effectiveSortField}
+                    activeOrder={effectiveSortOrder}
+                    onToggle={toggleSort}
+                  />
+                  <StoryAdminUsersSortableHeader
+                    label={users.usage.table.hourly}
+                    field="quotaHourlyUsed"
+                    activeField={effectiveSortField}
+                    activeOrder={effectiveSortOrder}
+                    onToggle={toggleSort}
+                  />
+                  <StoryAdminUsersSortableHeader
+                    label={users.usage.table.daily}
+                    field="quotaDailyUsed"
+                    activeField={effectiveSortField}
+                    activeOrder={effectiveSortOrder}
+                    onToggle={toggleSort}
+                  />
+                  <StoryAdminUsersSortableHeader
+                    label={users.usage.table.monthly}
+                    field="quotaMonthlyUsed"
+                    activeField={effectiveSortField}
+                    activeOrder={effectiveSortOrder}
+                    onToggle={toggleSort}
+                  />
+                  <StoryAdminUsersSortableHeader
+                    label={users.usage.table.dailySuccessRate}
+                    field="dailySuccessRate"
+                    activeField={effectiveSortField}
+                    activeOrder={effectiveSortOrder}
+                    onToggle={toggleSort}
+                  />
+                  <StoryAdminUsersSortableHeader
+                    label={users.usage.table.monthlySuccessRate}
+                    field="monthlySuccessRate"
+                    activeField={effectiveSortField}
+                    activeOrder={effectiveSortOrder}
+                    onToggle={toggleSort}
+                  />
+                  <th>{users.usage.table.apiKeyCount}</th>
+                  <StoryAdminUsersSortableHeader
+                    label={users.usage.table.lastUsed}
+                    field="lastActivity"
+                    activeField={effectiveSortField}
+                    activeOrder={effectiveSortOrder}
+                    onToggle={toggleSort}
+                  />
+                </tr>
+              </thead>
+              <tbody>
+                {sortedUsers.map((item) => {
+                  const hourlyAnyMetric = formatQuotaStackValue(item.hourlyAnyUsed, item.hourlyAnyLimit)
+                  const hourlyMetric = formatQuotaStackValue(item.quotaHourlyUsed, item.quotaHourlyLimit)
+                  const dailyQuotaMetric = formatQuotaStackValue(item.quotaDailyUsed, item.quotaDailyLimit)
+                  const monthlyQuotaMetric = formatQuotaStackValue(item.quotaMonthlyUsed, item.quotaMonthlyLimit)
+                  const dailySuccessMetric = formatSuccessRateStackValue(item.dailySuccess, item.dailyFailure, language)
+                  const monthlySuccessMetric = formatSuccessRateStackValue(item.monthlySuccess, item.monthlyFailure, language)
+                  const lastActivityMetric = formatStackedTimestamp(item.lastActivity, language)
+                  return (
+                    <tr key={item.userId}>
+                      <td className="admin-users-identity-cell">
+                        <strong>{item.displayName || item.username || item.userId}</strong>
+                        <div className="panel-description" style={{ marginTop: 4 }}>
+                          <code>{item.userId}</code>
+                          {item.username ? ` · @${item.username}` : ''}
+                        </div>
+                      </td>
+                      <td>
+                        <StatusBadge tone={item.active ? 'success' : 'neutral'}>
+                          {item.active ? users.status.active : users.status.inactive}
+                        </StatusBadge>
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <div className="admin-table-value-stack">
+                          <span className="admin-table-value-primary">{hourlyAnyMetric.primary}</span>
+                          <span className="admin-table-value-secondary">{hourlyAnyMetric.secondary}</span>
+                        </div>
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <div className="admin-table-value-stack">
+                          <span className="admin-table-value-primary">{hourlyMetric.primary}</span>
+                          <span className="admin-table-value-secondary">{hourlyMetric.secondary}</span>
+                        </div>
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <div className="admin-table-value-stack">
+                          <span className="admin-table-value-primary">{dailyQuotaMetric.primary}</span>
+                          <span className="admin-table-value-secondary">{dailyQuotaMetric.secondary}</span>
+                        </div>
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <div className="admin-table-value-stack">
+                          <span className="admin-table-value-primary">{monthlyQuotaMetric.primary}</span>
+                          <span className="admin-table-value-secondary">{monthlyQuotaMetric.secondary}</span>
+                        </div>
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <div className="admin-table-value-stack">
+                          <span className="admin-table-value-primary">{dailySuccessMetric.primary}</span>
+                          <span className="admin-table-value-secondary">{dailySuccessMetric.secondary}</span>
+                        </div>
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <div className="admin-table-value-stack">
+                          <span className="admin-table-value-primary">{monthlySuccessMetric.primary}</span>
+                          <span className="admin-table-value-secondary">{monthlySuccessMetric.secondary}</span>
+                        </div>
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <div className="admin-table-value-stack">
+                          <span className="admin-table-value-primary">{formatNumber(item.apiKeyCount)}</span>
+                        </div>
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <div className="admin-table-value-stack">
+                          <span className="admin-table-value-primary">{lastActivityMetric.primary}</span>
+                          {lastActivityMetric.secondary && (
+                            <span className="admin-table-value-secondary">{lastActivityMetric.secondary}</span>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           )}
@@ -3554,6 +3775,13 @@ export const Jobs: Story = {
 
 export const Users: Story = {
   render: () => <UsersPageCanvas />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+}
+
+export const UsersUsage: Story = {
+  render: () => <UsersUsagePageCanvas />,
   parameters: {
     viewport: { defaultViewport: '1440-device-desktop' },
   },

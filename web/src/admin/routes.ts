@@ -14,6 +14,7 @@ export type AdminPathRoute =
   | { name: 'module'; module: AdminModuleId }
   | { name: 'token'; id: string }
   | { name: 'token-usage' }
+  | { name: 'user-usage' }
   | { name: 'user'; id: string }
   | { name: 'user-tags' }
   | { name: 'user-tag-editor'; mode: 'create' }
@@ -72,6 +73,9 @@ export function parseAdminPath(pathname: string): AdminPathRoute {
   if (path === `${ADMIN_BASE}/users`) {
     return { name: 'module', module: 'users' }
   }
+  if (path === `${ADMIN_BASE}/users/usage`) {
+    return { name: 'user-usage' }
+  }
   if (path === `${ADMIN_BASE}/users/tags`) {
     return { name: 'user-tags' }
   }
@@ -120,6 +124,9 @@ export function isSameAdminRoute(left: AdminPathRoute, right: AdminPathRoute): b
   if (left.name === 'key' && right.name === 'key') {
     return left.id === right.id
   }
+  if (left.name === 'user-usage' && right.name === 'user-usage') {
+    return true
+  }
   return left.name === 'token-usage' && right.name === 'token-usage'
 }
 
@@ -167,6 +174,16 @@ export function buildAdminUsersPath(
   order?: SortDirection | null,
 ): string {
   return appendUsersContext(`${ADMIN_BASE}/users`, query, tagId, page, sort, order)
+}
+
+export function userUsagePath(
+  query?: string,
+  tagId?: string | null,
+  page?: number | null,
+  sort?: AdminUsersSortField | null,
+  order?: SortDirection | null,
+): string {
+  return appendUsersContext(`${ADMIN_BASE}/users/usage`, query, tagId, page, sort, order)
 }
 
 export function userDetailPath(

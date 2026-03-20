@@ -8220,6 +8220,30 @@ colo=LAX
             )
             .await
             .expect("record error");
+        let api_key_id = proxy
+            .add_or_undelete_key("tvly-admin-users-associated-key")
+            .await
+            .expect("create associated api key");
+        let pending_binding_log_id = proxy
+            .record_pending_billing_attempt(
+                &alice_token.id,
+                &Method::POST,
+                "/api/tavily/search",
+                None,
+                Some(200),
+                Some(200),
+                true,
+                "success",
+                None,
+                1,
+                Some(&api_key_id),
+            )
+            .await
+            .expect("record pending associated key binding");
+        proxy
+            .settle_pending_billing_attempt(pending_binding_log_id)
+            .await
+            .expect("settle associated key binding");
 
         let addr = spawn_admin_users_server(proxy, true).await;
         let client = Client::new();
@@ -8247,6 +8271,12 @@ colo=LAX
         assert_eq!(
             alice_item
                 .get("tokenCount")
+                .and_then(|value| value.as_i64()),
+            Some(1)
+        );
+        assert_eq!(
+            alice_item
+                .get("apiKeyCount")
                 .and_then(|value| value.as_i64()),
             Some(1)
         );
@@ -8312,6 +8342,12 @@ colo=LAX
             .get("hourlyAnyUsed")
             .and_then(|value| value.as_i64())
             .unwrap_or_default();
+        assert_eq!(
+            detail_body
+                .get("apiKeyCount")
+                .and_then(|value| value.as_i64()),
+            Some(1)
+        );
         let tokens = detail_body
             .get("tokens")
             .and_then(|value| value.as_array())

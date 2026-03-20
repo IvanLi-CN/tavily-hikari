@@ -4621,6 +4621,15 @@ impl TavilyProxy {
             .collect())
     }
 
+    pub async fn list_api_key_binding_counts_for_users(
+        &self,
+        user_ids: &[String],
+    ) -> Result<HashMap<String, i64>, ProxyError> {
+        self.key_store
+            .list_api_key_binding_counts_for_users(user_ids)
+            .await
+    }
+
     /// Admin: list users with pagination and optional fuzzy query.
     pub async fn list_admin_users_paged(
         &self,

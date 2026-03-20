@@ -4585,6 +4585,35 @@ impl KeyStore {
         .map_err(ProxyError::from)
     }
 
+    pub(crate) async fn list_api_key_binding_counts_for_users(
+        &self,
+        user_ids: &[String],
+    ) -> Result<HashMap<String, i64>, ProxyError> {
+        if user_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut builder = QueryBuilder::new(
+            r#"SELECT user_id, COUNT(*) AS api_key_count
+               FROM user_api_key_bindings
+               WHERE user_id IN ("#,
+        );
+        {
+            let mut separated = builder.separated(", ");
+            for user_id in user_ids {
+                separated.push_bind(user_id);
+            }
+        }
+        builder.push(") GROUP BY user_id");
+
+        let rows = builder
+            .build_query_as::<(String, i64)>()
+            .fetch_all(&self.pool)
+            .await?;
+
+        Ok(rows.into_iter().collect())
+    }
+
     pub(crate) async fn fetch_key_sticky_users_page(
         &self,
         key_id: &str,

@@ -87,6 +87,7 @@ import {
   userTagCreatePath,
   userTagEditPath,
   userTagsPath,
+  userUsagePath,
 } from './admin/routes'
 import { useLanguage, useTranslate, type AdminTranslations } from './i18n'
 import { extractApiKeyImportEntriesFromText } from './lib/api-key-extract'
@@ -213,6 +214,12 @@ const ADMIN_USERS_SORT_FIELDS: readonly AdminUsersSortField[] = [
   'lastActivity',
   'lastLoginAt',
 ]
+const ADMIN_USERS_OVERVIEW_SORT_FIELDS = new Set<AdminUsersSortField>([
+  'quotaDailyUsed',
+  'quotaMonthlyUsed',
+  'lastActivity',
+  'lastLoginAt',
+])
 
 type UserQuotaSnapshot = Record<QuotaSliderField, QuotaSliderSeed>
 
@@ -458,6 +465,10 @@ function getAdminUsersSortDirectionFromLocation(): SortDirection | null {
   if (getAdminUsersSortFromLocation() == null) return null
   const rawOrder = new URLSearchParams(window.location.search).get('order')?.trim()
   return rawOrder === 'asc' ? 'asc' : 'desc'
+}
+
+function isAdminUsersOverviewSortField(value: AdminUsersSortField | null): boolean {
+  return value != null && ADMIN_USERS_OVERVIEW_SORT_FIELDS.has(value)
 }
 
 function getAdminKeysPageFromLocation(): number {
@@ -1162,6 +1173,9 @@ function AdminDashboard(): JSX.Element {
   const [usersSort, setUsersSort] = useState<AdminUsersSortField | null>(() => getAdminUsersSortFromLocation())
   const [usersSortOrder, setUsersSortOrder] = useState<SortDirection | null>(() => getAdminUsersSortDirectionFromLocation())
   const [usersLoadState, setUsersLoadState] = useState<QueryLoadState>('initial_loading')
+  const isUsersModuleRoute = route.name === 'module' && route.module === 'users'
+  const isUserUsageRoute = route.name === 'user-usage'
+  const isUsersCollectionRoute = isUsersModuleRoute || isUserUsageRoute
   const [usersError, setUsersError] = useState<string | null>(null)
   const [allowRegistration, setAllowRegistration] = useState<boolean | null>(null)
   const [registrationSettingsLoaded, setRegistrationSettingsLoaded] = useState(false)
@@ -2763,7 +2777,7 @@ function AdminDashboard(): JSX.Element {
 
   useEffect(() => {
     const usersRouteActive =
-      (route.name === 'module' && route.module === 'users') || route.name === 'user'
+      isUsersCollectionRoute || route.name === 'user'
     if (!usersRouteActive) return
 
     const request = beginManagedRequest(usersAbortRef)
@@ -2808,7 +2822,16 @@ function AdminDashboard(): JSX.Element {
       request.abort()
       request.cleanup()
     }
-  }, [beginManagedRequest, route, usersPage, usersQuery, usersSort, usersSortOrder, usersTagFilterId])
+  }, [
+    beginManagedRequest,
+    isUsersCollectionRoute,
+    route,
+    usersPage,
+    usersQuery,
+    usersSort,
+    usersSortOrder,
+    usersTagFilterId,
+  ])
 
   useEffect(() => {
     const userTagRouteActive =
@@ -2844,7 +2867,7 @@ function AdminDashboard(): JSX.Element {
 
   useEffect(() => {
     const usersRouteActive =
-      (route.name === 'module' && route.module === 'users')
+      isUsersCollectionRoute
       || route.name === 'user'
       || route.name === 'user-tags'
       || route.name === 'user-tag-editor'
@@ -2874,22 +2897,26 @@ function AdminDashboard(): JSX.Element {
       })
 
     return () => controller.abort()
-  }, [route, adminStrings.users.registration.loadFailed])
+  }, [adminStrings.users.registration.loadFailed, isUsersCollectionRoute, route])
 
   useEffect(() => {
-    if (!(route.name === 'module' && route.module === 'users')) return
+    if (!isUsersCollectionRoute) return
     const locationQuery = getAdminUsersQueryFromLocation()
     const locationTagFilterId = getAdminUsersTagFilterFromLocation()
     const locationPage = getAdminUsersPageFromLocation()
     const locationSort = getAdminUsersSortFromLocation()
     const locationSortOrder = getAdminUsersSortDirectionFromLocation()
+    const normalizedSort = isUsersModuleRoute && !isAdminUsersOverviewSortField(locationSort)
+      ? null
+      : locationSort
+    const normalizedSortOrder = normalizedSort ? locationSortOrder : null
     setUsersPage((previous) => (previous === locationPage ? previous : locationPage))
     setUsersQueryInput((previous) => (previous === locationQuery ? previous : locationQuery))
     setUsersQuery((previous) => (previous === locationQuery ? previous : locationQuery))
     setUsersTagFilterId((previous) => (previous === locationTagFilterId ? previous : locationTagFilterId))
-    setUsersSort((previous) => (previous === locationSort ? previous : locationSort))
-    setUsersSortOrder((previous) => (previous === locationSortOrder ? previous : locationSortOrder))
-  }, [route])
+    setUsersSort((previous) => (previous === normalizedSort ? previous : normalizedSort))
+    setUsersSortOrder((previous) => (previous === normalizedSortOrder ? previous : normalizedSortOrder))
+  }, [isUserUsageRoute, isUsersCollectionRoute, isUsersModuleRoute, route])
 
   useEffect(() => {
     if (!(route.name === 'module' && route.module === 'keys')) return
@@ -3214,6 +3241,21 @@ function AdminDashboard(): JSX.Element {
     [navigateToPath, usersPage, usersQuery, usersSort, usersSortOrder, usersTagFilterId],
   )
 
+  const buildUsersCollectionPath = useCallback(
+    (
+      query?: string,
+      tagId?: string | null,
+      page?: number | null,
+      sort?: AdminUsersSortField | null,
+      order?: SortDirection | null,
+    ) => (
+      isUserUsageRoute
+        ? userUsagePath(query, tagId, page, sort, order)
+        : buildAdminUsersPath(query, tagId, page, sort, order)
+    ),
+    [isUserUsageRoute],
+  )
+
   const navigateUsersSearch = useCallback(
     (
       query: string,
@@ -3241,10 +3283,14 @@ function AdminDashboard(): JSX.Element {
       setUsersTagFilterId(normalizedTagId)
       setUsersSort(normalizedSort)
       setUsersSortOrder(normalizedOrder)
-      navigateToPath(buildAdminUsersPath(normalized, normalizedTagId, normalizedPage, normalizedSort, normalizedOrder))
+      navigateToPath(buildUsersCollectionPath(normalized, normalizedTagId, normalizedPage, normalizedSort, normalizedOrder))
     },
-    [navigateToPath, usersSort, usersSortOrder],
+    [buildUsersCollectionPath, navigateToPath, usersSort, usersSortOrder],
   )
+
+  const navigateUserUsage = useCallback(() => {
+    navigateToPath(userUsagePath(usersQuery, usersTagFilterId, usersPage, usersSort, usersSortOrder))
+  }, [navigateToPath, usersPage, usersQuery, usersSort, usersSortOrder, usersTagFilterId])
 
   const navigateKeysList = useCallback(
     (options?: {
@@ -3418,7 +3464,7 @@ function AdminDashboard(): JSX.Element {
         }),
       )
     }
-    if ((route.name === 'module' && route.module === 'users') || route.name === 'user') {
+    if (isUsersCollectionRoute || route.name === 'user') {
       const request = beginManagedRequest(usersAbortRef, controller.signal)
       setUsersLoadState(getRefreshingLoadState(usersLoadedRef.current))
       setUsersError(null)
@@ -4066,7 +4112,7 @@ function AdminDashboard(): JSX.Element {
     (route.name === 'module' && route.module === 'tokens' && tokensBlocking)
     || (route.name === 'module' && route.module === 'requests' && requestsBlocking)
     || (route.name === 'module' && route.module === 'jobs' && jobsBlocking)
-    || ((route.name === 'module' && route.module === 'users') || route.name === 'user') && usersBlocking
+    || (isUsersCollectionRoute || route.name === 'user') && usersBlocking
     || (route.name === 'module' && route.module === 'proxy-settings'
       && (forwardProxySettingsBlocking || forwardProxyStatsBlocking))
     || (route.name === 'token-usage' && tokenLeaderboardBlocking)
@@ -5238,7 +5284,10 @@ function AdminDashboard(): JSX.Element {
       ? route.module
       : route.name === 'key'
         ? 'keys'
-        : route.name === 'user' || route.name === 'user-tags' || route.name === 'user-tag-editor'
+        : route.name === 'user'
+            || route.name === 'user-usage'
+            || route.name === 'user-tags'
+            || route.name === 'user-tag-editor'
           ? 'users'
           : 'tokens'
   const usersStrings = adminStrings.users
@@ -6214,6 +6263,263 @@ function AdminDashboard(): JSX.Element {
             </section>
           </>
         )}
+      </AdminShell>
+    )
+  }
+
+  if (route.name === 'user-usage') {
+    const backSort = isAdminUsersOverviewSortField(usersSort) ? usersSort : null
+    const backOrder = backSort ? usersSortOrder : null
+
+    return (
+      <AdminShell
+        activeModule={activeModule}
+        navItems={navItems}
+        skipToContentLabel={adminStrings.accessibility.skipToContent}
+        onSelectModule={navigateModule}
+      >
+        <section className="surface panel">
+          <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
+            <div style={{ flex: '1 1 340px', minWidth: 260 }}>
+              <h2>{usersStrings.usage.title}</h2>
+              <p className="panel-description">{usersStrings.usage.description}</p>
+            </div>
+            <div className="admin-inline-actions" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => navigateToPath(buildAdminUsersPath(usersQuery, usersTagFilterId, usersPage, backSort, backOrder))}
+              >
+                {usersStrings.usage.back}
+              </Button>
+              <div className="users-search-controls">
+                <Input
+                  type="text"
+                  name="user-usage-search"
+                  className="users-search-input"
+                  placeholder={usersStrings.searchPlaceholder}
+                  value={usersQueryInput}
+                  disabled={usersBlocking}
+                  onChange={(event) => setUsersQueryInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault()
+                      applyUserSearch()
+                    }
+                  }}
+                />
+                <Button type="button" variant="outline" onClick={applyUserSearch} disabled={usersBlocking}>
+                  {usersStrings.search}
+                </Button>
+                {(usersQueryInput.length > 0 || usersQuery.length > 0 || usersTagFilterId != null) && (
+                  <Button type="button" variant="ghost" onClick={resetUserSearch} disabled={usersBlocking}>
+                    {usersStrings.clear}
+                  </Button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <AdminTableShell
+            className="jobs-table-wrapper"
+            tableClassName="jobs-table admin-users-table admin-users-usage-table"
+            loadState={usersLoadState}
+            loadingLabel={usersRefreshing ? loadingStateStrings.refreshing : usersStrings.empty.loading}
+            errorLabel={usersError ?? loadingStateStrings.error}
+            minHeight={360}
+          >
+            {users.length === 0 ? (
+              <tbody>
+                <tr>
+                  <td colSpan={10}>
+                    <div className="empty-state alert">{usersStrings.empty.none}</div>
+                  </td>
+                </tr>
+              </tbody>
+            ) : (
+              <>
+                <thead>
+                  <tr>
+                    <th>{usersStrings.usage.table.user}</th>
+                    <th>{usersStrings.usage.table.status}</th>
+                    <AdminUsersSortableHeader
+                      label={usersStrings.usage.table.hourlyAny}
+                      field="hourlyAnyUsed"
+                      activeField={effectiveUsersSort}
+                      activeOrder={effectiveUsersSortOrder}
+                      onToggle={toggleUsersSort}
+                    />
+                    <AdminUsersSortableHeader
+                      label={usersStrings.usage.table.hourly}
+                      field="quotaHourlyUsed"
+                      activeField={effectiveUsersSort}
+                      activeOrder={effectiveUsersSortOrder}
+                      onToggle={toggleUsersSort}
+                    />
+                    <AdminUsersSortableHeader
+                      label={usersStrings.usage.table.daily}
+                      field="quotaDailyUsed"
+                      activeField={effectiveUsersSort}
+                      activeOrder={effectiveUsersSortOrder}
+                      onToggle={toggleUsersSort}
+                    />
+                    <AdminUsersSortableHeader
+                      label={usersStrings.usage.table.monthly}
+                      field="quotaMonthlyUsed"
+                      activeField={effectiveUsersSort}
+                      activeOrder={effectiveUsersSortOrder}
+                      onToggle={toggleUsersSort}
+                    />
+                    <AdminUsersSortableHeader
+                      label={usersStrings.usage.table.dailySuccessRate}
+                      field="dailySuccessRate"
+                      activeField={effectiveUsersSort}
+                      activeOrder={effectiveUsersSortOrder}
+                      onToggle={toggleUsersSort}
+                    />
+                    <AdminUsersSortableHeader
+                      label={usersStrings.usage.table.monthlySuccessRate}
+                      field="monthlySuccessRate"
+                      activeField={effectiveUsersSort}
+                      activeOrder={effectiveUsersSortOrder}
+                      onToggle={toggleUsersSort}
+                    />
+                    <th>{usersStrings.usage.table.apiKeyCount}</th>
+                    <AdminUsersSortableHeader
+                      label={usersStrings.usage.table.lastUsed}
+                      field="lastActivity"
+                      activeField={effectiveUsersSort}
+                      activeOrder={effectiveUsersSortOrder}
+                      onToggle={toggleUsersSort}
+                    />
+                  </tr>
+                </thead>
+                <tbody>
+                  {users.map((item) => (
+                    <tr key={item.userId}>
+                      <td className="admin-users-identity-cell">
+                        <strong>{item.displayName || item.username || item.userId}</strong>
+                        <div className="panel-description" style={{ marginTop: 4 }}>
+                          <code>{item.userId}</code>
+                          {item.username ? ` · @${item.username}` : ''}
+                        </div>
+                      </td>
+                      <td>
+                        <StatusBadge tone={item.active ? 'success' : 'neutral'}>
+                          {item.active ? usersStrings.status.active : usersStrings.status.inactive}
+                        </StatusBadge>
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <AdminTableValueStack {...formatQuotaStackValue(item.hourlyAnyUsed, item.hourlyAnyLimit)} />
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <AdminTableValueStack {...formatQuotaStackValue(item.quotaHourlyUsed, item.quotaHourlyLimit)} />
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <AdminTableValueStack {...formatQuotaStackValue(item.quotaDailyUsed, item.quotaDailyLimit)} />
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <AdminTableValueStack {...formatQuotaStackValue(item.quotaMonthlyUsed, item.quotaMonthlyLimit)} />
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <AdminTableValueStack {...formatSuccessRateStackValue(item.dailySuccess, item.dailyFailure, language)} />
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <AdminTableValueStack {...formatSuccessRateStackValue(item.monthlySuccess, item.monthlyFailure, language)} />
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <AdminTableValueStack primary={formatNumber(item.apiKeyCount)} />
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <AdminTableValueStack {...formatStackedTimestamp(item.lastActivity, language)} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </>
+            )}
+          </AdminTableShell>
+
+          <AdminLoadingRegion
+            className="admin-mobile-list admin-responsive-down"
+            loadState={usersLoadState}
+            loadingLabel={usersRefreshing ? loadingStateStrings.refreshing : usersStrings.empty.loading}
+            errorLabel={usersError ?? loadingStateStrings.error}
+            minHeight={260}
+          >
+            {users.length === 0 ? (
+              <div className="empty-state alert">{usersStrings.empty.none}</div>
+            ) : (
+              users.map((item) => (
+                <article key={item.userId} className="admin-mobile-card">
+                  <div className="admin-mobile-kv">
+                    <span>{usersStrings.usage.table.user}</span>
+                    <strong>{item.displayName || item.username || item.userId}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{usersStrings.usage.table.status}</span>
+                    <StatusBadge tone={item.active ? 'success' : 'neutral'}>
+                      {item.active ? usersStrings.status.active : usersStrings.status.inactive}
+                    </StatusBadge>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{usersStrings.usage.table.hourlyAny}</span>
+                    <strong>{formatQuotaUsagePair(item.hourlyAnyUsed, item.hourlyAnyLimit)}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{usersStrings.usage.table.hourly}</span>
+                    <strong>{formatQuotaUsagePair(item.quotaHourlyUsed, item.quotaHourlyLimit)}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{usersStrings.usage.table.daily}</span>
+                    <strong>{formatQuotaUsagePair(item.quotaDailyUsed, item.quotaDailyLimit)}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{usersStrings.usage.table.monthly}</span>
+                    <strong>{formatQuotaUsagePair(item.quotaMonthlyUsed, item.quotaMonthlyLimit)}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{usersStrings.usage.table.dailySuccessRate}</span>
+                    <strong>{formatCompactSuccessRateValue(item.dailySuccess, item.dailyFailure, language)}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{usersStrings.usage.table.monthlySuccessRate}</span>
+                    <strong>{formatCompactSuccessRateValue(item.monthlySuccess, item.monthlyFailure, language)}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{usersStrings.usage.table.apiKeyCount}</span>
+                    <strong>{formatNumber(item.apiKeyCount)}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{usersStrings.usage.table.lastUsed}</span>
+                    <strong>{formatTimestamp(item.lastActivity)}</strong>
+                  </div>
+                </article>
+              ))
+            )}
+          </AdminLoadingRegion>
+
+          {usersTotal > USERS_PER_PAGE && (
+            <AdminTablePagination
+              page={usersPage}
+              totalPages={usersTotalPages}
+              pageSummary={
+                <span className="panel-description">
+                  {usersStrings.pagination
+                    .replace('{page}', String(usersPage))
+                    .replace('{total}', String(usersTotalPages))}
+                </span>
+              }
+              previousLabel={tokenStrings.pagination.prev}
+              nextLabel={tokenStrings.pagination.next}
+              previousDisabled={usersPage <= 1}
+              nextDisabled={usersPage >= usersTotalPages}
+              disabled={usersBlocking}
+              onPrevious={goPrevUsersPage}
+              onNext={goNextUsersPage}
+            />
+          )}
+        </section>
       </AdminShell>
     )
   }
@@ -8145,6 +8451,9 @@ function AdminDashboard(): JSX.Element {
                 <p className="panel-description">{usersStrings.description}</p>
               </div>
               <div style={{ display: 'flex', flex: '1 1 520px', flexWrap: 'wrap', gap: 12, justifyContent: 'flex-end' }}>
+                <Button type="button" variant="outline" onClick={navigateUserUsage} disabled={usersBlocking}>
+                  {usersStrings.usage.open}
+                </Button>
                 <div
                   className="rounded-xl border border-border/60 bg-background/55 px-4 py-3 shadow-sm backdrop-blur"
                   style={{
