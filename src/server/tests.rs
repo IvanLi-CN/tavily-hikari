@@ -3192,6 +3192,7 @@ mod tests {
             .route("/api/events", get(sse_dashboard))
             .route("/api/summary", get(fetch_summary))
             .route("/api/summary/windows", get(fetch_summary_windows))
+            .route("/api/logs", get(list_logs))
             .route("/api/keys", get(list_keys))
             .route("/api/keys/:id", get(get_api_key_detail))
             .route("/api/keys/batch", post(create_api_keys_batch))
@@ -7539,6 +7540,142 @@ colo=LAX
             body.pointer("/month/new_quarantines")
                 .and_then(|v| v.as_i64()),
             Some(1)
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn admin_logs_endpoint_returns_unfiltered_and_filtered_pages() {
+        let db_path = temp_db_path("admin-logs-page");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-admin-logs-page".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let key_id = proxy
+            .list_api_key_metrics()
+            .await
+            .expect("list api key metrics")
+            .into_iter()
+            .next()
+            .expect("seeded key exists")
+            .id;
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        sqlx::query(
+            r#"
+            INSERT INTO request_logs (
+                api_key_id,
+                auth_token_id,
+                method,
+                path,
+                query,
+                status_code,
+                tavily_status_code,
+                error_message,
+                result_status,
+                failure_kind,
+                key_effect_code,
+                key_effect_summary,
+                request_body,
+                response_body,
+                forwarded_headers,
+                dropped_headers,
+                created_at
+            ) VALUES
+                (?, 'token-success', 'POST', '/search', 'q=koha', 200, 200, NULL, 'success', NULL, 'none', NULL, X'7B7D', X'5B5D', '[]', '[]', ?),
+                (?, 'token-error', 'POST', '/search', 'q=bug', 401, 401, 'account deactivated', 'error', 'upstream_account_deactivated_401', 'quarantined', 'The system automatically quarantined this key', X'7B7D', X'5B5D', '[\"x-forwarded-for\"]', '[\"authorization\"]', ?)
+            "#,
+        )
+        .bind(&key_id)
+        .bind(100_i64)
+        .bind(&key_id)
+        .bind(200_i64)
+        .execute(&pool)
+        .await
+        .expect("insert request logs");
+
+        let admin_password = "admin-logs-page-password";
+        let admin_addr = spawn_builtin_keys_admin_server(proxy, admin_password).await;
+        let client = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build client");
+
+        let login_resp = client
+            .post(format!("http://{}/api/admin/login", admin_addr))
+            .json(&serde_json::json!({ "password": admin_password }))
+            .send()
+            .await
+            .expect("admin login");
+        assert_eq!(login_resp.status(), reqwest::StatusCode::OK);
+        let admin_cookie = find_cookie_pair(login_resp.headers(), BUILTIN_ADMIN_COOKIE_NAME)
+            .expect("admin session cookie");
+
+        let unfiltered_resp = client
+            .get(format!("http://{}/api/logs?page=1&per_page=20", admin_addr))
+            .header(reqwest::header::COOKIE, admin_cookie.clone())
+            .send()
+            .await
+            .expect("unfiltered admin logs request");
+        assert_eq!(unfiltered_resp.status(), reqwest::StatusCode::OK);
+        let unfiltered_body: serde_json::Value =
+            unfiltered_resp.json().await.expect("unfiltered admin logs json");
+        assert_eq!(unfiltered_body.get("total").and_then(|value| value.as_i64()), Some(2));
+        assert_eq!(
+            unfiltered_body
+                .pointer("/items/0/failure_kind")
+                .and_then(|value| value.as_str()),
+            Some("upstream_account_deactivated_401")
+        );
+        assert_eq!(
+            unfiltered_body
+                .pointer("/items/0/key_effect_code")
+                .and_then(|value| value.as_str()),
+            Some("quarantined")
+        );
+        assert_eq!(
+            unfiltered_body
+                .pointer("/items/0/key_effect_summary")
+                .and_then(|value| value.as_str()),
+            Some("The system automatically quarantined this key")
+        );
+
+        let success_resp = client
+            .get(format!(
+                "http://{}/api/logs?page=1&per_page=20&result=success",
+                admin_addr
+            ))
+            .header(reqwest::header::COOKIE, admin_cookie)
+            .send()
+            .await
+            .expect("filtered admin logs request");
+        assert_eq!(success_resp.status(), reqwest::StatusCode::OK);
+        let success_body: serde_json::Value =
+            success_resp.json().await.expect("filtered admin logs json");
+        assert_eq!(success_body.get("total").and_then(|value| value.as_i64()), Some(1));
+        assert_eq!(
+            success_body
+                .pointer("/items/0/auth_token_id")
+                .and_then(|value| value.as_str()),
+            Some("token-success")
+        );
+        assert_eq!(
+            success_body
+                .pointer("/items/0/key_effect_code")
+                .and_then(|value| value.as_str()),
+            Some("none")
+        );
+        assert!(
+            success_body
+                .pointer("/items/0/failure_kind")
+                .is_some_and(|value| value.is_null()),
+            "success log should expose a null failure_kind field"
         );
 
         let _ = std::fs::remove_file(db_path);
