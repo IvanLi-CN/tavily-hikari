@@ -8248,7 +8248,7 @@ function AdminDashboard(): JSX.Element {
               {users.length === 0 ? (
                 <tbody>
                   <tr>
-                    <td colSpan={12}>
+                    <td colSpan={11}>
                       <div className="empty-state alert">{usersStrings.empty.none}</div>
                     </td>
                   </tr>
@@ -8289,13 +8289,6 @@ function AdminDashboard(): JSX.Element {
                         onToggle={toggleUsersSort}
                       />
                       <AdminUsersSortableHeader
-                        label={usersStrings.table.successDaily}
-                        field="dailySuccessRate"
-                        activeField={effectiveUsersSort}
-                        activeOrder={effectiveUsersSortOrder}
-                        onToggle={toggleUsersSort}
-                      />
-                      <AdminUsersSortableHeader
                         label={usersStrings.table.successMonthly}
                         field="monthlySuccessRate"
                         activeField={effectiveUsersSort}
@@ -8321,7 +8314,6 @@ function AdminDashboard(): JSX.Element {
                   </thead>
                   <tbody>
                     {users.map((item) => {
-                      const dailyMetric = formatSuccessRateStackValue(item.dailySuccess, item.dailyFailure, language)
                       const monthlyMetric = formatSuccessRateStackValue(item.monthlySuccess, item.monthlyFailure, language)
                       return (
                       <tr key={item.userId}>
@@ -8361,9 +8353,6 @@ function AdminDashboard(): JSX.Element {
                         </td>
                         <td className="admin-users-compact-cell">
                           <AdminTableValueStack {...formatQuotaStackValue(item.quotaMonthlyUsed, item.quotaMonthlyLimit)} />
-                        </td>
-                        <td className="admin-users-compact-cell">
-                          <AdminTableValueStack {...dailyMetric} />
                         </td>
                         <td className="admin-users-compact-cell">
                           <AdminTableValueStack {...monthlyMetric} />
@@ -8438,10 +8427,6 @@ function AdminDashboard(): JSX.Element {
                     <div className="admin-mobile-kv">
                       <span>{usersStrings.table.monthly}</span>
                       <strong>{formatQuotaUsagePair(item.quotaMonthlyUsed, item.quotaMonthlyLimit)}</strong>
-                    </div>
-                    <div className="admin-mobile-kv">
-                      <span>{usersStrings.table.successDaily}</span>
-                      <strong>{formatCompactSuccessRateValue(item.dailySuccess, item.dailyFailure, language)}</strong>
                     </div>
                     <div className="admin-mobile-kv">
                       <span>{usersStrings.table.successMonthly}</span>

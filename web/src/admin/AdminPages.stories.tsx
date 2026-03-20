@@ -2921,13 +2921,6 @@ function UsersPageCanvas(): JSX.Element {
                     onToggle={toggleSort}
                   />
                   <StoryAdminUsersSortableHeader
-                    label={users.table.successDaily}
-                    field="dailySuccessRate"
-                    activeField={effectiveSortField}
-                    activeOrder={effectiveSortOrder}
-                    onToggle={toggleSort}
-                  />
-                  <StoryAdminUsersSortableHeader
                     label={users.table.successMonthly}
                     field="monthlySuccessRate"
                     activeField={effectiveSortField}
@@ -2953,7 +2946,6 @@ function UsersPageCanvas(): JSX.Element {
               </thead>
               <tbody>
                 {sortedUsers.map((item) => {
-                  const dailyMetric = formatSuccessRateStackValue(item.dailySuccess, item.dailyFailure, language)
                   const monthlyMetric = formatSuccessRateStackValue(item.monthlySuccess, item.monthlyFailure, language)
                   const hourlyAnyMetric = formatQuotaStackValue(item.hourlyAnyUsed, item.hourlyAnyLimit)
                   const hourlyMetric = formatQuotaStackValue(item.quotaHourlyUsed, item.quotaHourlyLimit)
@@ -3002,12 +2994,6 @@ function UsersPageCanvas(): JSX.Element {
                       <div className="admin-table-value-stack">
                         <span className="admin-table-value-primary">{monthlyQuotaMetric.primary}</span>
                         <span className="admin-table-value-secondary">{monthlyQuotaMetric.secondary}</span>
-                      </div>
-                    </td>
-                    <td className="admin-users-compact-cell">
-                      <div className="admin-table-value-stack">
-                        <span className="admin-table-value-primary">{dailyMetric.primary}</span>
-                        <span className="admin-table-value-secondary">{dailyMetric.secondary}</span>
                       </div>
                     </td>
                     <td className="admin-users-compact-cell">

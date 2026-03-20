@@ -4635,17 +4635,15 @@ tbody tr:hover {
 .jobs-table.admin-users-list-table th:nth-child(7),
 .jobs-table.admin-users-list-table td:nth-child(7),
 .jobs-table.admin-users-list-table th:nth-child(8),
-.jobs-table.admin-users-list-table td:nth-child(8),
-.jobs-table.admin-users-list-table th:nth-child(9),
-.jobs-table.admin-users-list-table td:nth-child(9) {
-  width: 6.25%;
+.jobs-table.admin-users-list-table td:nth-child(8) {
+  width: 7%;
 }
 
+.jobs-table.admin-users-list-table th:nth-child(9),
+.jobs-table.admin-users-list-table td:nth-child(9),
 .jobs-table.admin-users-list-table th:nth-child(10),
-.jobs-table.admin-users-list-table td:nth-child(10),
-.jobs-table.admin-users-list-table th:nth-child(11),
-.jobs-table.admin-users-list-table td:nth-child(11) {
-  width: 8.75%;
+.jobs-table.admin-users-list-table td:nth-child(10) {
+  width: 9%;
 }
 
 .admin-table-sort-button {
