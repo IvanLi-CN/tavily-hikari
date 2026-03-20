@@ -3123,7 +3123,7 @@ mod admin_resources_tests {
 
     #[test]
     fn admin_user_rows_default_to_last_login_desc_with_nulls_last() {
-        let mut rows = vec![
+        let mut rows = [
             mock_row("usr_none", None, |_| {}),
             mock_row("usr_old", Some(10), |_| {}),
             mock_row("usr_new", Some(20), |_| {}),
@@ -3137,7 +3137,7 @@ mod admin_resources_tests {
 
     #[test]
     fn success_rate_sort_keeps_zero_sample_rows_last() {
-        let mut rows = vec![
+        let mut rows = [
             mock_row("usr_zero", Some(10), |summary| {
                 summary.daily_success = 0;
                 summary.daily_failure = 0;
@@ -3167,7 +3167,7 @@ mod admin_resources_tests {
 
     #[test]
     fn quota_sort_uses_limit_as_secondary_tiebreaker() {
-        let mut rows = vec![
+        let mut rows = [
             mock_row("usr_b", Some(10), |summary| {
                 summary.quota_hourly_used = 40;
                 summary.quota_hourly_limit = 200;
