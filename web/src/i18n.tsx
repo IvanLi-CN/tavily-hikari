@@ -190,6 +190,7 @@ interface AdminTranslationsShape {
   }
   nav: {
     dashboard: string
+    usage: string
     tokens: string
     keys: string
     requests: string
@@ -1394,6 +1395,7 @@ export const translations: Record<Language, TranslationShape> = {
       },
       nav: {
         dashboard: 'Dashboard',
+        usage: 'Usage',
         tokens: 'Tokens',
         keys: 'API Keys',
         requests: 'Requests',
@@ -2586,6 +2588,7 @@ export const translations: Record<Language, TranslationShape> = {
       },
       nav: {
         dashboard: '仪表盘',
+        usage: '用量',
         tokens: '访问令牌',
         keys: 'API Keys',
         requests: '请求日志',

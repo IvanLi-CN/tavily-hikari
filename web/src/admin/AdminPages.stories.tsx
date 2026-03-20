@@ -46,7 +46,7 @@ import { LanguageProvider, useLanguage, useTranslate, type AdminTranslations } f
 import { KeyDetails } from '../AdminDashboard'
 import { TokenDetailStoryCanvas } from '../pages/TokenDetail.stories'
 
-import AdminShell, { type AdminNavItem } from './AdminShell'
+import AdminShell, { type AdminNavItem, type AdminNavTarget } from './AdminShell'
 import DashboardOverview, { type DashboardMetricCard } from './DashboardOverview'
 import ForwardProxySettingsModule from './ForwardProxySettingsModule'
 import ModulePlaceholder from './ModulePlaceholder'
@@ -72,8 +72,6 @@ import {
   type QuotaSliderField,
   type QuotaSliderSeed,
 } from './quotaSlider'
-import type { AdminModuleId } from './routes'
-
 const now = 1_762_380_000
 const ADMIN_USERS_DEFAULT_SORT_FIELD: AdminUsersSortField = 'lastLoginAt'
 const ADMIN_USERS_DEFAULT_SORT_ORDER: SortDirection = 'desc'
@@ -1634,19 +1632,20 @@ function requestFailureGuidance(kind: string | null | undefined, language: 'en' 
 
 function buildNavItems(strings: AdminTranslations): AdminNavItem[] {
   return [
-    { module: 'dashboard', label: strings.nav.dashboard, icon: 'mdi:view-dashboard-outline' },
-    { module: 'tokens', label: strings.nav.tokens, icon: 'mdi:key-chain-variant' },
-    { module: 'keys', label: strings.nav.keys, icon: 'mdi:key-outline' },
-    { module: 'requests', label: strings.nav.requests, icon: 'mdi:file-document-outline' },
-    { module: 'jobs', label: strings.nav.jobs, icon: 'mdi:calendar-clock-outline' },
-    { module: 'users', label: strings.nav.users, icon: 'mdi:account-group-outline' },
-    { module: 'alerts', label: strings.nav.alerts, icon: 'mdi:bell-ring-outline' },
-    { module: 'proxy-settings', label: strings.nav.proxySettings, icon: 'mdi:tune-variant' },
+    { target: 'dashboard', label: strings.nav.dashboard, icon: 'mdi:view-dashboard-outline' },
+    { target: 'user-usage', label: strings.nav.usage, icon: 'mdi:chart-box-outline' },
+    { target: 'tokens', label: strings.nav.tokens, icon: 'mdi:key-chain-variant' },
+    { target: 'keys', label: strings.nav.keys, icon: 'mdi:key-outline' },
+    { target: 'requests', label: strings.nav.requests, icon: 'mdi:file-document-outline' },
+    { target: 'jobs', label: strings.nav.jobs, icon: 'mdi:calendar-clock-outline' },
+    { target: 'users', label: strings.nav.users, icon: 'mdi:account-group-outline' },
+    { target: 'alerts', label: strings.nav.alerts, icon: 'mdi:bell-ring-outline' },
+    { target: 'proxy-settings', label: strings.nav.proxySettings, icon: 'mdi:tune-variant' },
   ]
 }
 
 interface AdminPageFrameProps {
-  activeModule: AdminModuleId
+  activeModule: AdminNavTarget
   children: ReactNode
 }
 
@@ -1655,10 +1654,10 @@ function AdminPageFrame({ activeModule, children }: AdminPageFrameProps): JSX.El
 
   return (
     <AdminShell
-      activeModule={activeModule}
+      activeItem={activeModule}
       navItems={buildNavItems(admin)}
       skipToContentLabel={admin.accessibility.skipToContent}
-      onSelectModule={() => {}}
+      onSelectItem={() => {}}
     >
       <AdminPanelHeader
         title={admin.header.title}
@@ -2841,9 +2840,6 @@ function UsersPageCanvas(): JSX.Element {
             <h2>{users.title}</h2>
             <p className="panel-description">{users.description}</p>
           </div>
-          <button type="button" className="btn btn-outline" onClick={() => openAdminStory('admin-pages--users-usage')}>
-            {users.usage.open}
-          </button>
           <div
             className="rounded-xl border border-border/60 bg-background/55 px-4 py-3 shadow-sm backdrop-blur"
             style={{
@@ -3037,7 +3033,7 @@ function UsersUsagePageCanvas(): JSX.Element {
   }
 
   return (
-    <AdminPageFrame activeModule="users">
+    <AdminPageFrame activeModule="user-usage">
       <section className="surface panel">
         <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
           <div>

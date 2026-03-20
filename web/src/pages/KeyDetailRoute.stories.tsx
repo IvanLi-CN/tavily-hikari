@@ -143,22 +143,23 @@ function KeyDetailRouteSurface(): JSX.Element {
   const adminStrings = useTranslate().admin
 
   const navItems: AdminNavItem[] = [
-    { module: 'dashboard', label: adminStrings.nav.dashboard, icon: 'mdi:view-dashboard-outline' },
-    { module: 'tokens', label: adminStrings.nav.tokens, icon: 'mdi:key-chain-variant' },
-    { module: 'keys', label: adminStrings.nav.keys, icon: 'mdi:key-outline' },
-    { module: 'requests', label: adminStrings.nav.requests, icon: 'mdi:file-document-outline' },
-    { module: 'jobs', label: adminStrings.nav.jobs, icon: 'mdi:calendar-clock-outline' },
-    { module: 'users', label: adminStrings.nav.users, icon: 'mdi:account-group-outline' },
-    { module: 'alerts', label: adminStrings.nav.alerts, icon: 'mdi:bell-ring-outline' },
-    { module: 'proxy-settings', label: adminStrings.nav.proxySettings, icon: 'mdi:tune-variant' },
+    { target: 'dashboard', label: adminStrings.nav.dashboard, icon: 'mdi:view-dashboard-outline' },
+    { target: 'user-usage', label: adminStrings.nav.usage, icon: 'mdi:chart-box-outline' },
+    { target: 'tokens', label: adminStrings.nav.tokens, icon: 'mdi:key-chain-variant' },
+    { target: 'keys', label: adminStrings.nav.keys, icon: 'mdi:key-outline' },
+    { target: 'requests', label: adminStrings.nav.requests, icon: 'mdi:file-document-outline' },
+    { target: 'jobs', label: adminStrings.nav.jobs, icon: 'mdi:calendar-clock-outline' },
+    { target: 'users', label: adminStrings.nav.users, icon: 'mdi:account-group-outline' },
+    { target: 'alerts', label: adminStrings.nav.alerts, icon: 'mdi:bell-ring-outline' },
+    { target: 'proxy-settings', label: adminStrings.nav.proxySettings, icon: 'mdi:tune-variant' },
   ]
 
   return (
     <AdminShell
-      activeModule="keys"
+      activeItem="keys"
       navItems={navItems}
       skipToContentLabel={adminStrings.accessibility.skipToContent}
-      onSelectModule={() => undefined}
+      onSelectItem={() => undefined}
     >
       <KeyDetails id={REVIEW_KEY_ID} onBack={() => undefined} onOpenUser={() => undefined} />
     </AdminShell>

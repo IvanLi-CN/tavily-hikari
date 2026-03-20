@@ -45,7 +45,7 @@ import { Textarea } from './components/ui/textarea'
 import TokenUsageHeader from './components/TokenUsageHeader'
 import TokenDetail from './pages/TokenDetail'
 import { ArrowDown, ArrowUp, ArrowUpDown } from 'lucide-react'
-import AdminShell, { type AdminNavItem } from './admin/AdminShell'
+import AdminShell, { type AdminNavItem, type AdminNavTarget } from './admin/AdminShell'
 import DashboardOverview from './admin/DashboardOverview'
 import ForwardProxySettingsModule, {
   type ForwardProxyDraft,
@@ -3177,10 +3177,14 @@ function AdminDashboard(): JSX.Element {
   }, [])
 
   const navigateModule = useCallback(
-    (module: AdminModuleId) => {
-      navigateToPath(modulePath(module))
+    (target: AdminNavTarget) => {
+      if (target === 'user-usage') {
+        navigateToPath(userUsagePath(usersQuery, usersTagFilterId, usersPage, usersSort, usersSortOrder))
+        return
+      }
+      navigateToPath(modulePath(target))
     },
-    [navigateToPath],
+    [navigateToPath, usersPage, usersQuery, usersSort, usersSortOrder, usersTagFilterId],
   )
 
   const navigateKey = useCallback(
@@ -3287,10 +3291,6 @@ function AdminDashboard(): JSX.Element {
     },
     [buildUsersCollectionPath, navigateToPath, usersSort, usersSortOrder],
   )
-
-  const navigateUserUsage = useCallback(() => {
-    navigateToPath(userUsagePath(usersQuery, usersTagFilterId, usersPage, usersSort, usersSortOrder))
-  }, [navigateToPath, usersPage, usersQuery, usersSort, usersSortOrder, usersTagFilterId])
 
   const navigateKeysList = useCallback(
     (options?: {
@@ -5270,15 +5270,28 @@ function AdminDashboard(): JSX.Element {
     return sortLeaderboard(tokenLeaderboard, tokenLeaderboardPeriod, tokenLeaderboardFocus).slice(0, 50)
   }, [tokenLeaderboard, tokenLeaderboardPeriod, tokenLeaderboardFocus])
   const navItems: AdminNavItem[] = [
-    { module: 'dashboard', label: adminStrings.nav.dashboard, icon: 'mdi:view-dashboard-outline' },
-    { module: 'tokens', label: adminStrings.nav.tokens, icon: 'mdi:key-chain-variant' },
-    { module: 'keys', label: adminStrings.nav.keys, icon: 'mdi:key-outline' },
-    { module: 'requests', label: adminStrings.nav.requests, icon: 'mdi:file-document-outline' },
-    { module: 'jobs', label: adminStrings.nav.jobs, icon: 'mdi:calendar-clock-outline' },
-    { module: 'users', label: adminStrings.nav.users, icon: 'mdi:account-group-outline' },
-    { module: 'alerts', label: adminStrings.nav.alerts, icon: 'mdi:bell-ring-outline' },
-    { module: 'proxy-settings', label: adminStrings.nav.proxySettings, icon: 'mdi:tune-variant' },
+    { target: 'dashboard', label: adminStrings.nav.dashboard, icon: 'mdi:view-dashboard-outline' },
+    { target: 'user-usage', label: adminStrings.nav.usage, icon: 'mdi:chart-box-outline' },
+    { target: 'tokens', label: adminStrings.nav.tokens, icon: 'mdi:key-chain-variant' },
+    { target: 'keys', label: adminStrings.nav.keys, icon: 'mdi:key-outline' },
+    { target: 'requests', label: adminStrings.nav.requests, icon: 'mdi:file-document-outline' },
+    { target: 'jobs', label: adminStrings.nav.jobs, icon: 'mdi:calendar-clock-outline' },
+    { target: 'users', label: adminStrings.nav.users, icon: 'mdi:account-group-outline' },
+    { target: 'alerts', label: adminStrings.nav.alerts, icon: 'mdi:bell-ring-outline' },
+    { target: 'proxy-settings', label: adminStrings.nav.proxySettings, icon: 'mdi:tune-variant' },
   ]
+  const activeNavItem: AdminNavTarget =
+    route.name === 'user-usage'
+      ? 'user-usage'
+      : route.name === 'module'
+        ? route.module
+        : route.name === 'key'
+          ? 'keys'
+          : route.name === 'user'
+              || route.name === 'user-tags'
+              || route.name === 'user-tag-editor'
+            ? 'users'
+            : 'tokens'
   const activeModule: AdminModuleId =
     route.name === 'module'
       ? route.module
@@ -5616,10 +5629,10 @@ function AdminDashboard(): JSX.Element {
 
   const renderUserTagCatalogIndexPage = (): JSX.Element => (
     <AdminShell
-      activeModule={activeModule}
+      activeItem={activeNavItem}
       navItems={navItems}
       skipToContentLabel={adminStrings.accessibility.skipToContent}
-      onSelectModule={navigateModule}
+      onSelectItem={navigateModule}
     >
       <section className="surface panel">
         <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
@@ -5711,10 +5724,10 @@ function AdminDashboard(): JSX.Element {
   if (route.name === 'key') {
     return (
       <AdminShell
-        activeModule={activeModule}
+        activeItem={activeNavItem}
         navItems={navItems}
         skipToContentLabel={adminStrings.accessibility.skipToContent}
-        onSelectModule={navigateModule}
+        onSelectItem={navigateModule}
       >
         <KeyDetails
           key={route.id}
@@ -5739,10 +5752,10 @@ function AdminDashboard(): JSX.Element {
   if (route.name === 'token') {
     return (
       <AdminShell
-        activeModule={activeModule}
+        activeItem={activeNavItem}
         navItems={navItems}
         skipToContentLabel={adminStrings.accessibility.skipToContent}
-        onSelectModule={navigateModule}
+        onSelectItem={navigateModule}
       >
         <TokenDetail
           key={route.id}
@@ -5765,10 +5778,10 @@ function AdminDashboard(): JSX.Element {
 
     return (
       <AdminShell
-        activeModule={activeModule}
+        activeItem={activeNavItem}
         navItems={navItems}
         skipToContentLabel={adminStrings.accessibility.skipToContent}
-        onSelectModule={navigateModule}
+        onSelectItem={navigateModule}
       >
         <section className="surface panel">
           <div className="panel-header">
@@ -6273,10 +6286,10 @@ function AdminDashboard(): JSX.Element {
 
     return (
       <AdminShell
-        activeModule={activeModule}
+        activeItem={activeNavItem}
         navItems={navItems}
         skipToContentLabel={adminStrings.accessibility.skipToContent}
-        onSelectModule={navigateModule}
+        onSelectItem={navigateModule}
       >
         <section className="surface panel">
           <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
@@ -6557,10 +6570,10 @@ function AdminDashboard(): JSX.Element {
 
     return (
       <AdminShell
-        activeModule={activeModule}
+        activeItem={activeNavItem}
         navItems={navItems}
         skipToContentLabel={adminStrings.accessibility.skipToContent}
-        onSelectModule={navigateModule}
+        onSelectItem={navigateModule}
       >
         <TokenUsageHeader
           title={tokenLeaderboardStrings.title}
@@ -6876,10 +6889,10 @@ function AdminDashboard(): JSX.Element {
           document.body,
         )}
       <AdminShell
-        activeModule={activeModule}
+        activeItem={activeNavItem}
         navItems={navItems}
         skipToContentLabel={adminStrings.accessibility.skipToContent}
-        onSelectModule={navigateModule}
+        onSelectItem={navigateModule}
       >
       <AdminPanelHeader
         title={headerStrings.title}
@@ -8451,9 +8464,6 @@ function AdminDashboard(): JSX.Element {
                 <p className="panel-description">{usersStrings.description}</p>
               </div>
               <div style={{ display: 'flex', flex: '1 1 520px', flexWrap: 'wrap', gap: 12, justifyContent: 'flex-end' }}>
-                <Button type="button" variant="outline" onClick={navigateUserUsage} disabled={usersBlocking}>
-                  {usersStrings.usage.open}
-                </Button>
                 <div
                   className="rounded-xl border border-border/60 bg-background/55 px-4 py-3 shadow-sm backdrop-blur"
                   style={{
