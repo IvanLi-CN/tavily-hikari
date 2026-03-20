@@ -210,7 +210,8 @@ async fn proxy_handler(
 
     // Billing plan (1:1 upstream credits):
     // - Non-business whitelist methods are ignored by business quota.
-    // - tools/call for tavily-* injects include_usage=true so upstream returns usage.credits.
+    // - tools/call for tavily-* prefers include_usage=true so upstream can return usage.credits.
+    // - If the upstream MCP schema rejects include_usage, retry once without it.
     // - Known Tavily tools use a reserved-credit precheck derived from request parameters.
     // - For unknown / batch / positional request shapes, default to billable to avoid bypass.
     let mut billable_flag = false;
@@ -705,7 +706,27 @@ async fn proxy_handler(
         }
     }
 
-    match state.proxy.proxy_request(proxy_request).await {
+    let proxy_result = {
+        let initial_result = state.proxy.proxy_request(proxy_request.clone()).await;
+        if path.starts_with("/mcp")
+            && let Ok(resp) = &initial_result
+            && mcp_response_rejected_include_usage(&resp.body)
+            && let Some(retry_body) =
+                remove_include_usage_from_mcp_request_bytes(proxy_request.body.as_ref())
+        {
+            state
+                .proxy
+                .proxy_request(ProxyRequest {
+                    body: retry_body,
+                    ..proxy_request
+                })
+                .await
+        } else {
+            initial_result
+        }
+    };
+
+    match proxy_result {
         Ok(resp) => {
             let mut billing_error: Option<String> = None;
             if let Some(tid) = token_id.as_deref() {
@@ -977,6 +998,49 @@ fn accepts_event_stream(headers: &HeaderMap) -> bool {
                 .any(|v| v.trim().eq_ignore_ascii_case("text/event-stream"))
         })
         .unwrap_or(false)
+}
+
+fn mcp_response_rejected_include_usage(body: &[u8]) -> bool {
+    let normalized = String::from_utf8_lossy(body).to_ascii_lowercase();
+    normalized.contains("include_usage") && normalized.contains("unexpected keyword argument")
+}
+
+fn remove_include_usage_from_mcp_request_bytes(body: &[u8]) -> Option<bytes::Bytes> {
+    fn scrub_value(value: &mut Value, removed: &mut bool) {
+        match value {
+            Value::Object(map) => {
+                let method = map.get("method").and_then(|value| value.as_str()).unwrap_or("");
+                if method == "tools/call"
+                    && let Some(Value::Object(params)) = map.get_mut("params")
+                    && let Some(Value::Object(arguments)) = params.get_mut("arguments")
+                    && arguments.remove("include_usage").is_some()
+                {
+                    *removed = true;
+                }
+
+                for nested in map.values_mut() {
+                    scrub_value(nested, removed);
+                }
+            }
+            Value::Array(items) => {
+                for nested in items.iter_mut() {
+                    scrub_value(nested, removed);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut value = serde_json::from_slice::<Value>(body).ok()?;
+    let mut removed = false;
+    scrub_value(&mut value, &mut removed);
+    if !removed {
+        return None;
+    }
+
+    serde_json::to_vec(&value)
+        .ok()
+        .map(bytes::Bytes::from)
 }
 
 fn build_response(resp: ProxyResponse) -> Response<Body> {

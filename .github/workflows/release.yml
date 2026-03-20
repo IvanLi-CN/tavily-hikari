@@ -328,6 +328,7 @@ jobs:
               -X POST \
               "http://127.0.0.1:${PROXY_PORT}/mcp" \
               -H "Authorization: Bearer ${TOKEN}" \
+              -H 'Accept: application/json, text/event-stream' \
               -H 'content-type: application/json' \
               -d '{"jsonrpc":"2.0","id":"release-smoke-search","method":"tools/call","params":{"name":"tavily_search","arguments":{"query":"release smoke gate","search_depth":"advanced"}}}'
           )"
