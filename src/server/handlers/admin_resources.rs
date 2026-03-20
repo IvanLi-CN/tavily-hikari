@@ -2433,41 +2433,79 @@ async fn list_users(
     }
     let page = q.page.unwrap_or(1).max(1);
     let per_page = q.per_page.unwrap_or(20).clamp(1, 100);
-    let users = state
-        .proxy
-        .list_admin_users_filtered(q.q.as_deref(), q.tag_id.as_deref())
-        .await
-        .map_err(|err| {
-            eprintln!("list admin users error: {err}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-    let user_ids: Vec<String> = users.iter().map(|user| user.user_id.clone()).collect();
-    let summaries = state
-        .proxy
-        .user_dashboard_summaries_for_users(&user_ids)
-        .await
-        .map_err(|err| {
-            eprintln!("list admin users dashboard summaries error: {err}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-    let mut rows: Vec<AdminUserSummaryRow> = users
-        .into_iter()
-        .map(|user| AdminUserSummaryRow {
-            summary: summaries
-                .get(&user.user_id)
-                .cloned()
-                .unwrap_or_else(empty_user_dashboard_summary),
-            user,
-        })
-        .collect();
-    rows.sort_by(|left, right| compare_admin_user_rows(left, right, q.sort, q.order));
-    let total = rows.len() as i64;
-    let offset = ((page - 1) * per_page) as usize;
-    let paged_rows: Vec<AdminUserSummaryRow> = rows
-        .into_iter()
-        .skip(offset)
-        .take(per_page as usize)
-        .collect();
+    let sort_field = q.sort.unwrap_or(AdminUsersSortField::LastLoginAt);
+    let sort_order = q.order.unwrap_or(AdminUsersSortDirection::Desc);
+    let use_default_paged_query =
+        sort_field == AdminUsersSortField::LastLoginAt
+            && sort_order == AdminUsersSortDirection::Desc;
+
+    let (paged_rows, total) = if use_default_paged_query {
+        let (users, total) = state
+            .proxy
+            .list_admin_users_paged(page, per_page, q.q.as_deref(), q.tag_id.as_deref())
+            .await
+            .map_err(|err| {
+                eprintln!("list admin users error: {err}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        let user_ids: Vec<String> = users.iter().map(|user| user.user_id.clone()).collect();
+        let summaries = state
+            .proxy
+            .user_dashboard_summaries_for_users(&user_ids)
+            .await
+            .map_err(|err| {
+                eprintln!("list admin users dashboard summaries error: {err}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        let rows: Vec<AdminUserSummaryRow> = users
+            .into_iter()
+            .map(|user| AdminUserSummaryRow {
+                summary: summaries
+                    .get(&user.user_id)
+                    .cloned()
+                    .unwrap_or_else(empty_user_dashboard_summary),
+                user,
+            })
+            .collect();
+        (rows, total)
+    } else {
+        let users = state
+            .proxy
+            .list_admin_users_filtered(q.q.as_deref(), q.tag_id.as_deref())
+            .await
+            .map_err(|err| {
+                eprintln!("list admin users error: {err}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        let user_ids: Vec<String> = users.iter().map(|user| user.user_id.clone()).collect();
+        let summaries = state
+            .proxy
+            .user_dashboard_summaries_for_users(&user_ids)
+            .await
+            .map_err(|err| {
+                eprintln!("list admin users dashboard summaries error: {err}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        let mut rows: Vec<AdminUserSummaryRow> = users
+            .into_iter()
+            .map(|user| AdminUserSummaryRow {
+                summary: summaries
+                    .get(&user.user_id)
+                    .cloned()
+                    .unwrap_or_else(empty_user_dashboard_summary),
+                user,
+            })
+            .collect();
+        rows.sort_by(|left, right| compare_admin_user_rows(left, right, Some(sort_field), Some(sort_order)));
+        let total = rows.len() as i64;
+        let offset = ((page - 1) * per_page) as usize;
+        let paged_rows = rows
+            .into_iter()
+            .skip(offset)
+            .take(per_page as usize)
+            .collect();
+        (paged_rows, total)
+    };
     let page_user_ids: Vec<String> = paged_rows
         .iter()
         .map(|row| row.user.user_id.clone())
