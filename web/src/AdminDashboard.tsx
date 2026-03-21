@@ -3209,12 +3209,20 @@ function AdminDashboard(): JSX.Element {
   const navigateModule = useCallback(
     (target: AdminNavTarget) => {
       if (target === 'user-usage') {
-        navigateToPath(userUsagePath(usersQuery, usersTagFilterId, usersPage, usersSort, usersSortOrder))
+        navigateToPath(
+          userUsagePath(
+            getAdminUsersQueryFromLocation(),
+            getAdminUsersTagFilterFromLocation(),
+            getAdminUsersPageFromLocation(),
+            getAdminUsersSortFromLocation(),
+            getAdminUsersSortDirectionFromLocation(),
+          ),
+        )
         return
       }
       navigateToPath(modulePath(target))
     },
-    [navigateToPath, usersPage, usersQuery, usersSort, usersSortOrder, usersTagFilterId],
+    [navigateToPath],
   )
 
   const navigateKey = useCallback(
