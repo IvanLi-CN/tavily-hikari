@@ -6444,8 +6444,15 @@ function AdminDashboard(): JSX.Element {
                   {users.map((item) => (
                     <tr key={item.userId}>
                       <td className="admin-users-identity-cell">
-                        <strong>{item.displayName || item.username || item.userId}</strong>
-                        <div className="panel-description" style={{ marginTop: 4 }}>
+                        <button
+                          type="button"
+                          className="link-button admin-users-identity-button"
+                          aria-label={usersStrings.actions.view}
+                          onClick={() => navigateUser(item.userId, { preserveUsersContext: true })}
+                        >
+                          <strong>{item.displayName || item.username || item.userId}</strong>
+                        </button>
+                        <div className="panel-description admin-users-identity-meta">
                           <code>{item.userId}</code>
                           {item.username ? ` · @${item.username}` : ''}
                         </div>
@@ -6500,7 +6507,14 @@ function AdminDashboard(): JSX.Element {
                 <article key={item.userId} className="admin-mobile-card">
                   <div className="admin-mobile-kv">
                     <span>{usersStrings.usage.table.user}</span>
-                    <strong>{item.displayName || item.username || item.userId}</strong>
+                    <button
+                      type="button"
+                      className="link-button admin-users-mobile-link"
+                      aria-label={usersStrings.actions.view}
+                      onClick={() => navigateUser(item.userId, { preserveUsersContext: true })}
+                    >
+                      <strong>{item.displayName || item.username || item.userId}</strong>
+                    </button>
                   </div>
                   <div className="admin-mobile-kv">
                     <span>{usersStrings.usage.table.status}</span>
@@ -8653,11 +8667,11 @@ function AdminDashboard(): JSX.Element {
                             onClick={() => navigateUser(item.userId, { preserveUsersContext: true })}
                           >
                             <strong>{item.displayName || item.username || item.userId}</strong>
-                            <span className="panel-description admin-users-identity-meta">
-                              <code>{item.userId}</code>
-                              {item.username ? ` · @${item.username}` : ''}
-                            </span>
                           </button>
+                          <div className="panel-description admin-users-identity-meta">
+                            <code>{item.userId}</code>
+                            {item.username ? ` · @${item.username}` : ''}
+                          </div>
                         </td>
                         <td>
                           <StatusBadge tone={item.active ? 'success' : 'neutral'}>

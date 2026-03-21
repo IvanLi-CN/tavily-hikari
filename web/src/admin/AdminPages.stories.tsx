@@ -2955,13 +2955,18 @@ function UsersPageCanvas(): JSX.Element {
                   return (
                   <tr key={item.userId}>
                     <td className="admin-users-identity-cell">
-                      <button type="button" className="link-button admin-users-identity-button" aria-label={users.actions.view}>
+                      <button
+                        type="button"
+                        className="link-button admin-users-identity-button"
+                        aria-label={users.actions.view}
+                        onClick={() => openAdminStory('admin-pages--user-detail')}
+                      >
                         <strong>{item.displayName || item.username || item.userId}</strong>
-                        <span className="panel-description admin-users-identity-meta">
-                          <code>{item.userId}</code>
-                          {item.username ? ` · @${item.username}` : ''}
-                        </span>
                       </button>
+                      <div className="panel-description admin-users-identity-meta">
+                        <code>{item.userId}</code>
+                        {item.username ? ` · @${item.username}` : ''}
+                      </div>
                     </td>
                     <td>
                       <StatusBadge tone={item.active ? 'success' : 'neutral'}>
@@ -3161,8 +3166,15 @@ function UsersUsagePageCanvas(): JSX.Element {
                   return (
                     <tr key={item.userId}>
                       <td className="admin-users-identity-cell">
-                        <strong>{item.displayName || item.username || item.userId}</strong>
-                        <div className="panel-description" style={{ marginTop: 4 }}>
+                        <button
+                          type="button"
+                          className="link-button admin-users-identity-button"
+                          aria-label={users.actions.view}
+                          onClick={() => openAdminStory('admin-pages--user-detail')}
+                        >
+                          <strong>{item.displayName || item.username || item.userId}</strong>
+                        </button>
+                        <div className="panel-description admin-users-identity-meta">
                           <code>{item.userId}</code>
                           {item.username ? ` · @${item.username}` : ''}
                         </div>

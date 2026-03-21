@@ -4805,7 +4805,9 @@ tbody tr:hover {
 }
 
 .admin-users-identity-meta {
-  margin-top: 0;
+  display: block;
+  margin-top: 4px;
+  text-align: left;
 }
 
 .admin-users-identity-button code {
