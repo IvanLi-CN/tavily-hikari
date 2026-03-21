@@ -527,7 +527,6 @@ interface AdminTranslationsShape {
         monthly: string
         dailySuccessRate: string
         monthlySuccessRate: string
-        apiKeyCount: string
         lastUsed: string
       }
     }
@@ -1719,7 +1718,7 @@ export const translations: Record<Language, TranslationShape> = {
         },
         usage: {
           title: 'User Usage',
-          description: 'Usage-first view for rolling quotas, success rates, key bindings, and latest activity.',
+          description: 'Usage-first view for rolling quotas, success rates, token totals, and latest activity.',
           open: 'Open usage view',
           back: 'Back to users',
           table: {
@@ -1731,7 +1730,6 @@ export const translations: Record<Language, TranslationShape> = {
             monthly: 'Month',
             dailySuccessRate: 'Daily Success',
             monthlySuccessRate: 'Monthly Success',
-            apiKeyCount: 'API Keys',
             lastUsed: 'Last Used',
           },
         },
@@ -2912,7 +2910,7 @@ export const translations: Record<Language, TranslationShape> = {
         },
         usage: {
           title: '用户用量',
-          description: '专门查看各用户的滚动额度、成功率、关联 API Keys 数量与最近使用时间。',
+          description: '专门查看各用户的滚动额度、成功率、令牌数量与最近使用时间。',
           open: '查看用量界面',
           back: '返回用户管理',
           table: {
@@ -2924,7 +2922,6 @@ export const translations: Record<Language, TranslationShape> = {
             monthly: '月度',
             dailySuccessRate: '日成功率',
             monthlySuccessRate: '月成功率',
-            apiKeyCount: '关联 API Keys',
             lastUsed: '上次使用',
           },
         },

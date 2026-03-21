@@ -2437,11 +2437,18 @@ async fn list_users(
     }
     let page = q.page.unwrap_or(1).max(1);
     let per_page = q.per_page.unwrap_or(20).clamp(1, 100);
-    let sort_field = q.sort.unwrap_or(AdminUsersSortField::LastLoginAt);
-    let sort_order = q.order.unwrap_or(AdminUsersSortDirection::Desc);
+    let requested_sort = q.sort;
+    let requested_order = if requested_sort.is_some() {
+        Some(q.order.unwrap_or(AdminUsersSortDirection::Desc))
+    } else {
+        None
+    };
+    let effective_sort_field = requested_sort.unwrap_or(AdminUsersSortField::LastLoginAt);
+    let effective_sort_order = requested_order.unwrap_or(AdminUsersSortDirection::Desc);
     let use_default_paged_query =
-        sort_field == AdminUsersSortField::LastLoginAt
-            && sort_order == AdminUsersSortDirection::Desc;
+        requested_sort.is_none()
+            || (effective_sort_field == AdminUsersSortField::LastLoginAt
+                && effective_sort_order == AdminUsersSortDirection::Desc);
 
     let (paged_rows, total) = if use_default_paged_query {
         let (users, total) = state
@@ -2500,7 +2507,14 @@ async fn list_users(
                 user,
             })
             .collect();
-        rows.sort_by(|left, right| compare_admin_user_rows(left, right, Some(sort_field), Some(sort_order)));
+        rows.sort_by(|left, right| {
+            compare_admin_user_rows(
+                left,
+                right,
+                Some(effective_sort_field),
+                Some(effective_sort_order),
+            )
+        });
         let total = rows.len() as i64;
         let offset = ((page - 1) * per_page) as usize;
         let paged_rows = rows
