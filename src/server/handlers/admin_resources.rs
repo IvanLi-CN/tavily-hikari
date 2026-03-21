@@ -1774,10 +1774,11 @@ async fn list_logs(
         }
         _ => None,
     };
+    let operational_class = normalize_operational_class_filter(params.operational_class.as_deref());
 
     state
         .proxy
-        .recent_request_logs_page(result_status, page, per_page)
+        .recent_request_logs_page(result_status, operational_class, page, per_page)
         .await
         .map(|(logs, total)| {
             let view_items = logs.into_iter().map(RequestLogView::from).collect();

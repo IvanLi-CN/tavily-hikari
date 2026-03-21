@@ -11,7 +11,11 @@ pub use analysis::{
     extract_mcp_has_error_by_id_from_bytes, extract_mcp_usage_credits_by_id_from_bytes,
     extract_usage_credits_from_json_bytes, extract_usage_credits_total_from_json_bytes,
     failure_kind_solution_guidance, mcp_response_has_any_error, mcp_response_has_any_success,
-    should_append_solution_guidance,
+    normalize_operational_class_filter, operational_class_for_request_kind,
+    operational_class_for_request_path, operational_class_for_token_log,
+    should_append_solution_guidance, token_request_kind_billing_group,
+    token_request_kind_billing_group_for_request, token_request_kind_billing_group_for_token_log,
+    token_request_kind_protocol_group,
 };
 pub use forward_proxy::{
     ForwardProxyHourlyBucketResponse, ForwardProxyLiveNodeResponse, ForwardProxyLiveStatsResponse,

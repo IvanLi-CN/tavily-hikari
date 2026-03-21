@@ -208,6 +208,12 @@ struct RequestLogView {
     response_body: Option<String>,
     forwarded_headers: Vec<String>,
     dropped_headers: Vec<String>,
+    #[serde(rename = "operationalClass")]
+    operational_class: String,
+    #[serde(rename = "requestKindProtocolGroup")]
+    request_kind_protocol_group: String,
+    #[serde(rename = "requestKindBillingGroup")]
+    request_kind_billing_group: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -394,10 +400,28 @@ struct TokenLogView {
     key_effect_code: String,
     key_effect_summary: Option<String>,
     created_at: i64,
+    #[serde(rename = "operationalClass")]
+    operational_class: String,
+    #[serde(rename = "requestKindProtocolGroup")]
+    request_kind_protocol_group: String,
+    #[serde(rename = "requestKindBillingGroup")]
+    request_kind_billing_group: String,
 }
 
 impl From<TokenLogRecord> for TokenLogView {
     fn from(r: TokenLogRecord) -> Self {
+        let request_kind_protocol_group = token_request_kind_protocol_group(&r.request_kind_key);
+        let request_kind_billing_group =
+            token_request_kind_billing_group_for_token_log(
+                &r.request_kind_key,
+                r.counts_business_quota,
+            );
+        let operational_class = operational_class_for_token_log(
+            &r.request_kind_key,
+            &r.result_status,
+            r.failure_kind.as_deref(),
+            r.counts_business_quota,
+        );
         Self {
             id: r.id,
             method: r.method,
@@ -415,6 +439,9 @@ impl From<TokenLogRecord> for TokenLogView {
             key_effect_code: r.key_effect_code,
             key_effect_summary: r.key_effect_summary,
             created_at: r.created_at,
+            operational_class: operational_class.to_string(),
+            request_kind_protocol_group: request_kind_protocol_group.to_string(),
+            request_kind_billing_group: request_kind_billing_group.to_string(),
         }
     }
 }
@@ -448,6 +475,7 @@ struct LogsQuery {
     page: Option<i64>,
     per_page: Option<i64>,
     result: Option<String>,
+    operational_class: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -663,6 +691,7 @@ struct TokenLogsPageQuery {
     per_page: Option<usize>,
     since: Option<String>,
     until: Option<String>,
+    operational_class: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -769,9 +798,18 @@ async fn get_token_logs_page(
         .token_log_request_kind_options(&id, since, Some(until))
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let operational_class = normalize_operational_class_filter(q.operational_class.as_deref());
     state
         .proxy
-        .token_logs_page(&id, page, per_page, since, Some(until), &request_kinds)
+        .token_logs_page(
+            &id,
+            page,
+            per_page,
+            since,
+            Some(until),
+            &request_kinds,
+            operational_class,
+        )
         .await
         .map(|(items, total)| {
             let mapped: Vec<TokenLogView> = items

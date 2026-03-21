@@ -746,6 +746,7 @@ pub struct TokenLogRecord {
     pub request_kind_key: String,
     pub request_kind_label: String,
     pub request_kind_detail: Option<String>,
+    pub counts_business_quota: bool,
     pub result_status: String,
     pub error_message: Option<String>,
     pub failure_kind: Option<String>,

@@ -1088,6 +1088,15 @@ fn decode_body(bytes: &[u8]) -> Option<String> {
 
 impl From<RequestLogRecord> for RequestLogView {
     fn from(record: RequestLogRecord) -> Self {
+        let operational_class = operational_class_for_request_path(
+            &record.path,
+            Some(&record.request_body),
+            &record.result_status,
+            record.failure_kind.as_deref(),
+        );
+        let request_kind = classify_token_request_kind(&record.path, Some(&record.request_body));
+        let request_kind_billing_group =
+            token_request_kind_billing_group_for_request(&record.path, Some(&record.request_body));
         Self {
             id: record.id,
             key_id: record.key_id,
@@ -1107,6 +1116,10 @@ impl From<RequestLogRecord> for RequestLogView {
             response_body: decode_body(&record.response_body),
             forwarded_headers: record.forwarded_headers,
             dropped_headers: record.dropped_headers,
+            operational_class: operational_class.to_string(),
+            request_kind_protocol_group: token_request_kind_protocol_group(&request_kind.key)
+                .to_string(),
+            request_kind_billing_group: request_kind_billing_group.to_string(),
         }
     }
 }

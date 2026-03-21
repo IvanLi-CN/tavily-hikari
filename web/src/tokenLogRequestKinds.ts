@@ -1,7 +1,10 @@
+import type { LogOperationalClass } from './api'
+
 export type TokenLogRequestKindProtocolGroup = 'api' | 'mcp'
 export type TokenLogRequestKindBillingGroup = 'billable' | 'non_billable'
 export type TokenLogRequestKindQuickBilling = 'all' | TokenLogRequestKindBillingGroup
 export type TokenLogRequestKindQuickProtocol = 'all' | TokenLogRequestKindProtocolGroup
+export type TokenLogOperationalClassFilter = 'all' | LogOperationalClass
 
 export interface TokenLogRequestKindOption {
   key: string
@@ -18,6 +21,7 @@ export interface TokenLogsPagePathInput {
   untilIso: string
   forceEmptyMatch?: boolean
   requestKinds: string[]
+  operationalClass?: TokenLogOperationalClassFilter
 }
 
 export interface TokenLogRequestKindLabelSource {
@@ -227,6 +231,7 @@ export function buildTokenLogsPagePath({
   untilIso,
   forceEmptyMatch = false,
   requestKinds,
+  operationalClass = 'all',
 }: TokenLogsPagePathInput): string {
   const search = new URLSearchParams({
     page: String(page),
@@ -234,6 +239,9 @@ export function buildTokenLogsPagePath({
     since: sinceIso,
     until: untilIso,
   })
+  if (operationalClass !== 'all') {
+    search.set('operational_class', operationalClass)
+  }
   const normalizedRequestKinds = uniqueSelectedRequestKinds(requestKinds)
   const queryRequestKinds =
     normalizedRequestKinds.length === 0 && forceEmptyMatch

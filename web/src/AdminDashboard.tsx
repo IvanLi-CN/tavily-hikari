@@ -101,6 +101,11 @@ import {
   type CopyTextOptions,
 } from './lib/clipboard'
 import {
+  operationalClassGuidance,
+  operationalClassLabel,
+  operationalClassTone,
+} from './lib/logOperationalClass'
+import {
   fetchApiKeys,
   fetchApiKeySecret,
   addApiKeysBatch,
@@ -119,6 +124,7 @@ import {
   type ApiKeyStats,
   type DashboardSnapshotEvent,
   type DashboardSiteStatusSnapshot,
+  type LogOperationalClass,
   type Profile,
   type RequestLog,
   type Summary,
@@ -203,6 +209,15 @@ const DASHBOARD_TOKENS_PAGE_SIZE = 100
 const DASHBOARD_TOKENS_MAX_PAGES = 10
 const USER_TAG_DISPLAY_LIMIT = 3
 const NEW_USER_TAG_CARD_ID = '__new__'
+const REQUEST_LOG_OPERATIONAL_FILTERS: Array<'all' | LogOperationalClass> = [
+  'all',
+  'success',
+  'neutral',
+  'client_error',
+  'upstream_error',
+  'system_error',
+  'quota_exhausted',
+]
 const ADMIN_USERS_DEFAULT_SORT_FIELD: AdminUsersSortField = 'lastLoginAt'
 const ADMIN_USERS_DEFAULT_SORT_ORDER: SortDirection = 'desc'
 const ADMIN_USERS_SORT_FIELDS: readonly AdminUsersSortField[] = [
@@ -926,6 +941,17 @@ function statusLabel(status: string, strings: AdminTranslations): string {
   return strings.statuses[normalized] ?? status
 }
 
+function requestLogTone(log: Pick<RequestLog, 'operationalClass' | 'result_status'>): StatusTone {
+  return operationalClassTone(log.operationalClass ?? log.result_status)
+}
+
+function requestLogLabel(
+  log: Pick<RequestLog, 'operationalClass' | 'result_status'>,
+  language: 'en' | 'zh',
+): string {
+  return operationalClassLabel(log.operationalClass ?? log.result_status, language)
+}
+
 function keyBadgeStatus(item: Pick<ApiKeyStats, 'status' | 'quarantine'>): string {
   return item.quarantine ? 'quarantined' : item.status
 }
@@ -981,10 +1007,20 @@ function jobStatusLabel(status: string): string {
     .replace(/\b[a-z]/g, (ch) => ch.toUpperCase())
 }
 
-function formatErrorMessage(log: RequestLog, errorsStrings: AdminTranslations['logs']['errors']): string {
+function formatErrorMessage(
+  log: RequestLog,
+  errorsStrings: AdminTranslations['logs']['errors'],
+  language: 'en' | 'zh',
+): string {
   const message = log.error_message?.trim()
   if (message) {
     return message
+  }
+
+  if (log.operationalClass === 'neutral') {
+    return language === 'zh'
+      ? 'MCP 控制面 / 非计费请求'
+      : 'MCP control-plane / non-billable request'
   }
 
   const status = log.result_status.toLowerCase()
@@ -1019,33 +1055,6 @@ function formatErrorMessage(log: RequestLog, errorsStrings: AdminTranslations['l
   }
 
   return errorsStrings.none
-}
-
-function failureKindGuidance(kind: string | null | undefined, language: 'en' | 'zh'): string | null {
-  switch (kind) {
-    case 'upstream_gateway_5xx':
-      return language === 'zh'
-        ? '这是上游网关临时故障，建议稍后重试，并检查上游连通性或代理节点健康。'
-        : 'This is a temporary upstream gateway failure. Retry later and inspect upstream connectivity or proxy health.'
-    case 'upstream_rate_limited_429':
-      return language === 'zh'
-        ? '这是 Tavily 限流，建议降低频率、切换其他 Key，或等待限流窗口恢复。'
-        : 'Tavily is rate limiting this traffic. Reduce request rate, switch keys, or wait for the limit window to reset.'
-    case 'upstream_account_deactivated_401':
-      return language === 'zh'
-        ? '该 Key 可能已失效、被撤销或账户停用，建议更换可用 Key 并检查 Tavily 后台状态。'
-        : 'The key may be invalid, revoked, or tied to a deactivated account. Replace it and check the Tavily account state.'
-    case 'transport_send_error':
-      return language === 'zh'
-        ? '这是链路发送失败，建议检查 DNS、TLS、代理链路和上游可达性。'
-        : 'This request failed before getting an upstream response. Check DNS, TLS, proxy routing, and upstream reachability.'
-    case 'mcp_accept_406':
-      return language === 'zh'
-        ? '客户端需要同时接受 application/json 与 text/event-stream，请修正 Accept 请求头。'
-        : 'The client must accept both application/json and text/event-stream. Fix the Accept header negotiation.'
-    default:
-      return null
-  }
 }
 
 function formatKeyEffectSummary(
@@ -1183,6 +1192,8 @@ function AdminDashboard(): JSX.Element {
   const [logsTotal, setLogsTotal] = useState(0)
   const [logsPage, setLogsPage] = useState(1)
   const [logResultFilter, setLogResultFilter] = useState<'all' | 'success' | 'error' | 'quota_exhausted'>('all')
+  const [logOperationalClassFilter, setLogOperationalClassFilter] =
+    useState<'all' | LogOperationalClass>('all')
   const [requestsLoadState, setRequestsLoadState] = useState<QueryLoadState>('initial_loading')
   const [requestsError, setRequestsError] = useState<string | null>(null)
   const [requestEntityDrawer, setRequestEntityDrawer] = useState<{ kind: 'key' | 'token'; id: string } | null>(null)
@@ -2644,7 +2655,13 @@ function AdminDashboard(): JSX.Element {
     setLogsTotal(0)
     setExpandedLogs(new Set())
 
-    fetchRequestLogs(logsPage, LOGS_PER_PAGE, resultParam, request.signal)
+    fetchRequestLogs(
+      logsPage,
+      LOGS_PER_PAGE,
+      resultParam,
+      request.signal,
+      logOperationalClassFilter,
+    )
       .then((result) => {
         if (request.signal.aborted) return
         setLogs(result.items)
@@ -2668,7 +2685,7 @@ function AdminDashboard(): JSX.Element {
       request.abort()
       request.cleanup()
     }
-  }, [beginManagedRequest, logsPage, logResultFilter])
+  }, [beginManagedRequest, logOperationalClassFilter, logsPage, logResultFilter])
 
   // Jobs list: refetch when filter or page changes
   useEffect(() => {
@@ -3468,6 +3485,7 @@ function AdminDashboard(): JSX.Element {
           LOGS_PER_PAGE,
           logResultFilter === 'all' ? undefined : (logResultFilter as 'success' | 'error' | 'quota_exhausted'),
           request.signal,
+          logOperationalClassFilter,
         )
           .then((result) => {
             if (request.signal.aborted) return
@@ -8050,6 +8068,29 @@ function AdminDashboard(): JSX.Element {
             <p className="panel-description">{logStrings.description}</p>
           </div>
           <div className="panel-actions">
+            <Select
+              value={logOperationalClassFilter}
+              onValueChange={(value) => {
+                setLogOperationalClassFilter(value as 'all' | LogOperationalClass)
+                setLogsPage(1)
+              }}
+              disabled={requestsBlocking}
+            >
+              <SelectTrigger className="w-[196px]" aria-label={language === 'zh' ? '运行分类筛选' : 'Operational class filter'}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="end">
+                {REQUEST_LOG_OPERATIONAL_FILTERS.map((value) => (
+                  <SelectItem key={value} value={value}>
+                    {value === 'all'
+                      ? language === 'zh'
+                        ? '全部运行分类'
+                        : 'All operational classes'
+                      : operationalClassLabel(value, language)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <SegmentedTabs<'all' | 'success' | 'error' | 'quota_exhausted'>
               value={logResultFilter}
               onChange={(next) => {
@@ -8176,8 +8217,8 @@ function AdminDashboard(): JSX.Element {
                 </div>
                 <div className="admin-mobile-kv">
                   <span>{logStrings.table.result}</span>
-                  <StatusBadge tone={statusTone(log.result_status)}>
-                    {statusLabel(log.result_status, adminStrings)}
+                  <StatusBadge tone={requestLogTone(log)}>
+                    {requestLogLabel(log, language)}
                   </StatusBadge>
                 </div>
                 <div className="admin-mobile-kv admin-mobile-kv--stacked">
@@ -8191,7 +8232,7 @@ function AdminDashboard(): JSX.Element {
                 </div>
                 <div className="admin-mobile-kv">
                   <span>{logStrings.table.error}</span>
-                  <strong>{formatErrorMessage(log, adminStrings.logs.errors)}</strong>
+                  <strong>{formatErrorMessage(log, adminStrings.logs.errors, language)}</strong>
                 </div>
               </article>
             ))
@@ -9313,8 +9354,8 @@ function LogRow({ log, expanded, onToggle, strings, language, onOpenKey, onOpenT
             aria-label={requestButtonLabel}
             title={requestButtonLabel}
           >
-            <StatusBadge tone={statusTone(log.result_status)}>
-              {statusLabel(log.result_status, strings)}
+            <StatusBadge tone={requestLogTone(log)}>
+              {requestLogLabel(log, language)}
             </StatusBadge>
             <Icon icon={expanded ? 'mdi:chevron-up' : 'mdi:chevron-down'} width={18} height={18} className="log-result-icon" />
           </button>
@@ -9327,7 +9368,7 @@ function LogRow({ log, expanded, onToggle, strings, language, onOpenKey, onOpenT
             {keyEffectBadgeLabel(log, strings)}
           </StatusBadge>
         </td>
-        <td>{formatErrorMessage(log, strings.logs.errors)}</td>
+        <td>{formatErrorMessage(log, strings.logs.errors, language)}</td>
       </tr>
       {expanded && (
         <tr className="log-details-row">
@@ -9358,7 +9399,7 @@ function LogDetails({
   const requestBody = log.request_body ?? strings.logDetails.noBody
   const responseBody = log.response_body ?? strings.logDetails.noBody
   const keyEffect = formatKeyEffectSummary(log, strings, language)
-  const guidance = failureKindGuidance(log.failure_kind, language)
+  const guidance = operationalClassGuidance(log.operationalClass, log.failure_kind, language)
 
   return (
     <div className="log-details-panel">
@@ -9376,7 +9417,7 @@ function LogDetails({
         </div>
         <div>
           <span className="log-details-label">{strings.logDetails.outcome}</span>
-          <span className="log-details-value">{statusLabel(log.result_status, strings)}</span>
+          <span className="log-details-value">{requestLogLabel(log, language)}</span>
         </div>
         <div>
           <span className="log-details-label">{strings.logDetails.keyEffect}</span>
@@ -9428,6 +9469,7 @@ function LogDetails({
 }
 
 export function KeyDetails({ id, onBack, onOpenUser }: { id: string; onBack: () => void; onOpenUser: (userId: string) => void }): JSX.Element {
+  const { language } = useLanguage()
   const translations = useTranslate()
   const adminStrings = translations.admin
   const keyStrings = adminStrings.keys
@@ -9960,11 +10002,11 @@ export function KeyDetails({ id, onBack, onOpenUser }: { id: string; onBack: () 
                     <td>{log.http_status ?? '—'}</td>
                     <td>{log.mcp_status ?? '—'}</td>
                     <td>
-                      <StatusBadge tone={statusTone(log.result_status)}>
-                        {statusLabel(log.result_status, adminStrings)}
+                      <StatusBadge tone={requestLogTone(log)}>
+                        {requestLogLabel(log, language)}
                       </StatusBadge>
                     </td>
-                    <td>{formatErrorMessage(log, adminStrings.logs.errors)}</td>
+                    <td>{formatErrorMessage(log, adminStrings.logs.errors, language)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -9996,13 +10038,13 @@ export function KeyDetails({ id, onBack, onOpenUser }: { id: string; onBack: () 
                 </div>
                 <div className="admin-mobile-kv">
                   <span>{logsTableStrings.result}</span>
-                  <StatusBadge tone={statusTone(log.result_status)}>
-                    {statusLabel(log.result_status, adminStrings)}
+                  <StatusBadge tone={requestLogTone(log)}>
+                    {requestLogLabel(log, language)}
                   </StatusBadge>
                 </div>
                 <div className="admin-mobile-kv">
                   <span>{logsTableStrings.error}</span>
-                  <strong>{formatErrorMessage(log, adminStrings.logs.errors)}</strong>
+                  <strong>{formatErrorMessage(log, adminStrings.logs.errors, language)}</strong>
                 </div>
               </article>
             ))

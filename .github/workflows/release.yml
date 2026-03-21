@@ -339,6 +339,54 @@ jobs:
           assert payload.get("result"), payload
           PY
 
+          curl -fsS \
+            -X POST \
+            "http://127.0.0.1:${PROXY_PORT}/mcp" \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -H 'Accept: application/json, text/event-stream' \
+            -H 'content-type: application/json' \
+            -d '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+            >/dev/null
+
+          CLIENT_ERROR_HTTP="$(
+            curl -sS \
+              -o /dev/null \
+              -w '%{http_code}' \
+              -X POST \
+              "http://127.0.0.1:${PROXY_PORT}/mcp" \
+              -H "Authorization: Bearer ${TOKEN}" \
+              -H 'Accept: application/json' \
+              -H 'content-type: application/json' \
+              -d '{"jsonrpc":"2.0","id":"release-smoke-406","method":"tools/call","params":{"name":"tavily_search","arguments":{"query":"release smoke client error"}}}'
+          )"
+          if [[ "${CLIENT_ERROR_HTTP}" != "406" ]]; then
+            echo "expected 406 MCP Accept failure, got ${CLIENT_ERROR_HTTP}" >&2
+            exit 1
+          fi
+
+          curl -fsS \
+            -X POST \
+            "http://127.0.0.1:${MOCK_PORT}/admin/force-response" \
+            -H 'content-type: application/json' \
+            -d '{"http_status":429,"body":{"error":"release smoke upstream rate limit"},"once":true}' \
+            >/dev/null
+
+          UPSTREAM_ERROR_HTTP="$(
+            curl -sS \
+              -o /dev/null \
+              -w '%{http_code}' \
+              -X POST \
+              "http://127.0.0.1:${PROXY_PORT}/mcp" \
+              -H "Authorization: Bearer ${TOKEN}" \
+              -H 'Accept: application/json, text/event-stream' \
+              -H 'content-type: application/json' \
+              -d '{"jsonrpc":"2.0","id":"release-smoke-429","method":"tools/call","params":{"name":"tavily_search","arguments":{"query":"release smoke upstream error"}}}'
+          )"
+          if [[ "${UPSTREAM_ERROR_HTTP}" != "429" ]]; then
+            echo "expected 429 MCP upstream failure, got ${UPSTREAM_ERROR_HTTP}" >&2
+            exit 1
+          fi
+
           python3 - "${DB_PATH}" "${TOKEN_ID}" <<'PY'
           import json
           import pathlib
@@ -349,21 +397,36 @@ jobs:
           token_id = sys.argv[2]
           conn = sqlite3.connect(db_path)
           request_rows = conn.execute(
-              "SELECT request_body, result_status FROM request_logs WHERE auth_token_id = ? ORDER BY id DESC",
+              "SELECT request_body, request_kind_key, result_status, failure_kind FROM request_logs WHERE auth_token_id = ? ORDER BY id DESC",
               (token_id,),
           ).fetchall()
           if not request_rows:
               raise SystemExit("missing request_logs row for smoke token")
-          if len(request_rows) != 1:
-              raise SystemExit(f"expected exactly one request_logs row for smoke token, got {len(request_rows)}")
-          request_body = json.loads(request_rows[0][0].decode())
+
+          success_search_rows = []
+          for request_body_raw, request_kind_key, result_status, failure_kind in request_rows:
+              request_body = json.loads(request_body_raw.decode())
+              request_id = request_body.get("id")
+              if request_id == "release-smoke-search":
+                  success_search_rows.append((request_body, request_kind_key, result_status, failure_kind))
+
+          if len(success_search_rows) != 1:
+              raise SystemExit(
+                  f"expected exactly one successful MCP search request_logs row for smoke token, got {len(success_search_rows)}"
+              )
+
+          request_body, request_kind_key, result_status, failure_kind = success_search_rows[0]
+          if request_kind_key != "mcp:search":
+              raise SystemExit(f"unexpected request_kind_key for MCP smoke search: {request_kind_key}")
           if request_body["params"]["arguments"].get("include_usage") is not None:
               raise SystemExit(f"include_usage must not be forwarded for MCP smoke: {request_body}")
-          if request_rows[0][1] != "success":
-              raise SystemExit(f"unexpected request_logs status for smoke token: {request_rows[0][1]}")
+          if result_status != "success" or failure_kind is not None:
+              raise SystemExit(
+                  f"unexpected request_logs outcome for MCP smoke search: result={result_status} failure={failure_kind}"
+              )
 
           token_log_row = conn.execute(
-              "SELECT business_credits FROM auth_token_logs WHERE token_id = ? ORDER BY id DESC LIMIT 1",
+              "SELECT business_credits FROM auth_token_logs WHERE token_id = ? AND request_kind_key = 'mcp:search' AND result_status = 'success' ORDER BY id DESC LIMIT 1",
               (token_id,),
           ).fetchone()
           if token_log_row is None or token_log_row[0] is None or token_log_row[0] <= 0:
@@ -377,6 +440,65 @@ jobs:
               raise SystemExit(
                   f"token monthly quota did not increase with billed credits: month_row={month_row} charged={token_log_row}"
               )
+          PY
+
+          ADMIN_LOGS_JSON="$(
+            curl -fsS "http://127.0.0.1:${PROXY_PORT}/api/logs?page=1&per_page=20"
+          )"
+          TOKEN_LOGS_NEUTRAL_JSON="$(
+            curl -fsS "http://127.0.0.1:${PROXY_PORT}/api/tokens/${TOKEN_ID}/logs/page?page=1&per_page=20&since=0&operational_class=neutral"
+          )"
+          export ADMIN_LOGS_JSON TOKEN_LOGS_NEUTRAL_JSON
+          python3 - <<'PY'
+          import json
+          import os
+
+          admin_logs = json.loads(os.environ["ADMIN_LOGS_JSON"])
+          neutral_token_logs = json.loads(os.environ["TOKEN_LOGS_NEUTRAL_JSON"])
+
+          def find_log(items, predicate, label):
+              for item in items:
+                  if predicate(item):
+                      return item
+              raise SystemExit(f"missing {label} in admin logs: {items}")
+
+          items = admin_logs.get("items") or []
+          neutral_log = find_log(
+              items,
+              lambda item: item.get("request_kind_key") == "mcp:notifications/initialized",
+              "neutral MCP notification",
+          )
+          if neutral_log.get("operationalClass") != "neutral":
+              raise SystemExit(f"expected neutral operational class, got {neutral_log}")
+          if neutral_log.get("requestKindProtocolGroup") != "mcp":
+              raise SystemExit(f"expected MCP protocol group, got {neutral_log}")
+          if neutral_log.get("requestKindBillingGroup") != "non_billable":
+              raise SystemExit(f"expected non-billable MCP notification, got {neutral_log}")
+
+          client_error_log = find_log(
+              items,
+              lambda item: item.get("failure_kind") == "mcp_accept_406",
+              "client_error MCP accept failure",
+          )
+          if client_error_log.get("operationalClass") != "client_error":
+              raise SystemExit(f"expected client_error operational class, got {client_error_log}")
+
+          upstream_error_log = find_log(
+              items,
+              lambda item: item.get("failure_kind") == "upstream_rate_limited_429",
+              "upstream_error MCP rate limit",
+          )
+          if upstream_error_log.get("operationalClass") != "upstream_error":
+              raise SystemExit(f"expected upstream_error operational class, got {upstream_error_log}")
+
+          neutral_items = neutral_token_logs.get("items") or []
+          if neutral_token_logs.get("total") != 1 or len(neutral_items) != 1:
+              raise SystemExit(f"expected exactly one neutral token log row, got {neutral_token_logs}")
+          neutral_token_log = neutral_items[0]
+          if neutral_token_log.get("request_kind_key") != "mcp:notifications/initialized":
+              raise SystemExit(f"unexpected neutral token log row: {neutral_token_log}")
+          if neutral_token_log.get("operationalClass") != "neutral":
+              raise SystemExit(f"expected neutral token log operational class, got {neutral_token_log}")
           PY
 
       - name: Log in to GHCR

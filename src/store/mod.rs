@@ -88,6 +88,27 @@ pub(crate) struct KeyStore {
     pub(crate) forced_quota_subject_lock_loss_subjects: std::sync::Mutex<HashSet<String>>,
 }
 
+#[derive(Debug, sqlx::FromRow)]
+struct TokenLogRow {
+    id: i64,
+    method: String,
+    path: String,
+    query: Option<String>,
+    http_status: Option<i64>,
+    mcp_status: Option<i64>,
+    business_credits: Option<i64>,
+    request_kind_key: Option<String>,
+    request_kind_label: Option<String>,
+    request_kind_detail: Option<String>,
+    counts_business_quota: i64,
+    result_status: String,
+    error_message: Option<String>,
+    failure_kind: Option<String>,
+    key_effect_code: String,
+    key_effect_summary: Option<String>,
+    created_at: i64,
+}
+
 impl KeyStore {
     pub(crate) async fn new(database_path: &str) -> Result<Self, ProxyError> {
         let store = Self {
@@ -7413,31 +7434,13 @@ impl KeyStore {
         before_id: Option<i64>,
     ) -> Result<Vec<TokenLogRecord>, ProxyError> {
         let limit = limit.clamp(1, 500) as i64;
-        type TokenLogRow = (
-            i64,
-            String,
-            String,
-            Option<String>,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            String,
-            Option<String>,
-            Option<String>,
-            String,
-            Option<String>,
-            i64,
-        );
         let rows = if let Some(bid) = before_id {
             sqlx::query_as::<_, TokenLogRow>(
                 r#"
                 SELECT id, method, path, query, http_status, mcp_status,
-                       CASE WHEN billing_state = 'charged' THEN business_credits ELSE NULL END,
+                       CASE WHEN billing_state = 'charged' THEN business_credits ELSE NULL END AS business_credits,
                        request_kind_key, request_kind_label, request_kind_detail,
-                       result_status, error_message, failure_kind, key_effect_code,
+                       counts_business_quota, result_status, error_message, failure_kind, key_effect_code,
                        key_effect_summary, created_at
                 FROM auth_token_logs
                 WHERE token_id = ? AND id < ?
@@ -7454,9 +7457,9 @@ impl KeyStore {
             sqlx::query_as::<_, TokenLogRow>(
                 r#"
                 SELECT id, method, path, query, http_status, mcp_status,
-                       CASE WHEN billing_state = 'charged' THEN business_credits ELSE NULL END,
+                       CASE WHEN billing_state = 'charged' THEN business_credits ELSE NULL END AS business_credits,
                        request_kind_key, request_kind_label, request_kind_detail,
-                       result_status, error_message, failure_kind, key_effect_code,
+                       counts_business_quota, result_status, error_message, failure_kind, key_effect_code,
                        key_effect_summary, created_at
                 FROM auth_token_logs
                 WHERE token_id = ?
@@ -7472,53 +7475,35 @@ impl KeyStore {
 
         Ok(rows
             .into_iter()
-            .map(
-                |(
-                    id,
-                    method,
-                    path,
-                    query,
-                    http_status,
-                    mcp_status,
-                    business_credits,
-                    request_kind_key,
-                    request_kind_label,
-                    request_kind_detail,
-                    result_status,
-                    error_message,
-                    failure_kind,
-                    key_effect_code,
-                    key_effect_summary,
-                    created_at,
-                )| {
-                    let request_kind = finalize_token_request_kind(
-                        method.as_str(),
-                        path.as_str(),
-                        query.as_deref(),
-                        request_kind_key,
-                        request_kind_label,
-                        request_kind_detail,
-                    );
-                    TokenLogRecord {
-                        id,
-                        method,
-                        path,
-                        query,
-                        http_status,
-                        mcp_status,
-                        business_credits,
-                        request_kind_key: request_kind.key,
-                        request_kind_label: request_kind.label,
-                        request_kind_detail: request_kind.detail,
-                        result_status,
-                        error_message,
-                        failure_kind,
-                        key_effect_code,
-                        key_effect_summary,
-                        created_at,
-                    }
-                },
-            )
+            .map(|row| {
+                let request_kind = finalize_token_request_kind(
+                    row.method.as_str(),
+                    row.path.as_str(),
+                    row.query.as_deref(),
+                    row.request_kind_key,
+                    row.request_kind_label,
+                    row.request_kind_detail,
+                );
+                TokenLogRecord {
+                    id: row.id,
+                    method: row.method,
+                    path: row.path,
+                    query: row.query,
+                    http_status: row.http_status,
+                    mcp_status: row.mcp_status,
+                    business_credits: row.business_credits,
+                    request_kind_key: request_kind.key,
+                    request_kind_label: request_kind.label,
+                    request_kind_detail: request_kind.detail,
+                    counts_business_quota: row.counts_business_quota != 0,
+                    result_status: row.result_status,
+                    error_message: row.error_message,
+                    failure_kind: row.failure_kind,
+                    key_effect_code: row.key_effect_code,
+                    key_effect_summary: row.key_effect_summary,
+                    created_at: row.created_at,
+                }
+            })
             .collect())
     }
 
@@ -7591,6 +7576,7 @@ impl KeyStore {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn fetch_token_logs_page(
         &self,
         token_id: &str,
@@ -7599,28 +7585,11 @@ impl KeyStore {
         since: i64,
         until: Option<i64>,
         request_kinds: &[String],
+        operational_class: Option<&str>,
     ) -> Result<(Vec<TokenLogRecord>, i64), ProxyError> {
         let per_page = per_page.clamp(1, 200) as i64;
         let page = page.max(1) as i64;
         let offset = (page - 1) * per_page;
-        type TokenLogRow = (
-            i64,
-            String,
-            String,
-            Option<String>,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            String,
-            Option<String>,
-            Option<String>,
-            String,
-            Option<String>,
-            i64,
-        );
         let filtered_request_kinds: Vec<&str> = request_kinds
             .iter()
             .map(|value| value.trim())
@@ -7628,6 +7597,15 @@ impl KeyStore {
             .collect();
         let needs_fallback_sql = token_request_kind_needs_fallback_sql();
         let fallback_key_sql = token_request_kind_fallback_key_sql();
+        let effective_request_kind_sql = format!(
+            "CASE WHEN {needs_fallback_sql} THEN {fallback_key_sql} ELSE request_kind_key END"
+        );
+        let operational_class_case_sql = token_log_operational_class_case_sql(
+            &effective_request_kind_sql,
+            "counts_business_quota",
+            "result_status",
+            "COALESCE(failure_kind, '')",
+        );
 
         let mut total_query =
             QueryBuilder::<Sqlite>::new("SELECT COUNT(*) FROM auth_token_logs WHERE token_id = ");
@@ -7661,6 +7639,12 @@ impl KeyStore {
             }
             total_query.push("))");
         }
+        if let Some(operational_class) = operational_class {
+            total_query.push(" AND ");
+            total_query.push(operational_class_case_sql.clone());
+            total_query.push(" = ");
+            total_query.push_bind(operational_class);
+        }
         let total: i64 = total_query
             .build_query_scalar()
             .fetch_one(&self.pool)
@@ -7669,10 +7653,11 @@ impl KeyStore {
         let mut rows_query = QueryBuilder::<Sqlite>::new(
             r#"
             SELECT id, method, path, query, http_status, mcp_status,
-                   CASE WHEN billing_state = 'charged' THEN business_credits ELSE NULL END,
+                   CASE WHEN billing_state = 'charged' THEN business_credits ELSE NULL END AS business_credits,
                    request_kind_key,
                    request_kind_label,
                    request_kind_detail,
+                   counts_business_quota,
                    result_status, error_message, failure_kind, key_effect_code,
                    key_effect_summary, created_at
             FROM auth_token_logs
@@ -7710,6 +7695,12 @@ impl KeyStore {
             }
             rows_query.push("))");
         }
+        if let Some(operational_class) = operational_class {
+            rows_query.push(" AND ");
+            rows_query.push(operational_class_case_sql);
+            rows_query.push(" = ");
+            rows_query.push_bind(operational_class);
+        }
         rows_query.push(" ORDER BY created_at DESC, id DESC LIMIT ");
         rows_query.push_bind(per_page);
         rows_query.push(" OFFSET ");
@@ -7721,53 +7712,35 @@ impl KeyStore {
 
         let items = rows
             .into_iter()
-            .map(
-                |(
-                    id,
-                    method,
-                    path,
-                    query,
-                    http_status,
-                    mcp_status,
-                    business_credits,
-                    request_kind_key,
-                    request_kind_label,
-                    request_kind_detail,
-                    result_status,
-                    error_message,
-                    failure_kind,
-                    key_effect_code,
-                    key_effect_summary,
-                    created_at,
-                )| {
-                    let request_kind = finalize_token_request_kind(
-                        method.as_str(),
-                        path.as_str(),
-                        query.as_deref(),
-                        request_kind_key,
-                        request_kind_label,
-                        request_kind_detail,
-                    );
-                    TokenLogRecord {
-                        id,
-                        method,
-                        path,
-                        query,
-                        http_status,
-                        mcp_status,
-                        business_credits,
-                        request_kind_key: request_kind.key,
-                        request_kind_label: request_kind.label,
-                        request_kind_detail: request_kind.detail,
-                        result_status,
-                        error_message,
-                        failure_kind,
-                        key_effect_code,
-                        key_effect_summary,
-                        created_at,
-                    }
-                },
-            )
+            .map(|row| {
+                let request_kind = finalize_token_request_kind(
+                    row.method.as_str(),
+                    row.path.as_str(),
+                    row.query.as_deref(),
+                    row.request_kind_key,
+                    row.request_kind_label,
+                    row.request_kind_detail,
+                );
+                TokenLogRecord {
+                    id: row.id,
+                    method: row.method,
+                    path: row.path,
+                    query: row.query,
+                    http_status: row.http_status,
+                    mcp_status: row.mcp_status,
+                    business_credits: row.business_credits,
+                    request_kind_key: request_kind.key,
+                    request_kind_label: request_kind.label,
+                    request_kind_detail: request_kind.detail,
+                    counts_business_quota: row.counts_business_quota != 0,
+                    result_status: row.result_status,
+                    error_message: row.error_message,
+                    failure_kind: row.failure_kind,
+                    key_effect_code: row.key_effect_code,
+                    key_effect_summary: row.key_effect_summary,
+                    created_at: row.created_at,
+                }
+            })
             .collect();
 
         Ok((items, total))
@@ -9208,110 +9181,80 @@ impl KeyStore {
     pub(crate) async fn fetch_recent_logs_page(
         &self,
         result_status: Option<&str>,
+        operational_class: Option<&str>,
         page: i64,
         per_page: i64,
     ) -> Result<(Vec<RequestLogRecord>, i64), ProxyError> {
         let page = page.max(1);
         let per_page = per_page.clamp(1, 200);
         let offset = (page - 1) * per_page;
+        let operational_class_case_sql = request_log_operational_class_case_sql(
+            "path",
+            "request_body",
+            "result_status",
+            "COALESCE(failure_kind, '')",
+        );
 
-        let (rows, total) = if let Some(status) = result_status {
-            let total: i64 = sqlx::query_scalar(
-                r#"
-                SELECT COUNT(*) AS count
-                FROM request_logs
-                WHERE visibility = ?
-                  AND result_status = ?
-                "#,
-            )
-            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-            .bind(status)
+        let mut total_query = QueryBuilder::<Sqlite>::new(
+            "SELECT COUNT(*) AS count FROM request_logs WHERE visibility = ",
+        );
+        total_query.push_bind(REQUEST_LOG_VISIBILITY_VISIBLE);
+        if let Some(status) = result_status {
+            total_query.push(" AND result_status = ");
+            total_query.push_bind(status);
+        }
+        if let Some(operational_class) = operational_class {
+            total_query.push(" AND ");
+            total_query.push(operational_class_case_sql.clone());
+            total_query.push(" = ");
+            total_query.push_bind(operational_class);
+        }
+        let total: i64 = total_query
+            .build_query_scalar()
             .fetch_one(&self.pool)
             .await?;
 
-            let rows = sqlx::query(
-                r#"
-                SELECT
-                    id,
-                    api_key_id,
-                    auth_token_id,
-                    method,
-                    path,
-                    query,
-                    status_code,
-                    tavily_status_code,
-                    error_message,
-                    result_status,
-                    failure_kind,
-                    key_effect_code,
-                    key_effect_summary,
+        let mut rows_query = QueryBuilder::<Sqlite>::new(
+            r#"
+            SELECT
+                id,
+                api_key_id,
+                auth_token_id,
+                method,
+                path,
+                query,
+                status_code,
+                tavily_status_code,
+                error_message,
+                result_status,
+                failure_kind,
+                key_effect_code,
+                key_effect_summary,
                 request_body,
                 response_body,
                 forwarded_headers,
                 dropped_headers,
                 created_at
-                FROM request_logs
-                WHERE visibility = ?
-                  AND result_status = ?
-                ORDER BY created_at DESC, id DESC
-                LIMIT ? OFFSET ?
-                "#,
-            )
-            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-            .bind(status)
-            .bind(per_page)
-            .bind(offset)
-            .fetch_all(&self.pool)
-            .await?;
-
-            (rows, total)
-        } else {
-            let total: i64 = sqlx::query_scalar(
-                r#"
-                SELECT COUNT(*) AS count
-                FROM request_logs
-                WHERE visibility = ?
-                "#,
-            )
-            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-            .fetch_one(&self.pool)
-            .await?;
-
-            let rows = sqlx::query(
-                r#"
-                SELECT
-                    id,
-                    api_key_id,
-                    auth_token_id,
-                    method,
-                    path,
-                    query,
-                    status_code,
-                    tavily_status_code,
-                    error_message,
-                    result_status,
-                    failure_kind,
-                    key_effect_code,
-                    key_effect_summary,
-                request_body,
-                response_body,
-                forwarded_headers,
-                dropped_headers,
-                created_at
-                FROM request_logs
-                WHERE visibility = ?
-                ORDER BY created_at DESC, id DESC
-                LIMIT ? OFFSET ?
-                "#,
-            )
-            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-            .bind(per_page)
-            .bind(offset)
-            .fetch_all(&self.pool)
-            .await?;
-
-            (rows, total)
-        };
+            FROM request_logs
+            WHERE visibility =
+            "#,
+        );
+        rows_query.push_bind(REQUEST_LOG_VISIBILITY_VISIBLE);
+        if let Some(status) = result_status {
+            rows_query.push(" AND result_status = ");
+            rows_query.push_bind(status);
+        }
+        if let Some(operational_class) = operational_class {
+            rows_query.push(" AND ");
+            rows_query.push(operational_class_case_sql);
+            rows_query.push(" = ");
+            rows_query.push_bind(operational_class);
+        }
+        rows_query.push(" ORDER BY created_at DESC, id DESC LIMIT ");
+        rows_query.push_bind(per_page);
+        rows_query.push(" OFFSET ");
+        rows_query.push_bind(offset);
+        let rows = rows_query.build().fetch_all(&self.pool).await?;
 
         let records = rows
             .into_iter()

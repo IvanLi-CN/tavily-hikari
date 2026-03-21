@@ -51,6 +51,22 @@ describe('token log request kind helpers', () => {
     )
   })
 
+  it('includes operational_class when the token log page uses an outcome filter', () => {
+    expect(
+      buildTokenLogsPagePath({
+        tokenId: 'ZjvC',
+        page: 1,
+        perPage: 20,
+        sinceIso: '2026-03-01T00:00:00+08:00',
+        untilIso: '2026-04-01T00:00:00+08:00',
+        operationalClass: 'neutral',
+        requestKinds: [],
+      }),
+    ).toBe(
+      '/api/tokens/ZjvC/logs/page?page=1&per_page=20&since=2026-03-01T00%3A00%3A00%2B08%3A00&until=2026-04-01T00%3A00%3A00%2B08%3A00&operational_class=neutral',
+    )
+  })
+
   it('preserves an active zero-match quick filter as an explicit empty query', () => {
     expect(
       buildTokenLogsPagePath({
