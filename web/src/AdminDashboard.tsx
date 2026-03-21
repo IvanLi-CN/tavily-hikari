@@ -5271,7 +5271,7 @@ function AdminDashboard(): JSX.Element {
   }, [tokenLeaderboard, tokenLeaderboardPeriod, tokenLeaderboardFocus])
   const navItems: AdminNavItem[] = [
     { target: 'dashboard', label: adminStrings.nav.dashboard, icon: 'mdi:view-dashboard-outline' },
-    { target: 'user-usage', label: adminStrings.nav.usage, icon: 'mdi:chart-box-outline' },
+    { target: 'user-usage', label: adminStrings.nav.usage, icon: 'mdi:chart-timeline-variant' },
     { target: 'tokens', label: adminStrings.nav.tokens, icon: 'mdi:key-chain-variant' },
     { target: 'keys', label: adminStrings.nav.keys, icon: 'mdi:key-outline' },
     { target: 'requests', label: adminStrings.nav.requests, icon: 'mdi:file-document-outline' },

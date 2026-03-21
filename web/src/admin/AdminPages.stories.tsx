@@ -1633,7 +1633,7 @@ function requestFailureGuidance(kind: string | null | undefined, language: 'en' 
 function buildNavItems(strings: AdminTranslations): AdminNavItem[] {
   return [
     { target: 'dashboard', label: strings.nav.dashboard, icon: 'mdi:view-dashboard-outline' },
-    { target: 'user-usage', label: strings.nav.usage, icon: 'mdi:chart-box-outline' },
+    { target: 'user-usage', label: strings.nav.usage, icon: 'mdi:chart-timeline-variant' },
     { target: 'tokens', label: strings.nav.tokens, icon: 'mdi:key-chain-variant' },
     { target: 'keys', label: strings.nav.keys, icon: 'mdi:key-outline' },
     { target: 'requests', label: strings.nav.requests, icon: 'mdi:file-document-outline' },

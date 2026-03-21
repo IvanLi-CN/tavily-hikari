@@ -7,7 +7,7 @@ import AdminShell, { type AdminNavItem, type AdminNavTarget } from './AdminShell
 
 const NAV_ITEMS: AdminNavItem[] = [
   { target: 'dashboard', label: 'Dashboard', icon: 'mdi:view-dashboard-outline' },
-  { target: 'user-usage', label: 'Usage', icon: 'mdi:chart-box-outline' },
+  { target: 'user-usage', label: 'Usage', icon: 'mdi:chart-timeline-variant' },
   { target: 'tokens', label: 'Tokens', icon: 'mdi:key-chain-variant' },
   { target: 'keys', label: 'API Keys', icon: 'mdi:key-outline' },
   { target: 'requests', label: 'Requests', icon: 'mdi:file-document-outline' },
