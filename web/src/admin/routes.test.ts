@@ -10,11 +10,16 @@ import {
   userTagCreatePath,
   userTagEditPath,
   userTagsPath,
+  userUsagePath,
 } from './routes'
 
 describe('admin user tag routes', () => {
   it('parses the user tag index before user detail fallback', () => {
     expect(parseAdminPath('/admin/users/tags')).toEqual({ name: 'user-tags' })
+  })
+
+  it('parses the dedicated user usage page before user detail fallback', () => {
+    expect(parseAdminPath('/admin/users/usage')).toEqual({ name: 'user-usage' })
   })
 
   it('parses the user tag create page', () => {
@@ -32,23 +37,40 @@ describe('admin user tag routes', () => {
 
   it('builds stable user tag management paths', () => {
     expect(userTagsPath()).toBe('/admin/users/tags')
+    expect(userUsagePath()).toBe('/admin/users/usage')
     expect(userTagCreatePath()).toBe('/admin/users/tags/new')
     expect(userTagEditPath('linuxdo l2')).toBe('/admin/users/tags/linuxdo%20l2')
   })
 
   it('preserves full users list context when building cross-page routes', () => {
-    expect(buildAdminUsersPath('L2', 'linuxdo_l2', 3)).toBe('/admin/users?q=L2&tagId=linuxdo_l2&page=3')
-    expect(userDetailPath('usr_alice', 'L2', 'linuxdo_l2', 3)).toBe(
-      '/admin/users/usr_alice?q=L2&tagId=linuxdo_l2&page=3',
+    expect(buildAdminUsersPath('L2', 'linuxdo_l2', 3, 'monthlySuccessRate', 'asc')).toBe(
+      '/admin/users?q=L2&tagId=linuxdo_l2&page=3&sort=monthlySuccessRate&order=asc',
     )
-    expect(userTagsPath('L2', 'linuxdo_l2', 3)).toBe('/admin/users/tags?q=L2&tagId=linuxdo_l2&page=3')
-    expect(userTagCreatePath('L2', 'linuxdo_l2', 3)).toBe(
-      '/admin/users/tags/new?q=L2&tagId=linuxdo_l2&page=3',
+    expect(userDetailPath('usr_alice', 'L2', 'linuxdo_l2', 3, 'monthlySuccessRate', 'asc')).toBe(
+      '/admin/users/usr_alice?q=L2&tagId=linuxdo_l2&page=3&sort=monthlySuccessRate&order=asc',
     )
-    expect(userTagEditPath('linuxdo l2', 'L2', 'linuxdo_l2', 3)).toBe(
-      '/admin/users/tags/linuxdo%20l2?q=L2&tagId=linuxdo_l2&page=3',
+    expect(userTagsPath('L2', 'linuxdo_l2', 3, 'monthlySuccessRate', 'asc')).toBe(
+      '/admin/users/tags?q=L2&tagId=linuxdo_l2&page=3&sort=monthlySuccessRate&order=asc',
+    )
+    expect(userUsagePath('L2', 'linuxdo_l2', 3, 'monthlySuccessRate', 'asc')).toBe(
+      '/admin/users/usage?q=L2&tagId=linuxdo_l2&page=3&sort=monthlySuccessRate&order=asc',
+    )
+    expect(userTagCreatePath('L2', 'linuxdo_l2', 3, 'monthlySuccessRate', 'asc')).toBe(
+      '/admin/users/tags/new?q=L2&tagId=linuxdo_l2&page=3&sort=monthlySuccessRate&order=asc',
+    )
+    expect(userTagEditPath('linuxdo l2', 'L2', 'linuxdo_l2', 3, 'monthlySuccessRate', 'asc')).toBe(
+      '/admin/users/tags/linuxdo%20l2?q=L2&tagId=linuxdo_l2&page=3&sort=monthlySuccessRate&order=asc',
     )
     expect(userDetailPath('usr_alice')).toBe('/admin/users/usr_alice')
+  })
+
+  it('marks detail and tag routes that were opened from the usage view', () => {
+    expect(userDetailPath('usr_alice', 'L2', 'linuxdo_l2', 3, 'monthlySuccessRate', 'asc', 'usage')).toBe(
+      '/admin/users/usr_alice?q=L2&tagId=linuxdo_l2&page=3&sort=monthlySuccessRate&order=asc&view=usage',
+    )
+    expect(userTagsPath('L2', 'linuxdo_l2', 3, 'monthlySuccessRate', 'asc', 'usage')).toBe(
+      '/admin/users/tags?q=L2&tagId=linuxdo_l2&page=3&sort=monthlySuccessRate&order=asc&view=usage',
+    )
   })
 
   it('builds stable key list paths with pagination and repeated filters', () => {
@@ -92,5 +114,9 @@ describe('admin user tag routes', () => {
         { name: 'user-tag-editor', mode: 'edit', id: 'tag-b' },
       ),
     ).toBe(false)
+  })
+
+  it('compares user usage routes as the same logical page', () => {
+    expect(isSameAdminRoute({ name: 'user-usage' }, { name: 'user-usage' })).toBe(true)
   })
 })

@@ -721,6 +721,21 @@
   transition: color 0.18s ease, background-color 0.18s ease, box-shadow 0.18s ease;
 }
 
+.admin-nav-item-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+}
+
+.admin-nav-item-icon > svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+
 .admin-nav-item:hover {
   color: hsl(var(--foreground));
   background: hsl(var(--accent) / 0.15);
@@ -4593,26 +4608,231 @@ tbody tr:hover {
   border-radius: 999px;
 }
 
-/* Admin users tables: prefer horizontal scroll over cramped fixed-layout columns. */
 .jobs-table.admin-users-table {
-  table-layout: auto;
-  min-width: 1240px;
+  width: 100%;
 }
 
 .jobs-table.admin-users-table th,
 .jobs-table.admin-users-table td {
-  white-space: nowrap;
   vertical-align: middle;
+}
+
+.jobs-table.admin-users-list-table {
+  table-layout: fixed;
+}
+
+.jobs-table.admin-users-list-table th,
+.jobs-table.admin-users-list-table td {
+  white-space: normal;
 }
 
 .jobs-table.admin-users-list-table th:nth-child(1),
 .jobs-table.admin-users-list-table td:nth-child(1) {
-  min-width: 18rem;
+  width: 25%;
+}
+
+.jobs-table.admin-users-list-table th:nth-child(2),
+.jobs-table.admin-users-list-table td:nth-child(2) {
+  width: 8%;
+}
+
+.jobs-table.admin-users-list-table th:nth-child(3),
+.jobs-table.admin-users-list-table td:nth-child(3) {
+  width: 24%;
+}
+
+.jobs-table.admin-users-list-table th:nth-child(4),
+.jobs-table.admin-users-list-table td:nth-child(4),
+.jobs-table.admin-users-list-table th:nth-child(5),
+.jobs-table.admin-users-list-table td:nth-child(5) {
+  width: 9%;
+}
+
+.jobs-table.admin-users-list-table th:nth-child(6),
+.jobs-table.admin-users-list-table td:nth-child(6),
+.jobs-table.admin-users-list-table th:nth-child(7),
+.jobs-table.admin-users-list-table td:nth-child(7) {
+  width: 12.5%;
+}
+
+.jobs-table.admin-users-usage-table {
+  table-layout: fixed;
+}
+
+.jobs-table.admin-users-usage-table th,
+.jobs-table.admin-users-usage-table td {
   white-space: normal;
 }
 
-.jobs-table.admin-users-list-table th:last-child,
-.jobs-table.admin-users-list-table td:last-child,
+.jobs-table.admin-users-usage-table th:nth-child(1),
+.jobs-table.admin-users-usage-table td:nth-child(1) {
+  width: 20%;
+}
+
+.jobs-table.admin-users-usage-table th:nth-child(2),
+.jobs-table.admin-users-usage-table td:nth-child(2) {
+  width: 8%;
+}
+
+.jobs-table.admin-users-usage-table th:nth-child(3),
+.jobs-table.admin-users-usage-table td:nth-child(3) {
+  width: 6%;
+}
+
+.jobs-table.admin-users-usage-table th:nth-child(4),
+.jobs-table.admin-users-usage-table td:nth-child(4),
+.jobs-table.admin-users-usage-table th:nth-child(5),
+.jobs-table.admin-users-usage-table td:nth-child(5),
+.jobs-table.admin-users-usage-table th:nth-child(6),
+.jobs-table.admin-users-usage-table td:nth-child(6) {
+  width: 8%;
+}
+
+.jobs-table.admin-users-usage-table th:nth-child(7),
+.jobs-table.admin-users-usage-table td:nth-child(7) {
+  width: 10%;
+}
+
+.jobs-table.admin-users-usage-table th:nth-child(8),
+.jobs-table.admin-users-usage-table td:nth-child(8),
+.jobs-table.admin-users-usage-table th:nth-child(9),
+.jobs-table.admin-users-usage-table td:nth-child(9) {
+  width: 9%;
+}
+
+.jobs-table.admin-users-usage-table th:nth-child(10),
+.jobs-table.admin-users-usage-table td:nth-child(10) {
+  width: 14%;
+}
+
+.admin-table-sort-button {
+  width: 100%;
+  justify-content: space-between;
+  gap: 0.4rem;
+  min-height: 0;
+  height: auto;
+  padding: 0 !important;
+  color: inherit !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  text-align: left;
+  opacity: 0.78;
+  cursor: pointer;
+}
+
+.admin-table-sort-label,
+.admin-table-header-text {
+  white-space: nowrap;
+}
+
+.admin-table-header-label {
+  width: 100%;
+  justify-content: flex-start;
+}
+
+.admin-table-sort-button:hover,
+.admin-table-sort-button:focus-visible,
+.admin-table-sort-button.is-active {
+  opacity: 1;
+}
+
+.admin-table-sort-button:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 3px;
+  border-radius: 0.35rem;
+}
+
+.admin-table-sort-indicator {
+  flex: 0 0 auto;
+  width: 1rem;
+  height: 1rem;
+  stroke-width: 2.1;
+}
+
+.admin-table-value-stack {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.18rem;
+}
+
+.admin-table-value-primary,
+.admin-table-value-secondary {
+  white-space: nowrap;
+}
+
+.admin-table-value-primary {
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.admin-table-value-primary-warning {
+  color: hsl(var(--warning));
+}
+
+.admin-table-value-primary-danger {
+  color: hsl(var(--destructive));
+}
+
+.admin-table-value-secondary {
+  font-size: 0.82rem;
+  line-height: 1.2;
+  color: hsl(var(--muted-foreground));
+}
+
+.admin-users-compact-cell {
+  text-align: left;
+}
+
+.admin-users-identity-cell code {
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+.admin-users-identity-button {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  text-align: left;
+}
+
+.admin-users-identity-button:hover strong,
+.admin-users-identity-button:focus-visible strong {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.admin-users-identity-meta {
+  display: block;
+  margin-top: 4px;
+  text-align: left;
+}
+
+.admin-users-identity-button code {
+  text-decoration: none;
+}
+
+.admin-users-mobile-link {
+  min-width: 0;
+  text-align: right;
+}
+
+.admin-users-mobile-link strong {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: 'JetBrains Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+}
+
+.admin-users-tags-cell {
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
 .jobs-table.admin-user-tokens-table th:last-child,
 .jobs-table.admin-user-tokens-table td:last-child {
   width: 86px;
@@ -4990,6 +5210,7 @@ tbody tr:hover {
 .user-tag-pill {
   display: inline-flex;
   align-items: center;
+  flex-wrap: nowrap;
   gap: 6px;
   padding: 6px 10px;
   border-radius: 999px;
@@ -5001,6 +5222,9 @@ tbody tr:hover {
   letter-spacing: 0;
   line-height: 1;
   text-transform: none;
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: keep-all;
 }
 
 .user-tag-pill-overflow {
@@ -5031,6 +5255,9 @@ tbody tr:hover {
   background: hsl(var(--background) / 0.8);
   color: hsl(var(--muted-foreground));
   font-size: 0.72rem;
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: keep-all;
 }
 
 .user-tag-binding-toolbar {

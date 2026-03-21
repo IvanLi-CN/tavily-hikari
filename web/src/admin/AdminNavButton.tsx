@@ -1,11 +1,10 @@
-import { Icon } from '../lib/icons'
-import type { ButtonHTMLAttributes } from 'react'
+import type { ButtonHTMLAttributes, ReactNode } from 'react'
 
 import { cn } from '../lib/utils'
 import { Button } from '../components/ui/button'
 
 interface AdminNavButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
-  icon: string
+  icon: ReactNode
   active?: boolean
 }
 
@@ -19,7 +18,9 @@ export default function AdminNavButton({ icon, active = false, className, childr
       aria-current={active ? 'page' : undefined}
       {...props}
     >
-      <Icon icon={icon} width={18} height={18} aria-hidden="true" />
+      <span className="admin-nav-item-icon" aria-hidden="true">
+        {icon}
+      </span>
       <span>{children}</span>
     </Button>
   )

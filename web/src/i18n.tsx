@@ -190,6 +190,7 @@ interface AdminTranslationsShape {
   }
   nav: {
     dashboard: string
+    usage: string
     tokens: string
     keys: string
     requests: string
@@ -511,6 +512,23 @@ interface AdminTranslationsShape {
     }
     actions: {
       view: string
+    }
+    usage: {
+      title: string
+      description: string
+      open: string
+      back: string
+      table: {
+        user: string
+        status: string
+        hourlyAny: string
+        hourly: string
+        daily: string
+        monthly: string
+        dailySuccessRate: string
+        monthlySuccessRate: string
+        lastUsed: string
+      }
     }
     empty: {
       loading: string
@@ -1376,6 +1394,7 @@ export const translations: Record<Language, TranslationShape> = {
       },
       nav: {
         dashboard: 'Dashboard',
+        usage: 'Usage',
         tokens: 'Tokens',
         keys: 'API Keys',
         requests: 'Requests',
@@ -1682,7 +1701,7 @@ export const translations: Record<Language, TranslationShape> = {
           daily: '24h',
           monthly: 'Month',
           successDaily: 'Daily S/F',
-          successMonthly: 'Monthly S',
+          successMonthly: 'Monthly Rate/F',
           lastActivity: 'Last Activity',
           lastLogin: 'Last Login',
           actions: 'Actions',
@@ -1696,6 +1715,23 @@ export const translations: Record<Language, TranslationShape> = {
         },
         actions: {
           view: 'Open details',
+        },
+        usage: {
+          title: 'User Usage',
+          description: 'Usage-first view for rolling quotas, success rates, token totals, and latest activity.',
+          open: 'Open usage view',
+          back: 'Back to users',
+          table: {
+            user: 'User',
+            status: 'Status',
+            hourlyAny: '1h (any)',
+            hourly: '1h',
+            daily: '24h',
+            monthly: 'Month',
+            dailySuccessRate: 'Daily Success',
+            monthlySuccessRate: 'Monthly Success',
+            lastUsed: 'Last Used',
+          },
         },
         empty: {
           loading: 'Loading users…',
@@ -2550,6 +2586,7 @@ export const translations: Record<Language, TranslationShape> = {
       },
       nav: {
         dashboard: '仪表盘',
+        usage: '用量',
         tokens: '访问令牌',
         keys: 'API Keys',
         requests: '请求日志',
@@ -2856,7 +2893,7 @@ export const translations: Record<Language, TranslationShape> = {
           daily: '24h',
           monthly: '月度',
           successDaily: '日成功/失败',
-          successMonthly: '月成功',
+          successMonthly: '月成功/失败',
           lastActivity: '最近活动',
           lastLogin: '最近登录',
           actions: '操作',
@@ -2870,6 +2907,23 @@ export const translations: Record<Language, TranslationShape> = {
         },
         actions: {
           view: '查看详情',
+        },
+        usage: {
+          title: '用户用量',
+          description: '专门查看各用户的滚动额度、成功率、令牌数量与最近使用时间。',
+          open: '查看用量界面',
+          back: '返回用户管理',
+          table: {
+            user: '用户',
+            status: '状态',
+            hourlyAny: '1h（任意）',
+            hourly: '1h（业务）',
+            daily: '24h',
+            monthly: '月度',
+            dailySuccessRate: '日成功率',
+            monthlySuccessRate: '月成功率',
+            lastUsed: '上次使用',
+          },
         },
         empty: {
           loading: '正在加载用户…',

@@ -8357,6 +8357,32 @@ colo=LAX
             )
             .await
             .expect("record error");
+        for index in 0..4 {
+            let api_key_id = proxy
+                .add_or_undelete_key(&format!("tvly-admin-users-associated-key-{index}"))
+                .await
+                .expect("create associated api key");
+            let pending_binding_log_id = proxy
+                .record_pending_billing_attempt(
+                    &alice_token.id,
+                    &Method::POST,
+                    "/api/tavily/search",
+                    None,
+                    Some(200),
+                    Some(200),
+                    true,
+                    "success",
+                    None,
+                    1,
+                    Some(&api_key_id),
+                )
+                .await
+                .expect("record pending associated key binding");
+            proxy
+                .settle_pending_billing_attempt(pending_binding_log_id)
+                .await
+                .expect("settle associated key binding");
+        }
 
         let addr = spawn_admin_users_server(proxy, true).await;
         let client = Client::new();
@@ -8373,6 +8399,10 @@ colo=LAX
             .get("items")
             .and_then(|value| value.as_array())
             .expect("items is array");
+        let default_ordered_user_ids: Vec<String> = items
+            .iter()
+            .filter_map(|item| item.get("userId").and_then(|value| value.as_str()).map(str::to_string))
+            .collect();
         let alice_item = items
             .iter()
             .find(|item| {
@@ -8386,6 +8416,12 @@ colo=LAX
                 .get("tokenCount")
                 .and_then(|value| value.as_i64()),
             Some(1)
+        );
+        assert_eq!(
+            alice_item
+                .get("apiKeyCount")
+                .and_then(|value| value.as_i64()),
+            Some(4)
         );
         assert!(
             alice_item
@@ -8437,6 +8473,26 @@ colo=LAX
                 .is_some_and(|value| value == alice.user_id)
         }));
 
+        let order_only_url = format!("http://{}/api/users?page=1&per_page=20&order=asc", addr);
+        let order_only_resp = client
+            .get(&order_only_url)
+            .send()
+            .await
+            .expect("order-only list request");
+        assert_eq!(order_only_resp.status(), reqwest::StatusCode::OK);
+        let order_only_body: serde_json::Value = order_only_resp
+            .json()
+            .await
+            .expect("order-only list json");
+        let order_only_user_ids: Vec<String> = order_only_body
+            .get("items")
+            .and_then(|value| value.as_array())
+            .expect("order-only items array")
+            .iter()
+            .filter_map(|item| item.get("userId").and_then(|value| value.as_str()).map(str::to_string))
+            .collect();
+        assert_eq!(order_only_user_ids, default_ordered_user_ids);
+
         let detail_url = format!("http://{}/api/users/{}", addr, alice.user_id);
         let detail_resp = client
             .get(&detail_url)
@@ -8449,6 +8505,12 @@ colo=LAX
             .get("hourlyAnyUsed")
             .and_then(|value| value.as_i64())
             .unwrap_or_default();
+        assert_eq!(
+            detail_body
+                .get("apiKeyCount")
+                .and_then(|value| value.as_i64()),
+            Some(4)
+        );
         let tokens = detail_body
             .get("tokens")
             .and_then(|value| value.as_array())

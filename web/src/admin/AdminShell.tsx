@@ -1,21 +1,23 @@
 import { Icon } from '../lib/icons'
-import { type PropsWithChildren, useEffect, useRef, useState } from 'react'
+import { type PropsWithChildren, type ReactNode, useEffect, useRef, useState } from 'react'
 import { ADMIN_SIDEBAR_STACK_MAX, useResponsiveModes } from '../lib/responsive'
 
 import AdminNavButton from './AdminNavButton'
 import type { AdminModuleId } from './routes'
 
+export type AdminNavTarget = AdminModuleId | 'user-usage'
+
 export interface AdminNavItem {
-  module: AdminModuleId
+  target: AdminNavTarget
   label: string
-  icon: string
+  icon: ReactNode
 }
 
 interface AdminShellProps extends PropsWithChildren {
-  activeModule: AdminModuleId
+  activeItem: AdminNavTarget
   navItems: AdminNavItem[]
   skipToContentLabel: string
-  onSelectModule: (module: AdminModuleId) => void
+  onSelectItem: (target: AdminNavTarget) => void
 }
 
 function readStackedSidebarMode(): boolean {
@@ -24,10 +26,10 @@ function readStackedSidebarMode(): boolean {
 }
 
 export default function AdminShell({
-  activeModule,
+  activeItem,
   navItems,
   skipToContentLabel,
-  onSelectModule,
+  onSelectItem,
   children,
 }: AdminShellProps): JSX.Element {
   const contentRef = useRef<HTMLElement>(null)
@@ -57,7 +59,7 @@ export default function AdminShell({
 
   useEffect(() => {
     if (isStackedSidebar) setIsMenuOpen(false)
-  }, [activeModule, isStackedSidebar])
+  }, [activeItem, isStackedSidebar])
 
   useEffect(() => {
     if (!isStackedSidebar || !isMenuOpen) return
@@ -107,13 +109,13 @@ export default function AdminShell({
         <div className={`admin-sidebar-menu${!isStackedSidebar || isMenuOpen ? ' is-open' : ''}`}>
           <nav id="admin-sidebar-nav" className="admin-sidebar-nav">
             {navItems.map((item) => {
-              const active = item.module === activeModule
+              const active = item.target === activeItem
               return (
                 <AdminNavButton
-                  key={item.module}
+                  key={item.target}
                   icon={item.icon}
                   active={active}
-                  onClick={() => onSelectModule(item.module)}
+                  onClick={() => onSelectItem(item.target)}
                 >
                   <span>{item.label}</span>
                 </AdminNavButton>

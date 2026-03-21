@@ -1309,18 +1309,6 @@ fn build_account_quota_resolution(
 }
 
 #[derive(Debug, Clone)]
-struct AccountQuotaSnapshot {
-    hourly_any_used: i64,
-    hourly_any_limit: i64,
-    hourly_used: i64,
-    hourly_limit: i64,
-    daily_used: i64,
-    daily_limit: i64,
-    monthly_used: i64,
-    monthly_limit: i64,
-}
-
-#[derive(Debug, Clone)]
 enum QuotaSubject {
     Token(String),
     Account(String),

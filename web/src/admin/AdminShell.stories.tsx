@@ -1,20 +1,26 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { ChartColumnIncreasing } from 'lucide-react'
 import { useState } from 'react'
 
 import AdminPanelHeader from '../components/AdminPanelHeader'
 import TokenUsageHeader from '../components/TokenUsageHeader'
-import AdminShell, { type AdminNavItem } from './AdminShell'
-import type { AdminModuleId } from './routes'
+import { Icon } from '../lib/icons'
+import AdminShell, { type AdminNavItem, type AdminNavTarget } from './AdminShell'
+
+function navIcon(name: string): JSX.Element {
+  return <Icon icon={name} width={18} height={18} />
+}
 
 const NAV_ITEMS: AdminNavItem[] = [
-  { module: 'dashboard', label: 'Dashboard', icon: 'mdi:view-dashboard-outline' },
-  { module: 'tokens', label: 'Tokens', icon: 'mdi:key-chain-variant' },
-  { module: 'keys', label: 'API Keys', icon: 'mdi:key-outline' },
-  { module: 'requests', label: 'Requests', icon: 'mdi:file-document-outline' },
-  { module: 'jobs', label: 'Jobs', icon: 'mdi:calendar-clock-outline' },
-  { module: 'users', label: 'Users', icon: 'mdi:account-group-outline' },
-  { module: 'alerts', label: 'Alerts', icon: 'mdi:bell-ring-outline' },
-  { module: 'proxy-settings', label: 'Proxy Settings', icon: 'mdi:tune-variant' },
+  { target: 'dashboard', label: 'Dashboard', icon: navIcon('mdi:view-dashboard-outline') },
+  { target: 'user-usage', label: 'Usage', icon: <ChartColumnIncreasing size={18} strokeWidth={2.2} /> },
+  { target: 'tokens', label: 'Tokens', icon: navIcon('mdi:key-chain-variant') },
+  { target: 'keys', label: 'API Keys', icon: navIcon('mdi:key-outline') },
+  { target: 'requests', label: 'Requests', icon: navIcon('mdi:file-document-outline') },
+  { target: 'jobs', label: 'Jobs', icon: navIcon('mdi:calendar-clock-outline') },
+  { target: 'users', label: 'Users', icon: navIcon('mdi:account-group-outline') },
+  { target: 'alerts', label: 'Alerts', icon: navIcon('mdi:bell-ring-outline') },
+  { target: 'proxy-settings', label: 'Proxy Settings', icon: navIcon('mdi:tune-variant') },
 ]
 
 function LayoutBody(props: { title: string; description: string }): JSX.Element {
@@ -89,14 +95,14 @@ function LayoutBody(props: { title: string; description: string }): JSX.Element 
 }
 
 function PanelHeaderLayoutStory(): JSX.Element {
-  const [activeModule, setActiveModule] = useState<AdminModuleId>('jobs')
+  const [activeModule, setActiveModule] = useState<AdminNavTarget>('jobs')
 
   return (
     <AdminShell
-      activeModule={activeModule}
+      activeItem={activeModule}
       navItems={NAV_ITEMS}
       skipToContentLabel="Skip to main content"
-      onSelectModule={setActiveModule}
+      onSelectItem={setActiveModule}
     >
       <AdminPanelHeader
         title="Tavily Hikari Overview"
@@ -118,16 +124,16 @@ function PanelHeaderLayoutStory(): JSX.Element {
 }
 
 function TokenUsageLayoutStory(): JSX.Element {
-  const [activeModule, setActiveModule] = useState<AdminModuleId>('tokens')
+  const [activeModule, setActiveModule] = useState<AdminNavTarget>('tokens')
   const [period, setPeriod] = useState<'day' | 'month' | 'all'>('day')
   const [focus, setFocus] = useState<'usage' | 'errors' | 'other'>('usage')
 
   return (
     <AdminShell
-      activeModule={activeModule}
+      activeItem={activeModule}
       navItems={NAV_ITEMS}
       skipToContentLabel="Skip to main content"
-      onSelectModule={setActiveModule}
+      onSelectItem={setActiveModule}
     >
       <TokenUsageHeader
         title="Token Usage Leaderboard"
@@ -175,10 +181,10 @@ const meta = {
   component: AdminShell,
   tags: ['autodocs'],
   args: {
-    activeModule: 'dashboard',
+    activeItem: 'dashboard',
     navItems: NAV_ITEMS,
     skipToContentLabel: 'Skip to main content',
-    onSelectModule: () => undefined,
+    onSelectItem: () => undefined,
   },
 } satisfies Meta<typeof AdminShell>
 

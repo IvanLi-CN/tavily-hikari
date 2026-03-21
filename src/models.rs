@@ -580,6 +580,16 @@ pub struct UserDashboardSummary {
     pub daily_success: i64,
     pub daily_failure: i64,
     pub monthly_success: i64,
+    pub monthly_failure: i64,
+    pub last_activity: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct UserLogMetricsSummary {
+    pub daily_success: i64,
+    pub daily_failure: i64,
+    pub monthly_success: i64,
+    pub monthly_failure: i64,
     pub last_activity: Option<i64>,
 }
 
