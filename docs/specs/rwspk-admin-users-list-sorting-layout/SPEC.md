@@ -140,14 +140,3 @@
   evidence_note: proves the usage table keeps quota and success metrics in the dedicated view while allowing the first-line user name to open the user detail page.
   image:
   ![Users usage overview](./assets/admin-users-usage.png)
-
-- source_type: storybook_canvas
-  target_program: mock-only
-  capture_scope: browser-viewport
-  sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
-  story_id_or_title: Admin/Pages/UserDetail
-  state: user detail destination
-  evidence_note: proves the detail surface reached from the users and usage tables renders the expected identity, status, and token summary.
-  image:
-  ![User detail destination](./assets/admin-user-detail.png)
