@@ -4112,11 +4112,12 @@ impl TavilyProxy {
     pub async fn recent_request_logs_page(
         &self,
         result_status: Option<&str>,
+        operational_class: Option<&str>,
         page: i64,
         per_page: i64,
     ) -> Result<(Vec<RequestLogRecord>, i64), ProxyError> {
         self.key_store
-            .fetch_recent_logs_page(result_status, page, per_page)
+            .fetch_recent_logs_page(result_status, operational_class, page, per_page)
             .await
     }
 
@@ -5411,6 +5412,7 @@ impl TavilyProxy {
     }
 
     /// Token logs (page-based pagination)
+    #[allow(clippy::too_many_arguments)]
     pub async fn token_logs_page(
         &self,
         token_id: &str,
@@ -5419,9 +5421,18 @@ impl TavilyProxy {
         since: i64,
         until: Option<i64>,
         request_kinds: &[String],
+        operational_class: Option<&str>,
     ) -> Result<(Vec<TokenLogRecord>, i64), ProxyError> {
         self.key_store
-            .fetch_token_logs_page(token_id, page, per_page, since, until, request_kinds)
+            .fetch_token_logs_page(
+                token_id,
+                page,
+                per_page,
+                since,
+                until,
+                request_kinds,
+                operational_class,
+            )
             .await
     }
 

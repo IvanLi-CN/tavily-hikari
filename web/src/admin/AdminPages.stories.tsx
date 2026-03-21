@@ -416,6 +416,9 @@ const MOCK_REQUESTS: RequestLog[] = [
     response_body: '{"status":200}',
     forwarded_headers: ['x-request-id', 'x-forwarded-for'],
     dropped_headers: ['authorization'],
+    operationalClass: 'success',
+    requestKindProtocolGroup: 'api',
+    requestKindBillingGroup: 'billable',
   },
   {
     id: 9500,
@@ -436,6 +439,9 @@ const MOCK_REQUESTS: RequestLog[] = [
     response_body: null,
     forwarded_headers: ['x-request-id'],
     dropped_headers: [],
+    operationalClass: 'upstream_error',
+    requestKindProtocolGroup: 'mcp',
+    requestKindBillingGroup: 'billable',
   },
   {
     id: 9499,
@@ -455,6 +461,9 @@ const MOCK_REQUESTS: RequestLog[] = [
     response_body: '{"status":432}',
     forwarded_headers: ['x-request-id'],
     dropped_headers: ['cookie'],
+    operationalClass: 'quota_exhausted',
+    requestKindProtocolGroup: 'api',
+    requestKindBillingGroup: 'billable',
   },
   {
     id: 9498,
@@ -475,6 +484,9 @@ const MOCK_REQUESTS: RequestLog[] = [
     response_body: '{"status":401}',
     forwarded_headers: ['x-request-id'],
     dropped_headers: [],
+    operationalClass: 'upstream_error',
+    requestKindProtocolGroup: 'mcp',
+    requestKindBillingGroup: 'billable',
   },
   {
     id: 9497,
@@ -495,6 +507,9 @@ const MOCK_REQUESTS: RequestLog[] = [
     response_body: null,
     forwarded_headers: ['x-request-id'],
     dropped_headers: [],
+    operationalClass: 'upstream_error',
+    requestKindProtocolGroup: 'api',
+    requestKindBillingGroup: 'billable',
   },
 ]
 

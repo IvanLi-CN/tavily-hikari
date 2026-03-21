@@ -67,6 +67,9 @@ function createRequestLog(id: number, isoTime: string): RequestLog {
     response_body: null,
     forwarded_headers: [],
     dropped_headers: [],
+    operationalClass: 'success',
+    requestKindProtocolGroup: 'api',
+    requestKindBillingGroup: 'billable',
   }
 }
 

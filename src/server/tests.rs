@@ -6534,6 +6534,7 @@ colo=LAX
             request_kind_key: "mcp:search".to_string(),
             request_kind_label: "MCP | search".to_string(),
             request_kind_detail: None,
+            counts_business_quota: true,
             result_status: "error".to_string(),
             error_message: Some("Search failed".to_string()),
             failure_kind: Some("upstream_rate_limited_429".to_string()),
@@ -6577,6 +6578,7 @@ colo=LAX
             request_kind_key: "api:search".to_string(),
             request_kind_label: "API | search".to_string(),
             request_kind_detail: None,
+            counts_business_quota: true,
             result_status: "error".to_string(),
             error_message: Some("account deactivated".to_string()),
             failure_kind: Some("upstream_account_deactivated_401".to_string()),
@@ -6600,6 +6602,24 @@ colo=LAX
                 .get("key_effect_summary")
                 .and_then(|value| value.as_str()),
             Some("The system automatically quarantined this key"),
+        );
+        assert_eq!(
+            object
+                .get("operationalClass")
+                .and_then(|value| value.as_str()),
+            Some("upstream_error"),
+        );
+        assert_eq!(
+            object
+                .get("requestKindProtocolGroup")
+                .and_then(|value| value.as_str()),
+            Some("api"),
+        );
+        assert_eq!(
+            object
+                .get("requestKindBillingGroup")
+                .and_then(|value| value.as_str()),
+            Some("billable"),
         );
     }
 
@@ -7589,16 +7609,53 @@ colo=LAX
                 created_at
             ) VALUES
                 (?, 'token-success', 'POST', '/search', 'q=koha', 200, 200, NULL, 'success', NULL, 'none', NULL, X'7B7D', X'5B5D', '[]', '[]', ?),
-                (?, 'token-error', 'POST', '/search', 'q=bug', 401, 401, 'account deactivated', 'error', 'upstream_account_deactivated_401', 'quarantined', 'The system automatically quarantined this key', X'7B7D', X'5B5D', '[\"x-forwarded-for\"]', '[\"authorization\"]', ?)
+                (?, 'token-error', 'POST', '/search', 'q=bug', 401, 401, 'account deactivated', 'error', 'upstream_account_deactivated_401', 'quarantined', 'The system automatically quarantined this key', X'7B7D', X'5B5D', '[\"x-forwarded-for\"]', '[\"authorization\"]', ?),
+                (?, 'token-search-initialize', 'POST', '/mcp', NULL, 200, 200, NULL, 'success', NULL, 'none', NULL, ?, X'5B5D', '[]', '[]', ?),
+                (?, 'token-batch-mixed', 'POST', '/mcp', NULL, 200, 200, NULL, 'success', NULL, 'none', NULL, ?, X'5B5D', '[]', '[]', ?)
             "#,
         )
         .bind(&key_id)
         .bind(100_i64)
         .bind(&key_id)
         .bind(200_i64)
+        .bind(&key_id)
+        .bind(br#"{"jsonrpc":"2.0","id":"search-like-control-plane","method":"tools/call","params":{"name":"tavily_search","arguments":{"query":"how to initialize rust logging","search_depth":"basic"}}}"#.as_slice())
+        .bind(250_i64)
+        .bind(&key_id)
+        .bind(br#"[{"jsonrpc":"2.0","method":"notifications/initialized"},{"jsonrpc":"2.0","id":"mixed-batch-search","method":"tools/call","params":{"name":"tavily_search","arguments":{"query":"mixed batch should stay billable","search_depth":"basic"}}}]"#.as_slice())
+        .bind(275_i64)
         .execute(&pool)
         .await
         .expect("insert request logs");
+        sqlx::query(
+            r#"
+            INSERT INTO request_logs (
+                api_key_id,
+                auth_token_id,
+                method,
+                path,
+                query,
+                status_code,
+                tavily_status_code,
+                error_message,
+                result_status,
+                failure_kind,
+                key_effect_code,
+                key_effect_summary,
+                request_body,
+                response_body,
+                forwarded_headers,
+                dropped_headers,
+                created_at
+            ) VALUES (?, 'token-neutral', 'POST', '/mcp', NULL, 202, NULL, NULL, 'unknown', NULL, 'none', NULL, ?, X'5B5D', '[]', '[]', ?)
+            "#,
+        )
+        .bind(&key_id)
+        .bind(br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.as_slice())
+        .bind(300_i64)
+        .execute(&pool)
+        .await
+        .expect("insert neutral request log");
 
         let admin_password = "admin-logs-page-password";
         let admin_addr = spawn_builtin_keys_admin_server(proxy, admin_password).await;
@@ -7626,24 +7683,60 @@ colo=LAX
         assert_eq!(unfiltered_resp.status(), reqwest::StatusCode::OK);
         let unfiltered_body: serde_json::Value =
             unfiltered_resp.json().await.expect("unfiltered admin logs json");
-        assert_eq!(unfiltered_body.get("total").and_then(|value| value.as_i64()), Some(2));
+        assert_eq!(unfiltered_body.get("total").and_then(|value| value.as_i64()), Some(5));
+        let unfiltered_items = unfiltered_body
+            .get("items")
+            .and_then(|value| value.as_array())
+            .expect("unfiltered admin log items");
         assert_eq!(
             unfiltered_body
                 .pointer("/items/0/failure_kind")
                 .and_then(|value| value.as_str()),
+            None
+        );
+        let unfiltered_error_log = unfiltered_items
+            .iter()
+            .find(|item| {
+                item.get("auth_token_id")
+                    .and_then(|value| value.as_str())
+                    .is_some_and(|value| value == "token-error")
+            })
+            .expect("unfiltered error log");
+        assert_eq!(
+            unfiltered_error_log
+                .get("failure_kind")
+                .and_then(|value| value.as_str()),
             Some("upstream_account_deactivated_401")
         );
         assert_eq!(
-            unfiltered_body
-                .pointer("/items/0/key_effect_code")
+            unfiltered_error_log
+                .get("key_effect_code")
                 .and_then(|value| value.as_str()),
             Some("quarantined")
         );
         assert_eq!(
-            unfiltered_body
-                .pointer("/items/0/key_effect_summary")
+            unfiltered_error_log
+                .get("key_effect_summary")
                 .and_then(|value| value.as_str()),
             Some("The system automatically quarantined this key")
+        );
+        assert_eq!(
+            unfiltered_body
+                .pointer("/items/0/operationalClass")
+                .and_then(|value| value.as_str()),
+            Some("neutral")
+        );
+        assert_eq!(
+            unfiltered_body
+                .pointer("/items/0/requestKindProtocolGroup")
+                .and_then(|value| value.as_str()),
+            Some("mcp")
+        );
+        assert_eq!(
+            unfiltered_body
+                .pointer("/items/0/requestKindBillingGroup")
+                .and_then(|value| value.as_str()),
+            Some("non_billable")
         );
 
         let success_resp = client
@@ -7651,31 +7744,110 @@ colo=LAX
                 "http://{}/api/logs?page=1&per_page=20&result=success",
                 admin_addr
             ))
-            .header(reqwest::header::COOKIE, admin_cookie)
+            .header(reqwest::header::COOKIE, admin_cookie.clone())
             .send()
             .await
             .expect("filtered admin logs request");
         assert_eq!(success_resp.status(), reqwest::StatusCode::OK);
         let success_body: serde_json::Value =
             success_resp.json().await.expect("filtered admin logs json");
-        assert_eq!(success_body.get("total").and_then(|value| value.as_i64()), Some(1));
+        assert_eq!(success_body.get("total").and_then(|value| value.as_i64()), Some(3));
         assert_eq!(
             success_body
                 .pointer("/items/0/auth_token_id")
                 .and_then(|value| value.as_str()),
-            Some("token-success")
+            Some("token-batch-mixed")
         );
         assert_eq!(
             success_body
-                .pointer("/items/0/key_effect_code")
+                .pointer("/items/1/auth_token_id")
                 .and_then(|value| value.as_str()),
+            Some("token-search-initialize")
+        );
+        assert_eq!(
+            success_body.get("items").and_then(|value| value.as_array()).and_then(|items| items.get(1)).and_then(|item| item.get("key_effect_code")).and_then(|value| value.as_str()),
             Some("none")
         );
         assert!(
             success_body
-                .pointer("/items/0/failure_kind")
+                .get("items")
+                .and_then(|value| value.as_array())
+                .and_then(|items| items.get(1))
+                .and_then(|item| item.get("failure_kind"))
                 .is_some_and(|value| value.is_null()),
             "success log should expose a null failure_kind field"
+        );
+        assert_eq!(
+            success_body.get("items").and_then(|value| value.as_array()).and_then(|items| items.get(1)).and_then(|item| item.get("operationalClass")).and_then(|value| value.as_str()),
+            Some("success")
+        );
+        assert_eq!(
+            success_body
+                .pointer("/items/2/auth_token_id")
+                .and_then(|value| value.as_str()),
+            Some("token-success")
+        );
+
+        let neutral_resp = client
+            .get(format!(
+                "http://{}/api/logs?page=1&per_page=20&operational_class=neutral",
+                admin_addr
+            ))
+            .header(reqwest::header::COOKIE, admin_cookie.clone())
+            .send()
+            .await
+            .expect("neutral admin logs request");
+        assert_eq!(neutral_resp.status(), reqwest::StatusCode::OK);
+        let neutral_body: serde_json::Value =
+            neutral_resp.json().await.expect("neutral admin logs json");
+        assert_eq!(neutral_body.get("total").and_then(|value| value.as_i64()), Some(1));
+        assert_eq!(
+            neutral_body
+                .pointer("/items/0/auth_token_id")
+                .and_then(|value| value.as_str()),
+            Some("token-neutral")
+        );
+        assert!(
+            neutral_body
+                .get("items")
+                .and_then(|value| value.as_array())
+                .is_some_and(|items| items.iter().all(|item| {
+                    item.get("auth_token_id")
+                        .and_then(|value| value.as_str())
+                        != Some("token-search-initialize")
+                })),
+            "billable MCP search rows must not leak into the neutral filter"
+        );
+        assert!(
+            neutral_body
+                .get("items")
+                .and_then(|value| value.as_array())
+                .is_some_and(|items| items.iter().all(|item| {
+                    item.get("auth_token_id")
+                        .and_then(|value| value.as_str())
+                        != Some("token-batch-mixed")
+                })),
+            "mixed MCP batches must not leak into the neutral filter"
+        );
+
+        let upstream_resp = client
+            .get(format!(
+                "http://{}/api/logs?page=1&per_page=20&operational_class=upstream_error",
+                admin_addr
+            ))
+            .header(reqwest::header::COOKIE, admin_cookie)
+            .send()
+            .await
+            .expect("upstream admin logs request");
+        assert_eq!(upstream_resp.status(), reqwest::StatusCode::OK);
+        let upstream_body: serde_json::Value =
+            upstream_resp.json().await.expect("upstream admin logs json");
+        assert_eq!(upstream_body.get("total").and_then(|value| value.as_i64()), Some(1));
+        assert_eq!(
+            upstream_body
+                .pointer("/items/0/operationalClass")
+                .and_then(|value| value.as_str()),
+            Some("upstream_error")
         );
 
         let _ = std::fs::remove_file(db_path);
@@ -9209,6 +9381,34 @@ colo=LAX
             )
             .await
             .expect("record api search log");
+        sqlx::query(
+            r#"
+            INSERT INTO auth_token_logs (
+                token_id,
+                method,
+                path,
+                query,
+                http_status,
+                mcp_status,
+                request_kind_key,
+                request_kind_label,
+                request_kind_detail,
+                result_status,
+                error_message,
+                failure_kind,
+                key_effect_code,
+                key_effect_summary,
+                created_at,
+                counts_business_quota,
+                billing_state
+            ) VALUES (?, 'POST', '/mcp', NULL, 202, NULL, 'mcp:notifications/initialized', 'MCP | notifications/initialized', NULL, 'unknown', NULL, NULL, 'none', NULL, ?, 0, 'none')
+            "#,
+        )
+        .bind(&token.id)
+        .bind(Utc::now().timestamp() + 2)
+        .execute(&pool)
+        .await
+        .expect("insert neutral token log");
 
         let mcp_search_kind = classify_token_request_kind(
             "/mcp",
@@ -9260,7 +9460,7 @@ colo=LAX
         assert_eq!(logs_resp.status(), reqwest::StatusCode::OK);
         let logs_body: serde_json::Value = logs_resp.json().await.expect("logs json");
         let logs = logs_body.as_array().expect("logs array");
-        assert_eq!(logs.len(), 3);
+        assert_eq!(logs.len(), 4);
         let charged_log = logs
             .iter()
             .find(|value| {
@@ -9297,6 +9497,27 @@ colo=LAX
                 .and_then(|value| value.as_str()),
             Some("MCP | /mcp/sse")
         );
+        let neutral_log = logs
+            .iter()
+            .find(|value| {
+                value
+                    .get("request_kind_key")
+                    .and_then(|kind| kind.as_str())
+                    .is_some_and(|kind| kind == "mcp:notifications/initialized")
+            })
+            .expect("neutral mcp notification log");
+        assert_eq!(
+            neutral_log
+                .get("operationalClass")
+                .and_then(|value| value.as_str()),
+            Some("neutral")
+        );
+        assert_eq!(
+            neutral_log
+                .get("requestKindBillingGroup")
+                .and_then(|value| value.as_str()),
+            Some("non_billable")
+        );
 
         let page_resp = client
             .get(format!(
@@ -9316,8 +9537,8 @@ colo=LAX
             .get("request_kind_options")
             .and_then(|value| value.as_array())
             .expect("request kind options array");
-        assert_eq!(items.len(), 3);
-        assert_eq!(request_kind_options.len(), 3);
+        assert_eq!(items.len(), 4);
+        assert_eq!(request_kind_options.len(), 4);
         let search_option = request_kind_options
             .iter()
             .find(|value| {
@@ -9381,6 +9602,24 @@ colo=LAX
                 .and_then(|value| value.as_str()),
             Some("MCP | search")
         );
+        assert_eq!(
+            page_search_log
+                .get("operationalClass")
+                .and_then(|value| value.as_str()),
+            Some("success")
+        );
+        assert_eq!(
+            page_search_log
+                .get("requestKindProtocolGroup")
+                .and_then(|value| value.as_str()),
+            Some("mcp")
+        );
+        assert_eq!(
+            page_search_log
+                .get("requestKindBillingGroup")
+                .and_then(|value| value.as_str()),
+            Some("billable")
+        );
         let paged_legacy_log = items
             .iter()
             .find(|value| {
@@ -9395,6 +9634,29 @@ colo=LAX
                 .get("request_kind_label")
                 .and_then(|value| value.as_str()),
             Some("MCP | /mcp/sse")
+        );
+
+        let neutral_page_resp = client
+            .get(format!(
+                "http://{}/api/tokens/{}/logs/page?page=1&per_page=20&since=0&operational_class=neutral",
+                addr, token.id
+            ))
+            .send()
+            .await
+            .expect("neutral token logs page request");
+        assert_eq!(neutral_page_resp.status(), reqwest::StatusCode::OK);
+        let neutral_page_body: serde_json::Value =
+            neutral_page_resp.json().await.expect("neutral token logs page json");
+        let neutral_items = neutral_page_body
+            .get("items")
+            .and_then(|value| value.as_array())
+            .expect("neutral token logs page items");
+        assert_eq!(neutral_items.len(), 1);
+        assert_eq!(
+            neutral_items[0]
+                .get("request_kind_key")
+                .and_then(|value| value.as_str()),
+            Some("mcp:notifications/initialized")
         );
 
         let filtered_page_resp = client
@@ -9491,7 +9753,7 @@ colo=LAX
             .get("logs")
             .and_then(|value| value.as_array())
             .expect("snapshot logs array");
-        assert_eq!(snapshot_logs.len(), 3);
+        assert_eq!(snapshot_logs.len(), 4);
         let snapshot_search_log = snapshot_logs
             .iter()
             .find(|value| {
@@ -9512,6 +9774,21 @@ colo=LAX
                 .get("request_kind_label")
                 .and_then(|value| value.as_str()),
             Some("MCP | search")
+        );
+        let snapshot_neutral_log = snapshot_logs
+            .iter()
+            .find(|value| {
+                value
+                    .get("request_kind_key")
+                    .and_then(|kind| kind.as_str())
+                    .is_some_and(|kind| kind == "mcp:notifications/initialized")
+            })
+            .expect("snapshot neutral log");
+        assert_eq!(
+            snapshot_neutral_log
+                .get("operationalClass")
+                .and_then(|value| value.as_str()),
+            Some("neutral")
         );
         drop(events_resp);
 

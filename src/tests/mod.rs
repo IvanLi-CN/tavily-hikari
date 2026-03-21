@@ -411,6 +411,32 @@ fn token_request_kind_option_groups_match_protocol_and_billing_contract() {
     );
     assert_eq!(token_request_kind_billing_group("mcp:raw:/mcp"), "billable");
     assert_eq!(token_request_kind_billing_group("mcp:batch"), "billable");
+    assert_eq!(
+        token_request_kind_billing_group_for_token_log("mcp:raw:/mcp", false),
+        "non_billable"
+    );
+    assert_eq!(
+        token_request_kind_billing_group_for_token_log("mcp:raw:/mcp/sse", false),
+        "billable"
+    );
+    assert_eq!(
+        token_request_kind_billing_group_for_request(
+            "/mcp",
+            Some(
+                br#"[{"jsonrpc":"2.0","method":"initialize"},{"jsonrpc":"2.0","method":"notifications/initialized"}]"#,
+            ),
+        ),
+        "non_billable"
+    );
+    assert_eq!(
+        token_request_kind_billing_group_for_request(
+            "/mcp",
+            Some(
+                br#"[{"jsonrpc":"2.0","method":"notifications/initialized"},{"jsonrpc":"2.0","id":"search","method":"tools/call","params":{"name":"tavily_search","arguments":{"query":"mixed batch"}}}]"#,
+            ),
+        ),
+        "billable"
+    );
 
     assert_eq!(
         token_request_kind_option_billing_group("mcp:batch", false, true),
@@ -423,6 +449,69 @@ fn token_request_kind_option_groups_match_protocol_and_billing_contract() {
     assert_eq!(
         token_request_kind_option_billing_group("api:search", false, true),
         "billable"
+    );
+}
+
+#[test]
+fn operational_class_maps_control_plane_and_failure_kinds() {
+    assert_eq!(
+        normalize_operational_class_filter(Some("neutral")),
+        Some(OPERATIONAL_CLASS_NEUTRAL)
+    );
+    assert_eq!(
+        operational_class_for_request_kind("mcp:notifications/initialized", OUTCOME_UNKNOWN, None),
+        OPERATIONAL_CLASS_NEUTRAL
+    );
+    assert_eq!(
+        operational_class_for_request_kind("mcp:search", OUTCOME_SUCCESS, None),
+        OPERATIONAL_CLASS_SUCCESS
+    );
+    assert_eq!(
+        operational_class_for_token_log("mcp:batch", OUTCOME_SUCCESS, None, false),
+        OPERATIONAL_CLASS_NEUTRAL
+    );
+    assert_eq!(
+        operational_class_for_token_log("mcp:raw:/mcp", OUTCOME_UNKNOWN, None, false),
+        OPERATIONAL_CLASS_NEUTRAL
+    );
+    assert_eq!(
+        operational_class_for_token_log("mcp:raw:/mcp/sse", OUTCOME_SUCCESS, None, false),
+        OPERATIONAL_CLASS_SUCCESS
+    );
+    assert_eq!(
+        operational_class_for_request_path(
+            "/mcp",
+            Some(
+                br#"[{"jsonrpc":"2.0","method":"initialize"},{"jsonrpc":"2.0","method":"notifications/initialized"}]"#
+            ),
+            OUTCOME_UNKNOWN,
+            None,
+        ),
+        OPERATIONAL_CLASS_NEUTRAL
+    );
+    assert_eq!(
+        operational_class_for_request_kind(
+            "mcp:search",
+            OUTCOME_ERROR,
+            Some(FAILURE_KIND_MCP_ACCEPT_406),
+        ),
+        OPERATIONAL_CLASS_CLIENT_ERROR
+    );
+    assert_eq!(
+        operational_class_for_request_kind(
+            "mcp:extract",
+            OUTCOME_ERROR,
+            Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429),
+        ),
+        OPERATIONAL_CLASS_UPSTREAM_ERROR
+    );
+    assert_eq!(
+        operational_class_for_request_kind("api:search", OUTCOME_ERROR, Some(FAILURE_KIND_OTHER),),
+        OPERATIONAL_CLASS_SYSTEM_ERROR
+    );
+    assert_eq!(
+        operational_class_for_request_kind("api:search", OUTCOME_QUOTA_EXHAUSTED, None),
+        OPERATIONAL_CLASS_QUOTA_EXHAUSTED
     );
 }
 
@@ -561,7 +650,7 @@ async fn token_log_filters_and_options_use_backfilled_request_kind_columns() {
 
     let filters = vec!["mcp:raw:/mcp/sse".to_string()];
     let (logs, total) = repaired
-        .token_logs_page(&token.id, 1, 20, 0, None, &filters)
+        .token_logs_page(&token.id, 1, 20, 0, None, &filters, None)
         .await
         .expect("query filtered token logs");
     assert_eq!(total, 1);
@@ -578,6 +667,29 @@ async fn token_log_filters_and_options_use_backfilled_request_kind_columns() {
     assert_eq!(options[0].label, "MCP | /mcp/sse");
     assert_eq!(options[0].protocol_group, "mcp");
     assert_eq!(options[0].billing_group, "billable");
+
+    sqlx::query(
+        r#"
+        INSERT INTO auth_token_logs (
+            token_id, method, path, query, http_status, mcp_status, request_kind_key,
+            request_kind_label, result_status, error_message, created_at, counts_business_quota
+        ) VALUES (?, 'POST', '/mcp', NULL, 202, NULL, NULL, NULL, 'unknown', NULL, ?, 0)
+        "#,
+    )
+    .bind(&token.id)
+    .bind(Utc::now().timestamp() + 1)
+    .execute(&repaired.key_store.pool)
+    .await
+    .expect("insert legacy neutral control-plane row");
+
+    let (neutral_logs, neutral_total) = repaired
+        .token_logs_page(&token.id, 1, 20, 0, None, &[], Some("neutral"))
+        .await
+        .expect("query neutral token logs");
+    assert_eq!(neutral_total, 1);
+    assert_eq!(neutral_logs.len(), 1);
+    assert_eq!(neutral_logs[0].request_kind_key, "mcp:raw:/mcp");
+    assert_eq!(neutral_logs[0].request_kind_label, "MCP | /mcp");
 
     sqlx::query(
         r#"

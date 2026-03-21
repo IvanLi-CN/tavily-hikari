@@ -7,6 +7,7 @@ import {
   fetchAdminUserTags,
   fetchApiKeys,
   fetchJobs,
+  fetchRequestLogs,
   updateForwardProxySettingsWithProgress,
   updateAdminRegistrationSettings,
   updateAdminUserQuota,
@@ -409,5 +410,27 @@ describe('admin user tag api helpers', () => {
 
     const [input] = fetchMock.mock.calls[0] as [string]
     expect(input).toBe('/api/jobs?page=1&per_page=10&group=geo')
+  })
+
+  it('passes the operational class filter through to the admin logs API', async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            items: [],
+            total: 0,
+            page: 1,
+            perPage: 20,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    )
+    globalThis.fetch = fetchMock as typeof fetch
+
+    await fetchRequestLogs(1, 20, 'error', undefined, 'neutral')
+
+    const [input] = fetchMock.mock.calls[0] as [string]
+    expect(input).toBe('/api/logs?page=1&per_page=20&result=error&operational_class=neutral')
   })
 })

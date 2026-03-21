@@ -2,7 +2,13 @@ import { Fragment, type ReactNode, useCallback, useEffect, useLayoutEffect, useM
 import { Icon } from '../lib/icons'
 import { Chart as ChartJS, BarElement, CategoryScale, Legend, LinearScale, Tooltip, type ChartOptions } from 'chart.js'
 import { Bar } from 'react-chartjs-2'
-import { fetchTokenUsageSeries, rotateTokenSecret, type TokenOwnerSummary, type TokenUsageBucket } from '../api'
+import {
+  fetchTokenUsageSeries,
+  rotateTokenSecret,
+  type LogOperationalClass,
+  type TokenOwnerSummary,
+  type TokenUsageBucket,
+} from '../api'
 import { type QueryLoadState, getBlockingLoadState, getRefreshingLoadState, isBlockingLoadState, isRefreshingLoadState } from '../admin/queryLoadState'
 import AdminLoadingRegion from '../components/AdminLoadingRegion'
 import AdminReturnToConsoleLink from '../components/AdminReturnToConsoleLink'
@@ -36,6 +42,11 @@ import { Textarea } from '../components/ui/textarea'
 import { useLanguage, useTranslate } from '../i18n'
 import { ADMIN_USER_CONSOLE_HREF } from '../lib/adminUserConsoleEntry'
 import { copyText, selectAllReadonlyText } from '../lib/clipboard'
+import {
+  operationalClassGuidance,
+  operationalClassLabel,
+  operationalClassTone,
+} from '../lib/logOperationalClass'
 import { useResponsiveModes } from '../lib/responsive'
 import {
   buildRequestKindQuickFilterSelection,
@@ -54,6 +65,7 @@ import {
   type TokenLogRequestKindQuickBilling,
   type TokenLogRequestKindQuickProtocol,
   type TokenLogRequestKindOption,
+  type TokenLogOperationalClassFilter,
   uniqueSelectedRequestKinds,
 } from '../tokenLogRequestKinds'
 
@@ -106,6 +118,15 @@ interface TokenLog {
   key_effect_code?: string
   key_effect_summary?: string | null
   created_at: number
+  operationalClass:
+    | 'success'
+    | 'neutral'
+    | 'client_error'
+    | 'upstream_error'
+    | 'system_error'
+    | 'quota_exhausted'
+  requestKindProtocolGroup: 'api' | 'mcp'
+  requestKindBillingGroup: 'billable' | 'non_billable'
 }
 
 interface TokenLogsPageResponse {
@@ -135,6 +156,15 @@ const requestKindProtocolQuickFilterOptions = [
   { value: 'mcp', label: 'MCP' },
   { value: 'api', label: 'API' },
 ] as const
+const operationalClassFilterOptions = [
+  { value: 'all', label: 'All outcomes' },
+  { value: 'success', label: 'Success' },
+  { value: 'neutral', label: 'Neutral' },
+  { value: 'client_error', label: 'Client Error' },
+  { value: 'upstream_error', label: 'Upstream Error' },
+  { value: 'system_error', label: 'System Error' },
+  { value: 'quota_exhausted', label: 'Quota Exhausted' },
+] as const
 
 const numberFormatter = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 })
 const dateTimeFormatter = new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'medium' })
@@ -162,20 +192,11 @@ function formatLogTime(ts: number | null, period: Period) {
 }
 
 function statusTone(status: string): StatusTone {
-  const s = status.toLowerCase()
-  if (s === 'active' || s === 'success') return 'success'
-  if (s === 'exhausted' || s === 'quota_exhausted') return 'warning'
-  if (s === 'error') return 'error'
-  return 'neutral'
+  return operationalClassTone(status)
 }
 
-function statusLabel(status: string): string {
-  switch (status.toLowerCase()) {
-    case 'success': return 'Success'
-    case 'error': return 'Error'
-    case 'quota_exhausted': return 'Quota Exhausted'
-    default: return status
-  }
+function statusLabel(status: string, language: 'en' | 'zh'): string {
+  return operationalClassLabel(status, language)
 }
 
 function formatTokenKeyEffectSummary(log: TokenLog, language: 'en' | 'zh'): string {
@@ -227,33 +248,6 @@ function tokenKeyEffectBadgeLabel(log: TokenLog, language: 'en' | 'zh'): string 
       return language === 'zh' ? '无变更' : 'No Change'
     default:
       return language === 'zh' ? '已更新' : 'Updated'
-  }
-}
-
-function tokenFailureGuidance(kind: string | null | undefined, language: 'en' | 'zh'): string | null {
-  switch (kind) {
-    case 'upstream_gateway_5xx':
-      return language === 'zh'
-        ? '这是上游网关临时故障，建议稍后重试，并检查上游连通性或代理节点健康。'
-        : 'This is a temporary upstream gateway failure. Retry later and inspect upstream connectivity or proxy health.'
-    case 'upstream_rate_limited_429':
-      return language === 'zh'
-        ? '这是 Tavily 限流，建议降低频率、切换其他 Key，或等待限流窗口恢复。'
-        : 'Tavily is rate limiting this traffic. Reduce request rate, switch keys, or wait for the limit window to reset.'
-    case 'upstream_account_deactivated_401':
-      return language === 'zh'
-        ? '该 Key 可能已失效、被撤销或账户停用，建议更换可用 Key 并检查 Tavily 后台状态。'
-        : 'The key may be invalid, revoked, or tied to a deactivated account. Replace it and check the Tavily account state.'
-    case 'transport_send_error':
-      return language === 'zh'
-        ? '这是链路发送失败，建议检查 DNS、TLS、代理链路和上游可达性。'
-        : 'This request failed before getting an upstream response. Check DNS, TLS, proxy routing, and upstream reachability.'
-    case 'mcp_accept_406':
-      return language === 'zh'
-        ? '客户端需要同时接受 application/json 与 text/event-stream，请修正 Accept 请求头。'
-        : 'The client must accept both application/json and text/event-stream. Fix the Accept header negotiation.'
-    default:
-      return null
   }
 }
 
@@ -515,6 +509,8 @@ export default function TokenDetail({
   const [selectedRequestKinds, setSelectedRequestKinds] = useState<string[]>([])
   const [requestKindQuickBilling, setRequestKindQuickBilling] = useState<TokenLogRequestKindQuickBilling>('all')
   const [requestKindQuickProtocol, setRequestKindQuickProtocol] = useState<TokenLogRequestKindQuickProtocol>('all')
+  const [operationalClassFilter, setOperationalClassFilter] =
+    useState<TokenLogOperationalClassFilter>('all')
   const [summaryLoadState, setSummaryLoadState] = useState<QueryLoadState>('initial_loading')
   const [logsLoadState, setLogsLoadState] = useState<QueryLoadState>('initial_loading')
   const [quickUsage, setQuickUsage] = useState<UsageBar[]>([])
@@ -551,12 +547,14 @@ export default function TokenDetail({
     untilIso: string
     requestKinds: string[]
     forceEmptyMatch: boolean
+    operationalClass: TokenLogOperationalClassFilter
   }>({
     tokenId: id,
     sinceIso: '',
     untilIso: '',
     requestKinds: [],
     forceEmptyMatch: false,
+    operationalClass: 'all',
   })
   const requestKindRefreshContextRef = useRef<{
     selectedRequestKindsNormalized: string[]
@@ -588,6 +586,7 @@ export default function TokenDetail({
     setSelectedRequestKinds([])
     setRequestKindQuickBilling('all')
     setRequestKindQuickProtocol('all')
+    setOperationalClassFilter('all')
     setWarning(null)
     setQuickUsage([])
     setQuickUsageLoading(true)
@@ -694,8 +693,9 @@ export default function TokenDetail({
   )
   const logsQueryBaseKey = useMemo(
     () =>
-      `${summaryQueryBaseKey}:quick=${requestKindQuickBilling}:${requestKindQuickProtocol}:requestKinds=${selectedRequestKindsNormalized.join(',')}`,
+      `${summaryQueryBaseKey}:op=${operationalClassFilter}:quick=${requestKindQuickBilling}:${requestKindQuickProtocol}:requestKinds=${selectedRequestKindsNormalized.join(',')}`,
     [
+      operationalClassFilter,
       requestKindQuickBilling,
       requestKindQuickProtocol,
       selectedRequestKindsNormalized,
@@ -708,6 +708,7 @@ export default function TokenDetail({
     untilIso,
     requestKinds: effectiveSelectedRequestKinds,
     forceEmptyMatch: hasQuickRequestKindEmptyMatch,
+    operationalClass: operationalClassFilter,
   }
   requestKindRefreshContextRef.current = {
     selectedRequestKindsNormalized,
@@ -820,7 +821,8 @@ export default function TokenDetail({
 
   const buildLogsPageUrl = useCallback(
     (nextPage: number, nextPerPage = perPageRef.current) => {
-      const { tokenId, sinceIso, untilIso, requestKinds, forceEmptyMatch } = logsRequestContextRef.current
+      const { tokenId, sinceIso, untilIso, requestKinds, forceEmptyMatch, operationalClass } =
+        logsRequestContextRef.current
       return buildTokenLogsPagePath({
         tokenId,
         page: nextPage,
@@ -829,6 +831,7 @@ export default function TokenDetail({
         untilIso,
         forceEmptyMatch,
         requestKinds,
+        operationalClass,
       })
     },
     [],
@@ -840,7 +843,7 @@ export default function TokenDetail({
       forceEmptyMatch: boolean,
       nextPerPage = perPageRef.current,
     ) => {
-      const { tokenId, sinceIso, untilIso } = logsRequestContextRef.current
+      const { tokenId, sinceIso, untilIso, operationalClass } = logsRequestContextRef.current
       return buildTokenLogsPagePath({
         tokenId,
         page: nextPage,
@@ -849,6 +852,7 @@ export default function TokenDetail({
         untilIso,
         forceEmptyMatch,
         requestKinds,
+        operationalClass,
       })
     },
     [],
@@ -1599,6 +1603,26 @@ export default function TokenDetail({
             <p className="panel-description">Newest entries first. Live refresh applies to the first page.</p>
           </div>
           <div className="token-request-records-actions">
+            <Select
+              value={operationalClassFilter}
+              onValueChange={(value) => {
+                setOperationalClassFilter(value as TokenLogOperationalClassFilter)
+                setPage(1)
+                setExpandedLogs(new Set())
+              }}
+              disabled={filterControlsDisabled}
+            >
+              <SelectTrigger className="w-[196px]" aria-label="Operational outcome filter">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="end">
+                {operationalClassFilterOptions.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button
@@ -1729,8 +1753,8 @@ export default function TokenDetail({
                         aria-expanded={expandedLogs.has(l.id)}
                         aria-controls={`token-log-details-${l.id}`}
                       >
-                        <StatusBadge tone={statusTone(l.result_status)}>
-                          {statusLabel(l.result_status)}
+                        <StatusBadge tone={statusTone(l.operationalClass)}>
+                          {statusLabel(l.operationalClass, language)}
                         </StatusBadge>
                         <Icon
                           icon={expandedLogs.has(l.id) ? 'mdi:chevron-up' : 'mdi:chevron-down'}
@@ -1821,8 +1845,8 @@ export default function TokenDetail({
                   </div>
                   <div className="user-console-mobile-kv">
                     <span>Result</span>
-                    <StatusBadge className="user-console-mobile-status" tone={statusTone(log.result_status)}>
-                      {statusLabel(log.result_status)}
+                    <StatusBadge className="user-console-mobile-status" tone={statusTone(log.operationalClass)}>
+                      {statusLabel(log.operationalClass, language)}
                     </StatusBadge>
                   </div>
                   <div className="user-console-mobile-kv user-console-mobile-kv--stacked">
@@ -1960,7 +1984,7 @@ function TokenLogDetails({
   const errorText = (log.error_message ?? '').trim() || 'No error reported.'
   const httpStatus = log.http_status != null ? `HTTP ${log.http_status}` : 'HTTP —'
   const tavilyStatus = log.mcp_status != null ? `Tavily ${log.mcp_status}` : 'Tavily —'
-  const guidance = tokenFailureGuidance(log.failure_kind, language)
+  const guidance = operationalClassGuidance(log.operationalClass, log.failure_kind, language)
 
   return (
     <div className="log-details-panel">
@@ -1989,7 +2013,7 @@ function TokenLogDetails({
         </div>
         <div>
           <span className="log-details-label">Outcome</span>
-          <span className="log-details-value">{statusLabel(log.result_status)}</span>
+          <span className="log-details-value">{statusLabel(log.operationalClass, language)}</span>
         </div>
         <div>
           <span className="log-details-label">Key Effect</span>

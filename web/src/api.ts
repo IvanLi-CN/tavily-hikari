@@ -160,6 +160,15 @@ export interface RequestLog {
   response_body: string | null
   forwarded_headers: string[]
   dropped_headers: string[]
+  operationalClass:
+    | 'success'
+    | 'neutral'
+    | 'client_error'
+    | 'upstream_error'
+    | 'system_error'
+    | 'quota_exhausted'
+  requestKindProtocolGroup: 'api' | 'mcp'
+  requestKindBillingGroup: 'billable' | 'non_billable'
 }
 
 export interface ApiKeySecret {
@@ -1143,12 +1152,20 @@ export interface Paginated<T> {
 }
 
 export type LogResultFilter = 'success' | 'error' | 'quota_exhausted'
+export type LogOperationalClass =
+  | 'success'
+  | 'neutral'
+  | 'client_error'
+  | 'upstream_error'
+  | 'system_error'
+  | 'quota_exhausted'
 
 export function fetchRequestLogs(
   page = 1,
   perPage = 20,
   result?: LogResultFilter,
   signal?: AbortSignal,
+  operationalClass?: LogOperationalClass | 'all',
 ): Promise<Paginated<RequestLog>> {
   const params = new URLSearchParams({
     page: String(page),
@@ -1156,6 +1173,9 @@ export function fetchRequestLogs(
   })
   if (result != null) {
     params.set('result', result)
+  }
+  if (operationalClass != null && operationalClass !== 'all') {
+    params.set('operational_class', operationalClass)
   }
   return requestJson(`/api/logs?${params.toString()}`, { signal })
 }

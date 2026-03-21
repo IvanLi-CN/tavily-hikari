@@ -161,8 +161,8 @@ export const Default: Story = {
       },
     ],
     logs: [
-      { id: 1, key_id: 'MZli', auth_token_id: '9vsN', method: 'POST', path: '/mcp', query: null, http_status: 200, mcp_status: 0, result_status: 'success', created_at: 1, error_message: null, request_body: null, response_body: null, forwarded_headers: [], dropped_headers: [] },
-      { id: 2, key_id: 'MZli', auth_token_id: '9vsN', method: 'POST', path: '/mcp', query: null, http_status: 429, mcp_status: -1, result_status: 'quota_exhausted', created_at: 2, error_message: 'quota', request_body: null, response_body: null, forwarded_headers: [], dropped_headers: [] },
+      { id: 1, key_id: 'MZli', auth_token_id: '9vsN', method: 'POST', path: '/mcp', query: null, http_status: 200, mcp_status: 0, result_status: 'success', created_at: 1, error_message: null, request_body: null, response_body: null, forwarded_headers: [], dropped_headers: [], operationalClass: 'success', requestKindProtocolGroup: 'mcp', requestKindBillingGroup: 'billable' },
+      { id: 2, key_id: 'MZli', auth_token_id: '9vsN', method: 'POST', path: '/mcp', query: null, http_status: 429, mcp_status: -1, result_status: 'quota_exhausted', created_at: 2, error_message: 'quota', request_body: null, response_body: null, forwarded_headers: [], dropped_headers: [], operationalClass: 'quota_exhausted', requestKindProtocolGroup: 'mcp', requestKindBillingGroup: 'billable' },
     ],
     jobs: [
       { id: 3, job_type: 'forward_proxy_geo_refresh', key_id: null, key_group: null, status: 'success', attempt: 1, message: 'refreshed_candidates=9', started_at: 5, finished_at: 6 },
@@ -213,7 +213,7 @@ export const QuarantineState: Story = {
       },
     ],
     logs: [
-      { id: 1, key_id: 'Qn8R', auth_token_id: '9vsN', method: 'POST', path: '/mcp', query: null, http_status: 401, mcp_status: -1, result_status: 'error', created_at: 1, error_message: 'account deactivated', request_body: null, response_body: null, forwarded_headers: [], dropped_headers: [] },
+      { id: 1, key_id: 'Qn8R', auth_token_id: '9vsN', method: 'POST', path: '/mcp', query: null, http_status: 401, mcp_status: -1, result_status: 'error', created_at: 1, error_message: 'account deactivated', request_body: null, response_body: null, forwarded_headers: [], dropped_headers: [], operationalClass: 'upstream_error', requestKindProtocolGroup: 'mcp', requestKindBillingGroup: 'billable' },
     ],
     jobs: [
       { id: 2, job_type: 'forward_proxy_geo_refresh', key_id: null, key_group: null, status: 'success', attempt: 1, message: 'refreshed_candidates=4', started_at: 3, finished_at: 4 },
