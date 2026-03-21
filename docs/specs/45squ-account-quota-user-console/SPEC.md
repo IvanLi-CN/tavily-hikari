@@ -111,6 +111,17 @@ Storybook `User Console/Fragments/Connectivity Checks/State Gallery`: renders MC
 
 ![Token detail probe bubble in light theme](./assets/token-detail-probe-bubble-light.png)
 
+- source_type: storybook_canvas
+- target_program: mock-only
+- capture_scope: browser-viewport
+- sensitive_exclusion: N/A
+- submission_gate: approved
+- story_id_or_title: user-console-fragments-connectivity-checks--state-gallery
+- scenario: MCP full sweep + structured tool-call copy
+- evidence_note: verifies the connectivity gallery shows the shortened MCP tool-call copy, renders the tool name as a distinct code-styled fragment, and keeps the long-name fixture readable without falling back to the old `MCP 工具调用 · {tool}` phrasing.
+- image:
+  ![Connectivity checks state gallery with structured MCP tool rows](./assets/connectivity-checks-state-gallery-tool-copy.png)
+
 ## 变更记录
 
 - 2026-03-18: 补充 Token Detail probe 实调回归覆盖；前端将 MCP/API 检测步骤抽成共享定义并用请求级测试锁定浏览器侧调用，后端再新增真实合同测试，直接拉起 Hikari 验证 `/mcp tools/list` 返回的全部广告工具都能继续通过 `/mcp tools/call` 命中 mock upstream，同时覆盖 `/api/tavily/search|extract|crawl|map|research|research/:id` 的真实调用链；运行时与 Storybook 的 MCP probe 也已改成发现后逐个 `tools/call`，并把 probe 状态收敛为独立 `Connectivity Checks` gallery，移除仅为展示 probe 状态存在的全页 `UserConsole` stories。
