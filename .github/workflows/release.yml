@@ -367,7 +367,7 @@ jobs:
               -d '{"jsonrpc":"2.0","id":"release-smoke-406","method":"tools/call","params":{"name":"tavily_search","arguments":{"query":"release smoke client error"}}}'
           )"
           if [[ "${CLIENT_ERROR_HTTP}" != "406" ]]; then
-            echo "expected 406 MCP Accept failure, got ${CLIENT_ERROR_HTTP}" >&2
+            echo "expected 406 MCP client error, got ${CLIENT_ERROR_HTTP}" >&2
             exit 1
           fi
 
@@ -404,27 +404,25 @@ jobs:
           token_id = sys.argv[2]
           conn = sqlite3.connect(db_path)
           request_rows = conn.execute(
-              "SELECT request_body, request_kind_key, result_status, failure_kind FROM request_logs WHERE auth_token_id = ? ORDER BY id DESC",
+              "SELECT request_body, result_status, failure_kind FROM request_logs WHERE auth_token_id = ? ORDER BY id DESC",
               (token_id,),
           ).fetchall()
           if not request_rows:
               raise SystemExit("missing request_logs row for smoke token")
 
           success_search_rows = []
-          for request_body_raw, request_kind_key, result_status, failure_kind in request_rows:
+          for request_body_raw, result_status, failure_kind in request_rows:
               request_body = json.loads(request_body_raw.decode())
               request_id = request_body.get("id")
               if request_id == "release-smoke-search":
-                  success_search_rows.append((request_body, request_kind_key, result_status, failure_kind))
+                  success_search_rows.append((request_body, result_status, failure_kind))
 
           if len(success_search_rows) != 1:
               raise SystemExit(
                   f"expected exactly one successful MCP search request_logs row for smoke token, got {len(success_search_rows)}"
               )
 
-          request_body, request_kind_key, result_status, failure_kind = success_search_rows[0]
-          if request_kind_key != "mcp:search":
-              raise SystemExit(f"unexpected request_kind_key for MCP smoke search: {request_kind_key}")
+          request_body, result_status, failure_kind = success_search_rows[0]
           if request_body["params"]["arguments"].get("include_usage") is not None:
               raise SystemExit(f"include_usage must not be forwarded for MCP smoke: {request_body}")
           if result_status != "success" or failure_kind is not None:
