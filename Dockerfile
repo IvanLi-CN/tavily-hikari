@@ -20,7 +20,8 @@ RUN cargo build --release --locked \
     --bin tavily-hikari \
     --bin billing_ledger_audit \
     --bin monthly_quota_rebase \
-    --bin mcp_search_billing_repair
+    --bin mcp_search_billing_repair \
+    --bin mcp_request_log_retry_repair
 
 ########## Stage 2: create a slim runtime image ##########
 FROM debian:bookworm-slim AS xray-downloader
@@ -56,6 +57,7 @@ COPY --from=builder /app/target/release/tavily-hikari /usr/local/bin/tavily-hika
 COPY --from=builder /app/target/release/billing_ledger_audit /usr/local/bin/billing_ledger_audit
 COPY --from=builder /app/target/release/monthly_quota_rebase /usr/local/bin/monthly_quota_rebase
 COPY --from=builder /app/target/release/mcp_search_billing_repair /usr/local/bin/mcp_search_billing_repair
+COPY --from=builder /app/target/release/mcp_request_log_retry_repair /usr/local/bin/mcp_request_log_retry_repair
 COPY --from=xray-downloader /usr/local/bin/xray /usr/local/bin/xray
 COPY --from=xray-downloader /usr/local/share/licenses/xray-core/LICENSE /usr/local/share/licenses/xray-core/LICENSE
 # Copy prebuilt web assets (produced by CI before Docker build)
