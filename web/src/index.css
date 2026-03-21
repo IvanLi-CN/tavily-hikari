@@ -4753,6 +4753,14 @@ tbody tr:hover {
   line-height: 1.25;
 }
 
+.admin-table-value-primary-warning {
+  color: hsl(var(--warning));
+}
+
+.admin-table-value-primary-danger {
+  color: hsl(var(--destructive));
+}
+
 .admin-table-value-secondary {
   font-size: 0.82rem;
   line-height: 1.2;

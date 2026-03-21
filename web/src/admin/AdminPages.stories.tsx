@@ -732,7 +732,7 @@ const MOCK_USERS: AdminUserSummary[] = [
     tags: MOCK_ALICE_TAGS,
     hourlyAnyUsed: 312,
     hourlyAnyLimit: 1_770,
-    quotaHourlyUsed: 298,
+    quotaHourlyUsed: 1_118,
     quotaHourlyLimit: 1_200,
     quotaDailyUsed: 5_201,
     quotaDailyLimit: 25_500,
@@ -968,10 +968,25 @@ function formatQuotaUsagePair(used: number, limit: number): string {
   return `${formatNumber(Math.max(0, used))} / ${formatQuotaLimitValue(limit)}`
 }
 
-function formatQuotaStackValue(used: number, limit: number): { primary: string; secondary: string } {
+function quotaUsagePrimaryClassName(used: number, limit: number): string | null {
+  const normalizedUsed = Math.max(0, used)
+  const normalizedLimit = Math.max(0, limit)
+
+  if (normalizedLimit <= 0) {
+    return normalizedUsed > 0 ? 'admin-table-value-primary-danger' : null
+  }
+
+  const usageRatio = normalizedUsed / normalizedLimit
+  if (usageRatio >= 1) return 'admin-table-value-primary-danger'
+  if (usageRatio > 0.9) return 'admin-table-value-primary-warning'
+  return null
+}
+
+function formatQuotaStackValue(used: number, limit: number): { primary: string; secondary: string; primaryClassName?: string } {
   return {
     primary: formatNumber(Math.max(0, used)),
     secondary: formatQuotaLimitValue(limit),
+    primaryClassName: quotaUsagePrimaryClassName(used, limit) ?? undefined,
   }
 }
 
@@ -2952,13 +2967,13 @@ function UsersPageCanvas(): JSX.Element {
                     </td>
                     <td className="admin-users-compact-cell">
                       <div className="admin-table-value-stack">
-                        <span className="admin-table-value-primary">{dailyQuotaMetric.primary}</span>
+                        <span className={`admin-table-value-primary${dailyQuotaMetric.primaryClassName ? ` ${dailyQuotaMetric.primaryClassName}` : ''}`}>{dailyQuotaMetric.primary}</span>
                         <span className="admin-table-value-secondary">{dailyQuotaMetric.secondary}</span>
                       </div>
                     </td>
                     <td className="admin-users-compact-cell">
                       <div className="admin-table-value-stack">
-                        <span className="admin-table-value-primary">{monthlyQuotaMetric.primary}</span>
+                        <span className={`admin-table-value-primary${monthlyQuotaMetric.primaryClassName ? ` ${monthlyQuotaMetric.primaryClassName}` : ''}`}>{monthlyQuotaMetric.primary}</span>
                         <span className="admin-table-value-secondary">{monthlyQuotaMetric.secondary}</span>
                       </div>
                     </td>
@@ -3150,25 +3165,25 @@ function UsersUsagePageCanvas(): JSX.Element {
                       </td>
                       <td className="admin-users-compact-cell">
                         <div className="admin-table-value-stack">
-                          <span className="admin-table-value-primary">{hourlyAnyMetric.primary}</span>
+                          <span className={`admin-table-value-primary${hourlyAnyMetric.primaryClassName ? ` ${hourlyAnyMetric.primaryClassName}` : ''}`}>{hourlyAnyMetric.primary}</span>
                           <span className="admin-table-value-secondary">{hourlyAnyMetric.secondary}</span>
                         </div>
                       </td>
                       <td className="admin-users-compact-cell">
                         <div className="admin-table-value-stack">
-                          <span className="admin-table-value-primary">{hourlyMetric.primary}</span>
+                          <span className={`admin-table-value-primary${hourlyMetric.primaryClassName ? ` ${hourlyMetric.primaryClassName}` : ''}`}>{hourlyMetric.primary}</span>
                           <span className="admin-table-value-secondary">{hourlyMetric.secondary}</span>
                         </div>
                       </td>
                       <td className="admin-users-compact-cell">
                         <div className="admin-table-value-stack">
-                          <span className="admin-table-value-primary">{dailyQuotaMetric.primary}</span>
+                          <span className={`admin-table-value-primary${dailyQuotaMetric.primaryClassName ? ` ${dailyQuotaMetric.primaryClassName}` : ''}`}>{dailyQuotaMetric.primary}</span>
                           <span className="admin-table-value-secondary">{dailyQuotaMetric.secondary}</span>
                         </div>
                       </td>
                       <td className="admin-users-compact-cell">
                         <div className="admin-table-value-stack">
-                          <span className="admin-table-value-primary">{monthlyQuotaMetric.primary}</span>
+                          <span className={`admin-table-value-primary${monthlyQuotaMetric.primaryClassName ? ` ${monthlyQuotaMetric.primaryClassName}` : ''}`}>{monthlyQuotaMetric.primary}</span>
                           <span className="admin-table-value-secondary">{monthlyQuotaMetric.secondary}</span>
                         </div>
                       </td>

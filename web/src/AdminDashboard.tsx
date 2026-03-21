@@ -295,12 +295,28 @@ function formatQuotaUsagePair(used: number, limit: number): string {
 type AdminTableStackedValue = {
   primary: string
   secondary?: string | null
+  primaryClassName?: string | null
+}
+
+function quotaUsagePrimaryClassName(used: number, limit: number): string | null {
+  const normalizedUsed = Math.max(0, used)
+  const normalizedLimit = Math.max(0, limit)
+
+  if (normalizedLimit <= 0) {
+    return normalizedUsed > 0 ? 'admin-table-value-primary-danger' : null
+  }
+
+  const usageRatio = normalizedUsed / normalizedLimit
+  if (usageRatio >= 1) return 'admin-table-value-primary-danger'
+  if (usageRatio > 0.9) return 'admin-table-value-primary-warning'
+  return null
 }
 
 function formatQuotaStackValue(used: number, limit: number): AdminTableStackedValue {
   return {
     primary: formatNumber(Math.max(0, used)),
     secondary: formatQuotaLimitValue(limit),
+    primaryClassName: quotaUsagePrimaryClassName(used, limit),
   }
 }
 
@@ -821,15 +837,17 @@ function TokenOwnerValue({
 function AdminTableValueStack({
   primary,
   secondary,
+  primaryClassName,
   className,
 }: {
   primary: string
   secondary?: string | null
+  primaryClassName?: string | null
   className?: string
 }): JSX.Element {
   return (
     <div className={`admin-table-value-stack${className ? ` ${className}` : ''}`}>
-      <span className="admin-table-value-primary">{primary}</span>
+      <span className={`admin-table-value-primary${primaryClassName ? ` ${primaryClassName}` : ''}`}>{primary}</span>
       {secondary ? <span className="admin-table-value-secondary">{secondary}</span> : null}
     </div>
   )
