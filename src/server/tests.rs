@@ -218,8 +218,8 @@ mod tests {
                                 .and_then(|p| p.get("arguments"))
                                 .and_then(|a| a.get("include_usage"))
                                 .and_then(|v| v.as_bool()),
-                            Some(true),
-                            "proxy should inject include_usage=true"
+                            None,
+                            "proxy should not inject include_usage for MCP tools"
                         );
 
                         let args = body
@@ -301,8 +301,8 @@ mod tests {
                                 .and_then(|p| p.get("arguments"))
                                 .and_then(|a| a.get("include_usage"))
                                 .and_then(|v| v.as_bool()),
-                            Some(true),
-                            "proxy should inject include_usage=true"
+                            None,
+                            "proxy should not inject include_usage for MCP tools"
                         );
 
                         Response::builder()
@@ -361,8 +361,8 @@ mod tests {
                                 .and_then(|p| p.get("arguments"))
                                 .and_then(|a| a.get("include_usage"))
                                 .and_then(|v| v.as_bool()),
-                            Some(true),
-                            "proxy should inject include_usage=true"
+                            None,
+                            "proxy should not inject include_usage for MCP tools"
                         );
 
                         let id = body.get("id").cloned().unwrap_or_else(|| serde_json::json!(1));
@@ -439,8 +439,8 @@ mod tests {
                                     .and_then(|p| p.get("arguments"))
                                     .and_then(|a| a.get("include_usage"))
                                     .and_then(|v| v.as_bool()),
-                                Some(true),
-                                "proxy should inject include_usage=true"
+                                None,
+                                "proxy should not inject include_usage for MCP tools"
                             );
 
                             let args = map
@@ -531,8 +531,8 @@ mod tests {
                                     .and_then(|p| p.get("arguments"))
                                     .and_then(|a| a.get("include_usage"))
                                     .and_then(|v| v.as_bool()),
-                                Some(true),
-                                "proxy should inject include_usage=true"
+                                None,
+                                "proxy should not inject include_usage for MCP tools"
                             );
                         }
 
@@ -627,8 +627,8 @@ mod tests {
                                     .and_then(|p| p.get("arguments"))
                                     .and_then(|a| a.get("include_usage"))
                                     .and_then(|v| v.as_bool()),
-                                Some(true),
-                                "proxy should inject include_usage=true"
+                                None,
+                                "proxy should not inject include_usage for MCP tools"
                             );
                         }
 
@@ -727,8 +727,8 @@ mod tests {
                                     .and_then(|p| p.get("arguments"))
                                     .and_then(|a| a.get("include_usage"))
                                     .and_then(|v| v.as_bool()),
-                                Some(true),
-                                "proxy should inject include_usage=true"
+                                None,
+                                "proxy should not inject include_usage for MCP tools"
                             );
                         }
 
@@ -828,8 +828,8 @@ mod tests {
                                     .and_then(|p| p.get("arguments"))
                                     .and_then(|a| a.get("include_usage"))
                                     .and_then(|v| v.as_bool()),
-                                Some(true),
-                                "proxy should inject include_usage=true"
+                                None,
+                                "proxy should not inject include_usage for MCP tools"
                             );
                         }
 
@@ -936,8 +936,8 @@ mod tests {
                                 .and_then(|p| p.get("arguments"))
                                 .and_then(|a| a.get("include_usage"))
                                 .and_then(|v| v.as_bool()),
-                            Some(true),
-                            "proxy should inject include_usage=true for tavily-search"
+                            None,
+                            "proxy should not inject include_usage for MCP tools"
                         );
 
                         let id1 = a.get("id").cloned().unwrap_or_else(|| serde_json::json!(1));
@@ -1038,8 +1038,8 @@ mod tests {
                                     .and_then(|p| p.get("arguments"))
                                     .and_then(|a| a.get("include_usage"))
                                     .and_then(|v| v.as_bool()),
-                                Some(true),
-                                "proxy should inject include_usage=true"
+                                None,
+                                "proxy should not inject include_usage for MCP tools"
                             );
 
                             if name == "tavily-search" {
@@ -1154,8 +1154,8 @@ mod tests {
                                             .and_then(|p| p.get("arguments"))
                                             .and_then(|a| a.get("include_usage"))
                                             .and_then(|v| v.as_bool()),
-                                        Some(true),
-                                        "proxy should inject include_usage=true for search"
+                                        None,
+                                        "proxy should not inject include_usage for MCP tools"
                                     );
                                 }
                                 "tavily-research" => {
@@ -1256,8 +1256,8 @@ mod tests {
                                 .and_then(|p| p.get("arguments"))
                                 .and_then(|a| a.get("include_usage"))
                                 .and_then(|v| v.as_bool()),
-                            Some(true),
-                            "proxy should inject include_usage=true"
+                            None,
+                            "proxy should not inject include_usage for MCP tools"
                         );
 
                         let result = match usage_credits {
@@ -1350,8 +1350,8 @@ mod tests {
                                     .and_then(|p| p.get("arguments"))
                                     .and_then(|a| a.get("include_usage"))
                                     .and_then(|v| v.as_bool()),
-                                Some(true),
-                                "proxy should inject include_usage=true"
+                                None,
+                                "proxy should not inject include_usage for MCP tools"
                             );
 
                             if name == "tavily-search" {
@@ -1448,8 +1448,8 @@ mod tests {
                                 .and_then(|p| p.get("arguments"))
                                 .and_then(|a| a.get("include_usage"))
                                 .and_then(|v| v.as_bool()),
-                            Some(true),
-                            "proxy should inject include_usage=true"
+                            None,
+                            "proxy should not inject include_usage for MCP tools"
                         );
 
                         let args = body
@@ -1534,8 +1534,8 @@ mod tests {
                                 .and_then(|p| p.get("arguments"))
                                 .and_then(|a| a.get("include_usage"))
                                 .and_then(|v| v.as_bool()),
-                            Some(true),
-                            "proxy should inject include_usage=true"
+                            None,
+                            "proxy should not inject include_usage for MCP tools"
                         );
 
                         (
@@ -1601,8 +1601,8 @@ mod tests {
                                 .and_then(|p| p.get("arguments"))
                                 .and_then(|a| a.get("include_usage"))
                                 .and_then(|v| v.as_bool()),
-                            Some(true),
-                            "proxy should inject include_usage=true"
+                            None,
+                            "proxy should not inject include_usage for MCP tools"
                         );
 
                         let args = body
@@ -1767,8 +1767,8 @@ mod tests {
                                 .and_then(|p| p.get("arguments"))
                                 .and_then(|a| a.get("include_usage"))
                                 .and_then(|v| v.as_bool()),
-                            Some(true),
-                            "proxy should inject include_usage=true"
+                            None,
+                            "proxy should not inject include_usage for MCP tools"
                         );
 
                         let credits = match tool {
@@ -1844,8 +1844,8 @@ mod tests {
                                 .and_then(|p| p.get("arguments"))
                                 .and_then(|a| a.get("include_usage"))
                                 .and_then(|v| v.as_bool()),
-                            Some(true),
-                            "proxy should inject include_usage=true"
+                            None,
+                            "proxy should not inject include_usage for MCP tools"
                         );
 
                         // Intentionally omit `usage.credits` to validate that non-search tools

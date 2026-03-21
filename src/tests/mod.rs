@@ -4641,6 +4641,25 @@ async fn insert_summary_window_logs(
     outcome: &str,
     count: usize,
 ) {
+    insert_summary_window_logs_with_visibility(
+        proxy,
+        key_id,
+        created_at,
+        outcome,
+        count,
+        REQUEST_LOG_VISIBILITY_VISIBLE,
+    )
+    .await;
+}
+
+async fn insert_summary_window_logs_with_visibility(
+    proxy: &TavilyProxy,
+    key_id: &str,
+    created_at: i64,
+    outcome: &str,
+    count: usize,
+    visibility: &str,
+) {
     for offset in 0..count {
         sqlx::query(
             r#"
@@ -4658,12 +4677,14 @@ async fn insert_summary_window_logs(
                 response_body,
                 forwarded_headers,
                 dropped_headers,
+                visibility,
                 created_at
-            ) VALUES (?, NULL, 'GET', '/v1/search', NULL, 200, 200, NULL, ?, NULL, NULL, '[]', '[]', ?)
+            ) VALUES (?, NULL, 'GET', '/v1/search', NULL, 200, 200, NULL, ?, NULL, NULL, '[]', '[]', ?, ?)
             "#,
         )
         .bind(key_id)
         .bind(outcome)
+        .bind(visibility)
         .bind(created_at + offset as i64)
         .execute(&proxy.key_store.pool)
         .await
@@ -4834,6 +4855,73 @@ async fn summary_windows_return_zero_for_empty_yesterday_bucket() {
         .await
         .expect("summary windows");
     assert_eq!(summary.yesterday, SummaryWindowMetrics::default());
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn suppressed_retry_shadow_logs_are_hidden_from_recent_logs_and_summary_windows() {
+    let db_path = temp_db_path("summary-windows-suppressed-retry-shadow");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-summary-window-shadow".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let key_id = proxy
+        .list_api_key_metrics()
+        .await
+        .expect("list key metrics")
+        .into_iter()
+        .next()
+        .expect("seeded key")
+        .id;
+
+    let fallback_now = Local::now();
+    let now_naive = fallback_now
+        .date_naive()
+        .and_hms_opt(12, 0, 0)
+        .expect("valid midday");
+    let now = match Local.from_local_datetime(&now_naive) {
+        chrono::LocalResult::Single(dt) => dt,
+        chrono::LocalResult::Ambiguous(dt, _) => dt,
+        chrono::LocalResult::None => fallback_now,
+    };
+    let today_start = start_of_local_day_utc_ts(now);
+
+    insert_summary_window_logs(&proxy, &key_id, today_start + 60, OUTCOME_SUCCESS, 1).await;
+    insert_summary_window_logs_with_visibility(
+        &proxy,
+        &key_id,
+        today_start + 120,
+        OUTCOME_ERROR,
+        1,
+        REQUEST_LOG_VISIBILITY_SUPPRESSED_RETRY_SHADOW,
+    )
+    .await;
+    proxy
+        .rebuild_api_key_usage_buckets()
+        .await
+        .expect("rebuild api key usage buckets");
+
+    let recent_logs = proxy
+        .recent_request_logs(10)
+        .await
+        .expect("recent request logs");
+    assert_eq!(recent_logs.len(), 1);
+    assert_eq!(recent_logs[0].result_status, OUTCOME_SUCCESS);
+
+    let summary = proxy
+        .summary_windows_at(now)
+        .await
+        .expect("summary windows");
+    assert_eq!(summary.today.total_requests, 1);
+    assert_eq!(summary.today.success_count, 1);
+    assert_eq!(summary.today.error_count, 0);
 
     let _ = std::fs::remove_file(db_path);
 }

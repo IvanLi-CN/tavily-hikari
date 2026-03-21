@@ -348,15 +348,19 @@ jobs:
           db_path = pathlib.Path(sys.argv[1])
           token_id = sys.argv[2]
           conn = sqlite3.connect(db_path)
-          request_row = conn.execute(
-              "SELECT request_body FROM request_logs WHERE auth_token_id = ? ORDER BY id DESC LIMIT 1",
+          request_rows = conn.execute(
+              "SELECT request_body, result_status FROM request_logs WHERE auth_token_id = ? ORDER BY id DESC",
               (token_id,),
-          ).fetchone()
-          if request_row is None:
+          ).fetchall()
+          if not request_rows:
               raise SystemExit("missing request_logs row for smoke token")
-          request_body = json.loads(request_row[0].decode())
-          if request_body["params"]["arguments"].get("include_usage") is not True:
-              raise SystemExit(f"include_usage missing from forwarded request: {request_body}")
+          if len(request_rows) != 1:
+              raise SystemExit(f"expected exactly one request_logs row for smoke token, got {len(request_rows)}")
+          request_body = json.loads(request_rows[0][0].decode())
+          if request_body["params"]["arguments"].get("include_usage") is not None:
+              raise SystemExit(f"include_usage must not be forwarded for MCP smoke: {request_body}")
+          if request_rows[0][1] != "success":
+              raise SystemExit(f"unexpected request_logs status for smoke token: {request_rows[0][1]}")
 
           token_log_row = conn.execute(
               "SELECT business_credits FROM auth_token_logs WHERE token_id = ? ORDER BY id DESC LIMIT 1",

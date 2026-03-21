@@ -4120,6 +4120,11 @@ impl TavilyProxy {
             .await
     }
 
+    /// Rebuild API-key request buckets from visible request logs.
+    pub async fn rebuild_api_key_usage_buckets(&self) -> Result<(), ProxyError> {
+        self.key_store.rebuild_api_key_usage_buckets().await
+    }
+
     /// 获取指定 key 在起始时间以来的汇总。
     pub async fn key_summary_since(
         &self,

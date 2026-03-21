@@ -149,6 +149,7 @@ impl KeyStore {
                 response_body BLOB,
                 forwarded_headers TEXT,
                 dropped_headers TEXT,
+                visibility TEXT NOT NULL DEFAULT 'visible',
                 created_at INTEGER NOT NULL,
                 FOREIGN KEY (api_key_id) REFERENCES api_keys(id)
             )
@@ -168,6 +169,12 @@ impl KeyStore {
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_request_logs_time
                ON request_logs(created_at DESC, id DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_request_logs_visibility_time
+               ON request_logs(visibility, created_at DESC, id DESC)"#,
         )
         .execute(&self.pool)
         .await?;
@@ -1136,6 +1143,10 @@ impl KeyStore {
     }
 
     pub(crate) async fn migrate_api_key_usage_buckets_v1(&self) -> Result<(), ProxyError> {
+        self.rebuild_api_key_usage_buckets().await
+    }
+
+    pub(crate) async fn rebuild_api_key_usage_buckets(&self) -> Result<(), ProxyError> {
         // Rebuild buckets from request_logs to preserve cumulative statistics after retention.
         // This is safe to rerun because we clear and recompute deterministically.
         let now_ts = Utc::now().timestamp();
@@ -1150,9 +1161,11 @@ impl KeyStore {
             r#"
             SELECT api_key_id, created_at, result_status
             FROM request_logs
+            WHERE visibility = ?
             ORDER BY api_key_id ASC, created_at ASC, id ASC
             "#,
         )
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
         .fetch(&mut *read_conn);
 
         #[derive(Clone, Copy, Default)]
@@ -2815,6 +2828,23 @@ impl KeyStore {
                 .await?;
         }
 
+        if !self.request_logs_column_exists("visibility").await? {
+            sqlx::query(
+                "ALTER TABLE request_logs ADD COLUMN visibility TEXT NOT NULL DEFAULT 'visible'",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
+
+        sqlx::query(
+            "UPDATE request_logs
+             SET visibility = ?
+             WHERE visibility IS NULL OR TRIM(visibility) = ''",
+        )
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .execute(&self.pool)
+        .await?;
+
         if !self.request_logs_column_exists("key_effect_code").await? {
             sqlx::query(
                 "ALTER TABLE request_logs ADD COLUMN key_effect_code TEXT NOT NULL DEFAULT 'none'",
@@ -2878,6 +2908,7 @@ impl KeyStore {
                     response_body BLOB,
                     forwarded_headers TEXT,
                     dropped_headers TEXT,
+                    visibility TEXT NOT NULL DEFAULT 'visible',
                     created_at INTEGER NOT NULL,
                     FOREIGN KEY (api_key_id) REFERENCES api_keys(id)
                 )
@@ -2899,13 +2930,14 @@ impl KeyStore {
                     tavily_status_code,
                     error_message,
                     result_status,
-                    NULL AS failure_kind,
-                    'none' AS key_effect_code,
-                    NULL AS key_effect_summary,
+                    failure_kind,
+                    key_effect_code,
+                    key_effect_summary,
                     request_body,
                     response_body,
                     forwarded_headers,
                     dropped_headers,
+                    visibility,
                     created_at
                 )
                 SELECT
@@ -2919,14 +2951,19 @@ impl KeyStore {
                     tavily_status_code,
                     error_message,
                     result_status,
+                    NULL AS failure_kind,
+                    'none' AS key_effect_code,
+                    NULL AS key_effect_summary,
                     request_body,
                     response_body,
                     forwarded_headers,
                     dropped_headers,
+                    ? AS visibility,
                     created_at
                 FROM request_logs
                 "#,
             )
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
             .execute(&mut *tx)
             .await?;
 
@@ -3062,12 +3099,13 @@ impl KeyStore {
                        result_status, failure_kind, key_effect_code, key_effect_summary,
                        request_body, response_body, created_at, forwarded_headers, dropped_headers
                 FROM request_logs
-                WHERE api_key_id = ? AND created_at >= ?
+                WHERE api_key_id = ? AND visibility = ? AND created_at >= ?
                 ORDER BY created_at DESC
                 LIMIT ?
                 "#,
             )
             .bind(key_id)
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
             .bind(since_ts)
             .bind(limit)
             .fetch_all(&self.pool)
@@ -3079,12 +3117,13 @@ impl KeyStore {
                        result_status, failure_kind, key_effect_code, key_effect_summary,
                        request_body, response_body, created_at, forwarded_headers, dropped_headers
                 FROM request_logs
-                WHERE api_key_id = ?
+                WHERE api_key_id = ? AND visibility = ?
                 ORDER BY created_at DESC
                 LIMIT ?
                 "#,
             )
             .bind(key_id)
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
             .bind(limit)
             .fetch_all(&self.pool)
             .await?
@@ -8850,10 +8889,12 @@ impl KeyStore {
                 dropped_headers,
                 created_at
             FROM request_logs
+            WHERE visibility = ?
             ORDER BY created_at DESC, id DESC
             LIMIT ?
             "#,
         )
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
@@ -8908,9 +8949,11 @@ impl KeyStore {
                 r#"
                 SELECT COUNT(*) AS count
                 FROM request_logs
-                WHERE result_status = ?
+                WHERE visibility = ?
+                  AND result_status = ?
                 "#,
             )
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
             .bind(status)
             .fetch_one(&self.pool)
             .await?;
@@ -8931,17 +8974,19 @@ impl KeyStore {
                     failure_kind,
                     key_effect_code,
                     key_effect_summary,
-                    request_body,
-                    response_body,
-                    forwarded_headers,
-                    dropped_headers,
-                    created_at
+                request_body,
+                response_body,
+                forwarded_headers,
+                dropped_headers,
+                created_at
                 FROM request_logs
-                WHERE result_status = ?
+                WHERE visibility = ?
+                  AND result_status = ?
                 ORDER BY created_at DESC, id DESC
                 LIMIT ? OFFSET ?
                 "#,
             )
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
             .bind(status)
             .bind(per_page)
             .bind(offset)
@@ -8954,8 +8999,10 @@ impl KeyStore {
                 r#"
                 SELECT COUNT(*) AS count
                 FROM request_logs
+                WHERE visibility = ?
                 "#,
             )
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
             .fetch_one(&self.pool)
             .await?;
 
@@ -8975,16 +9022,18 @@ impl KeyStore {
                     failure_kind,
                     key_effect_code,
                     key_effect_summary,
-                    request_body,
-                    response_body,
-                    forwarded_headers,
-                    dropped_headers,
-                    created_at
+                request_body,
+                response_body,
+                forwarded_headers,
+                dropped_headers,
+                created_at
                 FROM request_logs
+                WHERE visibility = ?
                 ORDER BY created_at DESC, id DESC
                 LIMIT ? OFFSET ?
                 "#,
             )
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
             .bind(per_page)
             .bind(offset)
             .fetch_all(&self.pool)
@@ -9479,7 +9528,8 @@ impl KeyStore {
                 COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS yesterday_error_count,
                 COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS yesterday_quota_exhausted_count
             FROM request_logs
-            WHERE created_at >= ?
+            WHERE visibility = ?
+              AND created_at >= ?
               AND created_at < ?
             "#,
         )
@@ -9505,6 +9555,7 @@ impl KeyStore {
         .bind(yesterday_start)
         .bind(yesterday_end)
         .bind(OUTCOME_QUOTA_EXHAUSTED)
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
         .bind(yesterday_start)
         .bind(today_end)
         .fetch_one(&mut *tx)

@@ -210,14 +210,14 @@ async fn proxy_handler(
 
     // Billing plan (1:1 upstream credits):
     // - Non-business whitelist methods are ignored by business quota.
-    // - tools/call for tavily-* prefers include_usage=true so upstream can return usage.credits.
-    // - If the upstream MCP schema rejects include_usage, retry once without it.
+    // - tools/call for tavily-* does not inject extra MCP arguments unless the upstream contract
+    //   is explicitly proven compatible.
     // - Known Tavily tools use a reserved-credit precheck derived from request parameters.
     // - For unknown / batch / positional request shapes, default to billable to avoid bypass.
     let mut billable_flag = false;
     let mut reserved_billable_credits: Option<i64> = None;
     let mut expected_search_credits: Option<i64> = None;
-    let mut forwarded_body = body_bytes.clone();
+    let forwarded_body = body_bytes.clone();
     let mut lockable_tool = false;
     let mut billable_mcp_ids: HashSet<String> = HashSet::new();
     let mut billable_search_mcp_ids: HashSet<String> = HashSet::new();
@@ -235,7 +235,6 @@ async fn proxy_handler(
                 let mut any_billable = false;
                 let mut any_lockable = false;
                 let mut all_non_billable = true;
-                let mut mutated = false;
                 let mut reserved_billable_total = 0i64;
                 let mut expected_search_total = 0i64;
 
@@ -250,7 +249,6 @@ async fn proxy_handler(
                                         any_billable: &mut bool,
                                         any_lockable: &mut bool,
                                         all_non_billable: &mut bool,
-                                        mutated: &mut bool,
                                         reserved_billable_total: &mut i64,
                                         expected_search_total: &mut i64,
                                         billable_mcp_ids: &mut HashSet<String>,
@@ -334,30 +332,7 @@ async fn proxy_handler(
                             };
 
                             if usage_metered_tool {
-                                let mut injected_include_usage = false;
-                                if !params.contains_key("arguments") {
-                                    params.insert(
-                                        "arguments".to_string(),
-                                        Value::Object(serde_json::Map::new()),
-                                    );
-                                    injected_include_usage = true;
-                                }
-
-                                let args_entry = params
-                                    .get_mut("arguments")
-                                    .expect("arguments must exist after insertion when absent");
-                                if let Value::Object(args) = args_entry {
-                                    let already_true = args
-                                        .get("include_usage")
-                                        .and_then(|v| v.as_bool())
-                                        .unwrap_or(false);
-                                    if !already_true {
-                                        args.insert("include_usage".to_string(), Value::Bool(true));
-                                        injected_include_usage = true;
-                                    }
-                                }
-                                *mutated |= injected_include_usage;
-
+                                let args_entry = params.get("arguments").unwrap_or(&Value::Null);
                                 let reserved =
                                     tavily_mcp_reserved_credits(normalized_tool.as_str(), args_entry);
                                 record_reserved_credits(
@@ -444,7 +419,6 @@ async fn proxy_handler(
                                 &mut any_billable,
                                 &mut any_lockable,
                                 &mut all_non_billable,
-                                &mut mutated,
                                 &mut reserved_billable_total,
                                 &mut expected_search_total,
                                 &mut billable_mcp_ids,
@@ -499,7 +473,6 @@ async fn proxy_handler(
                                     &mut any_billable,
                                     &mut any_lockable,
                                     &mut all_non_billable,
-                                    &mut mutated,
                                     &mut reserved_billable_total,
                                     &mut expected_search_total,
                                     &mut billable_mcp_ids,
@@ -534,11 +507,6 @@ async fn proxy_handler(
                     expected_search_credits = Some(expected_search_total);
                 }
 
-                if mutated
-                    && let Ok(encoded) = serde_json::to_vec(&value)
-                {
-                    forwarded_body = bytes::Bytes::from(encoded);
-                }
             }
             Err(_) => {
                 // Non-JSON / unparseable: treat as billable to avoid bypass.
@@ -706,25 +674,7 @@ async fn proxy_handler(
         }
     }
 
-    let proxy_result = {
-        let initial_result = state.proxy.proxy_request(proxy_request.clone()).await;
-        if path.starts_with("/mcp")
-            && let Ok(resp) = &initial_result
-            && mcp_response_rejected_include_usage(&resp.body)
-            && let Some(retry_body) =
-                remove_include_usage_from_mcp_request_bytes(proxy_request.body.as_ref())
-        {
-            state
-                .proxy
-                .proxy_request(ProxyRequest {
-                    body: retry_body,
-                    ..proxy_request
-                })
-                .await
-        } else {
-            initial_result
-        }
-    };
+    let proxy_result = state.proxy.proxy_request(proxy_request).await;
 
     match proxy_result {
         Ok(resp) => {
@@ -998,49 +948,6 @@ fn accepts_event_stream(headers: &HeaderMap) -> bool {
                 .any(|v| v.trim().eq_ignore_ascii_case("text/event-stream"))
         })
         .unwrap_or(false)
-}
-
-fn mcp_response_rejected_include_usage(body: &[u8]) -> bool {
-    let normalized = String::from_utf8_lossy(body).to_ascii_lowercase();
-    normalized.contains("include_usage") && normalized.contains("unexpected keyword argument")
-}
-
-fn remove_include_usage_from_mcp_request_bytes(body: &[u8]) -> Option<bytes::Bytes> {
-    fn scrub_value(value: &mut Value, removed: &mut bool) {
-        match value {
-            Value::Object(map) => {
-                let method = map.get("method").and_then(|value| value.as_str()).unwrap_or("");
-                if method == "tools/call"
-                    && let Some(Value::Object(params)) = map.get_mut("params")
-                    && let Some(Value::Object(arguments)) = params.get_mut("arguments")
-                    && arguments.remove("include_usage").is_some()
-                {
-                    *removed = true;
-                }
-
-                for nested in map.values_mut() {
-                    scrub_value(nested, removed);
-                }
-            }
-            Value::Array(items) => {
-                for nested in items.iter_mut() {
-                    scrub_value(nested, removed);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    let mut value = serde_json::from_slice::<Value>(body).ok()?;
-    let mut removed = false;
-    scrub_value(&mut value, &mut removed);
-    if !removed {
-        return None;
-    }
-
-    serde_json::to_vec(&value)
-        .ok()
-        .map(bytes::Bytes::from)
 }
 
 fn build_response(resp: ProxyResponse) -> Response<Body> {

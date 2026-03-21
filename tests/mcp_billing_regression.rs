@@ -142,6 +142,14 @@ async fn fetch_latest_request_body(pool: &sqlx::SqlitePool, token_id: &str) -> V
     serde_json::from_slice::<Value>(&request_body).expect("decode request body json")
 }
 
+async fn fetch_request_log_count(pool: &sqlx::SqlitePool, token_id: &str) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM request_logs WHERE auth_token_id = ?")
+        .bind(token_id)
+        .fetch_one(pool)
+        .await
+        .expect("fetch request log count")
+}
+
 async fn fetch_token_monthly_used(pool: &sqlx::SqlitePool, token_id: &str) -> i64 {
     sqlx::query(
         "SELECT COALESCE((SELECT month_count FROM auth_token_quota WHERE token_id = ? LIMIT 1), 0) AS month_count",
@@ -157,7 +165,7 @@ async fn fetch_token_monthly_used(pool: &sqlx::SqlitePool, token_id: &str) -> i6
 async fn spawn_mock_mcp_upstream_for_tool(
     expected_api_key: String,
     expected_tool_name: &'static str,
-    include_usage: bool,
+    include_usage_in_response: bool,
 ) -> (SocketAddr, Arc<AtomicUsize>) {
     let hits = Arc::new(AtomicUsize::new(0));
     let app = Router::new().route(
@@ -193,14 +201,14 @@ async fn spawn_mock_mcp_upstream_for_tool(
                             .and_then(|params| params.get("arguments"))
                             .and_then(|arguments| arguments.get("include_usage"))
                             .and_then(|value| value.as_bool()),
-                        Some(true),
-                        "proxy should inject include_usage=true",
+                        None,
+                        "proxy should not inject include_usage for MCP tool calls",
                     );
 
                     let mut structured_content = serde_json::Map::new();
                     structured_content.insert("status".into(), Value::Number(200.into()));
                     structured_content.insert("echo".into(), body.clone());
-                    if include_usage {
+                    if include_usage_in_response {
                         let credits = if body
                             .get("params")
                             .and_then(|params| params.get("arguments"))
@@ -242,103 +250,8 @@ async fn spawn_mock_mcp_upstream_for_tool(
     (addr, hits)
 }
 
-async fn spawn_mock_mcp_upstream_retrying_include_usage(
-    expected_api_key: String,
-    expected_tool_name: &'static str,
-    fallback_credits: Option<i64>,
-) -> (SocketAddr, Arc<AtomicUsize>) {
-    let hits = Arc::new(AtomicUsize::new(0));
-    let app = Router::new().route(
-        "/mcp",
-        any({
-            let hits = hits.clone();
-            move |Query(params): Query<std::collections::HashMap<String, String>>,
-                  Json(body): Json<Value>| {
-                let expected_api_key = expected_api_key.clone();
-                let hits = hits.clone();
-                async move {
-                    hits.fetch_add(1, Ordering::SeqCst);
-                    let received = params.get("tavilyApiKey").cloned();
-                    assert_eq!(
-                        received.as_deref(),
-                        Some(expected_api_key.as_str()),
-                        "missing or incorrect tavilyApiKey"
-                    );
-                    assert_eq!(
-                        body.get("method").and_then(|value| value.as_str()),
-                        Some("tools/call"),
-                        "expected MCP tools/call",
-                    );
-                    assert_eq!(
-                        body.get("params")
-                            .and_then(|params| params.get("name"))
-                            .and_then(|value| value.as_str()),
-                        Some(expected_tool_name),
-                        "unexpected forwarded tool name",
-                    );
-
-                    let include_usage = body
-                        .get("params")
-                        .and_then(|params| params.get("arguments"))
-                        .and_then(|arguments| arguments.get("include_usage"))
-                        .and_then(|value| value.as_bool())
-                        .unwrap_or(false);
-
-                    if include_usage {
-                        return (
-                            StatusCode::OK,
-                            Json(json!({
-                                "jsonrpc": "2.0",
-                                "id": body.get("id").cloned().unwrap_or_else(|| json!(1)),
-                                "result": {
-                                    "content": [{
-                                        "type": "text",
-                                        "text": format!(
-                                            "Internal error: 1 validation error for call[{expected_tool_name}]\ninclude_usage\n  Unexpected keyword argument [type=unexpected_keyword_argument, input_value=True, input_type=bool]"
-                                        )
-                                    }],
-                                    "isError": true
-                                }
-                            })),
-                        );
-                    }
-
-                    let mut structured_content = serde_json::Map::new();
-                    structured_content.insert("status".into(), Value::Number(200.into()));
-                    structured_content.insert("echo".into(), body.clone());
-                    if let Some(credits) = fallback_credits {
-                        structured_content.insert("usage".into(), json!({ "credits": credits }));
-                    }
-
-                    (
-                        StatusCode::OK,
-                        Json(json!({
-                            "jsonrpc": "2.0",
-                            "id": body.get("id").cloned().unwrap_or_else(|| json!(1)),
-                            "result": {
-                                "structuredContent": Value::Object(structured_content),
-                            }
-                        })),
-                    )
-                }
-            }
-        }),
-    );
-
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind retry mock upstream");
-    let addr = listener.local_addr().expect("retry mock upstream addr");
-    tokio::spawn(async move {
-        axum::serve(listener, app.into_make_service())
-            .await
-            .expect("serve retry mock upstream");
-    });
-    (addr, hits)
-}
-
 #[tokio::test]
-async fn mcp_search_with_underscore_tool_injects_usage_and_bills() {
+async fn mcp_search_with_underscore_tool_forwards_without_usage_and_bills() {
     let db_path = temp_db_path("mcp-search-underscore-usage");
     let db_str = db_path.to_string_lossy().to_string();
     let (upstream_addr, hits) =
@@ -353,7 +266,7 @@ async fn mcp_search_with_underscore_tool_injects_usage_and_bills() {
     let token = token_payload["token"].as_str().expect("token secret");
     let token_id = token_id_from_secret(token);
 
-    let response = Client::new()
+    let _response = Client::new()
         .post(format!("{base_url}/mcp"))
         .bearer_auth(token)
         .json(&json!({
@@ -377,24 +290,23 @@ async fn mcp_search_with_underscore_tool_injects_usage_and_bills() {
         .await
         .expect("decode search response");
 
-    assert_eq!(
-        response["result"]["structuredContent"]["echo"]["params"]["arguments"]["include_usage"],
-        Value::Bool(true)
-    );
     assert_eq!(hits.load(Ordering::SeqCst), 1);
 
     let pool = connect_sqlite_test_pool(&db_str).await;
     let credits = fetch_latest_token_log_credits(&pool, token_id).await;
     let request_body = fetch_latest_request_body(&pool, token_id).await;
+    let request_log_count = fetch_request_log_count(&pool, token_id).await;
     assert_eq!(credits, Some(2));
     assert_eq!(
         request_body["params"]["name"].as_str(),
         Some("tavily_search")
     );
-    assert_eq!(
-        request_body["params"]["arguments"]["include_usage"],
-        Value::Bool(true)
+    assert!(
+        request_body["params"]["arguments"]
+            .get("include_usage")
+            .is_none()
     );
+    assert_eq!(request_log_count, 1);
     assert_eq!(fetch_token_monthly_used(&pool, token_id).await, 2);
 
     let _ = std::fs::remove_file(db_path);
@@ -442,18 +354,21 @@ async fn mcp_search_with_underscore_tool_uses_missing_usage_fallback() {
     let pool = connect_sqlite_test_pool(&db_str).await;
     let credits = fetch_latest_token_log_credits(&pool, token_id).await;
     let request_body = fetch_latest_request_body(&pool, token_id).await;
+    let request_log_count = fetch_request_log_count(&pool, token_id).await;
     assert_eq!(credits, Some(2));
-    assert_eq!(
-        request_body["params"]["arguments"]["include_usage"],
-        Value::Bool(true)
+    assert!(
+        request_body["params"]["arguments"]
+            .get("include_usage")
+            .is_none()
     );
+    assert_eq!(request_log_count, 1);
     assert_eq!(fetch_token_monthly_used(&pool, token_id).await, 2);
 
     let _ = std::fs::remove_file(db_path);
 }
 
 #[tokio::test]
-async fn mcp_extract_with_underscore_tool_injects_usage_but_skips_missing_usage_charge() {
+async fn mcp_extract_with_underscore_tool_skips_missing_usage_charge_without_shadow_log() {
     let db_path = temp_db_path("mcp-extract-underscore-fallback");
     let db_str = db_path.to_string_lossy().to_string();
     let (upstream_addr, hits) =
@@ -494,143 +409,7 @@ async fn mcp_extract_with_underscore_tool_injects_usage_but_skips_missing_usage_
     let pool = connect_sqlite_test_pool(&db_str).await;
     let credits = fetch_latest_token_log_credits(&pool, token_id).await;
     let request_body = fetch_latest_request_body(&pool, token_id).await;
-    assert_eq!(credits, None);
-    assert_eq!(
-        request_body["params"]["name"].as_str(),
-        Some("tavily_extract")
-    );
-    assert_eq!(
-        request_body["params"]["arguments"]["include_usage"],
-        Value::Bool(true)
-    );
-    assert_eq!(fetch_token_monthly_used(&pool, token_id).await, 0);
-
-    let _ = std::fs::remove_file(db_path);
-}
-
-#[tokio::test]
-async fn mcp_search_retries_without_include_usage_when_upstream_rejects_it() {
-    let db_path = temp_db_path("mcp-search-include-usage-retry");
-    let db_str = db_path.to_string_lossy().to_string();
-    let (upstream_addr, hits) = spawn_mock_mcp_upstream_retrying_include_usage(
-        "tvly-test-key".to_string(),
-        "tavily_search",
-        None,
-    )
-    .await;
-    let port = reserve_local_port();
-    let upstream = format!("http://{upstream_addr}/mcp");
-    let _proxy = spawn_proxy_process(&db_str, &upstream, port);
-    wait_for_health(port).await;
-
-    let base_url = format!("http://127.0.0.1:{port}");
-    let token_payload = create_test_token(&base_url).await;
-    let token = token_payload["token"].as_str().expect("token secret");
-    let token_id = token_id_from_secret(token);
-
-    let response = Client::new()
-        .post(format!("{base_url}/mcp"))
-        .bearer_auth(token)
-        .header("Accept", "application/json, text/event-stream")
-        .json(&json!({
-            "jsonrpc": "2.0",
-            "id": "search-retry",
-            "method": "tools/call",
-            "params": {
-                "name": "tavily_search",
-                "arguments": {
-                    "query": "retry include usage",
-                    "search_depth": "advanced"
-                }
-            }
-        }))
-        .send()
-        .await
-        .expect("send search retry request")
-        .error_for_status()
-        .expect("search retry status")
-        .json::<Value>()
-        .await
-        .expect("decode search retry response");
-
-    assert!(
-        response.get("result").is_some(),
-        "search retry should recover"
-    );
-    assert_eq!(hits.load(Ordering::SeqCst), 2);
-
-    let pool = connect_sqlite_test_pool(&db_str).await;
-    let credits = fetch_latest_token_log_credits(&pool, token_id).await;
-    let request_body = fetch_latest_request_body(&pool, token_id).await;
-    assert_eq!(credits, Some(2));
-    assert_eq!(
-        request_body["params"]["name"].as_str(),
-        Some("tavily_search")
-    );
-    assert!(
-        request_body["params"]["arguments"]
-            .get("include_usage")
-            .is_none(),
-        "retry path should strip include_usage from the second upstream attempt"
-    );
-    assert_eq!(fetch_token_monthly_used(&pool, token_id).await, 2);
-
-    let _ = std::fs::remove_file(db_path);
-}
-
-#[tokio::test]
-async fn mcp_extract_retries_without_include_usage_when_upstream_rejects_it() {
-    let db_path = temp_db_path("mcp-extract-include-usage-retry");
-    let db_str = db_path.to_string_lossy().to_string();
-    let (upstream_addr, hits) = spawn_mock_mcp_upstream_retrying_include_usage(
-        "tvly-test-key".to_string(),
-        "tavily_extract",
-        None,
-    )
-    .await;
-    let port = reserve_local_port();
-    let upstream = format!("http://{upstream_addr}/mcp");
-    let _proxy = spawn_proxy_process(&db_str, &upstream, port);
-    wait_for_health(port).await;
-
-    let base_url = format!("http://127.0.0.1:{port}");
-    let token_payload = create_test_token(&base_url).await;
-    let token = token_payload["token"].as_str().expect("token secret");
-    let token_id = token_id_from_secret(token);
-
-    let response = Client::new()
-        .post(format!("{base_url}/mcp"))
-        .bearer_auth(token)
-        .header("Accept", "application/json, text/event-stream")
-        .json(&json!({
-            "jsonrpc": "2.0",
-            "id": "extract-retry",
-            "method": "tools/call",
-            "params": {
-                "name": "tavily_extract",
-                "arguments": {
-                    "urls": ["https://example.com"]
-                }
-            }
-        }))
-        .send()
-        .await
-        .expect("send extract retry request")
-        .error_for_status()
-        .expect("extract retry status")
-        .json::<Value>()
-        .await
-        .expect("decode extract retry response");
-
-    assert!(
-        response.get("result").is_some(),
-        "extract retry should recover"
-    );
-    assert_eq!(hits.load(Ordering::SeqCst), 2);
-
-    let pool = connect_sqlite_test_pool(&db_str).await;
-    let credits = fetch_latest_token_log_credits(&pool, token_id).await;
-    let request_body = fetch_latest_request_body(&pool, token_id).await;
+    let request_log_count = fetch_request_log_count(&pool, token_id).await;
     assert_eq!(credits, None);
     assert_eq!(
         request_body["params"]["name"].as_str(),
@@ -639,9 +418,9 @@ async fn mcp_extract_retries_without_include_usage_when_upstream_rejects_it() {
     assert!(
         request_body["params"]["arguments"]
             .get("include_usage")
-            .is_none(),
-        "retry path should strip include_usage from the second upstream attempt"
+            .is_none()
     );
+    assert_eq!(request_log_count, 1);
     assert_eq!(fetch_token_monthly_used(&pool, token_id).await, 0);
 
     let _ = std::fs::remove_file(db_path);
