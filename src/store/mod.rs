@@ -4595,8 +4595,10 @@ impl KeyStore {
 
         let mut builder = QueryBuilder::new(
             r#"SELECT user_id, COUNT(*) AS api_key_count
-               FROM user_api_key_bindings
-               WHERE user_id IN ("#,
+               FROM (
+                   SELECT DISTINCT user_id, api_key_id
+                   FROM user_api_key_bindings
+                   WHERE user_id IN ("#,
         );
         {
             let mut separated = builder.separated(", ");
@@ -4604,7 +4606,24 @@ impl KeyStore {
                 separated.push_bind(user_id);
             }
         }
-        builder.push(") GROUP BY user_id");
+        builder.push(
+            r#")
+                   UNION
+                   SELECT DISTINCT user_id, api_key_id
+                   FROM api_key_user_usage_buckets
+                   WHERE user_id IN ("#,
+        );
+        {
+            let mut separated = builder.separated(", ");
+            for user_id in user_ids {
+                separated.push_bind(user_id);
+            }
+        }
+        builder.push(
+            r#")
+               )
+               GROUP BY user_id"#,
+        );
 
         let rows = builder
             .build_query_as::<(String, i64)>()

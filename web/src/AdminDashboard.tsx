@@ -73,6 +73,7 @@ import {
   type QuotaSliderSeed,
 } from './admin/quotaSlider'
 import {
+  type AdminUsersCollectionView,
   type AdminModuleId,
   type AdminPathRoute,
   buildAdminKeysPath,
@@ -481,6 +482,10 @@ function getAdminUsersSortDirectionFromLocation(): SortDirection | null {
   if (getAdminUsersSortFromLocation() == null) return null
   const rawOrder = new URLSearchParams(window.location.search).get('order')?.trim()
   return rawOrder === 'asc' ? 'asc' : 'desc'
+}
+
+function getAdminUsersCollectionFromLocation(): AdminUsersCollectionView {
+  return new URLSearchParams(window.location.search).get('view') === 'usage' ? 'usage' : 'users'
 }
 
 function isAdminUsersOverviewSortField(value: AdminUsersSortField | null): boolean {
@@ -3262,12 +3267,13 @@ function AdminDashboard(): JSX.Element {
   const navigateUser = useCallback(
     (id: string, options?: { preserveUsersContext?: boolean }) => {
       if (options?.preserveUsersContext) {
-        navigateToPath(userDetailPath(id, usersQuery, usersTagFilterId, usersPage, usersSort, usersSortOrder))
+        const collection = isUserUsageRoute || getAdminUsersCollectionFromLocation() === 'usage' ? 'usage' : undefined
+        navigateToPath(userDetailPath(id, usersQuery, usersTagFilterId, usersPage, usersSort, usersSortOrder, collection))
         return
       }
       navigateToPath(userDetailPath(id))
     },
-    [navigateToPath, usersPage, usersQuery, usersSort, usersSortOrder, usersTagFilterId],
+    [isUserUsageRoute, navigateToPath, usersPage, usersQuery, usersSort, usersSortOrder, usersTagFilterId],
   )
 
   const buildUsersCollectionPath = useCallback(
@@ -3278,7 +3284,7 @@ function AdminDashboard(): JSX.Element {
       sort?: AdminUsersSortField | null,
       order?: SortDirection | null,
     ) => (
-      isUserUsageRoute
+      isUserUsageRoute || getAdminUsersCollectionFromLocation() === 'usage'
         ? userUsagePath(query, tagId, page, sort, order)
         : buildAdminUsersPath(query, tagId, page, sort, order)
     ),
@@ -3392,8 +3398,9 @@ function AdminDashboard(): JSX.Element {
     const page = route.name === 'module' && route.module === 'users' ? usersPage : getAdminUsersPageFromLocation()
     const sort = route.name === 'module' && route.module === 'users' ? usersSort : getAdminUsersSortFromLocation()
     const order = route.name === 'module' && route.module === 'users' ? usersSortOrder : getAdminUsersSortDirectionFromLocation()
-    navigateToPath(userTagsPath(query, tagId, page, sort, order))
-  }, [navigateToPath, route, usersPage, usersQuery, usersSort, usersSortOrder, usersTagFilterId])
+    const collection = isUserUsageRoute || getAdminUsersCollectionFromLocation() === 'usage' ? 'usage' : undefined
+    navigateToPath(userTagsPath(query, tagId, page, sort, order, collection))
+  }, [isUserUsageRoute, navigateToPath, route, usersPage, usersQuery, usersSort, usersSortOrder, usersTagFilterId])
 
   const navigateUserTagCreate = useCallback(() => {
     setActiveUserTagEditorId(NEW_USER_TAG_CARD_ID)
@@ -3406,6 +3413,7 @@ function AdminDashboard(): JSX.Element {
         getAdminUsersPageFromLocation(),
         getAdminUsersSortFromLocation(),
         getAdminUsersSortDirectionFromLocation(),
+        getAdminUsersCollectionFromLocation(),
       ),
     )
   }, [navigateToPath])
@@ -3426,6 +3434,7 @@ function AdminDashboard(): JSX.Element {
           getAdminUsersPageFromLocation(),
           getAdminUsersSortFromLocation(),
           getAdminUsersSortDirectionFromLocation(),
+          getAdminUsersCollectionFromLocation(),
         ),
       )
     },
@@ -5671,7 +5680,7 @@ function AdminDashboard(): JSX.Element {
               className="btn btn-outline"
               onClick={() =>
                 navigateToPath(
-                  buildAdminUsersPath(
+                  buildUsersCollectionPath(
                     getAdminUsersQueryFromLocation(),
                     getAdminUsersTagFilterFromLocation(),
                     getAdminUsersPageFromLocation(),
@@ -5827,7 +5836,7 @@ function AdminDashboard(): JSX.Element {
                 variant="outline"
                 onClick={() =>
                   navigateToPath(
-                    buildAdminUsersPath(
+                    buildUsersCollectionPath(
                       getAdminUsersQueryFromLocation(),
                       getAdminUsersTagFilterFromLocation(),
                       getAdminUsersPageFromLocation(),

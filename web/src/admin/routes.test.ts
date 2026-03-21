@@ -64,6 +64,15 @@ describe('admin user tag routes', () => {
     expect(userDetailPath('usr_alice')).toBe('/admin/users/usr_alice')
   })
 
+  it('marks detail and tag routes that were opened from the usage view', () => {
+    expect(userDetailPath('usr_alice', 'L2', 'linuxdo_l2', 3, 'monthlySuccessRate', 'asc', 'usage')).toBe(
+      '/admin/users/usr_alice?q=L2&tagId=linuxdo_l2&page=3&sort=monthlySuccessRate&order=asc&view=usage',
+    )
+    expect(userTagsPath('L2', 'linuxdo_l2', 3, 'monthlySuccessRate', 'asc', 'usage')).toBe(
+      '/admin/users/tags?q=L2&tagId=linuxdo_l2&page=3&sort=monthlySuccessRate&order=asc&view=usage',
+    )
+  })
+
   it('builds stable key list paths with pagination and repeated filters', () => {
     expect(buildAdminKeysPath()).toBe('/admin/keys')
     expect(

@@ -1,5 +1,7 @@
 import type { AdminUsersSortField, SortDirection } from '../api'
 
+export type AdminUsersCollectionView = 'users' | 'usage'
+
 export type AdminModuleId =
   | 'dashboard'
   | 'tokens'
@@ -150,6 +152,7 @@ function appendUsersContext(
   page?: number | null,
   sort?: AdminUsersSortField | null,
   order?: SortDirection | null,
+  collection?: AdminUsersCollectionView | null,
 ): string {
   const params = new URLSearchParams()
   const normalizedQuery = query?.trim()
@@ -161,6 +164,9 @@ function appendUsersContext(
   if (sort) {
     params.set('sort', sort)
     params.set('order', order ?? 'desc')
+  }
+  if (collection === 'usage' && !path.endsWith('/usage')) {
+    params.set('view', 'usage')
   }
   const search = params.toString()
   return search ? `${path}?${search}` : path
@@ -193,8 +199,17 @@ export function userDetailPath(
   page?: number | null,
   sort?: AdminUsersSortField | null,
   order?: SortDirection | null,
+  collection?: AdminUsersCollectionView | null,
 ): string {
-  return appendUsersContext(`${ADMIN_BASE}/users/${encodeURIComponent(id)}`, query, tagId, page, sort, order)
+  return appendUsersContext(
+    `${ADMIN_BASE}/users/${encodeURIComponent(id)}`,
+    query,
+    tagId,
+    page,
+    sort,
+    order,
+    collection,
+  )
 }
 
 export function userTagsPath(
@@ -203,8 +218,9 @@ export function userTagsPath(
   page?: number | null,
   sort?: AdminUsersSortField | null,
   order?: SortDirection | null,
+  collection?: AdminUsersCollectionView | null,
 ): string {
-  return appendUsersContext(`${ADMIN_BASE}/users/tags`, query, tagId, page, sort, order)
+  return appendUsersContext(`${ADMIN_BASE}/users/tags`, query, tagId, page, sort, order, collection)
 }
 
 export function userTagCreatePath(
@@ -213,8 +229,9 @@ export function userTagCreatePath(
   page?: number | null,
   sort?: AdminUsersSortField | null,
   order?: SortDirection | null,
+  collection?: AdminUsersCollectionView | null,
 ): string {
-  return appendUsersContext(`${ADMIN_BASE}/users/tags/new`, query, tagId, page, sort, order)
+  return appendUsersContext(`${ADMIN_BASE}/users/tags/new`, query, tagId, page, sort, order, collection)
 }
 
 export function userTagEditPath(
@@ -224,8 +241,17 @@ export function userTagEditPath(
   page?: number | null,
   sort?: AdminUsersSortField | null,
   order?: SortDirection | null,
+  collection?: AdminUsersCollectionView | null,
 ): string {
-  return appendUsersContext(`${ADMIN_BASE}/users/tags/${encodeURIComponent(id)}`, query, tagId, page, sort, order)
+  return appendUsersContext(
+    `${ADMIN_BASE}/users/tags/${encodeURIComponent(id)}`,
+    query,
+    tagId,
+    page,
+    sort,
+    order,
+    collection,
+  )
 }
 
 export interface AdminKeyListContext {
