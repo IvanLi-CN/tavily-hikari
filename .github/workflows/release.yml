@@ -461,6 +461,15 @@ jobs:
           admin_logs = json.loads(os.environ["ADMIN_LOGS_JSON"])
           neutral_token_logs = json.loads(os.environ["TOKEN_LOGS_NEUTRAL_JSON"])
 
+          def parsed_request_body(item):
+              raw = item.get("request_body")
+              if not raw:
+                  return {}
+              try:
+                  return json.loads(raw)
+              except json.JSONDecodeError:
+                  return {}
+
           def find_log(items, predicate, label):
               for item in items:
                   if predicate(item):
@@ -470,7 +479,7 @@ jobs:
           items = admin_logs.get("items") or []
           neutral_log = find_log(
               items,
-              lambda item: item.get("request_kind_key") == "mcp:notifications/initialized",
+              lambda item: parsed_request_body(item).get("method") == "notifications/initialized",
               "neutral MCP notification",
           )
           if neutral_log.get("operationalClass") != "neutral":
