@@ -8600,7 +8600,7 @@ function AdminDashboard(): JSX.Element {
               {users.length === 0 ? (
                 <tbody>
                   <tr>
-                    <td colSpan={8}>
+                    <td colSpan={7}>
                       <div className="empty-state alert">{usersStrings.empty.none}</div>
                     </td>
                   </tr>
@@ -8640,7 +8640,6 @@ function AdminDashboard(): JSX.Element {
                         activeOrder={effectiveUsersSortOrder}
                         onToggle={toggleUsersSort}
                       />
-                      <th>{usersStrings.table.actions}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -8649,15 +8648,16 @@ function AdminDashboard(): JSX.Element {
                         <td className="admin-users-identity-cell">
                           <button
                             type="button"
-                            className="link-button"
+                            className="link-button admin-users-identity-button"
+                            aria-label={usersStrings.actions.view}
                             onClick={() => navigateUser(item.userId, { preserveUsersContext: true })}
                           >
                             <strong>{item.displayName || item.username || item.userId}</strong>
+                            <span className="panel-description admin-users-identity-meta">
+                              <code>{item.userId}</code>
+                              {item.username ? ` · @${item.username}` : ''}
+                            </span>
                           </button>
-                          <div className="panel-description" style={{ marginTop: 4 }}>
-                            <code>{item.userId}</code>
-                            {item.username ? ` · @${item.username}` : ''}
-                          </div>
                         </td>
                         <td>
                           <StatusBadge tone={item.active ? 'success' : 'neutral'}>
@@ -8682,19 +8682,6 @@ function AdminDashboard(): JSX.Element {
                         </td>
                         <td className="admin-users-compact-cell">
                           <AdminTableValueStack {...formatStackedTimestamp(item.lastLoginAt, language)} />
-                        </td>
-                        <td>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8 rounded-full p-0 shadow-none"
-                            title={usersStrings.actions.view}
-                            aria-label={usersStrings.actions.view}
-                            onClick={() => navigateUser(item.userId, { preserveUsersContext: true })}
-                          >
-                            <Icon icon="mdi:eye-outline" width={16} height={16} />
-                          </Button>
                         </td>
                       </tr>
                     ))}

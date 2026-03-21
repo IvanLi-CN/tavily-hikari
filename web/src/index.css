@@ -4628,7 +4628,7 @@ tbody tr:hover {
 
 .jobs-table.admin-users-list-table th:nth-child(1),
 .jobs-table.admin-users-list-table td:nth-child(1) {
-  width: 24%;
+  width: 25%;
 }
 
 .jobs-table.admin-users-list-table th:nth-child(2),
@@ -4645,14 +4645,14 @@ tbody tr:hover {
 .jobs-table.admin-users-list-table td:nth-child(4),
 .jobs-table.admin-users-list-table th:nth-child(5),
 .jobs-table.admin-users-list-table td:nth-child(5) {
-  width: 8.5%;
+  width: 9%;
 }
 
 .jobs-table.admin-users-list-table th:nth-child(6),
 .jobs-table.admin-users-list-table td:nth-child(6),
 .jobs-table.admin-users-list-table th:nth-child(7),
 .jobs-table.admin-users-list-table td:nth-child(7) {
-  width: 12%;
+  width: 12.5%;
 }
 
 .jobs-table.admin-users-usage-table {
@@ -4789,16 +4789,32 @@ tbody tr:hover {
   word-break: break-all;
 }
 
+.admin-users-identity-button {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  text-align: left;
+}
+
+.admin-users-identity-button:hover strong,
+.admin-users-identity-button:focus-visible strong {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.admin-users-identity-meta {
+  margin-top: 0;
+}
+
+.admin-users-identity-button code {
+  text-decoration: none;
+}
+
 .admin-users-tags-cell {
   overflow-wrap: normal;
   word-break: normal;
-}
-
-.jobs-table.admin-users-list-table th:last-child,
-.jobs-table.admin-users-list-table td:last-child {
-  width: 72px;
-  min-width: 72px;
-  text-align: center;
 }
 
 .jobs-table.admin-user-tokens-table th:last-child,

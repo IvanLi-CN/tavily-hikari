@@ -2944,7 +2944,6 @@ function UsersPageCanvas(): JSX.Element {
                     activeOrder={effectiveSortOrder}
                     onToggle={toggleSort}
                   />
-                  <th>{users.table.actions}</th>
                 </tr>
               </thead>
               <tbody>
@@ -2956,13 +2955,13 @@ function UsersPageCanvas(): JSX.Element {
                   return (
                   <tr key={item.userId}>
                     <td className="admin-users-identity-cell">
-                      <button type="button" className="link-button">
+                      <button type="button" className="link-button admin-users-identity-button" aria-label={users.actions.view}>
                         <strong>{item.displayName || item.username || item.userId}</strong>
+                        <span className="panel-description admin-users-identity-meta">
+                          <code>{item.userId}</code>
+                          {item.username ? ` · @${item.username}` : ''}
+                        </span>
                       </button>
-                      <div className="panel-description" style={{ marginTop: 4 }}>
-                        <code>{item.userId}</code>
-                        {item.username ? ` · @${item.username}` : ''}
-                      </div>
                     </td>
                     <td>
                       <StatusBadge tone={item.active ? 'success' : 'neutral'}>
@@ -2999,11 +2998,6 @@ function UsersPageCanvas(): JSX.Element {
                           <span className="admin-table-value-secondary">{lastLoginMetric.secondary}</span>
                         )}
                       </div>
-                    </td>
-                    <td>
-                      <button type="button" className="btn btn-circle btn-ghost btn-sm" aria-label={users.actions.view}>
-                        <Icon icon="mdi:open-in-new" width={16} height={16} />
-                      </button>
                     </td>
                   </tr>
                 )})}
