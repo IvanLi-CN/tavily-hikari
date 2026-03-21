@@ -613,6 +613,59 @@ fn temp_db_path(prefix: &str) -> PathBuf {
 }
 
 #[tokio::test]
+async fn successful_request_logs_do_not_backfill_failure_kind() {
+    let db_path = temp_db_path("request-log-success-failure-kind");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-request-log-success".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let key_id: String = sqlx::query_scalar("SELECT id FROM api_keys LIMIT 1")
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("fetch key id");
+
+    proxy
+        .key_store
+        .log_attempt(AttemptLog {
+            key_id: &key_id,
+            auth_token_id: None,
+            method: &Method::POST,
+            path: "/mcp",
+            query: None,
+            status: Some(StatusCode::OK),
+            tavily_status_code: Some(200),
+            error: None,
+            request_body: br#"{"jsonrpc":"2.0","id":"success-log","method":"tools/call","params":{"name":"tavily_search","arguments":{"query":"ok"}}}"#,
+            response_body: br#"{"jsonrpc":"2.0","id":"success-log","result":{"content":[{"type":"text","text":"ok"}]}}"#,
+            outcome: OUTCOME_SUCCESS,
+            failure_kind: None,
+            key_effect_code: KEY_EFFECT_NONE,
+            key_effect_summary: None,
+            forwarded_headers: &[],
+            dropped_headers: &[],
+        })
+        .await
+        .expect("log success attempt");
+
+    let row: (String, Option<String>) = sqlx::query_as(
+        "SELECT result_status, failure_kind FROM request_logs ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("fetch request log row");
+    assert_eq!(row.0, OUTCOME_SUCCESS);
+    assert_eq!(row.1, None);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn token_log_filters_and_options_use_backfilled_request_kind_columns() {
     let db_path = temp_db_path("token-log-request-kind-backfill");
     let db_str = db_path.to_string_lossy().to_string();

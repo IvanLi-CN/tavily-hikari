@@ -8496,13 +8496,17 @@ impl KeyStore {
         let created_at = Utc::now().timestamp();
         let status_code = entry.status.map(|code| code.as_u16() as i64);
         let failure_kind = entry.failure_kind.map(str::to_string).or_else(|| {
-            classify_failure_kind(
-                entry.path,
-                status_code,
-                entry.tavily_status_code,
-                entry.error,
-                entry.response_body,
-            )
+            if entry.outcome == OUTCOME_ERROR {
+                classify_failure_kind(
+                    entry.path,
+                    status_code,
+                    entry.tavily_status_code,
+                    entry.error,
+                    entry.response_body,
+                )
+            } else {
+                None
+            }
         });
         let key_effect_summary = entry.key_effect_summary.map(str::to_string);
 
