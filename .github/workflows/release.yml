@@ -348,6 +348,13 @@ jobs:
             -d '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
             >/dev/null
 
+          curl -fsS \
+            -X POST \
+            "http://127.0.0.1:${MOCK_PORT}/admin/force-response" \
+            -H 'content-type: application/json' \
+            -d '{"http_status":406,"body":{"error":"client must accept both application/json and text/event-stream"},"once":true}' \
+            >/dev/null
+
           CLIENT_ERROR_HTTP="$(
             curl -sS \
               -o /dev/null \
@@ -355,7 +362,7 @@ jobs:
               -X POST \
               "http://127.0.0.1:${PROXY_PORT}/mcp" \
               -H "Authorization: Bearer ${TOKEN}" \
-              -H 'Accept: application/json' \
+              -H 'Accept: application/json, text/event-stream' \
               -H 'content-type: application/json' \
               -d '{"jsonrpc":"2.0","id":"release-smoke-406","method":"tools/call","params":{"name":"tavily_search","arguments":{"query":"release smoke client error"}}}'
           )"
