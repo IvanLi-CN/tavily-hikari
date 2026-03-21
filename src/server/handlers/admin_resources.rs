@@ -2196,7 +2196,7 @@ fn compare_success_rate(
         return ratio_order;
     }
 
-    direction.apply(left_failure.cmp(&right_failure))
+    left_failure.cmp(&right_failure)
 }
 
 fn compare_admin_user_rows(
@@ -3252,6 +3252,32 @@ mod admin_resources_tests {
 
         let ordered_ids: Vec<&str> = rows.iter().map(|row| row.user.user_id.as_str()).collect();
         assert_eq!(ordered_ids, vec!["usr_best", "usr_mid", "usr_zero"]);
+    }
+
+    #[test]
+    fn success_rate_sort_uses_failure_count_as_ascending_tiebreaker() {
+        let mut rows = [
+            mock_row("usr_many_failures", Some(10), |summary| {
+                summary.daily_success = 9;
+                summary.daily_failure = 9;
+            }),
+            mock_row("usr_few_failures", Some(11), |summary| {
+                summary.daily_success = 1;
+                summary.daily_failure = 1;
+            }),
+        ];
+
+        rows.sort_by(|left, right| {
+            compare_admin_user_rows(
+                left,
+                right,
+                Some(AdminUsersSortField::DailySuccessRate),
+                Some(AdminUsersSortDirection::Desc),
+            )
+        });
+
+        let ordered_ids: Vec<&str> = rows.iter().map(|row| row.user.user_id.as_str()).collect();
+        assert_eq!(ordered_ids, vec!["usr_few_failures", "usr_many_failures"]);
     }
 
     #[test]
