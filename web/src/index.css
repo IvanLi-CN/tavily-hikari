@@ -4245,11 +4245,18 @@ table {
 
 .recent-requests-facet-option {
   display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
+  grid-template-columns: max-content 1fr auto;
   align-items: center;
   gap: 12px;
   width: 100%;
   min-width: 0;
+}
+
+.recent-requests-filter-content [role='option'] > span {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .select-item-text {
@@ -4260,15 +4267,14 @@ table {
 }
 
 .recent-requests-facet-option--status .status-badge {
-  flex: 0 0 auto;
+  grid-column: 1;
   justify-self: start;
   min-width: 0;
   max-width: none;
 }
 
 .recent-requests-facet-count {
-  flex: 0 0 auto;
-  margin-left: auto;
+  grid-column: 3;
   justify-self: end;
   text-align: right;
   color: hsl(var(--muted-foreground));
