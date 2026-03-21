@@ -160,6 +160,41 @@
 - `cd web && bun run build`
 - Storybook / 浏览器验证三处页面的列显隐、facet、nowrap 与展开详情。
 
+## Visual Evidence (PR)
+
+- source_type: `storybook_canvas`
+  story_id_or_title: `admin-pages--requests`
+  target_program: `mock-only`
+  capture_scope: `browser-viewport`
+  sensitive_exclusion: `N/A`
+  submission_gate: `pending-owner-approval`
+  state: `shared recent requests list`
+  evidence_note: 验证全局请求页已经切换到统一的共享列表，筛选条、列顺序与 no-wrap 桌面表格在 Storybook 中稳定可复查。
+  image:
+  ![Admin requests shared list](./assets/admin-requests-shared-list.png)
+
+- source_type: `storybook_canvas`
+  story_id_or_title: `admin-pages--requests`
+  target_program: `mock-only`
+  capture_scope: `browser-viewport`
+  sensitive_exclusion: `N/A`
+  submission_gate: `pending-owner-approval`
+  state: `result and key effect facet expanded`
+  evidence_note: 验证“结果与影响”分组筛选在共享列表中可展开查看，并展示当前可选项与数量。
+  image:
+  ![Admin requests outcome facet](./assets/admin-requests-outcome-filter.png)
+
+- source_type: `storybook_canvas`
+  story_id_or_title: `admin-pages-tokendetail--dense-request-records`
+  target_program: `mock-only`
+  capture_scope: `browser-viewport`
+  sensitive_exclusion: `N/A`
+  submission_gate: `pending-owner-approval`
+  state: `token detail shared list`
+  evidence_note: 验证 Token 详情页复用同一套近期请求列表，并保持 Key 筛选与上下文列显隐。
+  image:
+  ![Token detail shared list](./assets/token-detail-shared-list.png)
+
 ## 里程碑
 
 - [ ] M1: 新 spec、README 索引与接口合同冻结
