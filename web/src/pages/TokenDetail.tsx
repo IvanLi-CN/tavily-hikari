@@ -2,15 +2,21 @@ import { Fragment, type ReactNode, useCallback, useEffect, useLayoutEffect, useM
 import { Icon } from '../lib/icons'
 import { Chart as ChartJS, BarElement, CategoryScale, Legend, LinearScale, Tooltip, type ChartOptions } from 'chart.js'
 import { Bar } from 'react-chartjs-2'
-import { fetchTokenUsageSeries, rotateTokenSecret, type TokenOwnerSummary, type TokenUsageBucket } from '../api'
+import {
+  fetchTokenLogsPage,
+  fetchTokenUsageSeries,
+  rotateTokenSecret,
+  type RequestLog,
+  type RequestLogFacets,
+  type TokenOwnerSummary,
+  type TokenUsageBucket,
+} from '../api'
 import { type QueryLoadState, getBlockingLoadState, getRefreshingLoadState, isBlockingLoadState, isRefreshingLoadState } from '../admin/queryLoadState'
 import AdminLoadingRegion from '../components/AdminLoadingRegion'
+import AdminRecentRequestsPanel, { type RecentRequestsOutcomeFilter } from '../components/AdminRecentRequestsPanel'
 import AdminReturnToConsoleLink from '../components/AdminReturnToConsoleLink'
-import AdminTablePagination from '../components/AdminTablePagination'
-import AdminTableShell from '../components/AdminTableShell'
-import RequestKindBadge from '../components/RequestKindBadge'
 import ThemeToggle from '../components/ThemeToggle'
-import { StatusBadge, type StatusTone } from '../components/StatusBadge'
+import { StatusBadge } from '../components/StatusBadge'
 import { Button } from '../components/ui/button'
 import {
   Dialog,
@@ -19,19 +25,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '../components/ui/dialog'
-import {
-  DropdownMenu,
-  DropdownMenuCheckboxItem,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '../components/ui/dropdown-menu'
 import { Input } from '../components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select'
-import SegmentedTabs from '../components/ui/SegmentedTabs'
-import { TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table'
 import { Textarea } from '../components/ui/textarea'
 import { useLanguage, useTranslate } from '../i18n'
 import { ADMIN_USER_CONSOLE_HREF } from '../lib/adminUserConsoleEntry'
@@ -39,17 +34,13 @@ import { copyText, selectAllReadonlyText } from '../lib/clipboard'
 import { useResponsiveModes } from '../lib/responsive'
 import {
   buildRequestKindQuickFilterSelection,
-  buildVisibleRequestKindOptions,
-  buildTokenLogsPagePath,
   defaultTokenLogRequestKindQuickFilters,
   hasActiveRequestKindQuickFilters,
-  mergeRequestKindOptionsByKey,
   resolveEffectiveRequestKindSelection,
   resolveRequestKindOptionsRefresh,
   resolveManualRequestKindQuickFilters,
   requestKindSelectionsMatch,
-  summarizeRequestKindQuickFilters,
-  summarizeSelectedRequestKinds,
+  tokenLogRequestKindEmptySelectionKey,
   toggleRequestKindSelection,
   type TokenLogRequestKindQuickBilling,
   type TokenLogRequestKindQuickProtocol,
@@ -58,6 +49,13 @@ import {
 } from '../tokenLogRequestKinds'
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip, Legend)
+
+const emptyRequestLogFacets: RequestLogFacets = {
+  results: [],
+  keyEffects: [],
+  tokens: [],
+  keys: [],
+}
 
 type Period = 'day' | 'week' | 'month'
 
@@ -89,33 +87,7 @@ interface TokenSummary {
   last_activity: number | null
 }
 
-interface TokenLog {
-  id: number
-  method: string
-  path: string
-  query: string | null
-  http_status: number | null
-  mcp_status: number | null
-  business_credits: number | null
-  request_kind_key: string
-  request_kind_label: string
-  request_kind_detail: string | null
-  result_status: string
-  error_message: string | null
-  failure_kind?: string | null
-  key_effect_code?: string
-  key_effect_summary?: string | null
-  created_at: number
-}
-
-interface TokenLogsPageResponse {
-  items: TokenLog[]
-  page: number
-  per_page?: number
-  perPage?: number
-  total: number
-  request_kind_options: TokenLogRequestKindOption[]
-}
+type TokenLog = RequestLog
 
 interface UsageBar {
   bucket: number
@@ -161,99 +133,12 @@ function formatLogTime(ts: number | null, period: Period) {
   }
 }
 
-function statusTone(status: string): StatusTone {
-  const s = status.toLowerCase()
-  if (s === 'active' || s === 'success') return 'success'
-  if (s === 'exhausted' || s === 'quota_exhausted') return 'warning'
-  if (s === 'error') return 'error'
-  return 'neutral'
-}
-
 function statusLabel(status: string): string {
   switch (status.toLowerCase()) {
     case 'success': return 'Success'
     case 'error': return 'Error'
     case 'quota_exhausted': return 'Quota Exhausted'
     default: return status
-  }
-}
-
-function formatTokenKeyEffectSummary(log: TokenLog, language: 'en' | 'zh'): string {
-  const summary = log.key_effect_summary?.trim()
-  switch ((log.key_effect_code ?? '').trim()) {
-    case 'quarantined':
-      return language === 'zh' ? '系统已自动隔离该 Key' : 'The system automatically quarantined this key'
-    case 'marked_exhausted':
-      return language === 'zh' ? '系统已自动将该 Key 标记为耗尽' : 'The system automatically marked this key as exhausted'
-    case 'restored_active':
-      return language === 'zh'
-        ? '系统已自动将 exhausted Key 恢复为 active'
-        : 'The system automatically restored this exhausted key to active'
-    case 'cleared_quarantine':
-      return language === 'zh' ? '管理员已解除该 Key 的隔离' : 'An admin cleared the quarantine on this key'
-    case 'none':
-      return language === 'zh' ? '无自动状态变更' : 'No automatic key state change'
-    default:
-      return summary && summary.length > 0 ? summary : language === 'zh' ? '无自动状态变更' : 'No automatic key state change'
-  }
-}
-
-function tokenKeyEffectTone(code: string | null | undefined): StatusTone {
-  switch ((code ?? '').trim()) {
-    case 'quarantined':
-      return 'error'
-    case 'marked_exhausted':
-      return 'warning'
-    case 'restored_active':
-    case 'cleared_quarantine':
-      return 'success'
-    default:
-      return 'neutral'
-  }
-}
-
-function tokenKeyEffectBadgeLabel(log: TokenLog, language: 'en' | 'zh'): string {
-  switch ((log.key_effect_code ?? '').trim()) {
-    case 'quarantined':
-      return language === 'zh' ? '已隔离' : 'Quarantined'
-    case 'marked_exhausted':
-      return language === 'zh' ? '已耗尽' : 'Exhausted'
-    case 'restored_active':
-      return language === 'zh' ? '已恢复' : 'Restored'
-    case 'cleared_quarantine':
-      return language === 'zh' ? '已清除' : 'Cleared'
-    case 'none':
-    case '':
-      return language === 'zh' ? '无变更' : 'No Change'
-    default:
-      return language === 'zh' ? '已更新' : 'Updated'
-  }
-}
-
-function tokenFailureGuidance(kind: string | null | undefined, language: 'en' | 'zh'): string | null {
-  switch (kind) {
-    case 'upstream_gateway_5xx':
-      return language === 'zh'
-        ? '这是上游网关临时故障，建议稍后重试，并检查上游连通性或代理节点健康。'
-        : 'This is a temporary upstream gateway failure. Retry later and inspect upstream connectivity or proxy health.'
-    case 'upstream_rate_limited_429':
-      return language === 'zh'
-        ? '这是 Tavily 限流，建议降低频率、切换其他 Key，或等待限流窗口恢复。'
-        : 'Tavily is rate limiting this traffic. Reduce request rate, switch keys, or wait for the limit window to reset.'
-    case 'upstream_account_deactivated_401':
-      return language === 'zh'
-        ? '该 Key 可能已失效、被撤销或账户停用，建议更换可用 Key 并检查 Tavily 后台状态。'
-        : 'The key may be invalid, revoked, or tied to a deactivated account. Replace it and check the Tavily account state.'
-    case 'transport_send_error':
-      return language === 'zh'
-        ? '这是链路发送失败，建议检查 DNS、TLS、代理链路和上游可达性。'
-        : 'This request failed before getting an upstream response. Check DNS, TLS, proxy routing, and upstream reachability.'
-    case 'mcp_accept_406':
-      return language === 'zh'
-        ? '客户端需要同时接受 application/json 与 text/event-stream，请修正 Accept 请求头。'
-        : 'The client must accept both application/json and text/event-stream. Fix the Accept header negotiation.'
-    default:
-      return null
   }
 }
 
@@ -482,11 +367,13 @@ function dayLabel(bucket: number): string {
 export default function TokenDetail({
   id,
   onBack,
+  onOpenKey,
   onOpenUser,
   onSecretRotated,
 }: {
   id: string
   onBack?: () => void
+  onOpenKey?: (keyId: string) => void
   onOpenUser?: (userId: string) => void
   onSecretRotated?: (id: string, token: string) => void
 }): JSX.Element {
@@ -511,10 +398,12 @@ export default function TokenDetail({
   const [perPage, setPerPage] = useState(20)
   const [total, setTotal] = useState(0)
   const [requestKindOptions, setRequestKindOptions] = useState<TokenLogRequestKindOption[]>([])
-  const [requestKindOptionsByKey, setRequestKindOptionsByKey] = useState<Record<string, TokenLogRequestKindOption>>({})
   const [selectedRequestKinds, setSelectedRequestKinds] = useState<string[]>([])
   const [requestKindQuickBilling, setRequestKindQuickBilling] = useState<TokenLogRequestKindQuickBilling>('all')
   const [requestKindQuickProtocol, setRequestKindQuickProtocol] = useState<TokenLogRequestKindQuickProtocol>('all')
+  const [logFacets, setLogFacets] = useState<RequestLogFacets>(emptyRequestLogFacets)
+  const [outcomeFilter, setOutcomeFilter] = useState<RecentRequestsOutcomeFilter | null>(null)
+  const [selectedKeyId, setSelectedKeyId] = useState<string | null>(null)
   const [summaryLoadState, setSummaryLoadState] = useState<QueryLoadState>('initial_loading')
   const [logsLoadState, setLogsLoadState] = useState<QueryLoadState>('initial_loading')
   const [quickUsage, setQuickUsage] = useState<UsageBar[]>([])
@@ -524,7 +413,6 @@ export default function TokenDetail({
   const [error, setError] = useState<string | null>(null)
   const [warning, setWarning] = useState<string | null>(null)
   const sseRef = useRef<EventSource | null>(null)
-  const [expandedLogs, setExpandedLogs] = useState<Set<number>>(() => new Set())
   const warningTimerRef = useRef<number | null>(null)
   const sinceDebounceRef = useRef<number | null>(null)
   const [isRotateDialogOpen, setIsRotateDialogOpen] = useState(false)
@@ -533,9 +421,7 @@ export default function TokenDetail({
   const [rotatedToken, setRotatedToken] = useState<string | null>(null)
   const [rotatedCopyState, setRotatedCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
   const [sseConnected, setSseConnected] = useState(false)
-  const [logsContentMinHeight, setLogsContentMinHeight] = useState(320)
   const perPageRef = useRef(20)
-  const logsContentRef = useRef<HTMLDivElement | null>(null)
   const quickUsageAbortRef = useRef<AbortController | null>(null)
   const snapshotUsageAbortRef = useRef<AbortController | null>(null)
   const detailAbortRef = useRef<AbortController | null>(null)
@@ -551,12 +437,18 @@ export default function TokenDetail({
     untilIso: string
     requestKinds: string[]
     forceEmptyMatch: boolean
+    result?: string
+    keyEffect?: string
+    keyId?: string
   }>({
     tokenId: id,
     sinceIso: '',
     untilIso: '',
     requestKinds: [],
     forceEmptyMatch: false,
+    result: undefined,
+    keyEffect: undefined,
+    keyId: undefined,
   })
   const requestKindRefreshContextRef = useRef<{
     selectedRequestKindsNormalized: string[]
@@ -584,16 +476,17 @@ export default function TokenDetail({
     setPage(1)
     setTotal(0)
     setRequestKindOptions([])
-    setRequestKindOptionsByKey({})
     setSelectedRequestKinds([])
     setRequestKindQuickBilling('all')
     setRequestKindQuickProtocol('all')
+    setLogFacets(emptyRequestLogFacets)
+    setOutcomeFilter(null)
+    setSelectedKeyId(null)
     setWarning(null)
     setQuickUsage([])
     setQuickUsageLoading(true)
     setSnapshotUsage([])
     setSnapshotUsageLoading(true)
-    setLogsContentMinHeight(320)
     setSummaryLoadState('initial_loading')
     setLogsLoadState('initial_loading')
     summaryQueryKeyRef.current = null
@@ -647,6 +540,8 @@ export default function TokenDetail({
     () => buildRequestKindQuickFilterSelection(requestKindOptions, requestKindQuickFilters),
     [requestKindOptions, requestKindQuickFilters],
   )
+  const resultFilter = outcomeFilter?.kind === 'result' ? outcomeFilter.value : undefined
+  const keyEffectFilter = outcomeFilter?.kind === 'keyEffect' ? outcomeFilter.value : undefined
   const effectiveSelectedRequestKinds = useMemo(
     () =>
       resolveEffectiveRequestKindSelection(
@@ -660,44 +555,19 @@ export default function TokenDetail({
     () => hasActiveQuickRequestKindFilters && requestKindQuickSelection.length === 0,
     [hasActiveQuickRequestKindFilters, requestKindQuickSelection.length],
   )
-  const visibleRequestKindOptions = useMemo(
-    () =>
-      buildVisibleRequestKindOptions(
-        effectiveSelectedRequestKinds,
-        requestKindOptions,
-        requestKindOptionsByKey,
-      ),
-    [effectiveSelectedRequestKinds, requestKindOptionsByKey, requestKindOptions],
-  )
-  const requestKindSummary = useMemo(
-    () => summarizeSelectedRequestKinds(effectiveSelectedRequestKinds, visibleRequestKindOptions),
-    [effectiveSelectedRequestKinds, visibleRequestKindOptions],
-  )
-  const requestKindQuickSummary = useMemo(
-    () => summarizeRequestKindQuickFilters(requestKindQuickFilters),
-    [requestKindQuickFilters],
-  )
-  const requestKindTriggerSummary = useMemo(() => {
-    if (hasActiveQuickRequestKindFilters) return requestKindQuickSummary
-    if (effectiveSelectedRequestKinds.length === 0) return 'All request types'
-    if (effectiveSelectedRequestKinds.length <= 2) return requestKindSummary
-    return 'Request types'
-  }, [
-    effectiveSelectedRequestKinds.length,
-    hasActiveQuickRequestKindFilters,
-    requestKindQuickSummary,
-    requestKindSummary,
-  ])
   const summaryQueryBaseKey = useMemo(
     () => `${id}:${period}:${sinceIso}:${untilIso}`,
     [id, period, sinceIso, untilIso],
   )
   const logsQueryBaseKey = useMemo(
     () =>
-      `${summaryQueryBaseKey}:quick=${requestKindQuickBilling}:${requestKindQuickProtocol}:requestKinds=${selectedRequestKindsNormalized.join(',')}`,
+      `${summaryQueryBaseKey}:quick=${requestKindQuickBilling}:${requestKindQuickProtocol}:requestKinds=${selectedRequestKindsNormalized.join(',')}:result=${resultFilter ?? ''}:keyEffect=${keyEffectFilter ?? ''}:key=${selectedKeyId ?? ''}`,
     [
+      keyEffectFilter,
       requestKindQuickBilling,
       requestKindQuickProtocol,
+      resultFilter,
+      selectedKeyId,
       selectedRequestKindsNormalized,
       summaryQueryBaseKey,
     ],
@@ -708,6 +578,9 @@ export default function TokenDetail({
     untilIso,
     requestKinds: effectiveSelectedRequestKinds,
     forceEmptyMatch: hasQuickRequestKindEmptyMatch,
+    result: resultFilter,
+    keyEffect: keyEffectFilter,
+    keyId: selectedKeyId ?? undefined,
   }
   requestKindRefreshContextRef.current = {
     selectedRequestKindsNormalized,
@@ -715,11 +588,6 @@ export default function TokenDetail({
     effectiveSelectedRequestKinds,
     hasQuickRequestKindEmptyMatch,
   }
-
-  useEffect(() => {
-    const preservedHeight = Math.max(320, logsContentRef.current?.offsetHeight ?? 0)
-    setLogsContentMinHeight(preservedHeight)
-  }, [logsQueryBaseKey, page, perPage])
 
   useEffect(() => {
     logsQueryBaseKeyRef.current = logsQueryBaseKey
@@ -731,19 +599,12 @@ export default function TokenDetail({
     if (page !== 1 || !hasActiveQuickRequestKindFilters) return
     if (requestKindSelectionsMatch(selectedRequestKindsNormalized, requestKindQuickSelection)) return
     setSelectedRequestKinds(requestKindQuickSelection)
-    setExpandedLogs(new Set())
   }, [
     hasActiveQuickRequestKindFilters,
     page,
     requestKindQuickSelection,
     selectedRequestKindsNormalized,
   ])
-
-  useLayoutEffect(() => {
-    if (logsBlocking) return
-    const nextHeight = Math.max(320, logsContentRef.current?.offsetHeight ?? 0)
-    setLogsContentMinHeight(nextHeight)
-  }, [logsBlocking, logs, expandedLogs, viewportMode, contentMode, isCompactLayout])
 
   const applyStartInput = (raw: string, nextPeriod: Period = period, opts?: { suppressWarning?: boolean }) => {
     const sanitized = sanitizeInput(nextPeriod, raw || defaultInputValue(nextPeriod))
@@ -818,38 +679,50 @@ export default function TokenDetail({
     }
   }
 
-  const buildLogsPageUrl = useCallback(
-    (nextPage: number, nextPerPage = perPageRef.current) => {
-      const { tokenId, sinceIso, untilIso, requestKinds, forceEmptyMatch } = logsRequestContextRef.current
-      return buildTokenLogsPagePath({
+  const loadLogsPage = useCallback(
+    (nextPage: number, nextPerPage = perPageRef.current, signal?: AbortSignal) => {
+      const { tokenId, sinceIso, untilIso, requestKinds, forceEmptyMatch, result, keyEffect, keyId } =
+        logsRequestContextRef.current
+      return fetchTokenLogsPage(
         tokenId,
-        page: nextPage,
-        perPage: nextPerPage,
-        sinceIso,
-        untilIso,
-        forceEmptyMatch,
-        requestKinds,
-      })
+        {
+          page: nextPage,
+          perPage: nextPerPage,
+          sinceIso,
+          untilIso,
+          requestKinds: forceEmptyMatch ? [tokenLogRequestKindEmptySelectionKey] : requestKinds,
+          result: result as 'success' | 'error' | 'quota_exhausted' | undefined,
+          keyEffect,
+          keyId,
+        },
+        signal,
+      )
     },
     [],
   )
-  const buildLogsPageUrlForSelection = useCallback(
+  const loadLogsPageForSelection = useCallback(
     (
       nextPage: number,
       requestKinds: string[],
       forceEmptyMatch: boolean,
       nextPerPage = perPageRef.current,
+      signal?: AbortSignal,
     ) => {
-      const { tokenId, sinceIso, untilIso } = logsRequestContextRef.current
-      return buildTokenLogsPagePath({
+      const { tokenId, sinceIso, untilIso, result, keyEffect, keyId } = logsRequestContextRef.current
+      return fetchTokenLogsPage(
         tokenId,
-        page: nextPage,
-        perPage: nextPerPage,
-        sinceIso,
-        untilIso,
-        forceEmptyMatch,
-        requestKinds,
-      })
+        {
+          page: nextPage,
+          perPage: nextPerPage,
+          sinceIso,
+          untilIso,
+          requestKinds: forceEmptyMatch ? [tokenLogRequestKindEmptySelectionKey] : requestKinds,
+          result: result as 'success' | 'error' | 'quota_exhausted' | undefined,
+          keyEffect,
+          keyId,
+        },
+        signal,
+      )
     },
     [],
   )
@@ -857,7 +730,6 @@ export default function TokenDetail({
   const syncRequestKindState = useCallback(
     (nextOptions: TokenLogRequestKindOption[]) => {
       setRequestKindOptions(nextOptions)
-      setRequestKindOptionsByKey((prev) => mergeRequestKindOptionsByKey(prev, nextOptions))
     },
     [],
   )
@@ -1003,22 +875,21 @@ export default function TokenDetail({
     setLogs([])
     setPage(1)
     setTotal(0)
-    setExpandedLogs(new Set())
+    setLogFacets(emptyRequestLogFacets)
     setError(null)
     const run = async () => {
       try {
-        const logsRes = await getJson<TokenLogsPageResponse>(buildLogsPageUrl(1), logsController.signal)
+        const logsRes = await loadLogsPage(1, perPageRef.current, logsController.signal)
         if (logsController.signal.aborted) return
-        const resolvedPerPage = logsRes.per_page ?? logsRes.perPage ?? perPageRef.current
         setLogs(logsRes.items)
         setPage(1)
-        setPerPage(resolvedPerPage)
+        setPerPage(logsRes.perPage)
         setTotal(logsRes.total)
-        syncRequestKindState(logsRes.request_kind_options ?? [])
-        setExpandedLogs(new Set())
+        setLogFacets(logsRes.facets)
+        syncRequestKindState(logsRes.requestKindOptions ?? [])
         setError(null)
         setLogsLoadState('ready')
-        logsQueryKeyRef.current = `${logsQueryBaseKey}:page=1:perPage=${resolvedPerPage}`
+        logsQueryKeyRef.current = `${logsQueryBaseKey}:page=1:perPage=${logsRes.perPage}`
       } catch (e) {
         if ((e as Error).name === 'AbortError') return
         setError(e instanceof Error ? e.message : 'Failed to load request records')
@@ -1029,7 +900,7 @@ export default function TokenDetail({
     return () => {
       logsController.abort()
     }
-  }, [buildLogsPageUrl, logsQueryBaseKey, syncRequestKindState])
+  }, [loadLogsPage, logsQueryBaseKey, syncRequestKindState])
 
   // SSE for live updates (refresh first page upon snapshot)
   useEffect(() => {
@@ -1049,17 +920,16 @@ export default function TokenDetail({
       logsAbortRef.current = controller
       setLogsLoadState(getRefreshingLoadState(logsQueryKeyRef.current != null))
       try {
-        const data = await getJson<TokenLogsPageResponse>(buildLogsPageUrl(1), controller.signal)
+        const data = await loadLogsPage(1, perPageRef.current, controller.signal)
         if (controller.signal.aborted) return
-        const resolvedPerPage = data.per_page ?? data.perPage ?? perPageRef.current
         setLogs(data.items)
         setTotal(data.total)
-        setPerPage(resolvedPerPage)
-        syncRequestKindState(data.request_kind_options ?? [])
+        setPerPage(data.perPage)
+        setLogFacets(data.facets)
+        syncRequestKindState(data.requestKindOptions ?? [])
         setPage(1)
-        setExpandedLogs(new Set())
         setLogsLoadState('ready')
-        logsQueryKeyRef.current = `${logsQueryBaseKey}:page=1:perPage=${resolvedPerPage}`
+        logsQueryKeyRef.current = `${logsQueryBaseKey}:page=1:perPage=${data.perPage}`
       } catch {
         if (!controller.signal.aborted) {
           setLogsLoadState('error')
@@ -1073,9 +943,9 @@ export default function TokenDetail({
       requestKindOptionsAbortRef.current = controller
       const requestQueryBaseKey = logsQueryBaseKeyRef.current
       try {
-        const data = await getJson<TokenLogsPageResponse>(buildLogsPageUrl(1), controller.signal)
+        const data = await loadLogsPage(1, perPageRef.current, controller.signal)
         if (controller.signal.aborted || logsQueryBaseKeyRef.current !== requestQueryBaseKey) return
-        const nextOptions = data.request_kind_options ?? []
+        const nextOptions = data.requestKindOptions ?? []
         const refreshContext = requestKindRefreshContextRef.current
         const refreshedSelection = resolveRequestKindOptionsRefresh(
           nextOptions,
@@ -1091,13 +961,11 @@ export default function TokenDetail({
           setLogsLoadState(getRefreshingLoadState(logsQueryKeyRef.current != null))
 
           const loadRefreshedPage = async (nextPage: number, nextPerPage = perPageRef.current) =>
-            getJson<TokenLogsPageResponse>(
-              buildLogsPageUrlForSelection(
-                nextPage,
-                refreshedSelection.effectiveSelection,
-                refreshedSelection.hasEmptyMatch,
-                nextPerPage,
-              ),
+            loadLogsPageForSelection(
+              nextPage,
+              refreshedSelection.effectiveSelection,
+              refreshedSelection.hasEmptyMatch,
+              nextPerPage,
               logsController.signal,
             )
 
@@ -1105,7 +973,7 @@ export default function TokenDetail({
           let refreshedPage = await loadRefreshedPage(resolvedPage)
           if (logsController.signal.aborted || logsQueryBaseKeyRef.current !== requestQueryBaseKey) return
 
-          const resolvedPerPage = refreshedPage.per_page ?? refreshedPage.perPage ?? perPageRef.current
+          const resolvedPerPage = refreshedPage.perPage ?? perPageRef.current
           const pageCount = Math.max(1, Math.ceil(refreshedPage.total / resolvedPerPage) || 1)
           const clampedPage = Math.min(resolvedPage, pageCount)
 
@@ -1114,22 +982,23 @@ export default function TokenDetail({
             if (logsController.signal.aborted || logsQueryBaseKeyRef.current !== requestQueryBaseKey) return
           }
 
-          const finalPerPage = refreshedPage.per_page ?? refreshedPage.perPage ?? resolvedPerPage
+          const finalPerPage = refreshedPage.perPage ?? resolvedPerPage
           const finalPageCount = Math.max(1, Math.ceil(refreshedPage.total / finalPerPage) || 1)
           const finalPage = Math.min(clampedPage, finalPageCount)
           setLogs(refreshedPage.items)
           setPage(finalPage)
           setPerPage(finalPerPage)
           setTotal(refreshedPage.total)
-          syncRequestKindState(refreshedPage.request_kind_options ?? nextOptions)
-          setExpandedLogs(new Set())
+          setLogFacets(refreshedPage.facets)
+          syncRequestKindState(refreshedPage.requestKindOptions ?? nextOptions)
           setLogsLoadState('ready')
           logsQueryKeyRef.current = `${requestQueryBaseKey}:page=${finalPage}:perPage=${finalPerPage}`
           return
         }
 
         setTotal(data.total)
-        setPerPage(data.per_page ?? data.perPage ?? perPageRef.current)
+        setPerPage(data.perPage ?? perPageRef.current)
+        setLogFacets(data.facets)
         syncRequestKindState(nextOptions)
       } catch {
         // ignore
@@ -1166,10 +1035,10 @@ export default function TokenDetail({
     es.onerror = () => { setSseConnected(false) }
     return () => { try { es.close() } catch {} setSseConnected(false) }
   }, [
-    buildLogsPageUrl,
-    buildLogsPageUrlForSelection,
     debouncedSinceInput,
     id,
+    loadLogsPage,
+    loadLogsPageForSelection,
     logsQueryBaseKey,
     page,
     period,
@@ -1194,13 +1063,12 @@ export default function TokenDetail({
     setLogsLoadState(getBlockingLoadState(logsQueryKeyRef.current != null))
     setLogs([])
     setPage(p)
-    setExpandedLogs(new Set())
     setError(null)
     const requestQueryBaseKey = logsQueryBaseKeyRef.current
     try {
-      const data = await getJson<TokenLogsPageResponse>(buildLogsPageUrl(p, nextPerPage), controller.signal)
+      const data = await loadLogsPage(p, nextPerPage, controller.signal)
       if (controller.signal.aborted || logsQueryBaseKeyRef.current !== requestQueryBaseKey) return
-      const nextOptions = data.request_kind_options ?? []
+      const nextOptions = data.requestKindOptions ?? []
       const refreshContext = requestKindRefreshContextRef.current
       const refreshedSelection = resolveRequestKindOptionsRefresh(
         nextOptions,
@@ -1211,13 +1079,11 @@ export default function TokenDetail({
       )
       if (refreshedSelection.selectionChanged) {
         const loadRefreshedPage = async (nextPage: number, pagePerPage = nextPerPage) =>
-          getJson<TokenLogsPageResponse>(
-            buildLogsPageUrlForSelection(
-              nextPage,
-              refreshedSelection.effectiveSelection,
-              refreshedSelection.hasEmptyMatch,
-              pagePerPage,
-            ),
+          loadLogsPageForSelection(
+            nextPage,
+            refreshedSelection.effectiveSelection,
+            refreshedSelection.hasEmptyMatch,
+            pagePerPage,
             controller.signal,
           )
 
@@ -1225,7 +1091,7 @@ export default function TokenDetail({
         let refreshedPage = await loadRefreshedPage(requestedPage)
         if (controller.signal.aborted || logsQueryBaseKeyRef.current !== requestQueryBaseKey) return
 
-        const resolvedPerPage = refreshedPage.per_page ?? refreshedPage.perPage ?? nextPerPage
+        const resolvedPerPage = refreshedPage.perPage ?? nextPerPage
         const refreshedPageCount = Math.max(1, Math.ceil(refreshedPage.total / resolvedPerPage) || 1)
         const clampedPage = Math.min(requestedPage, refreshedPageCount)
 
@@ -1234,27 +1100,27 @@ export default function TokenDetail({
           if (controller.signal.aborted || logsQueryBaseKeyRef.current !== requestQueryBaseKey) return
         }
 
-        const finalPerPage = refreshedPage.per_page ?? refreshedPage.perPage ?? resolvedPerPage
+        const finalPerPage = refreshedPage.perPage ?? resolvedPerPage
         const finalPageCount = Math.max(1, Math.ceil(refreshedPage.total / finalPerPage) || 1)
         const finalPage = Math.min(clampedPage, finalPageCount)
         setLogs(refreshedPage.items)
         setPage(finalPage)
         setPerPage(finalPerPage)
         setTotal(refreshedPage.total)
-        syncRequestKindState(refreshedPage.request_kind_options ?? nextOptions)
-        setExpandedLogs(new Set())
+        setLogFacets(refreshedPage.facets)
+        syncRequestKindState(refreshedPage.requestKindOptions ?? nextOptions)
         setLogsLoadState('ready')
         logsQueryKeyRef.current = `${requestQueryBaseKey}:page=${finalPage}:perPage=${finalPerPage}`
         return
       }
 
-      const resolvedPerPage = data.per_page ?? data.perPage ?? nextPerPage
+      const resolvedPerPage = data.perPage ?? nextPerPage
       setLogs(data.items)
       setPage(data.page)
       setPerPage(resolvedPerPage)
       setTotal(data.total)
+      setLogFacets(data.facets)
       syncRequestKindState(nextOptions)
-      setExpandedLogs(new Set())
       setLogsLoadState('ready')
       logsQueryKeyRef.current = `${requestQueryBaseKey}:page=${data.page}:perPage=${resolvedPerPage}`
     } catch (e) {
@@ -1273,18 +1139,17 @@ export default function TokenDetail({
     setLogs([])
     setPerPage(nextPerPage)
     setPage(1)
-    setExpandedLogs(new Set())
     setError(null)
     try {
-      const data = await getJson<TokenLogsPageResponse>(buildLogsPageUrl(1, nextPerPage), controller.signal)
+      const data = await loadLogsPage(1, nextPerPage, controller.signal)
       if (controller.signal.aborted) return
-      const resolvedPerPage = data.per_page ?? data.perPage ?? nextPerPage
+      const resolvedPerPage = data.perPage ?? nextPerPage
       setLogs(data.items)
       setPage(1)
       setPerPage(resolvedPerPage)
       setTotal(data.total)
-      syncRequestKindState(data.request_kind_options ?? [])
-      setExpandedLogs(new Set())
+      setLogFacets(data.facets)
+      syncRequestKindState(data.requestKindOptions ?? [])
       setLogsLoadState('ready')
       logsQueryKeyRef.current = `${logsQueryBaseKey}:page=1:perPage=${resolvedPerPage}`
     } catch (e) {
@@ -1304,7 +1169,6 @@ export default function TokenDetail({
       setRequestKindQuickProtocol(nextProtocol)
       setSelectedRequestKinds(buildRequestKindQuickFilterSelection(requestKindOptions, nextFilters))
       setPage(1)
-      setExpandedLogs(new Set())
     },
     [requestKindOptions],
   )
@@ -1322,7 +1186,6 @@ export default function TokenDetail({
       setRequestKindQuickBilling(nextQuickFilters.billing)
       setRequestKindQuickProtocol(nextQuickFilters.protocol)
       setPage(1)
-      setExpandedLogs(new Set())
     },
     [
       effectiveSelectedRequestKinds,
@@ -1337,21 +1200,17 @@ export default function TokenDetail({
     setRequestKindQuickBilling(defaultTokenLogRequestKindQuickFilters.billing)
     setRequestKindQuickProtocol(defaultTokenLogRequestKindQuickFilters.protocol)
     setPage(1)
-    setExpandedLogs(new Set())
   }, [])
 
-  const totalPages = Math.max(1, Math.ceil(total / perPage) || 1)
-  const toggleLog = (logId: number) => {
-    setExpandedLogs((prev) => {
-      const next = new Set(prev)
-      if (next.has(logId)) {
-        next.delete(logId)
-      } else {
-        next.add(logId)
-      }
-      return next
-    })
-  }
+  const handleOutcomeFilterChange = useCallback((next: RecentRequestsOutcomeFilter | null) => {
+    setOutcomeFilter(next)
+    setPage(1)
+  }, [])
+
+  const handleKeyFilterChange = useCallback((next: string | null) => {
+    setSelectedKeyId(next)
+    setPage(1)
+  }, [])
 
   const handleRotateToken = useCallback(async () => {
     try {
@@ -1592,272 +1451,44 @@ export default function TokenDetail({
         </div>
       </section>
 
-      <section className="surface panel">
-        <div className="panel-header token-request-records-header">
-          <div>
-            <h2>Request Records</h2>
-            <p className="panel-description">Newest entries first. Live refresh applies to the first page.</p>
-          </div>
-          <div className="token-request-records-actions">
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="token-request-kind-trigger"
-                  aria-label={`Filter request types: ${requestKindTriggerSummary}`}
-                >
-                  <Icon icon="mdi:filter-variant" width={16} height={16} aria-hidden="true" />
-                  <span className="token-request-kind-trigger-content">
-                    <span className="token-request-kind-trigger-summary">{requestKindTriggerSummary}</span>
-                  </span>
-                  {effectiveSelectedRequestKinds.length > 0 ? (
-                    <span className="token-request-kind-count">{effectiveSelectedRequestKinds.length}</span>
-                  ) : null}
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="token-request-kind-menu w-80">
-                <DropdownMenuLabel>Filter request types</DropdownMenuLabel>
-                <div className="token-request-quick-filters">
-                  <div className="token-request-quick-filter-row">
-                    <span className="token-request-quick-filter-label">Billing</span>
-                    <SegmentedTabs
-                      value={requestKindQuickBilling}
-                      onChange={(next) =>
-                        applyRequestKindQuickFilters(next as TokenLogRequestKindQuickBilling, requestKindQuickProtocol)
-                      }
-                      options={requestKindBillingQuickFilterOptions}
-                      ariaLabel="Billing request type filter"
-                      className="token-request-quick-segmented"
-                      disabled={filterControlsDisabled}
-                    />
-                  </div>
-                  <div className="token-request-quick-filter-row">
-                    <span className="token-request-quick-filter-label">Type</span>
-                    <SegmentedTabs
-                      value={requestKindQuickProtocol}
-                      onChange={(next) =>
-                        applyRequestKindQuickFilters(requestKindQuickBilling, next as TokenLogRequestKindQuickProtocol)
-                      }
-                      options={requestKindProtocolQuickFilterOptions}
-                      ariaLabel="Protocol request type filter"
-                      className="token-request-quick-segmented"
-                      disabled={filterControlsDisabled}
-                    />
-                  </div>
-                </div>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  className="cursor-pointer"
-                  disabled={effectiveSelectedRequestKinds.length === 0 && !hasActiveQuickRequestKindFilters}
-                  onSelect={(event) => {
-                    event.preventDefault()
-                    handleClearRequestKinds()
-                  }}
-                >
-                  Show all request types
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                {visibleRequestKindOptions.length === 0 ? (
-                  <DropdownMenuItem disabled>No request types in this window</DropdownMenuItem>
-                ) : (
-                  visibleRequestKindOptions.map((option) => (
-                    <DropdownMenuCheckboxItem
-                      key={option.key}
-                      className="cursor-pointer"
-                      checked={effectiveSelectedRequestKinds.includes(option.key)}
-                      onSelect={(event) => event.preventDefault()}
-                      onCheckedChange={() => handleToggleRequestKind(option.key)}
-                    >
-                      <RequestKindBadge requestKindKey={option.key} requestKindLabel={option.label} size="sm" />
-                    </DropdownMenuCheckboxItem>
-                  ))
-                )}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        </div>
-        <div ref={logsContentRef} style={{ minHeight: logsContentMinHeight }}>
-          <AdminTableShell
-            className="token-detail-md-up"
-            tableClassName="token-detail-table token-detail-request-records-table"
-            loadState={logsLoadState}
-            loadingLabel={logsRefreshing ? loadingStateStrings.refreshing : loadingStateStrings.switching}
-            minHeight={logsContentMinHeight}
-          >
-            <TableHeader>
-              <TableRow>
-                <TableHead>Time</TableHead>
-                <TableHead>Request Type</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Charged Credits</TableHead>
-                <TableHead>Result</TableHead>
-                <TableHead>Key Effect</TableHead>
-                <TableHead>Error</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {logs.map((l) => (
-                <Fragment key={l.id}>
-                  <TableRow>
-                    <TableCell>{formatLogTime(l.created_at, period)}</TableCell>
-                    <TableCell>
-                      <RequestKindBadge
-                        requestKindKey={l.request_kind_key}
-                        requestKindLabel={l.request_kind_label}
-                        size="sm"
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <span className="tooltip" data-tip={formatTokenStatusTip(l.http_status, l.mcp_status)}>
-                        <button
-                          type="button"
-                          className="status-pair-trigger"
-                          aria-label={formatTokenStatusTip(l.http_status, l.mcp_status)}
-                        >
-                          {formatTokenStatusPair(l.http_status, l.mcp_status)}
-                        </button>
-                      </span>
-                    </TableCell>
-                    <TableCell>{formatChargedCredits(l.business_credits)}</TableCell>
-                    <TableCell>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        className={`log-result-button${expandedLogs.has(l.id) ? ' log-result-button-active' : ''}`}
-                        onClick={() => toggleLog(l.id)}
-                        aria-expanded={expandedLogs.has(l.id)}
-                        aria-controls={`token-log-details-${l.id}`}
-                      >
-                        <StatusBadge tone={statusTone(l.result_status)}>
-                          {statusLabel(l.result_status)}
-                        </StatusBadge>
-                        <Icon
-                          icon={expandedLogs.has(l.id) ? 'mdi:chevron-up' : 'mdi:chevron-down'}
-                          width={18}
-                          height={18}
-                          className="log-result-icon"
-                          aria-hidden="true"
-                        />
-                      </Button>
-                    </TableCell>
-                    <TableCell>
-                      <StatusBadge
-                        tone={tokenKeyEffectTone(l.key_effect_code)}
-                        title={formatTokenKeyEffectSummary(l, language)}
-                      >
-                        {tokenKeyEffectBadgeLabel(l, language)}
-                      </StatusBadge>
-                    </TableCell>
-                    <TableCell>{l.error_message ?? '—'}</TableCell>
-                  </TableRow>
-                  {expandedLogs.has(l.id) && (
-                    <TableRow className="log-details-row">
-                      <TableCell colSpan={7} id={`token-log-details-${l.id}`}>
-                        <TokenLogDetails log={l} period={period} language={language} />
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </Fragment>
-              ))}
-              {logs.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={7} style={{ padding: 12 }}>
-                    <div className="empty-state alert" style={{ padding: 12 }}>No logs yet.</div>
-                  </TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </AdminTableShell>
-          <AdminLoadingRegion
-            className="token-detail-mobile-list token-detail-md-down"
-            loadState={logsLoadState}
-            loadingLabel={logsRefreshing ? loadingStateStrings.refreshing : loadingStateStrings.switching}
-            minHeight={Math.max(240, logsContentMinHeight)}
-          >
-            {logs.length === 0 ? (
-              <div className="empty-state alert" style={{ padding: 12 }}>No logs yet.</div>
-            ) : (
-              logs.map((log) => (
-                <article key={log.id} className="user-console-mobile-card">
-                  <div className="user-console-mobile-kv">
-                    <span>Time</span>
-                    <strong>{formatLogTime(log.created_at, period)}</strong>
-                  </div>
-                  <div className="user-console-mobile-kv">
-                    <span>Request</span>
-                    <strong>{`${log.method} ${log.path}${log.query ? `?${log.query}` : ''}`}</strong>
-                  </div>
-                  <div className="user-console-mobile-kv">
-                    <span>Request Type</span>
-                    <RequestKindBadge
-                      requestKindKey={log.request_kind_key}
-                      requestKindLabel={log.request_kind_label}
-                      size="sm"
-                      className="user-console-mobile-request-kind"
-                    />
-                  </div>
-                  {log.request_kind_detail ? (
-                    <div className="user-console-mobile-kv user-console-mobile-kv--stacked">
-                      <span>Request Type Detail</span>
-                      <strong className="user-console-mobile-detail">{log.request_kind_detail}</strong>
-                    </div>
-                  ) : null}
-                  <div className="user-console-mobile-kv">
-                    <span>HTTP / Tavily</span>
-                    <span className="tooltip" data-tip={formatTokenStatusTip(log.http_status, log.mcp_status)}>
-                      <button
-                        type="button"
-                        className="status-pair-trigger"
-                        aria-label={formatTokenStatusTip(log.http_status, log.mcp_status)}
-                      >
-                        <strong>{formatTokenStatusPair(log.http_status, log.mcp_status)}</strong>
-                      </button>
-                    </span>
-                  </div>
-                  <div className="user-console-mobile-kv">
-                    <span>Charged Credits</span>
-                    <strong>{formatChargedCredits(log.business_credits)}</strong>
-                  </div>
-                  <div className="user-console-mobile-kv">
-                    <span>Result</span>
-                    <StatusBadge className="user-console-mobile-status" tone={statusTone(log.result_status)}>
-                      {statusLabel(log.result_status)}
-                    </StatusBadge>
-                  </div>
-                  <div className="user-console-mobile-kv user-console-mobile-kv--stacked">
-                    <span>Key Effect</span>
-                    <StatusBadge
-                      className="user-console-mobile-status"
-                      tone={tokenKeyEffectTone(log.key_effect_code)}
-                      title={formatTokenKeyEffectSummary(log, language)}
-                    >
-                      {tokenKeyEffectBadgeLabel(log, language)}
-                    </StatusBadge>
-                  </div>
-                  <div className="user-console-mobile-kv">
-                    <span>Error</span>
-                    <strong>{log.error_message ?? '—'}</strong>
-                  </div>
-                </article>
-              ))
-            )}
-          </AdminLoadingRegion>
-        </div>
-        <AdminTablePagination
-          page={page}
-          totalPages={totalPages}
-          perPage={perPage}
-          onPerPageChange={(value) => {
-            void changePerPage(value)
-          }}
-          disabled={logsBlocking}
-          previousDisabled={page <= 1}
-          nextDisabled={page >= totalPages}
-          onPrevious={() => void goToPage(page - 1)}
-          onNext={() => void goToPage(page + 1)}
-        />
-      </section>
+      <AdminRecentRequestsPanel
+        variant="token"
+        language={language}
+        strings={translations.admin}
+        title={translations.admin.logs.title}
+        description="Newest entries first. Live refresh applies to the first page."
+        emptyLabel="No logs yet."
+        loadState={logsLoadState}
+        loadingLabel={logsRefreshing ? loadingStateStrings.refreshing : loadingStateStrings.switching}
+        errorLabel={error}
+        logs={logs}
+        requestKindOptions={requestKindOptions}
+        requestKindQuickBilling={requestKindQuickBilling}
+        requestKindQuickProtocol={requestKindQuickProtocol}
+        selectedRequestKinds={selectedRequestKinds}
+        onRequestKindQuickFiltersChange={applyRequestKindQuickFilters}
+        onToggleRequestKind={handleToggleRequestKind}
+        onClearRequestKinds={handleClearRequestKinds}
+        outcomeFilter={outcomeFilter}
+        resultOptions={logFacets.results}
+        keyEffectOptions={logFacets.keyEffects}
+        onOutcomeFilterChange={handleOutcomeFilterChange}
+        keyOptions={logFacets.keys}
+        selectedKeyId={selectedKeyId}
+        onKeyFilterChange={handleKeyFilterChange}
+        showKeyColumn
+        showTokenColumn={false}
+        onOpenKey={onOpenKey}
+        page={page}
+        perPage={perPage}
+        total={total}
+        paginationDisabled={logsBlocking}
+        onPreviousPage={() => void goToPage(page - 1)}
+        onNextPage={() => void goToPage(page + 1)}
+        onPerPageChange={(value) => void changePerPage(value)}
+        formatTime={(ts) => formatLogTime(ts, period)}
+        formatTimeDetail={(ts) => (ts ? dateTimeFormatter.format(new Date(ts * 1000)) : '—')}
+      />
     
     <Dialog open={isRotateDialogOpen} onOpenChange={setIsRotateDialogOpen}>
       <DialogContent className="sm:max-w-[480px]">
@@ -1926,98 +1557,6 @@ function InfoCard({ label, value }: { label: string; value: ReactNode }) {
     <div className="token-info-card">
       <span className="token-info-label">{label}</span>
       <div className="token-info-value">{value}</div>
-    </div>
-  )
-}
-
-function formatChargedCredits(value: number | null): string {
-  return value != null ? String(value) : '—'
-}
-
-function formatTokenStatusPair(httpStatus: number | null, mcpStatus: number | null): string {
-  return `${httpStatus ?? '—'} / ${mcpStatus ?? '—'}`
-}
-
-function formatTokenStatusTip(httpStatus: number | null, mcpStatus: number | null): string {
-  return `HTTP: ${httpStatus ?? '—'} · Tavily: ${mcpStatus ?? '—'}`
-}
-
-function formatRequestLine(log: TokenLog): string {
-  const query = log.query ? `?${log.query}` : ''
-  return `${log.method} ${log.path}${query}`
-}
-
-function TokenLogDetails({
-  log,
-  period,
-  language,
-}: {
-  log: TokenLog
-  period: Period
-  language: 'en' | 'zh'
-}) {
-  const requestLine = formatRequestLine(log)
-  const errorText = (log.error_message ?? '').trim() || 'No error reported.'
-  const httpStatus = log.http_status != null ? `HTTP ${log.http_status}` : 'HTTP —'
-  const tavilyStatus = log.mcp_status != null ? `Tavily ${log.mcp_status}` : 'Tavily —'
-  const guidance = tokenFailureGuidance(log.failure_kind, language)
-
-  return (
-    <div className="log-details-panel">
-      <div className="log-details-summary">
-        <div>
-          <span className="log-details-label">Time</span>
-          <span className="log-details-value">{formatLogTime(log.created_at, period)}</span>
-        </div>
-        <div>
-          <span className="log-details-label">Status</span>
-          <span className="log-details-value">{`${httpStatus} · ${tavilyStatus}`}</span>
-        </div>
-        <div>
-          <span className="log-details-label">Charged Credits</span>
-          <span className="log-details-value">{formatChargedCredits(log.business_credits)}</span>
-        </div>
-        <div>
-          <span className="log-details-label">Request Type</span>
-          <span className="log-details-value">
-            <RequestKindBadge
-              requestKindKey={log.request_kind_key}
-              requestKindLabel={log.request_kind_label}
-              size="sm"
-            />
-          </span>
-        </div>
-        <div>
-          <span className="log-details-label">Outcome</span>
-          <span className="log-details-value">{statusLabel(log.result_status)}</span>
-        </div>
-        <div>
-          <span className="log-details-label">Key Effect</span>
-          <span className="log-details-value">{formatTokenKeyEffectSummary(log, language)}</span>
-        </div>
-      </div>
-      <div className="log-details-body">
-        <div className="log-details-section">
-          <header>Request</header>
-          <pre>{requestLine}</pre>
-        </div>
-        {log.request_kind_detail ? (
-          <div className="log-details-section">
-            <header>Request Type Detail</header>
-            <pre>{log.request_kind_detail}</pre>
-          </div>
-        ) : null}
-        <div className="log-details-section">
-          <header>Error Message</header>
-          <pre>{errorText}</pre>
-        </div>
-        {guidance ? (
-          <div className="log-details-section">
-            <header>Suggested Handling</header>
-            <pre>{guidance}</pre>
-          </div>
-        ) : null}
-      </div>
     </div>
   )
 }

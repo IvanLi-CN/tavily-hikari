@@ -1,4 +1,5 @@
 import { requestMcpProbeWithToken } from './lib/mcpProbe'
+import type { TokenLogRequestKindOption } from './tokenLogRequestKinds'
 
 export interface Summary {
   total_requests: number
@@ -143,13 +144,17 @@ export interface ApiKeyStats {
 
 export interface RequestLog {
   id: number
-  key_id: string
+  key_id: string | null
   auth_token_id: string | null
   method: string
   path: string
   query: string | null
   http_status: number | null
   mcp_status: number | null
+  business_credits?: number | null
+  request_kind_key?: string
+  request_kind_label?: string
+  request_kind_detail?: string | null
   result_status: string
   created_at: number
   error_message: string | null
@@ -160,6 +165,110 @@ export interface RequestLog {
   response_body: string | null
   forwarded_headers: string[]
   dropped_headers: string[]
+}
+
+export interface LogFacetOption {
+  value: string
+  count: number
+}
+
+export interface RequestLogFacets {
+  results: LogFacetOption[]
+  keyEffects: LogFacetOption[]
+  tokens: LogFacetOption[]
+  keys: LogFacetOption[]
+}
+
+export interface RequestLogsPage {
+  items: RequestLog[]
+  total: number
+  page: number
+  perPage: number
+  requestKindOptions: TokenLogRequestKindOption[]
+  facets: RequestLogFacets
+}
+
+interface ServerLogFacetOption {
+  value: string
+  count: number
+}
+
+interface ServerRequestLogFacets {
+  results?: ServerLogFacetOption[]
+  keyEffects?: ServerLogFacetOption[]
+  key_effects?: ServerLogFacetOption[]
+  tokens?: ServerLogFacetOption[]
+  keys?: ServerLogFacetOption[]
+}
+
+interface ServerRequestLogsPage {
+  items: RequestLog[]
+  total: number
+  page: number
+  perPage?: number
+  per_page?: number
+  requestKindOptions?: TokenLogRequestKindOption[]
+  request_kind_options?: TokenLogRequestKindOption[]
+  facets?: ServerRequestLogFacets
+}
+
+export interface RequestLogsPageQuery {
+  page?: number
+  perPage?: number
+  requestKinds?: string[]
+  result?: LogResultFilter
+  keyEffect?: string
+  tokenId?: string
+  keyId?: string
+  since?: number
+  sinceIso?: string
+  untilIso?: string
+}
+
+function normalizeRequestLogFacets(value?: ServerRequestLogFacets): RequestLogFacets {
+  return {
+    results: value?.results ?? [],
+    keyEffects: value?.keyEffects ?? value?.key_effects ?? [],
+    tokens: value?.tokens ?? [],
+    keys: value?.keys ?? [],
+  }
+}
+
+function normalizeRequestLogsPage(value: ServerRequestLogsPage): RequestLogsPage {
+  return {
+    items: value.items ?? [],
+    total: value.total ?? 0,
+    page: value.page ?? 1,
+    perPage: value.perPage ?? value.per_page ?? 20,
+    requestKindOptions: value.requestKindOptions ?? value.request_kind_options ?? [],
+    facets: normalizeRequestLogFacets(value.facets),
+  }
+}
+
+function appendRequestLogsPageFilters(
+  params: URLSearchParams,
+  {
+    requestKinds,
+    result,
+    keyEffect,
+    tokenId,
+    keyId,
+    since,
+    sinceIso,
+    untilIso,
+  }: RequestLogsPageQuery,
+) {
+  for (const requestKind of requestKinds ?? []) {
+    const trimmed = requestKind.trim()
+    if (trimmed) params.append('request_kind', trimmed)
+  }
+  if (result) params.set('result', result)
+  if (keyEffect?.trim()) params.set('key_effect', keyEffect.trim())
+  if (tokenId?.trim()) params.set('auth_token_id', tokenId.trim())
+  if (keyId?.trim()) params.set('key_id', keyId.trim())
+  if (typeof since === 'number' && Number.isFinite(since)) params.set('since', String(since))
+  if (sinceIso?.trim()) params.set('since', sinceIso.trim())
+  if (untilIso?.trim()) params.set('until', untilIso.trim())
 }
 
 export interface ApiKeySecret {
@@ -1101,6 +1210,22 @@ export function fetchKeyLogs(id: string, limit = 50, since?: number, signal?: Ab
   return requestJson(`/api/keys/${encoded}/logs?${params.toString()}`, { signal })
 }
 
+export function fetchKeyLogsPage(
+  id: string,
+  query: RequestLogsPageQuery = {},
+  signal?: AbortSignal,
+): Promise<RequestLogsPage> {
+  const params = new URLSearchParams({
+    page: String(query.page ?? 1),
+    per_page: String(query.perPage ?? 20),
+  })
+  appendRequestLogsPageFilters(params, query)
+  const encoded = encodeURIComponent(id)
+  return requestJson<ServerRequestLogsPage>(`/api/keys/${encoded}/logs/page?${params.toString()}`, { signal }).then(
+    normalizeRequestLogsPage,
+  )
+}
+
 export function fetchKeyStickyUsers(
   id: string,
   page = 1,
@@ -1130,20 +1255,27 @@ export interface Paginated<T> {
 
 export type LogResultFilter = 'success' | 'error' | 'quota_exhausted'
 
+export function fetchRequestLogsPage(
+  query: RequestLogsPageQuery = {},
+  signal?: AbortSignal,
+): Promise<RequestLogsPage> {
+  const params = new URLSearchParams({
+    page: String(query.page ?? 1),
+    per_page: String(query.perPage ?? 20),
+  })
+  appendRequestLogsPageFilters(params, query)
+  return requestJson<ServerRequestLogsPage>(`/api/logs?${params.toString()}`, { signal }).then(
+    normalizeRequestLogsPage,
+  )
+}
+
 export function fetchRequestLogs(
   page = 1,
   perPage = 20,
   result?: LogResultFilter,
   signal?: AbortSignal,
-): Promise<Paginated<RequestLog>> {
-  const params = new URLSearchParams({
-    page: String(page),
-    per_page: String(perPage),
-  })
-  if (result != null) {
-    params.set('result', result)
-  }
-  return requestJson(`/api/logs?${params.toString()}`, { signal })
+): Promise<RequestLogsPage> {
+  return fetchRequestLogsPage({ page, perPage, result }, signal)
 }
 
 export function fetchJobs(
@@ -1350,6 +1482,22 @@ export function fetchTokenUsageSeries(
     search.set('bucket_secs', String(params.bucketSecs))
   }
   return requestJson(`/api/tokens/${encoded}/metrics/usage-series?${search.toString()}`, { signal })
+}
+
+export function fetchTokenLogsPage(
+  id: string,
+  query: RequestLogsPageQuery = {},
+  signal?: AbortSignal,
+): Promise<RequestLogsPage> {
+  const params = new URLSearchParams({
+    page: String(query.page ?? 1),
+    per_page: String(query.perPage ?? 20),
+  })
+  appendRequestLogsPageFilters(params, query)
+  const encoded = encodeURIComponent(id)
+  return requestJson<ServerRequestLogsPage>(`/api/tokens/${encoded}/logs/page?${params.toString()}`, { signal }).then(
+    normalizeRequestLogsPage,
+  )
 }
 
 export type TokenLeaderboardPeriod = 'day' | 'month' | 'all'

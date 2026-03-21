@@ -6524,6 +6524,7 @@ colo=LAX
     fn public_token_log_view_keeps_original_field_shape_and_appends_guidance() {
         let record = TokenLogRecord {
             id: 1,
+            key_id: Some("MZli".to_string()),
             method: "POST".to_string(),
             path: "/mcp".to_string(),
             query: Some("token=secret".to_string()),
@@ -6567,6 +6568,7 @@ colo=LAX
     fn admin_token_log_view_exposes_failure_kind_and_key_effect_fields() {
         let view = TokenLogView::from(TokenLogRecord {
             id: 2,
+            key_id: Some("Qn8R".to_string()),
             method: "POST".to_string(),
             path: "/api/tavily/search".to_string(),
             query: None,
@@ -9140,6 +9142,10 @@ colo=LAX
                 .and_then(|value| value.as_str()),
             Some("billable")
         );
+        assert_eq!(
+            search_option.get("count").and_then(|value| value.as_i64()),
+            Some(1)
+        );
         let legacy_option = request_kind_options
             .iter()
             .find(|value| {
@@ -9160,6 +9166,10 @@ colo=LAX
                 .get("billing_group")
                 .and_then(|value| value.as_str()),
             Some("billable")
+        );
+        assert_eq!(
+            legacy_option.get("count").and_then(|value| value.as_i64()),
+            Some(1)
         );
         let page_search_log = items
             .iter()

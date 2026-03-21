@@ -1751,11 +1751,14 @@ struct PaginatedLogsView {
     total: i64,
     page: i64,
     per_page: i64,
+    request_kind_options: Vec<TokenRequestKindOptionView>,
+    facets: RequestLogFacetsView,
 }
 
 async fn list_logs(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    RawQuery(raw_query): RawQuery,
     Query(params): Query<LogsQuery>,
 ) -> Result<Json<PaginatedLogsView>, StatusCode> {
     if !is_admin_request(state.as_ref(), &headers) {
@@ -1765,27 +1768,65 @@ async fn list_logs(
     let page = params.page.unwrap_or(1).max(1);
     let per_page = params.per_page.unwrap_or(20).clamp(1, 200);
 
-    // Optional result_status filter: normalize to known values.
-    let result_status: Option<&str> = match params.result.as_deref().map(str::trim) {
-        Some(v) if v.eq_ignore_ascii_case("success") => Some("success"),
-        Some(v) if v.eq_ignore_ascii_case("error") => Some("error"),
-        Some(v) if v.eq_ignore_ascii_case("quota_exhausted") || v.eq_ignore_ascii_case("quota") => {
-            Some("quota_exhausted")
-        }
-        _ => None,
-    };
+    let request_kinds = parse_request_kind_filters(raw_query.as_deref());
+    let result_status = normalize_result_status_filter(params.result.as_deref());
+    let key_effect_code = normalize_key_effect_filter(params.key_effect.as_deref());
+    if result_status.is_some() && key_effect_code.is_some() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let auth_token_id = normalize_optional_filter(params.auth_token_id.as_deref());
+    let key_id = normalize_optional_filter(params.key_id.as_deref());
 
     state
         .proxy
-        .recent_request_logs_page(result_status, page, per_page)
+        .request_logs_page(
+            &request_kinds,
+            result_status,
+            key_effect_code,
+            auth_token_id,
+            key_id,
+            page,
+            per_page,
+        )
         .await
-        .map(|(logs, total)| {
-            let view_items = logs.into_iter().map(RequestLogView::from).collect();
+        .map(|logs| {
+            let view_items = logs.items.into_iter().map(RequestLogView::from).collect();
             Json(PaginatedLogsView {
                 items: view_items,
-                total,
+                total: logs.total,
                 page,
                 per_page,
+                request_kind_options: logs
+                    .request_kind_options
+                    .into_iter()
+                    .map(TokenRequestKindOptionView::from)
+                    .collect(),
+                facets: RequestLogFacetsView {
+                    results: logs
+                        .facets
+                        .results
+                        .into_iter()
+                        .map(LogFacetOptionView::from)
+                        .collect(),
+                    key_effects: logs
+                        .facets
+                        .key_effects
+                        .into_iter()
+                        .map(LogFacetOptionView::from)
+                        .collect(),
+                    tokens: logs
+                        .facets
+                        .tokens
+                        .into_iter()
+                        .map(LogFacetOptionView::from)
+                        .collect(),
+                    keys: logs
+                        .facets
+                        .keys
+                        .into_iter()
+                        .map(LogFacetOptionView::from)
+                        .collect(),
+                },
             })
         })
         .map_err(|err| {

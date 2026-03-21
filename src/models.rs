@@ -44,6 +44,7 @@ pub struct ProxyResponse {
     pub headers: HeaderMap,
     pub body: Bytes,
     pub api_key_id: Option<String>,
+    pub request_log_id: Option<i64>,
     pub key_effect_code: String,
     pub key_effect_summary: Option<String>,
 }
@@ -403,6 +404,10 @@ pub struct RequestLogRecord {
     pub status_code: Option<i64>,
     pub tavily_status_code: Option<i64>,
     pub error_message: Option<String>,
+    pub business_credits: Option<i64>,
+    pub request_kind_key: String,
+    pub request_kind_label: String,
+    pub request_kind_detail: Option<String>,
     pub result_status: String,
     pub failure_kind: Option<String>,
     pub key_effect_code: String,
@@ -412,6 +417,28 @@ pub struct RequestLogRecord {
     pub created_at: i64,
     pub forwarded_headers: Vec<String>,
     pub dropped_headers: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogFacetOption {
+    pub value: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RequestLogPageFacets {
+    pub results: Vec<LogFacetOption>,
+    pub key_effects: Vec<LogFacetOption>,
+    pub tokens: Vec<LogFacetOption>,
+    pub keys: Vec<LogFacetOption>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RequestLogsPage {
+    pub items: Vec<RequestLogRecord>,
+    pub total: i64,
+    pub request_kind_options: Vec<TokenRequestKindOption>,
+    pub facets: RequestLogPageFacets,
 }
 
 /// 汇总统计信息，用于展示整体代理运行状况。
@@ -721,12 +748,14 @@ pub struct TokenRequestKindOption {
     pub label: String,
     pub protocol_group: String,
     pub billing_group: String,
+    pub count: i64,
 }
 
 /// Per-token log for detail UI
 #[derive(Debug, Clone)]
 pub struct TokenLogRecord {
     pub id: i64,
+    pub key_id: Option<String>,
     pub method: String,
     pub path: String,
     pub query: Option<String>,
@@ -742,6 +771,14 @@ pub struct TokenLogRecord {
     pub key_effect_code: String,
     pub key_effect_summary: Option<String>,
     pub created_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct TokenLogsPage {
+    pub items: Vec<TokenLogRecord>,
+    pub total: i64,
+    pub request_kind_options: Vec<TokenRequestKindOption>,
+    pub facets: RequestLogPageFacets,
 }
 
 /// Token summary for period view

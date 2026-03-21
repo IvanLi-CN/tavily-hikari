@@ -2,7 +2,7 @@ import { Icon } from '../lib/icons'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { addons } from 'storybook/preview-api'
 import { SELECT_STORY } from 'storybook/internal/core-events'
-import { Fragment, type ReactNode, useEffect, useLayoutEffect, useState } from 'react'
+import { Fragment, type ReactNode, useEffect, useLayoutEffect, useMemo, useState } from 'react'
 
 import type {
   AdminUserDetail,
@@ -16,6 +16,7 @@ import type {
   RequestLog,
 } from '../api'
 import AdminPanelHeader from '../components/AdminPanelHeader'
+import AdminRecentRequestsPanel, { type RecentRequestsOutcomeFilter } from '../components/AdminRecentRequestsPanel'
 import AdminTablePagination from '../components/AdminTablePagination'
 import JobKeyLink from '../components/JobKeyLink'
 import QuotaRangeField from '../components/QuotaRangeField'
@@ -42,6 +43,17 @@ import { Switch } from '../components/ui/switch'
 import { LanguageProvider, useLanguage, useTranslate, type AdminTranslations } from '../i18n'
 import { KeyDetails } from '../AdminDashboard'
 import { TokenDetailStoryCanvas } from '../pages/TokenDetail.stories'
+import {
+  buildRequestKindQuickFilterSelection,
+  defaultTokenLogRequestKindQuickFilters,
+  hasActiveRequestKindQuickFilters,
+  resolveEffectiveRequestKindSelection,
+  resolveManualRequestKindQuickFilters,
+  toggleRequestKindSelection,
+  type TokenLogRequestKindOption,
+  type TokenLogRequestKindQuickBilling,
+  type TokenLogRequestKindQuickProtocol,
+} from '../tokenLogRequestKinds'
 
 import AdminShell, { type AdminNavItem } from './AdminShell'
 import DashboardOverview, { type DashboardMetricCard } from './DashboardOverview'
@@ -404,6 +416,10 @@ const MOCK_REQUESTS: RequestLog[] = [
     query: null,
     http_status: 200,
     mcp_status: 200,
+    business_credits: 2,
+    request_kind_key: 'api:search',
+    request_kind_label: 'API | search',
+    request_kind_detail: null,
     result_status: 'success',
     created_at: now - 20,
     error_message: null,
@@ -423,6 +439,10 @@ const MOCK_REQUESTS: RequestLog[] = [
     query: null,
     http_status: 200,
     mcp_status: 429,
+    business_credits: null,
+    request_kind_key: 'mcp:raw:/mcp',
+    request_kind_label: 'MCP | /mcp',
+    request_kind_detail: 'tool: crawl',
     result_status: 'error',
     created_at: now - 74,
     error_message: 'Your request has been blocked due to excessive requests.',
@@ -443,6 +463,10 @@ const MOCK_REQUESTS: RequestLog[] = [
     query: null,
     http_status: 200,
     mcp_status: 432,
+    business_credits: null,
+    request_kind_key: 'api:search',
+    request_kind_label: 'API | search',
+    request_kind_detail: null,
     result_status: 'quota_exhausted',
     created_at: now - 118,
     error_message: 'Quota exhausted for this API key',
@@ -462,6 +486,10 @@ const MOCK_REQUESTS: RequestLog[] = [
     query: null,
     http_status: 200,
     mcp_status: 401,
+    business_credits: null,
+    request_kind_key: 'mcp:raw:/mcp',
+    request_kind_label: 'MCP | /mcp',
+    request_kind_detail: 'tool: map',
     result_status: 'error',
     created_at: now - 196,
     error_message: 'The account associated with this API key has been deactivated.',
@@ -482,6 +510,10 @@ const MOCK_REQUESTS: RequestLog[] = [
     query: null,
     http_status: 502,
     mcp_status: 502,
+    business_credits: null,
+    request_kind_key: 'api:extract',
+    request_kind_label: 'API | extract',
+    request_kind_detail: null,
     result_status: 'error',
     created_at: now - 310,
     error_message: 'Bad gateway from upstream',
@@ -494,6 +526,101 @@ const MOCK_REQUESTS: RequestLog[] = [
     dropped_headers: [],
   },
 ]
+
+const STORY_REQUEST_KIND_OPTIONS: TokenLogRequestKindOption[] = [
+  { key: 'api:extract', label: 'API | extract', protocol_group: 'api', billing_group: 'billable' },
+  { key: 'api:research-result', label: 'API | research result', protocol_group: 'api', billing_group: 'non_billable' },
+  { key: 'api:search', label: 'API | search', protocol_group: 'api', billing_group: 'billable' },
+  { key: 'mcp:initialize', label: 'MCP | initialize', protocol_group: 'mcp', billing_group: 'non_billable' },
+  { key: 'mcp:ping', label: 'MCP | ping', protocol_group: 'mcp', billing_group: 'non_billable' },
+  { key: 'mcp:raw:/mcp', label: 'MCP | /mcp', protocol_group: 'mcp', billing_group: 'billable' },
+]
+
+function buildStoryLogFacetOptions(values: Array<string | null | undefined>): Array<{ value: string; count: number }> {
+  const counts = new Map<string, number>()
+  for (const raw of values) {
+    const value = raw?.trim()
+    if (!value) continue
+    counts.set(value, (counts.get(value) ?? 0) + 1)
+  }
+  return Array.from(counts.entries())
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .map(([value, count]) => ({ value, count }))
+}
+
+function buildStoryRequestKindOptions(
+  logs: RequestLog[],
+  options: TokenLogRequestKindOption[],
+): TokenLogRequestKindOption[] {
+  return options.map((option) => ({
+    ...option,
+    count: logs.filter((log) => log.request_kind_key === option.key).length,
+  }))
+}
+
+function buildStoryRequestLogsPage(
+  logs: RequestLog[],
+  {
+    page,
+    perPage,
+    requestKinds = [],
+    result,
+    keyEffect,
+    tokenId,
+    keyId,
+    showTokens,
+    showKeys,
+    forceEmptyMatch = false,
+  }: {
+    page: number
+    perPage: number
+    requestKinds?: string[]
+    result?: string
+    keyEffect?: string
+    tokenId?: string | null
+    keyId?: string | null
+    showTokens: boolean
+    showKeys: boolean
+    forceEmptyMatch?: boolean
+  },
+) {
+  const normalizedRequestKinds = Array.from(new Set(requestKinds.map((value) => value.trim()).filter(Boolean)))
+  const filtered =
+    forceEmptyMatch
+      ? []
+      : logs.filter((log) => {
+          if (normalizedRequestKinds.length > 0 && !normalizedRequestKinds.includes(log.request_kind_key ?? '')) {
+            return false
+          }
+          if (result && log.result_status !== result) {
+            return false
+          }
+          if (keyEffect && (log.key_effect_code ?? 'none') !== keyEffect) {
+            return false
+          }
+          if (tokenId?.trim() && log.auth_token_id !== tokenId) {
+            return false
+          }
+          if (keyId?.trim() && log.key_id !== keyId) {
+            return false
+          }
+          return true
+        })
+  const start = (page - 1) * perPage
+  return {
+    items: filtered.slice(start, start + perPage),
+    page,
+    per_page: perPage,
+    total: filtered.length,
+    request_kind_options: buildStoryRequestKindOptions(logs, STORY_REQUEST_KIND_OPTIONS),
+    facets: {
+      results: buildStoryLogFacetOptions(filtered.map((log) => log.result_status)),
+      key_effects: buildStoryLogFacetOptions(filtered.map((log) => log.key_effect_code ?? 'none')),
+      tokens: showTokens ? buildStoryLogFacetOptions(filtered.map((log) => log.auth_token_id)) : [],
+      keys: showKeys ? buildStoryLogFacetOptions(filtered.map((log) => log.key_id)) : [],
+    },
+  }
+}
 
 const MOCK_JOBS: JobLogView[] = [
   {
@@ -905,6 +1032,7 @@ const dateTimeFormatter = new Intl.DateTimeFormat(undefined, {
   day: '2-digit',
   hour: '2-digit',
   minute: '2-digit',
+  second: '2-digit',
 })
 
 function formatNumber(value: number): string {
@@ -1310,6 +1438,21 @@ function StoryKeyDetailsCanvas({ id, logs }: { id: string; logs: RequestLog[] })
       const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
       if (url.includes(`/api/keys/${encodeURIComponent(id)}/metrics`)) {
         return jsonStoryResponse(keySummary)
+      }
+      if (url.includes(`/api/keys/${encodeURIComponent(id)}/logs/page`)) {
+        const requestUrl = new URL(url, window.location.origin)
+        return jsonStoryResponse(
+          buildStoryRequestLogsPage(keyLogs, {
+            page: Number(requestUrl.searchParams.get('page') ?? '1'),
+            perPage: Number(requestUrl.searchParams.get('per_page') ?? '20'),
+            requestKinds: requestUrl.searchParams.getAll('request_kind'),
+            result: requestUrl.searchParams.get('result') ?? undefined,
+            keyEffect: requestUrl.searchParams.get('key_effect') ?? undefined,
+            tokenId: requestUrl.searchParams.get('auth_token_id'),
+            showTokens: true,
+            showKeys: false,
+          }),
+        )
       }
       if (url.includes(`/api/keys/${encodeURIComponent(id)}/logs`)) {
         return jsonStoryResponse(keyLogs)
@@ -2151,193 +2294,147 @@ function RequestsPageCanvas(): JSX.Element {
   const admin = useTranslate().admin
   const { language } = useLanguage()
   const logStrings = admin.logs
-  const logDetailsStrings = admin.logDetails
-  const [expandedLogs, setExpandedLogs] = useState<Set<number>>(() => new Set([9499, 9498]))
+  const [page, setPage] = useState(1)
+  const [perPage, setPerPage] = useState(3)
+  const [selectedRequestKinds, setSelectedRequestKinds] = useState<string[]>([])
+  const [requestKindQuickBilling, setRequestKindQuickBilling] =
+    useState<TokenLogRequestKindQuickBilling>('all')
+  const [requestKindQuickProtocol, setRequestKindQuickProtocol] =
+    useState<TokenLogRequestKindQuickProtocol>('all')
+  const [outcomeFilter, setOutcomeFilter] = useState<RecentRequestsOutcomeFilter | null>(null)
+  const [selectedKeyId, setSelectedKeyId] = useState<string | null>(null)
   const [drawerTarget, setDrawerTarget] = useState<{ kind: 'key' | 'token'; id: string } | null>(null)
+  const requestKindQuickFilters = useMemo(
+    () => ({
+      billing: requestKindQuickBilling,
+      protocol: requestKindQuickProtocol,
+    }),
+    [requestKindQuickBilling, requestKindQuickProtocol],
+  )
+  const requestKindQuickSelection = useMemo(
+    () => buildRequestKindQuickFilterSelection(STORY_REQUEST_KIND_OPTIONS, requestKindQuickFilters),
+    [requestKindQuickFilters],
+  )
+  const effectiveSelectedRequestKinds = useMemo(
+    () =>
+      resolveEffectiveRequestKindSelection(
+        selectedRequestKinds,
+        requestKindQuickFilters,
+        requestKindQuickSelection,
+      ),
+    [requestKindQuickFilters, requestKindQuickSelection, selectedRequestKinds],
+  )
+  const hasEmptyRequestKindMatch = useMemo(
+    () =>
+      hasActiveRequestKindQuickFilters(requestKindQuickFilters) &&
+      requestKindQuickSelection.length === 0,
+    [requestKindQuickFilters, requestKindQuickSelection.length],
+  )
+  const pageData = useMemo(
+    () =>
+      buildStoryRequestLogsPage(MOCK_REQUESTS, {
+        page,
+        perPage,
+        requestKinds: effectiveSelectedRequestKinds,
+        result: outcomeFilter?.kind === 'result' ? outcomeFilter.value : undefined,
+        keyEffect: outcomeFilter?.kind === 'keyEffect' ? outcomeFilter.value : undefined,
+        keyId: selectedKeyId,
+        showTokens: true,
+        showKeys: true,
+        forceEmptyMatch: hasEmptyRequestKindMatch,
+      }),
+    [
+      effectiveSelectedRequestKinds,
+      hasEmptyRequestKindMatch,
+      outcomeFilter,
+      page,
+      perPage,
+      selectedKeyId,
+    ],
+  )
 
-  const toggleLog = (id: number) => {
-    setExpandedLogs((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) {
-        next.delete(id)
-      } else {
-        next.add(id)
-      }
-      return next
-    })
+  const handleRequestKindQuickFiltersChange = (
+    billing: TokenLogRequestKindQuickBilling,
+    protocol: TokenLogRequestKindQuickProtocol,
+  ) => {
+    const nextFilters = { billing, protocol }
+    setRequestKindQuickBilling(billing)
+    setRequestKindQuickProtocol(protocol)
+    setSelectedRequestKinds(buildRequestKindQuickFilterSelection(STORY_REQUEST_KIND_OPTIONS, nextFilters))
+    setPage(1)
+  }
+
+  const handleToggleRequestKind = (key: string) => {
+    const nextSelected = toggleRequestKindSelection(effectiveSelectedRequestKinds, key)
+    const nextQuickFilters = resolveManualRequestKindQuickFilters(
+      nextSelected,
+      requestKindQuickFilters,
+      requestKindQuickSelection,
+      STORY_REQUEST_KIND_OPTIONS,
+    )
+    setSelectedRequestKinds(nextSelected)
+    setRequestKindQuickBilling(nextQuickFilters.billing)
+    setRequestKindQuickProtocol(nextQuickFilters.protocol)
+    setPage(1)
+  }
+
+  const handleClearRequestKinds = () => {
+    setSelectedRequestKinds([])
+    setRequestKindQuickBilling(defaultTokenLogRequestKindQuickFilters.billing)
+    setRequestKindQuickProtocol(defaultTokenLogRequestKindQuickFilters.protocol)
+    setPage(1)
   }
 
   return (
     <AdminPageFrame activeModule="requests">
-      <section className="surface panel">
-        <div className="panel-header">
-          <div>
-            <h2>{logStrings.title}</h2>
-            <p className="panel-description">{logStrings.description}</p>
-          </div>
-          <div className="panel-actions">
-            <SegmentedTabs<'all' | 'success' | 'error' | 'quota_exhausted'>
-              value="all"
-              onChange={() => {}}
-              options={[
-                { value: 'all', label: logStrings.filters.all },
-                { value: 'success', label: logStrings.filters.success },
-                { value: 'error', label: logStrings.filters.error },
-                { value: 'quota_exhausted', label: logStrings.filters.quota },
-              ]}
-              ariaLabel={logStrings.title}
-            />
-          </div>
-        </div>
-
-        <div className="table-wrapper jobs-table-wrapper">
-          <table className="admin-logs-table admin-request-logs-table">
-            <thead>
-              <tr>
-                <th>{logStrings.table.time}</th>
-                <th>{logStrings.table.key}</th>
-                <th>{logStrings.table.token}</th>
-                <th>Status</th>
-                <th>{logStrings.table.result}</th>
-                <th>{logStrings.table.keyEffect}</th>
-                <th>{logStrings.table.error}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {MOCK_REQUESTS.map((log) => {
-                const expanded = expandedLogs.has(log.id)
-                const errorText = requestErrorText(log, admin)
-                const keyEffectText = requestKeyEffectText(log, admin)
-                const guidance = requestFailureGuidance(log.failure_kind, language)
-                const hasDetails =
-                  errorText !== logStrings.errors.none ||
-                  keyEffectText !== logDetailsStrings.noKeyEffect ||
-                  guidance != null
-
-                return (
-                  <Fragment key={log.id}>
-                    <tr>
-                      <td>{formatTimestamp(log.created_at)}</td>
-                      <td>
-                        <button
-                          type="button"
-                          className="log-key-pill request-entity-button"
-                          onClick={() => setDrawerTarget({ kind: 'key', id: log.key_id })}
-                        >
-                          <code>{log.key_id}</code>
-                        </button>
-                      </td>
-                      <td>
-                        {log.auth_token_id ? (
-                          <button
-                            type="button"
-                            className="link-button log-token-link request-entity-button"
-                            onClick={() => setDrawerTarget({ kind: 'token', id: log.auth_token_id! })}
-                          >
-                            <code>{log.auth_token_id}</code>
-                          </button>
-                        ) : (
-                          <code>—</code>
-                        )}
-                      </td>
-                      <td>
-                        <span className="tooltip" data-tip={requestStatusTip(log, admin)}>
-                          <button
-                            type="button"
-                            className="status-pair-trigger"
-                            aria-label={requestStatusTip(log, admin)}
-                          >
-                            {requestStatusPair(log)}
-                          </button>
-                        </span>
-                      </td>
-                      <td>
-                        <StatusBadge tone={logResultTone(log.result_status)}>
-                          {admin.statuses[log.result_status] ?? log.result_status}
-                        </StatusBadge>
-                      </td>
-                      <td>
-                        <StatusBadge
-                          tone={requestKeyEffectTone(log.key_effect_code)}
-                          title={keyEffectText}
-                        >
-                          {requestKeyEffectBadgeLabel(log, admin)}
-                        </StatusBadge>
-                      </td>
-                      <td>
-                        {hasDetails ? (
-                          <button
-                            type="button"
-                            className={`jobs-message-button${expanded ? ' jobs-message-button-active' : ''}`}
-                            onClick={() => toggleLog(log.id)}
-                            aria-expanded={expanded}
-                            aria-controls={`storybook-log-details-${log.id}`}
-                          >
-                            <span className="jobs-message-text">{errorText}</span>
-                            <Icon
-                              icon={expanded ? 'mdi:chevron-up' : 'mdi:chevron-down'}
-                              width={16}
-                              height={16}
-                              className="jobs-message-icon"
-                              aria-hidden="true"
-                            />
-                          </button>
-                        ) : (
-                          errorText
-                        )}
-                      </td>
-                    </tr>
-                    {expanded && (
-                      <tr className="log-details-row">
-                        <td colSpan={7} id={`storybook-log-details-${log.id}`}>
-                          <div className="log-details-panel">
-                            <div className="log-details-summary">
-                              <div>
-                                <div className="log-details-label">{logStrings.table.time}</div>
-                                <div className="log-details-value">{formatTimestamp(log.created_at)}</div>
-                              </div>
-                              <div>
-                                <div className="log-details-label">{logStrings.table.result}</div>
-                                <div className="log-details-value">{admin.statuses[log.result_status] ?? log.result_status}</div>
-                              </div>
-                              <div>
-                                <div className="log-details-label">{logDetailsStrings.keyEffect}</div>
-                                <div className="log-details-value">{keyEffectText}</div>
-                              </div>
-                              <div>
-                                <div className="log-details-label">{logStrings.table.error}</div>
-                                <div className="log-details-value">{errorText}</div>
-                              </div>
-                            </div>
-                            {guidance ? (
-                              <div className="log-details-block">
-                                <div className="log-details-label">{logDetailsStrings.solution}</div>
-                                <pre className="log-details-pre">{guidance}</pre>
-                              </div>
-                            ) : null}
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                  </Fragment>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-
-        <div className="table-pagination">
-          <span className="panel-description">{logStrings.description} (1 / 4)</span>
-          <div style={{ display: 'inline-flex', gap: 8 }}>
-            <button type="button" className="btn btn-outline">
-              {admin.tokens.pagination.prev}
-            </button>
-            <button type="button" className="btn btn-outline">
-              {admin.tokens.pagination.next}
-            </button>
-          </div>
-        </div>
-      </section>
+      <AdminRecentRequestsPanel
+        variant="admin"
+        language={language}
+        strings={admin}
+        title={logStrings.title}
+        description={logStrings.description}
+        emptyLabel={logStrings.empty.none}
+        loadState="ready"
+        loadingLabel={logStrings.empty.loading}
+        logs={pageData.items}
+        requestKindOptions={pageData.request_kind_options}
+        requestKindQuickBilling={requestKindQuickBilling}
+        requestKindQuickProtocol={requestKindQuickProtocol}
+        selectedRequestKinds={selectedRequestKinds}
+        onRequestKindQuickFiltersChange={handleRequestKindQuickFiltersChange}
+        onToggleRequestKind={handleToggleRequestKind}
+        onClearRequestKinds={handleClearRequestKinds}
+        outcomeFilter={outcomeFilter}
+        resultOptions={pageData.facets.results}
+        keyEffectOptions={pageData.facets.key_effects}
+        onOutcomeFilterChange={(value) => {
+          setOutcomeFilter(value)
+          setPage(1)
+        }}
+        keyOptions={pageData.facets.keys}
+        selectedKeyId={selectedKeyId}
+        onKeyFilterChange={(value) => {
+          setSelectedKeyId(value)
+          setPage(1)
+        }}
+        showKeyColumn
+        showTokenColumn
+        page={page}
+        perPage={pageData.per_page}
+        total={pageData.total}
+        onPreviousPage={() => setPage((value) => Math.max(1, value - 1))}
+        onNextPage={() =>
+          setPage((value) => Math.min(Math.max(1, Math.ceil(pageData.total / pageData.per_page)), value + 1))
+        }
+        onPerPageChange={(value) => {
+          setPerPage(value)
+          setPage(1)
+        }}
+        formatTime={formatTimestamp}
+        formatTimeDetail={formatTimestamp}
+        onOpenKey={(id) => setDrawerTarget({ kind: 'key', id })}
+        onOpenToken={(id) => setDrawerTarget({ kind: 'token', id })}
+      />
 
       <Drawer
         open={drawerTarget != null}

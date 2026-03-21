@@ -111,6 +111,8 @@ const requestKindOptionsMock = [
   { key: "mcp:tools/list", label: "MCP | tools/list", protocol_group: "mcp", billing_group: "non_billable" },
 ];
 
+const storyKeyIds = ["MZli", "Qn8R", "U2vK"] as const;
+
 const logTemplates = [
   {
     method: "POST",
@@ -123,6 +125,8 @@ const logTemplates = [
     request_kind_label: "API | crawl",
     request_kind_detail: null,
     result_status: "success",
+    key_effect_code: "none",
+    key_effect_summary: null,
     error_message: null,
   },
   {
@@ -136,6 +140,8 @@ const logTemplates = [
     request_kind_label: "API | extract",
     request_kind_detail: null,
     result_status: "success",
+    key_effect_code: "none",
+    key_effect_summary: null,
     error_message: null,
   },
   {
@@ -149,6 +155,8 @@ const logTemplates = [
     request_kind_label: "API | map",
     request_kind_detail: null,
     result_status: "success",
+    key_effect_code: "none",
+    key_effect_summary: null,
     error_message: null,
   },
   {
@@ -162,6 +170,8 @@ const logTemplates = [
     request_kind_label: "API | research",
     request_kind_detail: null,
     result_status: "success",
+    key_effect_code: "none",
+    key_effect_summary: null,
     error_message: null,
   },
   {
@@ -175,6 +185,8 @@ const logTemplates = [
     request_kind_label: "API | research result",
     request_kind_detail: null,
     result_status: "error",
+    key_effect_code: "none",
+    key_effect_summary: null,
     error_message: "research request not found",
   },
   {
@@ -188,6 +200,8 @@ const logTemplates = [
     request_kind_label: "API | search",
     request_kind_detail: null,
     result_status: "success",
+    key_effect_code: "none",
+    key_effect_summary: null,
     error_message: null,
   },
   {
@@ -201,6 +215,8 @@ const logTemplates = [
     request_kind_label: "MCP | /mcp",
     request_kind_detail: null,
     result_status: "quota_exhausted",
+    key_effect_code: "marked_exhausted",
+    key_effect_summary: "Automatically marked this key as exhausted",
     error_message: "quota exhausted",
   },
   {
@@ -214,6 +230,8 @@ const logTemplates = [
     request_kind_label: "MCP | extract",
     request_kind_detail: null,
     result_status: "success",
+    key_effect_code: "restored_active",
+    key_effect_summary: "The system automatically restored this key to active",
     error_message: null,
   },
   {
@@ -227,6 +245,8 @@ const logTemplates = [
     request_kind_label: "MCP | initialize",
     request_kind_detail: null,
     result_status: "success",
+    key_effect_code: "none",
+    key_effect_summary: null,
     error_message: null,
   },
   {
@@ -240,6 +260,8 @@ const logTemplates = [
     request_kind_label: "MCP | notifications/initialized",
     request_kind_detail: null,
     result_status: "unknown",
+    key_effect_code: "none",
+    key_effect_summary: null,
     error_message: null,
   },
   {
@@ -253,6 +275,8 @@ const logTemplates = [
     request_kind_label: "MCP | ping",
     request_kind_detail: null,
     result_status: "success",
+    key_effect_code: "none",
+    key_effect_summary: null,
     error_message: null,
   },
   {
@@ -266,6 +290,8 @@ const logTemplates = [
     request_kind_label: "MCP | resources/list",
     request_kind_detail: null,
     result_status: "success",
+    key_effect_code: "none",
+    key_effect_summary: null,
     error_message: null,
   },
   {
@@ -279,6 +305,8 @@ const logTemplates = [
     request_kind_label: "MCP | resources/templates/list",
     request_kind_detail: null,
     result_status: "success",
+    key_effect_code: "none",
+    key_effect_summary: null,
     error_message: null,
   },
   {
@@ -292,6 +320,8 @@ const logTemplates = [
     request_kind_label: "MCP | search",
     request_kind_detail: null,
     result_status: "success",
+    key_effect_code: "quarantined",
+    key_effect_summary: "The system automatically quarantined this key",
     error_message: null,
   },
   {
@@ -305,6 +335,8 @@ const logTemplates = [
     request_kind_label: "MCP | tools/list",
     request_kind_detail: null,
     result_status: "success",
+    key_effect_code: "none",
+    key_effect_summary: null,
     error_message: null,
   },
 ] as const;
@@ -319,6 +351,8 @@ function buildLogsMock(
     const template = logTemplates[idx % logTemplates.length];
     return {
       id: startId + idx,
+      key_id: storyKeyIds[idx % storyKeyIds.length],
+      auth_token_id: tokenId,
       ...template,
       business_credits:
         template.business_credits == null ? null : template.business_credits + Math.floor(idx / logTemplates.length),
@@ -401,15 +435,41 @@ function buildLogPage(
   per_page: number;
   total: number;
   request_kind_options: typeof requestKindOptionsMock;
+  facets: {
+    results: Array<{ value: string; count: number }>;
+    key_effects: Array<{ value: string; count: number }>;
+    keys: Array<{ value: string; count: number }>;
+  };
 } {
   const start = (page - 1) * responsePerPage;
+  const requestKindOptions = requestKindOptionsMock.map((option) => ({
+    ...option,
+    count: source.filter((log) => log.request_kind_key === option.key).length,
+  }));
   return {
     items: source.slice(start, start + responsePerPage),
     page,
     per_page: responsePerPage,
     total: source.length,
-    request_kind_options: requestKindOptionsMock,
+    request_kind_options: requestKindOptions,
+    facets: {
+      results: buildFacetOptions(source.map((log) => log.result_status)),
+      key_effects: buildFacetOptions(source.map((log) => log.key_effect_code ?? "none")),
+      keys: buildFacetOptions(source.map((log) => log.key_id)),
+    },
   };
+}
+
+function buildFacetOptions(values: Array<string | null | undefined>): Array<{ value: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const raw of values) {
+    const value = raw?.trim();
+    if (!value) continue;
+    counts.set(value, (counts.get(value) ?? 0) + 1);
+  }
+  return Array.from(counts.entries())
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .map(([value, count]) => ({ value, count }));
 }
 
 function installFetchMock(
@@ -447,11 +507,31 @@ function installFetchMock(
       const perPage = Number(url.searchParams.get("per_page") ?? "20");
       const page = Number(url.searchParams.get("page") ?? "1");
       const selectedRequestKinds = url.searchParams.getAll("request_kind");
-      const source = page === 2 ? storyData.logsPageTwo : storyData.logs;
-      const filteredSource =
-        selectedRequestKinds.length === 0
-          ? source
-          : source.filter((log) => selectedRequestKinds.includes(log.request_kind_key));
+      const selectedResult = url.searchParams.get("result")?.trim() ?? "";
+      const selectedKeyEffect = url.searchParams.get("key_effect")?.trim() ?? "";
+      const selectedKeyId = url.searchParams.get("key_id")?.trim() ?? "";
+      const source = (page === 2 ? storyData.logsPageTwo : storyData.logs).map((log) => ({
+        ...log,
+        auth_token_id: activeTokenId,
+      }));
+      const facetScopedSource = source.filter((log) => {
+        if (selectedRequestKinds.length > 0 && !selectedRequestKinds.includes(log.request_kind_key)) {
+          return false;
+        }
+        if (selectedKeyId && log.key_id !== selectedKeyId) {
+          return false;
+        }
+        return true;
+      });
+      const filteredSource = facetScopedSource.filter((log) => {
+        if (selectedResult && log.result_status !== selectedResult) {
+          return false;
+        }
+        if (selectedKeyEffect && (log.key_effect_code ?? "none") !== selectedKeyEffect) {
+          return false;
+        }
+        return true;
+      });
       if (mode === "initial_loading") {
         await wait(4_000);
       } else if (mode === "switch_loading" && page === 2) {

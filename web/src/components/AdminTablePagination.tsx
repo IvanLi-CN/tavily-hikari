@@ -38,6 +38,11 @@ export default function AdminTablePagination({
   onNext,
   onPerPageChange,
 }: AdminTablePaginationProps): JSX.Element {
+  const resolvedPerPageOptions =
+    typeof perPage === 'number' && !perPageOptions.includes(perPage)
+      ? [...perPageOptions, perPage].sort((left, right) => left - right)
+      : perPageOptions
+
   return (
     <div className="table-pagination">
       <span>{perPageLabel}</span>
@@ -47,7 +52,7 @@ export default function AdminTablePagination({
             <SelectValue />
           </SelectTrigger>
           <SelectContent align="start">
-            {perPageOptions.map((option) => (
+            {resolvedPerPageOptions.map((option) => (
               <SelectItem key={option} value={String(option)}>
                 {option}
               </SelectItem>

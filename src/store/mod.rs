@@ -142,6 +142,10 @@ impl KeyStore {
                 tavily_status_code INTEGER,
                 error_message TEXT,
                 result_status TEXT NOT NULL DEFAULT 'unknown',
+                request_kind_key TEXT,
+                request_kind_label TEXT,
+                request_kind_detail TEXT,
+                business_credits INTEGER,
                 failure_kind TEXT,
                 key_effect_code TEXT NOT NULL DEFAULT 'none',
                 key_effect_summary TEXT,
@@ -174,6 +178,18 @@ impl KeyStore {
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_request_logs_key_time
                ON request_logs(api_key_id, created_at DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_request_logs_request_kind_time
+               ON request_logs(request_kind_key, created_at DESC, id DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_request_logs_key_effect_time
+               ON request_logs(key_effect_code, created_at DESC, id DESC)"#,
         )
         .execute(&self.pool)
         .await?;
@@ -450,6 +466,7 @@ impl KeyStore {
                 billing_subject TEXT,
                 billing_state TEXT NOT NULL DEFAULT 'none',
                 api_key_id TEXT,
+                request_log_id INTEGER REFERENCES request_logs(id),
                 created_at INTEGER NOT NULL
             )
             "#,
@@ -607,6 +624,24 @@ impl KeyStore {
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_token_logs_api_key_time
                ON auth_token_logs(api_key_id, created_at DESC, id DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        if !self
+            .table_column_exists("auth_token_logs", "request_log_id")
+            .await?
+        {
+            sqlx::query(
+                "ALTER TABLE auth_token_logs ADD COLUMN request_log_id INTEGER REFERENCES request_logs(id)",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_token_logs_request_log_id
+               ON auth_token_logs(request_log_id)"#,
         )
         .execute(&self.pool)
         .await?;
@@ -2832,6 +2867,30 @@ impl KeyStore {
                 .await?;
         }
 
+        if !self.request_logs_column_exists("request_kind_key").await? {
+            sqlx::query("ALTER TABLE request_logs ADD COLUMN request_kind_key TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
+
+        if !self.request_logs_column_exists("request_kind_label").await? {
+            sqlx::query("ALTER TABLE request_logs ADD COLUMN request_kind_label TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
+
+        if !self.request_logs_column_exists("request_kind_detail").await? {
+            sqlx::query("ALTER TABLE request_logs ADD COLUMN request_kind_detail TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
+
+        if !self.request_logs_column_exists("business_credits").await? {
+            sqlx::query("ALTER TABLE request_logs ADD COLUMN business_credits INTEGER")
+                .execute(&self.pool)
+                .await?;
+        }
+
         self.ensure_request_logs_key_ids().await?;
 
         Ok(())
@@ -2871,6 +2930,10 @@ impl KeyStore {
                     tavily_status_code INTEGER,
                     error_message TEXT,
                     result_status TEXT NOT NULL DEFAULT 'unknown',
+                    request_kind_key TEXT,
+                    request_kind_label TEXT,
+                    request_kind_detail TEXT,
+                    business_credits INTEGER,
                     failure_kind TEXT,
                     key_effect_code TEXT NOT NULL DEFAULT 'none',
                     key_effect_summary TEXT,
@@ -2899,9 +2962,13 @@ impl KeyStore {
                     tavily_status_code,
                     error_message,
                     result_status,
-                    NULL AS failure_kind,
-                    'none' AS key_effect_code,
-                    NULL AS key_effect_summary,
+                    request_kind_key,
+                    request_kind_label,
+                    request_kind_detail,
+                    business_credits,
+                    failure_kind,
+                    key_effect_code,
+                    key_effect_summary,
                     request_body,
                     response_body,
                     forwarded_headers,
@@ -2919,6 +2986,13 @@ impl KeyStore {
                     tavily_status_code,
                     error_message,
                     result_status,
+                    NULL AS request_kind_key,
+                    NULL AS request_kind_label,
+                    NULL AS request_kind_detail,
+                    NULL AS business_credits,
+                    NULL AS failure_kind,
+                    'none' AS key_effect_code,
+                    NULL AS key_effect_summary,
                     request_body,
                     response_body,
                     forwarded_headers,
@@ -3059,7 +3133,8 @@ impl KeyStore {
             sqlx::query(
                 r#"
                 SELECT id, api_key_id, auth_token_id, method, path, query, status_code, tavily_status_code, error_message,
-                       result_status, failure_kind, key_effect_code, key_effect_summary,
+                       result_status, request_kind_key, request_kind_label, request_kind_detail, business_credits,
+                       failure_kind, key_effect_code, key_effect_summary,
                        request_body, response_body, created_at, forwarded_headers, dropped_headers
                 FROM request_logs
                 WHERE api_key_id = ? AND created_at >= ?
@@ -3076,7 +3151,8 @@ impl KeyStore {
             sqlx::query(
                 r#"
                 SELECT id, api_key_id, auth_token_id, method, path, query, status_code, tavily_status_code, error_message,
-                       result_status, failure_kind, key_effect_code, key_effect_summary,
+                       result_status, request_kind_key, request_kind_label, request_kind_detail, business_credits,
+                       failure_kind, key_effect_code, key_effect_summary,
                        request_body, response_body, created_at, forwarded_headers, dropped_headers
                 FROM request_logs
                 WHERE api_key_id = ?
@@ -3092,36 +3168,7 @@ impl KeyStore {
 
         Ok(rows
             .into_iter()
-            .map(|row| -> Result<RequestLogRecord, sqlx::Error> {
-                Ok(RequestLogRecord {
-                    id: row.try_get("id")?,
-                    key_id: row.try_get("api_key_id")?,
-                    auth_token_id: row.try_get("auth_token_id")?,
-                    method: row.try_get("method")?,
-                    path: row.try_get("path")?,
-                    query: row.try_get("query")?,
-                    status_code: row.try_get("status_code")?,
-                    tavily_status_code: row.try_get("tavily_status_code")?,
-                    error_message: row.try_get("error_message")?,
-                    result_status: row.try_get("result_status")?,
-                    failure_kind: row.try_get("failure_kind")?,
-                    key_effect_code: row.try_get("key_effect_code")?,
-                    key_effect_summary: row.try_get("key_effect_summary")?,
-                    request_body: row
-                        .try_get::<Option<Vec<u8>>, _>("request_body")?
-                        .unwrap_or_default(),
-                    response_body: row
-                        .try_get::<Option<Vec<u8>>, _>("response_body")?
-                        .unwrap_or_default(),
-                    created_at: row.try_get("created_at")?,
-                    forwarded_headers: parse_header_list(
-                        row.try_get::<Option<String>, _>("forwarded_headers")?,
-                    ),
-                    dropped_headers: parse_header_list(
-                        row.try_get::<Option<String>, _>("dropped_headers")?,
-                    ),
-                })
-            })
+            .map(Self::map_request_log_row)
             .collect::<Result<Vec<_>, _>>()?)
     }
 
@@ -6582,6 +6629,7 @@ impl KeyStore {
         failure_kind: Option<&str>,
         key_effect_code: &str,
         key_effect_summary: Option<&str>,
+        request_log_id: Option<i64>,
     ) -> Result<(), ProxyError> {
         let created_at = Utc::now().timestamp();
         let counts_business_quota = if counts_business_quota { 1i64 } else { 0i64 };
@@ -6595,8 +6643,8 @@ impl KeyStore {
                 token_id, method, path, query, http_status, mcp_status,
                 request_kind_key, request_kind_label, request_kind_detail,
                 result_status, error_message, failure_kind, key_effect_code, key_effect_summary,
-                counts_business_quota, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                counts_business_quota, request_log_id, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(token_id)
@@ -6614,6 +6662,7 @@ impl KeyStore {
         .bind(key_effect_code)
         .bind(key_effect_summary)
         .bind(counts_business_quota)
+        .bind(request_log_id)
         .bind(created_at)
         .execute(&self.pool)
         .await?;
@@ -6648,6 +6697,7 @@ impl KeyStore {
         failure_kind: Option<&str>,
         key_effect_code: &str,
         key_effect_summary: Option<&str>,
+        request_log_id: Option<i64>,
     ) -> Result<i64, ProxyError> {
         let created_at = Utc::now().timestamp();
         let counts_business_quota = if counts_business_quota { 1i64 } else { 0i64 };
@@ -6677,8 +6727,9 @@ impl KeyStore {
                 billing_subject,
                 billing_state,
                 api_key_id,
+                request_log_id,
                 created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
             "#,
         )
@@ -6701,6 +6752,7 @@ impl KeyStore {
         .bind(billing_subject)
         .bind(BILLING_STATE_PENDING)
         .bind(api_key_id)
+        .bind(request_log_id)
         .bind(created_at)
         .fetch_one(&self.pool)
         .await?;
@@ -6773,12 +6825,12 @@ impl KeyStore {
         let claimed = if force_claim_miss {
             None
         } else {
-            sqlx::query_as::<_, (i64, Option<String>, i64, Option<String>, String)>(
+            sqlx::query_as::<_, (i64, Option<String>, i64, Option<String>, String, Option<i64>)>(
                 r#"
                 UPDATE auth_token_logs
                 SET billing_state = ?
                 WHERE id = ? AND billing_state = ?
-                RETURNING COALESCE(business_credits, 0), billing_subject, created_at, api_key_id, result_status
+                RETURNING COALESCE(business_credits, 0), billing_subject, created_at, api_key_id, result_status, request_log_id
                 "#,
             )
             .bind(BILLING_STATE_CHARGED)
@@ -6788,7 +6840,7 @@ impl KeyStore {
             .await?
         };
 
-        let Some((credits, billing_subject, created_at, api_key_id, result_status)) = claimed
+        let Some((credits, billing_subject, created_at, api_key_id, result_status, request_log_id)) = claimed
         else {
             let billing_state = sqlx::query_scalar::<_, String>(
                 "SELECT billing_state FROM auth_token_logs WHERE id = ? LIMIT 1",
@@ -6825,6 +6877,20 @@ impl KeyStore {
         if credits <= 0 {
             tx.commit().await?;
             return Ok(PendingBillingSettleOutcome::Charged);
+        }
+
+        if let Some(request_log_id) = request_log_id {
+            sqlx::query(
+                r#"
+                UPDATE request_logs
+                SET business_credits = ?
+                WHERE id = ?
+                "#,
+            )
+            .bind(credits)
+            .bind(request_log_id)
+            .execute(&mut *tx)
+            .await?;
         }
 
         let Some(billing_subject) = billing_subject else {
@@ -7103,29 +7169,11 @@ impl KeyStore {
         before_id: Option<i64>,
     ) -> Result<Vec<TokenLogRecord>, ProxyError> {
         let limit = limit.clamp(1, 500) as i64;
-        type TokenLogRow = (
-            i64,
-            String,
-            String,
-            Option<String>,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            String,
-            Option<String>,
-            Option<String>,
-            String,
-            Option<String>,
-            i64,
-        );
         let rows = if let Some(bid) = before_id {
-            sqlx::query_as::<_, TokenLogRow>(
+            sqlx::query(
                 r#"
-                SELECT id, method, path, query, http_status, mcp_status,
-                       CASE WHEN billing_state = 'charged' THEN business_credits ELSE NULL END,
+                SELECT id, api_key_id, method, path, query, http_status, mcp_status,
+                       CASE WHEN billing_state = 'charged' THEN business_credits ELSE NULL END AS business_credits,
                        request_kind_key, request_kind_label, request_kind_detail,
                        result_status, error_message, failure_kind, key_effect_code,
                        key_effect_summary, created_at
@@ -7141,10 +7189,10 @@ impl KeyStore {
             .fetch_all(&self.pool)
             .await?
         } else {
-            sqlx::query_as::<_, TokenLogRow>(
+            sqlx::query(
                 r#"
-                SELECT id, method, path, query, http_status, mcp_status,
-                       CASE WHEN billing_state = 'charged' THEN business_credits ELSE NULL END,
+                SELECT id, api_key_id, method, path, query, http_status, mcp_status,
+                       CASE WHEN billing_state = 'charged' THEN business_credits ELSE NULL END AS business_credits,
                        request_kind_key, request_kind_label, request_kind_detail,
                        result_status, error_message, failure_kind, key_effect_code,
                        key_effect_summary, created_at
@@ -7162,54 +7210,43 @@ impl KeyStore {
 
         Ok(rows
             .into_iter()
-            .map(
-                |(
-                    id,
-                    method,
-                    path,
-                    query,
-                    http_status,
-                    mcp_status,
-                    business_credits,
-                    request_kind_key,
-                    request_kind_label,
-                    request_kind_detail,
-                    result_status,
-                    error_message,
-                    failure_kind,
-                    key_effect_code,
-                    key_effect_summary,
-                    created_at,
-                )| {
-                    let request_kind = finalize_token_request_kind(
-                        method.as_str(),
-                        path.as_str(),
-                        query.as_deref(),
-                        request_kind_key,
-                        request_kind_label,
-                        request_kind_detail,
-                    );
-                    TokenLogRecord {
-                        id,
-                        method,
-                        path,
-                        query,
-                        http_status,
-                        mcp_status,
-                        business_credits,
-                        request_kind_key: request_kind.key,
-                        request_kind_label: request_kind.label,
-                        request_kind_detail: request_kind.detail,
-                        result_status,
-                        error_message,
-                        failure_kind,
-                        key_effect_code,
-                        key_effect_summary,
-                        created_at,
-                    }
-                },
-            )
-            .collect())
+            .map(Self::map_token_log_row)
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    fn map_token_log_row(row: sqlx::sqlite::SqliteRow) -> Result<TokenLogRecord, sqlx::Error> {
+        let key_id: Option<String> = row.try_get("api_key_id")?;
+        let method: String = row.try_get("method")?;
+        let path: String = row.try_get("path")?;
+        let query: Option<String> = row.try_get("query")?;
+        let request_kind = finalize_token_request_kind(
+            method.as_str(),
+            path.as_str(),
+            query.as_deref(),
+            row.try_get("request_kind_key")?,
+            row.try_get("request_kind_label")?,
+            row.try_get("request_kind_detail")?,
+        );
+
+        Ok(TokenLogRecord {
+            id: row.try_get("id")?,
+            key_id,
+            method,
+            path,
+            query,
+            http_status: row.try_get("http_status")?,
+            mcp_status: row.try_get("mcp_status")?,
+            business_credits: row.try_get("business_credits")?,
+            request_kind_key: request_kind.key,
+            request_kind_label: request_kind.label,
+            request_kind_detail: request_kind.detail,
+            result_status: row.try_get("result_status")?,
+            error_message: row.try_get("error_message")?,
+            failure_kind: row.try_get("failure_kind")?,
+            key_effect_code: row.try_get("key_effect_code")?,
+            key_effect_summary: row.try_get("key_effect_summary")?,
+            created_at: row.try_get("created_at")?,
+        })
     }
 
     pub async fn fetch_token_summary_since(
@@ -7281,6 +7318,7 @@ impl KeyStore {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn fetch_token_logs_page(
         &self,
         token_id: &str,
@@ -7289,28 +7327,13 @@ impl KeyStore {
         since: i64,
         until: Option<i64>,
         request_kinds: &[String],
-    ) -> Result<(Vec<TokenLogRecord>, i64), ProxyError> {
+        result_status: Option<&str>,
+        key_effect_code: Option<&str>,
+        key_id: Option<&str>,
+    ) -> Result<TokenLogsPage, ProxyError> {
         let per_page = per_page.clamp(1, 200) as i64;
         let page = page.max(1) as i64;
         let offset = (page - 1) * per_page;
-        type TokenLogRow = (
-            i64,
-            String,
-            String,
-            Option<String>,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            String,
-            Option<String>,
-            Option<String>,
-            String,
-            Option<String>,
-            i64,
-        );
         let filtered_request_kinds: Vec<&str> = request_kinds
             .iter()
             .map(|value| value.trim())
@@ -7327,6 +7350,18 @@ impl KeyStore {
         if let Some(until) = until {
             total_query.push(" AND created_at < ");
             total_query.push_bind(until);
+        }
+        if let Some(result_status) = result_status {
+            total_query.push(" AND result_status = ");
+            total_query.push_bind(result_status);
+        }
+        if let Some(key_effect_code) = key_effect_code {
+            total_query.push(" AND key_effect_code = ");
+            total_query.push_bind(key_effect_code);
+        }
+        if let Some(key_id) = key_id {
+            total_query.push(" AND api_key_id = ");
+            total_query.push_bind(key_id);
         }
         if !filtered_request_kinds.is_empty() {
             total_query.push(" AND (request_kind_key IN (");
@@ -7358,8 +7393,8 @@ impl KeyStore {
 
         let mut rows_query = QueryBuilder::<Sqlite>::new(
             r#"
-            SELECT id, method, path, query, http_status, mcp_status,
-                   CASE WHEN billing_state = 'charged' THEN business_credits ELSE NULL END,
+            SELECT id, api_key_id, method, path, query, http_status, mcp_status,
+                   CASE WHEN billing_state = 'charged' THEN business_credits ELSE NULL END AS business_credits,
                    request_kind_key,
                    request_kind_label,
                    request_kind_detail,
@@ -7376,6 +7411,18 @@ impl KeyStore {
         if let Some(until) = until {
             rows_query.push(" AND created_at < ");
             rows_query.push_bind(until);
+        }
+        if let Some(result_status) = result_status {
+            rows_query.push(" AND result_status = ");
+            rows_query.push_bind(result_status);
+        }
+        if let Some(key_effect_code) = key_effect_code {
+            rows_query.push(" AND key_effect_code = ");
+            rows_query.push_bind(key_effect_code);
+        }
+        if let Some(key_id) = key_id {
+            rows_query.push(" AND api_key_id = ");
+            rows_query.push_bind(key_id);
         }
         if !filtered_request_kinds.is_empty() {
             rows_query.push(" AND (request_kind_key IN (");
@@ -7404,63 +7451,75 @@ impl KeyStore {
         rows_query.push_bind(per_page);
         rows_query.push(" OFFSET ");
         rows_query.push_bind(offset);
-        let rows = rows_query
-            .build_query_as::<TokenLogRow>()
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = rows_query.build().fetch_all(&self.pool).await?;
 
         let items = rows
             .into_iter()
-            .map(
-                |(
-                    id,
-                    method,
-                    path,
-                    query,
-                    http_status,
-                    mcp_status,
-                    business_credits,
-                    request_kind_key,
-                    request_kind_label,
-                    request_kind_detail,
-                    result_status,
-                    error_message,
-                    failure_kind,
-                    key_effect_code,
-                    key_effect_summary,
-                    created_at,
-                )| {
-                    let request_kind = finalize_token_request_kind(
-                        method.as_str(),
-                        path.as_str(),
-                        query.as_deref(),
-                        request_kind_key,
-                        request_kind_label,
-                        request_kind_detail,
-                    );
-                    TokenLogRecord {
-                        id,
-                        method,
-                        path,
-                        query,
-                        http_status,
-                        mcp_status,
-                        business_credits,
-                        request_kind_key: request_kind.key,
-                        request_kind_label: request_kind.label,
-                        request_kind_detail: request_kind.detail,
-                        result_status,
-                        error_message,
-                        failure_kind,
-                        key_effect_code,
-                        key_effect_summary,
-                        created_at,
-                    }
-                },
-            )
-            .collect();
+            .map(Self::map_token_log_row)
+            .collect::<Result<Vec<_>, _>>()?;
 
-        Ok((items, total))
+        let request_kind_options = self
+            .fetch_token_log_request_kind_options(token_id, since, until)
+            .await?;
+        let results = self
+            .fetch_token_log_facet_options(token_id, since, until, "result_status", false)
+            .await?;
+        let key_effects = self
+            .fetch_token_log_facet_options(token_id, since, until, "key_effect_code", false)
+            .await?;
+        let keys = self
+            .fetch_token_log_facet_options(token_id, since, until, "api_key_id", true)
+            .await?;
+
+        Ok(TokenLogsPage {
+            items,
+            total,
+            request_kind_options,
+            facets: RequestLogPageFacets {
+                results,
+                key_effects,
+                tokens: Vec::new(),
+                keys,
+            },
+        })
+    }
+
+    async fn fetch_token_log_facet_options(
+        &self,
+        token_id: &str,
+        since: i64,
+        until: Option<i64>,
+        column_expr: &str,
+        require_non_empty: bool,
+    ) -> Result<Vec<LogFacetOption>, ProxyError> {
+        let mut query = QueryBuilder::<Sqlite>::new(format!(
+            "SELECT {column_expr} AS value, COUNT(*) AS count FROM auth_token_logs WHERE token_id = "
+        ));
+        query.push_bind(token_id);
+        query.push(" AND created_at >= ");
+        query.push_bind(since);
+        if let Some(until) = until {
+            query.push(" AND created_at < ");
+            query.push_bind(until);
+        }
+        if require_non_empty {
+            query.push(" AND ");
+            query.push(format!(
+                "{column_expr} IS NOT NULL AND TRIM({column_expr}) <> ''"
+            ));
+        }
+        query.push(" GROUP BY 1 ORDER BY count DESC, value ASC");
+
+        let rows = query.build().fetch_all(&self.pool).await?;
+        rows.into_iter()
+            .map(|row| -> Result<LogFacetOption, sqlx::Error> {
+                Ok(LogFacetOption {
+                    value: row.try_get("value")?,
+                    count: row.try_get("count")?,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(ProxyError::from)
     }
 
     pub async fn fetch_token_log_request_kind_options(
@@ -7469,7 +7528,7 @@ impl KeyStore {
         since: i64,
         until: Option<i64>,
     ) -> Result<Vec<TokenRequestKindOption>, ProxyError> {
-        type RequestKindOptionRow = (String, String, i64, i64);
+        type RequestKindOptionRow = (String, String, i64, i64, i64);
         let fallback_key_sql = token_request_kind_fallback_key_sql();
         let fallback_label_sql = token_request_kind_fallback_label_sql();
         let needs_fallback_sql = token_request_kind_needs_fallback_sql();
@@ -7478,6 +7537,7 @@ impl KeyStore {
             SELECT
                 request_kind_key,
                 request_kind_label,
+                COUNT(*) AS request_count,
                 MAX(CASE WHEN counts_business_quota = 1 THEN 1 ELSE 0 END) AS has_billable,
                 MAX(CASE WHEN counts_business_quota = 0 THEN 1 ELSE 0 END) AS has_non_billable
             FROM auth_token_logs
@@ -7514,6 +7574,7 @@ impl KeyStore {
                 SELECT
                     {fallback_key_sql} AS request_kind_key,
                     {fallback_label_sql} AS request_kind_label,
+                    COUNT(*) AS request_count,
                     MAX(CASE WHEN counts_business_quota = 1 THEN 1 ELSE 0 END) AS has_billable,
                     MAX(CASE WHEN counts_business_quota = 0 THEN 1 ELSE 0 END) AS has_non_billable
                 FROM auth_token_logs
@@ -7530,6 +7591,7 @@ impl KeyStore {
                 SELECT
                     {fallback_key_sql} AS request_kind_key,
                     {fallback_label_sql} AS request_kind_label,
+                    COUNT(*) AS request_count,
                     MAX(CASE WHEN counts_business_quota = 1 THEN 1 ELSE 0 END) AS has_billable,
                     MAX(CASE WHEN counts_business_quota = 0 THEN 1 ELSE 0 END) AS has_non_billable
                 FROM auth_token_logs
@@ -7554,24 +7616,34 @@ impl KeyStore {
                 .fetch_all(&self.pool)
                 .await?
         };
-        let mut options_by_key = BTreeMap::<String, (String, bool, bool)>::new();
-        for (key, label, has_billable, has_non_billable) in
+        let mut options_by_key = BTreeMap::<String, (String, bool, bool, i64)>::new();
+        for (key, label, request_count, has_billable, has_non_billable) in
             options.into_iter().chain(legacy_options.into_iter())
         {
             match options_by_key.get_mut(&key) {
-                Some((current_label, current_has_billable, current_has_non_billable))
+                Some((current_label, current_has_billable, current_has_non_billable, current_count))
                     if prefer_request_kind_label(current_label, &label) =>
                 {
                     *current_label = label;
                     *current_has_billable |= has_billable != 0;
                     *current_has_non_billable |= has_non_billable != 0;
+                    *current_count += request_count;
                 }
-                Some((_, current_has_billable, current_has_non_billable)) => {
+                Some((_, current_has_billable, current_has_non_billable, current_count)) => {
                     *current_has_billable |= has_billable != 0;
                     *current_has_non_billable |= has_non_billable != 0;
+                    *current_count += request_count;
                 }
                 None => {
-                    options_by_key.insert(key, (label, has_billable != 0, has_non_billable != 0));
+                    options_by_key.insert(
+                        key,
+                        (
+                            label,
+                            has_billable != 0,
+                            has_non_billable != 0,
+                            request_count,
+                        ),
+                    );
                 }
             }
         }
@@ -7579,7 +7651,7 @@ impl KeyStore {
         let mut normalized_options = options_by_key
             .into_iter()
             .map(
-                |(key, (label, has_billable, has_non_billable))| TokenRequestKindOption {
+                |(key, (label, has_billable, has_non_billable, count))| TokenRequestKindOption {
                     protocol_group: token_request_kind_protocol_group(&key).to_string(),
                     billing_group: token_request_kind_option_billing_group(
                         &key,
@@ -7589,6 +7661,7 @@ impl KeyStore {
                     .to_string(),
                     key,
                     label,
+                    count,
                 },
             )
             .collect::<Vec<_>>();
@@ -8209,7 +8282,7 @@ impl KeyStore {
         Ok(())
     }
 
-    pub(crate) async fn log_attempt(&self, entry: AttemptLog<'_>) -> Result<(), ProxyError> {
+    pub(crate) async fn log_attempt(&self, entry: AttemptLog<'_>) -> Result<i64, ProxyError> {
         let created_at = Utc::now().timestamp();
         let status_code = entry.status.map(|code| code.as_u16() as i64);
         let failure_kind = entry.failure_kind.map(str::to_string).or_else(|| {
@@ -8222,6 +8295,7 @@ impl KeyStore {
             )
         });
         let key_effect_summary = entry.key_effect_summary.map(str::to_string);
+        let request_kind = classify_token_request_kind(entry.path, Some(entry.request_body));
 
         let forwarded_json =
             serde_json::to_string(entry.forwarded_headers).unwrap_or_else(|_| "[]".to_string());
@@ -8238,7 +8312,7 @@ impl KeyStore {
 
         let mut tx = self.pool.begin().await?;
 
-        sqlx::query(
+        let request_log_id: i64 = sqlx::query_scalar(
             r#"
             INSERT INTO request_logs (
                 api_key_id,
@@ -8250,6 +8324,10 @@ impl KeyStore {
                 tavily_status_code,
                 error_message,
                 result_status,
+                request_kind_key,
+                request_kind_label,
+                request_kind_detail,
+                business_credits,
                 failure_kind,
                 key_effect_code,
                 key_effect_summary,
@@ -8258,7 +8336,8 @@ impl KeyStore {
                 forwarded_headers,
                 dropped_headers,
                 created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING id
             "#,
         )
         .bind(entry.key_id)
@@ -8270,6 +8349,10 @@ impl KeyStore {
         .bind(entry.tavily_status_code)
         .bind(entry.error)
         .bind(entry.outcome)
+        .bind(&request_kind.key)
+        .bind(&request_kind.label)
+        .bind(request_kind.detail.as_deref())
+        .bind(None::<i64>)
         .bind(failure_kind)
         .bind(entry.key_effect_code)
         .bind(key_effect_summary)
@@ -8278,7 +8361,7 @@ impl KeyStore {
         .bind(forwarded_json)
         .bind(dropped_json)
         .bind(created_at)
-        .execute(&mut *tx)
+        .fetch_one(&mut *tx)
         .await?;
 
         // Daily API-key rollup bucket (bucket_secs=86400, aligned to local midnight).
@@ -8314,7 +8397,7 @@ impl KeyStore {
 
         tx.commit().await?;
 
-        Ok(())
+        Ok(request_log_id)
     }
 
     pub(crate) fn api_key_metrics_from_clause() -> &'static str {
@@ -8841,6 +8924,10 @@ impl KeyStore {
                 tavily_status_code,
                 error_message,
                 result_status,
+                request_kind_key,
+                request_kind_label,
+                request_kind_detail,
+                business_credits,
                 failure_kind,
                 key_effect_code,
                 key_effect_summary,
@@ -8860,34 +8947,7 @@ impl KeyStore {
 
         let records = rows
             .into_iter()
-            .map(|row| -> Result<RequestLogRecord, sqlx::Error> {
-                let forwarded =
-                    parse_header_list(row.try_get::<Option<String>, _>("forwarded_headers")?);
-                let dropped =
-                    parse_header_list(row.try_get::<Option<String>, _>("dropped_headers")?);
-                let request_body: Option<Vec<u8>> = row.try_get("request_body")?;
-                let response_body: Option<Vec<u8>> = row.try_get("response_body")?;
-                Ok(RequestLogRecord {
-                    id: row.try_get("id")?,
-                    key_id: row.try_get("api_key_id")?,
-                    auth_token_id: row.try_get("auth_token_id")?,
-                    method: row.try_get("method")?,
-                    path: row.try_get("path")?,
-                    query: row.try_get("query")?,
-                    status_code: row.try_get("status_code")?,
-                    tavily_status_code: row.try_get("tavily_status_code")?,
-                    error_message: row.try_get("error_message")?,
-                    result_status: row.try_get("result_status")?,
-                    failure_kind: row.try_get("failure_kind")?,
-                    key_effect_code: row.try_get("key_effect_code")?,
-                    key_effect_summary: row.try_get("key_effect_summary")?,
-                    created_at: row.try_get("created_at")?,
-                    request_body: request_body.unwrap_or_default(),
-                    response_body: response_body.unwrap_or_default(),
-                    forwarded_headers: forwarded,
-                    dropped_headers: dropped,
-                })
-            })
+            .map(Self::map_request_log_row)
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(records)
@@ -8899,130 +8959,361 @@ impl KeyStore {
         page: i64,
         per_page: i64,
     ) -> Result<(Vec<RequestLogRecord>, i64), ProxyError> {
+        let request_kinds: Vec<String> = Vec::new();
+        let result = self
+            .fetch_request_logs_page(
+                None,
+                None,
+                &request_kinds,
+                result_status,
+                None,
+                None,
+                None,
+                page,
+                per_page,
+                true,
+                true,
+            )
+            .await?;
+        Ok((result.items, result.total))
+    }
+
+    fn map_request_log_row(
+        row: sqlx::sqlite::SqliteRow,
+    ) -> Result<RequestLogRecord, sqlx::Error> {
+        let forwarded = parse_header_list(row.try_get::<Option<String>, _>("forwarded_headers")?);
+        let dropped = parse_header_list(row.try_get::<Option<String>, _>("dropped_headers")?);
+        let request_body: Option<Vec<u8>> = row.try_get("request_body")?;
+        let response_body: Option<Vec<u8>> = row.try_get("response_body")?;
+        let method: String = row.try_get("method")?;
+        let path: String = row.try_get("path")?;
+        let query: Option<String> = row.try_get("query")?;
+        let request_kind = finalize_token_request_kind(
+            method.as_str(),
+            path.as_str(),
+            query.as_deref(),
+            row.try_get("request_kind_key")?,
+            row.try_get("request_kind_label")?,
+            row.try_get("request_kind_detail")?,
+        );
+
+        Ok(RequestLogRecord {
+            id: row.try_get("id")?,
+            key_id: row.try_get("api_key_id")?,
+            auth_token_id: row.try_get("auth_token_id")?,
+            method,
+            path,
+            query,
+            status_code: row.try_get("status_code")?,
+            tavily_status_code: row.try_get("tavily_status_code")?,
+            error_message: row.try_get("error_message")?,
+            business_credits: row.try_get("business_credits")?,
+            request_kind_key: request_kind.key,
+            request_kind_label: request_kind.label,
+            request_kind_detail: request_kind.detail,
+            result_status: row.try_get("result_status")?,
+            failure_kind: row.try_get("failure_kind")?,
+            key_effect_code: row.try_get("key_effect_code")?,
+            key_effect_summary: row.try_get("key_effect_summary")?,
+            request_body: request_body.unwrap_or_default(),
+            response_body: response_body.unwrap_or_default(),
+            created_at: row.try_get("created_at")?,
+            forwarded_headers: forwarded,
+            dropped_headers: dropped,
+        })
+    }
+
+    fn push_request_logs_scope<'a>(
+        builder: &mut QueryBuilder<'a, Sqlite>,
+        scoped_key_id: Option<&'a str>,
+        since: Option<i64>,
+    ) -> bool {
+        let mut has_where = false;
+        if let Some(key_id) = scoped_key_id {
+            builder.push(" WHERE api_key_id = ");
+            builder.push_bind(key_id);
+            has_where = true;
+        }
+        if let Some(since) = since {
+            builder.push(if has_where { " AND created_at >= " } else { " WHERE created_at >= " });
+            builder.push_bind(since);
+            has_where = true;
+        }
+        has_where
+    }
+
+    fn push_request_logs_filters<'a>(
+        builder: &mut QueryBuilder<'a, Sqlite>,
+        request_kinds: &'a [&'a str],
+        result_status: Option<&'a str>,
+        key_effect_code: Option<&'a str>,
+        auth_token_id: Option<&'a str>,
+        key_id: Option<&'a str>,
+        mut has_where: bool,
+    ) {
+        if let Some(result_status) = result_status {
+            builder.push(if has_where { " AND result_status = " } else { " WHERE result_status = " });
+            builder.push_bind(result_status);
+            has_where = true;
+        }
+        if let Some(key_effect_code) = key_effect_code {
+            builder.push(if has_where { " AND key_effect_code = " } else { " WHERE key_effect_code = " });
+            builder.push_bind(key_effect_code);
+            has_where = true;
+        }
+        if let Some(auth_token_id) = auth_token_id {
+            builder.push(if has_where { " AND auth_token_id = " } else { " WHERE auth_token_id = " });
+            builder.push_bind(auth_token_id);
+            has_where = true;
+        }
+        if let Some(key_id) = key_id {
+            builder.push(if has_where { " AND api_key_id = " } else { " WHERE api_key_id = " });
+            builder.push_bind(key_id);
+            has_where = true;
+        }
+        if !request_kinds.is_empty() {
+            builder.push(if has_where { " AND (" } else { " WHERE (" });
+            builder.push("request_kind_key IN (");
+            {
+                let mut separated = builder.separated(", ");
+                for request_kind in request_kinds {
+                    separated.push_bind(request_kind);
+                }
+                separated.push_unseparated(")");
+            }
+            builder.push(" OR (");
+            builder.push(token_request_kind_needs_fallback_sql());
+            builder.push(" AND ");
+            builder.push(token_request_kind_fallback_key_sql());
+            builder.push(" IN (");
+            {
+                let mut separated = builder.separated(", ");
+                for request_kind in request_kinds {
+                    separated.push_bind(request_kind);
+                }
+                separated.push_unseparated(")");
+            }
+            builder.push("))");
+        }
+    }
+
+    async fn fetch_request_log_request_kind_options(
+        &self,
+        scoped_key_id: Option<&str>,
+        since: Option<i64>,
+    ) -> Result<Vec<TokenRequestKindOption>, ProxyError> {
+        type RequestKindOptionRow = (String, String, i64);
+
+        let mut stored_query = QueryBuilder::<Sqlite>::new(
+            "SELECT request_kind_key, request_kind_label, COUNT(*) AS request_count FROM request_logs",
+        );
+        let has_where = Self::push_request_logs_scope(&mut stored_query, scoped_key_id, since);
+        stored_query.push(if has_where { " AND " } else { " WHERE " });
+        stored_query.push("request_kind_key IS NOT NULL AND TRIM(request_kind_key) <> ''");
+        stored_query.push(" AND request_kind_label IS NOT NULL AND TRIM(request_kind_label) <> ''");
+        stored_query.push(" AND NOT (");
+        stored_query.push(token_request_kind_needs_fallback_sql());
+        stored_query.push(") GROUP BY request_kind_key, request_kind_label");
+        let stored = stored_query
+            .build_query_as::<RequestKindOptionRow>()
+            .fetch_all(&self.pool)
+            .await?;
+
+        let fallback_key_sql = token_request_kind_fallback_key_sql();
+        let fallback_label_sql = token_request_kind_fallback_label_sql();
+        let needs_fallback_sql = token_request_kind_needs_fallback_sql();
+        let mut legacy_query = QueryBuilder::<Sqlite>::new(format!(
+            "SELECT {fallback_key_sql} AS request_kind_key, {fallback_label_sql} AS request_kind_label, COUNT(*) AS request_count FROM request_logs"
+        ));
+        let has_where = Self::push_request_logs_scope(&mut legacy_query, scoped_key_id, since);
+        legacy_query.push(if has_where { " AND " } else { " WHERE " });
+        legacy_query.push(needs_fallback_sql);
+        legacy_query.push(" GROUP BY 1, 2");
+        let legacy = legacy_query
+            .build_query_as::<RequestKindOptionRow>()
+            .fetch_all(&self.pool)
+            .await?;
+
+        let mut by_key = BTreeMap::<String, (String, i64)>::new();
+        for (key, label, count) in stored.into_iter().chain(legacy.into_iter()) {
+            match by_key.get_mut(&key) {
+                Some((current_label, current_count))
+                    if prefer_request_kind_label(current_label, &label) =>
+                {
+                    *current_label = label;
+                    *current_count += count;
+                }
+                Some((_, current_count)) => {
+                    *current_count += count;
+                }
+                None => {
+                    by_key.insert(key, (label, count));
+                }
+            }
+        }
+
+        Ok(by_key
+            .into_iter()
+            .map(|(key, (label, count))| TokenRequestKindOption {
+                protocol_group: token_request_kind_protocol_group(&key).to_string(),
+                billing_group: token_request_kind_billing_group(&key).to_string(),
+                key,
+                label,
+                count,
+            })
+            .collect())
+    }
+
+    async fn fetch_request_log_facet_options(
+        &self,
+        column_expr: &str,
+        scoped_key_id: Option<&str>,
+        since: Option<i64>,
+        require_non_empty: bool,
+    ) -> Result<Vec<LogFacetOption>, ProxyError> {
+        let mut query = QueryBuilder::<Sqlite>::new(format!(
+            "SELECT {column_expr} AS value, COUNT(*) AS count FROM request_logs"
+        ));
+        let has_where = Self::push_request_logs_scope(&mut query, scoped_key_id, since);
+        if require_non_empty {
+            query.push(if has_where { " AND " } else { " WHERE " });
+            query.push(format!(
+                "{column_expr} IS NOT NULL AND TRIM({column_expr}) <> ''"
+            ));
+        }
+        query.push(" GROUP BY 1 ORDER BY count DESC, value ASC");
+
+        let rows = query.build().fetch_all(&self.pool).await?;
+        rows.into_iter()
+            .map(|row| -> Result<LogFacetOption, sqlx::Error> {
+                Ok(LogFacetOption {
+                    value: row.try_get("value")?,
+                    count: row.try_get("count")?,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(ProxyError::from)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn fetch_request_logs_page(
+        &self,
+        scoped_key_id: Option<&str>,
+        since: Option<i64>,
+        request_kinds: &[String],
+        result_status: Option<&str>,
+        key_effect_code: Option<&str>,
+        auth_token_id: Option<&str>,
+        key_id: Option<&str>,
+        page: i64,
+        per_page: i64,
+        include_token_facets: bool,
+        include_key_facets: bool,
+    ) -> Result<RequestLogsPage, ProxyError> {
         let page = page.max(1);
         let per_page = per_page.clamp(1, 200);
         let offset = (page - 1) * per_page;
+        let filtered_request_kinds: Vec<&str> = request_kinds
+            .iter()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .collect();
 
-        let (rows, total) = if let Some(status) = result_status {
-            let total: i64 = sqlx::query_scalar(
-                r#"
-                SELECT COUNT(*) AS count
-                FROM request_logs
-                WHERE result_status = ?
-                "#,
-            )
-            .bind(status)
-            .fetch_one(&self.pool)
-            .await?;
+        let mut total_query = QueryBuilder::<Sqlite>::new("SELECT COUNT(*) FROM request_logs");
+        let has_where = Self::push_request_logs_scope(&mut total_query, scoped_key_id, since);
+        Self::push_request_logs_filters(
+            &mut total_query,
+            &filtered_request_kinds,
+            result_status,
+            key_effect_code,
+            auth_token_id,
+            key_id,
+            has_where,
+        );
+        let total: i64 = total_query.build_query_scalar().fetch_one(&self.pool).await?;
 
-            let rows = sqlx::query(
-                r#"
-                SELECT
-                    id,
-                    api_key_id,
-                    auth_token_id,
-                    method,
-                    path,
-                    query,
-                    status_code,
-                    tavily_status_code,
-                    error_message,
-                    result_status,
-                    failure_kind,
-                    key_effect_code,
-                    key_effect_summary,
-                    request_body,
-                    response_body,
-                    forwarded_headers,
-                    dropped_headers,
-                    created_at
-                FROM request_logs
-                WHERE result_status = ?
-                ORDER BY created_at DESC, id DESC
-                LIMIT ? OFFSET ?
-                "#,
-            )
-            .bind(status)
-            .bind(per_page)
-            .bind(offset)
-            .fetch_all(&self.pool)
-            .await?;
-
-            (rows, total)
-        } else {
-            let total: i64 = sqlx::query_scalar(
-                r#"
-                SELECT COUNT(*) AS count
-                FROM request_logs
-                "#,
-            )
-            .fetch_one(&self.pool)
-            .await?;
-
-            let rows = sqlx::query(
-                r#"
-                SELECT
-                    id,
-                    api_key_id,
-                    auth_token_id,
-                    method,
-                    path,
-                    query,
-                    status_code,
-                    tavily_status_code,
-                    error_message,
-                    result_status,
-                    request_body,
-                    response_body,
-                    forwarded_headers,
-                    dropped_headers,
-                    created_at
-                FROM request_logs
-                ORDER BY created_at DESC, id DESC
-                LIMIT ? OFFSET ?
-                "#,
-            )
-            .bind(per_page)
-            .bind(offset)
-            .fetch_all(&self.pool)
-            .await?;
-
-            (rows, total)
-        };
-
-        let records = rows
+        let mut items_query = QueryBuilder::<Sqlite>::new(
+            r#"
+            SELECT
+                id,
+                api_key_id,
+                auth_token_id,
+                method,
+                path,
+                query,
+                status_code,
+                tavily_status_code,
+                error_message,
+                result_status,
+                request_kind_key,
+                request_kind_label,
+                request_kind_detail,
+                business_credits,
+                failure_kind,
+                key_effect_code,
+                key_effect_summary,
+                request_body,
+                response_body,
+                forwarded_headers,
+                dropped_headers,
+                created_at
+            FROM request_logs
+            "#
+            .to_string(),
+        );
+        let has_where = Self::push_request_logs_scope(&mut items_query, scoped_key_id, since);
+        Self::push_request_logs_filters(
+            &mut items_query,
+            &filtered_request_kinds,
+            result_status,
+            key_effect_code,
+            auth_token_id,
+            key_id,
+            has_where,
+        );
+        items_query.push(" ORDER BY created_at DESC, id DESC LIMIT ");
+        items_query.push_bind(per_page);
+        items_query.push(" OFFSET ");
+        items_query.push_bind(offset);
+        let rows = items_query.build().fetch_all(&self.pool).await?;
+        let items = rows
             .into_iter()
-            .map(|row| -> Result<RequestLogRecord, sqlx::Error> {
-                let forwarded =
-                    parse_header_list(row.try_get::<Option<String>, _>("forwarded_headers")?);
-                let dropped =
-                    parse_header_list(row.try_get::<Option<String>, _>("dropped_headers")?);
-                let request_body: Option<Vec<u8>> = row.try_get("request_body")?;
-                let response_body: Option<Vec<u8>> = row.try_get("response_body")?;
-                Ok(RequestLogRecord {
-                    id: row.try_get("id")?,
-                    key_id: row.try_get("api_key_id")?,
-                    auth_token_id: row.try_get("auth_token_id")?,
-                    method: row.try_get("method")?,
-                    path: row.try_get("path")?,
-                    query: row.try_get("query")?,
-                    status_code: row.try_get("status_code")?,
-                    tavily_status_code: row.try_get("tavily_status_code")?,
-                    error_message: row.try_get("error_message")?,
-                    result_status: row.try_get("result_status")?,
-                    failure_kind: row.try_get("failure_kind")?,
-                    key_effect_code: row.try_get("key_effect_code")?,
-                    key_effect_summary: row.try_get("key_effect_summary")?,
-                    created_at: row.try_get("created_at")?,
-                    request_body: request_body.unwrap_or_default(),
-                    response_body: response_body.unwrap_or_default(),
-                    forwarded_headers: forwarded,
-                    dropped_headers: dropped,
-                })
-            })
+            .map(Self::map_request_log_row)
             .collect::<Result<Vec<_>, _>>()?;
 
-        Ok((records, total))
+        let request_kind_options = self
+            .fetch_request_log_request_kind_options(scoped_key_id, since)
+            .await?;
+        let results = self
+            .fetch_request_log_facet_options("result_status", scoped_key_id, since, false)
+            .await?;
+        let key_effects = self
+            .fetch_request_log_facet_options("key_effect_code", scoped_key_id, since, false)
+            .await?;
+        let tokens = if include_token_facets {
+            self.fetch_request_log_facet_options("auth_token_id", scoped_key_id, since, true)
+                .await?
+        } else {
+            Vec::new()
+        };
+        let keys = if include_key_facets {
+            self.fetch_request_log_facet_options("api_key_id", scoped_key_id, since, true)
+                .await?
+        } else {
+            Vec::new()
+        };
+
+        Ok(RequestLogsPage {
+            items,
+            total,
+            request_kind_options,
+            facets: RequestLogPageFacets {
+                results,
+                key_effects,
+                tokens,
+                keys,
+            },
+        })
     }
 
     pub(crate) async fn fetch_api_key_secret(

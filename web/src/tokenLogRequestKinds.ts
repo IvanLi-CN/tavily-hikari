@@ -8,6 +8,7 @@ export interface TokenLogRequestKindOption {
   label: string
   protocol_group: TokenLogRequestKindProtocolGroup | ''
   billing_group: TokenLogRequestKindBillingGroup | ''
+  count?: number
 }
 
 export interface TokenLogsPagePathInput {
@@ -43,6 +44,57 @@ export const defaultTokenLogRequestKindQuickFilters: TokenLogRequestKindQuickFil
 }
 
 export const tokenLogRequestKindEmptySelectionKey = '__token_request_kind_empty_selection__'
+
+const canonicalTokenLogRequestKindOptions: TokenLogRequestKindOption[] = [
+  { key: 'api:crawl', label: 'API | crawl', protocol_group: 'api', billing_group: 'billable' },
+  { key: 'api:extract', label: 'API | extract', protocol_group: 'api', billing_group: 'billable' },
+  { key: 'api:map', label: 'API | map', protocol_group: 'api', billing_group: 'billable' },
+  { key: 'api:research', label: 'API | research', protocol_group: 'api', billing_group: 'billable' },
+  { key: 'api:research-result', label: 'API | research result', protocol_group: 'api', billing_group: 'non_billable' },
+  { key: 'api:search', label: 'API | search', protocol_group: 'api', billing_group: 'billable' },
+  { key: 'api:usage', label: 'API | usage', protocol_group: 'api', billing_group: 'non_billable' },
+  { key: 'mcp:batch', label: 'MCP | batch', protocol_group: 'mcp', billing_group: 'billable' },
+  { key: 'mcp:extract', label: 'MCP | extract', protocol_group: 'mcp', billing_group: 'billable' },
+  { key: 'mcp:initialize', label: 'MCP | initialize', protocol_group: 'mcp', billing_group: 'non_billable' },
+  {
+    key: 'mcp:notifications/initialized',
+    label: 'MCP | notifications/initialized',
+    protocol_group: 'mcp',
+    billing_group: 'non_billable',
+  },
+  { key: 'mcp:ping', label: 'MCP | ping', protocol_group: 'mcp', billing_group: 'non_billable' },
+  { key: 'mcp:prompts/list', label: 'MCP | prompts/list', protocol_group: 'mcp', billing_group: 'non_billable' },
+  { key: 'mcp:raw:/mcp', label: 'MCP | /mcp', protocol_group: 'mcp', billing_group: 'billable' },
+  { key: 'mcp:raw:/mcp/sse', label: 'MCP | /mcp/sse', protocol_group: 'mcp', billing_group: 'billable' },
+  { key: 'mcp:resources/list', label: 'MCP | resources/list', protocol_group: 'mcp', billing_group: 'non_billable' },
+  {
+    key: 'mcp:resources/templates/list',
+    label: 'MCP | resources/templates/list',
+    protocol_group: 'mcp',
+    billing_group: 'non_billable',
+  },
+  { key: 'mcp:search', label: 'MCP | search', protocol_group: 'mcp', billing_group: 'billable' },
+  { key: 'mcp:tools/call', label: 'MCP | tools/call', protocol_group: 'mcp', billing_group: 'billable' },
+  { key: 'mcp:tools/list', label: 'MCP | tools/list', protocol_group: 'mcp', billing_group: 'non_billable' },
+]
+
+function sortRequestKindOptions(left: TokenLogRequestKindOption, right: TokenLogRequestKindOption): number {
+  return left.label.localeCompare(right.label) || left.key.localeCompare(right.key)
+}
+
+export function mergeRequestKindCatalog(
+  options: TokenLogRequestKindOption[],
+): TokenLogRequestKindOption[] {
+  const byKey = new Map<string, TokenLogRequestKindOption>(
+    canonicalTokenLogRequestKindOptions.map((option) => [option.key, option]),
+  )
+  for (const option of options) {
+    const key = option.key.trim()
+    if (!key) continue
+    byKey.set(key, option)
+  }
+  return Array.from(byKey.values()).sort(sortRequestKindOptions)
+}
 
 export function uniqueSelectedRequestKinds(requestKinds: string[]): string[] {
   const seen = new Set<string>()
@@ -86,7 +138,7 @@ export function buildVisibleRequestKindOptions(
       },
     )
   }
-  return Array.from(byKey.values()).sort((left, right) => left.label.localeCompare(right.label) || left.key.localeCompare(right.key))
+  return Array.from(byKey.values()).sort(sortRequestKindOptions)
 }
 
 export function toggleRequestKindSelection(selected: string[], nextKey: string): string[] {

@@ -49,18 +49,55 @@ const keyMetricsMock: KeySummary = {
 }
 
 function createRequestLog(id: number, isoTime: string): RequestLog {
+  const tokenId = ['9vsN', 'Vn7D', 'Q4sE'][id % 3]
+  const requestKinds = [
+    {
+      key: 'api:search',
+      label: 'API | search',
+      detail: null,
+      credits: 2,
+      result: 'success',
+      keyEffectCode: 'none',
+      keyEffectSummary: null,
+    },
+    {
+      key: 'mcp:raw:/mcp',
+      label: 'MCP | /mcp',
+      detail: null,
+      credits: null,
+      result: 'quota_exhausted',
+      keyEffectCode: 'marked_exhausted',
+      keyEffectSummary: 'Automatically marked this key as exhausted',
+    },
+    {
+      key: 'api:extract',
+      label: 'API | extract',
+      detail: null,
+      credits: 3,
+      result: 'error',
+      keyEffectCode: 'none',
+      keyEffectSummary: null,
+    },
+  ] as const
+  const kind = requestKinds[id % requestKinds.length]
   return {
     id,
     key_id: REVIEW_KEY_ID,
-    auth_token_id: null,
+    auth_token_id: tokenId,
     method: 'POST',
-    path: '/api/tavily/search',
+    path: kind.key === 'api:extract' ? '/api/tavily/extract' : kind.key === 'api:search' ? '/api/tavily/search' : '/mcp',
     query: null,
-    http_status: 200,
-    mcp_status: null,
-    result_status: 'success',
+    http_status: kind.result === 'error' ? 502 : 200,
+    mcp_status: kind.result === 'quota_exhausted' ? 432 : 200,
+    business_credits: kind.credits,
+    request_kind_key: kind.key,
+    request_kind_label: kind.label,
+    request_kind_detail: kind.detail,
+    result_status: kind.result,
     created_at: Math.floor(Date.parse(isoTime) / 1000),
-    error_message: null,
+    error_message: kind.result === 'error' ? 'Bad gateway from upstream' : null,
+    key_effect_code: kind.keyEffectCode,
+    key_effect_summary: kind.keyEffectSummary,
     request_body: null,
     response_body: null,
     forwarded_headers: [],
@@ -100,6 +137,63 @@ function jsonResponse(data: unknown, status = 200): Response {
   })
 }
 
+function buildFacetOptions(values: Array<string | null | undefined>): Array<{ value: string; count: number }> {
+  const counts = new Map<string, number>()
+  for (const raw of values) {
+    const value = raw?.trim()
+    if (!value) continue
+    counts.set(value, (counts.get(value) ?? 0) + 1)
+  }
+  return Array.from(counts.entries())
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .map(([value, count]) => ({ value, count }))
+}
+
+function buildKeyLogsPage(source: RequestLog[], searchParams: URLSearchParams) {
+  const page = Number(searchParams.get('page') ?? '1')
+  const perPage = Number(searchParams.get('per_page') ?? '20')
+  const requestKinds = searchParams.getAll('request_kind')
+  const result = searchParams.get('result')?.trim() ?? ''
+  const keyEffect = searchParams.get('key_effect')?.trim() ?? ''
+  const tokenId = searchParams.get('auth_token_id')?.trim() ?? ''
+  const filtered = source.filter((log) => {
+    if (requestKinds.length > 0 && !(log.request_kind_key && requestKinds.includes(log.request_kind_key))) {
+      return false
+    }
+    if (tokenId && log.auth_token_id !== tokenId) {
+      return false
+    }
+    if (result && log.result_status !== result) {
+      return false
+    }
+    if (keyEffect && (log.key_effect_code ?? 'none') !== keyEffect) {
+      return false
+    }
+    return true
+  })
+  const start = (page - 1) * perPage
+  const requestKindOptions = [
+    { key: 'api:extract', label: 'API | extract', protocol_group: 'api', billing_group: 'billable' },
+    { key: 'api:search', label: 'API | search', protocol_group: 'api', billing_group: 'billable' },
+    { key: 'mcp:raw:/mcp', label: 'MCP | /mcp', protocol_group: 'mcp', billing_group: 'billable' },
+  ].map((option) => ({
+    ...option,
+    count: source.filter((log) => log.request_kind_key === option.key).length,
+  }))
+  return {
+    items: filtered.slice(start, start + perPage),
+    page,
+    per_page: perPage,
+    total: filtered.length,
+    request_kind_options: requestKindOptions,
+    facets: {
+      results: buildFacetOptions(filtered.map((log) => log.result_status)),
+      key_effects: buildFacetOptions(filtered.map((log) => log.key_effect_code ?? 'none')),
+      tokens: buildFacetOptions(filtered.map((log) => log.auth_token_id)),
+    },
+  }
+}
+
 function installKeyDetailFetchMock(): () => void {
   const originalFetch = window.fetch.bind(window)
 
@@ -113,6 +207,10 @@ function installKeyDetailFetchMock(): () => void {
 
     if (url.pathname === `/api/keys/${REVIEW_KEY_ID}/metrics`) {
       return jsonResponse(keyMetricsMock)
+    }
+
+    if (url.pathname === `/api/keys/${REVIEW_KEY_ID}/logs/page`) {
+      return jsonResponse(buildKeyLogsPage(keyLogsMock, url.searchParams))
     }
 
     if (url.pathname === `/api/keys/${REVIEW_KEY_ID}/logs`) {

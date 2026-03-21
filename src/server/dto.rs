@@ -191,13 +191,17 @@ struct StickyNodesView {
 #[derive(Debug, Serialize)]
 struct RequestLogView {
     id: i64,
-    key_id: String,
+    key_id: Option<String>,
     auth_token_id: Option<String>,
     method: String,
     path: String,
     query: Option<String>,
     http_status: Option<i64>,
     mcp_status: Option<i64>,
+    business_credits: Option<i64>,
+    request_kind_key: String,
+    request_kind_label: String,
+    request_kind_detail: Option<String>,
     result_status: String,
     created_at: i64,
     error_message: Option<String>,
@@ -379,6 +383,7 @@ impl From<TokenSummary> for TokenSummaryView {
 #[derive(Debug, Serialize)]
 struct TokenLogView {
     id: i64,
+    key_id: Option<String>,
     method: String,
     path: String,
     query: Option<String>,
@@ -400,6 +405,7 @@ impl From<TokenLogRecord> for TokenLogView {
     fn from(r: TokenLogRecord) -> Self {
         Self {
             id: r.id,
+            key_id: r.key_id,
             method: r.method,
             path: r.path,
             query: r.query,
@@ -425,6 +431,7 @@ struct TokenRequestKindOptionView {
     label: String,
     protocol_group: String,
     billing_group: String,
+    count: i64,
 }
 
 impl From<TokenRequestKindOption> for TokenRequestKindOptionView {
@@ -434,6 +441,7 @@ impl From<TokenRequestKindOption> for TokenRequestKindOptionView {
             label: value.label,
             protocol_group: value.protocol_group,
             billing_group: value.billing_group,
+            count: value.count,
         }
     }
 }
@@ -448,6 +456,86 @@ struct LogsQuery {
     page: Option<i64>,
     per_page: Option<i64>,
     result: Option<String>,
+    key_effect: Option<String>,
+    auth_token_id: Option<String>,
+    key_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LogFacetOptionView {
+    value: String,
+    count: i64,
+}
+
+impl From<LogFacetOption> for LogFacetOptionView {
+    fn from(value: LogFacetOption) -> Self {
+        Self {
+            value: value.value,
+            count: value.count,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RequestLogFacetsView {
+    results: Vec<LogFacetOptionView>,
+    key_effects: Vec<LogFacetOptionView>,
+    tokens: Vec<LogFacetOptionView>,
+    keys: Vec<LogFacetOptionView>,
+}
+
+fn normalize_result_status_filter(value: Option<&str>) -> Option<&'static str> {
+    match value.map(str::trim) {
+        Some(v) if v.eq_ignore_ascii_case("success") => Some("success"),
+        Some(v) if v.eq_ignore_ascii_case("error") => Some("error"),
+        Some(v) if v.eq_ignore_ascii_case("quota_exhausted") || v.eq_ignore_ascii_case("quota") => {
+            Some("quota_exhausted")
+        }
+        _ => None,
+    }
+}
+
+fn normalize_key_effect_filter(value: Option<&str>) -> Option<&'static str> {
+    match value.map(str::trim) {
+        Some(v) if v.eq_ignore_ascii_case("none") => Some("none"),
+        Some(v) if v.eq_ignore_ascii_case("quarantined") => Some("quarantined"),
+        Some(v) if v.eq_ignore_ascii_case("marked_exhausted") => {
+            Some("marked_exhausted")
+        }
+        Some(v) if v.eq_ignore_ascii_case("restored_active") => {
+            Some("restored_active")
+        }
+        Some(v) if v.eq_ignore_ascii_case("cleared_quarantine") => {
+            Some("cleared_quarantine")
+        }
+        _ => None,
+    }
+}
+
+fn normalize_optional_filter(value: Option<&str>) -> Option<&str> {
+    value.and_then(|raw| {
+        let trimmed = raw.trim();
+        (!trimmed.is_empty()).then_some(trimmed)
+    })
+}
+
+fn parse_request_kind_filters(raw_query: Option<&str>) -> Vec<String> {
+    raw_query
+        .map(|query| {
+            form_urlencoded::parse(query.as_bytes())
+                .filter_map(|(key, value)| {
+                    if key == "request_kind" {
+                        let trimmed = value.trim();
+                        (!trimmed.is_empty()).then(|| trimmed.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Deserialize)]
@@ -508,6 +596,16 @@ struct KeyLogsQuery {
     since: Option<i64>,
 }
 
+#[derive(Debug, Deserialize)]
+struct KeyLogsPageQuery {
+    page: Option<i64>,
+    per_page: Option<i64>,
+    since: Option<i64>,
+    result: Option<String>,
+    key_effect: Option<String>,
+    auth_token_id: Option<String>,
+}
+
 async fn get_key_logs(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -523,6 +621,92 @@ async fn get_key_logs(
         .key_recent_logs(&id, limit, q.since)
         .await
         .map(|logs| Json(logs.into_iter().map(RequestLogView::from).collect()))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct KeyLogsPageView {
+    items: Vec<RequestLogView>,
+    total: i64,
+    page: i64,
+    per_page: i64,
+    request_kind_options: Vec<TokenRequestKindOptionView>,
+    facets: RequestLogFacetsView,
+}
+
+async fn get_key_logs_page(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    RawQuery(raw_query): RawQuery,
+    Query(q): Query<KeyLogsPageQuery>,
+) -> Result<Json<KeyLogsPageView>, StatusCode> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let page = q.page.unwrap_or(1).max(1);
+    let per_page = q.per_page.unwrap_or(20).clamp(1, 200);
+    let request_kinds = parse_request_kind_filters(raw_query.as_deref());
+    let result_status = normalize_result_status_filter(q.result.as_deref());
+    let key_effect_code = normalize_key_effect_filter(q.key_effect.as_deref());
+    if result_status.is_some() && key_effect_code.is_some() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let auth_token_id = normalize_optional_filter(q.auth_token_id.as_deref());
+
+    state
+        .proxy
+        .key_logs_page(
+            &id,
+            q.since,
+            &request_kinds,
+            result_status,
+            key_effect_code,
+            auth_token_id,
+            page,
+            per_page,
+        )
+        .await
+        .map(|logs| {
+            Json(KeyLogsPageView {
+                items: logs.items.into_iter().map(RequestLogView::from).collect(),
+                total: logs.total,
+                page,
+                per_page,
+                request_kind_options: logs
+                    .request_kind_options
+                    .into_iter()
+                    .map(TokenRequestKindOptionView::from)
+                    .collect(),
+                facets: RequestLogFacetsView {
+                    results: logs
+                        .facets
+                        .results
+                        .into_iter()
+                        .map(LogFacetOptionView::from)
+                        .collect(),
+                    key_effects: logs
+                        .facets
+                        .key_effects
+                        .into_iter()
+                        .map(LogFacetOptionView::from)
+                        .collect(),
+                    tokens: logs
+                        .facets
+                        .tokens
+                        .into_iter()
+                        .map(LogFacetOptionView::from)
+                        .collect(),
+                    keys: logs
+                        .facets
+                        .keys
+                        .into_iter()
+                        .map(LogFacetOptionView::from)
+                        .collect(),
+                },
+            })
+        })
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
@@ -663,15 +847,19 @@ struct TokenLogsPageQuery {
     per_page: Option<usize>,
     since: Option<String>,
     until: Option<String>,
+    result: Option<String>,
+    key_effect: Option<String>,
+    key_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 struct TokenLogsPageView {
-    items: Vec<TokenLogView>,
+    items: Vec<RequestLogView>,
     page: usize,
     per_page: usize,
     total: i64,
     request_kind_options: Vec<TokenRequestKindOptionView>,
+    facets: RequestLogFacetsView,
 }
 
 #[derive(Debug, Serialize)]
@@ -749,34 +937,32 @@ async fn get_token_logs_page(
     if until <= since {
         return Err(StatusCode::BAD_REQUEST);
     }
-    let request_kinds = raw_query
-        .as_deref()
-        .map(|query| {
-            form_urlencoded::parse(query.as_bytes())
-                .filter_map(|(key, value)| {
-                    if key == "request_kind" {
-                        let trimmed = value.trim();
-                        (!trimmed.is_empty()).then(|| trimmed.to_string())
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let request_kind_options = state
-        .proxy
-        .token_log_request_kind_options(&id, since, Some(until))
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let request_kinds = parse_request_kind_filters(raw_query.as_deref());
+    let result_status = normalize_result_status_filter(q.result.as_deref());
+    let key_effect_code = normalize_key_effect_filter(q.key_effect.as_deref());
+    if result_status.is_some() && key_effect_code.is_some() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let key_id = normalize_optional_filter(q.key_id.as_deref());
     state
         .proxy
-        .token_logs_page(&id, page, per_page, since, Some(until), &request_kinds)
+        .token_logs_page(
+            &id,
+            page,
+            per_page,
+            since,
+            Some(until),
+            &request_kinds,
+            result_status,
+            key_effect_code,
+            key_id,
+        )
         .await
-        .map(|(items, total)| {
-            let mapped: Vec<TokenLogView> = items
+        .map(|logs| {
+            let mapped: Vec<RequestLogView> = logs
+                .items
                 .into_iter()
-                .map(TokenLogView::from)
+                .map(|record| RequestLogView::from_token_record(record, &id))
                 .map(|mut v| {
                     if let Some(err) = v.error_message.as_ref() {
                         v.error_message = Some(redact_sensitive(err));
@@ -788,11 +974,38 @@ async fn get_token_logs_page(
                 items: mapped,
                 page,
                 per_page,
-                total,
-                request_kind_options: request_kind_options
+                total: logs.total,
+                request_kind_options: logs
+                    .request_kind_options
                     .into_iter()
                     .map(TokenRequestKindOptionView::from)
                     .collect(),
+                facets: RequestLogFacetsView {
+                    results: logs
+                        .facets
+                        .results
+                        .into_iter()
+                        .map(LogFacetOptionView::from)
+                        .collect(),
+                    key_effects: logs
+                        .facets
+                        .key_effects
+                        .into_iter()
+                        .map(LogFacetOptionView::from)
+                        .collect(),
+                    tokens: logs
+                        .facets
+                        .tokens
+                        .into_iter()
+                        .map(LogFacetOptionView::from)
+                        .collect(),
+                    keys: logs
+                        .facets
+                        .keys
+                        .into_iter()
+                        .map(LogFacetOptionView::from)
+                        .collect(),
+                },
             })
         })
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)

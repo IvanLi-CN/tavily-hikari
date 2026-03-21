@@ -811,7 +811,7 @@ async fn proxy_handler(
                         match if let Some(subject) = billing_subject.as_deref() {
                             state
                                 .proxy
-                                .record_pending_billing_attempt_for_subject_with_kind(
+                                .record_pending_billing_attempt_for_subject_with_kind_request_log(
                                     tid,
                                     &method,
                                     &path,
@@ -828,12 +828,13 @@ async fn proxy_handler(
                                     analysis.failure_kind.as_deref(),
                                     Some(resp.key_effect_code.as_str()),
                                     resp.key_effect_summary.as_deref(),
+                                    resp.request_log_id,
                                 )
                                 .await
                         } else {
                             state
                                 .proxy
-                                .record_pending_billing_attempt_with_kind_metadata(
+                                .record_pending_billing_attempt_with_kind_request_log_metadata(
                                     tid,
                                     &method,
                                     &path,
@@ -849,6 +850,7 @@ async fn proxy_handler(
                                     analysis.failure_kind.as_deref(),
                                     Some(resp.key_effect_code.as_str()),
                                     resp.key_effect_summary.as_deref(),
+                                    resp.request_log_id,
                                 )
                                 .await
                         }
@@ -911,7 +913,7 @@ async fn proxy_handler(
                     let http_code = resp.status.as_u16() as i64;
                     let _ = state
                         .proxy
-                        .record_token_attempt_with_kind_metadata(
+                        .record_token_attempt_with_kind_request_log_metadata(
                             tid,
                             &method,
                             &path,
@@ -925,6 +927,7 @@ async fn proxy_handler(
                             analysis.failure_kind.as_deref(),
                             Some(resp.key_effect_code.as_str()),
                             resp.key_effect_summary.as_deref(),
+                            resp.request_log_id,
                         )
                         .await;
                 }
@@ -1119,13 +1122,17 @@ impl From<RequestLogRecord> for RequestLogView {
     fn from(record: RequestLogRecord) -> Self {
         Self {
             id: record.id,
-            key_id: record.key_id,
+            key_id: Some(record.key_id),
             auth_token_id: record.auth_token_id,
             method: record.method,
             path: record.path,
             query: record.query,
             http_status: record.status_code,
             mcp_status: record.tavily_status_code,
+            business_credits: record.business_credits,
+            request_kind_key: record.request_kind_key,
+            request_kind_label: record.request_kind_label,
+            request_kind_detail: record.request_kind_detail,
             result_status: record.result_status,
             created_at: record.created_at,
             error_message: record.error_message,
@@ -1136,6 +1143,35 @@ impl From<RequestLogRecord> for RequestLogView {
             response_body: decode_body(&record.response_body),
             forwarded_headers: record.forwarded_headers,
             dropped_headers: record.dropped_headers,
+        }
+    }
+}
+
+impl RequestLogView {
+    fn from_token_record(record: TokenLogRecord, token_id: &str) -> Self {
+        Self {
+            id: record.id,
+            key_id: record.key_id,
+            auth_token_id: Some(token_id.to_string()),
+            method: record.method,
+            path: record.path,
+            query: record.query,
+            http_status: record.http_status,
+            mcp_status: record.mcp_status,
+            business_credits: record.business_credits,
+            request_kind_key: record.request_kind_key,
+            request_kind_label: record.request_kind_label,
+            request_kind_detail: record.request_kind_detail,
+            result_status: record.result_status,
+            created_at: record.created_at,
+            error_message: record.error_message,
+            failure_kind: record.failure_kind,
+            key_effect_code: record.key_effect_code,
+            key_effect_summary: record.key_effect_summary,
+            request_body: None,
+            response_body: None,
+            forwarded_headers: Vec::new(),
+            dropped_headers: Vec::new(),
         }
     }
 }

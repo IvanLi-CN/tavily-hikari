@@ -6,6 +6,7 @@ import {
   buildTokenLogsPagePath,
   defaultTokenLogRequestKindQuickFilters,
   deriveRequestKindQuickFilters,
+  mergeRequestKindCatalog,
   mergeRequestKindOptionsByKey,
   requestKindSelectionsMatch,
   resolveEffectiveRequestKindSelection,
@@ -131,6 +132,28 @@ describe('token log request kind helpers', () => {
       { key: 'api:search', label: 'API | search', protocol_group: 'api', billing_group: 'billable' },
       { key: 'mcp:raw:/mcp/sse', label: 'MCP | /mcp/sse', protocol_group: 'mcp', billing_group: 'billable' },
     ])
+  })
+
+  it('merges the canonical request kind catalog with dynamic options for filter menus', () => {
+    const merged = mergeRequestKindCatalog([
+      {
+        key: 'mcp:tool:acme-lookup',
+        label: 'MCP | Acme Lookup',
+        protocol_group: 'mcp',
+        billing_group: 'non_billable',
+        count: 7,
+      },
+    ])
+
+    expect(merged.some((option) => option.key === 'api:search')).toBe(true)
+    expect(merged.some((option) => option.key === 'mcp:tools/list')).toBe(true)
+    expect(merged.find((option) => option.key === 'mcp:tool:acme-lookup')).toEqual({
+      key: 'mcp:tool:acme-lookup',
+      label: 'MCP | Acme Lookup',
+      protocol_group: 'mcp',
+      billing_group: 'non_billable',
+      count: 7,
+    })
   })
 
   it('builds tri-state quick-filter selections from canonical option groups', () => {
