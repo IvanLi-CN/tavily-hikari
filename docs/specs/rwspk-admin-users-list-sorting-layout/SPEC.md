@@ -116,3 +116,38 @@
 - [x] M2: 后端 bulk summary、排序与 `monthlyFailure` 契约
 - [x] M3: 前端表格、URL 状态、Storybook 与样式收敛
 - [x] M4: checks、浏览器验收与 review-loop 收敛到 merge-ready
+
+## Visual Evidence (PR)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Admin/Pages/Users
+  state: compact list with direct user-detail entry
+  evidence_note: proves the users table no longer uses a dedicated Actions column and keeps the first-line display name as the only clickable detail entry.
+  image:
+  ![Users list compact layout](./assets/admin-users-list-compact.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Admin/Pages/UsersUsage
+  state: usage overview with direct user-detail entry
+  evidence_note: proves the usage table keeps quota and success metrics in the dedicated view while allowing the first-line user name to open the user detail page.
+  image:
+  ![Users usage overview](./assets/admin-users-usage.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Admin/Pages/UserDetail
+  state: user detail destination
+  evidence_note: proves the detail surface reached from the users and usage tables renders the expected identity, status, and token summary.
+  image:
+  ![User detail destination](./assets/admin-user-detail.png)
