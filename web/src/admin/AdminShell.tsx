@@ -1,5 +1,5 @@
 import { Icon } from '../lib/icons'
-import { type PropsWithChildren, useEffect, useRef, useState } from 'react'
+import { type PropsWithChildren, type ReactNode, useEffect, useRef, useState } from 'react'
 import { ADMIN_SIDEBAR_STACK_MAX, useResponsiveModes } from '../lib/responsive'
 
 import AdminNavButton from './AdminNavButton'
@@ -10,7 +10,7 @@ export type AdminNavTarget = AdminModuleId | 'user-usage'
 export interface AdminNavItem {
   target: AdminNavTarget
   label: string
-  icon: string
+  icon: ReactNode
 }
 
 interface AdminShellProps extends PropsWithChildren {

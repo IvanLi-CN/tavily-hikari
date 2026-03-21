@@ -1,6 +1,11 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
+import { Icon } from '../lib/icons'
 import AdminNavButton from './AdminNavButton'
+
+function navIcon(name: string): JSX.Element {
+  return <Icon icon={name} width={18} height={18} />
+}
 
 const meta = {
   title: 'Admin/Wrappers/AdminNavButton',
@@ -9,7 +14,7 @@ const meta = {
     layout: 'padded',
   },
   args: {
-    icon: 'mdi:account-group-outline',
+    icon: navIcon('mdi:account-group-outline'),
     children: 'Users',
   },
   render: (args) => (
@@ -35,12 +40,12 @@ export const SidebarStack: Story = {
   render: () => (
     <div className="admin-sidebar-menu is-open" style={{ width: 260, padding: 12, borderRadius: 18 }}>
       <nav className="admin-sidebar-nav" aria-label="Admin navigation preview">
-        <AdminNavButton icon="mdi:view-dashboard-outline">Dashboard</AdminNavButton>
-        <AdminNavButton icon="mdi:key-chain-variant">Tokens</AdminNavButton>
-        <AdminNavButton icon="mdi:key-outline">API Keys</AdminNavButton>
-        <AdminNavButton icon="mdi:file-document-outline">Requests</AdminNavButton>
-        <AdminNavButton icon="mdi:calendar-clock-outline">Jobs</AdminNavButton>
-        <AdminNavButton icon="mdi:account-group-outline" active>
+        <AdminNavButton icon={navIcon('mdi:view-dashboard-outline')}>Dashboard</AdminNavButton>
+        <AdminNavButton icon={navIcon('mdi:key-chain-variant')}>Tokens</AdminNavButton>
+        <AdminNavButton icon={navIcon('mdi:key-outline')}>API Keys</AdminNavButton>
+        <AdminNavButton icon={navIcon('mdi:file-document-outline')}>Requests</AdminNavButton>
+        <AdminNavButton icon={navIcon('mdi:calendar-clock-outline')}>Jobs</AdminNavButton>
+        <AdminNavButton icon={navIcon('mdi:account-group-outline')} active>
           Users
         </AdminNavButton>
       </nav>

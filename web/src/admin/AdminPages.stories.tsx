@@ -2,7 +2,7 @@ import { Icon } from '../lib/icons'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { addons } from 'storybook/preview-api'
 import { SELECT_STORY } from 'storybook/internal/core-events'
-import { ArrowDown, ArrowUp, ArrowUpDown } from 'lucide-react'
+import { ArrowDown, ArrowUp, ArrowUpDown, ChartColumnIncreasing } from 'lucide-react'
 import { Fragment, type ReactNode, useEffect, useLayoutEffect, useState } from 'react'
 
 import type {
@@ -1632,15 +1632,15 @@ function requestFailureGuidance(kind: string | null | undefined, language: 'en' 
 
 function buildNavItems(strings: AdminTranslations): AdminNavItem[] {
   return [
-    { target: 'dashboard', label: strings.nav.dashboard, icon: 'mdi:view-dashboard-outline' },
-    { target: 'user-usage', label: strings.nav.usage, icon: 'mdi:chart-timeline-variant' },
-    { target: 'tokens', label: strings.nav.tokens, icon: 'mdi:key-chain-variant' },
-    { target: 'keys', label: strings.nav.keys, icon: 'mdi:key-outline' },
-    { target: 'requests', label: strings.nav.requests, icon: 'mdi:file-document-outline' },
-    { target: 'jobs', label: strings.nav.jobs, icon: 'mdi:calendar-clock-outline' },
-    { target: 'users', label: strings.nav.users, icon: 'mdi:account-group-outline' },
-    { target: 'alerts', label: strings.nav.alerts, icon: 'mdi:bell-ring-outline' },
-    { target: 'proxy-settings', label: strings.nav.proxySettings, icon: 'mdi:tune-variant' },
+    { target: 'dashboard', label: strings.nav.dashboard, icon: <Icon icon="mdi:view-dashboard-outline" width={18} height={18} /> },
+    { target: 'user-usage', label: strings.nav.usage, icon: <ChartColumnIncreasing size={18} strokeWidth={2.2} /> },
+    { target: 'tokens', label: strings.nav.tokens, icon: <Icon icon="mdi:key-chain-variant" width={18} height={18} /> },
+    { target: 'keys', label: strings.nav.keys, icon: <Icon icon="mdi:key-outline" width={18} height={18} /> },
+    { target: 'requests', label: strings.nav.requests, icon: <Icon icon="mdi:file-document-outline" width={18} height={18} /> },
+    { target: 'jobs', label: strings.nav.jobs, icon: <Icon icon="mdi:calendar-clock-outline" width={18} height={18} /> },
+    { target: 'users', label: strings.nav.users, icon: <Icon icon="mdi:account-group-outline" width={18} height={18} /> },
+    { target: 'alerts', label: strings.nav.alerts, icon: <Icon icon="mdi:bell-ring-outline" width={18} height={18} /> },
+    { target: 'proxy-settings', label: strings.nav.proxySettings, icon: <Icon icon="mdi:tune-variant" width={18} height={18} /> },
   ]
 }
 

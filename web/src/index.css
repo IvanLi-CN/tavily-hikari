@@ -721,6 +721,21 @@
   transition: color 0.18s ease, background-color 0.18s ease, box-shadow 0.18s ease;
 }
 
+.admin-nav-item-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+}
+
+.admin-nav-item-icon > svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+
 .admin-nav-item:hover {
   color: hsl(var(--foreground));
   background: hsl(var(--accent) / 0.15);

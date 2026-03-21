@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { ChartColumnIncreasing } from 'lucide-react'
 import { useLayoutEffect, useState } from 'react'
 
 import { KeyDetails } from '../AdminDashboard'
@@ -10,6 +11,7 @@ import type {
   StickyUsersResponse,
 } from '../api'
 import { useTranslate } from '../i18n'
+import { Icon } from '../lib/icons'
 import AdminShell, { type AdminNavItem } from '../admin/AdminShell'
 import {
   stickyNodesReviewStoryData,
@@ -143,15 +145,15 @@ function KeyDetailRouteSurface(): JSX.Element {
   const adminStrings = useTranslate().admin
 
   const navItems: AdminNavItem[] = [
-    { target: 'dashboard', label: adminStrings.nav.dashboard, icon: 'mdi:view-dashboard-outline' },
-    { target: 'user-usage', label: adminStrings.nav.usage, icon: 'mdi:chart-timeline-variant' },
-    { target: 'tokens', label: adminStrings.nav.tokens, icon: 'mdi:key-chain-variant' },
-    { target: 'keys', label: adminStrings.nav.keys, icon: 'mdi:key-outline' },
-    { target: 'requests', label: adminStrings.nav.requests, icon: 'mdi:file-document-outline' },
-    { target: 'jobs', label: adminStrings.nav.jobs, icon: 'mdi:calendar-clock-outline' },
-    { target: 'users', label: adminStrings.nav.users, icon: 'mdi:account-group-outline' },
-    { target: 'alerts', label: adminStrings.nav.alerts, icon: 'mdi:bell-ring-outline' },
-    { target: 'proxy-settings', label: adminStrings.nav.proxySettings, icon: 'mdi:tune-variant' },
+    { target: 'dashboard', label: adminStrings.nav.dashboard, icon: <Icon icon="mdi:view-dashboard-outline" width={18} height={18} /> },
+    { target: 'user-usage', label: adminStrings.nav.usage, icon: <ChartColumnIncreasing size={18} strokeWidth={2.2} /> },
+    { target: 'tokens', label: adminStrings.nav.tokens, icon: <Icon icon="mdi:key-chain-variant" width={18} height={18} /> },
+    { target: 'keys', label: adminStrings.nav.keys, icon: <Icon icon="mdi:key-outline" width={18} height={18} /> },
+    { target: 'requests', label: adminStrings.nav.requests, icon: <Icon icon="mdi:file-document-outline" width={18} height={18} /> },
+    { target: 'jobs', label: adminStrings.nav.jobs, icon: <Icon icon="mdi:calendar-clock-outline" width={18} height={18} /> },
+    { target: 'users', label: adminStrings.nav.users, icon: <Icon icon="mdi:account-group-outline" width={18} height={18} /> },
+    { target: 'alerts', label: adminStrings.nav.alerts, icon: <Icon icon="mdi:bell-ring-outline" width={18} height={18} /> },
+    { target: 'proxy-settings', label: adminStrings.nav.proxySettings, icon: <Icon icon="mdi:tune-variant" width={18} height={18} /> },
   ]
 
   return (

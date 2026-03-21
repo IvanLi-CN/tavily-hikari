@@ -1,20 +1,26 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { ChartColumnIncreasing } from 'lucide-react'
 import { useState } from 'react'
 
 import AdminPanelHeader from '../components/AdminPanelHeader'
 import TokenUsageHeader from '../components/TokenUsageHeader'
+import { Icon } from '../lib/icons'
 import AdminShell, { type AdminNavItem, type AdminNavTarget } from './AdminShell'
 
+function navIcon(name: string): JSX.Element {
+  return <Icon icon={name} width={18} height={18} />
+}
+
 const NAV_ITEMS: AdminNavItem[] = [
-  { target: 'dashboard', label: 'Dashboard', icon: 'mdi:view-dashboard-outline' },
-  { target: 'user-usage', label: 'Usage', icon: 'mdi:chart-timeline-variant' },
-  { target: 'tokens', label: 'Tokens', icon: 'mdi:key-chain-variant' },
-  { target: 'keys', label: 'API Keys', icon: 'mdi:key-outline' },
-  { target: 'requests', label: 'Requests', icon: 'mdi:file-document-outline' },
-  { target: 'jobs', label: 'Jobs', icon: 'mdi:calendar-clock-outline' },
-  { target: 'users', label: 'Users', icon: 'mdi:account-group-outline' },
-  { target: 'alerts', label: 'Alerts', icon: 'mdi:bell-ring-outline' },
-  { target: 'proxy-settings', label: 'Proxy Settings', icon: 'mdi:tune-variant' },
+  { target: 'dashboard', label: 'Dashboard', icon: navIcon('mdi:view-dashboard-outline') },
+  { target: 'user-usage', label: 'Usage', icon: <ChartColumnIncreasing size={18} strokeWidth={2.2} /> },
+  { target: 'tokens', label: 'Tokens', icon: navIcon('mdi:key-chain-variant') },
+  { target: 'keys', label: 'API Keys', icon: navIcon('mdi:key-outline') },
+  { target: 'requests', label: 'Requests', icon: navIcon('mdi:file-document-outline') },
+  { target: 'jobs', label: 'Jobs', icon: navIcon('mdi:calendar-clock-outline') },
+  { target: 'users', label: 'Users', icon: navIcon('mdi:account-group-outline') },
+  { target: 'alerts', label: 'Alerts', icon: navIcon('mdi:bell-ring-outline') },
+  { target: 'proxy-settings', label: 'Proxy Settings', icon: navIcon('mdi:tune-variant') },
 ]
 
 function LayoutBody(props: { title: string; description: string }): JSX.Element {
