@@ -4717,6 +4717,16 @@ tbody tr:hover {
   cursor: pointer;
 }
 
+.admin-table-sort-label,
+.admin-table-header-text {
+  white-space: nowrap;
+}
+
+.admin-table-header-label {
+  width: 100%;
+  justify-content: flex-start;
+}
+
 .admin-table-sort-button:hover,
 .admin-table-sort-button:focus-visible,
 .admin-table-sort-button.is-active {

@@ -855,12 +855,16 @@ function AdminTableValueStack({
 
 function AdminUsersSortableHeader({
   label,
+  displayLabel,
+  tooltipLabel,
   field,
   activeField,
   activeOrder,
   onToggle,
 }: {
   label: string
+  displayLabel?: string
+  tooltipLabel?: string
   field: AdminUsersSortField
   activeField: AdminUsersSortField | null
   activeOrder: SortDirection | null
@@ -869,17 +873,20 @@ function AdminUsersSortableHeader({
   const isActive = activeField === field
   const ariaSort = !isActive ? 'none' : activeOrder === 'asc' ? 'ascending' : 'descending'
   const SortIndicatorIcon = !isActive ? ArrowUpDown : activeOrder === 'asc' ? ArrowUp : ArrowDown
+  const visibleLabel = displayLabel ?? label
+  const bubbleLabel = tooltipLabel ?? label
   return (
     <th aria-sort={ariaSort}>
       <Button
         type="button"
         variant="ghost"
         size="sm"
-        className={`admin-table-sort-button${isActive ? ' is-active' : ''}`}
+        className={`tooltip admin-table-sort-button${isActive ? ' is-active' : ''}`}
         onClick={() => onToggle(field)}
-        aria-label={label}
+        aria-label={bubbleLabel}
+        data-tip={bubbleLabel}
       >
-        <span>{label}</span>
+        <span className="admin-table-sort-label">{visibleLabel}</span>
         <SortIndicatorIcon className="admin-table-sort-indicator" aria-hidden="true" />
       </Button>
     </th>
@@ -6301,6 +6308,8 @@ function AdminDashboard(): JSX.Element {
   if (route.name === 'user-usage') {
     const backSort = isAdminUsersOverviewSortField(usersSort) ? usersSort : null
     const backOrder = backSort ? usersSortOrder : null
+    const usageDailyRateLabel = language === 'zh' ? usersStrings.usage.table.dailySuccessRate : 'Daily'
+    const usageMonthlyRateLabel = language === 'zh' ? usersStrings.usage.table.monthlySuccessRate : 'Monthly'
 
     return (
       <AdminShell
@@ -6403,6 +6412,7 @@ function AdminDashboard(): JSX.Element {
                     />
                     <AdminUsersSortableHeader
                       label={usersStrings.usage.table.dailySuccessRate}
+                      displayLabel={usageDailyRateLabel}
                       field="dailySuccessRate"
                       activeField={effectiveUsersSort}
                       activeOrder={effectiveUsersSortOrder}
@@ -6410,12 +6420,17 @@ function AdminDashboard(): JSX.Element {
                     />
                     <AdminUsersSortableHeader
                       label={usersStrings.usage.table.monthlySuccessRate}
+                      displayLabel={usageMonthlyRateLabel}
                       field="monthlySuccessRate"
                       activeField={effectiveUsersSort}
                       activeOrder={effectiveUsersSortOrder}
                       onToggle={toggleUsersSort}
                     />
-                    <th>{usersStrings.usage.table.apiKeyCount}</th>
+                    <th>
+                      <span className="tooltip admin-table-header-label" data-tip={usersStrings.table.tokenCount}>
+                        <span className="admin-table-header-text">{usersStrings.table.tokenCount}</span>
+                      </span>
+                    </th>
                     <AdminUsersSortableHeader
                       label={usersStrings.usage.table.lastUsed}
                       field="lastActivity"
@@ -6459,7 +6474,7 @@ function AdminDashboard(): JSX.Element {
                         <AdminTableValueStack {...formatSuccessRateStackValue(item.monthlySuccess, item.monthlyFailure, language)} />
                       </td>
                       <td className="admin-users-compact-cell">
-                        <AdminTableValueStack primary={formatNumber(item.apiKeyCount)} />
+                        <AdminTableValueStack primary={formatNumber(item.tokenCount)} />
                       </td>
                       <td className="admin-users-compact-cell">
                         <AdminTableValueStack {...formatStackedTimestamp(item.lastActivity, language)} />
@@ -6518,8 +6533,8 @@ function AdminDashboard(): JSX.Element {
                     <strong>{formatCompactSuccessRateValue(item.monthlySuccess, item.monthlyFailure, language)}</strong>
                   </div>
                   <div className="admin-mobile-kv">
-                    <span>{usersStrings.usage.table.apiKeyCount}</span>
-                    <strong>{formatNumber(item.apiKeyCount)}</strong>
+                    <span>{usersStrings.table.tokenCount}</span>
+                    <strong>{formatNumber(item.tokenCount)}</strong>
                   </div>
                   <div className="admin-mobile-kv">
                     <span>{usersStrings.usage.table.lastUsed}</span>

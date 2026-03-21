@@ -1149,12 +1149,16 @@ function compareAdminUserSummaryRows(
 
 function StoryAdminUsersSortableHeader({
   label,
+  displayLabel,
+  tooltipLabel,
   field,
   activeField,
   activeOrder,
   onToggle,
 }: {
   label: string
+  displayLabel?: string
+  tooltipLabel?: string
   field: AdminUsersSortField
   activeField: AdminUsersSortField
   activeOrder: SortDirection
@@ -1163,17 +1167,20 @@ function StoryAdminUsersSortableHeader({
   const isActive = activeField === field
   const ariaSort = !isActive ? 'none' : activeOrder === 'asc' ? 'ascending' : 'descending'
   const SortIndicatorIcon = !isActive ? ArrowUpDown : activeOrder === 'asc' ? ArrowUp : ArrowDown
+  const visibleLabel = displayLabel ?? label
+  const bubbleLabel = tooltipLabel ?? label
   return (
     <th aria-sort={ariaSort}>
       <Button
         type="button"
         variant="ghost"
         size="sm"
-        className={`admin-table-sort-button${isActive ? ' is-active' : ''}`}
+        className={`tooltip admin-table-sort-button${isActive ? ' is-active' : ''}`}
         onClick={() => onToggle(field)}
-        aria-label={label}
+        aria-label={bubbleLabel}
+        data-tip={bubbleLabel}
       >
-        <span>{label}</span>
+        <span className="admin-table-sort-label">{visibleLabel}</span>
         <SortIndicatorIcon className="admin-table-sort-indicator" aria-hidden="true" />
       </Button>
     </th>
@@ -3013,6 +3020,8 @@ function UsersUsagePageCanvas(): JSX.Element {
   const admin = useTranslate().admin
   const { language } = useLanguage()
   const users = admin.users
+  const usageDailyRateLabel = language === 'zh' ? users.usage.table.dailySuccessRate : 'Daily'
+  const usageMonthlyRateLabel = language === 'zh' ? users.usage.table.monthlySuccessRate : 'Monthly'
   const [query, setQuery] = useState('')
   const [sortField, setSortField] = useState<AdminUsersSortField | null>(null)
   const [sortOrder, setSortOrder] = useState<SortDirection | null>(null)
@@ -3118,6 +3127,7 @@ function UsersUsagePageCanvas(): JSX.Element {
                   />
                   <StoryAdminUsersSortableHeader
                     label={users.usage.table.dailySuccessRate}
+                    displayLabel={usageDailyRateLabel}
                     field="dailySuccessRate"
                     activeField={effectiveSortField}
                     activeOrder={effectiveSortOrder}
@@ -3125,12 +3135,17 @@ function UsersUsagePageCanvas(): JSX.Element {
                   />
                   <StoryAdminUsersSortableHeader
                     label={users.usage.table.monthlySuccessRate}
+                    displayLabel={usageMonthlyRateLabel}
                     field="monthlySuccessRate"
                     activeField={effectiveSortField}
                     activeOrder={effectiveSortOrder}
                     onToggle={toggleSort}
                   />
-                  <th>{users.usage.table.apiKeyCount}</th>
+                  <th>
+                    <span className="tooltip admin-table-header-label" data-tip={users.table.tokenCount}>
+                      <span className="admin-table-header-text">{users.table.tokenCount}</span>
+                    </span>
+                  </th>
                   <StoryAdminUsersSortableHeader
                     label={users.usage.table.lastUsed}
                     field="lastActivity"
@@ -3201,7 +3216,7 @@ function UsersUsagePageCanvas(): JSX.Element {
                       </td>
                       <td className="admin-users-compact-cell">
                         <div className="admin-table-value-stack">
-                          <span className="admin-table-value-primary">{formatNumber(item.apiKeyCount)}</span>
+                          <span className="admin-table-value-primary">{formatNumber(item.tokenCount)}</span>
                         </div>
                       </td>
                       <td className="admin-users-compact-cell">
