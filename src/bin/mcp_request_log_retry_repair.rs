@@ -474,18 +474,19 @@ mod tests {
         .expect("insert api key");
     }
 
-    async fn insert_request_log(
-        pool: &sqlx::SqlitePool,
+    struct RequestLogSeed<'a> {
         id: i64,
-        api_key_id: &str,
-        token_id: &str,
+        api_key_id: &'a str,
+        token_id: &'a str,
         created_at: i64,
-        result_status: &str,
-        failure_kind: Option<&str>,
+        result_status: &'a str,
+        failure_kind: Option<&'a str>,
         request_body: Value,
         response_body: Value,
-        visibility: &str,
-    ) {
+        visibility: &'a str,
+    }
+
+    async fn insert_request_log(pool: &sqlx::SqlitePool, seed: RequestLogSeed<'_>) {
         sqlx::query(
             "INSERT INTO request_logs (
                 id,
@@ -507,15 +508,15 @@ mod tests {
                 created_at
              ) VALUES (?, ?, ?, 'POST', '/mcp', NULL, 200, NULL, NULL, ?, ?, ?, ?, '[]', '[]', ?, ?)",
         )
-        .bind(id)
-        .bind(api_key_id)
-        .bind(token_id)
-        .bind(result_status)
-        .bind(failure_kind)
-        .bind(serde_json::to_vec(&request_body).expect("serialize request body"))
-        .bind(serde_json::to_vec(&response_body).expect("serialize response body"))
-        .bind(visibility)
-        .bind(created_at)
+        .bind(seed.id)
+        .bind(seed.api_key_id)
+        .bind(seed.token_id)
+        .bind(seed.result_status)
+        .bind(seed.failure_kind)
+        .bind(serde_json::to_vec(&seed.request_body).expect("serialize request body"))
+        .bind(serde_json::to_vec(&seed.response_body).expect("serialize response body"))
+        .bind(seed.visibility)
+        .bind(seed.created_at)
         .execute(pool)
         .await
         .expect("insert request log");
@@ -616,55 +617,59 @@ mod tests {
 
         insert_request_log(
             &pool,
-            10,
-            "key-1",
-            "tok-1",
-            created_at,
-            "error",
-            Some("tool_argument_validation"),
-            json!({
-                "method": "tools/call",
-                "params": {
-                    "name": "tavily_search",
-                    "arguments": {
-                        "query": "retry shadow",
-                        "include_usage": true
+            RequestLogSeed {
+                id: 10,
+                api_key_id: "key-1",
+                token_id: "tok-1",
+                created_at,
+                result_status: "error",
+                failure_kind: Some("tool_argument_validation"),
+                request_body: json!({
+                    "method": "tools/call",
+                    "params": {
+                        "name": "tavily_search",
+                        "arguments": {
+                            "query": "retry shadow",
+                            "include_usage": true
+                        }
                     }
-                }
-            }),
-            json!({
-                "error": {
-                    "message": "Unexpected keyword argument: include_usage"
-                }
-            }),
-            "visible",
+                }),
+                response_body: json!({
+                    "error": {
+                        "message": "Unexpected keyword argument: include_usage"
+                    }
+                }),
+                visibility: "visible",
+            },
         )
         .await;
         insert_request_log(
             &pool,
-            11,
-            "key-1",
-            "tok-1",
-            created_at + 1,
-            "success",
-            None,
-            json!({
-                "method": "tools/call",
-                "params": {
-                    "name": "tavily_search",
-                    "arguments": {
-                        "query": "retry shadow"
+            RequestLogSeed {
+                id: 11,
+                api_key_id: "key-1",
+                token_id: "tok-1",
+                created_at: created_at + 1,
+                result_status: "success",
+                failure_kind: None,
+                request_body: json!({
+                    "method": "tools/call",
+                    "params": {
+                        "name": "tavily_search",
+                        "arguments": {
+                            "query": "retry shadow"
+                        }
                     }
-                }
-            }),
-            json!({
-                "result": {
-                    "structuredContent": {
-                        "status": 200
+                }),
+                response_body: json!({
+                    "result": {
+                        "structuredContent": {
+                            "status": 200
+                        }
                     }
-                }
-            }),
-            "visible",
+                }),
+                visibility: "visible",
+            },
         )
         .await;
 
