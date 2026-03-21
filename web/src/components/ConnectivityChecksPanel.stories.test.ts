@@ -41,4 +41,14 @@ describe('ConnectivityChecksPanel Storybook gallery', () => {
       alignItems: 'start',
     })
   })
+
+  it('includes a long tool-name scenario for probe-bubble wrapping regressions', () => {
+    const longToolScenario = connectivityStories.__testables.scenarios.find((scenario) => scenario.title === 'Long Tool Names')
+
+    expect(longToolScenario?.probeBubble?.items).toContainEqual({
+      id: 'mcp-tool-call:tavily_search_with_extended_probe_fixture_name',
+      label: 'Call tavily_search_with_extended_probe_fixture_name tool',
+      status: 'success',
+    })
+  })
 })

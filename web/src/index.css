@@ -6520,7 +6520,7 @@ tbody .log-details-row:hover {
   bottom: calc(100% + 6px);
   z-index: 8;
   min-width: 220px;
-  max-width: min(360px, calc(100vw - 28px));
+  max-width: min(420px, calc(100vw - 28px));
   border: 1px solid var(--user-console-probe-border);
   border-radius: 14px;
   background: var(--user-console-probe-surface);
@@ -6614,13 +6614,43 @@ tbody .log-details-row:hover {
 .user-console-probe-bubble-item-copy {
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
   gap: 2px;
+  min-width: 0;
 }
 
 .user-console-probe-bubble-item-label {
+  display: block;
   color: hsl(var(--popover-foreground) / 0.92);
   font-weight: 500;
   line-height: 1.32;
+}
+
+.user-console-probe-bubble-item-label-structured {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+}
+
+.user-console-probe-bubble-item-label-text {
+  white-space: nowrap;
+}
+
+.user-console-probe-bubble-item-tool {
+  display: inline-block;
+  max-width: 100%;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid hsl(var(--border) / 0.76);
+  background: hsl(var(--card) / 0.88);
+  color: hsl(var(--popover-foreground) / 0.94);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  font-size: 0.76rem;
+  font-weight: 600;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .user-console-probe-bubble-item-detail {

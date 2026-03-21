@@ -2495,7 +2495,7 @@ const EN = {
       steps: {
         mcpPing: 'MCP service connectivity',
         mcpToolsList: 'MCP tool discovery',
-        mcpToolCall: 'MCP tool call · {tool}',
+        mcpToolCall: 'Call {tool} tool',
         apiSearch: 'Web search capability',
         apiExtract: 'Page extract capability',
         apiCrawl: 'Site crawl capability',
@@ -2649,7 +2649,7 @@ const ZH = {
       steps: {
         mcpPing: 'MCP 服务连通',
         mcpToolsList: 'MCP 工具发现',
-        mcpToolCall: 'MCP 工具调用 · {tool}',
+        mcpToolCall: '调用 {tool} 工具',
         apiSearch: '网页搜索能力',
         apiExtract: '页面抽取能力',
         apiCrawl: '站点抓取能力',

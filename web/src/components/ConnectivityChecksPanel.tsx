@@ -25,6 +25,8 @@ export interface ProbeBubbleModel {
   items: ProbeBubbleItem[]
 }
 
+const MCP_TOOL_CALL_ID_PREFIX = 'mcp-tool-call:'
+
 interface ConnectivityChecksPanelProps {
   title: string
   costHint: string
@@ -66,6 +68,24 @@ function probeBubbleItemIcon(status: ProbeStepStatus): string {
   return 'mdi:loading'
 }
 
+function resolveStructuredMcpToolCallLabel(
+  item: ProbeBubbleItem,
+): { prefix: string, toolName: string, suffix: string } | null {
+  if (!item.id.startsWith(MCP_TOOL_CALL_ID_PREFIX)) return null
+
+  const toolName = item.id.slice(MCP_TOOL_CALL_ID_PREFIX.length).trim()
+  if (toolName.length === 0) return null
+
+  const toolIndex = item.label.indexOf(toolName)
+  if (toolIndex === -1) return null
+
+  return {
+    prefix: item.label.slice(0, toolIndex).trimEnd(),
+    toolName,
+    suffix: item.label.slice(toolIndex + toolName.length).trimStart(),
+  }
+}
+
 export default function ConnectivityChecksPanel({
   title,
   costHint,
@@ -101,25 +121,46 @@ export default function ConnectivityChecksPanel({
       >
         <ul className="user-console-probe-bubble-list">
           {probeBubble.items.map((item) => (
-            <li
-              key={item.id}
-              className="user-console-probe-bubble-item"
-              aria-label={`${stepStatusText[item.status]} · ${item.label}${item.detail ? ` · ${item.detail}` : ''}`}
-            >
-              <Icon
-                icon={probeBubbleItemIcon(item.status)}
-                className={
-                  `user-console-probe-bubble-item-icon user-console-probe-bubble-item-icon-status-${item.status} `
-                  + `${item.status === 'running' ? 'is-spinning' : ''}`
-                }
-              />
-              <div className="user-console-probe-bubble-item-copy">
-                <strong className="user-console-probe-bubble-item-label">{item.label}</strong>
-                {item.detail ? (
-                  <span className="user-console-probe-bubble-item-detail">{item.detail}</span>
-                ) : null}
-              </div>
-            </li>
+            (() => {
+              const structuredLabel = resolveStructuredMcpToolCallLabel(item)
+              return (
+                <li
+                  key={item.id}
+                  className="user-console-probe-bubble-item"
+                  aria-label={`${stepStatusText[item.status]} · ${item.label}${item.detail ? ` · ${item.detail}` : ''}`}
+                >
+                  <Icon
+                    icon={probeBubbleItemIcon(item.status)}
+                    className={
+                      `user-console-probe-bubble-item-icon user-console-probe-bubble-item-icon-status-${item.status} `
+                      + `${item.status === 'running' ? 'is-spinning' : ''}`
+                    }
+                  />
+                  <div className="user-console-probe-bubble-item-copy">
+                    {structuredLabel ? (
+                      <strong className="user-console-probe-bubble-item-label user-console-probe-bubble-item-label-structured">
+                        {structuredLabel.prefix ? (
+                          <span className="user-console-probe-bubble-item-label-text">
+                            {structuredLabel.prefix}
+                          </span>
+                        ) : null}
+                        <code className="user-console-probe-bubble-item-tool">{structuredLabel.toolName}</code>
+                        {structuredLabel.suffix ? (
+                          <span className="user-console-probe-bubble-item-label-text">
+                            {structuredLabel.suffix}
+                          </span>
+                        ) : null}
+                      </strong>
+                    ) : (
+                      <strong className="user-console-probe-bubble-item-label">{item.label}</strong>
+                    )}
+                    {item.detail ? (
+                      <span className="user-console-probe-bubble-item-detail">{item.detail}</span>
+                    ) : null}
+                  </div>
+                </li>
+              )
+            })()
           ))}
         </ul>
       </div>

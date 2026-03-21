@@ -4,7 +4,7 @@
 
 - Status: 已完成（fast-track）
 - Created: 2026-03-02
-- Last: 2026-03-18
+- Last: 2026-03-21
 
 ## 背景 / 问题陈述
 
@@ -105,6 +105,8 @@ Storybook `User Console/UserConsole/Token Detail Overview`: verifies the MCP pro
 
 Storybook `User Console/Fragments/Connectivity Checks/State Gallery`: aggregates the token-detail connectivity fragment across idle, running, success, partial, auth-failed, and quota-blocked states, and explicitly shows the MCP `tools/list` plus full `tools/call` sweep for every advertised tool without relying on separate full-page `UserConsole` stories.
 
+Storybook `User Console/Fragments/Connectivity Checks/State Gallery`: renders MCP `tools/call` rows as structured action copy with a monospace tool-name chip, and widens the probe bubble enough to keep common Tavily tool names on one line while still handling long fixture names cleanly.
+
 ![Token detail probe bubble in dark theme](./assets/token-detail-probe-bubble-dark.png)
 
 ![Token detail probe bubble in light theme](./assets/token-detail-probe-bubble-light.png)
@@ -112,6 +114,7 @@ Storybook `User Console/Fragments/Connectivity Checks/State Gallery`: aggregates
 ## 变更记录
 
 - 2026-03-18: 补充 Token Detail probe 实调回归覆盖；前端将 MCP/API 检测步骤抽成共享定义并用请求级测试锁定浏览器侧调用，后端再新增真实合同测试，直接拉起 Hikari 验证 `/mcp tools/list` 返回的全部广告工具都能继续通过 `/mcp tools/call` 命中 mock upstream，同时覆盖 `/api/tavily/search|extract|crawl|map|research|research/:id` 的真实调用链；运行时与 Storybook 的 MCP probe 也已改成发现后逐个 `tools/call`，并把 probe 状态收敛为独立 `Connectivity Checks` gallery，移除仅为展示 probe 状态存在的全页 `UserConsole` stories。
+- 2026-03-21: 优化 Token Detail 的 MCP 检测气泡显示；`tools/call` 项统一改成“调用 {tool} 工具”式文案，工具名以 monospace chip 独立展示，并放宽气泡宽度以减少常见 Tavily 工具名的割裂换行。
 - 2026-03-09: 修复 Token Detail 探测气泡的暗色主题表面配色，并补充 Storybook 暗色/浅色双截图作为最新验收依据。
 - 2026-03-07: 补充 Storybook 视觉证据，固定 `Quota Blocked` 场景截图到 spec 资产，用于 PR 合并前验收。
 - 2026-03-06: 修复用户控制台 MCP 探测合同：浏览器 probe 显式发送双 Accept，兼容 SSE `tools/list`（含通知夹杂场景）并拒绝格式损坏的 2xx 成功体，同时在 token 配额耗尽时前置标记为受阻而非误报全失败，并在缓存配额可能过期时先复核最新 detail。
