@@ -6382,6 +6382,11 @@ function AdminDashboard(): JSX.Element {
                   <tr>
                     <th>{usersStrings.usage.table.user}</th>
                     <th>{usersStrings.usage.table.status}</th>
+                    <th>
+                      <span className="tooltip admin-table-header-label" data-tip={usersStrings.table.tokenCount}>
+                        <span className="admin-table-header-text">{usersStrings.table.tokenCount}</span>
+                      </span>
+                    </th>
                     <AdminUsersSortableHeader
                       label={usersStrings.usage.table.hourlyAny}
                       field="hourlyAnyUsed"
@@ -6426,11 +6431,6 @@ function AdminDashboard(): JSX.Element {
                       activeOrder={effectiveUsersSortOrder}
                       onToggle={toggleUsersSort}
                     />
-                    <th>
-                      <span className="tooltip admin-table-header-label" data-tip={usersStrings.table.tokenCount}>
-                        <span className="admin-table-header-text">{usersStrings.table.tokenCount}</span>
-                      </span>
-                    </th>
                     <AdminUsersSortableHeader
                       label={usersStrings.usage.table.lastUsed}
                       field="lastActivity"
@@ -6456,6 +6456,9 @@ function AdminDashboard(): JSX.Element {
                         </StatusBadge>
                       </td>
                       <td className="admin-users-compact-cell">
+                        <AdminTableValueStack primary={formatNumber(item.tokenCount)} />
+                      </td>
+                      <td className="admin-users-compact-cell">
                         <AdminTableValueStack {...formatQuotaStackValue(item.hourlyAnyUsed, item.hourlyAnyLimit)} />
                       </td>
                       <td className="admin-users-compact-cell">
@@ -6472,9 +6475,6 @@ function AdminDashboard(): JSX.Element {
                       </td>
                       <td className="admin-users-compact-cell">
                         <AdminTableValueStack {...formatSuccessRateStackValue(item.monthlySuccess, item.monthlyFailure, language)} />
-                      </td>
-                      <td className="admin-users-compact-cell">
-                        <AdminTableValueStack primary={formatNumber(item.tokenCount)} />
                       </td>
                       <td className="admin-users-compact-cell">
                         <AdminTableValueStack {...formatStackedTimestamp(item.lastActivity, language)} />
@@ -6509,6 +6509,10 @@ function AdminDashboard(): JSX.Element {
                     </StatusBadge>
                   </div>
                   <div className="admin-mobile-kv">
+                    <span>{usersStrings.table.tokenCount}</span>
+                    <strong>{formatNumber(item.tokenCount)}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
                     <span>{usersStrings.usage.table.hourlyAny}</span>
                     <strong>{formatQuotaUsagePair(item.hourlyAnyUsed, item.hourlyAnyLimit)}</strong>
                   </div>
@@ -6531,10 +6535,6 @@ function AdminDashboard(): JSX.Element {
                   <div className="admin-mobile-kv">
                     <span>{usersStrings.usage.table.monthlySuccessRate}</span>
                     <strong>{formatCompactSuccessRateValue(item.monthlySuccess, item.monthlyFailure, language)}</strong>
-                  </div>
-                  <div className="admin-mobile-kv">
-                    <span>{usersStrings.table.tokenCount}</span>
-                    <strong>{formatNumber(item.tokenCount)}</strong>
                   </div>
                   <div className="admin-mobile-kv">
                     <span>{usersStrings.usage.table.lastUsed}</span>

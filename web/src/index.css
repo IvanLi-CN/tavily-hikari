@@ -4694,7 +4694,7 @@ tbody tr:hover {
 
 .jobs-table.admin-users-usage-table th:nth-child(9),
 .jobs-table.admin-users-usage-table td:nth-child(9) {
-  width: 8%;
+  width: 10%;
 }
 
 .jobs-table.admin-users-usage-table th:nth-child(10),

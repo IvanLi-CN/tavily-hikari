@@ -3097,6 +3097,11 @@ function UsersUsagePageCanvas(): JSX.Element {
                 <tr>
                   <th>{users.usage.table.user}</th>
                   <th>{users.usage.table.status}</th>
+                  <th>
+                    <span className="tooltip admin-table-header-label" data-tip={users.table.tokenCount}>
+                      <span className="admin-table-header-text">{users.table.tokenCount}</span>
+                    </span>
+                  </th>
                   <StoryAdminUsersSortableHeader
                     label={users.usage.table.hourlyAny}
                     field="hourlyAnyUsed"
@@ -3141,11 +3146,6 @@ function UsersUsagePageCanvas(): JSX.Element {
                     activeOrder={effectiveSortOrder}
                     onToggle={toggleSort}
                   />
-                  <th>
-                    <span className="tooltip admin-table-header-label" data-tip={users.table.tokenCount}>
-                      <span className="admin-table-header-text">{users.table.tokenCount}</span>
-                    </span>
-                  </th>
                   <StoryAdminUsersSortableHeader
                     label={users.usage.table.lastUsed}
                     field="lastActivity"
@@ -3177,6 +3177,11 @@ function UsersUsagePageCanvas(): JSX.Element {
                         <StatusBadge tone={item.active ? 'success' : 'neutral'}>
                           {item.active ? users.status.active : users.status.inactive}
                         </StatusBadge>
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <div className="admin-table-value-stack">
+                          <span className="admin-table-value-primary">{formatNumber(item.tokenCount)}</span>
+                        </div>
                       </td>
                       <td className="admin-users-compact-cell">
                         <div className="admin-table-value-stack">
@@ -3212,11 +3217,6 @@ function UsersUsagePageCanvas(): JSX.Element {
                         <div className="admin-table-value-stack">
                           <span className="admin-table-value-primary">{monthlySuccessMetric.primary}</span>
                           <span className="admin-table-value-secondary">{monthlySuccessMetric.secondary}</span>
-                        </div>
-                      </td>
-                      <td className="admin-users-compact-cell">
-                        <div className="admin-table-value-stack">
-                          <span className="admin-table-value-primary">{formatNumber(item.tokenCount)}</span>
                         </div>
                       </td>
                       <td className="admin-users-compact-cell">
