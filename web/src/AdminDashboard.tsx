@@ -8703,7 +8703,14 @@ function AdminDashboard(): JSX.Element {
                   <article key={item.userId} className="admin-mobile-card">
                     <div className="admin-mobile-kv">
                       <span>{usersStrings.table.user}</span>
-                      <strong>{item.displayName || item.username || item.userId}</strong>
+                      <button
+                        type="button"
+                        className="link-button admin-users-mobile-link"
+                        aria-label={usersStrings.actions.view}
+                        onClick={() => navigateUser(item.userId, { preserveUsersContext: true })}
+                      >
+                        <strong>{item.displayName || item.username || item.userId}</strong>
+                      </button>
                     </div>
                     <div className="admin-mobile-kv">
                       <span>{usersStrings.table.status}</span>
@@ -8734,16 +8741,6 @@ function AdminDashboard(): JSX.Element {
                     <div className="admin-mobile-kv">
                       <span>{usersStrings.table.lastLogin}</span>
                       <strong>{formatTimestamp(item.lastLoginAt)}</strong>
-                    </div>
-                    <div className="admin-mobile-actions">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => navigateUser(item.userId, { preserveUsersContext: true })}
-                      >
-                        {usersStrings.actions.view}
-                      </Button>
                     </div>
                   </article>
                 ))

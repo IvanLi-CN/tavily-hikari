@@ -4812,6 +4812,20 @@ tbody tr:hover {
   text-decoration: none;
 }
 
+.admin-users-mobile-link {
+  min-width: 0;
+  text-align: right;
+}
+
+.admin-users-mobile-link strong {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: 'JetBrains Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+}
+
 .admin-users-tags-cell {
   overflow-wrap: normal;
   word-break: normal;
