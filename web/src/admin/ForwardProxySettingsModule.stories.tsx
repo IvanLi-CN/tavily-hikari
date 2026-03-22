@@ -9,6 +9,7 @@ import ForwardProxySettingsModule, {
 import ForwardProxyProgressBubble from './ForwardProxyProgressBubble'
 import type { ForwardProxyDialogProgressState } from './forwardProxyDialogProgress'
 import type { ForwardProxySettings } from '../api'
+import { Dialog, DialogContent } from '../components/ui/dialog'
 import {
   forwardProxyStorySavedAt,
   forwardProxyStorySettings,
@@ -604,49 +605,46 @@ function StatusDetailBubbleProof(): JSX.Element {
               padding: 18,
             }}
           >
-            <div
-              ref={rootRef}
-              className="dark"
-              style={{
-                minHeight: 420,
-              }}
-            >
-              <div
-                style={{
-                  display: 'flex',
-                  maxHeight: 420,
-                  flexDirection: 'column',
-                  overflow: 'hidden',
-                  borderRadius: 24,
-                  border: '1px solid hsl(var(--border) / 0.75)',
-                  background: 'hsl(var(--background) / 0.94)',
-                  boxShadow: '0 30px 70px -42px rgba(15, 23, 42, 0.82)',
-                }}
-              >
-                <ForwardProxyCandidateDialog
-                  strings={strings}
-                  previewMode
-                  dialogIsSubscription={false}
-                  dialogInput={MANUAL_MIXED_RESULTS.map((entry) => entry.value).join('\n')}
-                  dialogError={null}
-                  dialogValidating={false}
-                  dialogSaving={false}
-                  dialogResults={MANUAL_MIXED_RESULTS}
-                  liveRows={[]}
-                  canAddSubscription={false}
-                  canAddManualBatch
-                  addManualBatchLabel={strings.config.add}
-                  saving={false}
-                  progress={null}
-                  onClose={() => {}}
-                  onCancelValidate={() => {}}
-                  onInputChange={() => {}}
-                  onValidate={() => {}}
-                  onAddSubscription={() => {}}
-                  onAddManualBatch={() => {}}
-                  onAddManualEntry={() => {}}
-                />
-              </div>
+            <div style={{ minHeight: 420 }}>
+              <Dialog open>
+                <DialogContent
+                  className="dark max-w-3xl overflow-hidden border-border/75 bg-background/94 p-0 shadow-[0_30px_70px_-42px_rgba(15,23,42,0.82)]"
+                >
+                  <div
+                    ref={rootRef}
+                    style={{
+                      display: 'flex',
+                      maxHeight: 420,
+                      flexDirection: 'column',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <ForwardProxyCandidateDialog
+                      strings={strings}
+                      previewMode
+                      dialogIsSubscription={false}
+                      dialogInput={MANUAL_MIXED_RESULTS.map((entry) => entry.value).join('\n')}
+                      dialogError={null}
+                      dialogValidating={false}
+                      dialogSaving={false}
+                      dialogResults={MANUAL_MIXED_RESULTS}
+                      liveRows={[]}
+                      canAddSubscription={false}
+                      canAddManualBatch
+                      addManualBatchLabel={strings.config.add}
+                      saving={false}
+                      progress={null}
+                      onClose={() => {}}
+                      onCancelValidate={() => {}}
+                      onInputChange={() => {}}
+                      onValidate={() => {}}
+                      onAddSubscription={() => {}}
+                      onAddManualBatch={() => {}}
+                      onAddManualEntry={() => {}}
+                    />
+                  </div>
+                </DialogContent>
+              </Dialog>
             </div>
           </div>
         </section>
