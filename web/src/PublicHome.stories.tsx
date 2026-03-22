@@ -176,7 +176,7 @@ function PublicHomeMobileGuideMenuProof(): JSX.Element {
                   />
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="w-[min(15rem,calc(100vw-2rem))] p-1">
+              <DropdownMenuContent align="start" className="guide-select-menu p-1">
                 {guideProofLabels.map((tab) => (
                   <DropdownMenuItem
                     key={tab.id}

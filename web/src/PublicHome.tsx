@@ -900,7 +900,7 @@ function MobileGuideDropdown({
           <Icon icon="mdi:chevron-down" width={16} height={16} aria-hidden="true" style={{ color: '#647589' }} />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-[min(15rem,calc(100vw-2rem))] p-1">
+      <DropdownMenuContent align="start" className="guide-select-menu p-1">
         {labels.map((tab) => (
           <DropdownMenuItem
             key={tab.id}

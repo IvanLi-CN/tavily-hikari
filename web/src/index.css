@@ -1457,6 +1457,10 @@
 /* Mobile dropdown for guide client selection */
 .guide-select { display: none; margin: 8px 0 0; }
 .guide-select select { width: 100%; }
+.guide-select-menu {
+  width: var(--radix-dropdown-menu-trigger-width);
+  max-width: calc(100vw - 2rem);
+}
 @media (max-width: 767px) {
   .guide-tabs { display: none !important; }
   .guide-select { display: block; }
