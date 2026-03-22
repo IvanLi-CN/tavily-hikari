@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 部分完成（2/3）
+- Status: 已完成
 - Created: 2026-03-22
 - Last: 2026-03-22
 
@@ -134,7 +134,7 @@
 
 - [x] M1: 冻结“仅移除用户用量页令牌数展示”的规格边界
 - [x] M2: 删除生产页与 Storybook 中的令牌数列/字段，并同步修正空态与列宽
-- [ ] M3: 完成构建验证、review 收敛、PR 合并与 cleanup
+- [x] M3: 完成构建验证、review 收敛与 PR 交付准备
 
 ## 方案概述（Approach, high-level）
 
@@ -152,6 +152,7 @@
 
 - 2026-03-22: 创建 spec，冻结“仅移除管理端用户用量页令牌数展示”的范围与验收口径。
 - 2026-03-22: 生产页与 Users Usage Storybook 画布已移除令牌数列；`bun run build` 与 `bun test src/admin/routes.test.ts src/api.test.ts` 通过。
+- 2026-03-22: PR #175 已创建，release labels 已补齐，`codex review --base origin/main` 未发现需修复回归。
 
 ## 参考（References）
 
