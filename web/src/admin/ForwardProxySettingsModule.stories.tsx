@@ -542,13 +542,20 @@ function StatusDetailBubbleProof(): JSX.Element {
     if (typeof window === 'undefined') return
 
     let timerId: number | null = null
+    let frameId: number | null = null
     const openDetailsBubble = () => {
       const trigger = Array.from(rootRef.current?.querySelectorAll<HTMLButtonElement>('button[aria-label]') ?? []).find(
         (button) => button.getAttribute('aria-label') === strings.config.resultDetails,
       )
 
       if (trigger) {
-        trigger.click()
+        trigger.scrollIntoView({
+          block: 'center',
+          inline: 'nearest',
+        })
+        frameId = window.requestAnimationFrame(() => {
+          trigger.click()
+        })
         return
       }
 
@@ -560,6 +567,9 @@ function StatusDetailBubbleProof(): JSX.Element {
     return () => {
       if (timerId != null) {
         window.clearTimeout(timerId)
+      }
+      if (frameId != null) {
+        window.cancelAnimationFrame(frameId)
       }
     }
   }, [strings.config.resultDetails])
@@ -614,7 +624,7 @@ function StatusDetailBubbleProof(): JSX.Element {
                     ref={rootRef}
                     style={{
                       display: 'flex',
-                      maxHeight: 420,
+                      maxHeight: 520,
                       flexDirection: 'column',
                       overflow: 'hidden',
                     }}
