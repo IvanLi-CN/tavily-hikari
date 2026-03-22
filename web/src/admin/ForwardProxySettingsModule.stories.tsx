@@ -5,6 +5,7 @@ import ForwardProxySettingsModule, {
   type ForwardProxyDialogPreviewState,
   type ForwardProxyValidationEntry,
 } from './ForwardProxySettingsModule'
+import ForwardProxyProgressBubble from './ForwardProxyProgressBubble'
 import type { ForwardProxyDialogProgressState } from './forwardProxyDialogProgress'
 import type { ForwardProxySettings } from '../api'
 import {
@@ -426,6 +427,111 @@ function StoryCanvas({
   )
 }
 
+function RevalidateProgressBubbleProof(): JSX.Element {
+  const strings = useTranslate().admin.proxySettings
+
+  return (
+    <div
+      style={{
+        minHeight: '100vh',
+        padding: 24,
+        color: 'hsl(var(--foreground))',
+        background: [
+          'radial-gradient(1000px 520px at 6% -8%, hsl(var(--primary) / 0.14), transparent 62%)',
+          'radial-gradient(900px 460px at 95% -14%, hsl(var(--accent) / 0.12), transparent 64%)',
+          'linear-gradient(180deg, hsl(var(--background)) 0%, hsl(var(--background)) 62%, hsl(var(--muted) / 0.58) 100%)',
+          'hsl(var(--background))',
+        ].join(', '),
+      }}
+    >
+      <div
+        style={{
+          display: 'grid',
+          gap: 20,
+          maxWidth: 980,
+          margin: '0 auto',
+        }}
+      >
+        <section className="surface panel">
+          <div className="panel-header">
+            <div>
+              <h2>Revalidate progress bubble proof</h2>
+              <p className="panel-description">
+                This state uses an inline progress card rather than a floating overlay. The progress details must stay obvious above
+                the stats grid during a subscription revalidate run.
+              </p>
+            </div>
+          </div>
+          <div
+            style={{
+              display: 'grid',
+              gap: 18,
+              overflow: 'hidden',
+              borderRadius: 28,
+              border: '1px dashed hsl(var(--accent) / 0.42)',
+              background: 'linear-gradient(180deg, hsl(var(--card) / 0.98), hsl(var(--muted) / 0.3))',
+              padding: 18,
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 12,
+              }}
+            >
+              <div style={{ display: 'grid', gap: 4 }}>
+                <strong style={{ fontSize: '1rem', color: 'hsl(var(--foreground))' }}>Node pool & live stats</strong>
+                <span style={{ fontSize: '0.92rem', color: 'hsl(var(--muted-foreground))' }}>
+                  Validate subscriptions now
+                </span>
+              </div>
+              <div style={{ display: 'flex', gap: 10 }}>
+                <button type="button" className="btn btn-outline btn-sm" disabled>
+                  Refresh
+                </button>
+                <button type="button" className="btn btn-outline btn-sm" disabled>
+                  Revalidating subscriptions
+                </button>
+              </div>
+            </div>
+
+            <ForwardProxyProgressBubble strings={strings} progress={REVALIDATE_PROGRESS} />
+
+            <div
+              style={{
+                display: 'grid',
+                gap: 12,
+                opacity: 0.56,
+              }}
+            >
+              <div
+                style={{
+                  height: 12,
+                  width: '32%',
+                  borderRadius: 999,
+                  background: 'hsl(var(--muted) / 0.7)',
+                }}
+              />
+              <div
+                style={{
+                  height: 148,
+                  borderRadius: 22,
+                  border: '1px solid hsl(var(--border) / 0.7)',
+                  background:
+                    'linear-gradient(180deg, hsl(var(--background) / 0.4), hsl(var(--background) / 0.22))',
+                }}
+              />
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  )
+}
+
 const meta = {
   title: 'Admin/ForwardProxySettingsModule',
   component: StoryCanvas,
@@ -485,10 +591,7 @@ export const GlobalSocks5EnableFailed: Story = {
 }
 
 export const RevalidateProgressBubble: Story = {
-  args: {
-    revalidating: true,
-    revalidateProgress: REVALIDATE_PROGRESS,
-  },
+  render: () => <RevalidateProgressBubbleProof />,
 }
 
 export const SubscriptionDialogEmpty: Story = {
