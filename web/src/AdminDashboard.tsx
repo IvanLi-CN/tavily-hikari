@@ -42,6 +42,7 @@ import { Badge } from './components/ui/badge'
 import { Switch } from './components/ui/switch'
 import { Table } from './components/ui/table'
 import { Textarea } from './components/ui/textarea'
+import { AnchoredInfoDisclosure } from './components/ui/anchored-info-disclosure'
 import { Tooltip, TooltipContent, TooltipTrigger } from './components/ui/tooltip'
 import TokenUsageHeader from './components/TokenUsageHeader'
 import TokenDetail from './pages/TokenDetail'
@@ -8203,20 +8204,13 @@ function AdminDashboard(): JSX.Element {
                 </div>
                 <div className="admin-mobile-kv">
                   <span>Status</span>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button
-                        type="button"
-                        className="status-pair-trigger"
-                        aria-label={formatRequestStatusTooltip(log, adminStrings)}
-                      >
-                        <strong>{formatRequestStatusPair(log.http_status, log.mcp_status)}</strong>
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent className="max-w-[min(18rem,calc(100vw-2rem))]" side="top">
-                      {formatRequestStatusTooltip(log, adminStrings)}
-                    </TooltipContent>
-                  </Tooltip>
+                  <AnchoredInfoDisclosure
+                    className="status-pair-trigger"
+                    aria-label={formatRequestStatusTooltip(log, adminStrings)}
+                    bubbleContent={formatRequestStatusTooltip(log, adminStrings)}
+                  >
+                    <strong>{formatRequestStatusPair(log.http_status, log.mcp_status)}</strong>
+                  </AnchoredInfoDisclosure>
                 </div>
                 <div className="admin-mobile-kv">
                   <span>{logStrings.table.result}</span>

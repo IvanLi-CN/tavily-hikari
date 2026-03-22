@@ -8520,6 +8520,43 @@ tbody .log-details-row:hover {
   backdrop-filter: blur(16px);
 }
 
+.anchored-info-disclosure-bubble {
+  position: fixed;
+  width: min(18rem, calc(100vw - 24px));
+  max-width: calc(100vw - 24px);
+  padding: 10px 12px;
+  border: 1px solid hsl(var(--border) / 0.88);
+  border-radius: 16px;
+  background: hsl(var(--popover) / 0.98);
+  color: hsl(var(--popover-foreground));
+  box-shadow: 0 24px 60px hsl(222 47% 11% / 0.22);
+  backdrop-filter: blur(16px);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1.45;
+}
+
+.anchored-info-disclosure-bubble::before {
+  content: '';
+  position: absolute;
+  left: var(--anchored-info-disclosure-arrow-offset, 24px);
+  width: 14px;
+  height: 14px;
+  border-left: 1px solid hsl(var(--border) / 0.88);
+  border-top: 1px solid hsl(var(--border) / 0.88);
+  background: hsl(var(--popover) / 0.98);
+  transform: translateX(-50%) rotate(45deg);
+}
+
+.anchored-info-disclosure-bubble[data-placement='bottom']::before {
+  top: -8px;
+}
+
+.anchored-info-disclosure-bubble[data-placement='top']::before {
+  bottom: -8px;
+  transform: translateX(-50%) rotate(225deg);
+}
+
 .manual-copy-bubble::before {
   content: '';
   position: absolute;

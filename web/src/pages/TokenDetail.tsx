@@ -39,6 +39,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import SegmentedTabs from '../components/ui/SegmentedTabs'
 import { TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table'
 import { Textarea } from '../components/ui/textarea'
+import { AnchoredInfoDisclosure } from '../components/ui/anchored-info-disclosure'
 import { Tooltip as OverlayTooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip'
 import { useLanguage, useTranslate } from '../i18n'
 import { ADMIN_USER_CONSOLE_HREF } from '../lib/adminUserConsoleEntry'
@@ -1835,20 +1836,13 @@ export default function TokenDetail({
                   ) : null}
                   <div className="user-console-mobile-kv">
                     <span>HTTP / Tavily</span>
-                    <OverlayTooltip>
-                      <TooltipTrigger asChild>
-                        <button
-                          type="button"
-                          className="status-pair-trigger"
-                          aria-label={formatTokenStatusTip(log.http_status, log.mcp_status)}
-                        >
-                          <strong>{formatTokenStatusPair(log.http_status, log.mcp_status)}</strong>
-                        </button>
-                      </TooltipTrigger>
-                      <TooltipContent className="max-w-[min(18rem,calc(100vw-2rem))]" side="top">
-                        {formatTokenStatusTip(log.http_status, log.mcp_status)}
-                      </TooltipContent>
-                    </OverlayTooltip>
+                    <AnchoredInfoDisclosure
+                      className="status-pair-trigger"
+                      aria-label={formatTokenStatusTip(log.http_status, log.mcp_status)}
+                      bubbleContent={formatTokenStatusTip(log.http_status, log.mcp_status)}
+                    >
+                      <strong>{formatTokenStatusPair(log.http_status, log.mcp_status)}</strong>
+                    </AnchoredInfoDisclosure>
                   </div>
                   <div className="user-console-mobile-kv">
                     <span>Charged Credits</span>
