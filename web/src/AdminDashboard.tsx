@@ -897,26 +897,32 @@ function AdminUsersSortableHeader({
   const SortIndicatorIcon = !isActive ? ArrowUpDown : activeOrder === 'asc' ? ArrowUp : ArrowDown
   const visibleLabel = displayLabel ?? label
   const bubbleLabel = tooltipLabel ?? label
+  const hasTooltip = bubbleLabel.trim() !== visibleLabel.trim()
+  const trigger = (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      className={`admin-table-sort-button${isActive ? ' is-active' : ''}`}
+      onClick={() => onToggle(field)}
+      aria-label={hasTooltip ? bubbleLabel : undefined}
+    >
+      <span className="admin-table-sort-label">{visibleLabel}</span>
+      <SortIndicatorIcon className="admin-table-sort-indicator" aria-hidden="true" />
+    </Button>
+  )
   return (
     <th aria-sort={ariaSort}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className={`admin-table-sort-button${isActive ? ' is-active' : ''}`}
-            onClick={() => onToggle(field)}
-            aria-label={bubbleLabel}
-          >
-            <span className="admin-table-sort-label">{visibleLabel}</span>
-            <SortIndicatorIcon className="admin-table-sort-indicator" aria-hidden="true" />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent className="max-w-[min(18rem,calc(100vw-2rem))]" side="top">
-          {bubbleLabel}
-        </TooltipContent>
-      </Tooltip>
+      {hasTooltip ? (
+        <Tooltip>
+          <TooltipTrigger asChild>{trigger}</TooltipTrigger>
+          <TooltipContent className="max-w-[min(18rem,calc(100vw-2rem))]" side="top">
+            {bubbleLabel}
+          </TooltipContent>
+        </Tooltip>
+      ) : (
+        trigger
+      )}
     </th>
   )
 }

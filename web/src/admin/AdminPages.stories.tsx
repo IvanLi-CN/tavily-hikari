@@ -1185,24 +1185,30 @@ function StoryAdminUsersSortableHeader({
   const SortIndicatorIcon = !isActive ? ArrowUpDown : activeOrder === 'asc' ? ArrowUp : ArrowDown
   const visibleLabel = displayLabel ?? label
   const bubbleLabel = tooltipLabel ?? label
+  const hasTooltip = bubbleLabel.trim() !== visibleLabel.trim()
+  const trigger = (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      className={`admin-table-sort-button${isActive ? ' is-active' : ''}`}
+      onClick={() => onToggle(field)}
+      aria-label={hasTooltip ? bubbleLabel : undefined}
+    >
+      <span className="admin-table-sort-label">{visibleLabel}</span>
+      <SortIndicatorIcon className="admin-table-sort-indicator" aria-hidden="true" />
+    </Button>
+  )
   return (
     <th aria-sort={ariaSort}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className={`admin-table-sort-button${isActive ? ' is-active' : ''}`}
-            onClick={() => onToggle(field)}
-            aria-label={bubbleLabel}
-          >
-            <span className="admin-table-sort-label">{visibleLabel}</span>
-            <SortIndicatorIcon className="admin-table-sort-indicator" aria-hidden="true" />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent side="top">{bubbleLabel}</TooltipContent>
-      </Tooltip>
+      {hasTooltip ? (
+        <Tooltip>
+          <TooltipTrigger asChild>{trigger}</TooltipTrigger>
+          <TooltipContent side="top">{bubbleLabel}</TooltipContent>
+        </Tooltip>
+      ) : (
+        trigger
+      )}
     </th>
   )
 }
@@ -3259,7 +3265,14 @@ function UsersUsagePageCanvas(): JSX.Element {
 }
 
 function UsersUsageTooltipProofCanvas(): JSX.Element {
+  const { language } = useLanguage()
   const users = useTranslate().admin.users
+  const dailySuccessLabel = language === 'zh' ? users.usage.table.dailySuccessRate : 'Daily'
+  const monthlySuccessLabel = language === 'zh' ? users.usage.table.monthlySuccessRate : 'Monthly'
+  const dailySuccessTooltip = language === 'zh' ? '按最近 24 小时成功率排序' : 'Sort by 24h success rate'
+  const monthlySuccessTooltip = language === 'zh' ? '按最近 30 天成功率排序' : 'Sort by 30d success rate'
+  const dailyFailureText = language === 'zh' ? '失败 1' : '1 failed'
+  const monthlyFailureText = language === 'zh' ? '失败 147' : '147 failed'
 
   return (
     <div style={{ display: 'grid', gap: 20, maxWidth: 840, margin: '0 auto' }}>
@@ -3289,25 +3302,26 @@ function UsersUsageTooltipProofCanvas(): JSX.Element {
                 <tr>
                   <th>{users.usage.table.user}</th>
                   <th>{users.usage.table.status}</th>
-                  <th>
+                  <th aria-sort="descending">
                     <Tooltip open>
                       <TooltipTrigger asChild>
-                        <span className="admin-table-header-label" tabIndex={0}>
-                          <span className="admin-table-header-text">{users.table.tokenCount}</span>
-                        </span>
+                        <Button type="button" variant="ghost" size="sm" className="admin-table-sort-button is-active">
+                          <span className="admin-table-sort-label">{dailySuccessLabel}</span>
+                          <ArrowDown className="admin-table-sort-indicator" aria-hidden="true" />
+                        </Button>
                       </TooltipTrigger>
-                      <TooltipContent side="top">{users.table.tokenCount}</TooltipContent>
+                      <TooltipContent side="top">{dailySuccessTooltip}</TooltipContent>
                     </Tooltip>
                   </th>
                   <th aria-sort="descending">
                     <Tooltip open>
                       <TooltipTrigger asChild>
                         <Button type="button" variant="ghost" size="sm" className="admin-table-sort-button is-active">
-                          <span className="admin-table-sort-label">{users.usage.table.monthly}</span>
+                          <span className="admin-table-sort-label">{monthlySuccessLabel}</span>
                           <ArrowDown className="admin-table-sort-indicator" aria-hidden="true" />
                         </Button>
                       </TooltipTrigger>
-                      <TooltipContent side="top">{users.usage.table.monthly}</TooltipContent>
+                      <TooltipContent side="top">{monthlySuccessTooltip}</TooltipContent>
                     </Tooltip>
                   </th>
                 </tr>
@@ -3324,13 +3338,19 @@ function UsersUsageTooltipProofCanvas(): JSX.Element {
                   </td>
                   <td>
                     <div className="admin-table-value-stack">
-                      <span className="admin-table-value-primary">884</span>
-                      <span className="admin-table-value-secondary">12,000</span>
+                      <span className="admin-table-value-primary">97.5%</span>
+                      <span className="admin-table-value-secondary">{dailyFailureText}</span>
+                    </div>
+                  </td>
+                  <td>
+                    <div className="admin-table-value-stack">
+                      <span className="admin-table-value-primary">94.1%</span>
+                      <span className="admin-table-value-secondary">{monthlyFailureText}</span>
                     </div>
                   </td>
                 </tr>
                 <tr>
-                  <td colSpan={3} style={{ height: 120 }} />
+                  <td colSpan={4} style={{ height: 120 }} />
                 </tr>
               </tbody>
             </table>
