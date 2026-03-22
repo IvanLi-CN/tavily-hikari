@@ -1,5 +1,5 @@
 import { createPortal } from 'react-dom'
-import { type CSSProperties, useMemo, useRef } from 'react'
+import { type CSSProperties, useCallback, useMemo, useState } from 'react'
 
 import { Icon } from '../lib/icons'
 import { useAnchoredFloatingLayer } from '../lib/useAnchoredFloatingLayer'
@@ -101,9 +101,15 @@ export default function ConnectivityChecksPanel({
   onMcpClick,
   onApiClick,
 }: ConnectivityChecksPanelProps): JSX.Element {
-  const mcpButtonRef = useRef<HTMLButtonElement | null>(null)
-  const apiButtonRef = useRef<HTMLButtonElement | null>(null)
-  const activeProbeAnchor = probeBubble?.anchor === 'mcp' ? mcpButtonRef.current : apiButtonRef.current
+  const [mcpButtonEl, setMcpButtonEl] = useState<HTMLButtonElement | null>(null)
+  const [apiButtonEl, setApiButtonEl] = useState<HTMLButtonElement | null>(null)
+  const handleMcpButtonRef = useCallback((node: HTMLButtonElement | null) => {
+    setMcpButtonEl(node)
+  }, [])
+  const handleApiButtonRef = useCallback((node: HTMLButtonElement | null) => {
+    setApiButtonEl(node)
+  }, [])
+  const activeProbeAnchor = probeBubble?.anchor === 'mcp' ? mcpButtonEl : apiButtonEl
   const isProbeBubbleOpen = Boolean(probeBubble?.visible && probeBubble.items.length > 0 && activeProbeAnchor)
   const probeBubbleAlign = probeBubble?.anchor === 'mcp' ? 'start' : 'end'
   const { layerRef: probeBubbleLayerRef, position: probeBubblePosition } = useAnchoredFloatingLayer<HTMLDivElement>({
@@ -221,7 +227,7 @@ export default function ConnectivityChecksPanel({
         <div className="user-console-probe-action">
           {renderProbeBubble('mcp')}
           <button
-            ref={mcpButtonRef}
+            ref={handleMcpButtonRef}
             type="button"
             data-probe-kind="mcp"
             className={`btn btn-sm user-console-probe-btn ${probeButtonTone(mcpProbe.state)}`}
@@ -238,7 +244,7 @@ export default function ConnectivityChecksPanel({
         <div className="user-console-probe-action">
           {renderProbeBubble('api')}
           <button
-            ref={apiButtonRef}
+            ref={handleApiButtonRef}
             type="button"
             data-probe-kind="api"
             className={`btn btn-sm user-console-probe-btn ${probeButtonTone(apiProbe.state)}`}
