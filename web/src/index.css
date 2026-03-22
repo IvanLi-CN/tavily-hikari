@@ -4666,7 +4666,7 @@ tbody tr:hover {
 
 .jobs-table.admin-users-usage-table th:nth-child(1),
 .jobs-table.admin-users-usage-table td:nth-child(1) {
-  width: 20%;
+  width: 21%;
 }
 
 .jobs-table.admin-users-usage-table th:nth-child(2),
@@ -4676,33 +4676,31 @@ tbody tr:hover {
 
 .jobs-table.admin-users-usage-table th:nth-child(3),
 .jobs-table.admin-users-usage-table td:nth-child(3) {
-  width: 6%;
+  width: 8%;
 }
 
 .jobs-table.admin-users-usage-table th:nth-child(4),
 .jobs-table.admin-users-usage-table td:nth-child(4),
 .jobs-table.admin-users-usage-table th:nth-child(5),
-.jobs-table.admin-users-usage-table td:nth-child(5),
-.jobs-table.admin-users-usage-table th:nth-child(6),
-.jobs-table.admin-users-usage-table td:nth-child(6) {
+.jobs-table.admin-users-usage-table td:nth-child(5) {
   width: 8%;
 }
 
-.jobs-table.admin-users-usage-table th:nth-child(7),
-.jobs-table.admin-users-usage-table td:nth-child(7) {
+.jobs-table.admin-users-usage-table th:nth-child(6),
+.jobs-table.admin-users-usage-table td:nth-child(6) {
   width: 10%;
 }
 
+.jobs-table.admin-users-usage-table th:nth-child(7),
+.jobs-table.admin-users-usage-table td:nth-child(7),
 .jobs-table.admin-users-usage-table th:nth-child(8),
-.jobs-table.admin-users-usage-table td:nth-child(8),
-.jobs-table.admin-users-usage-table th:nth-child(9),
-.jobs-table.admin-users-usage-table td:nth-child(9) {
+.jobs-table.admin-users-usage-table td:nth-child(8) {
   width: 9%;
 }
 
-.jobs-table.admin-users-usage-table th:nth-child(10),
-.jobs-table.admin-users-usage-table td:nth-child(10) {
-  width: 14%;
+.jobs-table.admin-users-usage-table th:nth-child(9),
+.jobs-table.admin-users-usage-table td:nth-child(9) {
+  width: 19%;
 }
 
 .admin-table-sort-button {

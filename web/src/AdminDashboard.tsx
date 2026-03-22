@@ -6406,7 +6406,7 @@ function AdminDashboard(): JSX.Element {
             {users.length === 0 ? (
               <tbody>
                 <tr>
-                  <td colSpan={10}>
+                  <td colSpan={9}>
                     <div className="empty-state alert">{usersStrings.empty.none}</div>
                   </td>
                 </tr>
@@ -6417,11 +6417,6 @@ function AdminDashboard(): JSX.Element {
                   <tr>
                     <th>{usersStrings.usage.table.user}</th>
                     <th>{usersStrings.usage.table.status}</th>
-                    <th>
-                      <span className="tooltip admin-table-header-label" data-tip={usersStrings.table.tokenCount}>
-                        <span className="admin-table-header-text">{usersStrings.table.tokenCount}</span>
-                      </span>
-                    </th>
                     <AdminUsersSortableHeader
                       label={usersStrings.usage.table.hourlyAny}
                       field="hourlyAnyUsed"
@@ -6498,9 +6493,6 @@ function AdminDashboard(): JSX.Element {
                         </StatusBadge>
                       </td>
                       <td className="admin-users-compact-cell">
-                        <AdminTableValueStack primary={formatNumber(item.tokenCount)} />
-                      </td>
-                      <td className="admin-users-compact-cell">
                         <AdminTableValueStack {...formatQuotaStackValue(item.hourlyAnyUsed, item.hourlyAnyLimit)} />
                       </td>
                       <td className="admin-users-compact-cell">
@@ -6556,10 +6548,6 @@ function AdminDashboard(): JSX.Element {
                     <StatusBadge tone={item.active ? 'success' : 'neutral'}>
                       {item.active ? usersStrings.status.active : usersStrings.status.inactive}
                     </StatusBadge>
-                  </div>
-                  <div className="admin-mobile-kv">
-                    <span>{usersStrings.table.tokenCount}</span>
-                    <strong>{formatNumber(item.tokenCount)}</strong>
                   </div>
                   <div className="admin-mobile-kv">
                     <span>{usersStrings.usage.table.hourlyAny}</span>
