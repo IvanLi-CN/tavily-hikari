@@ -408,23 +408,11 @@ async fn spawn_mock_mcp_tools_contract_upstream(
                                 .and_then(|params| params.get("arguments"))
                                 .and_then(|arguments| arguments.get("include_usage"))
                                 .and_then(|value| value.as_bool());
-                            let normalized_tool_name = tool_name.to_ascii_lowercase().replace('_', "-");
-                            if matches!(
-                                normalized_tool_name.as_str(),
-                                "tavily-search" | "tavily-extract" | "tavily-crawl" | "tavily-map"
-                            ) {
-                                assert_eq!(
-                                    include_usage,
-                                    Some(true),
-                                    "supported Tavily tool {tool_name} should inject include_usage=true"
-                                );
-                            } else {
-                                assert_eq!(
-                                    include_usage,
-                                    None,
-                                    "unsupported Tavily tool {tool_name} should not inject include_usage"
-                                );
-                            }
+                            assert_eq!(
+                                include_usage,
+                                None,
+                                "MCP tool {tool_name} should not inject include_usage"
+                            );
 
                             calls
                                 .lock()

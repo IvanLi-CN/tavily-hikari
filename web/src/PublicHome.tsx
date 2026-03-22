@@ -29,6 +29,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from './components/ui/dialog'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from './components/ui/dropdown-menu'
 import { useLanguage, useTranslate, type Language } from './i18n'
 import { copyText, selectAllReadonlyText } from './lib/clipboard'
 import { useResponsiveModes } from './lib/responsive'
@@ -878,24 +884,29 @@ function MobileGuideDropdown({
 }): JSX.Element {
   const current = labels.find((l) => l.id === active)
   return (
-    <div className="dropdown w-full">
-      <Button type="button" variant="outline" size="sm" className="w-full justify-between md:h-10" tabIndex={0}>
-        <span className="inline-flex items-center gap-2">
-          <Icon
-            icon={getGuideClientIconName(active)}
-            width={18}
-            height={18}
-            aria-hidden="true"
-            style={{ color: '#475569' }}
-          />
-          {current?.label ?? active}
-        </span>
-        <Icon icon="mdi:chevron-down" width={16} height={16} aria-hidden="true" style={{ color: '#647589' }} />
-      </Button>
-      <ul tabIndex={0} className="menu dropdown-content bg-base-100 rounded-box z-[1] w-60 p-2 shadow mt-2">
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button type="button" variant="outline" size="sm" className="w-full justify-between md:h-10">
+          <span className="inline-flex items-center gap-2">
+            <Icon
+              icon={getGuideClientIconName(active)}
+              width={18}
+              height={18}
+              aria-hidden="true"
+              style={{ color: '#475569' }}
+            />
+            {current?.label ?? active}
+          </span>
+          <Icon icon="mdi:chevron-down" width={16} height={16} aria-hidden="true" style={{ color: '#647589' }} />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="guide-select-menu p-1">
         {labels.map((tab) => (
-          <li key={tab.id}>
-            <button type="button" onClick={() => onChange(tab.id)} className="flex items-center gap-2">
+          <DropdownMenuItem
+            key={tab.id}
+            className={`flex items-center gap-2 ${tab.id === active ? 'bg-accent/45 text-accent-foreground' : ''}`}
+            onSelect={() => onChange(tab.id)}
+          >
               <Icon
                 icon={getGuideClientIconName(tab.id)}
                 width={16}
@@ -904,11 +915,10 @@ function MobileGuideDropdown({
                 style={{ color: '#475569' }}
               />
               <span className="truncate">{tab.label}</span>
-            </button>
-          </li>
+          </DropdownMenuItem>
         ))}
-      </ul>
-    </div>
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 function buildGuideContent(language: Language, baseUrl: string, prettyToken: string): Record<GuideKey, GuideContent> {

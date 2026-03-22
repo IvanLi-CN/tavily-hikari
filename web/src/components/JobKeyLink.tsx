@@ -1,6 +1,7 @@
 import type { MouseEvent } from 'react'
 
 import { keyDetailPath } from '../admin/routes'
+import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
 
 interface JobKeyLinkProps {
   keyId: string | null
@@ -9,6 +10,7 @@ interface JobKeyLinkProps {
   detailLabel: string
   onOpenKey?: (id: string) => void
   showBubble?: boolean
+  bubbleOpen?: boolean
 }
 
 function isPlainLeftClick(event: MouseEvent<HTMLAnchorElement>): boolean {
@@ -22,6 +24,7 @@ export default function JobKeyLink({
   detailLabel,
   onOpenKey,
   showBubble = true,
+  bubbleOpen,
 }: JobKeyLinkProps): JSX.Element {
   if (!keyId) {
     return <>—</>
@@ -50,8 +53,11 @@ export default function JobKeyLink({
   }
 
   return (
-    <span className="tooltip jobs-key-tooltip" data-tip={groupLabel}>
-      {link}
-    </span>
+    <Tooltip open={bubbleOpen}>
+      <TooltipTrigger asChild>{link}</TooltipTrigger>
+      <TooltipContent className="jobs-key-tooltip max-w-[min(18rem,calc(100vw-2rem))] text-center" side="top">
+        {groupLabel}
+      </TooltipContent>
+    </Tooltip>
   )
 }

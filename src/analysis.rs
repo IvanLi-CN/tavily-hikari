@@ -982,7 +982,7 @@ pub(crate) fn token_request_kind_needs_fallback_sql() -> &'static str {
     "#
 }
 
-pub(crate) fn token_request_kind_protocol_group(key: &str) -> &'static str {
+pub fn token_request_kind_protocol_group(key: &str) -> &'static str {
     if key.trim().starts_with("mcp:") {
         "mcp"
     } else {
@@ -990,7 +990,7 @@ pub(crate) fn token_request_kind_protocol_group(key: &str) -> &'static str {
     }
 }
 
-pub(crate) fn token_request_kind_billing_group(key: &str) -> &'static str {
+pub fn token_request_kind_billing_group(key: &str) -> &'static str {
     let normalized = key.trim();
     if normalized == "api:research-result"
         || normalized == "api:usage"
@@ -1019,6 +1019,334 @@ pub(crate) fn token_request_kind_option_billing_group(
     } else {
         token_request_kind_billing_group(normalized)
     }
+}
+
+pub fn token_request_kind_billing_group_for_token_log(
+    request_kind_key: &str,
+    counts_business_quota: bool,
+) -> &'static str {
+    let normalized = request_kind_key.trim();
+    if !counts_business_quota && (normalized == "mcp:batch" || normalized == "mcp:raw:/mcp") {
+        "non_billable"
+    } else {
+        token_request_kind_billing_group(normalized)
+    }
+}
+
+pub fn token_request_kind_billing_group_for_request(
+    path: &str,
+    body: Option<&[u8]>,
+) -> &'static str {
+    let request_kind = classify_token_request_kind(path, body);
+    if request_kind.key == "mcp:batch" && mcp_request_body_all_non_billable(body) {
+        "non_billable"
+    } else {
+        token_request_kind_billing_group(&request_kind.key)
+    }
+}
+
+pub(crate) const OPERATIONAL_CLASS_SUCCESS: &str = "success";
+pub(crate) const OPERATIONAL_CLASS_NEUTRAL: &str = "neutral";
+pub(crate) const OPERATIONAL_CLASS_CLIENT_ERROR: &str = "client_error";
+pub(crate) const OPERATIONAL_CLASS_UPSTREAM_ERROR: &str = "upstream_error";
+pub(crate) const OPERATIONAL_CLASS_SYSTEM_ERROR: &str = "system_error";
+pub(crate) const OPERATIONAL_CLASS_QUOTA_EXHAUSTED: &str = "quota_exhausted";
+
+pub fn normalize_operational_class_filter(value: Option<&str>) -> Option<&'static str> {
+    match value.map(str::trim) {
+        Some(value) if value.eq_ignore_ascii_case(OPERATIONAL_CLASS_SUCCESS) => {
+            Some(OPERATIONAL_CLASS_SUCCESS)
+        }
+        Some(value) if value.eq_ignore_ascii_case(OPERATIONAL_CLASS_NEUTRAL) => {
+            Some(OPERATIONAL_CLASS_NEUTRAL)
+        }
+        Some(value) if value.eq_ignore_ascii_case(OPERATIONAL_CLASS_CLIENT_ERROR) => {
+            Some(OPERATIONAL_CLASS_CLIENT_ERROR)
+        }
+        Some(value) if value.eq_ignore_ascii_case(OPERATIONAL_CLASS_UPSTREAM_ERROR) => {
+            Some(OPERATIONAL_CLASS_UPSTREAM_ERROR)
+        }
+        Some(value) if value.eq_ignore_ascii_case(OPERATIONAL_CLASS_SYSTEM_ERROR) => {
+            Some(OPERATIONAL_CLASS_SYSTEM_ERROR)
+        }
+        Some(value) if value.eq_ignore_ascii_case(OPERATIONAL_CLASS_QUOTA_EXHAUSTED) => {
+            Some(OPERATIONAL_CLASS_QUOTA_EXHAUSTED)
+        }
+        _ => None,
+    }
+}
+
+fn is_client_error_failure_kind(kind: &str) -> bool {
+    matches!(
+        kind.trim(),
+        FAILURE_KIND_MCP_ACCEPT_406
+            | FAILURE_KIND_TOOL_ARGUMENT_VALIDATION
+            | FAILURE_KIND_UNKNOWN_TOOL_NAME
+            | FAILURE_KIND_INVALID_SEARCH_DEPTH
+            | FAILURE_KIND_INVALID_COUNTRY_SEARCH_DEPTH_COMBO
+            | FAILURE_KIND_RESEARCH_PAYLOAD_422
+            | FAILURE_KIND_QUERY_TOO_LONG
+            | FAILURE_KIND_MCP_METHOD_405
+            | FAILURE_KIND_MCP_PATH_404
+    )
+}
+
+fn is_upstream_error_failure_kind(kind: &str) -> bool {
+    matches!(
+        kind.trim(),
+        FAILURE_KIND_UPSTREAM_RATE_LIMITED_429
+            | FAILURE_KIND_UPSTREAM_GATEWAY_5XX
+            | FAILURE_KIND_UPSTREAM_ACCOUNT_DEACTIVATED_401
+    )
+}
+
+pub fn operational_class_for_request_kind(
+    request_kind_key: &str,
+    result_status: &str,
+    failure_kind: Option<&str>,
+) -> &'static str {
+    operational_class_for_token_log(request_kind_key, result_status, failure_kind, true)
+}
+
+pub fn operational_class_for_token_log(
+    request_kind_key: &str,
+    result_status: &str,
+    failure_kind: Option<&str>,
+    counts_business_quota: bool,
+) -> &'static str {
+    let normalized_result = result_status.trim().to_ascii_lowercase();
+    if normalized_result == OUTCOME_QUOTA_EXHAUSTED {
+        return OPERATIONAL_CLASS_QUOTA_EXHAUSTED;
+    }
+
+    if normalized_result == OUTCOME_ERROR {
+        if let Some(kind) = failure_kind {
+            if is_client_error_failure_kind(kind) {
+                return OPERATIONAL_CLASS_CLIENT_ERROR;
+            }
+            if is_upstream_error_failure_kind(kind) {
+                return OPERATIONAL_CLASS_UPSTREAM_ERROR;
+            }
+        }
+        return OPERATIONAL_CLASS_SYSTEM_ERROR;
+    }
+
+    if token_request_kind_protocol_group(request_kind_key) == "mcp"
+        && token_request_kind_billing_group_for_token_log(request_kind_key, counts_business_quota)
+            == "non_billable"
+    {
+        return OPERATIONAL_CLASS_NEUTRAL;
+    }
+
+    if normalized_result == OUTCOME_SUCCESS {
+        OPERATIONAL_CLASS_SUCCESS
+    } else {
+        OPERATIONAL_CLASS_SYSTEM_ERROR
+    }
+}
+
+pub fn operational_class_for_request_path(
+    path: &str,
+    body: Option<&[u8]>,
+    result_status: &str,
+    failure_kind: Option<&str>,
+) -> &'static str {
+    let request_kind = classify_token_request_kind(path, body);
+    let counts_business_quota = if request_kind.key == "mcp:batch" {
+        !mcp_request_body_all_non_billable(body)
+    } else {
+        true
+    };
+    operational_class_for_token_log(
+        &request_kind.key,
+        result_status,
+        failure_kind,
+        counts_business_quota,
+    )
+}
+
+fn token_request_kind_non_billable_mcp_sql(expr: &str) -> String {
+    let normalized = format!("TRIM({expr})");
+    format!(
+        "({normalized} LIKE 'mcp:%' AND ({normalized} LIKE 'mcp:initialize%' OR {normalized} LIKE 'mcp:ping%' OR {normalized} LIKE 'mcp:tools/list%' OR ({normalized} LIKE 'mcp:tool:%' AND {normalized} NOT LIKE 'mcp:tool:tavily-%') OR {normalized} LIKE 'mcp:resources/%' OR {normalized} LIKE 'mcp:prompts/%' OR {normalized} LIKE 'mcp:notifications/%'))"
+    )
+}
+
+fn request_body_json_text_sql(expr: &str, path: &str) -> String {
+    format!("LOWER(COALESCE(NULLIF(json_extract(CAST({expr} AS TEXT), '{path}'), ''), ''))")
+}
+
+fn mcp_message_non_billable_kind_sql(value_expr: &str) -> String {
+    let method = request_body_json_text_sql(value_expr, "$.method");
+    let tool_name = request_body_json_text_sql(value_expr, "$.params.name");
+    let normalized_tool = format!(
+        "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE({tool_name}, ' ', '-'), '_', '-'), '/', '-'), ':', '-'), '.', '-')"
+    );
+    format!(
+        "
+        CASE
+            WHEN {method} IN ('initialize', 'ping', 'tools/list') THEN 'mcp:' || {method}
+            WHEN {method} LIKE 'resources/%' OR {method} LIKE 'prompts/%' OR {method} LIKE 'notifications/%'
+                THEN 'mcp:' || {method}
+            WHEN {method} = 'tools/call'
+                AND {tool_name} <> ''
+                AND {tool_name} NOT GLOB 'tavily-*'
+                AND {tool_name} NOT GLOB 'tavily_*'
+                THEN 'mcp:tool:' || {normalized_tool}
+            ELSE NULL
+        END
+        "
+    )
+}
+
+fn mcp_non_billable_control_plane_sql(path_expr: &str, body_expr: &str) -> String {
+    let path = format!("LOWER(COALESCE({path_expr}, ''))");
+    let body_json = format!("CAST({body_expr} AS TEXT)");
+    let object_kind = mcp_message_non_billable_kind_sql(body_expr);
+    let array_item_kind = mcp_message_non_billable_kind_sql("items.value");
+    format!(
+        "
+        ({path} LIKE '/mcp%' AND json_valid({body_json}) AND (
+            (json_type({body_json}) = 'object' AND ({object_kind}) IS NOT NULL)
+            OR
+            (
+                json_type({body_json}) = 'array'
+                AND EXISTS (SELECT 1 FROM json_each({body_json}) AS items)
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM json_each({body_json}) AS items
+                    WHERE ({array_item_kind}) IS NULL
+                )
+            )
+        ))
+        "
+    )
+}
+
+fn mcp_request_body_all_non_billable(body: Option<&[u8]>) -> bool {
+    let Some(body) = body else {
+        return false;
+    };
+    let Ok(Value::Array(items)) = serde_json::from_slice::<Value>(body) else {
+        return false;
+    };
+    !items.is_empty()
+        && items.iter().all(|item| {
+            classify_mcp_request_kind_from_message(item).is_some_and(|kind| {
+                token_request_kind_protocol_group(&kind.key) == "mcp"
+                    && token_request_kind_billing_group(&kind.key) == "non_billable"
+            })
+        })
+}
+
+pub(crate) fn token_log_operational_class_case_sql(
+    request_kind_expr: &str,
+    counts_business_quota_expr: &str,
+    result_status_expr: &str,
+    failure_kind_expr: &str,
+) -> String {
+    let non_billable_mcp = token_request_kind_non_billable_mcp_sql(request_kind_expr);
+    format!(
+        "
+        CASE
+            WHEN {result_status_expr} = 'quota_exhausted' THEN '{quota_exhausted}'
+            WHEN {result_status_expr} = 'error' AND {failure_kind_expr} IN (
+                '{mcp_accept_406}',
+                '{tool_argument_validation}',
+                '{unknown_tool_name}',
+                '{invalid_search_depth}',
+                '{invalid_country_search_depth_combo}',
+                '{research_payload_422}',
+                '{query_too_long}',
+                '{mcp_method_405}',
+                '{mcp_path_404}'
+            ) THEN '{client_error}'
+            WHEN {result_status_expr} = 'error' AND {failure_kind_expr} IN (
+                '{upstream_rate_limited_429}',
+                '{upstream_gateway_5xx}',
+                '{upstream_account_deactivated_401}'
+            ) THEN '{upstream_error}'
+            WHEN {result_status_expr} = 'error' THEN '{system_error}'
+            WHEN {request_kind_expr} IN ('mcp:batch', 'mcp:raw:/mcp')
+                AND {counts_business_quota_expr} = 0 THEN '{neutral}'
+            WHEN {non_billable_mcp} THEN '{neutral}'
+            WHEN {result_status_expr} = 'success' THEN '{success}'
+            ELSE '{system_error}'
+        END
+        ",
+        quota_exhausted = OPERATIONAL_CLASS_QUOTA_EXHAUSTED,
+        client_error = OPERATIONAL_CLASS_CLIENT_ERROR,
+        upstream_error = OPERATIONAL_CLASS_UPSTREAM_ERROR,
+        system_error = OPERATIONAL_CLASS_SYSTEM_ERROR,
+        neutral = OPERATIONAL_CLASS_NEUTRAL,
+        success = OPERATIONAL_CLASS_SUCCESS,
+        mcp_accept_406 = FAILURE_KIND_MCP_ACCEPT_406,
+        tool_argument_validation = FAILURE_KIND_TOOL_ARGUMENT_VALIDATION,
+        unknown_tool_name = FAILURE_KIND_UNKNOWN_TOOL_NAME,
+        invalid_search_depth = FAILURE_KIND_INVALID_SEARCH_DEPTH,
+        invalid_country_search_depth_combo = FAILURE_KIND_INVALID_COUNTRY_SEARCH_DEPTH_COMBO,
+        research_payload_422 = FAILURE_KIND_RESEARCH_PAYLOAD_422,
+        query_too_long = FAILURE_KIND_QUERY_TOO_LONG,
+        mcp_method_405 = FAILURE_KIND_MCP_METHOD_405,
+        mcp_path_404 = FAILURE_KIND_MCP_PATH_404,
+        upstream_rate_limited_429 = FAILURE_KIND_UPSTREAM_RATE_LIMITED_429,
+        upstream_gateway_5xx = FAILURE_KIND_UPSTREAM_GATEWAY_5XX,
+        upstream_account_deactivated_401 = FAILURE_KIND_UPSTREAM_ACCOUNT_DEACTIVATED_401,
+    )
+}
+
+pub(crate) fn request_log_operational_class_case_sql(
+    path_expr: &str,
+    request_body_expr: &str,
+    result_status_expr: &str,
+    failure_kind_expr: &str,
+) -> String {
+    let non_billable_mcp = mcp_non_billable_control_plane_sql(path_expr, request_body_expr);
+    format!(
+        "
+        CASE
+            WHEN {result_status_expr} = 'quota_exhausted' THEN '{quota_exhausted}'
+            WHEN {result_status_expr} = 'error' AND {failure_kind_expr} IN (
+                '{mcp_accept_406}',
+                '{tool_argument_validation}',
+                '{unknown_tool_name}',
+                '{invalid_search_depth}',
+                '{invalid_country_search_depth_combo}',
+                '{research_payload_422}',
+                '{query_too_long}',
+                '{mcp_method_405}',
+                '{mcp_path_404}'
+            ) THEN '{client_error}'
+            WHEN {result_status_expr} = 'error' AND {failure_kind_expr} IN (
+                '{upstream_rate_limited_429}',
+                '{upstream_gateway_5xx}',
+                '{upstream_account_deactivated_401}'
+            ) THEN '{upstream_error}'
+            WHEN {result_status_expr} = 'error' THEN '{system_error}'
+            WHEN {non_billable_mcp} THEN '{neutral}'
+            WHEN {result_status_expr} = 'success' THEN '{success}'
+            ELSE '{system_error}'
+        END
+        ",
+        quota_exhausted = OPERATIONAL_CLASS_QUOTA_EXHAUSTED,
+        client_error = OPERATIONAL_CLASS_CLIENT_ERROR,
+        upstream_error = OPERATIONAL_CLASS_UPSTREAM_ERROR,
+        system_error = OPERATIONAL_CLASS_SYSTEM_ERROR,
+        neutral = OPERATIONAL_CLASS_NEUTRAL,
+        success = OPERATIONAL_CLASS_SUCCESS,
+        mcp_accept_406 = FAILURE_KIND_MCP_ACCEPT_406,
+        tool_argument_validation = FAILURE_KIND_TOOL_ARGUMENT_VALIDATION,
+        unknown_tool_name = FAILURE_KIND_UNKNOWN_TOOL_NAME,
+        invalid_search_depth = FAILURE_KIND_INVALID_SEARCH_DEPTH,
+        invalid_country_search_depth_combo = FAILURE_KIND_INVALID_COUNTRY_SEARCH_DEPTH_COMBO,
+        research_payload_422 = FAILURE_KIND_RESEARCH_PAYLOAD_422,
+        query_too_long = FAILURE_KIND_QUERY_TOO_LONG,
+        mcp_method_405 = FAILURE_KIND_MCP_METHOD_405,
+        mcp_path_404 = FAILURE_KIND_MCP_PATH_404,
+        upstream_rate_limited_429 = FAILURE_KIND_UPSTREAM_RATE_LIMITED_429,
+        upstream_gateway_5xx = FAILURE_KIND_UPSTREAM_GATEWAY_5XX,
+        upstream_account_deactivated_401 = FAILURE_KIND_UPSTREAM_ACCOUNT_DEACTIVATED_401,
+    )
 }
 
 pub(crate) fn derive_token_request_kind_fallback(

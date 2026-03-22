@@ -41,12 +41,6 @@ function JobKeyLinkShowcaseCanvas(): JSX.Element {
         margin: '0 auto',
       }}
     >
-      <style>{`
-        .storybook-jobs-key-showcase .jobs-key-tooltip[data-tip]::after {
-          opacity: 1;
-        }
-      `}</style>
-
       <section className="surface panel">
         <div className="panel-header">
           <div>
@@ -177,12 +171,6 @@ function JobKeyLinkBubbleProofCanvas(): JSX.Element {
         margin: '48px auto 0',
       }}
     >
-      <style>{`
-        .storybook-jobs-key-bubble-proof .jobs-key-tooltip[data-tip]::after {
-          opacity: 1;
-        }
-      `}</style>
-
       <section className="surface panel">
         <div className="panel-header">
           <div>
@@ -219,6 +207,7 @@ function JobKeyLinkBubbleProofCanvas(): JSX.Element {
               keyGroup="ops"
               ungroupedLabel={admin.keys.groups.ungrouped}
               detailLabel={admin.keys.actions.details}
+              bubbleOpen
             />
           </div>
         </div>

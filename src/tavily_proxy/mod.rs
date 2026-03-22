@@ -4120,11 +4120,12 @@ impl TavilyProxy {
     pub async fn recent_request_logs_page(
         &self,
         result_status: Option<&str>,
+        operational_class: Option<&str>,
         page: i64,
         per_page: i64,
     ) -> Result<(Vec<RequestLogRecord>, i64), ProxyError> {
         self.key_store
-            .fetch_recent_logs_page(result_status, page, per_page)
+            .fetch_recent_logs_page(result_status, operational_class, page, per_page)
             .await
     }
 
@@ -4136,6 +4137,7 @@ impl TavilyProxy {
         key_effect_code: Option<&str>,
         auth_token_id: Option<&str>,
         key_id: Option<&str>,
+        operational_class: Option<&str>,
         page: i64,
         per_page: i64,
     ) -> Result<RequestLogsPage, ProxyError> {
@@ -4148,12 +4150,18 @@ impl TavilyProxy {
                 key_effect_code,
                 auth_token_id,
                 key_id,
+                operational_class,
                 page,
                 per_page,
                 true,
                 true,
             )
             .await
+    }
+
+    /// Rebuild API-key request buckets from visible request logs.
+    pub async fn rebuild_api_key_usage_buckets(&self) -> Result<(), ProxyError> {
+        self.key_store.rebuild_api_key_usage_buckets().await
     }
 
     /// 获取指定 key 在起始时间以来的汇总。
@@ -4195,6 +4203,7 @@ impl TavilyProxy {
                 result_status,
                 key_effect_code,
                 auth_token_id,
+                None,
                 None,
                 page,
                 per_page,
@@ -4581,37 +4590,118 @@ impl TavilyProxy {
         &self,
         user_id: &str,
     ) -> Result<UserDashboardSummary, ProxyError> {
-        let account = self
-            .token_quota
-            .snapshot_for_user(user_id)
-            .await?
-            .unwrap_or(AccountQuotaSnapshot {
-                hourly_any_used: 0,
-                hourly_any_limit: 0,
-                hourly_used: 0,
-                hourly_limit: 0,
-                daily_used: 0,
-                daily_limit: 0,
-                monthly_used: 0,
-                monthly_limit: 0,
-            });
-        let (monthly_success, daily_success, daily_failure) =
-            self.key_store.fetch_user_success_failure(user_id).await?;
-        let last_activity = self.key_store.fetch_user_last_activity(user_id).await?;
-        Ok(UserDashboardSummary {
-            hourly_any_used: account.hourly_any_used,
-            hourly_any_limit: account.hourly_any_limit,
-            quota_hourly_used: account.hourly_used,
-            quota_hourly_limit: account.hourly_limit,
-            quota_daily_used: account.daily_used,
-            quota_daily_limit: account.daily_limit,
-            quota_monthly_used: account.monthly_used,
-            quota_monthly_limit: account.monthly_limit,
-            daily_success,
-            daily_failure,
-            monthly_success,
-            last_activity,
-        })
+        let mut summaries = self
+            .user_dashboard_summaries_for_users(&[user_id.to_string()])
+            .await?;
+        Ok(summaries.remove(user_id).unwrap_or(UserDashboardSummary {
+            hourly_any_used: 0,
+            hourly_any_limit: 0,
+            quota_hourly_used: 0,
+            quota_hourly_limit: 0,
+            quota_daily_used: 0,
+            quota_daily_limit: 0,
+            quota_monthly_used: 0,
+            quota_monthly_limit: 0,
+            daily_success: 0,
+            daily_failure: 0,
+            monthly_success: 0,
+            monthly_failure: 0,
+            last_activity: None,
+        }))
+    }
+
+    /// Admin: resolve dashboard summaries for many users without N+1 queries.
+    pub async fn user_dashboard_summaries_for_users(
+        &self,
+        user_ids: &[String],
+    ) -> Result<HashMap<String, UserDashboardSummary>, ProxyError> {
+        if user_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let now = Utc::now();
+        let now_ts = now.timestamp();
+        let minute_bucket = now_ts - (now_ts % SECS_PER_MINUTE);
+        let hour_bucket = now_ts - (now_ts % SECS_PER_HOUR);
+        let hour_window_start = minute_bucket - 59 * SECS_PER_MINUTE;
+        let day_window_start = hour_bucket - 23 * SECS_PER_HOUR;
+        let month_start = start_of_month(now).timestamp();
+
+        let mut deduped_user_ids = user_ids.to_vec();
+        deduped_user_ids.sort_unstable();
+        deduped_user_ids.dedup();
+
+        let account_limits = self
+            .key_store
+            .resolve_account_quota_limits_bulk(&deduped_user_ids)
+            .await?;
+        let hourly_any_totals = self
+            .key_store
+            .sum_account_usage_buckets_bulk(
+                &deduped_user_ids,
+                GRANULARITY_REQUEST_MINUTE,
+                hour_window_start,
+            )
+            .await?;
+        let hourly_totals = self
+            .key_store
+            .sum_account_usage_buckets_bulk(
+                &deduped_user_ids,
+                GRANULARITY_MINUTE,
+                hour_window_start,
+            )
+            .await?;
+        let daily_totals = self
+            .key_store
+            .sum_account_usage_buckets_bulk(&deduped_user_ids, GRANULARITY_HOUR, day_window_start)
+            .await?;
+        let monthly_totals = self
+            .key_store
+            .fetch_account_monthly_counts(&deduped_user_ids, month_start)
+            .await?;
+        let log_metrics = self
+            .key_store
+            .fetch_user_log_metrics_bulk(&deduped_user_ids)
+            .await?;
+        let default_limits = AccountQuotaLimits::zero_base();
+
+        Ok(deduped_user_ids
+            .into_iter()
+            .map(|user_id| {
+                let limits = account_limits
+                    .get(&user_id)
+                    .cloned()
+                    .unwrap_or_else(|| default_limits.clone());
+                let metrics = log_metrics.get(&user_id).cloned().unwrap_or_default();
+                (
+                    user_id.clone(),
+                    UserDashboardSummary {
+                        hourly_any_used: hourly_any_totals.get(&user_id).copied().unwrap_or(0),
+                        hourly_any_limit: limits.hourly_any_limit,
+                        quota_hourly_used: hourly_totals.get(&user_id).copied().unwrap_or(0),
+                        quota_hourly_limit: limits.hourly_limit,
+                        quota_daily_used: daily_totals.get(&user_id).copied().unwrap_or(0),
+                        quota_daily_limit: limits.daily_limit,
+                        quota_monthly_used: monthly_totals.get(&user_id).copied().unwrap_or(0),
+                        quota_monthly_limit: limits.monthly_limit,
+                        daily_success: metrics.daily_success,
+                        daily_failure: metrics.daily_failure,
+                        monthly_success: metrics.monthly_success,
+                        monthly_failure: metrics.monthly_failure,
+                        last_activity: metrics.last_activity,
+                    },
+                )
+            })
+            .collect())
+    }
+
+    pub async fn list_api_key_binding_counts_for_users(
+        &self,
+        user_ids: &[String],
+    ) -> Result<HashMap<String, i64>, ProxyError> {
+        self.key_store
+            .list_api_key_binding_counts_for_users(user_ids)
+            .await
     }
 
     /// Admin: list users with pagination and optional fuzzy query.
@@ -4624,6 +4714,17 @@ impl TavilyProxy {
     ) -> Result<(Vec<AdminUserIdentity>, i64), ProxyError> {
         self.key_store
             .list_admin_users_paged(page, per_page, query, tag_id)
+            .await
+    }
+
+    /// Admin: list the full filtered user set prior to sorting and pagination.
+    pub async fn list_admin_users_filtered(
+        &self,
+        query: Option<&str>,
+        tag_id: Option<&str>,
+    ) -> Result<Vec<AdminUserIdentity>, ProxyError> {
+        self.key_store
+            .list_admin_users_filtered(query, tag_id)
             .await
     }
 
@@ -5633,6 +5734,7 @@ impl TavilyProxy {
         result_status: Option<&str>,
         key_effect_code: Option<&str>,
         key_id: Option<&str>,
+        operational_class: Option<&str>,
     ) -> Result<TokenLogsPage, ProxyError> {
         self.key_store
             .fetch_token_logs_page(
@@ -5645,6 +5747,7 @@ impl TavilyProxy {
                 result_status,
                 key_effect_code,
                 key_id,
+                operational_class,
             )
             .await
     }
@@ -6200,50 +6303,6 @@ impl TokenQuota {
                 ))
             }
         }
-    }
-
-    pub(crate) async fn snapshot_for_user(
-        &self,
-        user_id: &str,
-    ) -> Result<Option<AccountQuotaSnapshot>, ProxyError> {
-        let now = Utc::now();
-        let now_ts = now.timestamp();
-        let minute_bucket = now_ts - (now_ts % SECS_PER_MINUTE);
-        let hour_bucket = now_ts - (now_ts % SECS_PER_HOUR);
-        let hour_window_start = minute_bucket - 59 * SECS_PER_MINUTE;
-        let day_window_start = hour_bucket - 23 * SECS_PER_HOUR;
-        let month_start = start_of_month(now).timestamp();
-        let limits = self
-            .store
-            .resolve_account_quota_resolution(user_id)
-            .await?
-            .effective;
-        let hourly_any_used = self
-            .store
-            .sum_account_usage_buckets(user_id, GRANULARITY_REQUEST_MINUTE, hour_window_start)
-            .await?;
-        let hourly_used = self
-            .store
-            .sum_account_usage_buckets(user_id, GRANULARITY_MINUTE, hour_window_start)
-            .await?;
-        let daily_used = self
-            .store
-            .sum_account_usage_buckets(user_id, GRANULARITY_HOUR, day_window_start)
-            .await?;
-        let monthly_used = self
-            .store
-            .fetch_account_monthly_count(user_id, month_start)
-            .await?;
-        Ok(Some(AccountQuotaSnapshot {
-            hourly_any_used,
-            hourly_any_limit: limits.hourly_any_limit,
-            hourly_used,
-            hourly_limit: limits.hourly_limit,
-            daily_used,
-            daily_limit: limits.daily_limit,
-            monthly_used,
-            monthly_limit: limits.monthly_limit,
-        }))
     }
 
     pub(crate) async fn snapshot_many(

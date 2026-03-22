@@ -212,6 +212,12 @@ struct RequestLogView {
     response_body: Option<String>,
     forwarded_headers: Vec<String>,
     dropped_headers: Vec<String>,
+    #[serde(rename = "operationalClass")]
+    operational_class: String,
+    #[serde(rename = "requestKindProtocolGroup")]
+    request_kind_protocol_group: String,
+    #[serde(rename = "requestKindBillingGroup")]
+    request_kind_billing_group: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -399,10 +405,28 @@ struct TokenLogView {
     key_effect_code: String,
     key_effect_summary: Option<String>,
     created_at: i64,
+    #[serde(rename = "operationalClass")]
+    operational_class: String,
+    #[serde(rename = "requestKindProtocolGroup")]
+    request_kind_protocol_group: String,
+    #[serde(rename = "requestKindBillingGroup")]
+    request_kind_billing_group: String,
 }
 
 impl From<TokenLogRecord> for TokenLogView {
     fn from(r: TokenLogRecord) -> Self {
+        let request_kind_protocol_group = token_request_kind_protocol_group(&r.request_kind_key);
+        let request_kind_billing_group =
+            token_request_kind_billing_group_for_token_log(
+                &r.request_kind_key,
+                r.counts_business_quota,
+            );
+        let operational_class = operational_class_for_token_log(
+            &r.request_kind_key,
+            &r.result_status,
+            r.failure_kind.as_deref(),
+            r.counts_business_quota,
+        );
         Self {
             id: r.id,
             key_id: r.key_id,
@@ -421,6 +445,9 @@ impl From<TokenLogRecord> for TokenLogView {
             key_effect_code: r.key_effect_code,
             key_effect_summary: r.key_effect_summary,
             created_at: r.created_at,
+            operational_class: operational_class.to_string(),
+            request_kind_protocol_group: request_kind_protocol_group.to_string(),
+            request_kind_billing_group: request_kind_billing_group.to_string(),
         }
     }
 }
@@ -459,6 +486,7 @@ struct LogsQuery {
     key_effect: Option<String>,
     auth_token_id: Option<String>,
     key_id: Option<String>,
+    operational_class: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -501,15 +529,9 @@ fn normalize_key_effect_filter(value: Option<&str>) -> Option<&'static str> {
     match value.map(str::trim) {
         Some(v) if v.eq_ignore_ascii_case("none") => Some("none"),
         Some(v) if v.eq_ignore_ascii_case("quarantined") => Some("quarantined"),
-        Some(v) if v.eq_ignore_ascii_case("marked_exhausted") => {
-            Some("marked_exhausted")
-        }
-        Some(v) if v.eq_ignore_ascii_case("restored_active") => {
-            Some("restored_active")
-        }
-        Some(v) if v.eq_ignore_ascii_case("cleared_quarantine") => {
-            Some("cleared_quarantine")
-        }
+        Some(v) if v.eq_ignore_ascii_case("marked_exhausted") => Some("marked_exhausted"),
+        Some(v) if v.eq_ignore_ascii_case("restored_active") => Some("restored_active"),
+        Some(v) if v.eq_ignore_ascii_case("cleared_quarantine") => Some("cleared_quarantine"),
         _ => None,
     }
 }
@@ -850,6 +872,7 @@ struct TokenLogsPageQuery {
     result: Option<String>,
     key_effect: Option<String>,
     key_id: Option<String>,
+    operational_class: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -944,6 +967,7 @@ async fn get_token_logs_page(
         return Err(StatusCode::BAD_REQUEST);
     }
     let key_id = normalize_optional_filter(q.key_id.as_deref());
+    let operational_class = normalize_operational_class_filter(q.operational_class.as_deref());
     state
         .proxy
         .token_logs_page(
@@ -956,6 +980,7 @@ async fn get_token_logs_page(
             result_status,
             key_effect_code,
             key_id,
+            operational_class,
         )
         .await
         .map(|logs| {

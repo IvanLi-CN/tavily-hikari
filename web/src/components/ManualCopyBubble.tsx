@@ -1,21 +1,13 @@
-import { type FocusEvent, type MouseEvent, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { type FocusEvent, type MouseEvent, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
 
 import { selectAllReadonlyText } from '../lib/clipboard'
+import { useAnchoredFloatingLayer } from '../lib/useAnchoredFloatingLayer'
 import { cn } from '../lib/utils'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Textarea } from './ui/textarea'
-
-type BubblePlacement = 'top' | 'bottom'
-
-interface BubblePosition {
-  top: number
-  left: number
-  placement: BubblePlacement
-  arrowLeft: number
-}
 
 export interface ManualCopyBubbleProps {
   open: boolean
@@ -46,67 +38,16 @@ export default function ManualCopyBubble({
   className,
   onClose,
 }: ManualCopyBubbleProps): JSX.Element | null {
-  const bubbleRef = useRef<HTMLDivElement | null>(null)
   const fieldRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null)
-  const [position, setPosition] = useState<BubblePosition | null>(null)
-
-  useLayoutEffect(() => {
-    if (!open || !anchorEl || typeof window === 'undefined') {
-      setPosition(null)
-      return
-    }
-
-    const updatePosition = () => {
-      const bubble = bubbleRef.current
-      if (!bubble || !anchorEl.isConnected) {
-        setPosition(null)
-        return
-      }
-
-      const anchorRect = anchorEl.getBoundingClientRect()
-      const bubbleRect = bubble.getBoundingClientRect()
-
-      let top = anchorRect.bottom + ANCHOR_GAP
-      let placement: BubblePlacement = 'bottom'
-
-      if (top + bubbleRect.height > window.innerHeight - VIEWPORT_MARGIN) {
-        const nextTop = anchorRect.top - bubbleRect.height - ANCHOR_GAP
-        if (nextTop >= VIEWPORT_MARGIN) {
-          top = nextTop
-          placement = 'top'
-        }
-      }
-
-      top = Math.max(VIEWPORT_MARGIN, Math.min(top, window.innerHeight - bubbleRect.height - VIEWPORT_MARGIN))
-
-      let left = anchorRect.left + (anchorRect.width / 2) - (bubbleRect.width / 2)
-      left = Math.max(VIEWPORT_MARGIN, Math.min(left, window.innerWidth - bubbleRect.width - VIEWPORT_MARGIN))
-
-      const arrowLeft = Math.max(
-        ARROW_MARGIN,
-        Math.min(anchorRect.left + (anchorRect.width / 2) - left, bubbleRect.width - ARROW_MARGIN),
-      )
-
-      setPosition({ top, left, placement, arrowLeft })
-    }
-
-    updatePosition()
-
-    const resizeObserver = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(updatePosition) : null
-    resizeObserver?.observe(anchorEl)
-    if (bubbleRef.current) {
-      resizeObserver?.observe(bubbleRef.current)
-    }
-
-    window.addEventListener('resize', updatePosition)
-    window.addEventListener('scroll', updatePosition, true)
-
-    return () => {
-      resizeObserver?.disconnect()
-      window.removeEventListener('resize', updatePosition)
-      window.removeEventListener('scroll', updatePosition, true)
-    }
-  }, [anchorEl, open])
+  const { layerRef: bubbleRef, position } = useAnchoredFloatingLayer<HTMLDivElement>({
+    open,
+    anchorEl,
+    placement: 'bottom',
+    align: 'center',
+    offset: ANCHOR_GAP,
+    viewportMargin: VIEWPORT_MARGIN,
+    arrowPadding: ARROW_MARGIN,
+  })
 
   useEffect(() => {
     if (!open) return
@@ -162,7 +103,7 @@ export default function ManualCopyBubble({
   return createPortal(
     <div
       ref={bubbleRef}
-      className={cn('manual-copy-bubble', className)}
+      className={cn('manual-copy-bubble layer-popover', className)}
       role="dialog"
       aria-modal="false"
       style={{
@@ -170,7 +111,7 @@ export default function ManualCopyBubble({
         left: `${position?.left ?? 0}px`,
         visibility: position ? 'visible' : 'hidden',
         pointerEvents: position ? 'auto' : 'none',
-        ['--manual-copy-arrow-left' as string]: `${position?.arrowLeft ?? 40}px`,
+        ['--manual-copy-arrow-left' as string]: `${position?.arrowOffset ?? 40}px`,
       }}
       data-placement={position?.placement ?? 'bottom'}
     >

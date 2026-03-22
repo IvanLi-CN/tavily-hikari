@@ -98,6 +98,9 @@ describe('UserConsole Storybook acceptance controls', () => {
       name: 'Token Detail Admin',
       args: { consoleView: 'Token Detail', isAdmin: true, landingFocus: 'Overview Focus', tokenDetailPreview: 'Overview' },
     })
+    expect(userConsoleStories.MobileGuideMenuProof).toMatchObject({
+      name: 'Mobile Guide Menu Proof',
+    })
 
     expect(userConsoleStories).not.toHaveProperty('Dashboard')
     expect(userConsoleStories).not.toHaveProperty('DashboardAdmin')

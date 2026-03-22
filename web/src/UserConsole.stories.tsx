@@ -3,6 +3,13 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 
 import type { Profile, UserDashboard, UserTokenSummary } from './api'
 import UserConsole from './UserConsole'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from './components/ui/dropdown-menu'
+import { Icon, getGuideClientIconName } from './lib/icons'
 import { userConsoleRouteToHash } from './lib/userConsoleRoutes'
 
 type ConsoleView = 'Console Home' | 'Token Detail'
@@ -29,6 +36,11 @@ interface UserConsoleStoryState {
 }
 
 const TOKEN_DETAIL_HASH = '#/tokens/a1b2'
+const guideProofLabels = [
+  { id: 'codex', label: 'Codex CLI' },
+  { id: 'claude', label: 'Claude Code' },
+  { id: 'vscode', label: 'VS Code' },
+] as const
 
 const dashboardSample: UserDashboard = {
   hourlyAnyUsed: 126,
@@ -192,6 +204,84 @@ function resolveStoryState(args: UserConsoleStoryArgs): UserConsoleStoryState {
     routeHash: routeHashFromView(args.consoleView, args.landingFocus, args.routeHashOverride),
     tokenListMode,
   }
+}
+
+function UserConsoleMobileGuideMenuProof(): JSX.Element {
+  const active = guideProofLabels[0]
+
+  return (
+    <div
+      style={{
+        display: 'grid',
+        gap: 20,
+        maxWidth: 420,
+        margin: '0 auto',
+      }}
+    >
+      <section className="surface panel">
+        <div className="panel-header">
+          <div>
+            <h2>Mobile guide menu proof</h2>
+            <p className="panel-description">
+              The console guide dropdown uses the shared portal layer and must not clip inside the mobile token card.
+            </p>
+          </div>
+        </div>
+        <div
+          style={{
+            overflow: 'hidden',
+            borderRadius: 28,
+            border: '1px dashed hsl(var(--accent) / 0.42)',
+            background: 'linear-gradient(180deg, hsl(var(--card) / 0.98), hsl(var(--muted) / 0.3))',
+            padding: 18,
+          }}
+        >
+          <div style={{ minHeight: 120 }}>
+            <DropdownMenu open>
+              <DropdownMenuTrigger asChild>
+                <button type="button" className="btn btn-outline w-full justify-between btn-sm md:btn-md">
+                  <span className="inline-flex items-center gap-2">
+                    <Icon
+                      icon={getGuideClientIconName(active.id)}
+                      width={18}
+                      height={18}
+                      aria-hidden="true"
+                      style={{ color: '#475569' }}
+                    />
+                    {active.label}
+                  </span>
+                  <Icon
+                    icon="mdi:chevron-down"
+                    width={16}
+                    height={16}
+                    aria-hidden="true"
+                    style={{ color: '#647589' }}
+                  />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="guide-select-menu p-1">
+                {guideProofLabels.map((tab) => (
+                  <DropdownMenuItem
+                    key={tab.id}
+                    className={`flex items-center gap-2 ${tab.id === active.id ? 'bg-accent/45 text-accent-foreground' : ''}`}
+                  >
+                    <Icon
+                      icon={getGuideClientIconName(tab.id)}
+                      width={16}
+                      height={16}
+                      aria-hidden="true"
+                      style={{ color: '#475569' }}
+                    />
+                    <span className="truncate">{tab.label}</span>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
+      </section>
+    </div>
+  )
 }
 
 export const __testables = {
@@ -646,5 +736,21 @@ export const TokenDetailAdmin: Story = {
     isAdmin: true,
     landingFocus: 'Overview Focus',
     tokenDetailPreview: 'Overview',
+  },
+}
+
+export const MobileGuideMenuProof: Story = {
+  name: 'Mobile Guide Menu Proof',
+  args: {
+    consoleView: 'Console Home',
+    isAdmin: false,
+    landingFocus: 'Overview Focus',
+    tokenListState: 'Single Token',
+    tokenDetailPreview: 'Overview',
+  },
+  render: () => <UserConsoleMobileGuideMenuProof />,
+  parameters: {
+    layout: 'padded',
+    viewport: { defaultViewport: '0390-device-iphone-14' },
   },
 }

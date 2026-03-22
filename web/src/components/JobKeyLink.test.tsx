@@ -2,24 +2,28 @@ import { describe, expect, it } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 import JobKeyLink from './JobKeyLink'
+import { TooltipProvider } from './ui/tooltip'
 
 describe('JobKeyLink', () => {
-  it('renders a desktop tooltip wrapper with the key group when enabled', () => {
+  it('renders the desktop link without legacy tooltip attributes', () => {
     const html = renderToStaticMarkup(
-      <JobKeyLink
-        keyId="7QZ5"
-        keyGroup="ops"
-        ungroupedLabel="Ungrouped"
-        detailLabel="Key details"
-      />,
+      <TooltipProvider>
+        <JobKeyLink
+          keyId="7QZ5"
+          keyGroup="ops"
+          ungroupedLabel="Ungrouped"
+          detailLabel="Key details"
+        />
+      </TooltipProvider>,
     )
 
     expect(html).toContain('href="/admin/keys/7QZ5"')
-    expect(html).toContain('data-tip="ops"')
+    expect(html).toContain('class="jobs-key-link"')
     expect(html).toContain('<code>7QZ5</code>')
+    expect(html).not.toContain('data-tip=')
   })
 
-  it('omits the tooltip wrapper when mobile rendering disables bubbles', () => {
+  it('omits legacy tooltip attributes when mobile rendering disables bubbles', () => {
     const html = renderToStaticMarkup(
       <JobKeyLink
         keyId="7QZ5"

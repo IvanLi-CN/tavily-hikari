@@ -411,6 +411,32 @@ fn token_request_kind_option_groups_match_protocol_and_billing_contract() {
     );
     assert_eq!(token_request_kind_billing_group("mcp:raw:/mcp"), "billable");
     assert_eq!(token_request_kind_billing_group("mcp:batch"), "billable");
+    assert_eq!(
+        token_request_kind_billing_group_for_token_log("mcp:raw:/mcp", false),
+        "non_billable"
+    );
+    assert_eq!(
+        token_request_kind_billing_group_for_token_log("mcp:raw:/mcp/sse", false),
+        "billable"
+    );
+    assert_eq!(
+        token_request_kind_billing_group_for_request(
+            "/mcp",
+            Some(
+                br#"[{"jsonrpc":"2.0","method":"initialize"},{"jsonrpc":"2.0","method":"notifications/initialized"}]"#,
+            ),
+        ),
+        "non_billable"
+    );
+    assert_eq!(
+        token_request_kind_billing_group_for_request(
+            "/mcp",
+            Some(
+                br#"[{"jsonrpc":"2.0","method":"notifications/initialized"},{"jsonrpc":"2.0","id":"search","method":"tools/call","params":{"name":"tavily_search","arguments":{"query":"mixed batch"}}}]"#,
+            ),
+        ),
+        "billable"
+    );
 
     assert_eq!(
         token_request_kind_option_billing_group("mcp:batch", false, true),
@@ -423,6 +449,69 @@ fn token_request_kind_option_groups_match_protocol_and_billing_contract() {
     assert_eq!(
         token_request_kind_option_billing_group("api:search", false, true),
         "billable"
+    );
+}
+
+#[test]
+fn operational_class_maps_control_plane_and_failure_kinds() {
+    assert_eq!(
+        normalize_operational_class_filter(Some("neutral")),
+        Some(OPERATIONAL_CLASS_NEUTRAL)
+    );
+    assert_eq!(
+        operational_class_for_request_kind("mcp:notifications/initialized", OUTCOME_UNKNOWN, None),
+        OPERATIONAL_CLASS_NEUTRAL
+    );
+    assert_eq!(
+        operational_class_for_request_kind("mcp:search", OUTCOME_SUCCESS, None),
+        OPERATIONAL_CLASS_SUCCESS
+    );
+    assert_eq!(
+        operational_class_for_token_log("mcp:batch", OUTCOME_SUCCESS, None, false),
+        OPERATIONAL_CLASS_NEUTRAL
+    );
+    assert_eq!(
+        operational_class_for_token_log("mcp:raw:/mcp", OUTCOME_UNKNOWN, None, false),
+        OPERATIONAL_CLASS_NEUTRAL
+    );
+    assert_eq!(
+        operational_class_for_token_log("mcp:raw:/mcp/sse", OUTCOME_SUCCESS, None, false),
+        OPERATIONAL_CLASS_SUCCESS
+    );
+    assert_eq!(
+        operational_class_for_request_path(
+            "/mcp",
+            Some(
+                br#"[{"jsonrpc":"2.0","method":"initialize"},{"jsonrpc":"2.0","method":"notifications/initialized"}]"#
+            ),
+            OUTCOME_UNKNOWN,
+            None,
+        ),
+        OPERATIONAL_CLASS_NEUTRAL
+    );
+    assert_eq!(
+        operational_class_for_request_kind(
+            "mcp:search",
+            OUTCOME_ERROR,
+            Some(FAILURE_KIND_MCP_ACCEPT_406),
+        ),
+        OPERATIONAL_CLASS_CLIENT_ERROR
+    );
+    assert_eq!(
+        operational_class_for_request_kind(
+            "mcp:extract",
+            OUTCOME_ERROR,
+            Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429),
+        ),
+        OPERATIONAL_CLASS_UPSTREAM_ERROR
+    );
+    assert_eq!(
+        operational_class_for_request_kind("api:search", OUTCOME_ERROR, Some(FAILURE_KIND_OTHER),),
+        OPERATIONAL_CLASS_SYSTEM_ERROR
+    );
+    assert_eq!(
+        operational_class_for_request_kind("api:search", OUTCOME_QUOTA_EXHAUSTED, None),
+        OPERATIONAL_CLASS_QUOTA_EXHAUSTED
     );
 }
 
@@ -524,6 +613,59 @@ fn temp_db_path(prefix: &str) -> PathBuf {
 }
 
 #[tokio::test]
+async fn successful_request_logs_do_not_backfill_failure_kind() {
+    let db_path = temp_db_path("request-log-success-failure-kind");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-request-log-success".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let key_id: String = sqlx::query_scalar("SELECT id FROM api_keys LIMIT 1")
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("fetch key id");
+
+    proxy
+        .key_store
+        .log_attempt(AttemptLog {
+            key_id: &key_id,
+            auth_token_id: None,
+            method: &Method::POST,
+            path: "/mcp",
+            query: None,
+            status: Some(StatusCode::OK),
+            tavily_status_code: Some(200),
+            error: None,
+            request_body: br#"{"jsonrpc":"2.0","id":"success-log","method":"tools/call","params":{"name":"tavily_search","arguments":{"query":"ok"}}}"#,
+            response_body: br#"{"jsonrpc":"2.0","id":"success-log","result":{"content":[{"type":"text","text":"ok"}]}}"#,
+            outcome: OUTCOME_SUCCESS,
+            failure_kind: None,
+            key_effect_code: KEY_EFFECT_NONE,
+            key_effect_summary: None,
+            forwarded_headers: &[],
+            dropped_headers: &[],
+        })
+        .await
+        .expect("log success attempt");
+
+    let row: (String, Option<String>) = sqlx::query_as(
+        "SELECT result_status, failure_kind FROM request_logs ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("fetch request log row");
+    assert_eq!(row.0, OUTCOME_SUCCESS);
+    assert_eq!(row.1, None);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn token_log_filters_and_options_use_backfilled_request_kind_columns() {
     let db_path = temp_db_path("token-log-request-kind-backfill");
     let db_str = db_path.to_string_lossy().to_string();
@@ -561,7 +703,7 @@ async fn token_log_filters_and_options_use_backfilled_request_kind_columns() {
 
     let filters = vec!["mcp:raw:/mcp/sse".to_string()];
     let page = repaired
-        .token_logs_page(&token.id, 1, 20, 0, None, &filters, None, None, None)
+        .token_logs_page(&token.id, 1, 20, 0, None, &filters, None, None, None, None)
         .await
         .expect("query filtered token logs");
     assert_eq!(page.total, 1);
@@ -579,6 +721,40 @@ async fn token_log_filters_and_options_use_backfilled_request_kind_columns() {
     assert_eq!(options[0].protocol_group, "mcp");
     assert_eq!(options[0].billing_group, "billable");
     assert_eq!(options[0].count, 1);
+
+    sqlx::query(
+        r#"
+        INSERT INTO auth_token_logs (
+            token_id, method, path, query, http_status, mcp_status, request_kind_key,
+            request_kind_label, result_status, error_message, created_at, counts_business_quota
+        ) VALUES (?, 'POST', '/mcp', NULL, 202, NULL, NULL, NULL, 'unknown', NULL, ?, 0)
+        "#,
+    )
+    .bind(&token.id)
+    .bind(Utc::now().timestamp() + 1)
+    .execute(&repaired.key_store.pool)
+    .await
+    .expect("insert legacy neutral control-plane row");
+
+    let neutral_page = repaired
+        .token_logs_page(
+            &token.id,
+            1,
+            20,
+            0,
+            None,
+            &[],
+            None,
+            None,
+            None,
+            Some("neutral"),
+        )
+        .await
+        .expect("query neutral token logs");
+    assert_eq!(neutral_page.total, 1);
+    assert_eq!(neutral_page.items.len(), 1);
+    assert_eq!(neutral_page.items[0].request_kind_key, "mcp:raw:/mcp");
+    assert_eq!(neutral_page.items[0].request_kind_label, "MCP | /mcp");
 
     sqlx::query(
         r#"
@@ -615,7 +791,7 @@ async fn token_log_filters_and_options_use_backfilled_request_kind_columns() {
     assert_eq!(canonicalized_options[0].label, "MCP | Acme Lookup");
     assert_eq!(canonicalized_options[0].protocol_group, "mcp");
     assert_eq!(canonicalized_options[0].billing_group, "non_billable");
-    assert_eq!(canonicalized_options[0].count, 2);
+    assert_eq!(canonicalized_options[0].count, 3);
 
     sqlx::query(
         r#"
@@ -4647,6 +4823,25 @@ async fn insert_summary_window_logs(
     outcome: &str,
     count: usize,
 ) {
+    insert_summary_window_logs_with_visibility(
+        proxy,
+        key_id,
+        created_at,
+        outcome,
+        count,
+        REQUEST_LOG_VISIBILITY_VISIBLE,
+    )
+    .await;
+}
+
+async fn insert_summary_window_logs_with_visibility(
+    proxy: &TavilyProxy,
+    key_id: &str,
+    created_at: i64,
+    outcome: &str,
+    count: usize,
+    visibility: &str,
+) {
     for offset in 0..count {
         sqlx::query(
             r#"
@@ -4664,12 +4859,14 @@ async fn insert_summary_window_logs(
                 response_body,
                 forwarded_headers,
                 dropped_headers,
+                visibility,
                 created_at
-            ) VALUES (?, NULL, 'GET', '/v1/search', NULL, 200, 200, NULL, ?, NULL, NULL, '[]', '[]', ?)
+            ) VALUES (?, NULL, 'GET', '/v1/search', NULL, 200, 200, NULL, ?, NULL, NULL, '[]', '[]', ?, ?)
             "#,
         )
         .bind(key_id)
         .bind(outcome)
+        .bind(visibility)
         .bind(created_at + offset as i64)
         .execute(&proxy.key_store.pool)
         .await
@@ -4840,6 +5037,73 @@ async fn summary_windows_return_zero_for_empty_yesterday_bucket() {
         .await
         .expect("summary windows");
     assert_eq!(summary.yesterday, SummaryWindowMetrics::default());
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn suppressed_retry_shadow_logs_are_hidden_from_recent_logs_and_summary_windows() {
+    let db_path = temp_db_path("summary-windows-suppressed-retry-shadow");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-summary-window-shadow".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let key_id = proxy
+        .list_api_key_metrics()
+        .await
+        .expect("list key metrics")
+        .into_iter()
+        .next()
+        .expect("seeded key")
+        .id;
+
+    let fallback_now = Local::now();
+    let now_naive = fallback_now
+        .date_naive()
+        .and_hms_opt(12, 0, 0)
+        .expect("valid midday");
+    let now = match Local.from_local_datetime(&now_naive) {
+        chrono::LocalResult::Single(dt) => dt,
+        chrono::LocalResult::Ambiguous(dt, _) => dt,
+        chrono::LocalResult::None => fallback_now,
+    };
+    let today_start = start_of_local_day_utc_ts(now);
+
+    insert_summary_window_logs(&proxy, &key_id, today_start + 60, OUTCOME_SUCCESS, 1).await;
+    insert_summary_window_logs_with_visibility(
+        &proxy,
+        &key_id,
+        today_start + 120,
+        OUTCOME_ERROR,
+        1,
+        REQUEST_LOG_VISIBILITY_SUPPRESSED_RETRY_SHADOW,
+    )
+    .await;
+    proxy
+        .rebuild_api_key_usage_buckets()
+        .await
+        .expect("rebuild api key usage buckets");
+
+    let recent_logs = proxy
+        .recent_request_logs(10)
+        .await
+        .expect("recent request logs");
+    assert_eq!(recent_logs.len(), 1);
+    assert_eq!(recent_logs[0].result_status, OUTCOME_SUCCESS);
+
+    let summary = proxy
+        .summary_windows_at(now)
+        .await
+        .expect("summary windows");
+    assert_eq!(summary.today.total_requests, 1);
+    assert_eq!(summary.today.success_count, 1);
+    assert_eq!(summary.today.error_count, 0);
 
     let _ = std::fs::remove_file(db_path);
 }

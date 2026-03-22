@@ -1,5 +1,6 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
+import { TooltipProvider } from './components/ui/tooltip'
 import { LanguageProvider } from './i18n'
 import AdminLogin from './pages/AdminLogin'
 import { ThemeProvider } from './theme'
@@ -9,7 +10,9 @@ ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
     <LanguageProvider>
       <ThemeProvider>
-        <AdminLogin />
+        <TooltipProvider delayDuration={120} skipDelayDuration={250}>
+          <AdminLogin />
+        </TooltipProvider>
       </ThemeProvider>
     </LanguageProvider>
   </React.StrictMode>,

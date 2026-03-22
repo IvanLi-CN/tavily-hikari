@@ -64,7 +64,7 @@ const SelectContent = React.forwardRef<
     <SelectPrimitive.Content
       ref={ref}
       className={cn(
-        'relative z-[1200] max-h-96 min-w-[8rem] overflow-hidden rounded-lg border border-border/90 bg-popover/96 text-popover-foreground shadow-xl backdrop-blur',
+        'layer-dropdown relative max-h-96 min-w-[8rem] overflow-hidden rounded-lg border border-border/90 bg-popover/96 text-popover-foreground shadow-xl backdrop-blur',
         position === 'popper' &&
           'data-[side=bottom]:translate-y-1 data-[side=left]:-translate-x-1 data-[side=right]:translate-x-1 data-[side=top]:-translate-y-1',
         className,
@@ -113,7 +113,9 @@ const SelectItem = React.forwardRef<
         <Check className="h-4 w-4" />
       </SelectPrimitive.ItemIndicator>
     </span>
-    <SelectPrimitive.ItemText className="select-item-text">{children}</SelectPrimitive.ItemText>
+    <div className="select-item-text">
+      <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
+    </div>
   </SelectPrimitive.Item>
 ))
 SelectItem.displayName = SelectPrimitive.Item.displayName

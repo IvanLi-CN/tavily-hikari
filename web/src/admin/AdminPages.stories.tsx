@@ -2,11 +2,13 @@ import { Icon } from '../lib/icons'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { addons } from 'storybook/preview-api'
 import { SELECT_STORY } from 'storybook/internal/core-events'
+import { ArrowDown, ArrowUp, ArrowUpDown, ChartColumnIncreasing } from 'lucide-react'
 import { Fragment, type ReactNode, useEffect, useLayoutEffect, useMemo, useState } from 'react'
 
 import type {
   AdminUserDetail,
   AdminUserSummary,
+  AdminUsersSortField,
   AdminUserTag,
   AdminUserTagBinding,
   AdminUserTokenSummary,
@@ -14,6 +16,7 @@ import type {
   AuthToken,
   JobLogView,
   RequestLog,
+  SortDirection,
 } from '../api'
 import AdminPanelHeader from '../components/AdminPanelHeader'
 import AdminRecentRequestsPanel, { type RecentRequestsOutcomeFilter } from '../components/AdminRecentRequestsPanel'
@@ -37,6 +40,7 @@ import {
   DropdownMenuTrigger,
 } from '../components/ui/dropdown-menu'
 import { Input } from '../components/ui/input'
+import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip'
 import { Card } from '../components/ui/card'
 import { Badge } from '../components/ui/badge'
 import { Switch } from '../components/ui/switch'
@@ -55,7 +59,7 @@ import {
   type TokenLogRequestKindQuickProtocol,
 } from '../tokenLogRequestKinds'
 
-import AdminShell, { type AdminNavItem } from './AdminShell'
+import AdminShell, { type AdminNavItem, type AdminNavTarget } from './AdminShell'
 import DashboardOverview, { type DashboardMetricCard } from './DashboardOverview'
 import ForwardProxySettingsModule from './ForwardProxySettingsModule'
 import ModulePlaceholder from './ModulePlaceholder'
@@ -81,9 +85,9 @@ import {
   type QuotaSliderField,
   type QuotaSliderSeed,
 } from './quotaSlider'
-import type { AdminModuleId } from './routes'
-
 const now = 1_762_380_000
+const ADMIN_USERS_DEFAULT_SORT_FIELD: AdminUsersSortField = 'lastLoginAt'
+const ADMIN_USERS_DEFAULT_SORT_ORDER: SortDirection = 'desc'
 
 function formatKeyGroupName(group: string | null | undefined, ungroupedLabel: string): string {
   const normalized = group?.trim() ?? ''
@@ -429,6 +433,9 @@ const MOCK_REQUESTS: RequestLog[] = [
     response_body: '{"status":200}',
     forwarded_headers: ['x-request-id', 'x-forwarded-for'],
     dropped_headers: ['authorization'],
+    operationalClass: 'success',
+    requestKindProtocolGroup: 'api',
+    requestKindBillingGroup: 'billable',
   },
   {
     id: 9500,
@@ -453,6 +460,9 @@ const MOCK_REQUESTS: RequestLog[] = [
     response_body: null,
     forwarded_headers: ['x-request-id'],
     dropped_headers: [],
+    operationalClass: 'upstream_error',
+    requestKindProtocolGroup: 'mcp',
+    requestKindBillingGroup: 'billable',
   },
   {
     id: 9499,
@@ -476,6 +486,9 @@ const MOCK_REQUESTS: RequestLog[] = [
     response_body: '{"status":432}',
     forwarded_headers: ['x-request-id'],
     dropped_headers: ['cookie'],
+    operationalClass: 'quota_exhausted',
+    requestKindProtocolGroup: 'api',
+    requestKindBillingGroup: 'billable',
   },
   {
     id: 9498,
@@ -500,6 +513,9 @@ const MOCK_REQUESTS: RequestLog[] = [
     response_body: '{"status":401}',
     forwarded_headers: ['x-request-id'],
     dropped_headers: [],
+    operationalClass: 'upstream_error',
+    requestKindProtocolGroup: 'mcp',
+    requestKindBillingGroup: 'billable',
   },
   {
     id: 9497,
@@ -524,6 +540,9 @@ const MOCK_REQUESTS: RequestLog[] = [
     response_body: null,
     forwarded_headers: ['x-request-id'],
     dropped_headers: [],
+    operationalClass: 'upstream_error',
+    requestKindProtocolGroup: 'api',
+    requestKindBillingGroup: 'billable',
   },
 ]
 
@@ -852,10 +871,11 @@ const MOCK_USERS: AdminUserSummary[] = [
     active: true,
     lastLoginAt: now - 420,
     tokenCount: 2,
+    apiKeyCount: 3,
     tags: MOCK_ALICE_TAGS,
     hourlyAnyUsed: 312,
     hourlyAnyLimit: 1_770,
-    quotaHourlyUsed: 298,
+    quotaHourlyUsed: 1_118,
     quotaHourlyLimit: 1_200,
     quotaDailyUsed: 5_201,
     quotaDailyLimit: 25_500,
@@ -864,6 +884,7 @@ const MOCK_USERS: AdminUserSummary[] = [
     dailySuccess: 4_998,
     dailyFailure: 203,
     monthlySuccess: 129_442,
+    monthlyFailure: 3_180,
     lastActivity: now - 25,
   },
   {
@@ -873,6 +894,7 @@ const MOCK_USERS: AdminUserSummary[] = [
     active: true,
     lastLoginAt: now - 2_700,
     tokenCount: 1,
+    apiKeyCount: 2,
     tags: MOCK_BOB_TAGS,
     hourlyAnyUsed: 611,
     hourlyAnyLimit: 0,
@@ -885,6 +907,7 @@ const MOCK_USERS: AdminUserSummary[] = [
     dailySuccess: 9_800,
     dailyFailure: 209,
     monthlySuccess: 201_402,
+    monthlyFailure: 8_614,
     lastActivity: now - 38,
   },
   {
@@ -894,6 +917,7 @@ const MOCK_USERS: AdminUserSummary[] = [
     active: false,
     lastLoginAt: now - 86_400 * 6,
     tokenCount: 0,
+    apiKeyCount: 0,
     tags: [],
     hourlyAnyUsed: 0,
     hourlyAnyLimit: 600,
@@ -906,6 +930,7 @@ const MOCK_USERS: AdminUserSummary[] = [
     dailySuccess: 0,
     dailyFailure: 0,
     monthlySuccess: 122,
+    monthlyFailure: 7,
     lastActivity: null,
   },
 ]
@@ -1049,6 +1074,32 @@ function formatTimestamp(value: number | null): string {
   return dateTimeFormatter.format(new Date(value * 1000))
 }
 
+function formatClockTime(value: number | null): string {
+  if (!value) return '—'
+  return new Intl.DateTimeFormat(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).format(new Date(value * 1000))
+}
+
+function formatDateOnly(value: number | null, language: 'en' | 'zh'): string {
+  if (!value) return '—'
+  const date = new Date(value * 1000)
+  if (language === 'zh') {
+    const year = date.getFullYear()
+    const month = String(date.getMonth() + 1).padStart(2, '0')
+    const day = String(date.getDate()).padStart(2, '0')
+    return `${year}-${month}-${day}`
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+  }).format(date)
+}
+
 function clampDisplayedQuota(value: number): number {
   return Math.max(0, value)
 }
@@ -1059,6 +1110,235 @@ function formatQuotaLimitValue(value: number): string {
 
 function formatQuotaUsagePair(used: number, limit: number): string {
   return `${formatNumber(Math.max(0, used))} / ${formatQuotaLimitValue(limit)}`
+}
+
+function quotaUsagePrimaryClassName(used: number, limit: number): string | null {
+  const normalizedUsed = Math.max(0, used)
+  const normalizedLimit = Math.max(0, limit)
+
+  if (normalizedLimit <= 0) {
+    return normalizedUsed > 0 ? 'admin-table-value-primary-danger' : null
+  }
+
+  const usageRatio = normalizedUsed / normalizedLimit
+  if (usageRatio >= 1) return 'admin-table-value-primary-danger'
+  if (usageRatio > 0.9) return 'admin-table-value-primary-warning'
+  return null
+}
+
+function formatQuotaStackValue(used: number, limit: number): { primary: string; secondary: string; primaryClassName?: string } {
+  return {
+    primary: formatNumber(Math.max(0, used)),
+    secondary: formatQuotaLimitValue(limit),
+    primaryClassName: quotaUsagePrimaryClassName(used, limit) ?? undefined,
+  }
+}
+
+function formatSuccessRateStackValue(
+  success: number,
+  failure: number,
+  language: 'en' | 'zh',
+): { primary: string; secondary: string } {
+  return {
+    primary: success + failure > 0 ? formatPercent(success, success + failure) : '—',
+    secondary: language === 'zh' ? `失败 ${formatNumber(failure)}` : `Fail ${formatNumber(failure)}`,
+  }
+}
+
+function formatStackedTimestamp(value: number | null, language: 'en' | 'zh'): { primary: string; secondary?: string } {
+  if (!value) return { primary: '—' }
+  return {
+    primary: formatDateOnly(value, language),
+    secondary: formatClockTime(value),
+  }
+}
+
+function compareScalar(left: number, right: number): number {
+  if (left < right) return -1
+  if (left > right) return 1
+  return 0
+}
+
+function compareBigInt(left: bigint, right: bigint): number {
+  if (left < right) return -1
+  if (left > right) return 1
+  return 0
+}
+
+function applySortDirection(ordering: number, direction: SortDirection): number {
+  return direction === 'asc' ? ordering : -ordering
+}
+
+function compareOptionalTimestamp(
+  left: number | null,
+  right: number | null,
+  direction: SortDirection,
+): number {
+  if (left != null && right != null) {
+    return applySortDirection(compareScalar(left, right), direction)
+  }
+  if (left != null) return -1
+  if (right != null) return 1
+  return 0
+}
+
+function compareQuotaUsage(
+  leftUsed: number,
+  leftLimit: number,
+  rightUsed: number,
+  rightLimit: number,
+  direction: SortDirection,
+): number {
+  const usedOrder = applySortDirection(compareScalar(leftUsed, rightUsed), direction)
+  if (usedOrder !== 0) return usedOrder
+  return applySortDirection(compareScalar(leftLimit, rightLimit), direction)
+}
+
+function compareSuccessRate(
+  leftSuccess: number,
+  leftFailure: number,
+  rightSuccess: number,
+  rightFailure: number,
+  direction: SortDirection,
+): number {
+  const leftTotal = leftSuccess + leftFailure
+  const rightTotal = rightSuccess + rightFailure
+  if (leftTotal === 0 && rightTotal === 0) return 0
+  if (leftTotal === 0) return 1
+  if (rightTotal === 0) return -1
+
+  const leftRatio = BigInt(leftSuccess) * BigInt(rightTotal)
+  const rightRatio = BigInt(rightSuccess) * BigInt(leftTotal)
+  const ratioOrder = applySortDirection(compareBigInt(leftRatio, rightRatio), direction)
+  if (ratioOrder !== 0) return ratioOrder
+
+  return applySortDirection(compareScalar(leftFailure, rightFailure), direction)
+}
+
+function compareUserId(left: string, right: string): number {
+  return left.localeCompare(right)
+}
+
+function compareAdminUserSummaryRows(
+  left: AdminUserSummary,
+  right: AdminUserSummary,
+  sort: AdminUsersSortField | null,
+  order: SortDirection | null,
+): number {
+  const sortField = sort ?? ADMIN_USERS_DEFAULT_SORT_FIELD
+  const direction = order ?? ADMIN_USERS_DEFAULT_SORT_ORDER
+
+  const ordering = (() => {
+    switch (sortField) {
+      case 'hourlyAnyUsed':
+        return compareQuotaUsage(
+          left.hourlyAnyUsed,
+          left.hourlyAnyLimit,
+          right.hourlyAnyUsed,
+          right.hourlyAnyLimit,
+          direction,
+        )
+      case 'quotaHourlyUsed':
+        return compareQuotaUsage(
+          left.quotaHourlyUsed,
+          left.quotaHourlyLimit,
+          right.quotaHourlyUsed,
+          right.quotaHourlyLimit,
+          direction,
+        )
+      case 'quotaDailyUsed':
+        return compareQuotaUsage(
+          left.quotaDailyUsed,
+          left.quotaDailyLimit,
+          right.quotaDailyUsed,
+          right.quotaDailyLimit,
+          direction,
+        )
+      case 'quotaMonthlyUsed':
+        return compareQuotaUsage(
+          left.quotaMonthlyUsed,
+          left.quotaMonthlyLimit,
+          right.quotaMonthlyUsed,
+          right.quotaMonthlyLimit,
+          direction,
+        )
+      case 'dailySuccessRate':
+        return compareSuccessRate(
+          left.dailySuccess,
+          left.dailyFailure,
+          right.dailySuccess,
+          right.dailyFailure,
+          direction,
+        )
+      case 'monthlySuccessRate':
+        return compareSuccessRate(
+          left.monthlySuccess,
+          left.monthlyFailure,
+          right.monthlySuccess,
+          right.monthlyFailure,
+          direction,
+        )
+      case 'lastActivity':
+        return compareOptionalTimestamp(left.lastActivity, right.lastActivity, direction)
+      case 'lastLoginAt':
+        return compareOptionalTimestamp(left.lastLoginAt, right.lastLoginAt, direction)
+      default:
+        return 0
+    }
+  })()
+
+  if (ordering !== 0) return ordering
+  return compareUserId(left.userId, right.userId)
+}
+
+function StoryAdminUsersSortableHeader({
+  label,
+  displayLabel,
+  tooltipLabel,
+  field,
+  activeField,
+  activeOrder,
+  onToggle,
+}: {
+  label: string
+  displayLabel?: string
+  tooltipLabel?: string
+  field: AdminUsersSortField
+  activeField: AdminUsersSortField
+  activeOrder: SortDirection
+  onToggle: (field: AdminUsersSortField) => void
+}): JSX.Element {
+  const isActive = activeField === field
+  const ariaSort = !isActive ? 'none' : activeOrder === 'asc' ? 'ascending' : 'descending'
+  const SortIndicatorIcon = !isActive ? ArrowUpDown : activeOrder === 'asc' ? ArrowUp : ArrowDown
+  const visibleLabel = displayLabel ?? label
+  const bubbleLabel = tooltipLabel ?? label
+  const hasTooltip = bubbleLabel.trim() !== visibleLabel.trim()
+  const trigger = (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      className={`admin-table-sort-button${isActive ? ' is-active' : ''}`}
+      onClick={() => onToggle(field)}
+      aria-label={hasTooltip ? bubbleLabel : undefined}
+    >
+      <span className="admin-table-sort-label">{visibleLabel}</span>
+      <SortIndicatorIcon className="admin-table-sort-indicator" aria-hidden="true" />
+    </Button>
+  )
+  return (
+    <th aria-sort={ariaSort}>
+      {hasTooltip ? (
+        <Tooltip>
+          <TooltipTrigger asChild>{trigger}</TooltipTrigger>
+          <TooltipContent side="top">{bubbleLabel}</TooltipContent>
+        </Tooltip>
+      ) : (
+        trigger
+      )}
+    </th>
+  )
 }
 
 function formatSignedQuotaDelta(value: number): string {
@@ -1543,19 +1823,20 @@ function requestFailureGuidance(kind: string | null | undefined, language: 'en' 
 
 function buildNavItems(strings: AdminTranslations): AdminNavItem[] {
   return [
-    { module: 'dashboard', label: strings.nav.dashboard, icon: 'mdi:view-dashboard-outline' },
-    { module: 'tokens', label: strings.nav.tokens, icon: 'mdi:key-chain-variant' },
-    { module: 'keys', label: strings.nav.keys, icon: 'mdi:key-outline' },
-    { module: 'requests', label: strings.nav.requests, icon: 'mdi:file-document-outline' },
-    { module: 'jobs', label: strings.nav.jobs, icon: 'mdi:calendar-clock-outline' },
-    { module: 'users', label: strings.nav.users, icon: 'mdi:account-group-outline' },
-    { module: 'alerts', label: strings.nav.alerts, icon: 'mdi:bell-ring-outline' },
-    { module: 'proxy-settings', label: strings.nav.proxySettings, icon: 'mdi:tune-variant' },
+    { target: 'dashboard', label: strings.nav.dashboard, icon: <Icon icon="mdi:view-dashboard-outline" width={18} height={18} /> },
+    { target: 'user-usage', label: strings.nav.usage, icon: <ChartColumnIncreasing size={18} strokeWidth={2.2} /> },
+    { target: 'tokens', label: strings.nav.tokens, icon: <Icon icon="mdi:key-chain-variant" width={18} height={18} /> },
+    { target: 'keys', label: strings.nav.keys, icon: <Icon icon="mdi:key-outline" width={18} height={18} /> },
+    { target: 'requests', label: strings.nav.requests, icon: <Icon icon="mdi:file-document-outline" width={18} height={18} /> },
+    { target: 'jobs', label: strings.nav.jobs, icon: <Icon icon="mdi:calendar-clock-outline" width={18} height={18} /> },
+    { target: 'users', label: strings.nav.users, icon: <Icon icon="mdi:account-group-outline" width={18} height={18} /> },
+    { target: 'alerts', label: strings.nav.alerts, icon: <Icon icon="mdi:bell-ring-outline" width={18} height={18} /> },
+    { target: 'proxy-settings', label: strings.nav.proxySettings, icon: <Icon icon="mdi:tune-variant" width={18} height={18} /> },
   ]
 }
 
 interface AdminPageFrameProps {
-  activeModule: AdminModuleId
+  activeModule: AdminNavTarget
   children: ReactNode
 }
 
@@ -1564,10 +1845,10 @@ function AdminPageFrame({ activeModule, children }: AdminPageFrameProps): JSX.El
 
   return (
     <AdminShell
-      activeModule={activeModule}
+      activeItem={activeModule}
       navItems={buildNavItems(admin)}
       skipToContentLabel={admin.accessibility.skipToContent}
-      onSelectModule={() => {}}
+      onSelectItem={() => {}}
     >
       <AdminPanelHeader
         title={admin.header.title}
@@ -2624,10 +2905,15 @@ function JobsPageCanvas(): JSX.Element {
 
 function UsersPageCanvas(): JSX.Element {
   const admin = useTranslate().admin
+  const { language } = useLanguage()
   const users = admin.users
   const [query, setQuery] = useState('')
   const [allowRegistration, setAllowRegistration] = useState(true)
+  const [sortField, setSortField] = useState<AdminUsersSortField | null>(null)
+  const [sortOrder, setSortOrder] = useState<SortDirection | null>(null)
   const normalizedQuery = query.trim().toLowerCase()
+  const effectiveSortField = sortField ?? ADMIN_USERS_DEFAULT_SORT_FIELD
+  const effectiveSortOrder = sortOrder ?? ADMIN_USERS_DEFAULT_SORT_ORDER
   const filteredUsers = MOCK_USERS.filter((item) => {
     if (!normalizedQuery) return true
     const displayName = item.displayName?.toLowerCase() ?? ''
@@ -2638,6 +2924,23 @@ function UsersPageCanvas(): JSX.Element {
       || username.includes(normalizedQuery)
     )
   })
+  const sortedUsers = [...filteredUsers].sort((left, right) =>
+    compareAdminUserSummaryRows(left, right, sortField, sortOrder)
+  )
+
+  const toggleSort = (field: AdminUsersSortField) => {
+    const isActive = effectiveSortField === field
+    let nextSort: AdminUsersSortField | null = field
+    let nextOrder: SortDirection | null = ADMIN_USERS_DEFAULT_SORT_ORDER
+    if (isActive && effectiveSortOrder === 'desc') {
+      nextOrder = 'asc'
+    } else if (isActive && effectiveSortOrder === 'asc') {
+      nextSort = null
+      nextOrder = null
+    }
+    setSortField(nextSort)
+    setSortOrder(nextOrder)
+  }
 
   return (
     <AdminPageFrame activeModule="users">
@@ -2735,27 +3038,55 @@ function UsersPageCanvas(): JSX.Element {
                 <tr>
                   <th>{users.table.user}</th>
                   <th>{users.table.status}</th>
-                  <th>{users.table.tokenCount}</th>
                   <th>{users.table.tags}</th>
-                  <th>{users.table.hourlyAny}</th>
-                  <th>{users.table.hourly}</th>
-                  <th>{users.table.daily}</th>
-                  <th>{users.table.monthly}</th>
-                  <th>{users.table.successDaily}</th>
-                  <th>{users.table.successMonthly}</th>
-                  <th>{users.table.lastActivity}</th>
-                  <th>{users.table.lastLogin}</th>
-                  <th>{users.table.actions}</th>
+                  <StoryAdminUsersSortableHeader
+                    label={users.table.daily}
+                    field="quotaDailyUsed"
+                    activeField={effectiveSortField}
+                    activeOrder={effectiveSortOrder}
+                    onToggle={toggleSort}
+                  />
+                  <StoryAdminUsersSortableHeader
+                    label={users.table.monthly}
+                    field="quotaMonthlyUsed"
+                    activeField={effectiveSortField}
+                    activeOrder={effectiveSortOrder}
+                    onToggle={toggleSort}
+                  />
+                  <StoryAdminUsersSortableHeader
+                    label={users.table.lastActivity}
+                    field="lastActivity"
+                    activeField={effectiveSortField}
+                    activeOrder={effectiveSortOrder}
+                    onToggle={toggleSort}
+                  />
+                  <StoryAdminUsersSortableHeader
+                    label={users.table.lastLogin}
+                    field="lastLoginAt"
+                    activeField={effectiveSortField}
+                    activeOrder={effectiveSortOrder}
+                    onToggle={toggleSort}
+                  />
                 </tr>
               </thead>
               <tbody>
-                {filteredUsers.map((item) => (
+                {sortedUsers.map((item) => {
+                  const dailyQuotaMetric = formatQuotaStackValue(item.quotaDailyUsed, item.quotaDailyLimit)
+                  const monthlyQuotaMetric = formatQuotaStackValue(item.quotaMonthlyUsed, item.quotaMonthlyLimit)
+                  const lastActivityMetric = formatStackedTimestamp(item.lastActivity, language)
+                  const lastLoginMetric = formatStackedTimestamp(item.lastLoginAt, language)
+                  return (
                   <tr key={item.userId}>
-                    <td>
-                      <button type="button" className="link-button">
+                    <td className="admin-users-identity-cell">
+                      <button
+                        type="button"
+                        className="link-button admin-users-identity-button"
+                        aria-label={users.actions.view}
+                        onClick={() => openAdminStory('admin-pages--user-detail')}
+                      >
                         <strong>{item.displayName || item.username || item.userId}</strong>
                       </button>
-                      <div className="panel-description" style={{ marginTop: 4 }}>
+                      <div className="panel-description admin-users-identity-meta">
                         <code>{item.userId}</code>
                         {item.username ? ` · @${item.username}` : ''}
                       </div>
@@ -2765,31 +3096,362 @@ function UsersPageCanvas(): JSX.Element {
                         {item.active ? users.status.active : users.status.inactive}
                       </StatusBadge>
                     </td>
-                    <td>{formatNumber(item.tokenCount)}</td>
-                    <td>
+                    <td className="admin-users-tags-cell">
                       <StoryUserTagBadgeList tags={item.tags} users={users} emptyLabel={users.userTags.empty} />
                     </td>
-                    <td>{formatQuotaUsagePair(item.hourlyAnyUsed, item.hourlyAnyLimit)}</td>
-                    <td>{formatQuotaUsagePair(item.quotaHourlyUsed, item.quotaHourlyLimit)}</td>
-                    <td>{formatQuotaUsagePair(item.quotaDailyUsed, item.quotaDailyLimit)}</td>
-                    <td>{formatQuotaUsagePair(item.quotaMonthlyUsed, item.quotaMonthlyLimit)}</td>
-                    <td>{formatNumber(item.dailySuccess)} / {formatNumber(item.dailyFailure)}</td>
-                    <td>{formatNumber(item.monthlySuccess)}</td>
-                    <td>{formatTimestamp(item.lastActivity)}</td>
-                    <td>{formatTimestamp(item.lastLoginAt)}</td>
-                    <td>
-                      <button type="button" className="btn btn-circle btn-ghost btn-sm" aria-label={users.actions.view}>
-                        <Icon icon="mdi:open-in-new" width={16} height={16} />
-                      </button>
+                    <td className="admin-users-compact-cell">
+                      <div className="admin-table-value-stack">
+                        <span className={`admin-table-value-primary${dailyQuotaMetric.primaryClassName ? ` ${dailyQuotaMetric.primaryClassName}` : ''}`}>{dailyQuotaMetric.primary}</span>
+                        <span className="admin-table-value-secondary">{dailyQuotaMetric.secondary}</span>
+                      </div>
+                    </td>
+                    <td className="admin-users-compact-cell">
+                      <div className="admin-table-value-stack">
+                        <span className={`admin-table-value-primary${monthlyQuotaMetric.primaryClassName ? ` ${monthlyQuotaMetric.primaryClassName}` : ''}`}>{monthlyQuotaMetric.primary}</span>
+                        <span className="admin-table-value-secondary">{monthlyQuotaMetric.secondary}</span>
+                      </div>
+                    </td>
+                    <td className="admin-users-compact-cell">
+                      <div className="admin-table-value-stack">
+                        <span className="admin-table-value-primary">{lastActivityMetric.primary}</span>
+                        {lastActivityMetric.secondary && (
+                          <span className="admin-table-value-secondary">{lastActivityMetric.secondary}</span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="admin-users-compact-cell">
+                      <div className="admin-table-value-stack">
+                        <span className="admin-table-value-primary">{lastLoginMetric.primary}</span>
+                        {lastLoginMetric.secondary && (
+                          <span className="admin-table-value-secondary">{lastLoginMetric.secondary}</span>
+                        )}
+                      </div>
                     </td>
                   </tr>
-                ))}
+                )})}
               </tbody>
             </table>
           )}
         </div>
       </section>
     </AdminPageFrame>
+  )
+}
+
+function UsersUsagePageCanvas(): JSX.Element {
+  const admin = useTranslate().admin
+  const { language } = useLanguage()
+  const users = admin.users
+  const usageDailyRateLabel = language === 'zh' ? users.usage.table.dailySuccessRate : 'Daily'
+  const usageMonthlyRateLabel = language === 'zh' ? users.usage.table.monthlySuccessRate : 'Monthly'
+  const [query, setQuery] = useState('')
+  const [sortField, setSortField] = useState<AdminUsersSortField | null>(null)
+  const [sortOrder, setSortOrder] = useState<SortDirection | null>(null)
+  const normalizedQuery = query.trim().toLowerCase()
+  const effectiveSortField = sortField ?? ADMIN_USERS_DEFAULT_SORT_FIELD
+  const effectiveSortOrder = sortOrder ?? ADMIN_USERS_DEFAULT_SORT_ORDER
+  const filteredUsers = MOCK_USERS.filter((item) => {
+    if (!normalizedQuery) return true
+    const displayName = item.displayName?.toLowerCase() ?? ''
+    const username = item.username?.toLowerCase() ?? ''
+    return (
+      item.userId.toLowerCase().includes(normalizedQuery)
+      || displayName.includes(normalizedQuery)
+      || username.includes(normalizedQuery)
+    )
+  })
+  const sortedUsers = [...filteredUsers].sort((left, right) =>
+    compareAdminUserSummaryRows(left, right, sortField, sortOrder)
+  )
+
+  const toggleSort = (field: AdminUsersSortField) => {
+    const isActive = effectiveSortField === field
+    let nextSort: AdminUsersSortField | null = field
+    let nextOrder: SortDirection | null = ADMIN_USERS_DEFAULT_SORT_ORDER
+    if (isActive && effectiveSortOrder === 'desc') {
+      nextOrder = 'asc'
+    } else if (isActive && effectiveSortOrder === 'asc') {
+      nextSort = null
+      nextOrder = null
+    }
+    setSortField(nextSort)
+    setSortOrder(nextOrder)
+  }
+
+  return (
+    <AdminPageFrame activeModule="user-usage">
+      <section className="surface panel">
+        <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
+          <div>
+            <h2>{users.usage.title}</h2>
+            <p className="panel-description">{users.usage.description}</p>
+          </div>
+          <div className="admin-inline-actions" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <button type="button" className="btn btn-outline" onClick={() => openAdminStory('admin-pages--users')}>
+              {users.usage.back}
+            </button>
+            <div className="users-search-controls">
+              <input
+                type="text"
+                className="input input-bordered users-search-input"
+                placeholder={users.searchPlaceholder}
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+              />
+              <button type="button" className="btn btn-outline">
+                {users.search}
+              </button>
+              {query.length > 0 && (
+                <button type="button" className="btn btn-ghost" onClick={() => setQuery('')}>
+                  {users.clear}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="table-wrapper jobs-table-wrapper">
+          {filteredUsers.length === 0 ? (
+            <div className="empty-state alert">{users.empty.none}</div>
+          ) : (
+            <table className="jobs-table admin-users-table admin-users-usage-table">
+              <thead>
+                <tr>
+                  <th>{users.usage.table.user}</th>
+                  <th>{users.usage.table.status}</th>
+                  <StoryAdminUsersSortableHeader
+                    label={users.usage.table.hourlyAny}
+                    field="hourlyAnyUsed"
+                    activeField={effectiveSortField}
+                    activeOrder={effectiveSortOrder}
+                    onToggle={toggleSort}
+                  />
+                  <StoryAdminUsersSortableHeader
+                    label={users.usage.table.hourly}
+                    field="quotaHourlyUsed"
+                    activeField={effectiveSortField}
+                    activeOrder={effectiveSortOrder}
+                    onToggle={toggleSort}
+                  />
+                  <StoryAdminUsersSortableHeader
+                    label={users.usage.table.daily}
+                    field="quotaDailyUsed"
+                    activeField={effectiveSortField}
+                    activeOrder={effectiveSortOrder}
+                    onToggle={toggleSort}
+                  />
+                  <StoryAdminUsersSortableHeader
+                    label={users.usage.table.monthly}
+                    field="quotaMonthlyUsed"
+                    activeField={effectiveSortField}
+                    activeOrder={effectiveSortOrder}
+                    onToggle={toggleSort}
+                  />
+                  <StoryAdminUsersSortableHeader
+                    label={users.usage.table.dailySuccessRate}
+                    displayLabel={usageDailyRateLabel}
+                    field="dailySuccessRate"
+                    activeField={effectiveSortField}
+                    activeOrder={effectiveSortOrder}
+                    onToggle={toggleSort}
+                  />
+                  <StoryAdminUsersSortableHeader
+                    label={users.usage.table.monthlySuccessRate}
+                    displayLabel={usageMonthlyRateLabel}
+                    field="monthlySuccessRate"
+                    activeField={effectiveSortField}
+                    activeOrder={effectiveSortOrder}
+                    onToggle={toggleSort}
+                  />
+                  <StoryAdminUsersSortableHeader
+                    label={users.usage.table.lastUsed}
+                    field="lastActivity"
+                    activeField={effectiveSortField}
+                    activeOrder={effectiveSortOrder}
+                    onToggle={toggleSort}
+                  />
+                </tr>
+              </thead>
+              <tbody>
+                {sortedUsers.map((item) => {
+                  const hourlyAnyMetric = formatQuotaStackValue(item.hourlyAnyUsed, item.hourlyAnyLimit)
+                  const hourlyMetric = formatQuotaStackValue(item.quotaHourlyUsed, item.quotaHourlyLimit)
+                  const dailyQuotaMetric = formatQuotaStackValue(item.quotaDailyUsed, item.quotaDailyLimit)
+                  const monthlyQuotaMetric = formatQuotaStackValue(item.quotaMonthlyUsed, item.quotaMonthlyLimit)
+                  const dailySuccessMetric = formatSuccessRateStackValue(item.dailySuccess, item.dailyFailure, language)
+                  const monthlySuccessMetric = formatSuccessRateStackValue(item.monthlySuccess, item.monthlyFailure, language)
+                  const lastActivityMetric = formatStackedTimestamp(item.lastActivity, language)
+                  return (
+                    <tr key={item.userId}>
+                      <td className="admin-users-identity-cell">
+                        <button
+                          type="button"
+                          className="link-button admin-users-identity-button"
+                          aria-label={users.actions.view}
+                          onClick={() => openAdminStory('admin-pages--user-detail')}
+                        >
+                          <strong>{item.displayName || item.username || item.userId}</strong>
+                        </button>
+                        <div className="panel-description admin-users-identity-meta">
+                          <code>{item.userId}</code>
+                          {item.username ? ` · @${item.username}` : ''}
+                        </div>
+                      </td>
+                      <td>
+                        <StatusBadge tone={item.active ? 'success' : 'neutral'}>
+                          {item.active ? users.status.active : users.status.inactive}
+                        </StatusBadge>
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <div className="admin-table-value-stack">
+                          <span className={`admin-table-value-primary${hourlyAnyMetric.primaryClassName ? ` ${hourlyAnyMetric.primaryClassName}` : ''}`}>{hourlyAnyMetric.primary}</span>
+                          <span className="admin-table-value-secondary">{hourlyAnyMetric.secondary}</span>
+                        </div>
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <div className="admin-table-value-stack">
+                          <span className={`admin-table-value-primary${hourlyMetric.primaryClassName ? ` ${hourlyMetric.primaryClassName}` : ''}`}>{hourlyMetric.primary}</span>
+                          <span className="admin-table-value-secondary">{hourlyMetric.secondary}</span>
+                        </div>
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <div className="admin-table-value-stack">
+                          <span className={`admin-table-value-primary${dailyQuotaMetric.primaryClassName ? ` ${dailyQuotaMetric.primaryClassName}` : ''}`}>{dailyQuotaMetric.primary}</span>
+                          <span className="admin-table-value-secondary">{dailyQuotaMetric.secondary}</span>
+                        </div>
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <div className="admin-table-value-stack">
+                          <span className={`admin-table-value-primary${monthlyQuotaMetric.primaryClassName ? ` ${monthlyQuotaMetric.primaryClassName}` : ''}`}>{monthlyQuotaMetric.primary}</span>
+                          <span className="admin-table-value-secondary">{monthlyQuotaMetric.secondary}</span>
+                        </div>
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <div className="admin-table-value-stack">
+                          <span className="admin-table-value-primary">{dailySuccessMetric.primary}</span>
+                          <span className="admin-table-value-secondary">{dailySuccessMetric.secondary}</span>
+                        </div>
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <div className="admin-table-value-stack">
+                          <span className="admin-table-value-primary">{monthlySuccessMetric.primary}</span>
+                          <span className="admin-table-value-secondary">{monthlySuccessMetric.secondary}</span>
+                        </div>
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <div className="admin-table-value-stack">
+                          <span className="admin-table-value-primary">{lastActivityMetric.primary}</span>
+                          {lastActivityMetric.secondary && (
+                            <span className="admin-table-value-secondary">{lastActivityMetric.secondary}</span>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </section>
+    </AdminPageFrame>
+  )
+}
+
+function UsersUsageTooltipProofCanvas(): JSX.Element {
+  const { language } = useLanguage()
+  const users = useTranslate().admin.users
+  const dailySuccessLabel = language === 'zh' ? users.usage.table.dailySuccessRate : 'Daily'
+  const monthlySuccessLabel = language === 'zh' ? users.usage.table.monthlySuccessRate : 'Monthly'
+  const dailySuccessTooltip = language === 'zh' ? '按最近 24 小时成功率排序' : 'Sort by 24h success rate'
+  const monthlySuccessTooltip = language === 'zh' ? '按最近 30 天成功率排序' : 'Sort by 30d success rate'
+  const dailyFailureText = language === 'zh' ? '失败 1' : '1 failed'
+  const monthlyFailureText = language === 'zh' ? '失败 147' : '147 failed'
+
+  return (
+    <div style={{ display: 'grid', gap: 20, maxWidth: 840, margin: '0 auto' }}>
+      <section className="surface panel">
+        <div className="panel-header">
+          <div>
+            <h2>Users usage tooltip proof</h2>
+            <p className="panel-description">
+              The table shell is intentionally clipped to reproduce the original overlap bug. Shared tooltips must
+              render above the sticky header and scroll frame.
+            </p>
+          </div>
+        </div>
+        <div
+          style={{
+            overflow: 'hidden',
+            maxHeight: 260,
+            borderRadius: 28,
+            border: '1px dashed hsl(var(--accent) / 0.42)',
+            background: 'linear-gradient(180deg, hsl(var(--card) / 0.98), hsl(var(--muted) / 0.24))',
+            padding: 18,
+          }}
+        >
+          <div className="table-wrapper jobs-table-wrapper" style={{ maxHeight: 180, overflow: 'auto' }}>
+            <table className="jobs-table admin-users-table admin-users-usage-table">
+              <thead>
+                <tr>
+                  <th>{users.usage.table.user}</th>
+                  <th>{users.usage.table.status}</th>
+                  <th aria-sort="descending">
+                    <Tooltip open>
+                      <TooltipTrigger asChild>
+                        <Button type="button" variant="ghost" size="sm" className="admin-table-sort-button is-active">
+                          <span className="admin-table-sort-label">{dailySuccessLabel}</span>
+                          <ArrowDown className="admin-table-sort-indicator" aria-hidden="true" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side="top">{dailySuccessTooltip}</TooltipContent>
+                    </Tooltip>
+                  </th>
+                  <th aria-sort="descending">
+                    <Tooltip open>
+                      <TooltipTrigger asChild>
+                        <Button type="button" variant="ghost" size="sm" className="admin-table-sort-button is-active">
+                          <span className="admin-table-sort-label">{monthlySuccessLabel}</span>
+                          <ArrowDown className="admin-table-sort-indicator" aria-hidden="true" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side="top">{monthlySuccessTooltip}</TooltipContent>
+                    </Tooltip>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>
+                    <div className="admin-users-identity-cell">
+                      <strong>unclejimao</strong>
+                    </div>
+                  </td>
+                  <td>
+                    <StatusBadge tone="success">{users.status.active}</StatusBadge>
+                  </td>
+                  <td>
+                    <div className="admin-table-value-stack">
+                      <span className="admin-table-value-primary">97.5%</span>
+                      <span className="admin-table-value-secondary">{dailyFailureText}</span>
+                    </div>
+                  </td>
+                  <td>
+                    <div className="admin-table-value-stack">
+                      <span className="admin-table-value-primary">94.1%</span>
+                      <span className="admin-table-value-secondary">{monthlyFailureText}</span>
+                    </div>
+                  </td>
+                </tr>
+                <tr>
+                  <td colSpan={4} style={{ height: 120 }} />
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </div>
   )
 }
 
@@ -3355,6 +4017,20 @@ export const Jobs: Story = {
 
 export const Users: Story = {
   render: () => <UsersPageCanvas />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+}
+
+export const UsersUsage: Story = {
+  render: () => <UsersUsagePageCanvas />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+}
+
+export const UsersUsageTooltipProof: Story = {
+  render: () => <UsersUsageTooltipProofCanvas />,
   parameters: {
     viewport: { defaultViewport: '1440-device-desktop' },
   },

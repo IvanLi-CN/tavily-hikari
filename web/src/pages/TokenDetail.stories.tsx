@@ -341,6 +341,41 @@ const logTemplates = [
   },
 ] as const;
 
+function requestKindProtocolGroup(key: string): 'api' | 'mcp' {
+  return key.startsWith('mcp:') ? 'mcp' : 'api'
+}
+
+function requestKindBillingGroup(key: string): 'billable' | 'non_billable' {
+  if (
+    key === 'api:research-result' ||
+    key === 'api:usage' ||
+    key.startsWith('mcp:initialize') ||
+    key.startsWith('mcp:ping') ||
+    key.startsWith('mcp:tools/list') ||
+    (key.startsWith('mcp:tool:') && !key.startsWith('mcp:tool:tavily-')) ||
+    key.startsWith('mcp:resources/') ||
+    key.startsWith('mcp:prompts/') ||
+    key.startsWith('mcp:notifications/')
+  ) {
+    return 'non_billable'
+  }
+  return 'billable'
+}
+
+function requestOperationalClass(
+  resultStatus: string,
+  requestKindKey: string,
+): 'success' | 'neutral' | 'quota_exhausted' {
+  if (resultStatus === 'quota_exhausted') return 'quota_exhausted'
+  if (
+    requestKindProtocolGroup(requestKindKey) === 'mcp' &&
+    requestKindBillingGroup(requestKindKey) === 'non_billable'
+  ) {
+    return 'neutral'
+  }
+  return 'success'
+}
+
 function buildLogsMock(
   count: number,
   startId: number,
@@ -357,6 +392,9 @@ function buildLogsMock(
       business_credits:
         template.business_credits == null ? null : template.business_credits + Math.floor(idx / logTemplates.length),
       created_at: createdAtStart - idx * createdAtStep,
+      operationalClass: requestOperationalClass(template.result_status, template.request_kind_key),
+      requestKindProtocolGroup: requestKindProtocolGroup(template.request_kind_key),
+      requestKindBillingGroup: requestKindBillingGroup(template.request_kind_key),
     };
   });
 }

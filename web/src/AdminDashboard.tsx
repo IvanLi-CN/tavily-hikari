@@ -43,9 +43,12 @@ import { Badge } from './components/ui/badge'
 import { Switch } from './components/ui/switch'
 import { Table } from './components/ui/table'
 import { Textarea } from './components/ui/textarea'
+import { AnchoredInfoDisclosure } from './components/ui/anchored-info-disclosure'
+import { Tooltip, TooltipContent, TooltipTrigger } from './components/ui/tooltip'
 import TokenUsageHeader from './components/TokenUsageHeader'
 import TokenDetail from './pages/TokenDetail'
-import AdminShell, { type AdminNavItem } from './admin/AdminShell'
+import { ArrowDown, ArrowUp, ArrowUpDown, ChartColumnIncreasing } from 'lucide-react'
+import AdminShell, { type AdminNavItem, type AdminNavTarget } from './admin/AdminShell'
 import DashboardOverview from './admin/DashboardOverview'
 import ForwardProxySettingsModule, {
   type ForwardProxyDraft,
@@ -73,6 +76,7 @@ import {
   type QuotaSliderSeed,
 } from './admin/quotaSlider'
 import {
+  type AdminUsersCollectionView,
   type AdminModuleId,
   type AdminPathRoute,
   buildAdminKeysPath,
@@ -87,6 +91,7 @@ import {
   userTagCreatePath,
   userTagEditPath,
   userTagsPath,
+  userUsagePath,
 } from './admin/routes'
 import { useLanguage, useTranslate, type AdminTranslations } from './i18n'
 import { extractApiKeyImportEntriesFromText } from './lib/api-key-extract'
@@ -98,6 +103,11 @@ import {
   shouldPrewarmSecretCopy,
   type CopyTextOptions,
 } from './lib/clipboard'
+import {
+  operationalClassGuidance,
+  operationalClassLabel,
+  operationalClassTone,
+} from './lib/logOperationalClass'
 import {
   fetchApiKeys,
   fetchApiKeySecret,
@@ -146,6 +156,7 @@ import {
   syncApiKeyUsage,
   fetchJobs,
   fetchTokenGroups,
+  type AdminUsersSortField,
   type TokenGroup,
   fetchAdminUsers,
   fetchAdminUserDetail,
@@ -162,6 +173,7 @@ import {
   type AdminUserDetail,
   type AdminUserTag,
   type AdminUserTagBinding,
+  type SortDirection,
   type ForwardProxySettings,
   type ForwardProxyStatsResponse,
   type ForwardProxyDashboardSummaryResponse,
@@ -212,6 +224,24 @@ const DASHBOARD_TOKENS_PAGE_SIZE = 100
 const DASHBOARD_TOKENS_MAX_PAGES = 10
 const USER_TAG_DISPLAY_LIMIT = 3
 const NEW_USER_TAG_CARD_ID = '__new__'
+const ADMIN_USERS_DEFAULT_SORT_FIELD: AdminUsersSortField = 'lastLoginAt'
+const ADMIN_USERS_DEFAULT_SORT_ORDER: SortDirection = 'desc'
+const ADMIN_USERS_SORT_FIELDS: readonly AdminUsersSortField[] = [
+  'hourlyAnyUsed',
+  'quotaHourlyUsed',
+  'quotaDailyUsed',
+  'quotaMonthlyUsed',
+  'dailySuccessRate',
+  'monthlySuccessRate',
+  'lastActivity',
+  'lastLoginAt',
+]
+const ADMIN_USERS_OVERVIEW_SORT_FIELDS = new Set<AdminUsersSortField>([
+  'quotaDailyUsed',
+  'quotaMonthlyUsed',
+  'lastActivity',
+  'lastLoginAt',
+])
 
 type UserQuotaSnapshot = Record<QuotaSliderField, QuotaSliderSeed>
 
@@ -282,6 +312,70 @@ function formatQuotaLimitValue(value: number): string {
 
 function formatQuotaUsagePair(used: number, limit: number): string {
   return `${formatNumber(Math.max(0, used))} / ${formatQuotaLimitValue(limit)}`
+}
+
+type AdminTableStackedValue = {
+  primary: string
+  secondary?: string | null
+  primaryClassName?: string | null
+}
+
+function quotaUsagePrimaryClassName(used: number, limit: number): string | null {
+  const normalizedUsed = Math.max(0, used)
+  const normalizedLimit = Math.max(0, limit)
+
+  if (normalizedLimit <= 0) {
+    return normalizedUsed > 0 ? 'admin-table-value-primary-danger' : null
+  }
+
+  const usageRatio = normalizedUsed / normalizedLimit
+  if (usageRatio >= 1) return 'admin-table-value-primary-danger'
+  if (usageRatio > 0.9) return 'admin-table-value-primary-warning'
+  return null
+}
+
+function formatQuotaStackValue(used: number, limit: number): AdminTableStackedValue {
+  return {
+    primary: formatNumber(Math.max(0, used)),
+    secondary: formatQuotaLimitValue(limit),
+    primaryClassName: quotaUsagePrimaryClassName(used, limit),
+  }
+}
+
+function formatSuccessRateStackValue(
+  success: number,
+  failure: number,
+  language: 'en' | 'zh',
+): AdminTableStackedValue {
+  const total = success + failure
+  return {
+    primary: formatPercent(success, total),
+    secondary: language === 'zh' ? `失败 ${formatNumber(failure)}` : `Fail ${formatNumber(failure)}`,
+  }
+}
+
+function formatCompactSuccessRateValue(success: number, failure: number, language: 'en' | 'zh'): string {
+  const total = success + failure
+  const rate = formatPercent(success, total)
+  const failureLabel = language === 'zh' ? '失败' : 'Fail'
+  return `${rate} · ${failureLabel} ${formatNumber(failure)}`
+}
+
+function formatStackedTimestamp(
+  value: number | null,
+  language: 'en' | 'zh',
+): AdminTableStackedValue {
+  if (!value) {
+    return { primary: '—' }
+  }
+  return {
+    primary: language === 'zh' ? formatDateOnly(value) : dateOnlyFormatter.format(new Date(value * 1000)),
+    secondary: formatClockTime(value),
+  }
+}
+
+function isAdminUsersSortField(value: string | null): value is AdminUsersSortField {
+  return value != null && ADMIN_USERS_SORT_FIELDS.includes(value as AdminUsersSortField)
 }
 
 function formatKeyGroupName(group: string | null | undefined, ungroupedLabel: string): string {
@@ -398,6 +492,25 @@ function getAdminUsersPageFromLocation(): number {
   const rawPage = new URLSearchParams(window.location.search).get('page')?.trim() ?? ''
   const parsedPage = Number.parseInt(rawPage, 10)
   return Number.isFinite(parsedPage) && parsedPage > 1 ? parsedPage : 1
+}
+
+function getAdminUsersSortFromLocation(): AdminUsersSortField | null {
+  const rawSort = new URLSearchParams(window.location.search).get('sort')?.trim() ?? ''
+  return isAdminUsersSortField(rawSort) ? rawSort : null
+}
+
+function getAdminUsersSortDirectionFromLocation(): SortDirection | null {
+  if (getAdminUsersSortFromLocation() == null) return null
+  const rawOrder = new URLSearchParams(window.location.search).get('order')?.trim()
+  return rawOrder === 'asc' ? 'asc' : 'desc'
+}
+
+function getAdminUsersCollectionFromLocation(): AdminUsersCollectionView {
+  return new URLSearchParams(window.location.search).get('view') === 'usage' ? 'usage' : 'users'
+}
+
+function isAdminUsersOverviewSortField(value: AdminUsersSortField | null): boolean {
+  return value != null && ADMIN_USERS_OVERVIEW_SORT_FIELDS.has(value)
 }
 
 function getAdminKeysPageFromLocation(): number {
@@ -747,6 +860,77 @@ function TokenOwnerValue({
   )
 }
 
+function AdminTableValueStack({
+  primary,
+  secondary,
+  primaryClassName,
+  className,
+}: {
+  primary: string
+  secondary?: string | null
+  primaryClassName?: string | null
+  className?: string
+}): JSX.Element {
+  return (
+    <div className={`admin-table-value-stack${className ? ` ${className}` : ''}`}>
+      <span className={`admin-table-value-primary${primaryClassName ? ` ${primaryClassName}` : ''}`}>{primary}</span>
+      {secondary ? <span className="admin-table-value-secondary">{secondary}</span> : null}
+    </div>
+  )
+}
+
+function AdminUsersSortableHeader({
+  label,
+  displayLabel,
+  tooltipLabel,
+  field,
+  activeField,
+  activeOrder,
+  onToggle,
+}: {
+  label: string
+  displayLabel?: string
+  tooltipLabel?: string
+  field: AdminUsersSortField
+  activeField: AdminUsersSortField | null
+  activeOrder: SortDirection | null
+  onToggle: (field: AdminUsersSortField) => void
+}): JSX.Element {
+  const isActive = activeField === field
+  const ariaSort = !isActive ? 'none' : activeOrder === 'asc' ? 'ascending' : 'descending'
+  const SortIndicatorIcon = !isActive ? ArrowUpDown : activeOrder === 'asc' ? ArrowUp : ArrowDown
+  const visibleLabel = displayLabel ?? label
+  const bubbleLabel = tooltipLabel ?? label
+  const hasTooltip = bubbleLabel.trim() !== visibleLabel.trim()
+  const trigger = (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      className={`admin-table-sort-button${isActive ? ' is-active' : ''}`}
+      onClick={() => onToggle(field)}
+      aria-label={hasTooltip ? bubbleLabel : undefined}
+    >
+      <span className="admin-table-sort-label">{visibleLabel}</span>
+      <SortIndicatorIcon className="admin-table-sort-indicator" aria-hidden="true" />
+    </Button>
+  )
+  return (
+    <th aria-sort={ariaSort}>
+      {hasTooltip ? (
+        <Tooltip>
+          <TooltipTrigger asChild>{trigger}</TooltipTrigger>
+          <TooltipContent className="max-w-[min(18rem,calc(100vw-2rem))]" side="top">
+            {bubbleLabel}
+          </TooltipContent>
+        </Tooltip>
+      ) : (
+        trigger
+      )}
+    </th>
+  )
+}
+
 function statusTone(status: string): StatusTone {
   const normalized = status.toLowerCase()
   if (normalized === 'active' || normalized === 'success' || normalized === 'completed') return 'success'
@@ -773,6 +957,17 @@ function quotaTone(quotaState: string): StatusTone {
 function statusLabel(status: string, strings: AdminTranslations): string {
   const normalized = status.toLowerCase()
   return strings.statuses[normalized] ?? status
+}
+
+function requestLogTone(log: Pick<RequestLog, 'operationalClass' | 'result_status'>): StatusTone {
+  return operationalClassTone(log.operationalClass ?? log.result_status)
+}
+
+function requestLogLabel(
+  log: Pick<RequestLog, 'operationalClass' | 'result_status'>,
+  language: 'en' | 'zh',
+): string {
+  return operationalClassLabel(log.operationalClass ?? log.result_status, language)
 }
 
 function keyBadgeStatus(item: Pick<ApiKeyStats, 'status' | 'quarantine'>): string {
@@ -830,10 +1025,20 @@ function jobStatusLabel(status: string): string {
     .replace(/\b[a-z]/g, (ch) => ch.toUpperCase())
 }
 
-function formatErrorMessage(log: RequestLog, errorsStrings: AdminTranslations['logs']['errors']): string {
+function formatErrorMessage(
+  log: RequestLog,
+  errorsStrings: AdminTranslations['logs']['errors'],
+  language: 'en' | 'zh',
+): string {
   const message = log.error_message?.trim()
   if (message) {
     return message
+  }
+
+  if (log.operationalClass === 'neutral') {
+    return language === 'zh'
+      ? 'MCP 控制面 / 非计费请求'
+      : 'MCP control-plane / non-billable request'
   }
 
   const status = log.result_status.toLowerCase()
@@ -868,33 +1073,6 @@ function formatErrorMessage(log: RequestLog, errorsStrings: AdminTranslations['l
   }
 
   return errorsStrings.none
-}
-
-function failureKindGuidance(kind: string | null | undefined, language: 'en' | 'zh'): string | null {
-  switch (kind) {
-    case 'upstream_gateway_5xx':
-      return language === 'zh'
-        ? '这是上游网关临时故障，建议稍后重试，并检查上游连通性或代理节点健康。'
-        : 'This is a temporary upstream gateway failure. Retry later and inspect upstream connectivity or proxy health.'
-    case 'upstream_rate_limited_429':
-      return language === 'zh'
-        ? '这是 Tavily 限流，建议降低频率、切换其他 Key，或等待限流窗口恢复。'
-        : 'Tavily is rate limiting this traffic. Reduce request rate, switch keys, or wait for the limit window to reset.'
-    case 'upstream_account_deactivated_401':
-      return language === 'zh'
-        ? '该 Key 可能已失效、被撤销或账户停用，建议更换可用 Key 并检查 Tavily 后台状态。'
-        : 'The key may be invalid, revoked, or tied to a deactivated account. Replace it and check the Tavily account state.'
-    case 'transport_send_error':
-      return language === 'zh'
-        ? '这是链路发送失败，建议检查 DNS、TLS、代理链路和上游可达性。'
-        : 'This request failed before getting an upstream response. Check DNS, TLS, proxy routing, and upstream reachability.'
-    case 'mcp_accept_406':
-      return language === 'zh'
-        ? '客户端需要同时接受 application/json 与 text/event-stream，请修正 Accept 请求头。'
-        : 'The client must accept both application/json and text/event-stream. Fix the Accept header negotiation.'
-    default:
-      return null
-  }
 }
 
 function formatKeyEffectSummary(
@@ -1059,11 +1237,16 @@ function AdminDashboard(): JSX.Element {
   const [jobsError, setJobsError] = useState<string | null>(null)
   const [users, setUsers] = useState<AdminUserSummary[]>([])
   const [usersTotal, setUsersTotal] = useState(0)
-  const [usersPage, setUsersPage] = useState(1)
-  const [usersQueryInput, setUsersQueryInput] = useState('')
-  const [usersQuery, setUsersQuery] = useState('')
-  const [usersTagFilterId, setUsersTagFilterId] = useState<string | null>(null)
+  const [usersPage, setUsersPage] = useState(() => getAdminUsersPageFromLocation())
+  const [usersQueryInput, setUsersQueryInput] = useState(() => getAdminUsersQueryFromLocation())
+  const [usersQuery, setUsersQuery] = useState(() => getAdminUsersQueryFromLocation())
+  const [usersTagFilterId, setUsersTagFilterId] = useState<string | null>(() => getAdminUsersTagFilterFromLocation())
+  const [usersSort, setUsersSort] = useState<AdminUsersSortField | null>(() => getAdminUsersSortFromLocation())
+  const [usersSortOrder, setUsersSortOrder] = useState<SortDirection | null>(() => getAdminUsersSortDirectionFromLocation())
   const [usersLoadState, setUsersLoadState] = useState<QueryLoadState>('initial_loading')
+  const isUsersModuleRoute = route.name === 'module' && route.module === 'users'
+  const isUserUsageRoute = route.name === 'user-usage'
+  const isUsersCollectionRoute = isUsersModuleRoute || isUserUsageRoute
   const [usersError, setUsersError] = useState<string | null>(null)
   const [allowRegistration, setAllowRegistration] = useState<boolean | null>(null)
   const [registrationSettingsLoaded, setRegistrationSettingsLoaded] = useState(false)
@@ -2788,11 +2971,17 @@ function AdminDashboard(): JSX.Element {
 
   useEffect(() => {
     const usersRouteActive =
-      (route.name === 'module' && route.module === 'users') || route.name === 'user'
+      isUsersCollectionRoute || route.name === 'user'
     if (!usersRouteActive) return
 
     const request = beginManagedRequest(usersAbortRef)
-    const nextQueryKey = `${usersPage}:${usersQuery}:${usersTagFilterId ?? ''}`
+    const nextQueryKey = [
+      usersPage,
+      usersQuery,
+      usersTagFilterId ?? '',
+      usersSort ?? '',
+      usersSortOrder ?? '',
+    ].join(':')
     const sameQueryRefresh = usersLoadedRef.current && usersQueryKeyRef.current === nextQueryKey
     setUsersLoadState(
       sameQueryRefresh ? getRefreshingLoadState(true) : getBlockingLoadState(usersLoadedRef.current),
@@ -2802,7 +2991,7 @@ function AdminDashboard(): JSX.Element {
       setUsers([])
       setUsersTotal(0)
     }
-    fetchAdminUsers(usersPage, USERS_PER_PAGE, usersQuery, usersTagFilterId, request.signal)
+    fetchAdminUsers(usersPage, USERS_PER_PAGE, usersQuery, usersTagFilterId, usersSort, usersSortOrder, request.signal)
       .then((result) => {
         if (request.signal.aborted) return
         setUsers(result.items)
@@ -2827,7 +3016,16 @@ function AdminDashboard(): JSX.Element {
       request.abort()
       request.cleanup()
     }
-  }, [beginManagedRequest, route, usersPage, usersQuery, usersTagFilterId])
+  }, [
+    beginManagedRequest,
+    isUsersCollectionRoute,
+    route,
+    usersPage,
+    usersQuery,
+    usersSort,
+    usersSortOrder,
+    usersTagFilterId,
+  ])
 
   useEffect(() => {
     const userTagRouteActive =
@@ -2863,7 +3061,7 @@ function AdminDashboard(): JSX.Element {
 
   useEffect(() => {
     const usersRouteActive =
-      (route.name === 'module' && route.module === 'users')
+      isUsersCollectionRoute
       || route.name === 'user'
       || route.name === 'user-tags'
       || route.name === 'user-tag-editor'
@@ -2893,18 +3091,26 @@ function AdminDashboard(): JSX.Element {
       })
 
     return () => controller.abort()
-  }, [route, adminStrings.users.registration.loadFailed])
+  }, [adminStrings.users.registration.loadFailed, isUsersCollectionRoute, route])
 
   useEffect(() => {
-    if (!(route.name === 'module' && route.module === 'users')) return
+    if (!isUsersCollectionRoute) return
     const locationQuery = getAdminUsersQueryFromLocation()
     const locationTagFilterId = getAdminUsersTagFilterFromLocation()
     const locationPage = getAdminUsersPageFromLocation()
+    const locationSort = getAdminUsersSortFromLocation()
+    const locationSortOrder = getAdminUsersSortDirectionFromLocation()
+    const normalizedSort = isUsersModuleRoute && !isAdminUsersOverviewSortField(locationSort)
+      ? null
+      : locationSort
+    const normalizedSortOrder = normalizedSort ? locationSortOrder : null
     setUsersPage((previous) => (previous === locationPage ? previous : locationPage))
     setUsersQueryInput((previous) => (previous === locationQuery ? previous : locationQuery))
     setUsersQuery((previous) => (previous === locationQuery ? previous : locationQuery))
     setUsersTagFilterId((previous) => (previous === locationTagFilterId ? previous : locationTagFilterId))
-  }, [route])
+    setUsersSort((previous) => (previous === normalizedSort ? previous : normalizedSort))
+    setUsersSortOrder((previous) => (previous === normalizedSortOrder ? previous : normalizedSortOrder))
+  }, [isUserUsageRoute, isUsersCollectionRoute, isUsersModuleRoute, route])
 
   useEffect(() => {
     if (!(route.name === 'module' && route.module === 'keys')) return
@@ -3165,8 +3371,20 @@ function AdminDashboard(): JSX.Element {
   }, [])
 
   const navigateModule = useCallback(
-    (module: AdminModuleId) => {
-      navigateToPath(modulePath(module))
+    (target: AdminNavTarget) => {
+      if (target === 'user-usage') {
+        navigateToPath(
+          userUsagePath(
+            getAdminUsersQueryFromLocation(),
+            getAdminUsersTagFilterFromLocation(),
+            getAdminUsersPageFromLocation(),
+            getAdminUsersSortFromLocation(),
+            getAdminUsersSortDirectionFromLocation(),
+          ),
+        )
+        return
+      }
+      navigateToPath(modulePath(target))
     },
     [navigateToPath],
   )
@@ -3221,26 +3439,60 @@ function AdminDashboard(): JSX.Element {
   const navigateUser = useCallback(
     (id: string, options?: { preserveUsersContext?: boolean }) => {
       if (options?.preserveUsersContext) {
-        navigateToPath(userDetailPath(id, usersQuery, usersTagFilterId, usersPage))
+        const collection = isUserUsageRoute || getAdminUsersCollectionFromLocation() === 'usage' ? 'usage' : undefined
+        navigateToPath(userDetailPath(id, usersQuery, usersTagFilterId, usersPage, usersSort, usersSortOrder, collection))
         return
       }
       navigateToPath(userDetailPath(id))
     },
-    [navigateToPath, usersPage, usersQuery, usersTagFilterId],
+    [isUserUsageRoute, navigateToPath, usersPage, usersQuery, usersSort, usersSortOrder, usersTagFilterId],
+  )
+
+  const buildUsersCollectionPath = useCallback(
+    (
+      query?: string,
+      tagId?: string | null,
+      page?: number | null,
+      sort?: AdminUsersSortField | null,
+      order?: SortDirection | null,
+    ) => (
+      isUserUsageRoute || getAdminUsersCollectionFromLocation() === 'usage'
+        ? userUsagePath(query, tagId, page, sort, order)
+        : buildAdminUsersPath(query, tagId, page, sort, order)
+    ),
+    [isUserUsageRoute],
   )
 
   const navigateUsersSearch = useCallback(
-    (query: string, options?: { tagId?: string | null; page?: number | null }) => {
+    (
+      query: string,
+      options?: {
+        tagId?: string | null
+        page?: number | null
+        sort?: AdminUsersSortField | null
+        order?: SortDirection | null
+      },
+    ) => {
       const normalized = query.trim()
       const normalizedTagId = options?.tagId?.trim() ?? null
       const normalizedPage = options?.page != null ? Math.max(1, options.page) : 1
+      const hasExplicitSort = options != null && Object.prototype.hasOwnProperty.call(options, 'sort')
+      const hasExplicitOrder = options != null && Object.prototype.hasOwnProperty.call(options, 'order')
+      const normalizedSort = hasExplicitSort ? options?.sort ?? null : usersSort
+      const normalizedOrder = normalizedSort
+        ? hasExplicitOrder
+          ? options?.order ?? ADMIN_USERS_DEFAULT_SORT_ORDER
+          : usersSortOrder ?? ADMIN_USERS_DEFAULT_SORT_ORDER
+        : null
       setUsersPage(normalizedPage)
       setUsersQueryInput(normalized)
       setUsersQuery(normalized)
       setUsersTagFilterId(normalizedTagId)
-      navigateToPath(buildAdminUsersPath(normalized, normalizedTagId, normalizedPage))
+      setUsersSort(normalizedSort)
+      setUsersSortOrder(normalizedOrder)
+      navigateToPath(buildUsersCollectionPath(normalized, normalizedTagId, normalizedPage, normalizedSort, normalizedOrder))
     },
-    [navigateToPath],
+    [buildUsersCollectionPath, navigateToPath, usersSort, usersSortOrder],
   )
 
   const navigateKeysList = useCallback(
@@ -3316,8 +3568,11 @@ function AdminDashboard(): JSX.Element {
       ? usersTagFilterId
       : getAdminUsersTagFilterFromLocation()
     const page = route.name === 'module' && route.module === 'users' ? usersPage : getAdminUsersPageFromLocation()
-    navigateToPath(userTagsPath(query, tagId, page))
-  }, [navigateToPath, route, usersPage, usersQuery, usersTagFilterId])
+    const sort = route.name === 'module' && route.module === 'users' ? usersSort : getAdminUsersSortFromLocation()
+    const order = route.name === 'module' && route.module === 'users' ? usersSortOrder : getAdminUsersSortDirectionFromLocation()
+    const collection = isUserUsageRoute || getAdminUsersCollectionFromLocation() === 'usage' ? 'usage' : undefined
+    navigateToPath(userTagsPath(query, tagId, page, sort, order, collection))
+  }, [isUserUsageRoute, navigateToPath, route, usersPage, usersQuery, usersSort, usersSortOrder, usersTagFilterId])
 
   const navigateUserTagCreate = useCallback(() => {
     setActiveUserTagEditorId(NEW_USER_TAG_CARD_ID)
@@ -3328,6 +3583,9 @@ function AdminDashboard(): JSX.Element {
         getAdminUsersQueryFromLocation(),
         getAdminUsersTagFilterFromLocation(),
         getAdminUsersPageFromLocation(),
+        getAdminUsersSortFromLocation(),
+        getAdminUsersSortDirectionFromLocation(),
+        getAdminUsersCollectionFromLocation(),
       ),
     )
   }, [navigateToPath])
@@ -3346,6 +3604,9 @@ function AdminDashboard(): JSX.Element {
           getAdminUsersQueryFromLocation(),
           getAdminUsersTagFilterFromLocation(),
           getAdminUsersPageFromLocation(),
+          getAdminUsersSortFromLocation(),
+          getAdminUsersSortDirectionFromLocation(),
+          getAdminUsersCollectionFromLocation(),
         ),
       )
     },
@@ -3416,12 +3677,20 @@ function AdminDashboard(): JSX.Element {
         }),
       )
     }
-    if ((route.name === 'module' && route.module === 'users') || route.name === 'user') {
+    if (isUsersCollectionRoute || route.name === 'user') {
       const request = beginManagedRequest(usersAbortRef, controller.signal)
       setUsersLoadState(getRefreshingLoadState(usersLoadedRef.current))
       setUsersError(null)
       tasks.push(
-        fetchAdminUsers(usersPage, USERS_PER_PAGE, usersQuery, usersTagFilterId, request.signal).then((result) => {
+        fetchAdminUsers(
+          usersPage,
+          USERS_PER_PAGE,
+          usersQuery,
+          usersTagFilterId,
+          usersSort,
+          usersSortOrder,
+          request.signal,
+        ).then((result) => {
           if (request.signal.aborted) return
           setUsers(result.items)
           setUsersTotal(result.total)
@@ -4046,6 +4315,8 @@ function AdminDashboard(): JSX.Element {
   const jobsRefreshing = isRefreshingLoadState(jobsLoadState)
   const usersBlocking = isBlockingLoadState(usersLoadState)
   const usersRefreshing = isRefreshingLoadState(usersLoadState)
+  const effectiveUsersSort = usersSort ?? ADMIN_USERS_DEFAULT_SORT_FIELD
+  const effectiveUsersSortOrder = usersSortOrder ?? ADMIN_USERS_DEFAULT_SORT_ORDER
   const tokenLeaderboardBlocking = isBlockingLoadState(tokenLeaderboardLoadState)
   const tokenLeaderboardRefreshing = isRefreshingLoadState(tokenLeaderboardLoadState)
   const forwardProxySettingsBlocking = isBlockingLoadState(forwardProxySettingsLoadState)
@@ -4054,7 +4325,7 @@ function AdminDashboard(): JSX.Element {
     (route.name === 'module' && route.module === 'tokens' && tokensBlocking)
     || (route.name === 'module' && route.module === 'requests' && requestsBlocking)
     || (route.name === 'module' && route.module === 'jobs' && jobsBlocking)
-    || ((route.name === 'module' && route.module === 'users') || route.name === 'user') && usersBlocking
+    || (isUsersCollectionRoute || route.name === 'user') && usersBlocking
     || (route.name === 'module' && route.module === 'proxy-settings'
       && (forwardProxySettingsBlocking || forwardProxyStatsBlocking))
     || (route.name === 'token-usage' && tokenLeaderboardBlocking)
@@ -4514,20 +4785,46 @@ function AdminDashboard(): JSX.Element {
   }
 
   const goPrevUsersPage = () => {
-    navigateUsersSearch(usersQuery, { tagId: usersTagFilterId, page: usersPage - 1 })
+    navigateUsersSearch(usersQuery, {
+      tagId: usersTagFilterId,
+      page: usersPage - 1,
+      sort: usersSort,
+      order: usersSortOrder,
+    })
   }
 
   const goNextUsersPage = () => {
-    navigateUsersSearch(usersQuery, { tagId: usersTagFilterId, page: usersPage + 1 })
+    navigateUsersSearch(usersQuery, {
+      tagId: usersTagFilterId,
+      page: usersPage + 1,
+      sort: usersSort,
+      order: usersSortOrder,
+    })
   }
 
   const applyUserSearch = () => {
-    navigateUsersSearch(usersQueryInput, { tagId: usersTagFilterId, page: 1 })
+    navigateUsersSearch(usersQueryInput, { tagId: usersTagFilterId, page: 1, sort: usersSort, order: usersSortOrder })
   }
 
   const resetUserSearch = () => {
-    navigateUsersSearch('', { tagId: null, page: 1 })
+    navigateUsersSearch('', { tagId: null, page: 1, sort: usersSort, order: usersSortOrder })
   }
+
+  const toggleUsersSort = useCallback(
+    (field: AdminUsersSortField) => {
+      const isActive = effectiveUsersSort === field
+      let nextSort: AdminUsersSortField | null = field
+      let nextOrder: SortDirection | null = ADMIN_USERS_DEFAULT_SORT_ORDER
+      if (isActive && effectiveUsersSortOrder === 'desc') {
+        nextOrder = 'asc'
+      } else if (isActive && effectiveUsersSortOrder === 'asc') {
+        nextSort = null
+        nextOrder = null
+      }
+      navigateUsersSearch(usersQuery, { tagId: usersTagFilterId, page: 1, sort: nextSort, order: nextOrder })
+    },
+    [effectiveUsersSort, effectiveUsersSortOrder, navigateUsersSearch, usersQuery, usersTagFilterId],
+  )
 
   const goPrevKeysPage = () => {
     navigateKeysList({
@@ -4616,7 +4913,14 @@ function AdminDashboard(): JSX.Element {
     }
   }
   const refreshUsersList = async () => {
-    const pagedUsers = await fetchAdminUsers(usersPage, USERS_PER_PAGE, usersQuery, usersTagFilterId)
+    const pagedUsers = await fetchAdminUsers(
+      usersPage,
+      USERS_PER_PAGE,
+      usersQuery,
+      usersTagFilterId,
+      usersSort,
+      usersSortOrder,
+    )
     setUsers(pagedUsers.items)
     setUsersTotal(pagedUsers.total)
     return pagedUsers
@@ -5184,21 +5488,37 @@ function AdminDashboard(): JSX.Element {
     return sortLeaderboard(tokenLeaderboard, tokenLeaderboardPeriod, tokenLeaderboardFocus).slice(0, 50)
   }, [tokenLeaderboard, tokenLeaderboardPeriod, tokenLeaderboardFocus])
   const navItems: AdminNavItem[] = [
-    { module: 'dashboard', label: adminStrings.nav.dashboard, icon: 'mdi:view-dashboard-outline' },
-    { module: 'tokens', label: adminStrings.nav.tokens, icon: 'mdi:key-chain-variant' },
-    { module: 'keys', label: adminStrings.nav.keys, icon: 'mdi:key-outline' },
-    { module: 'requests', label: adminStrings.nav.requests, icon: 'mdi:file-document-outline' },
-    { module: 'jobs', label: adminStrings.nav.jobs, icon: 'mdi:calendar-clock-outline' },
-    { module: 'users', label: adminStrings.nav.users, icon: 'mdi:account-group-outline' },
-    { module: 'alerts', label: adminStrings.nav.alerts, icon: 'mdi:bell-ring-outline' },
-    { module: 'proxy-settings', label: adminStrings.nav.proxySettings, icon: 'mdi:tune-variant' },
+    { target: 'dashboard', label: adminStrings.nav.dashboard, icon: <Icon icon="mdi:view-dashboard-outline" width={18} height={18} /> },
+    { target: 'user-usage', label: adminStrings.nav.usage, icon: <ChartColumnIncreasing size={18} strokeWidth={2.2} /> },
+    { target: 'tokens', label: adminStrings.nav.tokens, icon: <Icon icon="mdi:key-chain-variant" width={18} height={18} /> },
+    { target: 'keys', label: adminStrings.nav.keys, icon: <Icon icon="mdi:key-outline" width={18} height={18} /> },
+    { target: 'requests', label: adminStrings.nav.requests, icon: <Icon icon="mdi:file-document-outline" width={18} height={18} /> },
+    { target: 'jobs', label: adminStrings.nav.jobs, icon: <Icon icon="mdi:calendar-clock-outline" width={18} height={18} /> },
+    { target: 'users', label: adminStrings.nav.users, icon: <Icon icon="mdi:account-group-outline" width={18} height={18} /> },
+    { target: 'alerts', label: adminStrings.nav.alerts, icon: <Icon icon="mdi:bell-ring-outline" width={18} height={18} /> },
+    { target: 'proxy-settings', label: adminStrings.nav.proxySettings, icon: <Icon icon="mdi:tune-variant" width={18} height={18} /> },
   ]
+  const activeNavItem: AdminNavTarget =
+    route.name === 'user-usage'
+      ? 'user-usage'
+      : route.name === 'module'
+        ? route.module
+        : route.name === 'key'
+          ? 'keys'
+          : route.name === 'user'
+              || route.name === 'user-tags'
+              || route.name === 'user-tag-editor'
+            ? 'users'
+            : 'tokens'
   const activeModule: AdminModuleId =
     route.name === 'module'
       ? route.module
       : route.name === 'key'
         ? 'keys'
-        : route.name === 'user' || route.name === 'user-tags' || route.name === 'user-tag-editor'
+        : route.name === 'user'
+            || route.name === 'user-usage'
+            || route.name === 'user-tags'
+            || route.name === 'user-tag-editor'
           ? 'users'
           : 'tokens'
   const usersStrings = adminStrings.users
@@ -5478,7 +5798,9 @@ function AdminDashboard(): JSX.Element {
             variant="secondary"
             size="xs"
             className="user-tag-catalog-users user-tag-catalog-users-button"
-            onClick={() => tag && navigateUsersSearch(tag.displayName, { tagId: tag.id })}
+            onClick={() =>
+              tag && navigateUsersSearch(tag.displayName, { tagId: tag.id, sort: usersSort, order: usersSortOrder })
+            }
             disabled={isNewCard}
           >
             <span className="user-tag-catalog-users-label">{usersStrings.catalog.columns.users}</span>
@@ -5525,10 +5847,10 @@ function AdminDashboard(): JSX.Element {
 
   const renderUserTagCatalogIndexPage = (): JSX.Element => (
     <AdminShell
-      activeModule={activeModule}
+      activeItem={activeNavItem}
       navItems={navItems}
       skipToContentLabel={adminStrings.accessibility.skipToContent}
-      onSelectModule={navigateModule}
+      onSelectItem={navigateModule}
     >
       <section className="surface panel">
         <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
@@ -5542,10 +5864,12 @@ function AdminDashboard(): JSX.Element {
               className="btn btn-outline"
               onClick={() =>
                 navigateToPath(
-                  buildAdminUsersPath(
+                  buildUsersCollectionPath(
                     getAdminUsersQueryFromLocation(),
                     getAdminUsersTagFilterFromLocation(),
                     getAdminUsersPageFromLocation(),
+                    getAdminUsersSortFromLocation(),
+                    getAdminUsersSortDirectionFromLocation(),
                   ),
                 )
               }
@@ -5618,10 +5942,10 @@ function AdminDashboard(): JSX.Element {
   if (route.name === 'key') {
     return (
       <AdminShell
-        activeModule={activeModule}
+        activeItem={activeNavItem}
         navItems={navItems}
         skipToContentLabel={adminStrings.accessibility.skipToContent}
-        onSelectModule={navigateModule}
+        onSelectItem={navigateModule}
       >
         <KeyDetails
           key={route.id}
@@ -5646,10 +5970,10 @@ function AdminDashboard(): JSX.Element {
   if (route.name === 'token') {
     return (
       <AdminShell
-        activeModule={activeModule}
+        activeItem={activeNavItem}
         navItems={navItems}
         skipToContentLabel={adminStrings.accessibility.skipToContent}
-        onSelectModule={navigateModule}
+        onSelectItem={navigateModule}
       >
         <TokenDetail
           key={route.id}
@@ -5673,10 +5997,10 @@ function AdminDashboard(): JSX.Element {
 
     return (
       <AdminShell
-        activeModule={activeModule}
+        activeItem={activeNavItem}
         navItems={navItems}
         skipToContentLabel={adminStrings.accessibility.skipToContent}
-        onSelectModule={navigateModule}
+        onSelectItem={navigateModule}
       >
         <section className="surface panel">
           <div className="panel-header">
@@ -5697,10 +6021,12 @@ function AdminDashboard(): JSX.Element {
                 variant="outline"
                 onClick={() =>
                   navigateToPath(
-                    buildAdminUsersPath(
+                    buildUsersCollectionPath(
                       getAdminUsersQueryFromLocation(),
                       getAdminUsersTagFilterFromLocation(),
                       getAdminUsersPageFromLocation(),
+                      getAdminUsersSortFromLocation(),
+                      getAdminUsersSortDirectionFromLocation(),
                     ),
                   )
                 }
@@ -6173,6 +6499,273 @@ function AdminDashboard(): JSX.Element {
     )
   }
 
+  if (route.name === 'user-usage') {
+    const backSort = isAdminUsersOverviewSortField(usersSort) ? usersSort : null
+    const backOrder = backSort ? usersSortOrder : null
+    const usageDailyRateLabel = language === 'zh' ? usersStrings.usage.table.dailySuccessRate : 'Daily'
+    const usageMonthlyRateLabel = language === 'zh' ? usersStrings.usage.table.monthlySuccessRate : 'Monthly'
+
+    return (
+      <AdminShell
+        activeItem={activeNavItem}
+        navItems={navItems}
+        skipToContentLabel={adminStrings.accessibility.skipToContent}
+        onSelectItem={navigateModule}
+      >
+        <section className="surface panel">
+          <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
+            <div style={{ flex: '1 1 340px', minWidth: 260 }}>
+              <h2>{usersStrings.usage.title}</h2>
+              <p className="panel-description">{usersStrings.usage.description}</p>
+            </div>
+            <div className="admin-inline-actions" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => navigateToPath(buildAdminUsersPath(usersQuery, usersTagFilterId, usersPage, backSort, backOrder))}
+              >
+                {usersStrings.usage.back}
+              </Button>
+              <div className="users-search-controls">
+                <Input
+                  type="text"
+                  name="user-usage-search"
+                  className="users-search-input"
+                  placeholder={usersStrings.searchPlaceholder}
+                  value={usersQueryInput}
+                  disabled={usersBlocking}
+                  onChange={(event) => setUsersQueryInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault()
+                      applyUserSearch()
+                    }
+                  }}
+                />
+                <Button type="button" variant="outline" onClick={applyUserSearch} disabled={usersBlocking}>
+                  {usersStrings.search}
+                </Button>
+                {(usersQueryInput.length > 0 || usersQuery.length > 0 || usersTagFilterId != null) && (
+                  <Button type="button" variant="ghost" onClick={resetUserSearch} disabled={usersBlocking}>
+                    {usersStrings.clear}
+                  </Button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <AdminTableShell
+            className="jobs-table-wrapper"
+            tableClassName="jobs-table admin-users-table admin-users-usage-table"
+            loadState={usersLoadState}
+            loadingLabel={usersRefreshing ? loadingStateStrings.refreshing : usersStrings.empty.loading}
+            errorLabel={usersError ?? loadingStateStrings.error}
+            minHeight={360}
+          >
+            {users.length === 0 ? (
+              <tbody>
+                <tr>
+                  <td colSpan={9}>
+                    <div className="empty-state alert">{usersStrings.empty.none}</div>
+                  </td>
+                </tr>
+              </tbody>
+            ) : (
+              <>
+                <thead>
+                  <tr>
+                    <th>{usersStrings.usage.table.user}</th>
+                    <th>{usersStrings.usage.table.status}</th>
+                    <AdminUsersSortableHeader
+                      label={usersStrings.usage.table.hourlyAny}
+                      field="hourlyAnyUsed"
+                      activeField={effectiveUsersSort}
+                      activeOrder={effectiveUsersSortOrder}
+                      onToggle={toggleUsersSort}
+                    />
+                    <AdminUsersSortableHeader
+                      label={usersStrings.usage.table.hourly}
+                      field="quotaHourlyUsed"
+                      activeField={effectiveUsersSort}
+                      activeOrder={effectiveUsersSortOrder}
+                      onToggle={toggleUsersSort}
+                    />
+                    <AdminUsersSortableHeader
+                      label={usersStrings.usage.table.daily}
+                      field="quotaDailyUsed"
+                      activeField={effectiveUsersSort}
+                      activeOrder={effectiveUsersSortOrder}
+                      onToggle={toggleUsersSort}
+                    />
+                    <AdminUsersSortableHeader
+                      label={usersStrings.usage.table.monthly}
+                      field="quotaMonthlyUsed"
+                      activeField={effectiveUsersSort}
+                      activeOrder={effectiveUsersSortOrder}
+                      onToggle={toggleUsersSort}
+                    />
+                    <AdminUsersSortableHeader
+                      label={usersStrings.usage.table.dailySuccessRate}
+                      displayLabel={usageDailyRateLabel}
+                      field="dailySuccessRate"
+                      activeField={effectiveUsersSort}
+                      activeOrder={effectiveUsersSortOrder}
+                      onToggle={toggleUsersSort}
+                    />
+                    <AdminUsersSortableHeader
+                      label={usersStrings.usage.table.monthlySuccessRate}
+                      displayLabel={usageMonthlyRateLabel}
+                      field="monthlySuccessRate"
+                      activeField={effectiveUsersSort}
+                      activeOrder={effectiveUsersSortOrder}
+                      onToggle={toggleUsersSort}
+                    />
+                    <AdminUsersSortableHeader
+                      label={usersStrings.usage.table.lastUsed}
+                      field="lastActivity"
+                      activeField={effectiveUsersSort}
+                      activeOrder={effectiveUsersSortOrder}
+                      onToggle={toggleUsersSort}
+                    />
+                  </tr>
+                </thead>
+                <tbody>
+                  {users.map((item) => (
+                    <tr key={item.userId}>
+                      <td className="admin-users-identity-cell">
+                        <button
+                          type="button"
+                          className="link-button admin-users-identity-button"
+                          aria-label={usersStrings.actions.view}
+                          onClick={() => navigateUser(item.userId, { preserveUsersContext: true })}
+                        >
+                          <strong>{item.displayName || item.username || item.userId}</strong>
+                        </button>
+                        <div className="panel-description admin-users-identity-meta">
+                          <code>{item.userId}</code>
+                          {item.username ? ` · @${item.username}` : ''}
+                        </div>
+                      </td>
+                      <td>
+                        <StatusBadge tone={item.active ? 'success' : 'neutral'}>
+                          {item.active ? usersStrings.status.active : usersStrings.status.inactive}
+                        </StatusBadge>
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <AdminTableValueStack {...formatQuotaStackValue(item.hourlyAnyUsed, item.hourlyAnyLimit)} />
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <AdminTableValueStack {...formatQuotaStackValue(item.quotaHourlyUsed, item.quotaHourlyLimit)} />
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <AdminTableValueStack {...formatQuotaStackValue(item.quotaDailyUsed, item.quotaDailyLimit)} />
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <AdminTableValueStack {...formatQuotaStackValue(item.quotaMonthlyUsed, item.quotaMonthlyLimit)} />
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <AdminTableValueStack {...formatSuccessRateStackValue(item.dailySuccess, item.dailyFailure, language)} />
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <AdminTableValueStack {...formatSuccessRateStackValue(item.monthlySuccess, item.monthlyFailure, language)} />
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <AdminTableValueStack {...formatStackedTimestamp(item.lastActivity, language)} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </>
+            )}
+          </AdminTableShell>
+
+          <AdminLoadingRegion
+            className="admin-mobile-list admin-responsive-down"
+            loadState={usersLoadState}
+            loadingLabel={usersRefreshing ? loadingStateStrings.refreshing : usersStrings.empty.loading}
+            errorLabel={usersError ?? loadingStateStrings.error}
+            minHeight={260}
+          >
+            {users.length === 0 ? (
+              <div className="empty-state alert">{usersStrings.empty.none}</div>
+            ) : (
+              users.map((item) => (
+                <article key={item.userId} className="admin-mobile-card">
+                  <div className="admin-mobile-kv">
+                    <span>{usersStrings.usage.table.user}</span>
+                    <button
+                      type="button"
+                      className="link-button admin-users-mobile-link"
+                      aria-label={usersStrings.actions.view}
+                      onClick={() => navigateUser(item.userId, { preserveUsersContext: true })}
+                    >
+                      <strong>{item.displayName || item.username || item.userId}</strong>
+                    </button>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{usersStrings.usage.table.status}</span>
+                    <StatusBadge tone={item.active ? 'success' : 'neutral'}>
+                      {item.active ? usersStrings.status.active : usersStrings.status.inactive}
+                    </StatusBadge>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{usersStrings.usage.table.hourlyAny}</span>
+                    <strong>{formatQuotaUsagePair(item.hourlyAnyUsed, item.hourlyAnyLimit)}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{usersStrings.usage.table.hourly}</span>
+                    <strong>{formatQuotaUsagePair(item.quotaHourlyUsed, item.quotaHourlyLimit)}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{usersStrings.usage.table.daily}</span>
+                    <strong>{formatQuotaUsagePair(item.quotaDailyUsed, item.quotaDailyLimit)}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{usersStrings.usage.table.monthly}</span>
+                    <strong>{formatQuotaUsagePair(item.quotaMonthlyUsed, item.quotaMonthlyLimit)}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{usersStrings.usage.table.dailySuccessRate}</span>
+                    <strong>{formatCompactSuccessRateValue(item.dailySuccess, item.dailyFailure, language)}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{usersStrings.usage.table.monthlySuccessRate}</span>
+                    <strong>{formatCompactSuccessRateValue(item.monthlySuccess, item.monthlyFailure, language)}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{usersStrings.usage.table.lastUsed}</span>
+                    <strong>{formatTimestamp(item.lastActivity)}</strong>
+                  </div>
+                </article>
+              ))
+            )}
+          </AdminLoadingRegion>
+
+          {usersTotal > USERS_PER_PAGE && (
+            <AdminTablePagination
+              page={usersPage}
+              totalPages={usersTotalPages}
+              pageSummary={
+                <span className="panel-description">
+                  {usersStrings.pagination
+                    .replace('{page}', String(usersPage))
+                    .replace('{total}', String(usersTotalPages))}
+                </span>
+              }
+              previousLabel={tokenStrings.pagination.prev}
+              nextLabel={tokenStrings.pagination.next}
+              previousDisabled={usersPage <= 1}
+              nextDisabled={usersPage >= usersTotalPages}
+              disabled={usersBlocking}
+              onPrevious={goPrevUsersPage}
+              onNext={goNextUsersPage}
+            />
+          )}
+        </section>
+      </AdminShell>
+    )
+  }
+
   if (route.name === 'token-usage') {
     const primaryMetric: MetricKey = tokenLeaderboardFocus
 
@@ -6206,10 +6799,10 @@ function AdminDashboard(): JSX.Element {
 
     return (
       <AdminShell
-        activeModule={activeModule}
+        activeItem={activeNavItem}
         navItems={navItems}
         skipToContentLabel={adminStrings.accessibility.skipToContent}
-        onSelectModule={navigateModule}
+        onSelectItem={navigateModule}
       >
         <TokenUsageHeader
           title={tokenLeaderboardStrings.title}
@@ -6525,10 +7118,10 @@ function AdminDashboard(): JSX.Element {
           document.body,
         )}
       <AdminShell
-        activeModule={activeModule}
+        activeItem={activeNavItem}
         navItems={navItems}
         skipToContentLabel={adminStrings.accessibility.skipToContent}
-        onSelectModule={navigateModule}
+        onSelectItem={navigateModule}
       >
       <AdminPanelHeader
         title={headerStrings.title}
@@ -6572,18 +7165,21 @@ function AdminDashboard(): JSX.Element {
           <div style={{ flex: '1 1 320px', minWidth: 240 }}>
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
               <h2 style={{ margin: 0 }}>{tokenStrings.title}</h2>
-              <div className="tooltip" data-tip={tokenStrings.actions.viewLeaderboard}>
-<Button
-  type="button"
-  variant="ghost"
-  size="icon"
-  className="h-8 w-8 rounded-full p-0 shadow-none"
-  aria-label={tokenStrings.actions.viewLeaderboard}
-  onClick={navigateTokenLeaderboard}
->
-  <Icon icon="mdi:chart-timeline-variant" width={20} height={20} />
-</Button>
-              </div>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 rounded-full p-0 shadow-none"
+                    aria-label={tokenStrings.actions.viewLeaderboard}
+                    onClick={navigateTokenLeaderboard}
+                  >
+                    <Icon icon="mdi:chart-timeline-variant" width={20} height={20} />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top">{tokenStrings.actions.viewLeaderboard}</TooltipContent>
+              </Tooltip>
             </div>
             <p className="panel-description">{tokenStrings.description}</p>
           </div>
@@ -7803,16 +8399,22 @@ function AdminDashboard(): JSX.Element {
                                 <div className="log-details-label">{jobsStrings.table.type}</div>
                                 <div className="log-details-value">
                                   {jt ? (
-                                    <span className="job-type-pill">
-                                      <button
-                                        type="button"
-                                        className="job-type-trigger"
-                                        aria-label={jt}
-                                      >
-                                        <span className="job-type-main">{jobTypeLabelText}</span>
-                                      </button>
-                                      <div className="job-type-bubble">{jt}</div>
-                                    </span>
+                                    <Tooltip>
+                                      <TooltipTrigger asChild>
+                                        <span className="job-type-pill">
+                                          <button
+                                            type="button"
+                                            className="job-type-trigger"
+                                            aria-label={jt}
+                                          >
+                                            <span className="job-type-main">{jobTypeLabelText}</span>
+                                          </button>
+                                        </span>
+                                      </TooltipTrigger>
+                                      <TooltipContent className="job-type-tooltip max-w-[min(20rem,calc(100vw-2rem))]" side="top">
+                                        <code>{jt}</code>
+                                      </TooltipContent>
+                                    </Tooltip>
                                   ) : (
                                     '—'
                                   )}
@@ -8073,7 +8675,7 @@ function AdminDashboard(): JSX.Element {
               {users.length === 0 ? (
                 <tbody>
                   <tr>
-                    <td colSpan={13}>
+                    <td colSpan={7}>
                       <div className="empty-state alert">{usersStrings.empty.none}</div>
                     </td>
                   </tr>
@@ -8084,31 +8686,50 @@ function AdminDashboard(): JSX.Element {
                     <tr>
                       <th>{usersStrings.table.user}</th>
                       <th>{usersStrings.table.status}</th>
-                      <th>{usersStrings.table.tokenCount}</th>
                       <th>{usersStrings.table.tags}</th>
-                      <th>{usersStrings.table.hourlyAny}</th>
-                      <th>{usersStrings.table.hourly}</th>
-                      <th>{usersStrings.table.daily}</th>
-                      <th>{usersStrings.table.monthly}</th>
-                      <th>{usersStrings.table.successDaily}</th>
-                      <th>{usersStrings.table.successMonthly}</th>
-                      <th>{usersStrings.table.lastActivity}</th>
-                      <th>{usersStrings.table.lastLogin}</th>
-                      <th>{usersStrings.table.actions}</th>
+                      <AdminUsersSortableHeader
+                        label={usersStrings.table.daily}
+                        field="quotaDailyUsed"
+                        activeField={effectiveUsersSort}
+                        activeOrder={effectiveUsersSortOrder}
+                        onToggle={toggleUsersSort}
+                      />
+                      <AdminUsersSortableHeader
+                        label={usersStrings.table.monthly}
+                        field="quotaMonthlyUsed"
+                        activeField={effectiveUsersSort}
+                        activeOrder={effectiveUsersSortOrder}
+                        onToggle={toggleUsersSort}
+                      />
+                      <AdminUsersSortableHeader
+                        label={usersStrings.table.lastActivity}
+                        field="lastActivity"
+                        activeField={effectiveUsersSort}
+                        activeOrder={effectiveUsersSortOrder}
+                        onToggle={toggleUsersSort}
+                      />
+                      <AdminUsersSortableHeader
+                        label={usersStrings.table.lastLogin}
+                        field="lastLoginAt"
+                        activeField={effectiveUsersSort}
+                        activeOrder={effectiveUsersSortOrder}
+                        onToggle={toggleUsersSort}
+                      />
                     </tr>
                   </thead>
                   <tbody>
                     {users.map((item) => (
                       <tr key={item.userId}>
-                        <td>
+                        <td className="admin-users-identity-cell">
                           <button
                             type="button"
-                            className="link-button"
+                            className="link-button admin-users-identity-button"
+                            aria-label={usersStrings.actions.view}
                             onClick={() => navigateUser(item.userId, { preserveUsersContext: true })}
                           >
                             <strong>{item.displayName || item.username || item.userId}</strong>
                           </button>
-                          <div className="panel-description" style={{ marginTop: 4 }}>
+                          <div className="panel-description admin-users-identity-meta">
                             <code>{item.userId}</code>
                             {item.username ? ` · @${item.username}` : ''}
                           </div>
@@ -8118,34 +8739,24 @@ function AdminDashboard(): JSX.Element {
                             {item.active ? usersStrings.status.active : usersStrings.status.inactive}
                           </StatusBadge>
                         </td>
-                        <td>{formatNumber(item.tokenCount)}</td>
-                        <td>
+                        <td className="admin-users-tags-cell">
                           <UserTagBadgeList
                             tags={item.tags}
                             usersStrings={usersStrings}
                             emptyLabel={usersStrings.userTags.empty}
                           />
                         </td>
-                        <td>{formatQuotaUsagePair(item.hourlyAnyUsed, item.hourlyAnyLimit)}</td>
-                        <td>{formatQuotaUsagePair(item.quotaHourlyUsed, item.quotaHourlyLimit)}</td>
-                        <td>{formatQuotaUsagePair(item.quotaDailyUsed, item.quotaDailyLimit)}</td>
-                        <td>{formatQuotaUsagePair(item.quotaMonthlyUsed, item.quotaMonthlyLimit)}</td>
-                        <td>{formatNumber(item.dailySuccess)} / {formatNumber(item.dailyFailure)}</td>
-                        <td>{formatNumber(item.monthlySuccess)}</td>
-                        <td>{formatTimestamp(item.lastActivity)}</td>
-                        <td>{formatTimestamp(item.lastLoginAt)}</td>
-                        <td>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8 rounded-full p-0 shadow-none"
-                            title={usersStrings.actions.view}
-                            aria-label={usersStrings.actions.view}
-                            onClick={() => navigateUser(item.userId, { preserveUsersContext: true })}
-                          >
-                            <Icon icon="mdi:eye-outline" width={16} height={16} />
-                          </Button>
+                        <td className="admin-users-compact-cell">
+                          <AdminTableValueStack {...formatQuotaStackValue(item.quotaDailyUsed, item.quotaDailyLimit)} />
+                        </td>
+                        <td className="admin-users-compact-cell">
+                          <AdminTableValueStack {...formatQuotaStackValue(item.quotaMonthlyUsed, item.quotaMonthlyLimit)} />
+                        </td>
+                        <td className="admin-users-compact-cell">
+                          <AdminTableValueStack {...formatStackedTimestamp(item.lastActivity, language)} />
+                        </td>
+                        <td className="admin-users-compact-cell">
+                          <AdminTableValueStack {...formatStackedTimestamp(item.lastLoginAt, language)} />
                         </td>
                       </tr>
                     ))}
@@ -8167,17 +8778,20 @@ function AdminDashboard(): JSX.Element {
                   <article key={item.userId} className="admin-mobile-card">
                     <div className="admin-mobile-kv">
                       <span>{usersStrings.table.user}</span>
-                      <strong>{item.displayName || item.username || item.userId}</strong>
+                      <button
+                        type="button"
+                        className="link-button admin-users-mobile-link"
+                        aria-label={usersStrings.actions.view}
+                        onClick={() => navigateUser(item.userId, { preserveUsersContext: true })}
+                      >
+                        <strong>{item.displayName || item.username || item.userId}</strong>
+                      </button>
                     </div>
                     <div className="admin-mobile-kv">
                       <span>{usersStrings.table.status}</span>
                       <StatusBadge tone={item.active ? 'success' : 'neutral'}>
                         {item.active ? usersStrings.status.active : usersStrings.status.inactive}
                       </StatusBadge>
-                    </div>
-                    <div className="admin-mobile-kv">
-                      <span>{usersStrings.table.tokenCount}</span>
-                      <strong>{formatNumber(item.tokenCount)}</strong>
                     </div>
                     <div className="admin-mobile-kv">
                       <span>{usersStrings.table.tags}</span>
@@ -8188,14 +8802,6 @@ function AdminDashboard(): JSX.Element {
                       />
                     </div>
                     <div className="admin-mobile-kv">
-                      <span>{usersStrings.table.hourlyAny}</span>
-                      <strong>{formatQuotaUsagePair(item.hourlyAnyUsed, item.hourlyAnyLimit)}</strong>
-                    </div>
-                    <div className="admin-mobile-kv">
-                      <span>{usersStrings.table.hourly}</span>
-                      <strong>{formatQuotaUsagePair(item.quotaHourlyUsed, item.quotaHourlyLimit)}</strong>
-                    </div>
-                    <div className="admin-mobile-kv">
                       <span>{usersStrings.table.daily}</span>
                       <strong>{formatQuotaUsagePair(item.quotaDailyUsed, item.quotaDailyLimit)}</strong>
                     </div>
@@ -8204,30 +8810,12 @@ function AdminDashboard(): JSX.Element {
                       <strong>{formatQuotaUsagePair(item.quotaMonthlyUsed, item.quotaMonthlyLimit)}</strong>
                     </div>
                     <div className="admin-mobile-kv">
-                      <span>{usersStrings.table.successDaily}</span>
-                      <strong>{`${formatNumber(item.dailySuccess)} / ${formatNumber(item.dailyFailure)}`}</strong>
-                    </div>
-                    <div className="admin-mobile-kv">
-                      <span>{usersStrings.table.successMonthly}</span>
-                      <strong>{formatNumber(item.monthlySuccess)}</strong>
-                    </div>
-                    <div className="admin-mobile-kv">
                       <span>{usersStrings.table.lastActivity}</span>
                       <strong>{formatTimestamp(item.lastActivity)}</strong>
                     </div>
                     <div className="admin-mobile-kv">
                       <span>{usersStrings.table.lastLogin}</span>
                       <strong>{formatTimestamp(item.lastLoginAt)}</strong>
-                    </div>
-                    <div className="admin-mobile-actions">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => navigateUser(item.userId, { preserveUsersContext: true })}
-                      >
-                        {usersStrings.actions.view}
-                      </Button>
                     </div>
                   </article>
                 ))
@@ -8713,16 +9301,20 @@ function LogRow({ log, expanded, onToggle, strings, language, onOpenKey, onOpenT
     <>
       <tr>
         <td>
-          <div className="log-time-cell">
-            <button
-              type="button"
-              className="log-time-trigger"
-              aria-label={timeDetail}
-            >
-              <span className="log-time-main">{timeLabel}</span>
-            </button>
-            <div className="log-time-bubble">{timeDetail}</div>
-          </div>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                className="log-time-trigger"
+                aria-label={timeDetail}
+              >
+                <span className="log-time-main">{timeLabel}</span>
+              </button>
+            </TooltipTrigger>
+            <TooltipContent className="log-time-tooltip max-w-[min(20rem,calc(100vw-2rem))]" side="right">
+              {timeDetail}
+            </TooltipContent>
+          </Tooltip>
         </td>
         <td>
           <button
@@ -8754,15 +9346,20 @@ function LogRow({ log, expanded, onToggle, strings, language, onOpenKey, onOpenT
           )}
         </td>
         <td>
-          <span className="tooltip" data-tip={formatRequestStatusTooltip(log, strings)}>
-            <button
-              type="button"
-              className="status-pair-trigger"
-              aria-label={formatRequestStatusTooltip(log, strings)}
-            >
-              {formatRequestStatusPair(log.http_status, log.mcp_status)}
-            </button>
-          </span>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                className="status-pair-trigger"
+                aria-label={formatRequestStatusTooltip(log, strings)}
+              >
+                {formatRequestStatusPair(log.http_status, log.mcp_status)}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-[min(18rem,calc(100vw-2rem))]" side="top">
+              {formatRequestStatusTooltip(log, strings)}
+            </TooltipContent>
+          </Tooltip>
         </td>
         <td>
           <button
@@ -8774,8 +9371,8 @@ function LogRow({ log, expanded, onToggle, strings, language, onOpenKey, onOpenT
             aria-label={requestButtonLabel}
             title={requestButtonLabel}
           >
-            <StatusBadge tone={statusTone(log.result_status)}>
-              {statusLabel(log.result_status, strings)}
+            <StatusBadge tone={requestLogTone(log)}>
+              {requestLogLabel(log, language)}
             </StatusBadge>
             <Icon icon={expanded ? 'mdi:chevron-up' : 'mdi:chevron-down'} width={18} height={18} className="log-result-icon" />
           </button>
@@ -8788,7 +9385,7 @@ function LogRow({ log, expanded, onToggle, strings, language, onOpenKey, onOpenT
             {keyEffectBadgeLabel(log, strings)}
           </StatusBadge>
         </td>
-        <td>{formatErrorMessage(log, strings.logs.errors)}</td>
+        <td>{formatErrorMessage(log, strings.logs.errors, language)}</td>
       </tr>
       {expanded && (
         <tr className="log-details-row">
@@ -8819,7 +9416,7 @@ function LogDetails({
   const requestBody = log.request_body ?? strings.logDetails.noBody
   const responseBody = log.response_body ?? strings.logDetails.noBody
   const keyEffect = formatKeyEffectSummary(log, strings, language)
-  const guidance = failureKindGuidance(log.failure_kind, language)
+  const guidance = operationalClassGuidance(log.operationalClass, log.failure_kind, language)
 
   return (
     <div className="log-details-panel">
@@ -8837,7 +9434,7 @@ function LogDetails({
         </div>
         <div>
           <span className="log-details-label">{strings.logDetails.outcome}</span>
-          <span className="log-details-value">{statusLabel(log.result_status, strings)}</span>
+          <span className="log-details-value">{requestLogLabel(log, language)}</span>
         </div>
         <div>
           <span className="log-details-label">{strings.logDetails.keyEffect}</span>

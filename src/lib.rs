@@ -11,7 +11,11 @@ pub use analysis::{
     extract_mcp_has_error_by_id_from_bytes, extract_mcp_usage_credits_by_id_from_bytes,
     extract_usage_credits_from_json_bytes, extract_usage_credits_total_from_json_bytes,
     failure_kind_solution_guidance, mcp_response_has_any_error, mcp_response_has_any_success,
-    should_append_solution_guidance,
+    normalize_operational_class_filter, operational_class_for_request_kind,
+    operational_class_for_request_path, operational_class_for_token_log,
+    should_append_solution_guidance, token_request_kind_billing_group,
+    token_request_kind_billing_group_for_request, token_request_kind_billing_group_for_token_log,
+    token_request_kind_protocol_group,
 };
 pub use forward_proxy::{
     ForwardProxyHourlyBucketResponse, ForwardProxyLiveNodeResponse, ForwardProxyLiveStatsResponse,
@@ -272,6 +276,8 @@ const OUTCOME_SUCCESS: &str = "success";
 const OUTCOME_ERROR: &str = "error";
 const OUTCOME_QUOTA_EXHAUSTED: &str = "quota_exhausted";
 const OUTCOME_UNKNOWN: &str = "unknown";
+pub const REQUEST_LOG_VISIBILITY_VISIBLE: &str = "visible";
+pub const REQUEST_LOG_VISIBILITY_SUPPRESSED_RETRY_SHADOW: &str = "suppressed_retry_shadow";
 const FAILURE_KIND_UPSTREAM_GATEWAY_5XX: &str = "upstream_gateway_5xx";
 const FAILURE_KIND_UPSTREAM_RATE_LIMITED_429: &str = "upstream_rate_limited_429";
 const FAILURE_KIND_UPSTREAM_ACCOUNT_DEACTIVATED_401: &str = "upstream_account_deactivated_401";
@@ -1306,18 +1312,6 @@ fn build_account_quota_resolution(
         breakdown,
         tags,
     }
-}
-
-#[derive(Debug, Clone)]
-struct AccountQuotaSnapshot {
-    hourly_any_used: i64,
-    hourly_any_limit: i64,
-    hourly_used: i64,
-    hourly_limit: i64,
-    daily_used: i64,
-    daily_limit: i64,
-    monthly_used: i64,
-    monthly_limit: i64,
 }
 
 #[derive(Debug, Clone)]

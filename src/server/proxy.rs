@@ -210,13 +210,14 @@ async fn proxy_handler(
 
     // Billing plan (1:1 upstream credits):
     // - Non-business whitelist methods are ignored by business quota.
-    // - tools/call for tavily-* injects include_usage=true so upstream returns usage.credits.
+    // - tools/call for tavily-* does not inject extra MCP arguments unless the upstream contract
+    //   is explicitly proven compatible.
     // - Known Tavily tools use a reserved-credit precheck derived from request parameters.
     // - For unknown / batch / positional request shapes, default to billable to avoid bypass.
     let mut billable_flag = false;
     let mut reserved_billable_credits: Option<i64> = None;
     let mut expected_search_credits: Option<i64> = None;
-    let mut forwarded_body = body_bytes.clone();
+    let forwarded_body = body_bytes.clone();
     let mut lockable_tool = false;
     let mut billable_mcp_ids: HashSet<String> = HashSet::new();
     let mut billable_search_mcp_ids: HashSet<String> = HashSet::new();
@@ -234,7 +235,6 @@ async fn proxy_handler(
                 let mut any_billable = false;
                 let mut any_lockable = false;
                 let mut all_non_billable = true;
-                let mut mutated = false;
                 let mut reserved_billable_total = 0i64;
                 let mut expected_search_total = 0i64;
 
@@ -249,7 +249,6 @@ async fn proxy_handler(
                                         any_billable: &mut bool,
                                         any_lockable: &mut bool,
                                         all_non_billable: &mut bool,
-                                        mutated: &mut bool,
                                         reserved_billable_total: &mut i64,
                                         expected_search_total: &mut i64,
                                         billable_mcp_ids: &mut HashSet<String>,
@@ -333,30 +332,7 @@ async fn proxy_handler(
                             };
 
                             if usage_metered_tool {
-                                let mut injected_include_usage = false;
-                                if !params.contains_key("arguments") {
-                                    params.insert(
-                                        "arguments".to_string(),
-                                        Value::Object(serde_json::Map::new()),
-                                    );
-                                    injected_include_usage = true;
-                                }
-
-                                let args_entry = params
-                                    .get_mut("arguments")
-                                    .expect("arguments must exist after insertion when absent");
-                                if let Value::Object(args) = args_entry {
-                                    let already_true = args
-                                        .get("include_usage")
-                                        .and_then(|v| v.as_bool())
-                                        .unwrap_or(false);
-                                    if !already_true {
-                                        args.insert("include_usage".to_string(), Value::Bool(true));
-                                        injected_include_usage = true;
-                                    }
-                                }
-                                *mutated |= injected_include_usage;
-
+                                let args_entry = params.get("arguments").unwrap_or(&Value::Null);
                                 let reserved =
                                     tavily_mcp_reserved_credits(normalized_tool.as_str(), args_entry);
                                 record_reserved_credits(
@@ -443,7 +419,6 @@ async fn proxy_handler(
                                 &mut any_billable,
                                 &mut any_lockable,
                                 &mut all_non_billable,
-                                &mut mutated,
                                 &mut reserved_billable_total,
                                 &mut expected_search_total,
                                 &mut billable_mcp_ids,
@@ -498,7 +473,6 @@ async fn proxy_handler(
                                     &mut any_billable,
                                     &mut any_lockable,
                                     &mut all_non_billable,
-                                    &mut mutated,
                                     &mut reserved_billable_total,
                                     &mut expected_search_total,
                                     &mut billable_mcp_ids,
@@ -533,11 +507,6 @@ async fn proxy_handler(
                     expected_search_credits = Some(expected_search_total);
                 }
 
-                if mutated
-                    && let Ok(encoded) = serde_json::to_vec(&value)
-                {
-                    forwarded_body = bytes::Bytes::from(encoded);
-                }
             }
             Err(_) => {
                 // Non-JSON / unparseable: treat as billable to avoid bypass.
@@ -705,7 +674,9 @@ async fn proxy_handler(
         }
     }
 
-    match state.proxy.proxy_request(proxy_request).await {
+    let proxy_result = state.proxy.proxy_request(proxy_request).await;
+
+    match proxy_result {
         Ok(resp) => {
             let mut billing_error: Option<String> = None;
             if let Some(tid) = token_id.as_deref() {
@@ -1120,6 +1091,15 @@ fn decode_body(bytes: &[u8]) -> Option<String> {
 
 impl From<RequestLogRecord> for RequestLogView {
     fn from(record: RequestLogRecord) -> Self {
+        let operational_class = operational_class_for_request_path(
+            &record.path,
+            Some(&record.request_body),
+            &record.result_status,
+            record.failure_kind.as_deref(),
+        );
+        let request_kind = classify_token_request_kind(&record.path, Some(&record.request_body));
+        let request_kind_billing_group =
+            token_request_kind_billing_group_for_request(&record.path, Some(&record.request_body));
         Self {
             id: record.id,
             key_id: Some(record.key_id),
@@ -1143,12 +1123,31 @@ impl From<RequestLogRecord> for RequestLogView {
             response_body: decode_body(&record.response_body),
             forwarded_headers: record.forwarded_headers,
             dropped_headers: record.dropped_headers,
+            operational_class: operational_class.to_string(),
+            request_kind_protocol_group: token_request_kind_protocol_group(&request_kind.key)
+                .to_string(),
+            request_kind_billing_group: request_kind_billing_group.to_string(),
         }
     }
 }
 
 impl RequestLogView {
     fn from_token_record(record: TokenLogRecord, token_id: &str) -> Self {
+        let request_kind_key = record.request_kind_key.clone();
+        let request_kind_protocol_group =
+            token_request_kind_protocol_group(&request_kind_key).to_string();
+        let request_kind_billing_group = token_request_kind_billing_group_for_token_log(
+            &request_kind_key,
+            record.counts_business_quota,
+        )
+        .to_string();
+        let operational_class = operational_class_for_token_log(
+            &request_kind_key,
+            &record.result_status,
+            record.failure_kind.as_deref(),
+            record.counts_business_quota,
+        )
+        .to_string();
         Self {
             id: record.id,
             key_id: record.key_id,
@@ -1172,6 +1171,9 @@ impl RequestLogView {
             response_body: None,
             forwarded_headers: Vec::new(),
             dropped_headers: Vec::new(),
+            operational_class,
+            request_kind_protocol_group,
+            request_kind_billing_group,
         }
     }
 }

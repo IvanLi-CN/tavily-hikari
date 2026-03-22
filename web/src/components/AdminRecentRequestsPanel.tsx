@@ -42,6 +42,7 @@ import {
 } from './ui/select'
 import SegmentedTabs from './ui/SegmentedTabs'
 import { TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table'
+import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
 
 type Language = 'en' | 'zh'
 type RecentRequestsVariant = 'admin' | 'token'
@@ -673,7 +674,10 @@ export default function AdminRecentRequestsPanel({
                     resultOptions.map((option) => (
                       <SelectItem key={`result-${option.value}`} value={`result:${option.value}`}>
                         <span className="recent-requests-facet-option recent-requests-facet-option--status">
-                          {renderOutcomeFacetLabel('result', option.value, strings)}
+                          <span className="recent-requests-facet-option-main">
+                            {renderOutcomeFacetLabel('result', option.value, strings)}
+                          </span>
+                          <span className="recent-requests-facet-option-spacer" aria-hidden="true" />
                           <span className="recent-requests-facet-count">{`x${option.count ?? 0}`}</span>
                         </span>
                       </SelectItem>
@@ -691,7 +695,10 @@ export default function AdminRecentRequestsPanel({
                     keyEffectOptions.map((option) => (
                       <SelectItem key={`effect-${option.value}`} value={`keyEffect:${option.value}`}>
                         <span className="recent-requests-facet-option recent-requests-facet-option--status">
-                          {renderOutcomeFacetLabel('keyEffect', option.value, strings)}
+                          <span className="recent-requests-facet-option-main">
+                            {renderOutcomeFacetLabel('keyEffect', option.value, strings)}
+                          </span>
+                          <span className="recent-requests-facet-option-spacer" aria-hidden="true" />
                           <span className="recent-requests-facet-count">{`x${option.count ?? 0}`}</span>
                         </span>
                       </SelectItem>
@@ -812,7 +819,8 @@ export default function AdminRecentRequestsPanel({
                       <RequestKindBadge requestKindKey={log.request_kind_key ?? null} requestKindLabel={requestKindLabel} size="sm" />
                     </TableCell>
                     <TableCell className="recent-requests-col recent-requests-col--status">
-                      <span className="tooltip" data-tip={formatRequestStatusTooltip(log, strings)}>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
                         <button
                           type="button"
                           className="status-pair-trigger"
@@ -820,7 +828,11 @@ export default function AdminRecentRequestsPanel({
                         >
                           {formatRequestStatusPair(log.http_status, log.mcp_status)}
                         </button>
-                      </span>
+                        </TooltipTrigger>
+                        <TooltipContent side="top">
+                          {formatRequestStatusTooltip(log, strings)}
+                        </TooltipContent>
+                      </Tooltip>
                     </TableCell>
                     <TableCell className="recent-requests-col recent-requests-col--credits">
                       {formatChargedCredits(log.business_credits)}
@@ -952,11 +964,16 @@ export default function AdminRecentRequestsPanel({
                 ) : null}
                 <div className={mobileKvClassName}>
                   <span>{strings.logs.table.status}</span>
-                  <span className="tooltip" data-tip={formatRequestStatusTooltip(log, strings)}>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
                     <button type="button" className="status-pair-trigger" aria-label={formatRequestStatusTooltip(log, strings)}>
                       <strong>{formatRequestStatusPair(log.http_status, log.mcp_status)}</strong>
                     </button>
-                  </span>
+                    </TooltipTrigger>
+                    <TooltipContent side="top">
+                      {formatRequestStatusTooltip(log, strings)}
+                    </TooltipContent>
+                  </Tooltip>
                 </div>
                 <div className={mobileKvClassName}>
                   <span>{strings.logs.table.chargedCredits}</span>

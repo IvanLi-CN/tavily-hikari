@@ -34,11 +34,11 @@ interface ConnectivityScenario {
 const allMcpToolSweepItems: ProbeBubbleModel['items'] = [
   { id: 'mcp-ping', label: 'MCP service connectivity', status: 'success' },
   { id: 'mcp-tools-list', label: 'MCP tool discovery', status: 'success' },
-  { id: 'mcp-tool-call:tavily-search', label: 'MCP tool call · tavily-search', status: 'success' },
-  { id: 'mcp-tool-call:tavily-extract', label: 'MCP tool call · tavily-extract', status: 'success' },
-  { id: 'mcp-tool-call:tavily-crawl', label: 'MCP tool call · tavily-crawl', status: 'success' },
-  { id: 'mcp-tool-call:tavily-map', label: 'MCP tool call · tavily-map', status: 'success' },
-  { id: 'mcp-tool-call:tavily-research', label: 'MCP tool call · tavily-research', status: 'success' },
+  { id: 'mcp-tool-call:tavily_search', label: 'Call tavily_search tool', status: 'success' },
+  { id: 'mcp-tool-call:tavily_extract', label: 'Call tavily_extract tool', status: 'success' },
+  { id: 'mcp-tool-call:tavily_crawl', label: 'Call tavily_crawl tool', status: 'success' },
+  { id: 'mcp-tool-call:tavily_map', label: 'Call tavily_map tool', status: 'success' },
+  { id: 'mcp-tool-call:tavily_research', label: 'Call tavily_research tool', status: 'success' },
 ]
 
 const galleryGridStyle = {
@@ -102,11 +102,33 @@ const scenarios: ConnectivityScenario[] = [
       items: [
         { id: 'mcp-ping', label: 'MCP service connectivity', status: 'success' },
         { id: 'mcp-tools-list', label: 'MCP tool discovery', status: 'success' },
-        { id: 'mcp-tool-call:tavily-search', label: 'MCP tool call · tavily-search', status: 'success' },
-        { id: 'mcp-tool-call:tavily-extract', label: 'MCP tool call · tavily-extract', status: 'success' },
-        { id: 'mcp-tool-call:tavily-crawl', label: 'MCP tool call · tavily-crawl', status: 'success' },
-        { id: 'mcp-tool-call:tavily-map', label: 'MCP tool call · tavily-map', status: 'failed', detail: '500 timeout from mock upstream' },
-        { id: 'mcp-tool-call:tavily-research', label: 'MCP tool call · tavily-research', status: 'success' },
+        { id: 'mcp-tool-call:tavily_search', label: 'Call tavily_search tool', status: 'success' },
+        { id: 'mcp-tool-call:tavily_extract', label: 'Call tavily_extract tool', status: 'success' },
+        { id: 'mcp-tool-call:tavily_crawl', label: 'Call tavily_crawl tool', status: 'success' },
+        { id: 'mcp-tool-call:tavily_map', label: 'Call tavily_map tool', status: 'failed', detail: '500 timeout from mock upstream' },
+        { id: 'mcp-tool-call:tavily_research', label: 'Call tavily_research tool', status: 'success' },
+      ],
+    },
+  },
+  {
+    title: 'Long Tool Names',
+    description: 'Structured tool rows keep long tool identifiers readable without splitting the action copy into awkward fragments.',
+    mcpProbe: { state: 'success', completed: 4, total: 4 },
+    apiProbe: idleProbe,
+    mcpButtonLabel: 'MCP Ready',
+    apiButtonLabel: 'Test API',
+    probeBubble: {
+      visible: true,
+      anchor: 'mcp',
+      items: [
+        { id: 'mcp-ping', label: 'MCP service connectivity', status: 'success' },
+        { id: 'mcp-tools-list', label: 'MCP tool discovery', status: 'success' },
+        {
+          id: 'mcp-tool-call:tavily_search_with_extended_probe_fixture_name',
+          label: 'Call tavily_search_with_extended_probe_fixture_name tool',
+          status: 'success',
+        },
+        { id: 'mcp-tool-call:tavily_extract', label: 'Call tavily_extract tool', status: 'success' },
       ],
     },
   },
@@ -138,11 +160,11 @@ const scenarios: ConnectivityScenario[] = [
       items: [
         { id: 'mcp-ping', label: 'MCP service connectivity', status: 'success' },
         { id: 'mcp-tools-list', label: 'MCP tool discovery', status: 'success' },
-        { id: 'mcp-tool-call:tavily-search', label: 'MCP tool call · tavily-search', status: 'blocked', detail: 'Skipped after quota precheck' },
-        { id: 'mcp-tool-call:tavily-extract', label: 'MCP tool call · tavily-extract', status: 'blocked', detail: 'Skipped after quota precheck' },
-        { id: 'mcp-tool-call:tavily-crawl', label: 'MCP tool call · tavily-crawl', status: 'blocked', detail: 'Skipped after quota precheck' },
-        { id: 'mcp-tool-call:tavily-map', label: 'MCP tool call · tavily-map', status: 'blocked', detail: 'Skipped after quota precheck' },
-        { id: 'mcp-tool-call:tavily-research', label: 'MCP tool call · tavily-research', status: 'blocked', detail: 'Skipped after quota precheck' },
+        { id: 'mcp-tool-call:tavily_search', label: 'Call tavily_search tool', status: 'blocked', detail: 'Skipped after quota precheck' },
+        { id: 'mcp-tool-call:tavily_extract', label: 'Call tavily_extract tool', status: 'blocked', detail: 'Skipped after quota precheck' },
+        { id: 'mcp-tool-call:tavily_crawl', label: 'Call tavily_crawl tool', status: 'blocked', detail: 'Skipped after quota precheck' },
+        { id: 'mcp-tool-call:tavily_map', label: 'Call tavily_map tool', status: 'blocked', detail: 'Skipped after quota precheck' },
+        { id: 'mcp-tool-call:tavily_research', label: 'Call tavily_research tool', status: 'blocked', detail: 'Skipped after quota precheck' },
       ],
     },
   },
@@ -249,6 +271,59 @@ function ConnectivityChecksGallery(): JSX.Element {
   )
 }
 
+function ConnectivityChecksBubbleProof(): JSX.Element {
+  const bubbleProofScenario = scenarios.find((scenario) => scenario.title === 'MCP Full Sweep') ?? scenarios[2]
+
+  return (
+    <div
+      style={{
+        display: 'grid',
+        gap: 20,
+        maxWidth: 720,
+        margin: '0 auto',
+      }}
+    >
+      <section className="surface panel">
+        <div className="panel-header">
+          <div>
+            <h2>Clipped container bubble proof</h2>
+            <p className="panel-description">
+              The parent shell is intentionally clipped. The probe result bubble must still render above it through the
+              shared portal layer.
+            </p>
+          </div>
+        </div>
+        <div
+          style={{
+            overflow: 'hidden',
+            maxHeight: 220,
+            borderRadius: 28,
+            border: '1px dashed rgba(96, 165, 250, 0.4)',
+            background:
+              'radial-gradient(circle at top, rgba(59, 130, 246, 0.1), transparent 42%), linear-gradient(180deg, rgba(2, 6, 23, 0.98), rgba(15, 23, 42, 0.92))',
+            padding: 24,
+          }}
+        >
+          <div className="dark" style={{ paddingTop: 52 }}>
+            <ConnectivityChecksPanel
+              title="Connectivity Checks"
+              costHint="Runs a small MCP handshake and the full Tavily API chain against the mock upstream."
+              costHintAria="Connectivity check cost hint"
+              stepStatusText={stepStatusText}
+              mcpButtonLabel={bubbleProofScenario.mcpButtonLabel}
+              apiButtonLabel={bubbleProofScenario.apiButtonLabel}
+              mcpProbe={bubbleProofScenario.mcpProbe}
+              apiProbe={bubbleProofScenario.apiProbe}
+              probeBubble={bubbleProofScenario.probeBubble}
+              anyProbeRunning={bubbleProofScenario.anyProbeRunning}
+            />
+          </div>
+        </div>
+      </section>
+    </div>
+  )
+}
+
 const meta = {
   title: 'User Console/Fragments/Connectivity Checks',
   component: ConnectivityChecksPanel,
@@ -282,6 +357,11 @@ type Story = StoryObj<typeof meta>
 export const StateGallery: Story = {
   name: 'State Gallery',
   render: () => <ConnectivityChecksGallery />,
+}
+
+export const BubbleProof: Story = {
+  name: 'Bubble Proof',
+  render: () => <ConnectivityChecksBubbleProof />,
 }
 
 export const __testables = {

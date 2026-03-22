@@ -8,7 +8,7 @@ const mcpProbeText: Parameters<typeof __testables.buildMcpProbeStepDefinitions>[
   steps: {
     mcpPing: 'MCP 服务连通',
     mcpToolsList: 'MCP 工具发现',
-    mcpToolCall: 'MCP 工具调用 · {tool}',
+    mcpToolCall: '调用 {tool} 工具',
   },
   skippedProbeFixture: '当前本地没有 {tool} 的检测夹具，已跳过。',
   errors: {
@@ -128,6 +128,11 @@ describe('UserConsole probe step definitions', () => {
       { id: 'mcp-tool-call:tavily_search', billable: true },
       { id: 'mcp-tool-call:tavily-search', billable: true },
       { id: 'mcp-tool-call:Acme_Lookup', billable: false },
+    ])
+    expect(steps.map((step) => step.label)).toEqual([
+      '调用 tavily_search 工具',
+      '调用 tavily-search 工具',
+      '调用 Acme_Lookup 工具',
     ])
 
     await expect(steps[0]?.run('th-zjvc-secret')).resolves.toBeNull()

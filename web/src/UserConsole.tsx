@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Icon, getGuideClientIconName } from './lib/icons'
 import CherryStudioMock from './components/CherryStudioMock'
 import ConnectivityChecksPanel, {
@@ -40,6 +40,12 @@ import { StatusBadge, type StatusTone } from './components/StatusBadge'
 import ThemeToggle from './components/ThemeToggle'
 import UserConsoleFooter from './components/UserConsoleFooter'
 import { Button } from './components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from './components/ui/dropdown-menu'
 import { useLanguage, useTranslate, type Language } from './i18n'
 import { copyText, isCopyIntentKey, selectAllReadonlyText, shouldPrewarmSecretCopy } from './lib/clipboard'
 import {
@@ -714,8 +720,6 @@ export default function UserConsole(): JSX.Element {
   const [mcpProbe, setMcpProbe] = useState<ProbeButtonModel>(() => createProbeButtonModel(2))
   const [apiProbe, setApiProbe] = useState<ProbeButtonModel>(() => createProbeButtonModel(6))
   const [probeBubble, setProbeBubble] = useState<ProbeBubbleModel | null>(null)
-  const [probeBubbleShift, setProbeBubbleShift] = useState(0)
-  const probeBubbleRef = useRef<HTMLDivElement | null>(null)
   const [manualCopyBubble, setManualCopyBubble] = useState<ManualCopyBubbleState | null>(null)
   const tokenSecretCacheRef = useRef<Map<string, string>>(new Map())
   const tokenSecretCacheTimerRef = useRef<Map<string, number>>(new Map())
@@ -849,7 +853,6 @@ export default function UserConsole(): JSX.Element {
     setMcpProbe(createProbeButtonModel(2))
     setApiProbe(createProbeButtonModel(6))
     setProbeBubble(null)
-    setProbeBubbleShift(0)
     setManualCopyBubble(null)
   }, [route.name === 'token' ? route.id : route.section ?? 'landing'])
 
@@ -907,37 +910,6 @@ export default function UserConsole(): JSX.Element {
       abortAllPendingTokenSecretRequests()
     }
   }, [abortAllPendingTokenSecretRequests])
-
-  useLayoutEffect(() => {
-    if (!probeBubble?.visible || probeBubble.items.length === 0) {
-      setProbeBubbleShift(0)
-      return
-    }
-
-    let frame = 0
-    const updateShift = () => {
-      const bubble = probeBubbleRef.current
-      if (!bubble) return
-      const rect = bubble.getBoundingClientRect()
-      const viewportWidth = window.innerWidth
-      const margin = 10
-
-      let nextShift = 0
-      if (rect.left < margin) {
-        nextShift = margin - rect.left
-      } else if (rect.right > viewportWidth - margin) {
-        nextShift = (viewportWidth - margin) - rect.right
-      }
-      setProbeBubbleShift(Math.round(nextShift))
-    }
-
-    frame = window.requestAnimationFrame(updateShift)
-    window.addEventListener('resize', updateShift)
-    return () => {
-      window.cancelAnimationFrame(frame)
-      window.removeEventListener('resize', updateShift)
-    }
-  }, [probeBubble])
 
   const clearCachedTokenSecret = useCallback((tokenId: string) => {
     const cacheTimer = tokenSecretCacheTimerRef.current.get(tokenId)
@@ -1966,8 +1938,6 @@ export default function UserConsole(): JSX.Element {
               mcpProbe={mcpProbe}
               apiProbe={apiProbe}
               probeBubble={probeBubble}
-              probeBubbleShift={probeBubbleShift}
-              probeBubbleRef={probeBubbleRef}
               anyProbeRunning={anyProbeRunning}
               onMcpClick={() => void runMcpProbe()}
               onApiClick={() => void runApiProbe()}
@@ -2108,24 +2078,29 @@ function MobileGuideDropdown({
 }): JSX.Element {
   const current = labels.find((l) => l.id === active)
   return (
-    <div className="dropdown w-full">
-      <div tabIndex={0} role="button" className="btn btn-outline w-full justify-between btn-sm md:btn-md">
-        <span className="inline-flex items-center gap-2">
-          <Icon
-            icon={getGuideClientIconName(active)}
-            width={18}
-            height={18}
-            aria-hidden="true"
-            style={{ color: '#475569' }}
-          />
-          {current?.label ?? active}
-        </span>
-        <Icon icon="mdi:chevron-down" width={16} height={16} aria-hidden="true" style={{ color: '#647589' }} />
-      </div>
-      <ul tabIndex={0} className="menu dropdown-content bg-base-100 rounded-box z-[1] w-60 p-2 shadow mt-2">
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button type="button" className="btn btn-outline w-full justify-between btn-sm md:btn-md">
+          <span className="inline-flex items-center gap-2">
+            <Icon
+              icon={getGuideClientIconName(active)}
+              width={18}
+              height={18}
+              aria-hidden="true"
+              style={{ color: '#475569' }}
+            />
+            {current?.label ?? active}
+          </span>
+          <Icon icon="mdi:chevron-down" width={16} height={16} aria-hidden="true" style={{ color: '#647589' }} />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="guide-select-menu p-1">
         {labels.map((tab) => (
-          <li key={tab.id}>
-            <button type="button" onClick={() => onChange(tab.id)} className="flex items-center gap-2">
+          <DropdownMenuItem
+            key={tab.id}
+            className={`flex items-center gap-2 ${tab.id === active ? 'bg-accent/45 text-accent-foreground' : ''}`}
+            onSelect={() => onChange(tab.id)}
+          >
               <Icon
                 icon={getGuideClientIconName(tab.id)}
                 width={16}
@@ -2134,11 +2109,10 @@ function MobileGuideDropdown({
                 style={{ color: '#475569' }}
               />
               <span className="truncate">{tab.label}</span>
-            </button>
-          </li>
+          </DropdownMenuItem>
         ))}
-      </ul>
-    </div>
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 
@@ -2495,7 +2469,7 @@ const EN = {
       steps: {
         mcpPing: 'MCP service connectivity',
         mcpToolsList: 'MCP tool discovery',
-        mcpToolCall: 'MCP tool call · {tool}',
+        mcpToolCall: 'Call {tool} tool',
         apiSearch: 'Web search capability',
         apiExtract: 'Page extract capability',
         apiCrawl: 'Site crawl capability',
@@ -2649,7 +2623,7 @@ const ZH = {
       steps: {
         mcpPing: 'MCP 服务连通',
         mcpToolsList: 'MCP 工具发现',
-        mcpToolCall: 'MCP 工具调用 · {tool}',
+        mcpToolCall: '调用 {tool} 工具',
         apiSearch: '网页搜索能力',
         apiExtract: '页面抽取能力',
         apiCrawl: '站点抓取能力',

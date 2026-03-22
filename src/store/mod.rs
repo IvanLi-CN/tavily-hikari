@@ -153,6 +153,7 @@ impl KeyStore {
                 response_body BLOB,
                 forwarded_headers TEXT,
                 dropped_headers TEXT,
+                visibility TEXT NOT NULL DEFAULT 'visible',
                 created_at INTEGER NOT NULL,
                 FOREIGN KEY (api_key_id) REFERENCES api_keys(id)
             )
@@ -172,6 +173,12 @@ impl KeyStore {
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_request_logs_time
                ON request_logs(created_at DESC, id DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_request_logs_visibility_time
+               ON request_logs(visibility, created_at DESC, id DESC)"#,
         )
         .execute(&self.pool)
         .await?;
@@ -1171,6 +1178,10 @@ impl KeyStore {
     }
 
     pub(crate) async fn migrate_api_key_usage_buckets_v1(&self) -> Result<(), ProxyError> {
+        self.rebuild_api_key_usage_buckets().await
+    }
+
+    pub(crate) async fn rebuild_api_key_usage_buckets(&self) -> Result<(), ProxyError> {
         // Rebuild buckets from request_logs to preserve cumulative statistics after retention.
         // This is safe to rerun because we clear and recompute deterministically.
         let now_ts = Utc::now().timestamp();
@@ -1185,9 +1196,11 @@ impl KeyStore {
             r#"
             SELECT api_key_id, created_at, result_status
             FROM request_logs
+            WHERE visibility = ?
             ORDER BY api_key_id ASC, created_at ASC, id ASC
             "#,
         )
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
         .fetch(&mut *read_conn);
 
         #[derive(Clone, Copy, Default)]
@@ -2850,6 +2863,23 @@ impl KeyStore {
                 .await?;
         }
 
+        if !self.request_logs_column_exists("visibility").await? {
+            sqlx::query(
+                "ALTER TABLE request_logs ADD COLUMN visibility TEXT NOT NULL DEFAULT 'visible'",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
+
+        sqlx::query(
+            "UPDATE request_logs
+             SET visibility = ?
+             WHERE visibility IS NULL OR TRIM(visibility) = ''",
+        )
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .execute(&self.pool)
+        .await?;
+
         if !self.request_logs_column_exists("key_effect_code").await? {
             sqlx::query(
                 "ALTER TABLE request_logs ADD COLUMN key_effect_code TEXT NOT NULL DEFAULT 'none'",
@@ -2873,13 +2903,19 @@ impl KeyStore {
                 .await?;
         }
 
-        if !self.request_logs_column_exists("request_kind_label").await? {
+        if !self
+            .request_logs_column_exists("request_kind_label")
+            .await?
+        {
             sqlx::query("ALTER TABLE request_logs ADD COLUMN request_kind_label TEXT")
                 .execute(&self.pool)
                 .await?;
         }
 
-        if !self.request_logs_column_exists("request_kind_detail").await? {
+        if !self
+            .request_logs_column_exists("request_kind_detail")
+            .await?
+        {
             sqlx::query("ALTER TABLE request_logs ADD COLUMN request_kind_detail TEXT")
                 .execute(&self.pool)
                 .await?;
@@ -2941,6 +2977,7 @@ impl KeyStore {
                     response_body BLOB,
                     forwarded_headers TEXT,
                     dropped_headers TEXT,
+                    visibility TEXT NOT NULL DEFAULT 'visible',
                     created_at INTEGER NOT NULL,
                     FOREIGN KEY (api_key_id) REFERENCES api_keys(id)
                 )
@@ -2973,6 +3010,7 @@ impl KeyStore {
                     response_body,
                     forwarded_headers,
                     dropped_headers,
+                    visibility,
                     created_at
                 )
                 SELECT
@@ -2997,10 +3035,12 @@ impl KeyStore {
                     response_body,
                     forwarded_headers,
                     dropped_headers,
+                    ? AS visibility,
                     created_at
                 FROM request_logs
                 "#,
             )
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
             .execute(&mut *tx)
             .await?;
 
@@ -3137,12 +3177,13 @@ impl KeyStore {
                        failure_kind, key_effect_code, key_effect_summary,
                        request_body, response_body, created_at, forwarded_headers, dropped_headers
                 FROM request_logs
-                WHERE api_key_id = ? AND created_at >= ?
+                WHERE api_key_id = ? AND visibility = ? AND created_at >= ?
                 ORDER BY created_at DESC
                 LIMIT ?
                 "#,
             )
             .bind(key_id)
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
             .bind(since_ts)
             .bind(limit)
             .fetch_all(&self.pool)
@@ -3155,12 +3196,13 @@ impl KeyStore {
                        failure_kind, key_effect_code, key_effect_summary,
                        request_body, response_body, created_at, forwarded_headers, dropped_headers
                 FROM request_logs
-                WHERE api_key_id = ?
+                WHERE api_key_id = ? AND visibility = ?
                 ORDER BY created_at DESC
                 LIMIT ?
                 "#,
             )
             .bind(key_id)
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
             .bind(limit)
             .fetch_all(&self.pool)
             .await?
@@ -4318,6 +4360,197 @@ impl KeyStore {
         Ok((items, total))
     }
 
+    pub(crate) async fn list_admin_users_filtered(
+        &self,
+        query: Option<&str>,
+        tag_id: Option<&str>,
+    ) -> Result<Vec<AdminUserIdentity>, ProxyError> {
+        let search = query
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| format!("%{value}%"));
+        let tag_id = tag_id.map(str::trim).filter(|value| !value.is_empty());
+
+        let rows = match (search.as_ref(), tag_id) {
+            (Some(search), Some(tag_id)) => {
+                sqlx::query_as::<
+                    _,
+                    (
+                        String,
+                        Option<String>,
+                        Option<String>,
+                        i64,
+                        Option<i64>,
+                        i64,
+                    ),
+                >(
+                    r#"SELECT
+                         u.id,
+                         u.display_name,
+                         u.username,
+                         u.active,
+                         u.last_login_at,
+                         COALESCE(COUNT(b.token_id), 0) AS token_count
+                       FROM users u
+                       LEFT JOIN user_token_bindings b ON b.user_id = u.id
+                       WHERE EXISTS (
+                               SELECT 1
+                               FROM user_tag_bindings utb
+                               WHERE utb.user_id = u.id
+                                 AND utb.tag_id = ?
+                           )
+                         AND (
+                               u.id LIKE ?
+                               OR COALESCE(u.display_name, '') LIKE ?
+                               OR COALESCE(u.username, '') LIKE ?
+                               OR EXISTS (
+                                   SELECT 1
+                                   FROM user_tag_bindings utb
+                                   JOIN user_tags ut ON ut.id = utb.tag_id
+                                   WHERE utb.user_id = u.id
+                                     AND (
+                                         ut.name LIKE ?
+                                         OR COALESCE(ut.display_name, '') LIKE ?
+                                     )
+                               )
+                           )
+                       GROUP BY u.id, u.display_name, u.username, u.active, u.last_login_at
+                       ORDER BY (u.last_login_at IS NULL) ASC, u.last_login_at DESC, u.id ASC"#,
+                )
+                .bind(tag_id)
+                .bind(search)
+                .bind(search)
+                .bind(search)
+                .bind(search)
+                .bind(search)
+                .fetch_all(&self.pool)
+                .await?
+            }
+            (Some(search), None) => {
+                sqlx::query_as::<
+                    _,
+                    (
+                        String,
+                        Option<String>,
+                        Option<String>,
+                        i64,
+                        Option<i64>,
+                        i64,
+                    ),
+                >(
+                    r#"SELECT
+                         u.id,
+                         u.display_name,
+                         u.username,
+                         u.active,
+                         u.last_login_at,
+                         COALESCE(COUNT(b.token_id), 0) AS token_count
+                       FROM users u
+                       LEFT JOIN user_token_bindings b ON b.user_id = u.id
+                       WHERE u.id LIKE ?
+                          OR COALESCE(u.display_name, '') LIKE ?
+                          OR COALESCE(u.username, '') LIKE ?
+                          OR EXISTS (
+                               SELECT 1
+                               FROM user_tag_bindings utb
+                               JOIN user_tags ut ON ut.id = utb.tag_id
+                               WHERE utb.user_id = u.id
+                                 AND (
+                                   ut.name LIKE ?
+                                   OR COALESCE(ut.display_name, '') LIKE ?
+                                 )
+                           )
+                       GROUP BY u.id, u.display_name, u.username, u.active, u.last_login_at
+                       ORDER BY (u.last_login_at IS NULL) ASC, u.last_login_at DESC, u.id ASC"#,
+                )
+                .bind(search)
+                .bind(search)
+                .bind(search)
+                .bind(search)
+                .bind(search)
+                .fetch_all(&self.pool)
+                .await?
+            }
+            (None, Some(tag_id)) => {
+                sqlx::query_as::<
+                    _,
+                    (
+                        String,
+                        Option<String>,
+                        Option<String>,
+                        i64,
+                        Option<i64>,
+                        i64,
+                    ),
+                >(
+                    r#"SELECT
+                         u.id,
+                         u.display_name,
+                         u.username,
+                         u.active,
+                         u.last_login_at,
+                         COALESCE(COUNT(b.token_id), 0) AS token_count
+                       FROM users u
+                       LEFT JOIN user_token_bindings b ON b.user_id = u.id
+                       WHERE EXISTS (
+                           SELECT 1
+                           FROM user_tag_bindings utb
+                           WHERE utb.user_id = u.id
+                             AND utb.tag_id = ?
+                       )
+                       GROUP BY u.id, u.display_name, u.username, u.active, u.last_login_at
+                       ORDER BY (u.last_login_at IS NULL) ASC, u.last_login_at DESC, u.id ASC"#,
+                )
+                .bind(tag_id)
+                .fetch_all(&self.pool)
+                .await?
+            }
+            (None, None) => {
+                sqlx::query_as::<
+                    _,
+                    (
+                        String,
+                        Option<String>,
+                        Option<String>,
+                        i64,
+                        Option<i64>,
+                        i64,
+                    ),
+                >(
+                    r#"SELECT
+                         u.id,
+                         u.display_name,
+                         u.username,
+                         u.active,
+                         u.last_login_at,
+                         COALESCE(COUNT(b.token_id), 0) AS token_count
+                       FROM users u
+                       LEFT JOIN user_token_bindings b ON b.user_id = u.id
+                       GROUP BY u.id, u.display_name, u.username, u.active, u.last_login_at
+                       ORDER BY (u.last_login_at IS NULL) ASC, u.last_login_at DESC, u.id ASC"#,
+                )
+                .fetch_all(&self.pool)
+                .await?
+            }
+        };
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(user_id, display_name, username, active, last_login_at, token_count)| {
+                    AdminUserIdentity {
+                        user_id,
+                        display_name,
+                        username,
+                        active: active == 1,
+                        last_login_at,
+                        token_count,
+                    }
+                },
+            )
+            .collect())
+    }
+
     pub(crate) async fn get_admin_user_identity(
         &self,
         user_id: &str,
@@ -4439,6 +4672,54 @@ impl KeyStore {
         .fetch_all(&self.pool)
         .await
         .map_err(ProxyError::from)
+    }
+
+    pub(crate) async fn list_api_key_binding_counts_for_users(
+        &self,
+        user_ids: &[String],
+    ) -> Result<HashMap<String, i64>, ProxyError> {
+        if user_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut builder = QueryBuilder::new(
+            r#"SELECT user_id, COUNT(*) AS api_key_count
+               FROM (
+                   SELECT DISTINCT user_id, api_key_id
+                   FROM user_api_key_bindings
+                   WHERE user_id IN ("#,
+        );
+        {
+            let mut separated = builder.separated(", ");
+            for user_id in user_ids {
+                separated.push_bind(user_id);
+            }
+        }
+        builder.push(
+            r#")
+                   UNION
+                   SELECT DISTINCT user_id, api_key_id
+                   FROM api_key_user_usage_buckets
+                   WHERE user_id IN ("#,
+        );
+        {
+            let mut separated = builder.separated(", ");
+            for user_id in user_ids {
+                separated.push_bind(user_id);
+            }
+        }
+        builder.push(
+            r#")
+               )
+               GROUP BY user_id"#,
+        );
+
+        let rows = builder
+            .build_query_as::<(String, i64)>()
+            .fetch_all(&self.pool)
+            .await?;
+
+        Ok(rows.into_iter().collect())
     }
 
     pub(crate) async fn fetch_key_sticky_users_page(
@@ -5791,54 +6072,86 @@ impl KeyStore {
         Ok(resolution)
     }
 
-    pub(crate) async fn fetch_user_success_failure(
+    pub(crate) async fn fetch_user_log_metrics_bulk(
         &self,
-        user_id: &str,
-    ) -> Result<(i64, i64, i64), ProxyError> {
+        user_ids: &[String],
+    ) -> Result<HashMap<String, UserLogMetricsSummary>, ProxyError> {
+        if user_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
         let now = Utc::now();
         let month_start = start_of_month(now).timestamp();
         let day_start = start_of_day(now).timestamp();
-        let row = sqlx::query(
+
+        let mut builder = QueryBuilder::new(
             r#"
             SELECT
-              COALESCE(SUM(CASE WHEN l.result_status = ? AND l.created_at >= ? THEN 1 ELSE 0 END), 0) AS monthly_success,
-              COALESCE(SUM(CASE WHEN l.result_status = ? AND l.created_at >= ? THEN 1 ELSE 0 END), 0) AS daily_success,
-              COALESCE(SUM(CASE WHEN l.result_status = ? AND l.created_at >= ? THEN 1 ELSE 0 END), 0) AS daily_failure
-            FROM auth_token_logs l
-            JOIN user_token_bindings b ON b.token_id = l.token_id
-            WHERE b.user_id = ?
-            "#,
-        )
-        .bind(OUTCOME_SUCCESS)
-        .bind(month_start)
-        .bind(OUTCOME_SUCCESS)
-        .bind(day_start)
-        .bind(OUTCOME_ERROR)
-        .bind(day_start)
-        .bind(user_id)
-        .fetch_one(&self.pool)
-        .await?;
-        Ok((
-            row.try_get("monthly_success")?,
-            row.try_get("daily_success")?,
-            row.try_get("daily_failure")?,
-        ))
-    }
+              b.user_id,
+              COALESCE(SUM(CASE WHEN l.result_status = "#,
+        );
+        builder.push_bind(OUTCOME_SUCCESS);
+        builder.push(" AND l.created_at >= ");
+        builder.push_bind(day_start);
+        builder.push(" THEN 1 ELSE 0 END), 0) AS daily_success, ");
+        builder.push("COALESCE(SUM(CASE WHEN l.result_status = ");
+        builder.push_bind(OUTCOME_ERROR);
+        builder.push(" AND l.created_at >= ");
+        builder.push_bind(day_start);
+        builder.push(" THEN 1 ELSE 0 END), 0) AS daily_failure, ");
+        builder.push("COALESCE(SUM(CASE WHEN l.result_status = ");
+        builder.push_bind(OUTCOME_SUCCESS);
+        builder.push(" AND l.created_at >= ");
+        builder.push_bind(month_start);
+        builder.push(" THEN 1 ELSE 0 END), 0) AS monthly_success, ");
+        builder.push("COALESCE(SUM(CASE WHEN l.result_status = ");
+        builder.push_bind(OUTCOME_ERROR);
+        builder.push(" AND l.created_at >= ");
+        builder.push_bind(month_start);
+        builder.push(" THEN 1 ELSE 0 END), 0) AS monthly_failure, ");
+        builder.push(
+            r#"MAX(l.created_at) AS last_activity
+            FROM user_token_bindings b
+            LEFT JOIN auth_token_logs l ON l.token_id = b.token_id
+            WHERE b.user_id IN ("#,
+        );
+        {
+            let mut separated = builder.separated(", ");
+            for user_id in user_ids {
+                separated.push_bind(user_id);
+            }
+        }
+        builder.push(") GROUP BY b.user_id");
 
-    pub(crate) async fn fetch_user_last_activity(
-        &self,
-        user_id: &str,
-    ) -> Result<Option<i64>, ProxyError> {
-        let row = sqlx::query_scalar::<_, Option<i64>>(
-            r#"SELECT MAX(l.created_at)
-               FROM auth_token_logs l
-               JOIN user_token_bindings b ON b.token_id = l.token_id
-               WHERE b.user_id = ?"#,
-        )
-        .bind(user_id)
-        .fetch_one(&self.pool)
-        .await?;
-        Ok(row)
+        let rows = builder
+            .build_query_as::<(String, i64, i64, i64, i64, Option<i64>)>()
+            .fetch_all(&self.pool)
+            .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(
+                    user_id,
+                    daily_success,
+                    daily_failure,
+                    monthly_success,
+                    monthly_failure,
+                    last_activity,
+                )| {
+                    (
+                        user_id,
+                        UserLogMetricsSummary {
+                            daily_success,
+                            daily_failure,
+                            monthly_success,
+                            monthly_failure,
+                            last_activity,
+                        },
+                    )
+                },
+            )
+            .collect())
     }
 
     pub(crate) async fn insert_oauth_login_state(
@@ -6840,7 +7153,8 @@ impl KeyStore {
             .await?
         };
 
-        let Some((credits, billing_subject, created_at, api_key_id, result_status, request_log_id)) = claimed
+        let Some((credits, billing_subject, created_at, api_key_id, result_status, request_log_id)) =
+            claimed
         else {
             let billing_state = sqlx::query_scalar::<_, String>(
                 "SELECT billing_state FROM auth_token_logs WHERE id = ? LIMIT 1",
@@ -7175,7 +7489,7 @@ impl KeyStore {
                 SELECT id, api_key_id, method, path, query, http_status, mcp_status,
                        CASE WHEN billing_state = 'charged' THEN business_credits ELSE NULL END AS business_credits,
                        request_kind_key, request_kind_label, request_kind_detail,
-                       result_status, error_message, failure_kind, key_effect_code,
+                       counts_business_quota, result_status, error_message, failure_kind, key_effect_code,
                        key_effect_summary, created_at
                 FROM auth_token_logs
                 WHERE token_id = ? AND id < ?
@@ -7194,7 +7508,7 @@ impl KeyStore {
                 SELECT id, api_key_id, method, path, query, http_status, mcp_status,
                        CASE WHEN billing_state = 'charged' THEN business_credits ELSE NULL END AS business_credits,
                        request_kind_key, request_kind_label, request_kind_detail,
-                       result_status, error_message, failure_kind, key_effect_code,
+                       counts_business_quota, result_status, error_message, failure_kind, key_effect_code,
                        key_effect_summary, created_at
                 FROM auth_token_logs
                 WHERE token_id = ?
@@ -7240,6 +7554,7 @@ impl KeyStore {
             request_kind_key: request_kind.key,
             request_kind_label: request_kind.label,
             request_kind_detail: request_kind.detail,
+            counts_business_quota: row.try_get::<i64, _>("counts_business_quota")? != 0,
             result_status: row.try_get("result_status")?,
             error_message: row.try_get("error_message")?,
             failure_kind: row.try_get("failure_kind")?,
@@ -7330,6 +7645,7 @@ impl KeyStore {
         result_status: Option<&str>,
         key_effect_code: Option<&str>,
         key_id: Option<&str>,
+        operational_class: Option<&str>,
     ) -> Result<TokenLogsPage, ProxyError> {
         let per_page = per_page.clamp(1, 200) as i64;
         let page = page.max(1) as i64;
@@ -7341,6 +7657,15 @@ impl KeyStore {
             .collect();
         let needs_fallback_sql = token_request_kind_needs_fallback_sql();
         let fallback_key_sql = token_request_kind_fallback_key_sql();
+        let effective_request_kind_sql = format!(
+            "CASE WHEN {needs_fallback_sql} THEN {fallback_key_sql} ELSE request_kind_key END"
+        );
+        let operational_class_case_sql = token_log_operational_class_case_sql(
+            &effective_request_kind_sql,
+            "counts_business_quota",
+            "result_status",
+            "COALESCE(failure_kind, '')",
+        );
 
         let mut total_query =
             QueryBuilder::<Sqlite>::new("SELECT COUNT(*) FROM auth_token_logs WHERE token_id = ");
@@ -7386,6 +7711,12 @@ impl KeyStore {
             }
             total_query.push("))");
         }
+        if let Some(operational_class) = operational_class {
+            total_query.push(" AND ");
+            total_query.push(operational_class_case_sql.clone());
+            total_query.push(" = ");
+            total_query.push_bind(operational_class);
+        }
         let total: i64 = total_query
             .build_query_scalar()
             .fetch_one(&self.pool)
@@ -7398,6 +7729,7 @@ impl KeyStore {
                    request_kind_key,
                    request_kind_label,
                    request_kind_detail,
+                   counts_business_quota,
                    result_status, error_message, failure_kind, key_effect_code,
                    key_effect_summary, created_at
             FROM auth_token_logs
@@ -7446,6 +7778,12 @@ impl KeyStore {
                 separated.push_unseparated(")");
             }
             rows_query.push("))");
+        }
+        if let Some(operational_class) = operational_class {
+            rows_query.push(" AND ");
+            rows_query.push(operational_class_case_sql);
+            rows_query.push(" = ");
+            rows_query.push_bind(operational_class);
         }
         rows_query.push(" ORDER BY created_at DESC, id DESC LIMIT ");
         rows_query.push_bind(per_page);
@@ -7621,9 +7959,12 @@ impl KeyStore {
             options.into_iter().chain(legacy_options.into_iter())
         {
             match options_by_key.get_mut(&key) {
-                Some((current_label, current_has_billable, current_has_non_billable, current_count))
-                    if prefer_request_kind_label(current_label, &label) =>
-                {
+                Some((
+                    current_label,
+                    current_has_billable,
+                    current_has_non_billable,
+                    current_count,
+                )) if prefer_request_kind_label(current_label, &label) => {
                     *current_label = label;
                     *current_has_billable |= has_billable != 0;
                     *current_has_non_billable |= has_non_billable != 0;
@@ -8286,13 +8627,17 @@ impl KeyStore {
         let created_at = Utc::now().timestamp();
         let status_code = entry.status.map(|code| code.as_u16() as i64);
         let failure_kind = entry.failure_kind.map(str::to_string).or_else(|| {
-            classify_failure_kind(
-                entry.path,
-                status_code,
-                entry.tavily_status_code,
-                entry.error,
-                entry.response_body,
-            )
+            if entry.outcome == OUTCOME_ERROR {
+                classify_failure_kind(
+                    entry.path,
+                    status_code,
+                    entry.tavily_status_code,
+                    entry.error,
+                    entry.response_body,
+                )
+            } else {
+                None
+            }
         });
         let key_effect_summary = entry.key_effect_summary.map(str::to_string);
         let request_kind = classify_token_request_kind(entry.path, Some(entry.request_body));
@@ -8937,10 +9282,12 @@ impl KeyStore {
                 dropped_headers,
                 created_at
             FROM request_logs
+            WHERE visibility = ?
             ORDER BY created_at DESC, id DESC
             LIMIT ?
             "#,
         )
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
@@ -8956,6 +9303,7 @@ impl KeyStore {
     pub(crate) async fn fetch_recent_logs_page(
         &self,
         result_status: Option<&str>,
+        operational_class: Option<&str>,
         page: i64,
         per_page: i64,
     ) -> Result<(Vec<RequestLogRecord>, i64), ProxyError> {
@@ -8969,6 +9317,7 @@ impl KeyStore {
                 None,
                 None,
                 None,
+                operational_class,
                 page,
                 per_page,
                 true,
@@ -8978,9 +9327,7 @@ impl KeyStore {
         Ok((result.items, result.total))
     }
 
-    fn map_request_log_row(
-        row: sqlx::sqlite::SqliteRow,
-    ) -> Result<RequestLogRecord, sqlx::Error> {
+    fn map_request_log_row(row: sqlx::sqlite::SqliteRow) -> Result<RequestLogRecord, sqlx::Error> {
         let forwarded = parse_header_list(row.try_get::<Option<String>, _>("forwarded_headers")?);
         let dropped = parse_header_list(row.try_get::<Option<String>, _>("dropped_headers")?);
         let request_body: Option<Vec<u8>> = row.try_get("request_body")?;
@@ -9028,14 +9375,20 @@ impl KeyStore {
         scoped_key_id: Option<&'a str>,
         since: Option<i64>,
     ) -> bool {
-        let mut has_where = false;
+        builder.push(" WHERE visibility = ");
+        builder.push_bind(REQUEST_LOG_VISIBILITY_VISIBLE);
+        let mut has_where = true;
         if let Some(key_id) = scoped_key_id {
-            builder.push(" WHERE api_key_id = ");
+            builder.push(" AND api_key_id = ");
             builder.push_bind(key_id);
             has_where = true;
         }
         if let Some(since) = since {
-            builder.push(if has_where { " AND created_at >= " } else { " WHERE created_at >= " });
+            builder.push(if has_where {
+                " AND created_at >= "
+            } else {
+                " WHERE created_at >= "
+            });
             builder.push_bind(since);
             has_where = true;
         }
@@ -9052,22 +9405,38 @@ impl KeyStore {
         mut has_where: bool,
     ) {
         if let Some(result_status) = result_status {
-            builder.push(if has_where { " AND result_status = " } else { " WHERE result_status = " });
+            builder.push(if has_where {
+                " AND result_status = "
+            } else {
+                " WHERE result_status = "
+            });
             builder.push_bind(result_status);
             has_where = true;
         }
         if let Some(key_effect_code) = key_effect_code {
-            builder.push(if has_where { " AND key_effect_code = " } else { " WHERE key_effect_code = " });
+            builder.push(if has_where {
+                " AND key_effect_code = "
+            } else {
+                " WHERE key_effect_code = "
+            });
             builder.push_bind(key_effect_code);
             has_where = true;
         }
         if let Some(auth_token_id) = auth_token_id {
-            builder.push(if has_where { " AND auth_token_id = " } else { " WHERE auth_token_id = " });
+            builder.push(if has_where {
+                " AND auth_token_id = "
+            } else {
+                " WHERE auth_token_id = "
+            });
             builder.push_bind(auth_token_id);
             has_where = true;
         }
         if let Some(key_id) = key_id {
-            builder.push(if has_where { " AND api_key_id = " } else { " WHERE api_key_id = " });
+            builder.push(if has_where {
+                " AND api_key_id = "
+            } else {
+                " WHERE api_key_id = "
+            });
             builder.push_bind(key_id);
             has_where = true;
         }
@@ -9205,6 +9574,7 @@ impl KeyStore {
         key_effect_code: Option<&str>,
         auth_token_id: Option<&str>,
         key_id: Option<&str>,
+        operational_class: Option<&str>,
         page: i64,
         per_page: i64,
         include_token_facets: bool,
@@ -9218,6 +9588,12 @@ impl KeyStore {
             .map(|value| value.trim())
             .filter(|value| !value.is_empty())
             .collect();
+        let operational_class_case_sql = request_log_operational_class_case_sql(
+            "path",
+            "request_body",
+            "result_status",
+            "COALESCE(failure_kind, '')",
+        );
 
         let mut total_query = QueryBuilder::<Sqlite>::new("SELECT COUNT(*) FROM request_logs");
         let has_where = Self::push_request_logs_scope(&mut total_query, scoped_key_id, since);
@@ -9230,7 +9606,16 @@ impl KeyStore {
             key_id,
             has_where,
         );
-        let total: i64 = total_query.build_query_scalar().fetch_one(&self.pool).await?;
+        if let Some(operational_class) = operational_class {
+            total_query.push(" AND ");
+            total_query.push(operational_class_case_sql.clone());
+            total_query.push(" = ");
+            total_query.push_bind(operational_class);
+        }
+        let total: i64 = total_query
+            .build_query_scalar()
+            .fetch_one(&self.pool)
+            .await?;
 
         let mut items_query = QueryBuilder::<Sqlite>::new(
             r#"
@@ -9271,6 +9656,12 @@ impl KeyStore {
             key_id,
             has_where,
         );
+        if let Some(operational_class) = operational_class {
+            items_query.push(" AND ");
+            items_query.push(operational_class_case_sql);
+            items_query.push(" = ");
+            items_query.push_bind(operational_class);
+        }
         items_query.push(" ORDER BY created_at DESC, id DESC LIMIT ");
         items_query.push_bind(per_page);
         items_query.push(" OFFSET ");
@@ -9767,7 +10158,8 @@ impl KeyStore {
                 COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS yesterday_error_count,
                 COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS yesterday_quota_exhausted_count
             FROM request_logs
-            WHERE created_at >= ?
+            WHERE visibility = ?
+              AND created_at >= ?
               AND created_at < ?
             "#,
         )
@@ -9793,6 +10185,7 @@ impl KeyStore {
         .bind(yesterday_start)
         .bind(yesterday_end)
         .bind(OUTCOME_QUOTA_EXHAUSTED)
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
         .bind(yesterday_start)
         .bind(today_end)
         .fetch_one(&mut *tx)

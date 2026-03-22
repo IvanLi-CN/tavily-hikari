@@ -6,14 +6,27 @@ import LanguageSwitcher from './components/LanguageSwitcher'
 import ThemeToggle from './components/ThemeToggle'
 import TokenSecretField from './components/TokenSecretField'
 import { Button } from './components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from './components/ui/dropdown-menu'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from './components/ui/dialog'
 import { useTranslate } from './i18n'
+import { Icon, getGuideClientIconName } from './lib/icons'
 
 type CopyState = 'idle' | 'copied' | 'error'
 
 interface PublicHomeStoryArgs {
   showAdminAction: boolean
 }
+
+const guideProofLabels = [
+  { id: 'codex', label: 'Codex CLI' },
+  { id: 'claude', label: 'Claude Code' },
+  { id: 'vscode', label: 'VS Code' },
+] as const
 
 function PublicHomeTokenModalStory(args: PublicHomeStoryArgs): JSX.Element {
   const strings = useTranslate().public
@@ -110,6 +123,84 @@ function PublicHomeTokenModalStory(args: PublicHomeStoryArgs): JSX.Element {
   )
 }
 
+function PublicHomeMobileGuideMenuProof(): JSX.Element {
+  const active = guideProofLabels[0]
+
+  return (
+    <div
+      style={{
+        display: 'grid',
+        gap: 20,
+        maxWidth: 420,
+        margin: '0 auto',
+      }}
+    >
+      <section className="surface panel">
+        <div className="panel-header">
+          <div>
+            <h2>Mobile guide menu proof</h2>
+            <p className="panel-description">
+              The menu stays visible even when the guide card lives inside a clipped mobile shell.
+            </p>
+          </div>
+        </div>
+        <div
+          style={{
+            overflow: 'hidden',
+            borderRadius: 28,
+            border: '1px dashed hsl(var(--accent) / 0.42)',
+            background: 'linear-gradient(180deg, hsl(var(--card) / 0.98), hsl(var(--muted) / 0.3))',
+            padding: 18,
+          }}
+        >
+          <div style={{ minHeight: 120 }}>
+            <DropdownMenu open>
+              <DropdownMenuTrigger asChild>
+                <Button type="button" variant="outline" size="sm" className="w-full justify-between md:h-10">
+                  <span className="inline-flex items-center gap-2">
+                    <Icon
+                      icon={getGuideClientIconName(active.id)}
+                      width={18}
+                      height={18}
+                      aria-hidden="true"
+                      style={{ color: '#475569' }}
+                    />
+                    {active.label}
+                  </span>
+                  <Icon
+                    icon="mdi:chevron-down"
+                    width={16}
+                    height={16}
+                    aria-hidden="true"
+                    style={{ color: '#647589' }}
+                  />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="guide-select-menu p-1">
+                {guideProofLabels.map((tab) => (
+                  <DropdownMenuItem
+                    key={tab.id}
+                    className={`flex items-center gap-2 ${tab.id === active.id ? 'bg-accent/45 text-accent-foreground' : ''}`}
+                  >
+                    <Icon
+                      icon={getGuideClientIconName(tab.id)}
+                      width={16}
+                      height={16}
+                      aria-hidden="true"
+                      style={{ color: '#475569' }}
+                    />
+                    <span className="truncate">{tab.label}</span>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
+      </section>
+    </div>
+  )
+}
+
 const meta = {
   title: 'Public/PublicHome',
   parameters: {
@@ -146,5 +237,16 @@ export const TokenModalOpenWithAdminAction: Story = {
   },
   parameters: {
     viewport: { defaultViewport: '1440-device-desktop' },
+  },
+}
+
+export const MobileGuideMenuProof: Story = {
+  args: {
+    showAdminAction: false,
+  },
+  render: () => <PublicHomeMobileGuideMenuProof />,
+  parameters: {
+    layout: 'padded',
+    viewport: { defaultViewport: '0390-device-iphone-14' },
   },
 }

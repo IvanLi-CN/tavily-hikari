@@ -165,6 +165,15 @@ export interface RequestLog {
   response_body: string | null
   forwarded_headers: string[]
   dropped_headers: string[]
+  operationalClass:
+    | 'success'
+    | 'neutral'
+    | 'client_error'
+    | 'upstream_error'
+    | 'system_error'
+    | 'quota_exhausted'
+  requestKindProtocolGroup: 'api' | 'mcp'
+  requestKindBillingGroup: 'billable' | 'non_billable'
 }
 
 export interface LogFacetOption {
@@ -218,6 +227,7 @@ export interface RequestLogsPageQuery {
   requestKinds?: string[]
   result?: LogResultFilter
   keyEffect?: string
+  operationalClass?: LogOperationalClass | 'all'
   tokenId?: string
   keyId?: string
   since?: number
@@ -251,6 +261,7 @@ function appendRequestLogsPageFilters(
     requestKinds,
     result,
     keyEffect,
+    operationalClass,
     tokenId,
     keyId,
     since,
@@ -264,6 +275,7 @@ function appendRequestLogsPageFilters(
   }
   if (result) params.set('result', result)
   if (keyEffect?.trim()) params.set('key_effect', keyEffect.trim())
+  if (operationalClass && operationalClass !== 'all') params.set('operational_class', operationalClass)
   if (tokenId?.trim()) params.set('auth_token_id', tokenId.trim())
   if (keyId?.trim()) params.set('key_id', keyId.trim())
   if (typeof since === 'number' && Number.isFinite(since)) params.set('since', String(since))
@@ -754,6 +766,7 @@ export interface AdminUserSummary {
   active: boolean
   lastLoginAt: number | null
   tokenCount: number
+  apiKeyCount: number
   tags: AdminUserTagBinding[]
   hourlyAnyUsed: number
   hourlyAnyLimit: number
@@ -766,8 +779,21 @@ export interface AdminUserSummary {
   dailySuccess: number
   dailyFailure: number
   monthlySuccess: number
+  monthlyFailure: number
   lastActivity: number | null
 }
+
+export type AdminUsersSortField =
+  | 'hourlyAnyUsed'
+  | 'quotaHourlyUsed'
+  | 'quotaDailyUsed'
+  | 'quotaMonthlyUsed'
+  | 'dailySuccessRate'
+  | 'monthlySuccessRate'
+  | 'lastActivity'
+  | 'lastLoginAt'
+
+export type SortDirection = 'asc' | 'desc'
 
 export interface AdminUserTokenSummary {
   tokenId: string
@@ -1254,6 +1280,13 @@ export interface Paginated<T> {
 }
 
 export type LogResultFilter = 'success' | 'error' | 'quota_exhausted'
+export type LogOperationalClass =
+  | 'success'
+  | 'neutral'
+  | 'client_error'
+  | 'upstream_error'
+  | 'system_error'
+  | 'quota_exhausted'
 
 export function fetchRequestLogsPage(
   query: RequestLogsPageQuery = {},
@@ -1274,8 +1307,9 @@ export function fetchRequestLogs(
   perPage = 20,
   result?: LogResultFilter,
   signal?: AbortSignal,
+  operationalClass?: LogOperationalClass | 'all',
 ): Promise<RequestLogsPage> {
-  return fetchRequestLogsPage({ page, perPage, result }, signal)
+  return fetchRequestLogsPage({ page, perPage, result, operationalClass }, signal)
 }
 
 export function fetchJobs(
@@ -1314,6 +1348,8 @@ export function fetchAdminUsers(
   perPage = 20,
   query?: string,
   tagId?: string | null,
+  sort?: AdminUsersSortField | null,
+  order?: SortDirection | null,
   signal?: AbortSignal,
 ): Promise<Paginated<AdminUserSummary>> {
   const params = new URLSearchParams({
@@ -1325,6 +1361,10 @@ export function fetchAdminUsers(
   }
   if (tagId && tagId.trim().length > 0) {
     params.set('tagId', tagId.trim())
+  }
+  if (sort) {
+    params.set('sort', sort)
+    params.set('order', order ?? 'desc')
   }
   return requestJson(`/api/users?${params.toString()}`, { signal })
 }

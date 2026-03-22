@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Icon } from "../lib/icons";
 
 import { useTranslate } from "../i18n";
+import { useAnchoredFloatingLayer } from "../lib/useAnchoredFloatingLayer";
 import { useViewportMode } from "../lib/responsive";
 import { StatusBadge, type StatusTone } from "./StatusBadge";
 import { Button } from "./ui/button";
@@ -12,6 +13,7 @@ import {
   DialogContent,
 } from "./ui/dialog";
 import { Drawer, DrawerContent } from "./ui/drawer";
+import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import {
   Table,
   TableBody,
@@ -72,19 +74,7 @@ export type KeysValidationCounts = {
 };
 
 type ValidationFilterKey = "pending" | "ok" | "exhausted" | "invalid" | "error" | "duplicate";
-type BubblePlacement = "top" | "bottom";
-
-type BubblePosition = {
-  top: number;
-  left: number;
-  placement: BubblePlacement;
-  arrowLeft: number;
-};
-
 const numberFormatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
-const BUBBLE_VIEWPORT_MARGIN = 12;
-const BUBBLE_ANCHOR_GAP = 10;
-const BUBBLE_ARROW_MARGIN = 18;
 
 function formatNumber(value: number | null | undefined): string {
   if (value == null) return "—";
@@ -211,9 +201,7 @@ function RegistrationIpIndicator(props: {
   proxyLabelText: string;
 }): JSX.Element {
   const triggerRef = React.useRef<HTMLSpanElement | null>(null);
-  const bubbleRef = React.useRef<HTMLSpanElement | null>(null);
   const [open, setOpen] = React.useState(false);
-  const [position, setPosition] = React.useState<BubblePosition | null>(null);
   const region = props.region?.trim() ?? null;
   const proxyValue = props.proxyLabel?.trim() || props.proxyKey?.trim() || null;
   const proxyValueToneClass = assignedProxyMatchToneClass(props.proxyMatchKind);
@@ -224,70 +212,15 @@ function RegistrationIpIndicator(props: {
   ]
     .filter(Boolean)
     .join("; ");
-
-  React.useLayoutEffect(() => {
-    if (!open || !triggerRef.current || typeof window === "undefined") {
-      setPosition(null);
-      return;
-    }
-
-    const anchorEl = triggerRef.current;
-
-    const updatePosition = () => {
-      const bubbleEl = bubbleRef.current;
-      if (!bubbleEl || !anchorEl.isConnected) {
-        setPosition(null);
-        return;
-      }
-
-      const anchorRect = anchorEl.getBoundingClientRect();
-      const bubbleRect = bubbleEl.getBoundingClientRect();
-
-      let top = anchorRect.bottom + BUBBLE_ANCHOR_GAP;
-      let placement: BubblePlacement = "bottom";
-
-      if (top + bubbleRect.height > window.innerHeight - BUBBLE_VIEWPORT_MARGIN) {
-        const nextTop = anchorRect.top - bubbleRect.height - BUBBLE_ANCHOR_GAP;
-        if (nextTop >= BUBBLE_VIEWPORT_MARGIN) {
-          top = nextTop;
-          placement = "top";
-        }
-      }
-
-      top = Math.max(
-        BUBBLE_VIEWPORT_MARGIN,
-        Math.min(top, window.innerHeight - bubbleRect.height - BUBBLE_VIEWPORT_MARGIN),
-      );
-
-      let left = anchorRect.left + anchorRect.width / 2 - bubbleRect.width / 2;
-      left = Math.max(
-        BUBBLE_VIEWPORT_MARGIN,
-        Math.min(left, window.innerWidth - bubbleRect.width - BUBBLE_VIEWPORT_MARGIN),
-      );
-
-      const arrowLeft = Math.max(
-        BUBBLE_ARROW_MARGIN,
-        Math.min(anchorRect.left + anchorRect.width / 2 - left, bubbleRect.width - BUBBLE_ARROW_MARGIN),
-      );
-
-      setPosition({ top, left, placement, arrowLeft });
-    };
-
-    updatePosition();
-
-    const resizeObserver = typeof ResizeObserver !== "undefined" ? new ResizeObserver(updatePosition) : null;
-    resizeObserver?.observe(anchorEl);
-    if (bubbleRef.current) resizeObserver?.observe(bubbleRef.current);
-
-    window.addEventListener("resize", updatePosition);
-    window.addEventListener("scroll", updatePosition, true);
-
-    return () => {
-      resizeObserver?.disconnect();
-      window.removeEventListener("resize", updatePosition);
-      window.removeEventListener("scroll", updatePosition, true);
-    };
-  }, [open]);
+  const { layerRef: bubbleRef, position } = useAnchoredFloatingLayer<HTMLSpanElement>({
+    open,
+    anchorEl: triggerRef.current,
+    placement: "bottom",
+    align: "center",
+    offset: 10,
+    viewportMargin: 12,
+    arrowPadding: 18,
+  });
 
   return (
     <span className="key-validation-detail">
@@ -314,7 +247,7 @@ function RegistrationIpIndicator(props: {
         ? createPortal(
             <span
               ref={bubbleRef}
-              className="key-validation-bubble"
+              className="key-validation-bubble layer-popover"
               role="tooltip"
               data-placement={position?.placement ?? "bottom"}
               style={{
@@ -322,7 +255,7 @@ function RegistrationIpIndicator(props: {
                 left: `${position?.left ?? 0}px`,
                 visibility: position ? "visible" : "hidden",
                 pointerEvents: "none",
-                ["--key-validation-bubble-arrow-left" as string]: `${position?.arrowLeft ?? 40}px`,
+                ["--key-validation-bubble-arrow-left" as string]: `${position?.arrowOffset ?? 40}px`,
               }}
             >
               <span className="key-validation-bubble-line">
@@ -532,42 +465,51 @@ export function ApiKeysValidationDialog(props: ApiKeysValidationDialogProps): JS
                 const rate = hasRate ? Math.round((segment.count / segmentTotal) * 100) : 0;
                 const isActive = activeFilter === segment.key;
                 const isDimmed = !!activeFilter && activeFilter !== segment.key;
+                const segmentButton = (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    key={segment.key}
+                    className={`key-validation-segment-stat ${segment.toneClass}${hasRate ? " has-rate" : ""}${
+                      isActive ? " is-active" : ""
+                    }${isDimmed ? " is-dimmed" : ""}`}
+                    onClick={() => setActiveFilter((prev) => (prev === segment.key ? null : segment.key))}
+                    aria-pressed={isActive}
+                  >
+                    <span className="key-validation-segment-dot" />
+                    {segment.label}:{" "}
+                    <span className="font-mono tabular-nums">{formatNumber(segment.count)}</span>
+                  </Button>
+                );
+
+                if (!hasRate) {
+                  return segmentButton;
+                }
+
                 return (
-<Button
-  type="button"
-  variant="ghost"
-  size="sm"
-  key={segment.key}
-  className={`key-validation-segment-stat ${segment.toneClass}${hasRate ? " has-rate" : ""}${
-    isActive ? " is-active" : ""
-  }${isDimmed ? " is-dimmed" : ""}`}
-  {...(hasRate ? { tabIndex: 0 } : {})}
-  onClick={() => setActiveFilter((prev) => (prev === segment.key ? null : segment.key))}
-  aria-pressed={isActive}
->
-  <span className="key-validation-segment-dot" />
-  {segment.label}:{" "}
-  <span className="font-mono tabular-nums">{formatNumber(segment.count)}</span>
-  {hasRate ? (
-    <span className="key-validation-stat-bubble">{rate}%</span>
-  ) : null}
-</Button>
+                  <Tooltip key={segment.key}>
+                    <TooltipTrigger asChild>{segmentButton}</TooltipTrigger>
+                    <TooltipContent side="bottom" className="text-center">
+                      {rate}%
+                    </TooltipContent>
+                  </Tooltip>
                 );
               })}
-<Button
-  type="button"
-  variant="ghost"
-  size="sm"
-  className={`key-validation-segment-stat is-duplicate${
-    activeFilter === "duplicate" ? " is-active" : ""
-  }${activeFilter && activeFilter !== "duplicate" ? " is-dimmed" : ""}`}
-  onClick={() => setActiveFilter((prev) => (prev === "duplicate" ? null : "duplicate"))}
-  aria-pressed={activeFilter === "duplicate"}
->
-  <span className="key-validation-segment-dot" />
-  {statuses.duplicate_in_input ?? "Duplicate"}:{" "}
-  <span className="font-mono tabular-nums">{formatNumber(props.counts.duplicate)}</span>
-</Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className={`key-validation-segment-stat is-duplicate${
+                  activeFilter === "duplicate" ? " is-active" : ""
+                }${activeFilter && activeFilter !== "duplicate" ? " is-dimmed" : ""}`}
+                onClick={() => setActiveFilter((prev) => (prev === "duplicate" ? null : "duplicate"))}
+                aria-pressed={activeFilter === "duplicate"}
+              >
+                <span className="key-validation-segment-dot" />
+                {statuses.duplicate_in_input ?? "Duplicate"}:{" "}
+                <span className="font-mono tabular-nums">{formatNumber(props.counts.duplicate)}</span>
+              </Button>
             </div>
           </div>
         ) : null}

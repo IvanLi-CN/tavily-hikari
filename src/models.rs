@@ -607,6 +607,16 @@ pub struct UserDashboardSummary {
     pub daily_success: i64,
     pub daily_failure: i64,
     pub monthly_success: i64,
+    pub monthly_failure: i64,
+    pub last_activity: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct UserLogMetricsSummary {
+    pub daily_success: i64,
+    pub daily_failure: i64,
+    pub monthly_success: i64,
+    pub monthly_failure: i64,
     pub last_activity: Option<i64>,
 }
 
@@ -765,6 +775,7 @@ pub struct TokenLogRecord {
     pub request_kind_key: String,
     pub request_kind_label: String,
     pub request_kind_detail: Option<String>,
+    pub counts_business_quota: bool,
     pub result_status: String,
     pub error_message: Option<String>,
     pub failure_kind: Option<String>,

@@ -3,6 +3,7 @@ import React, { useEffect } from 'react'
 import { INITIAL_VIEWPORTS } from 'storybook/viewport'
 
 import '../src/index.css'
+import { TooltipProvider } from '../src/components/ui/tooltip'
 import { LanguageProvider, type Language, useLanguage } from '../src/i18n'
 import { ThemeProvider, type ThemeMode, useTheme } from '../src/theme'
 
@@ -309,9 +310,11 @@ const preview: Preview = {
       return (
         <LanguageProvider>
           <ThemeProvider>
-            <SyncGlobals language={language} themeMode={themeMode}>
-              <Story />
-            </SyncGlobals>
+            <TooltipProvider delayDuration={120} skipDelayDuration={250}>
+              <SyncGlobals language={language} themeMode={themeMode}>
+                <Story />
+              </SyncGlobals>
+            </TooltipProvider>
           </ThemeProvider>
         </LanguageProvider>
       )
