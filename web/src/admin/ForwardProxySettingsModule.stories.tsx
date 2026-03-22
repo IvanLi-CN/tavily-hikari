@@ -1,7 +1,8 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import ForwardProxySettingsModule, {
+  ForwardProxyCandidateDialog,
   type ForwardProxyDialogPreviewState,
   type ForwardProxyValidationEntry,
 } from './ForwardProxySettingsModule'
@@ -532,6 +533,128 @@ function RevalidateProgressBubbleProof(): JSX.Element {
   )
 }
 
+function StatusDetailBubbleProof(): JSX.Element {
+  const strings = useTranslate().admin.proxySettings
+  const rootRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+
+    let timerId: number | null = null
+    const openDetailsBubble = () => {
+      const trigger = Array.from(rootRef.current?.querySelectorAll<HTMLButtonElement>('button[aria-label]') ?? []).find(
+        (button) => button.getAttribute('aria-label') === strings.config.resultDetails,
+      )
+
+      if (trigger) {
+        trigger.click()
+        return
+      }
+
+      timerId = window.setTimeout(openDetailsBubble, 50)
+    }
+
+    openDetailsBubble()
+
+    return () => {
+      if (timerId != null) {
+        window.clearTimeout(timerId)
+      }
+    }
+  }, [strings.config.resultDetails])
+
+  return (
+    <div
+      style={{
+        minHeight: '100vh',
+        padding: 24,
+        color: 'hsl(var(--foreground))',
+        background: [
+          'radial-gradient(1000px 520px at 6% -8%, hsl(var(--primary) / 0.14), transparent 62%)',
+          'radial-gradient(900px 460px at 95% -14%, hsl(var(--accent) / 0.12), transparent 64%)',
+          'linear-gradient(180deg, hsl(var(--background)) 0%, hsl(var(--background)) 62%, hsl(var(--muted) / 0.58) 100%)',
+          'hsl(var(--background))',
+        ].join(', '),
+      }}
+    >
+      <div
+        style={{
+          display: 'grid',
+          gap: 20,
+          maxWidth: 980,
+          margin: '0 auto',
+        }}
+      >
+        <section className="surface panel">
+          <div className="panel-header">
+            <div>
+              <h2>Status detail bubble proof</h2>
+              <p className="panel-description">
+                This proof auto-opens the failed-row detail bubble. The floating panel must stay visible above the clipped shell
+                instead of being cut off by the validation dialog container.
+              </p>
+            </div>
+          </div>
+          <div
+            style={{
+              overflow: 'hidden',
+              borderRadius: 28,
+              border: '1px dashed hsl(var(--accent) / 0.42)',
+              background: 'linear-gradient(180deg, hsl(var(--card) / 0.98), hsl(var(--muted) / 0.3))',
+              padding: 18,
+            }}
+          >
+            <div
+              ref={rootRef}
+              className="dark"
+              style={{
+                minHeight: 420,
+              }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  maxHeight: 420,
+                  flexDirection: 'column',
+                  overflow: 'hidden',
+                  borderRadius: 24,
+                  border: '1px solid hsl(var(--border) / 0.75)',
+                  background: 'hsl(var(--background) / 0.94)',
+                  boxShadow: '0 30px 70px -42px rgba(15, 23, 42, 0.82)',
+                }}
+              >
+                <ForwardProxyCandidateDialog
+                  strings={strings}
+                  previewMode
+                  dialogIsSubscription={false}
+                  dialogInput={MANUAL_MIXED_RESULTS.map((entry) => entry.value).join('\n')}
+                  dialogError={null}
+                  dialogValidating={false}
+                  dialogSaving={false}
+                  dialogResults={MANUAL_MIXED_RESULTS}
+                  liveRows={[]}
+                  canAddSubscription={false}
+                  canAddManualBatch
+                  addManualBatchLabel={strings.config.add}
+                  saving={false}
+                  progress={null}
+                  onClose={() => {}}
+                  onCancelValidate={() => {}}
+                  onInputChange={() => {}}
+                  onValidate={() => {}}
+                  onAddSubscription={() => {}}
+                  onAddManualBatch={() => {}}
+                  onAddManualEntry={() => {}}
+                />
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  )
+}
+
 const meta = {
   title: 'Admin/ForwardProxySettingsModule',
   component: StoryCanvas,
@@ -591,7 +714,13 @@ export const GlobalSocks5EnableFailed: Story = {
 }
 
 export const RevalidateProgressBubble: Story = {
+  name: 'Revalidate Progress Card',
   render: () => <RevalidateProgressBubbleProof />,
+}
+
+export const StatusDetailBubble: Story = {
+  name: 'Status Detail Bubble Proof',
+  render: () => <StatusDetailBubbleProof />,
 }
 
 export const SubscriptionDialogEmpty: Story = {
