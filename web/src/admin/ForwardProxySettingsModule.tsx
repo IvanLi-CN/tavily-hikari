@@ -1,5 +1,5 @@
 import { Icon } from '@iconify/react'
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
@@ -18,6 +18,7 @@ import { Switch } from '../components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table'
 import { Textarea } from '../components/ui/textarea'
 import AdminLoadingRegion from '../components/AdminLoadingRegion'
+import { useAnchoredFloatingLayer } from '../lib/useAnchoredFloatingLayer'
 import type {
   ForwardProxyActivityBucket,
   ForwardProxyProgressEvent,
@@ -850,11 +851,6 @@ interface ForwardProxyStatusBubbleState {
   pinned: boolean
 }
 
-interface ForwardProxyStatusBubblePosition {
-  top: number
-  left: number
-}
-
 function ForwardProxyStatusDetailBubble({
   strings,
   state,
@@ -868,56 +864,15 @@ function ForwardProxyStatusDetailBubble({
   onPointerEnter: () => void
   onPointerLeave: () => void
 }): JSX.Element | null {
-  const bubbleRef = useRef<HTMLDivElement | null>(null)
-  const [position, setPosition] = useState<ForwardProxyStatusBubblePosition | null>(null)
-
-  useLayoutEffect(() => {
-    if (!state || typeof window === 'undefined') {
-      setPosition(null)
-      return
-    }
-
-    const updatePosition = () => {
-      const bubble = bubbleRef.current
-      if (!bubble || !state.anchorEl.isConnected) {
-        setPosition(null)
-        return
-      }
-
-      const anchorRect = state.anchorEl.getBoundingClientRect()
-      const bubbleRect = bubble.getBoundingClientRect()
-      const viewportPadding = 12
-      const gap = 10
-
-      let top = anchorRect.top + (anchorRect.height / 2) - (bubbleRect.height / 2)
-      top = Math.max(viewportPadding, Math.min(top, window.innerHeight - bubbleRect.height - viewportPadding))
-
-      let left = anchorRect.right + gap
-      if (left + bubbleRect.width > window.innerWidth - viewportPadding) {
-        left = anchorRect.left - bubbleRect.width - gap
-      }
-      left = Math.max(viewportPadding, Math.min(left, window.innerWidth - bubbleRect.width - viewportPadding))
-
-      setPosition({ top, left })
-    }
-
-    updatePosition()
-
-    const resizeObserver = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(updatePosition) : null
-    resizeObserver?.observe(state.anchorEl)
-    if (bubbleRef.current) {
-      resizeObserver?.observe(bubbleRef.current)
-    }
-
-    window.addEventListener('resize', updatePosition)
-    window.addEventListener('scroll', updatePosition, true)
-
-    return () => {
-      resizeObserver?.disconnect()
-      window.removeEventListener('resize', updatePosition)
-      window.removeEventListener('scroll', updatePosition, true)
-    }
-  }, [state])
+  const { layerRef: bubbleRef, position } = useAnchoredFloatingLayer<HTMLDivElement>({
+    open: Boolean(state),
+    anchorEl: state?.anchorEl ?? null,
+    placement: 'right',
+    align: 'center',
+    offset: 10,
+    viewportMargin: 12,
+    arrowPadding: 18,
+  })
 
   useEffect(() => {
     if (!state) return
@@ -951,14 +906,16 @@ function ForwardProxyStatusDetailBubble({
   return createPortal(
     <div
       ref={bubbleRef}
-      className="forward-proxy-status-bubble"
+      className="forward-proxy-status-bubble layer-popover"
       role="dialog"
       aria-label={strings.config.resultDetails}
+      data-placement={position?.placement ?? 'right'}
       style={{
         top: `${position?.top ?? 0}px`,
         left: `${position?.left ?? 0}px`,
         visibility: position ? 'visible' : 'hidden',
         pointerEvents: position ? 'auto' : 'none',
+        ['--forward-proxy-status-bubble-arrow-offset' as string]: `${position?.arrowOffset ?? 24}px`,
       }}
       onMouseEnter={onPointerEnter}
       onMouseLeave={onPointerLeave}

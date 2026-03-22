@@ -1,6 +1,9 @@
-import type { CSSProperties, Ref } from 'react'
+import { createPortal } from 'react-dom'
+import { type CSSProperties, useMemo, useRef } from 'react'
 
 import { Icon } from '../lib/icons'
+import { useAnchoredFloatingLayer } from '../lib/useAnchoredFloatingLayer'
+import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
 
 export type ProbeButtonState = 'idle' | 'running' | 'success' | 'partial' | 'failed'
 export type ProbeStepStatus = 'running' | 'success' | 'failed' | 'blocked' | 'skipped'
@@ -37,8 +40,6 @@ interface ConnectivityChecksPanelProps {
   mcpProbe: ProbeButtonModel
   apiProbe: ProbeButtonModel
   probeBubble?: ProbeBubbleModel | null
-  probeBubbleShift?: number
-  probeBubbleRef?: Ref<HTMLDivElement>
   anyProbeRunning?: boolean
   onMcpClick?: () => void
   onApiClick?: () => void
@@ -96,28 +97,46 @@ export default function ConnectivityChecksPanel({
   mcpProbe,
   apiProbe,
   probeBubble,
-  probeBubbleShift = 0,
-  probeBubbleRef,
   anyProbeRunning = false,
   onMcpClick,
   onApiClick,
 }: ConnectivityChecksPanelProps): JSX.Element {
-  const renderProbeBubble = (anchor: ProbeBubbleAnchor): JSX.Element | null => {
-    if (!probeBubble?.visible || probeBubble.anchor !== anchor || probeBubble.items.length === 0) {
+  const mcpButtonRef = useRef<HTMLButtonElement | null>(null)
+  const apiButtonRef = useRef<HTMLButtonElement | null>(null)
+  const activeProbeAnchor = probeBubble?.anchor === 'mcp' ? mcpButtonRef.current : apiButtonRef.current
+  const isProbeBubbleOpen = Boolean(probeBubble?.visible && probeBubble.items.length > 0 && activeProbeAnchor)
+  const probeBubbleAlign = probeBubble?.anchor === 'mcp' ? 'start' : 'end'
+  const { layerRef: probeBubbleLayerRef, position: probeBubblePosition } = useAnchoredFloatingLayer<HTMLDivElement>({
+    open: isProbeBubbleOpen,
+    anchorEl: activeProbeAnchor,
+    placement: 'top',
+    align: probeBubbleAlign,
+    offset: 10,
+    viewportMargin: 12,
+    arrowPadding: 24,
+  })
+
+  const probeBubbleNode = useMemo(() => {
+    if (!probeBubble?.visible || probeBubble.items.length === 0) {
       return null
     }
 
     const bubbleStyle = {
-      '--probe-bubble-shift': `${probeBubbleShift}px`,
+      top: probeBubblePosition ? `${probeBubblePosition.top}px` : undefined,
+      left: probeBubblePosition ? `${probeBubblePosition.left}px` : undefined,
+      visibility: typeof document === 'undefined' || probeBubblePosition ? 'visible' : 'hidden',
+      pointerEvents: typeof document === 'undefined' || probeBubblePosition ? 'auto' : 'none',
+      ['--probe-bubble-arrow-offset' as string]: `${probeBubblePosition?.arrowOffset ?? 24}px`,
     } as CSSProperties
 
     return (
       <div
-        ref={probeBubbleRef}
-        className={`user-console-probe-bubble user-console-probe-bubble-anchor-${anchor}`}
-        style={bubbleStyle}
+        ref={probeBubbleLayerRef}
+        className="user-console-probe-bubble layer-popover"
+        data-placement={probeBubblePosition?.placement ?? 'top'}
         role="status"
         aria-live="polite"
+        style={bubbleStyle}
       >
         <ul className="user-console-probe-bubble-list">
           {probeBubble.items.map((item) => (
@@ -165,29 +184,44 @@ export default function ConnectivityChecksPanel({
         </ul>
       </div>
     )
+  }, [probeBubble, probeBubbleLayerRef, probeBubblePosition, stepStatusText])
+
+  const renderProbeBubble = (anchor: ProbeBubbleAnchor): JSX.Element | null => {
+    if (!probeBubble?.visible || probeBubble.anchor !== anchor || !probeBubbleNode) {
+      return null
+    }
+
+    if (typeof document === 'undefined') {
+      return probeBubbleNode
+    }
+
+    return createPortal(probeBubbleNode, document.body)
   }
 
   return (
     <div className="user-console-probe-box">
       <div className="user-console-probe-label-row">
         <label className="token-label">{title}</label>
-        <span className="user-console-probe-hint">
-          <button
-            type="button"
-            className="user-console-probe-hint-trigger"
-            aria-label={costHintAria}
-          >
-            <Icon icon="mdi:help-circle-outline" />
-          </button>
-          <span className="user-console-probe-hint-bubble" role="tooltip">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              className="user-console-probe-hint-trigger"
+              aria-label={costHintAria}
+            >
+              <Icon icon="mdi:help-circle-outline" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent className="max-w-[min(20rem,calc(100vw-2rem))]" side="top">
             {costHint}
-          </span>
-        </span>
+          </TooltipContent>
+        </Tooltip>
       </div>
       <div className="user-console-probe-actions">
         <div className="user-console-probe-action">
           {renderProbeBubble('mcp')}
           <button
+            ref={mcpButtonRef}
             type="button"
             data-probe-kind="mcp"
             className={`btn btn-sm user-console-probe-btn ${probeButtonTone(mcpProbe.state)}`}
@@ -204,6 +238,7 @@ export default function ConnectivityChecksPanel({
         <div className="user-console-probe-action">
           {renderProbeBubble('api')}
           <button
+            ref={apiButtonRef}
             type="button"
             data-probe-kind="api"
             className={`btn btn-sm user-console-probe-btn ${probeButtonTone(apiProbe.state)}`}

@@ -39,6 +39,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import SegmentedTabs from '../components/ui/SegmentedTabs'
 import { TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table'
 import { Textarea } from '../components/ui/textarea'
+import { Tooltip as OverlayTooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip'
 import { useLanguage, useTranslate } from '../i18n'
 import { ADMIN_USER_CONSOLE_HREF } from '../lib/adminUserConsoleEntry'
 import { copyText, selectAllReadonlyText } from '../lib/clipboard'
@@ -1733,15 +1734,20 @@ export default function TokenDetail({
                       />
                     </TableCell>
                     <TableCell>
-                      <span className="tooltip" data-tip={formatTokenStatusTip(l.http_status, l.mcp_status)}>
-                        <button
-                          type="button"
-                          className="status-pair-trigger"
-                          aria-label={formatTokenStatusTip(l.http_status, l.mcp_status)}
-                        >
-                          {formatTokenStatusPair(l.http_status, l.mcp_status)}
-                        </button>
-                      </span>
+                      <OverlayTooltip>
+                        <TooltipTrigger asChild>
+                          <button
+                            type="button"
+                            className="status-pair-trigger"
+                            aria-label={formatTokenStatusTip(l.http_status, l.mcp_status)}
+                          >
+                            {formatTokenStatusPair(l.http_status, l.mcp_status)}
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent className="max-w-[min(18rem,calc(100vw-2rem))]" side="top">
+                          {formatTokenStatusTip(l.http_status, l.mcp_status)}
+                        </TooltipContent>
+                      </OverlayTooltip>
                     </TableCell>
                     <TableCell>{formatChargedCredits(l.business_credits)}</TableCell>
                     <TableCell>
@@ -1829,15 +1835,20 @@ export default function TokenDetail({
                   ) : null}
                   <div className="user-console-mobile-kv">
                     <span>HTTP / Tavily</span>
-                    <span className="tooltip" data-tip={formatTokenStatusTip(log.http_status, log.mcp_status)}>
-                      <button
-                        type="button"
-                        className="status-pair-trigger"
-                        aria-label={formatTokenStatusTip(log.http_status, log.mcp_status)}
-                      >
-                        <strong>{formatTokenStatusPair(log.http_status, log.mcp_status)}</strong>
-                      </button>
-                    </span>
+                    <OverlayTooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          className="status-pair-trigger"
+                          aria-label={formatTokenStatusTip(log.http_status, log.mcp_status)}
+                        >
+                          <strong>{formatTokenStatusPair(log.http_status, log.mcp_status)}</strong>
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent className="max-w-[min(18rem,calc(100vw-2rem))]" side="top">
+                        {formatTokenStatusTip(log.http_status, log.mcp_status)}
+                      </TooltipContent>
+                    </OverlayTooltip>
                   </div>
                   <div className="user-console-mobile-kv">
                     <span>Charged Credits</span>

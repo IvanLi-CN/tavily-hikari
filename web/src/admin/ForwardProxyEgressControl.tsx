@@ -1,9 +1,9 @@
 import { Icon } from '@iconify/react'
-import type { RefObject } from 'react'
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 
 import type { AdminTranslations } from '../i18n'
+import { useAnchoredFloatingLayer } from '../lib/useAnchoredFloatingLayer'
 import { Input } from '../components/ui/input'
 import { Switch } from '../components/ui/switch'
 import type { ForwardProxyDialogProgressState } from './forwardProxyDialogProgress'
@@ -29,82 +29,20 @@ function ForwardProxyAnchoredProgressBubble({
   anchorEl,
   strings,
   progress,
-  bubbleRef,
 }: {
   anchorEl: HTMLElement | null
   strings: AdminTranslations['proxySettings']
   progress: ForwardProxyDialogProgressState
-  bubbleRef?: RefObject<HTMLDivElement>
 }): JSX.Element | null {
-  const localBubbleRef = useRef<HTMLDivElement | null>(null)
-  const [position, setPosition] = useState<{
-    top: number
-    left: number
-    placement: 'top' | 'bottom'
-    arrowLeft: number
-  } | null>(null)
-
-  useLayoutEffect(() => {
-    if (!anchorEl || typeof window === 'undefined') {
-      setPosition(null)
-      return
-    }
-
-    const viewportMargin = 12
-    const anchorGap = 10
-    const arrowMargin = 18
-
-    const updatePosition = () => {
-      const bubble = (bubbleRef?.current ?? localBubbleRef.current)
-      if (!bubble || !anchorEl.isConnected) {
-        setPosition(null)
-        return
-      }
-
-      const anchorRect = anchorEl.getBoundingClientRect()
-      const bubbleRect = bubble.getBoundingClientRect()
-
-      let top = anchorRect.bottom + anchorGap
-      let placement: 'top' | 'bottom' = 'bottom'
-
-      if (top + bubbleRect.height > window.innerHeight - viewportMargin) {
-        const nextTop = anchorRect.top - bubbleRect.height - anchorGap
-        if (nextTop >= viewportMargin) {
-          top = nextTop
-          placement = 'top'
-        }
-      }
-
-      top = Math.max(viewportMargin, Math.min(top, window.innerHeight - bubbleRect.height - viewportMargin))
-
-      let left = anchorRect.left + anchorRect.width / 2 - bubbleRect.width / 2
-      left = Math.max(viewportMargin, Math.min(left, window.innerWidth - bubbleRect.width - viewportMargin))
-
-      const arrowLeft = Math.max(
-        arrowMargin,
-        Math.min(anchorRect.left + anchorRect.width / 2 - left, bubbleRect.width - arrowMargin),
-      )
-
-      setPosition({ top, left, placement, arrowLeft })
-    }
-
-    updatePosition()
-
-    const resizeObserver = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(updatePosition) : null
-    resizeObserver?.observe(anchorEl)
-    if ((bubbleRef?.current ?? localBubbleRef.current)) {
-      resizeObserver?.observe((bubbleRef?.current ?? localBubbleRef.current)!)
-    }
-
-    window.addEventListener('resize', updatePosition)
-    window.addEventListener('scroll', updatePosition, true)
-
-    return () => {
-      resizeObserver?.disconnect()
-      window.removeEventListener('resize', updatePosition)
-      window.removeEventListener('scroll', updatePosition, true)
-    }
-  }, [anchorEl, progress])
+  const { layerRef: bubbleRef, position } = useAnchoredFloatingLayer<HTMLDivElement>({
+    open: Boolean(anchorEl),
+    anchorEl,
+    placement: 'bottom',
+    align: 'center',
+    offset: 10,
+    viewportMargin: 12,
+    arrowPadding: 18,
+  })
 
   if (!anchorEl || typeof document === 'undefined') {
     return null
@@ -112,15 +50,15 @@ function ForwardProxyAnchoredProgressBubble({
 
   return createPortal(
     <div
-      ref={bubbleRef ?? localBubbleRef}
-      className="forward-proxy-progress-bubble-shell"
+      ref={bubbleRef}
+      className="forward-proxy-progress-bubble-shell layer-popover"
       data-placement={position?.placement ?? 'bottom'}
       style={{
         top: `${position?.top ?? 0}px`,
         left: `${position?.left ?? 0}px`,
         visibility: position ? 'visible' : 'hidden',
         pointerEvents: 'none',
-        ['--forward-proxy-progress-bubble-arrow-left' as string]: `${position?.arrowLeft ?? 40}px`,
+        ['--forward-proxy-progress-bubble-arrow-left' as string]: `${position?.arrowOffset ?? 40}px`,
       }}
     >
       <ForwardProxyProgressBubble
@@ -151,7 +89,6 @@ export default function ForwardProxyEgressControl({
   const switchAnchorRef = useRef<HTMLDivElement | null>(null)
   const switchRef = useRef<HTMLButtonElement | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
-  const bubbleShellRef = useRef<HTMLDivElement>(null)
   const [bubbleVisible, setBubbleVisible] = useState(false)
   const previousHasProgressRef = useRef(false)
 
@@ -178,7 +115,6 @@ export default function ForwardProxyEgressControl({
       const target = event.target as Node | null
       if (!target) return
       if (switchAnchorRef.current?.contains(target)) return
-      if (bubbleShellRef.current?.contains(target)) return
       setBubbleVisible(false)
     }
 
@@ -226,7 +162,6 @@ export default function ForwardProxyEgressControl({
           anchorEl={switchAnchorRef.current ?? switchRef.current}
           strings={strings}
           progress={progress}
-          bubbleRef={bubbleShellRef}
         />
       )}
       <Input

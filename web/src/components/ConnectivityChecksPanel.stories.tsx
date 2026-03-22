@@ -271,6 +271,59 @@ function ConnectivityChecksGallery(): JSX.Element {
   )
 }
 
+function ConnectivityChecksBubbleProof(): JSX.Element {
+  const bubbleProofScenario = scenarios.find((scenario) => scenario.title === 'MCP Full Sweep') ?? scenarios[2]
+
+  return (
+    <div
+      style={{
+        display: 'grid',
+        gap: 20,
+        maxWidth: 720,
+        margin: '0 auto',
+      }}
+    >
+      <section className="surface panel">
+        <div className="panel-header">
+          <div>
+            <h2>Clipped container bubble proof</h2>
+            <p className="panel-description">
+              The parent shell is intentionally clipped. The probe result bubble must still render above it through the
+              shared portal layer.
+            </p>
+          </div>
+        </div>
+        <div
+          style={{
+            overflow: 'hidden',
+            maxHeight: 220,
+            borderRadius: 28,
+            border: '1px dashed rgba(96, 165, 250, 0.4)',
+            background:
+              'radial-gradient(circle at top, rgba(59, 130, 246, 0.1), transparent 42%), linear-gradient(180deg, rgba(2, 6, 23, 0.98), rgba(15, 23, 42, 0.92))',
+            padding: 24,
+          }}
+        >
+          <div className="dark" style={{ paddingTop: 52 }}>
+            <ConnectivityChecksPanel
+              title="Connectivity Checks"
+              costHint="Runs a small MCP handshake and the full Tavily API chain against the mock upstream."
+              costHintAria="Connectivity check cost hint"
+              stepStatusText={stepStatusText}
+              mcpButtonLabel={bubbleProofScenario.mcpButtonLabel}
+              apiButtonLabel={bubbleProofScenario.apiButtonLabel}
+              mcpProbe={bubbleProofScenario.mcpProbe}
+              apiProbe={bubbleProofScenario.apiProbe}
+              probeBubble={bubbleProofScenario.probeBubble}
+              anyProbeRunning={bubbleProofScenario.anyProbeRunning}
+            />
+          </div>
+        </div>
+      </section>
+    </div>
+  )
+}
+
 const meta = {
   title: 'User Console/Fragments/Connectivity Checks',
   component: ConnectivityChecksPanel,
@@ -304,6 +357,11 @@ type Story = StoryObj<typeof meta>
 export const StateGallery: Story = {
   name: 'State Gallery',
   render: () => <ConnectivityChecksGallery />,
+}
+
+export const BubbleProof: Story = {
+  name: 'Bubble Proof',
+  render: () => <ConnectivityChecksBubbleProof />,
 }
 
 export const __testables = {

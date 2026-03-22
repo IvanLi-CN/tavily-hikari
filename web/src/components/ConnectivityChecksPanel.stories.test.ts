@@ -16,6 +16,9 @@ describe('ConnectivityChecksPanel Storybook gallery', () => {
     expect(connectivityStories.StateGallery).toMatchObject({
       name: 'State Gallery',
     })
+    expect(connectivityStories.BubbleProof).toMatchObject({
+      name: 'Bubble Proof',
+    })
     expect(connectivityStories).not.toHaveProperty('Idle')
     expect(connectivityStories).not.toHaveProperty('ApiCheckRunning')
     expect(connectivityStories).not.toHaveProperty('AllChecksPass')

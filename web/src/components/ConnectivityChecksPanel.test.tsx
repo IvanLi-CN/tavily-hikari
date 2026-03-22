@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 import ConnectivityChecksPanel, { type ProbeButtonModel, type ProbeStepStatus } from './ConnectivityChecksPanel'
+import { TooltipProvider } from './ui/tooltip'
 
 const stepStatusText: Record<ProbeStepStatus, string> = {
   running: '进行中',
@@ -20,26 +21,28 @@ const idleProbe: ProbeButtonModel = {
 describe('ConnectivityChecksPanel', () => {
   it('renders MCP tool-call rows with a separate monospace tool chip', () => {
     const html = renderToStaticMarkup(
-      <ConnectivityChecksPanel
-        title="连通性检测"
-        costHint="Runs probe checks."
-        costHintAria="Probe cost hint"
-        stepStatusText={stepStatusText}
-        mcpButtonLabel="检测 MCP"
-        apiButtonLabel="检测 API"
-        mcpProbe={idleProbe}
-        apiProbe={idleProbe}
-        probeBubble={{
-          visible: true,
-          anchor: 'mcp',
-          items: [{
-            id: 'mcp-tool-call:tavily_search',
-            label: '调用 tavily_search 工具',
-            status: 'success',
-            detail: 'mock upstream replied in 42ms',
-          }],
-        }}
-      />,
+      <TooltipProvider>
+        <ConnectivityChecksPanel
+          title="连通性检测"
+          costHint="Runs probe checks."
+          costHintAria="Probe cost hint"
+          stepStatusText={stepStatusText}
+          mcpButtonLabel="检测 MCP"
+          apiButtonLabel="检测 API"
+          mcpProbe={idleProbe}
+          apiProbe={idleProbe}
+          probeBubble={{
+            visible: true,
+            anchor: 'mcp',
+            items: [{
+              id: 'mcp-tool-call:tavily_search',
+              label: '调用 tavily_search 工具',
+              status: 'success',
+              detail: 'mock upstream replied in 42ms',
+            }],
+          }}
+        />
+      </TooltipProvider>,
     )
 
     expect(html).toContain('user-console-probe-bubble-item-label-structured')
@@ -51,25 +54,27 @@ describe('ConnectivityChecksPanel', () => {
 
   it('falls back to the plain label when the rendered copy cannot be split around the tool name', () => {
     const html = renderToStaticMarkup(
-      <ConnectivityChecksPanel
-        title="连通性检测"
-        costHint="Runs probe checks."
-        costHintAria="Probe cost hint"
-        stepStatusText={stepStatusText}
-        mcpButtonLabel="检测 MCP"
-        apiButtonLabel="检测 API"
-        mcpProbe={idleProbe}
-        apiProbe={idleProbe}
-        probeBubble={{
-          visible: true,
-          anchor: 'mcp',
-          items: [{
-            id: 'mcp-tool-call:tavily_search',
-            label: '自定义调用文案',
-            status: 'success',
-          }],
-        }}
-      />,
+      <TooltipProvider>
+        <ConnectivityChecksPanel
+          title="连通性检测"
+          costHint="Runs probe checks."
+          costHintAria="Probe cost hint"
+          stepStatusText={stepStatusText}
+          mcpButtonLabel="检测 MCP"
+          apiButtonLabel="检测 API"
+          mcpProbe={idleProbe}
+          apiProbe={idleProbe}
+          probeBubble={{
+            visible: true,
+            anchor: 'mcp',
+            items: [{
+              id: 'mcp-tool-call:tavily_search',
+              label: '自定义调用文案',
+              status: 'success',
+            }],
+          }}
+        />
+      </TooltipProvider>,
     )
 
     expect(html).not.toContain('user-console-probe-bubble-item-label-structured')

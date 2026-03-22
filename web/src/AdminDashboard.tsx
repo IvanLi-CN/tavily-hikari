@@ -42,6 +42,7 @@ import { Badge } from './components/ui/badge'
 import { Switch } from './components/ui/switch'
 import { Table } from './components/ui/table'
 import { Textarea } from './components/ui/textarea'
+import { Tooltip, TooltipContent, TooltipTrigger } from './components/ui/tooltip'
 import TokenUsageHeader from './components/TokenUsageHeader'
 import TokenDetail from './pages/TokenDetail'
 import { ArrowDown, ArrowUp, ArrowUpDown, ChartColumnIncreasing } from 'lucide-react'
@@ -897,18 +898,24 @@ function AdminUsersSortableHeader({
   const bubbleLabel = tooltipLabel ?? label
   return (
     <th aria-sort={ariaSort}>
-      <Button
-        type="button"
-        variant="ghost"
-        size="sm"
-        className={`tooltip admin-table-sort-button${isActive ? ' is-active' : ''}`}
-        onClick={() => onToggle(field)}
-        aria-label={bubbleLabel}
-        data-tip={bubbleLabel}
-      >
-        <span className="admin-table-sort-label">{visibleLabel}</span>
-        <SortIndicatorIcon className="admin-table-sort-indicator" aria-hidden="true" />
-      </Button>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className={`admin-table-sort-button${isActive ? ' is-active' : ''}`}
+            onClick={() => onToggle(field)}
+            aria-label={bubbleLabel}
+          >
+            <span className="admin-table-sort-label">{visibleLabel}</span>
+            <SortIndicatorIcon className="admin-table-sort-indicator" aria-hidden="true" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-[min(18rem,calc(100vw-2rem))]" side="top">
+          {bubbleLabel}
+        </TooltipContent>
+      </Tooltip>
     </th>
   )
 }
@@ -7006,18 +7013,21 @@ function AdminDashboard(): JSX.Element {
           <div style={{ flex: '1 1 320px', minWidth: 240 }}>
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
               <h2 style={{ margin: 0 }}>{tokenStrings.title}</h2>
-              <div className="tooltip" data-tip={tokenStrings.actions.viewLeaderboard}>
-<Button
-  type="button"
-  variant="ghost"
-  size="icon"
-  className="h-8 w-8 rounded-full p-0 shadow-none"
-  aria-label={tokenStrings.actions.viewLeaderboard}
-  onClick={navigateTokenLeaderboard}
->
-  <Icon icon="mdi:chart-timeline-variant" width={20} height={20} />
-</Button>
-              </div>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 rounded-full p-0 shadow-none"
+                    aria-label={tokenStrings.actions.viewLeaderboard}
+                    onClick={navigateTokenLeaderboard}
+                  >
+                    <Icon icon="mdi:chart-timeline-variant" width={20} height={20} />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top">{tokenStrings.actions.viewLeaderboard}</TooltipContent>
+              </Tooltip>
             </div>
             <p className="panel-description">{tokenStrings.description}</p>
           </div>
@@ -8193,15 +8203,20 @@ function AdminDashboard(): JSX.Element {
                 </div>
                 <div className="admin-mobile-kv">
                   <span>Status</span>
-                  <span className="tooltip" data-tip={formatRequestStatusTooltip(log, adminStrings)}>
-                    <button
-                      type="button"
-                      className="status-pair-trigger"
-                      aria-label={formatRequestStatusTooltip(log, adminStrings)}
-                    >
-                      <strong>{formatRequestStatusPair(log.http_status, log.mcp_status)}</strong>
-                    </button>
-                  </span>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        className="status-pair-trigger"
+                        aria-label={formatRequestStatusTooltip(log, adminStrings)}
+                      >
+                        <strong>{formatRequestStatusPair(log.http_status, log.mcp_status)}</strong>
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent className="max-w-[min(18rem,calc(100vw-2rem))]" side="top">
+                      {formatRequestStatusTooltip(log, adminStrings)}
+                    </TooltipContent>
+                  </Tooltip>
                 </div>
                 <div className="admin-mobile-kv">
                   <span>{logStrings.table.result}</span>
@@ -8390,16 +8405,22 @@ function AdminDashboard(): JSX.Element {
                                 <div className="log-details-label">{jobsStrings.table.type}</div>
                                 <div className="log-details-value">
                                   {jt ? (
-                                    <span className="job-type-pill">
-                                      <button
-                                        type="button"
-                                        className="job-type-trigger"
-                                        aria-label={jt}
-                                      >
-                                        <span className="job-type-main">{jobTypeLabelText}</span>
-                                      </button>
-                                      <div className="job-type-bubble">{jt}</div>
-                                    </span>
+                                    <Tooltip>
+                                      <TooltipTrigger asChild>
+                                        <span className="job-type-pill">
+                                          <button
+                                            type="button"
+                                            className="job-type-trigger"
+                                            aria-label={jt}
+                                          >
+                                            <span className="job-type-main">{jobTypeLabelText}</span>
+                                          </button>
+                                        </span>
+                                      </TooltipTrigger>
+                                      <TooltipContent className="job-type-tooltip max-w-[min(20rem,calc(100vw-2rem))]" side="top">
+                                        <code>{jt}</code>
+                                      </TooltipContent>
+                                    </Tooltip>
                                   ) : (
                                     '—'
                                   )}
@@ -9284,16 +9305,20 @@ function LogRow({ log, expanded, onToggle, strings, language, onOpenKey, onOpenT
     <>
       <tr>
         <td>
-          <div className="log-time-cell">
-            <button
-              type="button"
-              className="log-time-trigger"
-              aria-label={timeDetail}
-            >
-              <span className="log-time-main">{timeLabel}</span>
-            </button>
-            <div className="log-time-bubble">{timeDetail}</div>
-          </div>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                className="log-time-trigger"
+                aria-label={timeDetail}
+              >
+                <span className="log-time-main">{timeLabel}</span>
+              </button>
+            </TooltipTrigger>
+            <TooltipContent className="log-time-tooltip max-w-[min(20rem,calc(100vw-2rem))]" side="right">
+              {timeDetail}
+            </TooltipContent>
+          </Tooltip>
         </td>
         <td>
           <button
@@ -9322,15 +9347,20 @@ function LogRow({ log, expanded, onToggle, strings, language, onOpenKey, onOpenT
           )}
         </td>
         <td>
-          <span className="tooltip" data-tip={formatRequestStatusTooltip(log, strings)}>
-            <button
-              type="button"
-              className="status-pair-trigger"
-              aria-label={formatRequestStatusTooltip(log, strings)}
-            >
-              {formatRequestStatusPair(log.http_status, log.mcp_status)}
-            </button>
-          </span>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                className="status-pair-trigger"
+                aria-label={formatRequestStatusTooltip(log, strings)}
+              >
+                {formatRequestStatusPair(log.http_status, log.mcp_status)}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-[min(18rem,calc(100vw-2rem))]" side="top">
+              {formatRequestStatusTooltip(log, strings)}
+            </TooltipContent>
+          </Tooltip>
         </td>
         <td>
           <button
