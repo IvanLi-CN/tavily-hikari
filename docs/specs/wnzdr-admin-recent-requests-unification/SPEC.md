@@ -167,7 +167,7 @@
   target_program: `mock-only`
   capture_scope: `browser-viewport`
   sensitive_exclusion: `N/A`
-  submission_gate: `pending-owner-approval`
+  submission_gate: `approved`
   state: `shared recent requests list`
   evidence_note: 验证全局请求页已经切换到统一的共享列表，筛选条、列顺序与 no-wrap 桌面表格在 Storybook 中稳定可复查。
   image:
@@ -178,7 +178,7 @@
   target_program: `mock-only`
   capture_scope: `browser-viewport`
   sensitive_exclusion: `N/A`
-  submission_gate: `pending-owner-approval`
+  submission_gate: `approved`
   state: `result and key effect facet expanded`
   evidence_note: 验证“结果与影响”分组筛选在共享列表中可展开查看，并展示当前可选项与数量。
   image:
@@ -189,7 +189,7 @@
   target_program: `mock-only`
   capture_scope: `browser-viewport`
   sensitive_exclusion: `N/A`
-  submission_gate: `pending-owner-approval`
+  submission_gate: `approved`
   state: `token detail shared list`
   evidence_note: 验证 Token 详情页复用同一套近期请求列表，并保持 Key 筛选与上下文列显隐。
   image:
