@@ -2,9 +2,9 @@
 
 ## 状态
 
-- Status: 待实现
+- Status: 已实现（待审查）
 - Created: 2026-03-20
-- Last: 2026-03-20
+- Last: 2026-03-22
 
 ## 背景 / 问题陈述
 
@@ -197,12 +197,13 @@
 
 ## 里程碑
 
-- [ ] M1: 新 spec、README 索引与接口合同冻结
-- [ ] M2: `request_logs` / `auth_token_logs` schema 与关联链路补齐
-- [ ] M3: `/api/logs`、`/api/keys/:id/logs/page`、`/api/tokens/:id/logs/page` 统一 facets 过滤能力
-- [ ] M4: 共享 recent requests 组件接入 requests / key detail / token detail
+- [x] M1: 新 spec、README 索引与接口合同冻结
+- [x] M2: `request_logs` / `auth_token_logs` schema 与关联链路补齐
+- [x] M3: `/api/logs`、`/api/keys/:id/logs/page`、`/api/tokens/:id/logs/page` 统一 facets 过滤能力
+- [x] M4: 共享 recent requests 组件接入 requests / key detail / token detail
 - [ ] M5: stories、测试、review-loop 与 merge-ready 收敛
 
 ## Change log
 
 - 2026-03-20: 初始化 spec，冻结“管理员近期请求列表全量统一”的数据对齐、共享组件、facet 过滤与 no-wrap 桌面表格边界。
+- 2026-03-22: 共享近期请求列表、日志 facets、Storybook 证据与截图裁剪已落地；规格同步到“已实现（待审查）”，等待 PR 收敛。
