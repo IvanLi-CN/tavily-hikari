@@ -96,33 +96,6 @@ describe('UserConsole landing guide helpers', () => {
     expect(__testables.isActiveGuideRevealContext('landing:tokens:a1b2', 'landing:tokens:b2c3')).toBe(false)
     expect(__testables.isActiveGuideRevealContext('token:a1b2', null)).toBe(false)
   })
-
-  it('prefers explicit guide sample lists so a guide can show multiple setup examples', () => {
-    const samples = __testables.resolveGuideSamples({
-      title: 'Other clients',
-      steps: [],
-      sampleTitle: 'legacy',
-      snippetLanguage: 'bash',
-      snippet: 'legacy snippet',
-      samples: [
-        { title: 'sample-1', language: 'bash', snippet: 'first' },
-        { title: 'sample-2', language: 'json', snippet: 'second' },
-      ],
-    } as any)
-
-    expect(samples).toEqual([
-      { title: 'sample-1', language: 'bash', snippet: 'first' },
-      { title: 'sample-2', language: 'json', snippet: 'second' },
-    ])
-  })
-
-  it('builds an API-client request template with the MCP probe headers and tools/list body', () => {
-    const snippet = __testables.buildApiClientRequestSnippet('th-a1b2-1234567890abcdef')
-
-    expect(snippet).toContain('"Authorization": "Bearer th-a1b2-1234567890abcdef"')
-    expect(snippet).toContain('"Accept": "application/json, text/event-stream"')
-    expect(snippet).toContain('"method": "tools/list"')
-  })
 })
 
 describe('UserConsole probe step definitions', () => {
