@@ -44,6 +44,158 @@ mod tests {
             .expect("connect to sqlite")
     }
 
+    async fn create_request_log_reference_tables(pool: &sqlx::SqlitePool) {
+        sqlx::query(
+            r#"
+            CREATE TABLE users (
+                id TEXT PRIMARY KEY,
+                display_name TEXT,
+                username TEXT,
+                avatar_template TEXT,
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                last_login_at INTEGER
+            )
+            "#,
+        )
+        .execute(pool)
+        .await
+        .expect("create users");
+
+        sqlx::query(
+            r#"
+            CREATE TABLE auth_tokens (
+                id TEXT PRIMARY KEY,
+                secret TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                note TEXT,
+                group_name TEXT,
+                total_requests INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                last_used_at INTEGER,
+                deleted_at INTEGER
+            )
+            "#,
+        )
+        .execute(pool)
+        .await
+        .expect("create auth_tokens");
+
+        sqlx::query(
+            r#"
+            CREATE TABLE auth_token_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                token_id TEXT NOT NULL,
+                method TEXT NOT NULL,
+                path TEXT NOT NULL,
+                query TEXT,
+                http_status INTEGER,
+                mcp_status INTEGER,
+                request_kind_key TEXT,
+                request_kind_label TEXT,
+                request_kind_detail TEXT,
+                result_status TEXT NOT NULL,
+                error_message TEXT,
+                failure_kind TEXT,
+                key_effect_code TEXT NOT NULL DEFAULT 'none',
+                key_effect_summary TEXT,
+                counts_business_quota INTEGER NOT NULL DEFAULT 1,
+                business_credits INTEGER,
+                billing_subject TEXT,
+                billing_state TEXT NOT NULL DEFAULT 'none',
+                api_key_id TEXT,
+                request_log_id INTEGER REFERENCES request_logs(id),
+                created_at INTEGER NOT NULL
+            )
+            "#,
+        )
+        .execute(pool)
+        .await
+        .expect("create auth_token_logs");
+
+        sqlx::query(
+            r#"
+            CREATE TABLE api_key_maintenance_records (
+                id TEXT PRIMARY KEY,
+                key_id TEXT NOT NULL,
+                source TEXT NOT NULL,
+                operation_code TEXT NOT NULL,
+                operation_summary TEXT NOT NULL,
+                reason_code TEXT,
+                reason_summary TEXT,
+                reason_detail TEXT,
+                request_log_id INTEGER,
+                auth_token_log_id INTEGER,
+                auth_token_id TEXT,
+                actor_user_id TEXT,
+                actor_display_name TEXT,
+                status_before TEXT,
+                status_after TEXT,
+                quarantine_before INTEGER NOT NULL DEFAULT 0,
+                quarantine_after INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                FOREIGN KEY (key_id) REFERENCES api_keys(id),
+                FOREIGN KEY (auth_token_id) REFERENCES auth_tokens(id),
+                FOREIGN KEY (request_log_id) REFERENCES request_logs(id),
+                FOREIGN KEY (auth_token_log_id) REFERENCES auth_token_logs(id)
+            )
+            "#,
+        )
+        .execute(pool)
+        .await
+        .expect("create api_key_maintenance_records");
+    }
+
+    async fn insert_request_log_reference_rows(
+        pool: &sqlx::SqlitePool,
+        key_id: &str,
+        request_log_id: i64,
+    ) {
+        let auth_token_log_id: i64 = sqlx::query_scalar(
+            r#"
+            INSERT INTO auth_token_logs (
+                token_id,
+                method,
+                path,
+                result_status,
+                request_log_id,
+                created_at
+            ) VALUES (?, 'POST', '/mcp', 'error', ?, ?)
+            RETURNING id
+            "#,
+        )
+        .bind("tok-ref")
+        .bind(request_log_id)
+        .bind(181_i64)
+        .fetch_one(pool)
+        .await
+        .expect("insert auth_token_log reference");
+
+        sqlx::query(
+            r#"
+            INSERT INTO api_key_maintenance_records (
+                id,
+                key_id,
+                source,
+                operation_code,
+                operation_summary,
+                request_log_id,
+                auth_token_log_id,
+                created_at
+            ) VALUES (?, ?, 'system', 'mark_exhausted', 'Mark Exhausted', ?, ?, ?)
+            "#,
+        )
+        .bind("maint-ref")
+        .bind(key_id)
+        .bind(request_log_id)
+        .bind(auth_token_log_id)
+        .bind(182_i64)
+        .execute(pool)
+        .await
+        .expect("insert maintenance reference");
+    }
+
     fn env_var_test_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
@@ -2835,7 +2987,7 @@ mod tests {
 
         let app = Router::new()
             .route("/mcp", any(proxy_handler))
-            .route("/mcp/*path", any(proxy_handler))
+            .route("/mcp/*path", any(mcp_subpath_reject_handler))
             .route("/api/tavily/search", post(tavily_http_search))
             .route("/api/tavily/extract", post(tavily_http_extract))
             .route("/api/tavily/crawl", post(tavily_http_crawl))
@@ -8079,6 +8231,699 @@ colo=LAX
     }
 
     #[tokio::test]
+    async fn request_logs_legacy_api_key_migration_preserves_request_log_foreign_keys() {
+        let db_path = temp_db_path("request-logs-legacy-fk-safe-migration");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let options = SqliteConnectOptions::new()
+            .filename(&db_str)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open legacy db pool");
+
+        sqlx::query(
+            r#"
+            CREATE TABLE api_keys (
+                id TEXT PRIMARY KEY,
+                api_key TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL DEFAULT 'active',
+                status_changed_at INTEGER,
+                last_used_at INTEGER NOT NULL DEFAULT 0,
+                quota_limit INTEGER,
+                quota_remaining INTEGER,
+                quota_synced_at INTEGER,
+                deleted_at INTEGER
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create legacy api_keys");
+
+        sqlx::query(
+            r#"
+            INSERT INTO api_keys (
+                id, api_key, status, status_changed_at, last_used_at, quota_limit, quota_remaining, quota_synced_at, deleted_at
+            ) VALUES (?, ?, 'active', NULL, ?, NULL, NULL, NULL, NULL)
+            "#,
+        )
+        .bind("k-legacy")
+        .bind("tvly-legacy-ref")
+        .bind(420_i64)
+        .execute(&pool)
+        .await
+        .expect("insert legacy api key");
+
+        sqlx::query(
+            r#"
+            CREATE TABLE request_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                api_key TEXT NOT NULL,
+                method TEXT NOT NULL,
+                path TEXT NOT NULL,
+                query TEXT,
+                status_code INTEGER,
+                error_message TEXT,
+                request_body BLOB,
+                response_body BLOB,
+                created_at INTEGER NOT NULL
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create legacy request_logs");
+
+        let request_log_id: i64 = sqlx::query_scalar(
+            r#"
+            INSERT INTO request_logs (
+                api_key, method, path, query, status_code, error_message, request_body, response_body, created_at
+            ) VALUES (?, 'POST', '/search', NULL, 200, NULL, NULL, NULL, ?)
+            RETURNING id
+            "#,
+        )
+        .bind("tvly-legacy-ref")
+        .bind(180_i64)
+        .fetch_one(&pool)
+        .await
+        .expect("insert legacy request log");
+
+        create_request_log_reference_tables(&pool).await;
+        insert_request_log_reference_rows(&pool, "k-legacy", request_log_id).await;
+        drop(pool);
+
+        let _proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-legacy-ref-upgrade".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("upgrade proxy");
+
+        let upgraded_pool = connect_sqlite_test_pool(&db_str).await;
+
+        let request_row = sqlx::query(
+            "SELECT id, api_key_id, auth_token_id, visibility, key_effect_code FROM request_logs WHERE id = ?",
+        )
+        .bind(request_log_id)
+        .fetch_one(&upgraded_pool)
+        .await
+        .expect("read migrated request log");
+        assert_eq!(request_row.try_get::<i64, _>("id").unwrap(), request_log_id);
+        assert_eq!(
+            request_row.try_get::<Option<String>, _>("api_key_id").unwrap(),
+            Some("k-legacy".to_string())
+        );
+        assert_eq!(
+            request_row
+                .try_get::<Option<String>, _>("auth_token_id")
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            request_row.try_get::<String, _>("visibility").unwrap(),
+            "visible"
+        );
+        assert_eq!(
+            request_row.try_get::<String, _>("key_effect_code").unwrap(),
+            "none"
+        );
+
+        assert_eq!(
+            sqlx::query_scalar::<_, Option<i64>>(
+                "SELECT request_log_id FROM auth_token_logs ORDER BY id DESC LIMIT 1",
+            )
+            .fetch_one(&upgraded_pool)
+            .await
+            .expect("read auth_token_logs reference"),
+            Some(request_log_id)
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, Option<i64>>(
+                "SELECT request_log_id FROM api_key_maintenance_records WHERE id = 'maint-ref'",
+            )
+            .fetch_one(&upgraded_pool)
+            .await
+            .expect("read maintenance reference"),
+            Some(request_log_id)
+        );
+
+        let fk_violations = sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(&upgraded_pool)
+            .await
+            .expect("run foreign_key_check");
+        assert!(
+            fk_violations.is_empty(),
+            "migration should preserve all request_log references"
+        );
+
+        let api_key_column_still_exists = sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT 1 FROM pragma_table_info('request_logs') WHERE name = 'api_key' LIMIT 1",
+        )
+        .fetch_optional(&upgraded_pool)
+        .await
+        .expect("probe api_key column")
+        .is_some();
+        assert!(
+            !api_key_column_still_exists,
+            "legacy api_key column should be removed after rebuild"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn request_logs_legacy_api_key_migration_rolls_back_when_fk_check_fails() {
+        let db_path = temp_db_path("request-logs-legacy-fk-safe-migration-rollback");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let options = SqliteConnectOptions::new()
+            .filename(&db_str)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open rollback db pool");
+
+        sqlx::query(
+            r#"
+            CREATE TABLE api_keys (
+                id TEXT PRIMARY KEY,
+                api_key TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL DEFAULT 'active',
+                status_changed_at INTEGER,
+                last_used_at INTEGER NOT NULL DEFAULT 0,
+                quota_limit INTEGER,
+                quota_remaining INTEGER,
+                quota_synced_at INTEGER,
+                deleted_at INTEGER
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create rollback api_keys");
+
+        sqlx::query(
+            r#"
+            INSERT INTO api_keys (
+                id, api_key, status, status_changed_at, last_used_at, quota_limit, quota_remaining, quota_synced_at, deleted_at
+            ) VALUES (?, ?, 'active', NULL, ?, NULL, NULL, NULL, NULL)
+            "#,
+        )
+        .bind("k-rollback")
+        .bind("tvly-rollback-ref")
+        .bind(512_i64)
+        .execute(&pool)
+        .await
+        .expect("insert rollback api key");
+
+        sqlx::query(
+            r#"
+            CREATE TABLE request_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                api_key TEXT NOT NULL,
+                method TEXT NOT NULL,
+                path TEXT NOT NULL,
+                query TEXT,
+                status_code INTEGER,
+                error_message TEXT,
+                request_body BLOB,
+                response_body BLOB,
+                created_at INTEGER NOT NULL
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create rollback request_logs");
+
+        let request_log_id: i64 = sqlx::query_scalar(
+            r#"
+            INSERT INTO request_logs (
+                api_key, method, path, query, status_code, error_message, request_body, response_body, created_at
+            ) VALUES (?, 'POST', '/search', NULL, 200, NULL, NULL, NULL, ?)
+            RETURNING id
+            "#,
+        )
+        .bind("tvly-rollback-ref")
+        .bind(220_i64)
+        .fetch_one(&pool)
+        .await
+        .expect("insert rollback request log");
+
+        create_request_log_reference_tables(&pool).await;
+
+        sqlx::query("PRAGMA foreign_keys = OFF")
+            .execute(&pool)
+            .await
+            .expect("disable foreign keys for corruption fixture");
+        sqlx::query(
+            r#"
+            INSERT INTO auth_token_logs (
+                token_id,
+                method,
+                path,
+                result_status,
+                request_log_id,
+                created_at
+            ) VALUES ('tok-ref', 'POST', '/mcp', 'error', ?, ?)
+            "#,
+        )
+        .bind(request_log_id + 999)
+        .bind(221_i64)
+        .execute(&pool)
+        .await
+        .expect("insert invalid auth_token_logs reference");
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&pool)
+            .await
+            .expect("reenable foreign keys after corruption fixture");
+        drop(pool);
+
+        let err = TavilyProxy::with_endpoint(
+            vec!["tvly-rollback-ref-upgrade".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect_err("startup migration should fail on invalid preserved foreign keys");
+        assert!(
+            err.to_string()
+                .contains("request_logs schema migration produced invalid preserved references"),
+            "unexpected migration error: {err}"
+        );
+
+        let upgraded_pool = connect_sqlite_test_pool(&db_str).await;
+
+        let api_key_column_still_exists = sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT 1 FROM pragma_table_info('request_logs') WHERE name = 'api_key' LIMIT 1",
+        )
+        .fetch_optional(&upgraded_pool)
+        .await
+        .expect("probe rollback api_key column")
+        .is_some();
+        assert!(
+            api_key_column_still_exists,
+            "failed migration should leave the legacy request_logs schema intact"
+        );
+
+        let rebuilt_table_exists = sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'request_logs_new' LIMIT 1",
+        )
+        .fetch_optional(&upgraded_pool)
+        .await
+        .expect("probe request_logs_new after rollback")
+        .is_some();
+        assert!(
+            !rebuilt_table_exists,
+            "failed migration should not leave request_logs_new behind"
+        );
+
+        assert_eq!(
+            sqlx::query_scalar::<_, Option<i64>>(
+                "SELECT request_log_id FROM auth_token_logs ORDER BY id DESC LIMIT 1",
+            )
+            .fetch_one(&upgraded_pool)
+            .await
+            .expect("read invalid preserved auth_token_logs reference"),
+            Some(request_log_id + 999)
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn request_logs_migration_ignores_unrelated_auth_token_log_orphans() {
+        let db_path = temp_db_path("request-logs-ignore-unrelated-auth-token-log-orphans");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let options = SqliteConnectOptions::new()
+            .filename(&db_str)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open unrelated orphan db pool");
+
+        sqlx::query(
+            r#"
+            CREATE TABLE api_keys (
+                id TEXT PRIMARY KEY,
+                api_key TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL DEFAULT 'active',
+                status_changed_at INTEGER,
+                last_used_at INTEGER NOT NULL DEFAULT 0,
+                quota_limit INTEGER,
+                quota_remaining INTEGER,
+                quota_synced_at INTEGER,
+                deleted_at INTEGER
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create unrelated orphan api_keys");
+
+        sqlx::query(
+            r#"
+            INSERT INTO api_keys (
+                id, api_key, status, status_changed_at, last_used_at, quota_limit, quota_remaining, quota_synced_at, deleted_at
+            ) VALUES (?, ?, 'active', NULL, ?, NULL, NULL, NULL, NULL)
+            "#,
+        )
+        .bind("k-unrelated")
+        .bind("tvly-unrelated-ref")
+        .bind(640_i64)
+        .execute(&pool)
+        .await
+        .expect("insert unrelated orphan api key");
+
+        sqlx::query(
+            r#"
+            CREATE TABLE request_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                api_key TEXT NOT NULL,
+                method TEXT NOT NULL,
+                path TEXT NOT NULL,
+                query TEXT,
+                status_code INTEGER,
+                error_message TEXT,
+                request_body BLOB,
+                response_body BLOB,
+                created_at INTEGER NOT NULL
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create unrelated orphan request_logs");
+
+        let request_log_id: i64 = sqlx::query_scalar(
+            r#"
+            INSERT INTO request_logs (
+                api_key, method, path, query, status_code, error_message, request_body, response_body, created_at
+            ) VALUES (?, 'POST', '/search', NULL, 200, NULL, NULL, NULL, ?)
+            RETURNING id
+            "#,
+        )
+        .bind("tvly-unrelated-ref")
+        .bind(240_i64)
+        .fetch_one(&pool)
+        .await
+        .expect("insert unrelated orphan request log");
+
+        create_request_log_reference_tables(&pool).await;
+        insert_request_log_reference_rows(&pool, "k-unrelated", request_log_id).await;
+
+        sqlx::query("PRAGMA foreign_keys = OFF")
+            .execute(&pool)
+            .await
+            .expect("disable foreign keys for unrelated orphan fixture");
+        sqlx::query(
+            "UPDATE api_key_maintenance_records SET auth_token_log_id = ? WHERE id = 'maint-ref'",
+        )
+        .bind(999_999_i64)
+        .execute(&pool)
+        .await
+        .expect("corrupt unrelated auth_token_log_id reference");
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&pool)
+            .await
+            .expect("reenable foreign keys after unrelated orphan fixture");
+        drop(pool);
+
+        let _proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-unrelated-ref-upgrade".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("request_logs migration should ignore unrelated auth_token_log orphans");
+
+        let upgraded_pool = connect_sqlite_test_pool(&db_str).await;
+        assert_eq!(
+            sqlx::query_scalar::<_, Option<String>>(
+                "SELECT api_key_id FROM request_logs WHERE id = ?",
+            )
+            .bind(request_log_id)
+            .fetch_one(&upgraded_pool)
+            .await
+            .expect("read migrated unrelated orphan request log"),
+            Some("k-unrelated".to_string())
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, Option<i64>>(
+                "SELECT request_log_id FROM api_key_maintenance_records WHERE id = 'maint-ref'",
+            )
+            .fetch_one(&upgraded_pool)
+            .await
+            .expect("read preserved maintenance request_log_id"),
+            Some(request_log_id)
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, Option<i64>>(
+                "SELECT auth_token_log_id FROM api_key_maintenance_records WHERE id = 'maint-ref'",
+            )
+            .fetch_one(&upgraded_pool)
+            .await
+            .expect("read preserved unrelated orphan auth_token_log_id"),
+            Some(999_999_i64)
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn request_logs_not_null_api_key_migration_preserves_references_and_accepts_null_keys() {
+        let db_path = temp_db_path("request-logs-nullable-fk-safe-migration");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let options = SqliteConnectOptions::new()
+            .filename(&db_str)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open not-null db pool");
+
+        sqlx::query(
+            r#"
+            CREATE TABLE api_keys (
+                id TEXT PRIMARY KEY,
+                api_key TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL DEFAULT 'active',
+                status_changed_at INTEGER,
+                last_used_at INTEGER NOT NULL DEFAULT 0,
+                quota_limit INTEGER,
+                quota_remaining INTEGER,
+                quota_synced_at INTEGER,
+                deleted_at INTEGER
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create api_keys");
+
+        sqlx::query(
+            r#"
+            INSERT INTO api_keys (
+                id, api_key, status, status_changed_at, last_used_at, quota_limit, quota_remaining, quota_synced_at, deleted_at
+            ) VALUES (?, ?, 'active', NULL, ?, NULL, NULL, NULL, NULL)
+            "#,
+        )
+        .bind("k-modern")
+        .bind("tvly-modern-ref")
+        .bind(900_i64)
+        .execute(&pool)
+        .await
+        .expect("insert api key");
+
+        sqlx::query(
+            r#"
+            CREATE TABLE request_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                api_key_id TEXT NOT NULL,
+                auth_token_id TEXT,
+                method TEXT NOT NULL,
+                path TEXT NOT NULL,
+                query TEXT,
+                status_code INTEGER,
+                tavily_status_code INTEGER,
+                error_message TEXT,
+                result_status TEXT NOT NULL DEFAULT 'unknown',
+                request_kind_key TEXT,
+                request_kind_label TEXT,
+                request_kind_detail TEXT,
+                business_credits INTEGER,
+                failure_kind TEXT,
+                key_effect_code TEXT NOT NULL DEFAULT 'none',
+                key_effect_summary TEXT,
+                request_body BLOB,
+                response_body BLOB,
+                forwarded_headers TEXT,
+                dropped_headers TEXT,
+                visibility TEXT NOT NULL DEFAULT 'visible',
+                created_at INTEGER NOT NULL,
+                FOREIGN KEY (api_key_id) REFERENCES api_keys(id)
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create modern legacy request_logs");
+
+        let request_log_id: i64 = sqlx::query_scalar(
+            r#"
+            INSERT INTO request_logs (
+                api_key_id, auth_token_id, method, path, query, status_code, tavily_status_code,
+                error_message, result_status, request_kind_key, request_kind_label, request_kind_detail,
+                business_credits, failure_kind, key_effect_code, key_effect_summary, request_body,
+                response_body, forwarded_headers, dropped_headers, visibility, created_at
+            ) VALUES (
+                ?, ?, 'POST', '/mcp', NULL, 404, 404,
+                'legacy error', 'error', 'mcp:raw:/mcp/search', 'MCP | /mcp/search', NULL,
+                NULL, 'mcp_path_404', 'none', NULL, X'7B7D', X'4E6F7420466F756E64', '[]', '[]', 'visible', ?
+            )
+            RETURNING id
+            "#,
+        )
+        .bind("k-modern")
+        .bind("tok-modern")
+        .bind(901_i64)
+        .fetch_one(&pool)
+        .await
+        .expect("insert request log");
+
+        create_request_log_reference_tables(&pool).await;
+        insert_request_log_reference_rows(&pool, "k-modern", request_log_id).await;
+        drop(pool);
+
+        let _proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-modern-ref-upgrade".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("upgrade proxy");
+
+        let upgraded_pool = connect_sqlite_test_pool(&db_str).await;
+
+        let api_key_not_null: i64 = sqlx::query_scalar(
+            r#"SELECT "notnull" FROM pragma_table_info('request_logs') WHERE name = 'api_key_id'"#,
+        )
+        .fetch_one(&upgraded_pool)
+        .await
+        .expect("read api_key_id notnull");
+        assert_eq!(api_key_not_null, 0, "api_key_id should be nullable after migration");
+
+        assert_eq!(
+            sqlx::query_scalar::<_, Option<i64>>(
+                "SELECT request_log_id FROM auth_token_logs ORDER BY id DESC LIMIT 1",
+            )
+            .fetch_one(&upgraded_pool)
+            .await
+            .expect("read auth_token_logs reference"),
+            Some(request_log_id)
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, Option<i64>>(
+                "SELECT request_log_id FROM api_key_maintenance_records WHERE id = 'maint-ref'",
+            )
+            .fetch_one(&upgraded_pool)
+            .await
+            .expect("read maintenance reference"),
+            Some(request_log_id)
+        );
+
+        sqlx::query(
+            r#"
+            INSERT INTO request_logs (
+                api_key_id,
+                auth_token_id,
+                method,
+                path,
+                query,
+                status_code,
+                tavily_status_code,
+                error_message,
+                result_status,
+                request_kind_key,
+                request_kind_label,
+                request_kind_detail,
+                business_credits,
+                failure_kind,
+                key_effect_code,
+                key_effect_summary,
+                request_body,
+                response_body,
+                forwarded_headers,
+                dropped_headers,
+                visibility,
+                created_at
+            ) VALUES (
+                NULL,
+                'tok-null-key',
+                'POST',
+                '/mcp/search',
+                NULL,
+                404,
+                404,
+                'Not Found',
+                'error',
+                'mcp:raw:/mcp/search',
+                'MCP | /mcp/search',
+                NULL,
+                NULL,
+                'mcp_path_404',
+                'none',
+                NULL,
+                X'7B7D',
+                X'4E6F7420466F756E64',
+                '[]',
+                '[]',
+                'visible',
+                ?
+            )
+            "#,
+        )
+        .bind(902_i64)
+        .execute(&upgraded_pool)
+        .await
+        .expect("insert null-key request log after migration");
+
+        let fk_violations = sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(&upgraded_pool)
+            .await
+            .expect("run foreign_key_check");
+        assert!(
+            fk_violations.is_empty(),
+            "nullable migration should preserve request_log references"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn api_keys_created_at_backfill_only_runs_once() {
         let db_path = temp_db_path("api-keys-created-at-backfill-once");
         let db_str = db_path.to_string_lossy().to_string();
@@ -12673,6 +13518,340 @@ colo=LAX
             resp.status().is_success(),
             "expected success from /mcp using query param token, got {}",
             resp.status()
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_subpath_rejects_authenticated_requests_locally_and_persists_null_key_logs() {
+        let db_path = temp_db_path("mcp-subpath-local-reject");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let upstream_addr =
+            spawn_counted_fake_forward_proxy(StatusCode::OK, Duration::from_millis(0), hits.clone())
+                .await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-mcp-subpath-local-reject".to_string()],
+            &upstream,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+        let access_token = proxy
+            .create_access_token(Some("mcp-subpath-local-reject"))
+            .await
+            .expect("create access token");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), "https://api.tavily.com".to_string()).await;
+        let client = Client::new();
+        let resp = client
+            .post(format!(
+                "http://{}/mcp/search?tavilyApiKey={}",
+                proxy_addr, access_token.token
+            ))
+            .json(&serde_json::json!({
+                "query": "why was this client pointed at /mcp/search"
+            }))
+            .send()
+            .await
+            .expect("subpath request");
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(resp.text().await.expect("plain text body"), "Not Found");
+        assert_eq!(hits.load(Ordering::SeqCst), 0, "subpath reject must not hit upstream");
+
+        let latest_token_log = proxy
+            .token_recent_logs(&access_token.id, 1, None)
+            .await
+            .expect("token recent logs")
+            .into_iter()
+            .next()
+            .expect("token log exists");
+        assert_eq!(latest_token_log.key_id, None);
+        assert_eq!(latest_token_log.request_kind_key, "mcp:raw:/mcp/search");
+        assert_eq!(latest_token_log.request_kind_label, "MCP | /mcp/search");
+        assert_eq!(latest_token_log.result_status, "error");
+        assert_eq!(
+            latest_token_log.failure_kind.as_deref(),
+            Some("mcp_path_404")
+        );
+        assert!(!latest_token_log.counts_business_quota);
+        assert_eq!(latest_token_log.business_credits, None);
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let request_row = sqlx::query(
+            r#"
+            SELECT
+                id,
+                api_key_id,
+                auth_token_id,
+                status_code,
+                tavily_status_code,
+                result_status,
+                request_kind_key,
+                request_kind_label,
+                failure_kind,
+                key_effect_code,
+                business_credits,
+                request_body,
+                response_body,
+                forwarded_headers,
+                dropped_headers
+            FROM request_logs
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("request log row");
+        let request_log_id: i64 = request_row.try_get("id").expect("request log id");
+        let request_api_key_id: Option<String> =
+            request_row.try_get("api_key_id").expect("request api key id");
+        let request_auth_token_id: Option<String> = request_row
+            .try_get("auth_token_id")
+            .expect("request auth token id");
+        let request_body: Vec<u8> = request_row.try_get("request_body").expect("request body");
+        let response_body: Vec<u8> = request_row.try_get("response_body").expect("response body");
+        assert_eq!(request_api_key_id, None);
+        assert_eq!(request_auth_token_id.as_deref(), Some(access_token.id.as_str()));
+        assert_eq!(
+            request_row.try_get::<Option<i64>, _>("status_code").unwrap(),
+            Some(404)
+        );
+        assert_eq!(
+            request_row
+                .try_get::<Option<i64>, _>("tavily_status_code")
+                .unwrap(),
+            Some(404)
+        );
+        assert_eq!(
+            request_row.try_get::<String, _>("result_status").unwrap(),
+            "error"
+        );
+        assert_eq!(
+            request_row.try_get::<String, _>("request_kind_key").unwrap(),
+            "mcp:raw:/mcp/search"
+        );
+        assert_eq!(
+            request_row.try_get::<String, _>("request_kind_label").unwrap(),
+            "MCP | /mcp/search"
+        );
+        assert_eq!(
+            request_row
+                .try_get::<Option<String>, _>("failure_kind")
+                .unwrap()
+                .as_deref(),
+            Some("mcp_path_404")
+        );
+        assert_eq!(
+            request_row.try_get::<String, _>("key_effect_code").unwrap(),
+            "none"
+        );
+        assert_eq!(
+            request_row
+                .try_get::<Option<i64>, _>("business_credits")
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&request_body)
+                .expect("request body json")
+                .get("query")
+                .and_then(|value| value.as_str()),
+            Some("why was this client pointed at /mcp/search")
+        );
+        assert_eq!(response_body, b"Not Found");
+        assert_eq!(
+            request_row.try_get::<String, _>("forwarded_headers").unwrap(),
+            "[]"
+        );
+        assert_eq!(
+            request_row.try_get::<String, _>("dropped_headers").unwrap(),
+            "[]"
+        );
+
+        let token_row = sqlx::query(
+            r#"
+            SELECT api_key_id, counts_business_quota, business_credits, request_log_id
+            FROM auth_token_logs
+            WHERE token_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(&access_token.id)
+        .fetch_one(&pool)
+        .await
+        .expect("token log row");
+        assert_eq!(
+            token_row
+                .try_get::<Option<String>, _>("api_key_id")
+                .expect("token log api key id"),
+            None
+        );
+        assert_eq!(
+            token_row
+                .try_get::<i64, _>("counts_business_quota")
+                .expect("counts business quota"),
+            0
+        );
+        assert_eq!(
+            token_row
+                .try_get::<Option<i64>, _>("business_credits")
+                .expect("token log business credits"),
+            None
+        );
+        assert_eq!(
+            token_row
+                .try_get::<Option<i64>, _>("request_log_id")
+                .expect("linked request log id"),
+            Some(request_log_id)
+        );
+
+        let verdict = proxy
+            .peek_token_quota(&access_token.id)
+            .await
+            .expect("peek token quota");
+        assert_eq!(verdict.hourly_used, 0, "subpath rejects must not charge business quota");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_subpath_keeps_missing_and_invalid_token_401_responses() {
+        let db_path = temp_db_path("mcp-subpath-auth-401");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let upstream_addr =
+            spawn_counted_fake_forward_proxy(StatusCode::OK, Duration::from_millis(0), hits.clone())
+                .await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-mcp-subpath-auth-401".to_string()],
+            &upstream,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+        let proxy_addr = spawn_proxy_server(proxy, "https://api.tavily.com".to_string()).await;
+        let client = Client::new();
+
+        let missing_resp = client
+            .post(format!("http://{}/mcp/search", proxy_addr))
+            .json(&serde_json::json!({ "query": "missing token" }))
+            .send()
+            .await
+            .expect("missing token request");
+        assert_eq!(missing_resp.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            missing_resp
+                .json::<serde_json::Value>()
+                .await
+                .expect("missing token json")
+                .get("error")
+                .and_then(|value| value.as_str()),
+            Some("missing token")
+        );
+
+        let invalid_resp = client
+            .post(format!("http://{}/mcp/search", proxy_addr))
+            .header("Authorization", "Bearer th-invalid-token")
+            .json(&serde_json::json!({ "query": "invalid token" }))
+            .send()
+            .await
+            .expect("invalid token request");
+        assert_eq!(invalid_resp.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            invalid_resp
+                .json::<serde_json::Value>()
+                .await
+                .expect("invalid token json")
+                .get("error")
+                .and_then(|value| value.as_str()),
+            Some("invalid or disabled token")
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 0, "401 rejects must not hit upstream");
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let request_log_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM request_logs")
+            .fetch_one(&pool)
+            .await
+            .expect("request log count");
+        let token_log_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM auth_token_logs")
+            .fetch_one(&pool)
+            .await
+            .expect("token log count");
+        assert_eq!(request_log_count, 0);
+        assert_eq!(token_log_count, 0);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_root_sse_get_stays_405_while_subpath_sse_get_is_local_404() {
+        let db_path = temp_db_path("mcp-root-sse-and-subpath");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let upstream_addr =
+            spawn_counted_fake_forward_proxy(StatusCode::OK, Duration::from_millis(0), hits.clone())
+                .await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-mcp-root-sse-subpath".to_string()],
+            &upstream,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+        let access_token = proxy
+            .create_access_token(Some("mcp-root-sse-subpath"))
+            .await
+            .expect("create access token");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), "https://api.tavily.com".to_string()).await;
+        let client = Client::new();
+
+        let root_resp = client
+            .get(format!("http://{}/mcp?tavilyApiKey={}", proxy_addr, access_token.token))
+            .header("Accept", "text/event-stream")
+            .send()
+            .await
+            .expect("root sse request");
+        assert_eq!(root_resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+
+        let subpath_resp = client
+            .get(format!(
+                "http://{}/mcp/sse?tavilyApiKey={}",
+                proxy_addr, access_token.token
+            ))
+            .header("Accept", "text/event-stream")
+            .send()
+            .await
+            .expect("subpath sse request");
+        assert_eq!(subpath_resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(subpath_resp.text().await.expect("subpath body"), "Not Found");
+        assert_eq!(hits.load(Ordering::SeqCst), 0, "SSE guard paths must stay local");
+
+        let latest_token_log = proxy
+            .token_recent_logs(&access_token.id, 1, None)
+            .await
+            .expect("token recent logs")
+            .into_iter()
+            .next()
+            .expect("token log exists");
+        assert_eq!(latest_token_log.request_kind_key, "mcp:raw:/mcp/sse");
+        assert_eq!(
+            latest_token_log.failure_kind.as_deref(),
+            Some("mcp_path_404")
         );
 
         let _ = std::fs::remove_file(db_path);

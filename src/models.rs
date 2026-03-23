@@ -8,7 +8,7 @@ pub(crate) struct ApiKeyLease {
 }
 
 pub(crate) struct AttemptLog<'a> {
-    pub(crate) key_id: &'a str,
+    pub(crate) key_id: Option<&'a str>,
     pub(crate) auth_token_id: Option<&'a str>,
     pub(crate) method: &'a Method,
     pub(crate) path: &'a str,
@@ -396,7 +396,7 @@ pub(crate) struct KeyStateSnapshot {
 #[derive(Debug, Clone)]
 pub struct RequestLogRecord {
     pub id: i64,
-    pub key_id: String,
+    pub key_id: Option<String>,
     pub auth_token_id: Option<String>,
     pub method: String,
     pub path: String,

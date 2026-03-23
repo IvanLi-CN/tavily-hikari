@@ -139,6 +139,153 @@ fn extract_token_from_query(raw_query: Option<&str>) -> (Option<String>, Option<
     (query, token)
 }
 
+struct AuthenticatedRequestToken {
+    token_id: Option<String>,
+    using_dev_open_admin_fallback: bool,
+}
+
+fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.trim().to_string())
+        .and_then(|raw| raw.strip_prefix("Bearer ").map(str::to_string))
+        .map(|token| token.trim().to_string())
+        .filter(|token| !token.is_empty())
+}
+
+fn missing_token_response() -> Result<Response<Body>, StatusCode> {
+    Response::builder()
+        .status(StatusCode::UNAUTHORIZED)
+        .header(CONTENT_TYPE, "application/json; charset=utf-8")
+        .body(Body::from("{\"error\":\"missing token\"}"))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+fn invalid_token_response() -> Result<Response<Body>, StatusCode> {
+    Response::builder()
+        .status(StatusCode::UNAUTHORIZED)
+        .header(CONTENT_TYPE, "application/json; charset=utf-8")
+        .body(Body::from("{\"error\":\"invalid or disabled token\"}"))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+async fn authenticate_request_token(
+    state: &Arc<AppState>,
+    headers: &HeaderMap,
+    query_token: Option<String>,
+) -> Result<AuthenticatedRequestToken, Response<Body>> {
+    let header_token = extract_bearer_token(headers);
+    let Some(token_resolution) =
+        resolve_request_token(state.dev_open_admin, vec![header_token, query_token])
+    else {
+        return Err(
+            missing_token_response()
+                .unwrap_or_else(|status| Response::builder().status(status).body(Body::empty()).unwrap()),
+        );
+    };
+
+    let valid = if token_resolution.using_dev_open_admin_fallback {
+        true
+    } else {
+        state
+            .proxy
+            .validate_access_token(&token_resolution.token)
+            .await
+            .map_err(|_| {
+                Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Body::empty())
+                    .unwrap()
+            })?
+    };
+
+    if !valid {
+        return Err(
+            invalid_token_response()
+                .unwrap_or_else(|status| Response::builder().status(status).body(Body::empty()).unwrap()),
+        );
+    }
+
+    Ok(AuthenticatedRequestToken {
+        token_id: token_resolution.auth_token_id,
+        using_dev_open_admin_fallback: token_resolution.using_dev_open_admin_fallback,
+    })
+}
+
+async fn mcp_subpath_reject_handler(
+    State(state): State<Arc<AppState>>,
+    req: Request<Body>,
+) -> Result<Response<Body>, StatusCode> {
+    let (parts, body) = req.into_parts();
+    let method = parts.method.clone();
+    let path = parts.uri.path().to_owned();
+    let (query, query_token) = extract_token_from_query(parts.uri.query());
+    let authenticated = match authenticate_request_token(&state, &parts.headers, query_token).await {
+        Ok(authenticated) => authenticated,
+        Err(response) => return Ok(response),
+    };
+    let body_bytes = body::to_bytes(body, BODY_LIMIT)
+        .await
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let request_kind = classify_token_request_kind(&path, Some(body_bytes.as_ref()));
+    let response_body = b"Not Found".as_slice();
+    let empty_headers: [String; 0] = [];
+
+    let request_log_id = match state
+        .proxy
+        .record_local_request_log_without_key(
+            authenticated.token_id.as_deref(),
+            &method,
+            &path,
+            query.as_deref(),
+            StatusCode::NOT_FOUND,
+            Some(StatusCode::NOT_FOUND.as_u16() as i64),
+            &body_bytes,
+            response_body,
+            "error",
+            Some("mcp_path_404"),
+            &empty_headers,
+            &empty_headers,
+        )
+        .await
+    {
+        Ok(log_id) => Some(log_id),
+        Err(err) => {
+            eprintln!("local MCP subpath reject request_log failed for {path}: {err}");
+            None
+        }
+    };
+
+    if let Some(token_id) = authenticated.token_id.as_deref() {
+        let _ = state
+            .proxy
+            .record_token_attempt_with_kind_request_log_metadata(
+                token_id,
+                &method,
+                &path,
+                query.as_deref(),
+                Some(StatusCode::NOT_FOUND.as_u16() as i64),
+                Some(StatusCode::NOT_FOUND.as_u16() as i64),
+                false,
+                "error",
+                None,
+                &request_kind,
+                Some("mcp_path_404"),
+                Some("none"),
+                None,
+                request_log_id,
+            )
+            .await;
+    }
+
+    Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .header(CONTENT_TYPE, "text/plain; charset=utf-8")
+        .body(Body::from(response_body.to_vec()))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
 async fn proxy_handler(
     State(state): State<Arc<AppState>>,
     req: Request<Body>,
@@ -156,49 +303,12 @@ async fn proxy_handler(
         return Ok(response);
     }
 
-    // Require Authorization: Bearer th-<id>-<secret>
-    let auth_bearer = parts
-        .headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.trim().to_string());
-
-    let header_token = auth_bearer
-        .as_deref()
-        .and_then(|raw| raw.strip_prefix("Bearer "))
-        .map(str::trim)
-        .filter(|t| !t.is_empty())
-        .map(|t| t.to_string());
-
-    let Some(token_resolution) =
-        resolve_request_token(state.dev_open_admin, vec![header_token, query_token])
-    else {
-        return Response::builder()
-            .status(StatusCode::UNAUTHORIZED)
-            .header(CONTENT_TYPE, "application/json; charset=utf-8")
-            .body(Body::from("{\"error\":\"missing token\"}"))
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
+    let authenticated = match authenticate_request_token(&state, &parts.headers, query_token).await {
+        Ok(authenticated) => authenticated,
+        Err(response) => return Ok(response),
     };
-    let token = token_resolution.token;
-    let token_id = token_resolution.auth_token_id.clone();
-    let using_dev_open_admin_fallback = token_resolution.using_dev_open_admin_fallback;
-
-    let valid = if using_dev_open_admin_fallback {
-        true
-    } else {
-        state
-            .proxy
-            .validate_access_token(&token)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-    };
-    if !valid {
-        return Response::builder()
-            .status(StatusCode::UNAUTHORIZED)
-            .header(CONTENT_TYPE, "application/json; charset=utf-8")
-            .body(Body::from("{\"error\":\"invalid or disabled token\"}"))
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
-    }
+    let token_id = authenticated.token_id;
+    let using_dev_open_admin_fallback = authenticated.using_dev_open_admin_fallback;
 
     let mut headers = clone_headers(&parts.headers);
     // prevent leaking our Authorization to upstream
@@ -1102,7 +1212,7 @@ impl From<RequestLogRecord> for RequestLogView {
             token_request_kind_billing_group_for_request(&record.path, Some(&record.request_body));
         Self {
             id: record.id,
-            key_id: Some(record.key_id),
+            key_id: record.key_id,
             auth_token_id: record.auth_token_id,
             method: record.method,
             path: record.path,

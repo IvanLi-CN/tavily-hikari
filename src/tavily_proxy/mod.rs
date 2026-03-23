@@ -3461,7 +3461,7 @@ impl TavilyProxy {
                 let request_log_id = self
                     .key_store
                     .log_attempt(AttemptLog {
-                        key_id: &lease.id,
+                        key_id: Some(&lease.id),
                         auth_token_id: request.auth_token_id.as_deref(),
                         method: &request.method,
                         path: request.path.as_str(),
@@ -3500,7 +3500,7 @@ impl TavilyProxy {
                 );
                 self.key_store
                     .log_attempt(AttemptLog {
-                        key_id: &lease.id,
+                        key_id: Some(&lease.id),
                         auth_token_id: request.auth_token_id.as_deref(),
                         method: &request.method,
                         path: request.path.as_str(),
@@ -3638,7 +3638,7 @@ impl TavilyProxy {
                 let request_log_id = self
                     .key_store
                     .log_attempt(AttemptLog {
-                        key_id: &lease.id,
+                        key_id: Some(&lease.id),
                         auth_token_id,
                         method,
                         path: display_path,
@@ -3676,7 +3676,7 @@ impl TavilyProxy {
                 let redacted_empty: Vec<u8> = Vec::new();
                 self.key_store
                     .log_attempt(AttemptLog {
-                        key_id: &lease.id,
+                        key_id: Some(&lease.id),
                         auth_token_id,
                         method,
                         path: display_path,
@@ -3825,7 +3825,7 @@ impl TavilyProxy {
                 let request_log_id = self
                     .key_store
                     .log_attempt(AttemptLog {
-                        key_id: &lease.id,
+                        key_id: Some(&lease.id),
                         auth_token_id,
                         method,
                         path: display_path,
@@ -3889,7 +3889,7 @@ impl TavilyProxy {
                 let redacted_empty: Vec<u8> = Vec::new();
                 self.key_store
                     .log_attempt(AttemptLog {
-                        key_id: &lease.id,
+                        key_id: Some(&lease.id),
                         auth_token_id,
                         method,
                         path: display_path,
@@ -3995,7 +3995,7 @@ impl TavilyProxy {
                 let request_log_id = self
                     .key_store
                     .log_attempt(AttemptLog {
-                        key_id: &lease.id,
+                        key_id: Some(&lease.id),
                         auth_token_id,
                         method,
                         path: display_path,
@@ -4033,7 +4033,7 @@ impl TavilyProxy {
                 let redacted_empty: Vec<u8> = Vec::new();
                 self.key_store
                     .log_attempt(AttemptLog {
-                        key_id: &lease.id,
+                        key_id: Some(&lease.id),
                         auth_token_id,
                         method,
                         path: display_path,
@@ -4954,6 +4954,44 @@ impl TavilyProxy {
     }
 
     /// Record a token usage log. Intended for /mcp proxy handler.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_local_request_log_without_key(
+        &self,
+        auth_token_id: Option<&str>,
+        method: &Method,
+        path: &str,
+        query: Option<&str>,
+        http_status: StatusCode,
+        mcp_status: Option<i64>,
+        request_body: &[u8],
+        response_body: &[u8],
+        result_status: &str,
+        failure_kind: Option<&str>,
+        forwarded_headers: &[String],
+        dropped_headers: &[String],
+    ) -> Result<i64, ProxyError> {
+        self.key_store
+            .log_attempt(AttemptLog {
+                key_id: None,
+                auth_token_id,
+                method,
+                path,
+                query,
+                status: Some(http_status),
+                tavily_status_code: mcp_status,
+                error: None,
+                request_body,
+                response_body,
+                outcome: result_status,
+                failure_kind,
+                key_effect_code: KEY_EFFECT_NONE,
+                key_effect_summary: None,
+                forwarded_headers,
+                dropped_headers,
+            })
+            .await
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn record_token_attempt(
         &self,

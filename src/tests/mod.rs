@@ -633,7 +633,7 @@ async fn successful_request_logs_do_not_backfill_failure_kind() {
     proxy
         .key_store
         .log_attempt(AttemptLog {
-            key_id: &key_id,
+            key_id: Some(&key_id),
             auth_token_id: None,
             method: &Method::POST,
             path: "/mcp",
