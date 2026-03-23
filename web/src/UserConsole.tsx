@@ -71,13 +71,14 @@ import {
 
 const CODEX_DOC_URL = 'https://github.com/openai/codex/blob/main/docs/config.md'
 const CLAUDE_DOC_URL = 'https://code.claude.com/docs/en/mcp'
+const TAVILY_SEARCH_DOC_URL = 'https://docs.tavily.com/documentation/api-reference/endpoint/search'
 const VSCODE_DOC_URL = 'https://code.visualstudio.com/docs/copilot/customization/mcp-servers'
 const NOCODB_DOC_URL = 'https://nocodb.com/docs/product-docs/mcp'
 const USER_CONSOLE_SECRET_CACHE_TTL_MS = 2_000
 const USER_CONSOLE_SECRET_PREWARM_DELAY_MS = 120
 
 type GuideLanguage = 'toml' | 'json' | 'bash'
-type GuideKey = 'codex' | 'claude' | 'vscode' | 'claudeDesktop' | 'cursor' | 'windsurf' | 'cherryStudio'
+type GuideKey = 'codex' | 'claude' | 'vscode' | 'claudeDesktop' | 'cursor' | 'windsurf' | 'cherryStudio' | 'other'
 
 interface GuideReference {
   label: string
@@ -106,6 +107,7 @@ const GUIDE_KEY_ORDER: GuideKey[] = [
   'cursor',
   'windsurf',
   'cherryStudio',
+  'other',
 ]
 
 interface McpProbeStepDefinition {
@@ -2255,6 +2257,7 @@ function buildGuideContent(language: Language, baseUrl: string, prettyToken: str
   const codexSnippet = buildCodexSnippet(baseUrl)
   const claudeSnippet = buildClaudeSnippet(baseUrl, prettyToken, language)
   const genericJsonSnippet = buildGenericJsonSnippet(baseUrl, prettyToken)
+  const apiSearchSnippet = buildApiSearchSnippet(baseUrl, prettyToken)
   return {
     codex: {
       title: 'Codex CLI',
@@ -2407,6 +2410,27 @@ function buildGuideContent(language: Language, baseUrl: string, prettyToken: str
             <>6）可按需在 Cherry 中调整返回条数、是否附带答案/日期等选项。</>,
           ],
     },
+    other: {
+      title: isEnglish ? 'HTTP API clients' : 'HTTP API 客户端',
+      steps: isEnglish
+        ? [
+            <>Base URL: <code>{baseUrl}/api/tavily</code>. Append Tavily-compatible paths such as <code>/search</code>, <code>/extract</code>, <code>/crawl</code>, <code>/map</code>, or <code>/research</code>.</>,
+            <>Recommended auth: HTTP header <code>Authorization: Bearer {prettyToken}</code>.</>,
+            <>If a client cannot set headers, send the same token as JSON field <code>api_key</code>; the remaining payload stays Tavily-compatible.</>,
+          ]
+        : [
+            <>基础地址：<code>{baseUrl}/api/tavily</code>。按 Tavily HTTP API 的路径继续拼接 <code>/search</code>、<code>/extract</code>、<code>/crawl</code>、<code>/map</code>、<code>/research</code> 等端点。</>,
+            <>推荐认证方式：HTTP Header <code>Authorization: Bearer {prettyToken}</code>。</>,
+            <>如果客户端不方便自定义 Header，也可以把同一个令牌放进 JSON 请求体字段 <code>api_key</code>，其余参数继续按 Tavily API 格式填写。</>,
+          ],
+      sampleTitle: isEnglish ? 'Example: POST /api/tavily/search' : '示例：POST /api/tavily/search',
+      snippetLanguage: 'bash',
+      snippet: apiSearchSnippet,
+      reference: {
+        label: 'Tavily Search API docs',
+        url: TAVILY_SEARCH_DOC_URL,
+      },
+    },
   }
 }
 
@@ -2466,6 +2490,19 @@ function buildGenericJsonSnippet(baseUrl: string, prettyToken: string): string {
     }
   }
 }`
+}
+
+function buildApiSearchSnippet(baseUrl: string, prettyToken: string): string {
+  return `curl -X POST "${baseUrl}/api/tavily/search" \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer ${prettyToken}" \\
+  -d '{
+    "query": "latest AI agent news",
+    "topic": "general",
+    "search_depth": "basic",
+    "include_answer": true,
+    "max_results": 5
+  }'`
 }
 
 const EN = {

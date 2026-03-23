@@ -1319,7 +1319,7 @@ export const translations: Record<Language, TranslationShape> = {
         },
       },
       guide: {
-        title: 'Connect Tavily Hikari to common MCP clients',
+        title: 'Connect Tavily Hikari to common clients',
         dataSourceLabel: 'Reference: ',
         tokenVisibility: {
           show: 'Show token',
@@ -1333,7 +1333,7 @@ export const translations: Record<Language, TranslationShape> = {
           cursor: 'Cursor',
           windsurf: 'Windsurf',
           cherryStudio: 'Cherry Studio',
-          other: 'Other',
+          other: 'HTTP API',
         },
       },
       footer: {
@@ -2531,7 +2531,7 @@ export const translations: Record<Language, TranslationShape> = {
         },
       },
       guide: {
-        title: '如何在常见 MCP 客户端接入 Tavily Hikari',
+        title: '如何在常见客户端接入 Tavily Hikari',
         dataSourceLabel: '数据来源：',
         tokenVisibility: {
           show: '显示密钥',
@@ -2545,7 +2545,7 @@ export const translations: Record<Language, TranslationShape> = {
           cursor: 'Cursor',
           windsurf: 'Windsurf',
           cherryStudio: 'Cherry Studio',
-          other: '其他',
+          other: 'HTTP API',
         },
       },
       footer: {
