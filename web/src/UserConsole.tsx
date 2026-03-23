@@ -71,6 +71,7 @@ import {
 
 const CODEX_DOC_URL = 'https://github.com/openai/codex/blob/main/docs/config.md'
 const CLAUDE_DOC_URL = 'https://code.claude.com/docs/en/mcp'
+const MCP_SPEC_URL = 'https://modelcontextprotocol.io/introduction'
 const TAVILY_SEARCH_DOC_URL = 'https://docs.tavily.com/documentation/api-reference/endpoint/search'
 const VSCODE_DOC_URL = 'https://code.visualstudio.com/docs/copilot/customization/mcp-servers'
 const NOCODB_DOC_URL = 'https://nocodb.com/docs/product-docs/mcp'
@@ -85,6 +86,13 @@ interface GuideReference {
   url: string
 }
 
+interface GuideSample {
+  title: string
+  language?: GuideLanguage
+  snippet: string
+  reference?: GuideReference
+}
+
 interface GuideContent {
   title: string
   steps: ReactNode[]
@@ -92,6 +100,7 @@ interface GuideContent {
   snippetLanguage?: GuideLanguage
   snippet?: string
   reference?: GuideReference
+  samples?: GuideSample[]
 }
 
 interface ManualCopyBubbleState {
@@ -1642,27 +1651,27 @@ export default function UserConsole(): JSX.Element {
             <li key={index}>{step}</li>
           ))}
         </ol>
-        {guideDescription.sampleTitle && guideDescription.snippet && (
-          <div className="guide-sample">
-            <p className="guide-sample-title">{guideDescription.sampleTitle}</p>
+        {resolveGuideSamples(guideDescription).map((sample) => (
+          <div className="guide-sample" key={`${guideDescription.title}-${sample.title}`}>
+            <p className="guide-sample-title">{sample.title}</p>
             <div className="mockup-code relative guide-code-shell">
               <span className="guide-lang-badge badge badge-outline badge-sm">
-                {(guideDescription.snippetLanguage ?? 'code').toUpperCase()}
+                {(sample.language ?? 'code').toUpperCase()}
               </span>
               <pre>
-                <code dangerouslySetInnerHTML={{ __html: guideDescription.snippet }} />
+                <code dangerouslySetInnerHTML={{ __html: sample.snippet }} />
               </pre>
             </div>
+            {sample.reference ? (
+              <p className="guide-reference">
+                {publicStrings.guide.dataSourceLabel}
+                <a href={sample.reference.url} target="_blank" rel="noreferrer">
+                  {sample.reference.label}
+                </a>
+              </p>
+            ) : null}
           </div>
-        )}
-        {guideDescription.reference && (
-          <p className="guide-reference">
-            {publicStrings.guide.dataSourceLabel}
-            <a href={guideDescription.reference.url} target="_blank" rel="noreferrer">
-              {guideDescription.reference.label}
-            </a>
-          </p>
-        )}
+        ))}
       </div>
       {activeGuide === 'cherryStudio' && <CherryStudioMock apiKeyExample={guideToken} />}
     </section>
@@ -2197,6 +2206,7 @@ export const __testables = {
   isActiveGuideRevealContext,
   isBillableMcpProbeTool,
   nextRunningMcpProbeModel,
+  resolveGuideSamples,
   resolveGuideRevealContextKey,
   resolveGuideToken,
   resolveGuideTokenId,
@@ -2257,6 +2267,7 @@ function buildGuideContent(language: Language, baseUrl: string, prettyToken: str
   const codexSnippet = buildCodexSnippet(baseUrl)
   const claudeSnippet = buildClaudeSnippet(baseUrl, prettyToken, language)
   const genericJsonSnippet = buildGenericJsonSnippet(baseUrl, prettyToken)
+  const genericMcpSnippet = buildGenericMcpSnippet(baseUrl, prettyToken)
   const apiSearchSnippet = buildApiSearchSnippet(baseUrl, prettyToken)
   return {
     codex: {
@@ -2411,25 +2422,38 @@ function buildGuideContent(language: Language, baseUrl: string, prettyToken: str
           ],
     },
     other: {
-      title: isEnglish ? 'HTTP API clients' : 'HTTP API 客户端',
+      title: isEnglish ? 'Other clients' : '其他客户端',
       steps: isEnglish
         ? [
-            <>Base URL: <code>{baseUrl}/api/tavily</code>. Append Tavily-compatible paths such as <code>/search</code>, <code>/extract</code>, <code>/crawl</code>, <code>/map</code>, or <code>/research</code>.</>,
-            <>Recommended auth: HTTP header <code>Authorization: Bearer {prettyToken}</code>.</>,
-            <>If a client cannot set headers, send the same token as JSON field <code>api_key</code>; the remaining payload stays Tavily-compatible.</>,
+            <>If your client supports remote MCP, point it to <code>{baseUrl}/mcp</code> and attach <code>Authorization: Bearer {prettyToken}</code>.</>,
+            <>If your client talks to Tavily's HTTP API instead of MCP, use the façade base URL <code>{baseUrl}/api/tavily</code> and call endpoints such as <code>/search</code>, <code>/extract</code>, <code>/crawl</code>, <code>/map</code>, or <code>/research</code>.</>,
+            <>For HTTP API clients, prefer the same bearer token in the header; if headers are unavailable, send it as JSON field <code>api_key</code>.</>,
           ]
         : [
-            <>基础地址：<code>{baseUrl}/api/tavily</code>。按 Tavily HTTP API 的路径继续拼接 <code>/search</code>、<code>/extract</code>、<code>/crawl</code>、<code>/map</code>、<code>/research</code> 等端点。</>,
-            <>推荐认证方式：HTTP Header <code>Authorization: Bearer {prettyToken}</code>。</>,
-            <>如果客户端不方便自定义 Header，也可以把同一个令牌放进 JSON 请求体字段 <code>api_key</code>，其余参数继续按 Tavily API 格式填写。</>,
+            <>如果客户端支持远程 MCP，就把地址指向 <code>{baseUrl}/mcp</code>，并附带 <code>Authorization: Bearer {prettyToken}</code>。</>,
+            <>如果客户端走的是 Tavily 风格 HTTP API，而不是 MCP，就使用基础地址 <code>{baseUrl}/api/tavily</code>，再继续调用 <code>/search</code>、<code>/extract</code>、<code>/crawl</code>、<code>/map</code>、<code>/research</code> 等端点。</>,
+            <>对于 HTTP API 客户端，推荐继续使用同一个 Bearer Token；如果没法自定义 Header，也可以把令牌写入 JSON 请求体字段 <code>api_key</code>。</>,
           ],
-      sampleTitle: isEnglish ? 'Example: POST /api/tavily/search' : '示例：POST /api/tavily/search',
-      snippetLanguage: 'bash',
-      snippet: apiSearchSnippet,
-      reference: {
-        label: 'Tavily Search API docs',
-        url: TAVILY_SEARCH_DOC_URL,
-      },
+      samples: [
+        {
+          title: isEnglish ? 'Example 1: generic MCP client config' : '示例 1：通用 MCP 客户端配置',
+          language: 'json',
+          snippet: genericMcpSnippet,
+          reference: {
+            label: 'Model Context Protocol spec',
+            url: MCP_SPEC_URL,
+          },
+        },
+        {
+          title: isEnglish ? 'Example 2: POST /api/tavily/search' : '示例 2：POST /api/tavily/search',
+          language: 'bash',
+          snippet: apiSearchSnippet,
+          reference: {
+            label: 'Tavily Search API docs',
+            url: TAVILY_SEARCH_DOC_URL,
+          },
+        },
+      ],
     },
   }
 }
@@ -2492,6 +2516,16 @@ function buildGenericJsonSnippet(baseUrl: string, prettyToken: string): string {
 }`
 }
 
+function buildGenericMcpSnippet(baseUrl: string, prettyToken: string): string {
+  return `{
+  <span class="hl-key">"type"</span>: <span class="hl-string">"http"</span>,
+  <span class="hl-key">"url"</span>: <span class="hl-string">"${baseUrl}/mcp"</span>,
+  <span class="hl-key">"headers"</span>: {
+    <span class="hl-key">"Authorization"</span>: <span class="hl-string">"Bearer ${prettyToken}"</span>
+  }
+}`
+}
+
 function buildApiSearchSnippet(baseUrl: string, prettyToken: string): string {
   return `curl -X POST "${baseUrl}/api/tavily/search" \\
   -H "Content-Type: application/json" \\
@@ -2503,6 +2537,19 @@ function buildApiSearchSnippet(baseUrl: string, prettyToken: string): string {
     "include_answer": true,
     "max_results": 5
   }'`
+}
+
+function resolveGuideSamples(content: GuideContent): GuideSample[] {
+  if (content.samples && content.samples.length > 0) return content.samples
+  if (content.sampleTitle && content.snippet) {
+    return [{
+      title: content.sampleTitle,
+      language: content.snippetLanguage,
+      snippet: content.snippet,
+      reference: content.reference,
+    }]
+  }
+  return []
 }
 
 const EN = {

@@ -96,6 +96,30 @@ describe('UserConsole landing guide helpers', () => {
     expect(__testables.isActiveGuideRevealContext('landing:tokens:a1b2', 'landing:tokens:b2c3')).toBe(false)
     expect(__testables.isActiveGuideRevealContext('token:a1b2', null)).toBe(false)
   })
+
+  it('normalizes guide samples so the other tab can render both MCP and API examples', () => {
+    expect(__testables.resolveGuideSamples({
+      title: 'Legacy',
+      steps: [],
+      sampleTitle: 'Example',
+      snippetLanguage: 'bash',
+      snippet: 'echo ok',
+      reference: { label: 'Docs', url: 'https://example.com' },
+    })).toEqual([
+      {
+        title: 'Example',
+        language: 'bash',
+        snippet: 'echo ok',
+        reference: { label: 'Docs', url: 'https://example.com' },
+      },
+    ])
+
+    const samples = [
+      { title: 'MCP', language: 'json', snippet: '{}' },
+      { title: 'API', language: 'bash', snippet: 'curl ...' },
+    ]
+    expect(__testables.resolveGuideSamples({ title: 'Other', steps: [], samples })).toBe(samples)
+  })
 })
 
 describe('UserConsole probe step definitions', () => {

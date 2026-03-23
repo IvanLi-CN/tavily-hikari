@@ -1333,7 +1333,7 @@ export const translations: Record<Language, TranslationShape> = {
           cursor: 'Cursor',
           windsurf: 'Windsurf',
           cherryStudio: 'Cherry Studio',
-          other: 'HTTP API',
+          other: 'Other',
         },
       },
       footer: {
@@ -2545,7 +2545,7 @@ export const translations: Record<Language, TranslationShape> = {
           cursor: 'Cursor',
           windsurf: 'Windsurf',
           cherryStudio: 'Cherry Studio',
-          other: 'HTTP API',
+          other: '其他',
         },
       },
       footer: {

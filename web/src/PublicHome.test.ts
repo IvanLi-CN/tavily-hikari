@@ -26,4 +26,28 @@ describe('PublicHome guide token visibility', () => {
     expect(__testables.resolvePublicGuideToken('th-a1b2-', placeholder, true)).toBe(placeholder)
     expect(__testables.resolvePublicGuideToken('', placeholder, true)).toBe(placeholder)
   })
+
+  it('normalizes legacy single-sample guides into an array and preserves multi-sample guides', () => {
+    expect(__testables.resolveGuideSamples({
+      title: 'Legacy',
+      steps: [],
+      sampleTitle: 'Example',
+      snippetLanguage: 'bash',
+      snippet: 'echo ok',
+      reference: { label: 'Docs', url: 'https://example.com' },
+    })).toEqual([
+      {
+        title: 'Example',
+        language: 'bash',
+        snippet: 'echo ok',
+        reference: { label: 'Docs', url: 'https://example.com' },
+      },
+    ])
+
+    const samples = [
+      { title: 'One', language: 'json', snippet: '{}' },
+      { title: 'Two', language: 'bash', snippet: 'curl ...' },
+    ]
+    expect(__testables.resolveGuideSamples({ title: 'Modern', steps: [], samples })).toBe(samples)
+  })
 })
