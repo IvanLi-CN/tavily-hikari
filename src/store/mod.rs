@@ -119,7 +119,9 @@ struct RequestLogFilterParams<'a> {
     key_effect_code: Option<&'a str>,
     auth_token_id: Option<&'a str>,
     key_id: Option<&'a str>,
-    effective_request_kind_sql: &'a str,
+    stored_request_kind_sql: &'a str,
+    legacy_request_kind_predicate_sql: &'a str,
+    legacy_request_kind_sql: &'a str,
     has_where: bool,
 }
 
@@ -7870,6 +7872,61 @@ impl KeyStore {
             .collect()
     }
 
+    fn push_request_kind_filter_clause<'a>(
+        builder: &mut QueryBuilder<'a, Sqlite>,
+        stored_request_kind_sql: &str,
+        legacy_request_kind_predicate_sql: &str,
+        legacy_request_kind_sql: &str,
+        request_kinds: &[&'a str],
+    ) {
+        builder.push("(");
+        builder.push(stored_request_kind_sql.to_string());
+        builder.push(" IN (");
+        {
+            let mut separated = builder.separated(", ");
+            for request_kind in request_kinds {
+                separated.push_bind(*request_kind);
+            }
+            separated.push_unseparated(")");
+        }
+        builder.push(" OR (");
+        builder.push(legacy_request_kind_predicate_sql.to_string());
+        builder.push(" AND ");
+        builder.push(legacy_request_kind_sql.to_string());
+        builder.push(" IN (");
+        {
+            let mut separated = builder.separated(", ");
+            for request_kind in request_kinds {
+                separated.push_bind(*request_kind);
+            }
+            separated.push_unseparated(")");
+        }
+        builder.push("))");
+    }
+
+    fn push_operational_class_filter_clause<'a>(
+        builder: &mut QueryBuilder<'a, Sqlite>,
+        operational_class: &'a str,
+        legacy_request_kind_predicate_sql: &str,
+        stored_operational_class_sql: &str,
+        legacy_operational_class_sql: &str,
+    ) {
+        builder.push("(");
+        builder.push("((NOT ");
+        builder.push(legacy_request_kind_predicate_sql.to_string());
+        builder.push(") AND ");
+        builder.push(stored_operational_class_sql.to_string());
+        builder.push(" = ");
+        builder.push_bind(operational_class);
+        builder.push(") OR (");
+        builder.push(legacy_request_kind_predicate_sql.to_string());
+        builder.push(" AND ");
+        builder.push(legacy_operational_class_sql.to_string());
+        builder.push(" = ");
+        builder.push_bind(operational_class);
+        builder.push("))");
+    }
+
     fn map_token_log_row(row: sqlx::sqlite::SqliteRow) -> Result<TokenLogRecord, sqlx::Error> {
         let key_id: Option<String> = row.try_get("api_key_id")?;
         let method: String = row.try_get("method")?;
@@ -8012,9 +8069,18 @@ impl KeyStore {
             .iter()
             .map(String::as_str)
             .collect();
-        let effective_request_kind_sql = token_log_request_kind_key_sql("path", "request_kind_key");
-        let operational_class_case_sql = token_log_operational_class_case_sql(
-            &effective_request_kind_sql,
+        let stored_request_kind_sql = "request_kind_key";
+        let legacy_request_kind_predicate_sql =
+            legacy_request_kind_stored_predicate_sql(stored_request_kind_sql);
+        let legacy_request_kind_sql = token_log_request_kind_key_sql("path", "request_kind_key");
+        let stored_operational_class_case_sql = token_log_operational_class_case_sql(
+            stored_request_kind_sql,
+            "counts_business_quota",
+            "result_status",
+            "COALESCE(failure_kind, '')",
+        );
+        let legacy_operational_class_case_sql = token_log_operational_class_case_sql(
+            &legacy_request_kind_sql,
             "counts_business_quota",
             "result_status",
             "COALESCE(failure_kind, '')",
@@ -8043,21 +8109,23 @@ impl KeyStore {
         }
         if !filtered_request_kinds.is_empty() {
             total_query.push(" AND ");
-            total_query.push(effective_request_kind_sql.clone());
-            total_query.push(" IN (");
-            {
-                let mut separated = total_query.separated(", ");
-                for kind in &filtered_request_kinds {
-                    separated.push_bind(kind);
-                }
-                separated.push_unseparated(")");
-            }
+            Self::push_request_kind_filter_clause(
+                &mut total_query,
+                stored_request_kind_sql,
+                &legacy_request_kind_predicate_sql,
+                &legacy_request_kind_sql,
+                &filtered_request_kinds,
+            );
         }
         if let Some(operational_class) = operational_class {
             total_query.push(" AND ");
-            total_query.push(operational_class_case_sql.clone());
-            total_query.push(" = ");
-            total_query.push_bind(operational_class);
+            Self::push_operational_class_filter_clause(
+                &mut total_query,
+                operational_class,
+                &legacy_request_kind_predicate_sql,
+                &stored_operational_class_case_sql,
+                &legacy_operational_class_case_sql,
+            );
         }
         let total: i64 = total_query
             .build_query_scalar()
@@ -8103,21 +8171,23 @@ impl KeyStore {
         }
         if !filtered_request_kinds.is_empty() {
             rows_query.push(" AND ");
-            rows_query.push(effective_request_kind_sql.clone());
-            rows_query.push(" IN (");
-            {
-                let mut separated = rows_query.separated(", ");
-                for kind in &filtered_request_kinds {
-                    separated.push_bind(kind);
-                }
-                separated.push_unseparated(")");
-            }
+            Self::push_request_kind_filter_clause(
+                &mut rows_query,
+                stored_request_kind_sql,
+                &legacy_request_kind_predicate_sql,
+                &legacy_request_kind_sql,
+                &filtered_request_kinds,
+            );
         }
         if let Some(operational_class) = operational_class {
             rows_query.push(" AND ");
-            rows_query.push(operational_class_case_sql);
-            rows_query.push(" = ");
-            rows_query.push_bind(operational_class);
+            Self::push_operational_class_filter_clause(
+                &mut rows_query,
+                operational_class,
+                &legacy_request_kind_predicate_sql,
+                &stored_operational_class_case_sql,
+                &legacy_operational_class_case_sql,
+            );
         }
         rows_query.push(" ORDER BY created_at DESC, id DESC LIMIT ");
         rows_query.push_bind(per_page);
@@ -8201,13 +8271,17 @@ impl KeyStore {
         until: Option<i64>,
     ) -> Result<Vec<TokenRequestKindOption>, ProxyError> {
         type RequestKindOptionRow = (String, String, i64, i64, i64);
-        let canonical_key_sql = token_log_request_kind_key_sql("path", "request_kind_key");
-        let canonical_label_sql = canonical_request_kind_label_sql(&canonical_key_sql);
+        let stored_request_kind_sql = "request_kind_key";
+        let canonical_request_kind_predicate_sql =
+            canonical_request_kind_stored_predicate_sql(stored_request_kind_sql);
+        let legacy_request_kind_predicate_sql =
+            legacy_request_kind_stored_predicate_sql(stored_request_kind_sql);
+        let stored_label_sql = canonical_request_kind_label_sql(stored_request_kind_sql);
         let mut stored_query = QueryBuilder::<Sqlite>::new(format!(
             "
             SELECT
-                {canonical_key_sql} AS request_kind_key,
-                {canonical_label_sql} AS request_kind_label,
+                {stored_request_kind_sql} AS request_kind_key,
+                {stored_label_sql} AS request_kind_label,
                 COUNT(*) AS request_count,
                 MAX(CASE WHEN counts_business_quota = 1 THEN 1 ELSE 0 END) AS has_billable,
                 MAX(CASE WHEN counts_business_quota = 0 THEN 1 ELSE 0 END) AS has_non_billable
@@ -8222,14 +8296,47 @@ impl KeyStore {
             stored_query.push(" AND created_at < ");
             stored_query.push_bind(until);
         }
+        stored_query.push(" AND ");
+        stored_query.push(canonical_request_kind_predicate_sql.clone());
         stored_query.push(" GROUP BY 1, 2");
 
-        let options = stored_query
+        let stored_options = stored_query
+            .build_query_as::<RequestKindOptionRow>()
+            .fetch_all(&self.pool)
+            .await?;
+        let legacy_request_kind_sql = token_log_request_kind_key_sql("path", "request_kind_key");
+        let legacy_label_sql = canonical_request_kind_label_sql(&legacy_request_kind_sql);
+        let mut legacy_query = QueryBuilder::<Sqlite>::new(format!(
+            "
+            SELECT
+                {legacy_request_kind_sql} AS request_kind_key,
+                {legacy_label_sql} AS request_kind_label,
+                COUNT(*) AS request_count,
+                MAX(CASE WHEN counts_business_quota = 1 THEN 1 ELSE 0 END) AS has_billable,
+                MAX(CASE WHEN counts_business_quota = 0 THEN 1 ELSE 0 END) AS has_non_billable
+            FROM auth_token_logs
+            WHERE token_id =
+            "
+        ));
+        legacy_query.push_bind(token_id);
+        legacy_query.push(" AND created_at >= ");
+        legacy_query.push_bind(since);
+        if let Some(until) = until {
+            legacy_query.push(" AND created_at < ");
+            legacy_query.push_bind(until);
+        }
+        legacy_query.push(" AND ");
+        legacy_query.push(legacy_request_kind_predicate_sql);
+        legacy_query.push(" GROUP BY 1, 2");
+
+        let legacy_options = legacy_query
             .build_query_as::<RequestKindOptionRow>()
             .fetch_all(&self.pool)
             .await?;
         let mut options_by_key = BTreeMap::<String, (String, bool, bool, i64)>::new();
-        for (key, label, request_count, has_billable, has_non_billable) in options {
+        for (key, label, request_count, has_billable, has_non_billable) in
+            stored_options.into_iter().chain(legacy_options)
+        {
             match options_by_key.get_mut(&key) {
                 Some((
                     current_label,
@@ -9696,7 +9803,9 @@ impl KeyStore {
             key_effect_code,
             auth_token_id,
             key_id,
-            effective_request_kind_sql,
+            stored_request_kind_sql,
+            legacy_request_kind_predicate_sql,
+            legacy_request_kind_sql,
             mut has_where,
         } = filters;
         if let Some(result_status) = result_status {
@@ -9737,15 +9846,13 @@ impl KeyStore {
         }
         if !request_kinds.is_empty() {
             builder.push(if has_where { " AND " } else { " WHERE " });
-            builder.push(effective_request_kind_sql.to_string());
-            builder.push(" IN (");
-            {
-                let mut separated = builder.separated(", ");
-                for request_kind in request_kinds {
-                    separated.push_bind(request_kind);
-                }
-                separated.push_unseparated(")");
-            }
+            Self::push_request_kind_filter_clause(
+                builder,
+                stored_request_kind_sql,
+                legacy_request_kind_predicate_sql,
+                legacy_request_kind_sql,
+                request_kinds,
+            );
         }
     }
 
@@ -9755,27 +9862,60 @@ impl KeyStore {
         since: Option<i64>,
     ) -> Result<Vec<TokenRequestKindOption>, ProxyError> {
         type RequestKindOptionRow = (String, String, i64);
-        let canonical_key_sql =
-            request_log_request_kind_key_sql("path", "request_body", "request_kind_key");
-        let canonical_label_sql = canonical_request_kind_label_sql(&canonical_key_sql);
-        let mut query = QueryBuilder::<Sqlite>::new(format!(
-            "SELECT {canonical_key_sql} AS request_kind_key, {canonical_label_sql} AS request_kind_label, COUNT(*) AS request_count FROM request_logs"
+        let stored_request_kind_sql = "request_kind_key";
+        let canonical_request_kind_predicate_sql =
+            canonical_request_kind_stored_predicate_sql(stored_request_kind_sql);
+        let legacy_request_kind_predicate_sql =
+            legacy_request_kind_stored_predicate_sql(stored_request_kind_sql);
+        let stored_label_sql = canonical_request_kind_label_sql(stored_request_kind_sql);
+        let mut stored_query = QueryBuilder::<Sqlite>::new(format!(
+            "SELECT {stored_request_kind_sql} AS request_kind_key, {stored_label_sql} AS request_kind_label, COUNT(*) AS request_count FROM request_logs"
         ));
-        let has_where = Self::push_request_logs_scope(&mut query, scoped_key_id, since);
-        query.push(if has_where { " AND " } else { " WHERE " });
-        query.push(format!(
-            "{canonical_key_sql} IS NOT NULL AND TRIM({canonical_key_sql}) <> ''"
-        ));
-        query.push(" GROUP BY 1, 2");
+        let has_where = Self::push_request_logs_scope(&mut stored_query, scoped_key_id, since);
+        stored_query.push(if has_where { " AND " } else { " WHERE " });
+        stored_query.push(canonical_request_kind_predicate_sql);
+        stored_query.push(" GROUP BY 1, 2");
 
-        let rows = query
+        let stored_rows = stored_query
             .build_query_as::<RequestKindOptionRow>()
             .fetch_all(&self.pool)
             .await?;
+        let legacy_request_kind_sql =
+            request_log_request_kind_key_sql("path", "request_body", "request_kind_key");
+        let legacy_label_sql = canonical_request_kind_label_sql(&legacy_request_kind_sql);
+        let mut legacy_query = QueryBuilder::<Sqlite>::new(format!(
+            "SELECT {legacy_request_kind_sql} AS request_kind_key, {legacy_label_sql} AS request_kind_label, COUNT(*) AS request_count FROM request_logs"
+        ));
+        let has_where = Self::push_request_logs_scope(&mut legacy_query, scoped_key_id, since);
+        legacy_query.push(if has_where { " AND " } else { " WHERE " });
+        legacy_query.push(legacy_request_kind_predicate_sql);
+        legacy_query.push(" GROUP BY 1, 2");
 
-        Ok(rows
+        let legacy_rows = legacy_query
+            .build_query_as::<RequestKindOptionRow>()
+            .fetch_all(&self.pool)
+            .await?;
+        let mut options_by_key = BTreeMap::<String, (String, i64)>::new();
+        for (key, label, count) in stored_rows.into_iter().chain(legacy_rows) {
+            match options_by_key.get_mut(&key) {
+                Some((current_label, current_count))
+                    if prefer_request_kind_label(current_label, &label) =>
+                {
+                    *current_label = label;
+                    *current_count += count;
+                }
+                Some((_, current_count)) => {
+                    *current_count += count;
+                }
+                None => {
+                    options_by_key.insert(key, (label, count));
+                }
+            }
+        }
+
+        Ok(options_by_key
             .into_iter()
-            .map(|(key, label, count)| TokenRequestKindOption {
+            .map(|(key, (label, count))| TokenRequestKindOption {
                 protocol_group: token_request_kind_protocol_group(&key).to_string(),
                 billing_group: token_request_kind_billing_group(&key).to_string(),
                 key,
@@ -9840,11 +9980,24 @@ impl KeyStore {
             .iter()
             .map(String::as_str)
             .collect();
-        let effective_request_kind_sql =
+        let stored_request_kind_sql = "request_kind_key";
+        let legacy_request_kind_predicate_sql =
+            legacy_request_kind_stored_predicate_sql(stored_request_kind_sql);
+        let legacy_request_kind_sql =
             request_log_request_kind_key_sql("path", "request_body", "request_kind_key");
-        let operational_class_case_sql = request_log_operational_class_case_sql(
-            "path",
-            "request_body",
+        let stored_counts_business_quota_sql =
+            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body");
+        let stored_operational_class_case_sql = request_log_operational_class_case_sql(
+            stored_request_kind_sql,
+            &stored_counts_business_quota_sql,
+            "result_status",
+            "COALESCE(failure_kind, '')",
+        );
+        let legacy_counts_business_quota_sql =
+            request_log_counts_business_quota_sql(&legacy_request_kind_sql, "request_body");
+        let legacy_operational_class_case_sql = request_log_operational_class_case_sql(
+            &legacy_request_kind_sql,
+            &legacy_counts_business_quota_sql,
             "result_status",
             "COALESCE(failure_kind, '')",
         );
@@ -9859,15 +10012,21 @@ impl KeyStore {
                 key_effect_code,
                 auth_token_id,
                 key_id,
-                effective_request_kind_sql: &effective_request_kind_sql,
+                stored_request_kind_sql,
+                legacy_request_kind_predicate_sql: &legacy_request_kind_predicate_sql,
+                legacy_request_kind_sql: &legacy_request_kind_sql,
                 has_where,
             },
         );
         if let Some(operational_class) = operational_class {
             total_query.push(" AND ");
-            total_query.push(operational_class_case_sql.clone());
-            total_query.push(" = ");
-            total_query.push_bind(operational_class);
+            Self::push_operational_class_filter_clause(
+                &mut total_query,
+                operational_class,
+                &legacy_request_kind_predicate_sql,
+                &stored_operational_class_case_sql,
+                &legacy_operational_class_case_sql,
+            );
         }
         let total: i64 = total_query
             .build_query_scalar()
@@ -9915,15 +10074,21 @@ impl KeyStore {
                 key_effect_code,
                 auth_token_id,
                 key_id,
-                effective_request_kind_sql: &effective_request_kind_sql,
+                stored_request_kind_sql,
+                legacy_request_kind_predicate_sql: &legacy_request_kind_predicate_sql,
+                legacy_request_kind_sql: &legacy_request_kind_sql,
                 has_where,
             },
         );
         if let Some(operational_class) = operational_class {
             items_query.push(" AND ");
-            items_query.push(operational_class_case_sql);
-            items_query.push(" = ");
-            items_query.push_bind(operational_class);
+            Self::push_operational_class_filter_clause(
+                &mut items_query,
+                operational_class,
+                &legacy_request_kind_predicate_sql,
+                &stored_operational_class_case_sql,
+                &legacy_operational_class_case_sql,
+            );
         }
         items_query.push(" ORDER BY created_at DESC, id DESC LIMIT ");
         items_query.push_bind(per_page);

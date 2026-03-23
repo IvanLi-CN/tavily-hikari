@@ -87,16 +87,48 @@ const canonicalTokenLogRequestKindOptions: TokenLogRequestKindOption[] = [
   { key: 'mcp:unsupported-path', label: 'MCP | unsupported path', protocol_group: 'mcp', billing_group: 'non_billable' },
 ]
 
+const canonicalTokenLogRequestKindOptionsByKey = new Map<string, TokenLogRequestKindOption>(
+  canonicalTokenLogRequestKindOptions.map((option) => [option.key, option]),
+)
+
 function sortRequestKindOptions(left: TokenLogRequestKindOption, right: TokenLogRequestKindOption): number {
   return left.label.localeCompare(right.label) || left.key.localeCompare(right.key)
+}
+
+function normalizeRequestKindSelectionKey(raw: string): string {
+  const value = raw.trim()
+  if (!value) return ''
+  if (canonicalTokenLogRequestKindOptionsByKey.has(value)) {
+    return value
+  }
+  if (value.startsWith('api:raw:') || value.startsWith('api:')) {
+    return 'api:unknown-path'
+  }
+  if (value.startsWith('mcp:tool:')) {
+    return 'mcp:third-party-tool'
+  }
+  if (value === 'mcp:tools/call') {
+    return 'mcp:unknown-payload'
+  }
+  if (value.startsWith('mcp:raw:')) {
+    const path = value.slice('mcp:raw:'.length)
+    if (path === '/mcp') {
+      return 'mcp:unknown-payload'
+    }
+    if (path.startsWith('/mcp/')) {
+      return 'mcp:unsupported-path'
+    }
+  }
+  if (value.startsWith('mcp:')) {
+    return 'mcp:unknown-method'
+  }
+  return value
 }
 
 export function mergeRequestKindCatalog(
   options: TokenLogRequestKindOption[],
 ): TokenLogRequestKindOption[] {
-  const byKey = new Map<string, TokenLogRequestKindOption>(
-    canonicalTokenLogRequestKindOptions.map((option) => [option.key, option]),
-  )
+  const byKey = new Map<string, TokenLogRequestKindOption>(canonicalTokenLogRequestKindOptionsByKey)
   for (const option of options) {
     const key = option.key.trim()
     if (!key) continue
@@ -109,7 +141,7 @@ export function uniqueSelectedRequestKinds(requestKinds: string[]): string[] {
   const seen = new Set<string>()
   const normalized: string[] = []
   for (const raw of requestKinds) {
-    const value = raw.trim()
+    const value = normalizeRequestKindSelectionKey(raw)
     if (!value || seen.has(value)) continue
     seen.add(value)
     normalized.push(value)
@@ -151,7 +183,7 @@ export function buildVisibleRequestKindOptions(
 }
 
 export function toggleRequestKindSelection(selected: string[], nextKey: string): string[] {
-  const key = nextKey.trim()
+  const key = normalizeRequestKindSelectionKey(nextKey)
   if (!key) return uniqueSelectedRequestKinds(selected)
   const normalized = uniqueSelectedRequestKinds(selected)
   return normalized.includes(key)

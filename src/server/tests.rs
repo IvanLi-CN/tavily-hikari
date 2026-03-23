@@ -8020,6 +8020,175 @@ colo=LAX
     }
 
     #[tokio::test]
+    async fn admin_logs_endpoint_uses_canonical_request_kind_for_filters_and_view_metadata() {
+        let db_path = temp_db_path("admin-logs-canonical-request-kind");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-admin-logs-canonical-request-kind".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let key_id = proxy
+            .list_api_key_metrics()
+            .await
+            .expect("list api key metrics")
+            .into_iter()
+            .next()
+            .expect("seeded key exists")
+            .id;
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        sqlx::query(
+            r#"
+            INSERT INTO request_logs (
+                api_key_id,
+                auth_token_id,
+                method,
+                path,
+                query,
+                status_code,
+                tavily_status_code,
+                error_message,
+                result_status,
+                failure_kind,
+                key_effect_code,
+                key_effect_summary,
+                request_kind_key,
+                request_kind_label,
+                legacy_request_kind_key,
+                legacy_request_kind_label,
+                request_body,
+                response_body,
+                forwarded_headers,
+                dropped_headers,
+                created_at
+            ) VALUES
+                (?, 'token-backfilled-billable', 'POST', '/mcp', NULL, 200, 200, NULL, 'success', NULL, 'none', NULL, 'mcp:search', 'MCP | search', 'mcp:raw:/mcp', 'MCP | /mcp', X'6E6F742D6A736F6E', X'5B5D', '[]', '[]', ?),
+                (?, 'token-backfilled-neutral', 'POST', '/mcp', NULL, 200, 200, NULL, 'success', NULL, 'none', NULL, 'mcp:notifications/initialized', 'MCP | notifications/initialized', 'mcp:raw:/mcp', 'MCP | /mcp', X'6E6F742D6A736F6E', X'5B5D', '[]', '[]', ?)
+            "#,
+        )
+        .bind(&key_id)
+        .bind(100_i64)
+        .bind(&key_id)
+        .bind(200_i64)
+        .execute(&pool)
+        .await
+        .expect("insert canonical request log rows");
+
+        let admin_password = "admin-logs-canonical-password";
+        let admin_addr = spawn_builtin_keys_admin_server(proxy, admin_password).await;
+        let client = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build client");
+
+        let login_resp = client
+            .post(format!("http://{}/api/admin/login", admin_addr))
+            .json(&serde_json::json!({ "password": admin_password }))
+            .send()
+            .await
+            .expect("admin login");
+        assert_eq!(login_resp.status(), reqwest::StatusCode::OK);
+        let admin_cookie = find_cookie_pair(login_resp.headers(), BUILTIN_ADMIN_COOKIE_NAME)
+            .expect("admin session cookie");
+
+        let success_resp = client
+            .get(format!(
+                "http://{}/api/logs?page=1&per_page=20&operational_class=success",
+                admin_addr
+            ))
+            .header(reqwest::header::COOKIE, admin_cookie.clone())
+            .send()
+            .await
+            .expect("success admin logs request");
+        assert_eq!(success_resp.status(), reqwest::StatusCode::OK);
+        let success_body: serde_json::Value =
+            success_resp.json().await.expect("success admin logs json");
+        let success_items = success_body
+            .get("items")
+            .and_then(|value| value.as_array())
+            .expect("success admin log items");
+        let billable_log = success_items
+            .iter()
+            .find(|item| {
+                item.get("auth_token_id")
+                    .and_then(|value| value.as_str())
+                    .is_some_and(|value| value == "token-backfilled-billable")
+            })
+            .expect("billable canonical request log");
+        assert_eq!(
+            billable_log
+                .get("operationalClass")
+                .and_then(|value| value.as_str()),
+            Some("success")
+        );
+        assert_eq!(
+            billable_log
+                .get("requestKindBillingGroup")
+                .and_then(|value| value.as_str()),
+            Some("billable")
+        );
+        assert!(
+            success_items.iter().all(|item| {
+                item.get("auth_token_id")
+                    .and_then(|value| value.as_str())
+                    != Some("token-backfilled-neutral")
+            }),
+            "neutral canonical rows must not leak into the success filter"
+        );
+
+        let neutral_resp = client
+            .get(format!(
+                "http://{}/api/logs?page=1&per_page=20&operational_class=neutral",
+                admin_addr
+            ))
+            .header(reqwest::header::COOKIE, admin_cookie)
+            .send()
+            .await
+            .expect("neutral admin logs request");
+        assert_eq!(neutral_resp.status(), reqwest::StatusCode::OK);
+        let neutral_body: serde_json::Value =
+            neutral_resp.json().await.expect("neutral admin logs json");
+        let neutral_items = neutral_body
+            .get("items")
+            .and_then(|value| value.as_array())
+            .expect("neutral admin log items");
+        let neutral_log = neutral_items
+            .iter()
+            .find(|item| {
+                item.get("auth_token_id")
+                    .and_then(|value| value.as_str())
+                    .is_some_and(|value| value == "token-backfilled-neutral")
+            })
+            .expect("neutral canonical request log");
+        assert_eq!(
+            neutral_log
+                .get("operationalClass")
+                .and_then(|value| value.as_str()),
+            Some("neutral")
+        );
+        assert_eq!(
+            neutral_log
+                .get("requestKindBillingGroup")
+                .and_then(|value| value.as_str()),
+            Some("non_billable")
+        );
+        assert!(
+            neutral_items.iter().all(|item| {
+                item.get("auth_token_id")
+                    .and_then(|value| value.as_str())
+                    != Some("token-backfilled-billable")
+            }),
+            "billable canonical rows must not leak into the neutral filter"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn api_keys_schema_upgrade_backfills_created_at_best_effort() {
         let db_path = temp_db_path("api-keys-created-at-upgrade");
         let db_str = db_path.to_string_lossy().to_string();

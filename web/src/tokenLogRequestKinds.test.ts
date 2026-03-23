@@ -20,10 +20,23 @@ import {
 } from './tokenLogRequestKinds'
 
 describe('token log request kind helpers', () => {
-  it('deduplicates repeated request kind selections while preserving order', () => {
-    expect(uniqueSelectedRequestKinds(['api:search', ' api:search ', '', 'mcp:search'])).toEqual([
+  it('deduplicates and canonicalizes request kind selections while preserving order', () => {
+    expect(
+      uniqueSelectedRequestKinds([
+        'api:search',
+        ' api:search ',
+        '',
+        'mcp:search',
+        'mcp:raw:/mcp/sse',
+        'mcp:tool:acme-lookup',
+        'mcp:cancel',
+      ]),
+    ).toEqual([
       'api:search',
       'mcp:search',
+      'mcp:unsupported-path',
+      'mcp:third-party-tool',
+      'mcp:unknown-method',
     ])
   })
 
@@ -35,6 +48,7 @@ describe('token log request kind helpers', () => {
     expect(toggleRequestKindSelection(['api:search', 'mcp:search'], 'api:search')).toEqual([
       'mcp:search',
     ])
+    expect(toggleRequestKindSelection(['mcp:unsupported-path'], 'mcp:raw:/mcp/sse')).toEqual([])
   })
 
   it('builds repeated request_kind query params for exact multi-select filters', () => {
@@ -45,10 +59,10 @@ describe('token log request kind helpers', () => {
         perPage: 50,
         sinceIso: '2026-03-01T00:00:00+08:00',
         untilIso: '2026-04-01T00:00:00+08:00',
-        requestKinds: ['api:search', 'mcp:search', 'api:search'],
+        requestKinds: ['api:search', 'mcp:search', 'api:search', 'mcp:raw:/mcp/sse'],
       }),
     ).toBe(
-      '/api/tokens/ZjvC/logs/page?page=2&per_page=50&since=2026-03-01T00%3A00%3A00%2B08%3A00&until=2026-04-01T00%3A00%3A00%2B08%3A00&request_kind=api%3Asearch&request_kind=mcp%3Asearch',
+      '/api/tokens/ZjvC/logs/page?page=2&per_page=50&since=2026-03-01T00%3A00%3A00%2B08%3A00&until=2026-04-01T00%3A00%3A00%2B08%3A00&request_kind=api%3Asearch&request_kind=mcp%3Asearch&request_kind=mcp%3Aunsupported-path',
     )
   })
 

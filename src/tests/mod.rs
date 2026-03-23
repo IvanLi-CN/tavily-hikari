@@ -452,6 +452,15 @@ fn token_request_kind_option_groups_match_protocol_and_billing_contract() {
         ),
         "billable"
     );
+    assert_eq!(
+        token_request_kind_billing_group_for_request_log(
+            "mcp:batch",
+            Some(
+                br#"[{"jsonrpc":"2.0","method":"initialize"},{"jsonrpc":"2.0","method":"notifications/initialized"}]"#,
+            ),
+        ),
+        "non_billable"
+    );
 
     assert_eq!(
         token_request_kind_option_billing_group("mcp:batch", false, true),
@@ -464,6 +473,18 @@ fn token_request_kind_option_groups_match_protocol_and_billing_contract() {
     assert_eq!(
         token_request_kind_option_billing_group("api:search", false, true),
         "billable"
+    );
+    assert_eq!(
+        canonical_request_kind_key_for_filter("mcp:raw:/mcp/sse"),
+        "mcp:unsupported-path"
+    );
+    assert_eq!(
+        canonical_request_kind_key_for_filter("mcp:cancel"),
+        "mcp:unknown-method"
+    );
+    assert_eq!(
+        canonical_request_kind_key_for_filter("api:custom"),
+        "api:unknown-path"
     );
 }
 
@@ -500,6 +521,24 @@ fn operational_class_maps_control_plane_and_failure_kinds() {
                 br#"[{"jsonrpc":"2.0","method":"initialize"},{"jsonrpc":"2.0","method":"notifications/initialized"}]"#
             ),
             OUTCOME_UNKNOWN,
+            None,
+        ),
+        OPERATIONAL_CLASS_NEUTRAL
+    );
+    assert_eq!(
+        operational_class_for_request_log(
+            "mcp:search",
+            Some(br#"not-json"#),
+            OUTCOME_SUCCESS,
+            None
+        ),
+        OPERATIONAL_CLASS_SUCCESS
+    );
+    assert_eq!(
+        operational_class_for_request_log(
+            "mcp:notifications/initialized",
+            Some(br#"not-json"#),
+            OUTCOME_SUCCESS,
             None,
         ),
         OPERATIONAL_CLASS_NEUTRAL

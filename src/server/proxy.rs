@@ -1203,14 +1203,16 @@ impl From<RequestLogRecord> for RequestLogView {
     fn from(record: RequestLogRecord) -> Self {
         let request_kind_protocol_group =
             token_request_kind_protocol_group(&record.request_kind_key).to_string();
-        let operational_class = operational_class_for_request_path(
-            &record.path,
+        let operational_class = operational_class_for_request_log(
+            &record.request_kind_key,
             Some(&record.request_body),
             &record.result_status,
             record.failure_kind.as_deref(),
         );
-        let request_kind_billing_group =
-            token_request_kind_billing_group_for_request(&record.path, Some(&record.request_body));
+        let request_kind_billing_group = token_request_kind_billing_group_for_request_log(
+            &record.request_kind_key,
+            Some(&record.request_body),
+        );
         Self {
             id: record.id,
             key_id: record.key_id,
