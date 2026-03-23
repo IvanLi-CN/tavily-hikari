@@ -109,6 +109,7 @@ function PublicHome(): JSX.Element {
   const [error, setError] = useState<string | null>(null)
   const [profile, setProfile] = useState<Profile | null>(null)
   const [activeGuide, setActiveGuide] = useState<GuideKey>('codex')
+  const [guideTokenVisible, setGuideTokenVisible] = useState(false)
   const updateBanner = useUpdateAvailable()
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
   const pageRef = useRef<HTMLElement>(null)
@@ -269,13 +270,20 @@ function PublicHome(): JSX.Element {
   const showLinuxDoLogin = isLoggedOut
   const showRegistrationPausedNotice = isLoggedOut && profile?.allowRegistration === false
   const hasTokenInfo = token.trim().length > 0
+  const canRevealGuideToken = isFullToken(token)
   const hasValidTokenForLogs = isFullToken(token) && !invalidToken
   const hideTokenPanels = !hasTokenInfo && (loading || isLoggedOut)
   const availableKeys = summary?.active_keys ?? null
   const exhaustedKeys = summary?.exhausted_keys ?? null
   const totalKeys = availableKeys != null && exhaustedKeys != null ? availableKeys + exhaustedKeys : null
 
-  const exampleToken = isFullToken(token) ? token : publicStrings.accessToken.placeholder
+  const exampleToken = resolvePublicGuideToken(token, publicStrings.accessToken.placeholder, guideTokenVisible)
+
+  useEffect(() => {
+    if (!canRevealGuideToken) {
+      setGuideTokenVisible(false)
+    }
+  }, [canRevealGuideToken])
 
   const guideDescription = useMemo<GuideContent>(() => {
     const baseUrl = window.location.origin
@@ -753,7 +761,30 @@ function PublicHome(): JSX.Element {
         </div>
         )}
         <div className="guide-panel">
-          <h3>{guideDescription.title}</h3>
+          <div className="guide-panel-header">
+            <h3>{guideDescription.title}</h3>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="guide-token-toggle"
+              disabled={!canRevealGuideToken}
+              aria-pressed={guideTokenVisible}
+              onClick={() => setGuideTokenVisible((prev) => !prev)}
+            >
+              <Icon
+                icon={guideTokenVisible ? 'mdi:eye-off-outline' : 'mdi:eye-outline'}
+                width={16}
+                height={16}
+                aria-hidden="true"
+              />
+              <span>
+                {guideTokenVisible
+                  ? publicStrings.guide.tokenVisibility.hide
+                  : publicStrings.guide.tokenVisibility.show}
+              </span>
+            </Button>
+          </div>
           <ol>
             {guideDescription.steps.map((step, index) => (
               <li key={index}>{step}</li>
@@ -872,6 +903,10 @@ function PublicHome(): JSX.Element {
 }
 
 export default PublicHome
+
+export const __testables = {
+  resolvePublicGuideToken,
+}
 
 function MobileGuideDropdown({
   active,
@@ -1167,6 +1202,10 @@ function buildCurlSnippet(baseUrl: string, prettyToken: string): string {
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer ${prettyToken}" \\
   ${baseUrl}/mcp`
+}
+
+function resolvePublicGuideToken(token: string, placeholder: string, revealed: boolean): string {
+  return revealed && isFullToken(token) ? token : placeholder
 }
 
 function normalizeTokenHash(value: string): string {

@@ -66,6 +66,18 @@ describe('UserConsole landing guide helpers', () => {
       [{ tokenId: 'a1b2' } as any, { tokenId: 'c3d4' } as any],
     )).toBe('th-xxxx-xxxxxxxxxxxx')
   })
+
+  it('returns the revealable guide token id only for token detail or single-token landing routes', () => {
+    expect(__testables.resolveGuideTokenId({ name: 'token', id: 'a1b2' }, [])).toBe('a1b2')
+    expect(__testables.resolveGuideTokenId(
+      { name: 'landing', section: 'tokens' },
+      [{ tokenId: 'c3d4' } as any],
+    )).toBe('c3d4')
+    expect(__testables.resolveGuideTokenId(
+      { name: 'landing', section: 'dashboard' },
+      [{ tokenId: 'a1b2' } as any, { tokenId: 'c3d4' } as any],
+    )).toBeNull()
+  })
 })
 
 describe('UserConsole probe step definitions', () => {

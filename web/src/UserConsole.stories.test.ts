@@ -86,6 +86,10 @@ describe('UserConsole Storybook acceptance controls', () => {
       name: 'Console Home Empty Tokens',
       args: { consoleView: 'Console Home', landingFocus: 'Token Focus', tokenListState: 'Empty' },
     })
+    expect(userConsoleStories.ConsoleHomeGuideTokenRevealed).toMatchObject({
+      name: 'Console Home Guide Token Revealed',
+      args: { consoleView: 'Console Home', isAdmin: false, landingFocus: 'Token Focus', tokenListState: 'Single Token' },
+    })
     expect(userConsoleStories.TokenDetailOverview).toMatchObject({
       name: 'Token Detail Overview',
       args: { consoleView: 'Token Detail', isAdmin: false, landingFocus: 'Overview Focus', tokenDetailPreview: 'Overview' },
@@ -93,6 +97,10 @@ describe('UserConsole Storybook acceptance controls', () => {
     expect(userConsoleStories.TokenRevealed).toMatchObject({
       name: 'Token Revealed',
       args: { consoleView: 'Token Detail', isAdmin: false, tokenDetailPreview: 'Token Revealed' },
+    })
+    expect(userConsoleStories.TokenDetailGuideTokenRevealed).toMatchObject({
+      name: 'Token Detail Guide Token Revealed',
+      args: { consoleView: 'Token Detail', isAdmin: false, tokenDetailPreview: 'Overview' },
     })
     expect(userConsoleStories.TokenDetailAdmin).toMatchObject({
       name: 'Token Detail Admin',

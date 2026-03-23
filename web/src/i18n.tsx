@@ -105,6 +105,10 @@ interface PublicTranslations {
   guide: {
     title: string
     dataSourceLabel: string
+    tokenVisibility: {
+      show: string
+      hide: string
+    }
     tabs: Record<string, string>
   }
   footer: {
@@ -1317,6 +1321,10 @@ export const translations: Record<Language, TranslationShape> = {
       guide: {
         title: 'Connect Tavily Hikari to common MCP clients',
         dataSourceLabel: 'Reference: ',
+        tokenVisibility: {
+          show: 'Show token',
+          hide: 'Hide token',
+        },
         tabs: {
           codex: 'Codex CLI',
           claude: 'Claude Code CLI',
@@ -2525,6 +2533,10 @@ export const translations: Record<Language, TranslationShape> = {
       guide: {
         title: '如何在常见 MCP 客户端接入 Tavily Hikari',
         dataSourceLabel: '数据来源：',
+        tokenVisibility: {
+          show: '显示密钥',
+          hide: '隐藏密钥',
+        },
         tabs: {
           codex: 'Codex CLI',
           claude: 'Claude Code CLI',

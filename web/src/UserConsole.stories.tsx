@@ -18,6 +18,7 @@ type TokenListState = 'Single Token' | 'Multiple Tokens' | 'Empty'
 type TokenDetailPreview = 'Overview' | 'Token Revealed'
 
 type CopyRecoveryMode = 'none' | 'list-manual-bubble' | 'detail-inline'
+type GuideRevealMode = 'none' | 'landing-guide' | 'detail-guide'
 
 interface UserConsoleStoryArgs {
   consoleView: ConsoleView
@@ -481,6 +482,7 @@ function installClipboardFailureMock(): () => void {
 function UserConsoleStory(
   args: UserConsoleStoryArgs & {
     copyRecoveryMode?: CopyRecoveryMode
+    guideRevealMode?: GuideRevealMode
   },
 ): JSX.Element {
   const [ready, setReady] = useState(false)
@@ -489,6 +491,7 @@ function UserConsoleStory(
     [args.consoleView, args.isAdmin, args.landingFocus, args.tokenListState, args.tokenDetailPreview, args.routeHashOverride],
   )
   const copyRecoveryMode = args.copyRecoveryMode ?? 'none'
+  const guideRevealMode = args.guideRevealMode ?? 'none'
 
   useLayoutEffect(() => {
     const previousHash = window.location.hash
@@ -526,6 +529,15 @@ function UserConsoleStory(
     return () => window.clearTimeout(timer)
   }, [copyRecoveryMode, ready])
 
+  useEffect(() => {
+    if (!ready || guideRevealMode === 'none') return
+    const timer = window.setTimeout(() => {
+      const button = document.querySelector<HTMLButtonElement>('.guide-token-toggle')
+      button?.click()
+    }, guideRevealMode === 'landing-guide' ? 200 : 120)
+    return () => window.clearTimeout(timer)
+  }, [guideRevealMode, ready])
+
   if (!ready) {
     return <div style={{ minHeight: '100vh' }} />
   }
@@ -535,6 +547,7 @@ function UserConsoleStory(
     storyState.isAdmin ? 'admin' : 'user',
     storyState.tokenListMode,
     storyState.autoRevealToken ? 'revealed' : 'hidden',
+    guideRevealMode,
   ].join(':')
 
   return <UserConsole key={storyKey} />
@@ -699,6 +712,17 @@ export const ConsoleHomeCopyFailureRecovery: Story = {
   render: (args) => <UserConsoleStory {...args} copyRecoveryMode="list-manual-bubble" />,
 }
 
+export const ConsoleHomeGuideTokenRevealed: Story = {
+  name: 'Console Home Guide Token Revealed',
+  args: {
+    consoleView: 'Console Home',
+    isAdmin: false,
+    landingFocus: 'Token Focus',
+    tokenListState: 'Single Token',
+  },
+  render: (args) => <UserConsoleStory {...args} guideRevealMode="landing-guide" />,
+}
+
 export const TokenDetailOverview: Story = {
   name: 'Token Detail Overview',
   args: {
@@ -727,6 +751,16 @@ export const TokenRevealed: Story = {
     isAdmin: false,
     tokenDetailPreview: 'Token Revealed',
   },
+}
+
+export const TokenDetailGuideTokenRevealed: Story = {
+  name: 'Token Detail Guide Token Revealed',
+  args: {
+    consoleView: 'Token Detail',
+    isAdmin: false,
+    tokenDetailPreview: 'Overview',
+  },
+  render: (args) => <UserConsoleStory {...args} guideRevealMode="detail-guide" />,
 }
 
 export const TokenDetailAdmin: Story = {

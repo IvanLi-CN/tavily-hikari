@@ -209,14 +209,19 @@ function shouldRenderLandingGuide(route: ConsoleRoute, tokenCount: number): bool
   return route.name === 'landing' && tokenCount === 1
 }
 
-function resolveGuideToken(route: ConsoleRoute, tokens: UserTokenSummary[]): string {
+function resolveGuideTokenId(route: ConsoleRoute, tokens: UserTokenSummary[]): string | null {
   if (route.name === 'token') {
-    return tokenLabel(route.id)
+    return route.id
   }
   if (tokens.length === 1) {
-    return tokenLabel(tokens[0].tokenId)
+    return tokens[0].tokenId
   }
-  return 'th-xxxx-xxxxxxxxxxxx'
+  return null
+}
+
+function resolveGuideToken(route: ConsoleRoute, tokens: UserTokenSummary[]): string {
+  const guideTokenId = resolveGuideTokenId(route, tokens)
+  return guideTokenId ? tokenLabel(guideTokenId) : 'th-xxxx-xxxxxxxxxxxx'
 }
 
 function createProbeButtonModel(total: number): ProbeButtonModel {
@@ -721,6 +726,10 @@ export default function UserConsole(): JSX.Element {
   const [apiProbe, setApiProbe] = useState<ProbeButtonModel>(() => createProbeButtonModel(6))
   const [probeBubble, setProbeBubble] = useState<ProbeBubbleModel | null>(null)
   const [manualCopyBubble, setManualCopyBubble] = useState<ManualCopyBubbleState | null>(null)
+  const [guideTokenVisible, setGuideTokenVisible] = useState(false)
+  const [guideTokenValue, setGuideTokenValue] = useState<string | null>(null)
+  const [guideTokenLoading, setGuideTokenLoading] = useState(false)
+  const [guideTokenError, setGuideTokenError] = useState<string | null>(null)
   const tokenSecretCacheRef = useRef<Map<string, string>>(new Map())
   const tokenSecretCacheTimerRef = useRef<Map<string, number>>(new Map())
   const tokenSecretWarmTimerRef = useRef<Map<string, number>>(new Map())
@@ -729,6 +738,7 @@ export default function UserConsole(): JSX.Element {
   const tokenSecretRequestAbortRef = useRef<Map<string, AbortController>>(new Map())
   const probeRunIdRef = useRef(0)
   const tokenSecretRunIdRef = useRef(0)
+  const guideTokenRunIdRef = useRef(0)
   const pageRef = useRef<HTMLElement>(null)
   const dashboardSectionRef = useRef<HTMLElement | null>(null)
   const tokensSectionRef = useRef<HTMLElement | null>(null)
@@ -910,6 +920,17 @@ export default function UserConsole(): JSX.Element {
       abortAllPendingTokenSecretRequests()
     }
   }, [abortAllPendingTokenSecretRequests])
+
+  useEffect(() => {
+    guideTokenRunIdRef.current += 1
+    setGuideTokenVisible(false)
+    setGuideTokenValue(null)
+    setGuideTokenLoading(false)
+    setGuideTokenError(null)
+  }, [
+    consoleAvailability,
+    route.name === 'token' ? route.id : `${route.section ?? 'landing'}:${tokens.map((token) => token.tokenId).join(',')}`,
+  ])
 
   const clearCachedTokenSecret = useCallback((tokenId: string) => {
     const cacheTimer = tokenSecretCacheTimerRef.current.get(tokenId)
@@ -1125,6 +1146,47 @@ export default function UserConsole(): JSX.Element {
     }
   }, [route, text.detail.tokenSecret.revealFailed, tokenSecretLoading, tokenSecretVisible])
 
+  const guideTokenId = useMemo(() => resolveGuideTokenId(route, tokens), [route, tokens])
+  const maskedGuideToken = useMemo(() => resolveGuideToken(route, tokens), [route, tokens])
+
+  const toggleGuideTokenVisibility = useCallback(async () => {
+    if (!guideTokenId) return
+    if (guideTokenVisible) {
+      guideTokenRunIdRef.current += 1
+      setGuideTokenVisible(false)
+      setGuideTokenValue(null)
+      setGuideTokenLoading(false)
+      setGuideTokenError(null)
+      return
+    }
+    if (guideTokenLoading) return
+
+    const runId = guideTokenRunIdRef.current + 1
+    guideTokenRunIdRef.current = runId
+    setGuideTokenVisible(false)
+    setGuideTokenValue(null)
+    setGuideTokenLoading(true)
+    setGuideTokenError(null)
+
+    try {
+      const secret = await resolveTokenSecret(guideTokenId)
+      if (guideTokenRunIdRef.current !== runId) return
+      setGuideTokenValue(secret)
+      setGuideTokenVisible(true)
+    } catch (err) {
+      if (guideTokenRunIdRef.current !== runId) return
+      setGuideTokenVisible(false)
+      setGuideTokenValue(null)
+      setGuideTokenError(formatTemplate(text.detail.guideToken.revealFailed, {
+        message: getProbeErrorMessage(err),
+      }))
+    } finally {
+      if (guideTokenRunIdRef.current === runId) {
+        setGuideTokenLoading(false)
+      }
+    }
+  }, [guideTokenId, guideTokenLoading, guideTokenVisible, resolveTokenSecret, text.detail.guideToken.revealFailed])
+
   const subtitle = useMemo(() => {
     const user = profile?.userDisplayName?.trim()
     if (user && user.length > 0) {
@@ -1133,7 +1195,7 @@ export default function UserConsole(): JSX.Element {
     return text.subtitle
   }, [profile?.userDisplayName, text.subtitle])
 
-  const guideToken = useMemo(() => resolveGuideToken(route, tokens), [route, tokens])
+  const guideToken = guideTokenVisible && guideTokenValue != null ? guideTokenValue : maskedGuideToken
 
   const detailTokenCopyState = route.name === 'token' ? copyState[route.id] ?? 'idle' : 'idle'
   const detailTokenMatchesRoute = route.name === 'token' && tokenSecretTokenId === route.id
@@ -1519,7 +1581,37 @@ export default function UserConsole(): JSX.Element {
         </div>
       )}
       <div className="guide-panel">
-        <h3>{guideDescription.title}</h3>
+        <div className="guide-panel-header">
+          <h3>{guideDescription.title}</h3>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="guide-token-toggle"
+            disabled={!guideTokenId || guideTokenLoading}
+            aria-pressed={guideTokenVisible}
+            aria-busy={guideTokenLoading}
+            onClick={() => void toggleGuideTokenVisibility()}
+          >
+            <Icon
+              icon={guideTokenLoading ? 'mdi:loading' : guideTokenVisible ? 'mdi:eye-off-outline' : 'mdi:eye-outline'}
+              width={16}
+              height={16}
+              aria-hidden="true"
+              className={guideTokenLoading ? 'guide-token-toggle-icon-spin' : undefined}
+            />
+            <span>
+              {guideTokenLoading
+                ? text.detail.guideToken.loading
+                : guideTokenVisible
+                  ? text.detail.guideToken.hide
+                  : text.detail.guideToken.show}
+            </span>
+          </Button>
+        </div>
+        {guideTokenError ? (
+          <p className="guide-token-error" role="status" aria-live="polite">{guideTokenError}</p>
+        ) : null}
         <ol>
           {guideDescription.steps.map((step, index) => (
             <li key={index}>{step}</li>
@@ -1549,7 +1641,23 @@ export default function UserConsole(): JSX.Element {
       </div>
       {activeGuide === 'cherryStudio' && <CherryStudioMock apiKeyExample={guideToken} />}
     </section>
-  ), [activeGuide, guideDescription, guideTabs, guideToken, isCompactLayout, publicStrings.guide.dataSourceLabel, publicStrings.guide.title])
+  ), [
+    activeGuide,
+    guideDescription,
+    guideTabs,
+    guideToken,
+    guideTokenError,
+    guideTokenId,
+    guideTokenLoading,
+    guideTokenVisible,
+    isCompactLayout,
+    publicStrings.guide.dataSourceLabel,
+    publicStrings.guide.title,
+    text.detail.guideToken.hide,
+    text.detail.guideToken.loading,
+    text.detail.guideToken.show,
+    toggleGuideTokenVisibility,
+  ])
 
   return (
     <main
@@ -2064,6 +2172,7 @@ export const __testables = {
   isBillableMcpProbeTool,
   nextRunningMcpProbeModel,
   resolveGuideToken,
+  resolveGuideTokenId,
   shouldRenderLandingGuide,
 }
 
@@ -2423,6 +2532,12 @@ const EN = {
       loading: 'Loading full token…',
       revealFailed: 'Failed to reveal token: {message}',
     },
+    guideToken: {
+      show: 'Show token',
+      hide: 'Hide token',
+      loading: 'Loading token…',
+      revealFailed: 'Failed to reveal guide token: {message}',
+    },
     probe: {
       title: 'Connectivity Checks',
       costHint: "This check uses this token's own quota/credits.",
@@ -2576,6 +2691,12 @@ const ZH = {
       iconAlt: 'Token 显隐切换',
       loading: '正在读取完整 Token…',
       revealFailed: '读取完整 Token 失败：{message}',
+    },
+    guideToken: {
+      show: '显示密钥',
+      hide: '隐藏密钥',
+      loading: '正在读取密钥…',
+      revealFailed: '读取导览密钥失败：{message}',
     },
     probe: {
       title: '连通性检测',

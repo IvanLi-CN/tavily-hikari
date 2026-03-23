@@ -1425,11 +1425,35 @@
   gap: 12px;
 }
 
+.guide-panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .guide-panel h3 {
   margin: 0;
   font-size: 1.05rem;
   font-weight: 600;
   color: hsl(var(--foreground));
+}
+
+.guide-token-toggle {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.guide-token-toggle-icon-spin {
+  animation: guide-token-spin 0.8s linear infinite;
+}
+
+.guide-token-error {
+  margin: 0;
+  font-size: 0.9rem;
+  color: hsl(var(--destructive));
 }
 
 .guide-panel ol {
@@ -1464,6 +1488,14 @@
 @media (max-width: 767px) {
   .guide-tabs { display: none !important; }
   .guide-select { display: block; }
+  .guide-panel-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .guide-token-toggle {
+    width: 100%;
+    justify-content: center;
+  }
 }
 
 .guide-sample {
@@ -1493,6 +1525,11 @@
 
 .guide-reference a:hover {
   text-decoration: underline;
+}
+
+@keyframes guide-token-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 .update-banner {
