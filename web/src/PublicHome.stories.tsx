@@ -15,6 +15,7 @@ import {
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from './components/ui/dialog'
 import { useTranslate } from './i18n'
 import { Icon, getGuideClientIconName } from './lib/icons'
+import { __testables as publicHomeTestables } from './PublicHome'
 
 type CopyState = 'idle' | 'copied' | 'error'
 
@@ -26,6 +27,17 @@ const guideProofLabels = [
   { id: 'codex', label: 'Codex CLI' },
   { id: 'claude', label: 'Claude Code' },
   { id: 'vscode', label: 'VS Code' },
+] as const
+
+const publicGuideTabs = [
+  { id: 'codex', label: 'Codex CLI' },
+  { id: 'claude', label: 'Claude Code CLI' },
+  { id: 'vscode', label: 'VS Code / Copilot' },
+  { id: 'claudeDesktop', label: 'Claude Desktop' },
+  { id: 'cursor', label: 'Cursor' },
+  { id: 'windsurf', label: 'Windsurf' },
+  { id: 'cherryStudio', label: 'Cherry Studio' },
+  { id: 'other', label: 'HTTP API' },
 ] as const
 
 function PublicHomeTokenModalStory(args: PublicHomeStoryArgs): JSX.Element {
@@ -201,6 +213,75 @@ function PublicHomeMobileGuideMenuProof(): JSX.Element {
   )
 }
 
+function PublicHomeGuideTokenRevealedProof(): JSX.Element {
+  const strings = useTranslate().public
+  const activeGuide = 'other'
+  const exampleToken = 'th-a1b2-1234567890abcdef'
+  const guideDescription = publicHomeTestables.buildGuideContent('zh', 'https://hikari.example.com', exampleToken).other
+  const samples = publicHomeTestables.resolveGuideSamples(guideDescription)
+
+  return (
+    <main className="app-shell public-home">
+      <section className="surface panel public-home-guide">
+        <div className="panel-header public-home-guide__header">
+          <div>
+            <h2>{strings.guide.title}</h2>
+            <p className="panel-description">{strings.guide.subtitle}</p>
+          </div>
+        </div>
+
+        <div className="public-home-guide__tabs" role="tablist" aria-label={strings.guide.title}>
+          {publicGuideTabs.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              className={`guide-tab ${tab.id === activeGuide ? 'is-active' : ''}`}
+              aria-pressed={tab.id === activeGuide}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        <section className="guide-panel" aria-labelledby="public-home-guide-other">
+          <div className="guide-panel__header">
+            <h3 id="public-home-guide-other">{guideDescription.title}</h3>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="guide-secret-toggle"
+            >
+              {strings.guide.hideSecret}
+            </Button>
+          </div>
+          <div
+            className="guide-description"
+            dangerouslySetInnerHTML={{ __html: guideDescription.description }}
+          />
+          {samples.map((sample) => (
+            <div key={sample.title} className="guide-sample">
+              <p className="guide-sample__title">{sample.title}</p>
+              <div className="guide-code-block">
+                <div className="guide-code-block__chrome">
+                  <span>{sample.language}</span>
+                </div>
+                <pre dangerouslySetInnerHTML={{ __html: sample.snippet }} />
+              </div>
+            </div>
+          ))}
+          {guideDescription.sourceLabel && guideDescription.sourceHref ? (
+            <div className="guide-source">
+              <span>{guideDescription.sourceLabel}</span>{' '}
+              <a href={guideDescription.sourceHref}>{guideDescription.sourceHrefLabel ?? guideDescription.sourceHref}</a>
+            </div>
+          ) : null}
+        </section>
+      </section>
+    </main>
+  )
+}
+
 const meta = {
   title: 'Public/PublicHome',
   parameters: {
@@ -248,5 +329,16 @@ export const MobileGuideMenuProof: Story = {
   parameters: {
     layout: 'padded',
     viewport: { defaultViewport: '0390-device-iphone-14' },
+  },
+}
+
+export const GuideTokenRevealed: Story = {
+  args: {
+    showAdminAction: false,
+  },
+  render: () => <PublicHomeGuideTokenRevealedProof />,
+  parameters: {
+    layout: 'fullscreen',
+    viewport: { defaultViewport: '1440-device-desktop' },
   },
 }

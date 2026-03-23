@@ -18,5 +18,9 @@ describe('PublicHome Storybook proofs', () => {
       layout: 'padded',
       viewport: { defaultViewport: '0390-device-iphone-14' },
     })
+    expect(publicHomeStories.GuideTokenRevealed.parameters).toMatchObject({
+      layout: 'fullscreen',
+      viewport: { defaultViewport: '1440-device-desktop' },
+    })
   })
 })

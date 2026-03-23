@@ -912,6 +912,7 @@ export const __testables = {
   resolvePublicGuideToken,
   resolveGuideSamples,
   shouldRevealPublicGuideToken,
+  buildGuideContent,
 }
 
 function MobileGuideDropdown({
