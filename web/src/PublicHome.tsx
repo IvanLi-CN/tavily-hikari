@@ -39,7 +39,7 @@ import { useLanguage, useTranslate, type Language } from './i18n'
 import { copyText, selectAllReadonlyText } from './lib/clipboard'
 import { useResponsiveModes } from './lib/responsive'
 
-type GuideLanguage = 'toml' | 'json' | 'bash'
+type GuideLanguage = 'toml' | 'json' | 'bash' | 'http'
 
 type GuideKey = 'codex' | 'claude' | 'vscode' | 'claudeDesktop' | 'cursor' | 'windsurf' | 'cherryStudio' | 'other'
 
@@ -48,12 +48,19 @@ interface GuideReference {
   url: string
 }
 
+interface GuideSample {
+  title: string
+  language?: GuideLanguage
+  snippet: string
+}
+
 interface GuideContent {
   title: string
   steps: ReactNode[]
   sampleTitle?: string
   snippetLanguage?: GuideLanguage
   snippet?: string
+  samples?: GuideSample[]
   reference?: GuideReference
 }
 
@@ -785,19 +792,19 @@ function PublicHome(): JSX.Element {
               <li key={index}>{step}</li>
             ))}
           </ol>
-          {guideDescription.sampleTitle && guideDescription.snippet && (
-            <div className="guide-sample">
-              <p className="guide-sample-title">{guideDescription.sampleTitle}</p>
+          {resolveGuideSamples(guideDescription).map((sample) => (
+            <div className="guide-sample" key={`${sample.title}:${sample.language ?? 'code'}`}>
+              <p className="guide-sample-title">{sample.title}</p>
               <div className="mockup-code relative guide-code-shell">
                 <span className="guide-lang-badge badge badge-outline badge-sm">
-                  {(guideDescription.snippetLanguage ?? 'code').toUpperCase()}
+                  {(sample.language ?? 'code').toUpperCase()}
                 </span>
                 <pre>
-                  <code dangerouslySetInnerHTML={{ __html: guideDescription.snippet }} />
+                  <code dangerouslySetInnerHTML={{ __html: sample.snippet }} />
                 </pre>
               </div>
             </div>
-          )}
+          ))}
           {guideDescription.reference && (
             <p className="guide-reference">
               {publicStrings.guide.dataSourceLabel}
@@ -958,6 +965,7 @@ function buildGuideContent(language: Language, baseUrl: string, prettyToken: str
   const claudeSnippet = buildClaudeSnippet(baseUrl, prettyToken, language)
   const genericJsonSnippet = buildGenericJsonSnippet(baseUrl, prettyToken)
   const curlSnippet = buildCurlSnippet(baseUrl, prettyToken)
+  const apiClientSnippet = buildApiClientRequestSnippet(prettyToken)
 
   return {
     codex: {
@@ -1117,16 +1125,33 @@ function buildGuideContent(language: Language, baseUrl: string, prettyToken: str
         ? [
             <>Endpoint: <code>{baseUrl}/mcp</code> (Streamable HTTP).</>,
             <>Auth: HTTP header <code>Authorization: Bearer {prettyToken}</code>.</>,
+            <>
+              For Postman, Apifox, Bruno, or similar API clients, send a <code>POST</code> request to this endpoint with{' '}
+              <code>Accept: application/json, text/event-stream</code> and <code>Content-Type: application/json</code>.
+            </>,
             <>Any MCP-compatible client can target this URL with the header attached.</>,
           ]
         : [
             <>端点：<code>{baseUrl}/mcp</code>（Streamable HTTP）。</>,
             <>认证：HTTP Header <code>Authorization: Bearer {prettyToken}</code>。</>,
+            <>
+              如果是 Postman、Apifox、Bruno 这类 API 客户端，请向该端点发送 <code>POST</code> 请求，并补上{' '}
+              <code>Accept: application/json, text/event-stream</code> 与 <code>Content-Type: application/json</code>。
+            </>,
             <>适用于任意兼容客户端，直接指向该 URL 并附带上述头部即可。</>,
           ],
-      sampleTitle: isEnglish ? 'Example: generic request' : '示例：通用请求',
-      snippetLanguage: 'bash',
-      snippet: curlSnippet,
+      samples: [
+        {
+          title: isEnglish ? 'Example 1: curl request' : '示例 1：curl 请求',
+          language: 'bash',
+          snippet: curlSnippet,
+        },
+        {
+          title: isEnglish ? 'Example 2: Postman / Apifox JSON body' : '示例 2：Postman / Apifox 请求体',
+          language: 'json',
+          snippet: apiClientSnippet,
+        },
+      ],
       reference: {
         label: 'Model Context Protocol spec',
         url: MCP_SPEC_URL,
@@ -1195,13 +1220,45 @@ function buildGenericJsonSnippet(baseUrl: string, prettyToken: string): string {
 
 function buildCurlSnippet(baseUrl: string, prettyToken: string): string {
   return `curl -X POST \\
+  -H "Accept: application/json, text/event-stream" \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer ${prettyToken}" \\
+  -d '{"jsonrpc":"2.0","id":"tools-list","method":"tools/list","params":{}}' \\
   ${baseUrl}/mcp`
+}
+
+function buildApiClientRequestSnippet(prettyToken: string): string {
+  return `{
+  "headers": {
+    "Authorization": "Bearer ${prettyToken}",
+    "Accept": "application/json, text/event-stream",
+    "Content-Type": "application/json"
+  },
+  "body": {
+    "jsonrpc": "2.0",
+    "id": "tools-list",
+    "method": "tools/list",
+    "params": {}
+  }
+}`
 }
 
 function resolvePublicGuideToken(token: string, placeholder: string, revealed: boolean): string {
   return revealed && isFullToken(token) ? token : placeholder
+}
+
+function resolveGuideSamples(guide: GuideContent): GuideSample[] {
+  if (guide.samples && guide.samples.length > 0) {
+    return guide.samples
+  }
+  if (guide.sampleTitle && guide.snippet) {
+    return [{
+      title: guide.sampleTitle,
+      language: guide.snippetLanguage,
+      snippet: guide.snippet,
+    }]
+  }
+  return []
 }
 
 function shouldRevealPublicGuideToken(token: string, revealedToken: string | null): boolean {
