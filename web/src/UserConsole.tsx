@@ -73,12 +73,11 @@ const CODEX_DOC_URL = 'https://github.com/openai/codex/blob/main/docs/config.md'
 const CLAUDE_DOC_URL = 'https://code.claude.com/docs/en/mcp'
 const VSCODE_DOC_URL = 'https://code.visualstudio.com/docs/copilot/customization/mcp-servers'
 const NOCODB_DOC_URL = 'https://nocodb.com/docs/product-docs/mcp'
-const MCP_SPEC_URL = 'https://modelcontextprotocol.io/introduction'
 const USER_CONSOLE_SECRET_CACHE_TTL_MS = 2_000
 const USER_CONSOLE_SECRET_PREWARM_DELAY_MS = 120
 
 type GuideLanguage = 'toml' | 'json' | 'bash'
-type GuideKey = 'codex' | 'claude' | 'vscode' | 'claudeDesktop' | 'cursor' | 'windsurf' | 'cherryStudio' | 'other'
+type GuideKey = 'codex' | 'claude' | 'vscode' | 'claudeDesktop' | 'cursor' | 'windsurf' | 'cherryStudio'
 
 interface GuideReference {
   label: string
@@ -107,7 +106,6 @@ const GUIDE_KEY_ORDER: GuideKey[] = [
   'cursor',
   'windsurf',
   'cherryStudio',
-  'other',
 ]
 
 interface McpProbeStepDefinition {
@@ -2257,8 +2255,6 @@ function buildGuideContent(language: Language, baseUrl: string, prettyToken: str
   const codexSnippet = buildCodexSnippet(baseUrl)
   const claudeSnippet = buildClaudeSnippet(baseUrl, prettyToken, language)
   const genericJsonSnippet = buildGenericJsonSnippet(baseUrl, prettyToken)
-  const curlSnippet = buildCurlSnippet(baseUrl, prettyToken)
-
   return {
     codex: {
       title: 'Codex CLI',
@@ -2411,27 +2407,6 @@ function buildGuideContent(language: Language, baseUrl: string, prettyToken: str
             <>6）可按需在 Cherry 中调整返回条数、是否附带答案/日期等选项。</>,
           ],
     },
-    other: {
-      title: isEnglish ? 'Other clients' : '其他 MCP 客户端',
-      steps: isEnglish
-        ? [
-            <>Endpoint: <code>{baseUrl}/mcp</code> (Streamable HTTP).</>,
-            <>Auth: HTTP header <code>Authorization: Bearer {prettyToken}</code>.</>,
-            <>Any MCP-compatible client can target this URL with the header attached.</>,
-          ]
-        : [
-            <>端点：<code>{baseUrl}/mcp</code>（Streamable HTTP）。</>,
-            <>认证：HTTP Header <code>Authorization: Bearer {prettyToken}</code>。</>,
-            <>适用于任意兼容客户端，直接指向该 URL 并附带上述头部即可。</>,
-          ],
-      sampleTitle: isEnglish ? 'Example: generic request' : '示例：通用请求',
-      snippetLanguage: 'bash',
-      snippet: curlSnippet,
-      reference: {
-        label: 'Model Context Protocol spec',
-        url: MCP_SPEC_URL,
-      },
-    },
   }
 }
 
@@ -2491,13 +2466,6 @@ function buildGenericJsonSnippet(baseUrl: string, prettyToken: string): string {
     }
   }
 }`
-}
-
-function buildCurlSnippet(baseUrl: string, prettyToken: string): string {
-  return `curl -X POST \\
-  -H "Content-Type: application/json" \\
-  -H "Authorization: Bearer ${prettyToken}" \\
-  ${baseUrl}/mcp`
 }
 
 const EN = {
