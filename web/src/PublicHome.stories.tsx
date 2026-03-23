@@ -223,19 +223,13 @@ function PublicHomeGuideTokenRevealedProof(): JSX.Element {
   return (
     <main className="app-shell public-home">
       <section className="surface panel public-home-guide">
-        <div className="panel-header public-home-guide__header">
-          <div>
-            <h2>{strings.guide.title}</h2>
-            <p className="panel-description">{strings.guide.subtitle}</p>
-          </div>
-        </div>
-
-        <div className="public-home-guide__tabs" role="tablist" aria-label={strings.guide.title}>
+        <h2>{strings.guide.title}</h2>
+        <div className="guide-tabs" role="tablist" aria-label={strings.guide.title}>
           {publicGuideTabs.map((tab) => (
             <button
               key={tab.id}
               type="button"
-              className={`guide-tab ${tab.id === activeGuide ? 'is-active' : ''}`}
+              className={`guide-tab${tab.id === activeGuide ? ' active' : ''}`}
               aria-pressed={tab.id === activeGuide}
             >
               {tab.label}
@@ -244,38 +238,50 @@ function PublicHomeGuideTokenRevealedProof(): JSX.Element {
         </div>
 
         <section className="guide-panel" aria-labelledby="public-home-guide-other">
-          <div className="guide-panel__header">
+          <div className="guide-panel-header">
             <h3 id="public-home-guide-other">{guideDescription.title}</h3>
             <Button
               type="button"
               variant="outline"
               size="sm"
-              className="guide-secret-toggle"
+              className="guide-token-toggle"
+              aria-pressed
             >
-              {strings.guide.hideSecret}
+              <Icon
+                icon="mdi:eye-off-outline"
+                width={16}
+                height={16}
+                aria-hidden="true"
+              />
+              <span>{strings.guide.tokenVisibility.hide}</span>
             </Button>
           </div>
-          <div
-            className="guide-description"
-            dangerouslySetInnerHTML={{ __html: guideDescription.description }}
-          />
+          <ol>
+            {guideDescription.steps.map((step, index) => (
+              <li key={index}>{step}</li>
+            ))}
+          </ol>
           {samples.map((sample) => (
             <div key={sample.title} className="guide-sample">
-              <p className="guide-sample__title">{sample.title}</p>
-              <div className="guide-code-block">
-                <div className="guide-code-block__chrome">
-                  <span>{sample.language}</span>
-                </div>
-                <pre dangerouslySetInnerHTML={{ __html: sample.snippet }} />
+              <p className="guide-sample-title">{sample.title}</p>
+              <div className="mockup-code relative guide-code-shell">
+                <span className="guide-lang-badge badge badge-outline badge-sm">
+                  {(sample.language ?? 'code').toUpperCase()}
+                </span>
+                <pre>
+                  <code dangerouslySetInnerHTML={{ __html: sample.snippet }} />
+                </pre>
               </div>
+              {sample.reference ? (
+                <p className="guide-reference">
+                  {strings.guide.dataSourceLabel}
+                  <a href={sample.reference.url} target="_blank" rel="noreferrer">
+                    {sample.reference.label}
+                  </a>
+                </p>
+              ) : null}
             </div>
           ))}
-          {guideDescription.sourceLabel && guideDescription.sourceHref ? (
-            <div className="guide-source">
-              <span>{guideDescription.sourceLabel}</span>{' '}
-              <a href={guideDescription.sourceHref}>{guideDescription.sourceHrefLabel ?? guideDescription.sourceHref}</a>
-            </div>
-          ) : null}
         </section>
       </section>
     </main>
