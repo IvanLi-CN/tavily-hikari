@@ -224,6 +224,19 @@ function resolveGuideToken(route: ConsoleRoute, tokens: UserTokenSummary[]): str
   return guideTokenId ? tokenLabel(guideTokenId) : 'th-xxxx-xxxxxxxxxxxx'
 }
 
+function resolveGuideRevealContextKey(route: ConsoleRoute, tokens: UserTokenSummary[]): string | null {
+  const guideTokenId = resolveGuideTokenId(route, tokens)
+  if (!guideTokenId) return null
+  if (route.name === 'token') {
+    return `token:${route.id}`
+  }
+  return `landing:${route.section ?? 'landing'}:${tokens.map((token) => token.tokenId).join(',')}`
+}
+
+function isActiveGuideRevealContext(revealedContextKey: string | null, currentContextKey: string | null): boolean {
+  return revealedContextKey != null && currentContextKey != null && revealedContextKey === currentContextKey
+}
+
 function createProbeButtonModel(total: number): ProbeButtonModel {
   return {
     state: 'idle',
@@ -726,7 +739,7 @@ export default function UserConsole(): JSX.Element {
   const [apiProbe, setApiProbe] = useState<ProbeButtonModel>(() => createProbeButtonModel(6))
   const [probeBubble, setProbeBubble] = useState<ProbeBubbleModel | null>(null)
   const [manualCopyBubble, setManualCopyBubble] = useState<ManualCopyBubbleState | null>(null)
-  const [guideTokenVisible, setGuideTokenVisible] = useState(false)
+  const [revealedGuideContextKey, setRevealedGuideContextKey] = useState<string | null>(null)
   const [guideTokenValue, setGuideTokenValue] = useState<string | null>(null)
   const [guideTokenLoading, setGuideTokenLoading] = useState(false)
   const [guideTokenError, setGuideTokenError] = useState<string | null>(null)
@@ -923,7 +936,7 @@ export default function UserConsole(): JSX.Element {
 
   useEffect(() => {
     guideTokenRunIdRef.current += 1
-    setGuideTokenVisible(false)
+    setRevealedGuideContextKey(null)
     setGuideTokenValue(null)
     setGuideTokenLoading(false)
     setGuideTokenError(null)
@@ -1148,12 +1161,17 @@ export default function UserConsole(): JSX.Element {
 
   const guideTokenId = useMemo(() => resolveGuideTokenId(route, tokens), [route, tokens])
   const maskedGuideToken = useMemo(() => resolveGuideToken(route, tokens), [route, tokens])
+  const guideRevealContextKey = useMemo(() => resolveGuideRevealContextKey(route, tokens), [route, tokens])
+  const guideTokenVisible =
+    consoleAvailability === 'enabled'
+    && guideTokenValue != null
+    && isActiveGuideRevealContext(revealedGuideContextKey, guideRevealContextKey)
 
   const toggleGuideTokenVisibility = useCallback(async () => {
     if (!guideTokenId) return
     if (guideTokenVisible) {
       guideTokenRunIdRef.current += 1
-      setGuideTokenVisible(false)
+      setRevealedGuideContextKey(null)
       setGuideTokenValue(null)
       setGuideTokenLoading(false)
       setGuideTokenError(null)
@@ -1163,7 +1181,7 @@ export default function UserConsole(): JSX.Element {
 
     const runId = guideTokenRunIdRef.current + 1
     guideTokenRunIdRef.current = runId
-    setGuideTokenVisible(false)
+    setRevealedGuideContextKey(null)
     setGuideTokenValue(null)
     setGuideTokenLoading(true)
     setGuideTokenError(null)
@@ -1172,10 +1190,10 @@ export default function UserConsole(): JSX.Element {
       const secret = await resolveTokenSecret(guideTokenId)
       if (guideTokenRunIdRef.current !== runId) return
       setGuideTokenValue(secret)
-      setGuideTokenVisible(true)
+      setRevealedGuideContextKey(guideRevealContextKey)
     } catch (err) {
       if (guideTokenRunIdRef.current !== runId) return
-      setGuideTokenVisible(false)
+      setRevealedGuideContextKey(null)
       setGuideTokenValue(null)
       setGuideTokenError(formatTemplate(text.detail.guideToken.revealFailed, {
         message: getProbeErrorMessage(err),
@@ -1185,7 +1203,14 @@ export default function UserConsole(): JSX.Element {
         setGuideTokenLoading(false)
       }
     }
-  }, [guideTokenId, guideTokenLoading, guideTokenVisible, resolveTokenSecret, text.detail.guideToken.revealFailed])
+  }, [
+    guideRevealContextKey,
+    guideTokenId,
+    guideTokenLoading,
+    guideTokenVisible,
+    resolveTokenSecret,
+    text.detail.guideToken.revealFailed,
+  ])
 
   const subtitle = useMemo(() => {
     const user = profile?.userDisplayName?.trim()
@@ -1195,7 +1220,7 @@ export default function UserConsole(): JSX.Element {
     return text.subtitle
   }, [profile?.userDisplayName, text.subtitle])
 
-  const guideToken = guideTokenVisible && guideTokenValue != null ? guideTokenValue : maskedGuideToken
+  const guideToken = guideTokenVisible ? guideTokenValue ?? maskedGuideToken : maskedGuideToken
 
   const detailTokenCopyState = route.name === 'token' ? copyState[route.id] ?? 'idle' : 'idle'
   const detailTokenMatchesRoute = route.name === 'token' && tokenSecretTokenId === route.id
@@ -2169,8 +2194,10 @@ export const __testables = {
   buildMcpToolCallProbeStepDefinitions,
   canonicalMcpProbeToolName,
   extractAdvertisedMcpTools,
+  isActiveGuideRevealContext,
   isBillableMcpProbeTool,
   nextRunningMcpProbeModel,
+  resolveGuideRevealContextKey,
   resolveGuideToken,
   resolveGuideTokenId,
   shouldRenderLandingGuide,

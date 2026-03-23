@@ -109,7 +109,7 @@ function PublicHome(): JSX.Element {
   const [error, setError] = useState<string | null>(null)
   const [profile, setProfile] = useState<Profile | null>(null)
   const [activeGuide, setActiveGuide] = useState<GuideKey>('codex')
-  const [guideTokenVisible, setGuideTokenVisible] = useState(false)
+  const [revealedGuideToken, setRevealedGuideToken] = useState<string | null>(null)
   const updateBanner = useUpdateAvailable()
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
   const pageRef = useRef<HTMLElement>(null)
@@ -271,6 +271,7 @@ function PublicHome(): JSX.Element {
   const showRegistrationPausedNotice = isLoggedOut && profile?.allowRegistration === false
   const hasTokenInfo = token.trim().length > 0
   const canRevealGuideToken = isFullToken(token)
+  const guideTokenVisible = shouldRevealPublicGuideToken(token, revealedGuideToken)
   const hasValidTokenForLogs = isFullToken(token) && !invalidToken
   const hideTokenPanels = !hasTokenInfo && (loading || isLoggedOut)
   const availableKeys = summary?.active_keys ?? null
@@ -278,10 +279,6 @@ function PublicHome(): JSX.Element {
   const totalKeys = availableKeys != null && exhaustedKeys != null ? availableKeys + exhaustedKeys : null
 
   const exampleToken = resolvePublicGuideToken(token, publicStrings.accessToken.placeholder, guideTokenVisible)
-
-  useEffect(() => {
-    setGuideTokenVisible(false)
-  }, [token])
 
   const guideDescription = useMemo<GuideContent>(() => {
     const baseUrl = window.location.origin
@@ -768,7 +765,7 @@ function PublicHome(): JSX.Element {
               className="guide-token-toggle"
               disabled={!canRevealGuideToken}
               aria-pressed={guideTokenVisible}
-              onClick={() => setGuideTokenVisible((prev) => !prev)}
+              onClick={() => setRevealedGuideToken(guideTokenVisible ? null : token)}
             >
               <Icon
                 icon={guideTokenVisible ? 'mdi:eye-off-outline' : 'mdi:eye-outline'}
@@ -904,6 +901,7 @@ export default PublicHome
 
 export const __testables = {
   resolvePublicGuideToken,
+  shouldRevealPublicGuideToken,
 }
 
 function MobileGuideDropdown({
@@ -1204,6 +1202,10 @@ function buildCurlSnippet(baseUrl: string, prettyToken: string): string {
 
 function resolvePublicGuideToken(token: string, placeholder: string, revealed: boolean): string {
   return revealed && isFullToken(token) ? token : placeholder
+}
+
+function shouldRevealPublicGuideToken(token: string, revealedToken: string | null): boolean {
+  return isFullToken(token) && revealedToken === token
 }
 
 function normalizeTokenHash(value: string): string {

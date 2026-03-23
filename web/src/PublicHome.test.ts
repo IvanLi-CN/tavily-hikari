@@ -15,6 +15,13 @@ describe('PublicHome guide token visibility', () => {
     )
   })
 
+  it('hides the guide immediately when the revealed token no longer matches the current token', () => {
+    expect(__testables.shouldRevealPublicGuideToken(
+      'th-b2c3-fedcba0987654321',
+      'th-a1b2-1234567890abcdef',
+    )).toBe(false)
+  })
+
   it('falls back to the placeholder when the current value is incomplete', () => {
     expect(__testables.resolvePublicGuideToken('th-a1b2-', placeholder, true)).toBe(placeholder)
     expect(__testables.resolvePublicGuideToken('', placeholder, true)).toBe(placeholder)

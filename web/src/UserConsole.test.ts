@@ -78,6 +78,24 @@ describe('UserConsole landing guide helpers', () => {
       [{ tokenId: 'a1b2' } as any, { tokenId: 'c3d4' } as any],
     )).toBeNull()
   })
+
+  it('derives a distinct guide reveal context for each route and visible token set', () => {
+    expect(__testables.resolveGuideRevealContextKey({ name: 'token', id: 'a1b2' }, [])).toBe('token:a1b2')
+    expect(__testables.resolveGuideRevealContextKey(
+      { name: 'landing', section: 'tokens' },
+      [{ tokenId: 'c3d4' } as any],
+    )).toBe('landing:tokens:c3d4')
+    expect(__testables.resolveGuideRevealContextKey(
+      { name: 'landing', section: 'dashboard' },
+      [{ tokenId: 'a1b2' } as any, { tokenId: 'c3d4' } as any],
+    )).toBeNull()
+  })
+
+  it('renders a revealed guide token only while the reveal context still matches', () => {
+    expect(__testables.isActiveGuideRevealContext('landing:tokens:a1b2', 'landing:tokens:a1b2')).toBe(true)
+    expect(__testables.isActiveGuideRevealContext('landing:tokens:a1b2', 'landing:tokens:b2c3')).toBe(false)
+    expect(__testables.isActiveGuideRevealContext('token:a1b2', null)).toBe(false)
+  })
 })
 
 describe('UserConsole probe step definitions', () => {
