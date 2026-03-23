@@ -280,10 +280,8 @@ function PublicHome(): JSX.Element {
   const exampleToken = resolvePublicGuideToken(token, publicStrings.accessToken.placeholder, guideTokenVisible)
 
   useEffect(() => {
-    if (!canRevealGuideToken) {
-      setGuideTokenVisible(false)
-    }
-  }, [canRevealGuideToken])
+    setGuideTokenVisible(false)
+  }, [token])
 
   const guideDescription = useMemo<GuideContent>(() => {
     const baseUrl = window.location.origin
