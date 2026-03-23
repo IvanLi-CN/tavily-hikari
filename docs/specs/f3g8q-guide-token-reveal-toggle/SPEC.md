@@ -2,9 +2,9 @@
 
 ## 状态
 
-- Status: 进行中（快车道）
+- Status: 已完成（快车道）
 - Created: 2026-03-23
-- Last: 2026-03-23
+- Last: 2026-03-24
 
 ## 背景 / 问题陈述
 
@@ -103,7 +103,7 @@
 - [x] M1: PublicHome / UserConsole 导览卡片头部接入 reveal 按钮与显隐状态
 - [x] M2: UserConsole 复用现有 secret cache / detail reveal 逻辑
 - [x] M3: 文案、样式、测试与 Storybook proof 更新
-- [ ] M4: 快车道收敛到 merge-ready PR
+- [x] M4: 快车道收敛到 merge-ready PR
 
 ## 风险 / 假设（Risks / Assumptions）
 
@@ -113,6 +113,7 @@
 ## 变更记录（Change log）
 
 - 2026-03-23: 创建 follow-up spec，冻结 PublicHome + UserConsole 导览区 reveal 按钮的范围、行为与质量门槛。
+- 2026-03-24: 补充 PublicHome / UserConsole 的 Storybook visual evidence，并将“其他”页签统一为通用 MCP + HTTP API 双示例。
 
 ## Visual Evidence (PR)
 
