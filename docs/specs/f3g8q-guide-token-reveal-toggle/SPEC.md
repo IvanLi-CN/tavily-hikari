@@ -113,3 +113,38 @@
 ## 变更记录（Change log）
 
 - 2026-03-23: 创建 follow-up spec，冻结 PublicHome + UserConsole 导览区 reveal 按钮的范围、行为与质量门槛。
+
+## Visual Evidence (PR)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Public/PublicHome/Guide Token Revealed
+  state: other tab with revealed token
+  evidence_note: 验证 PublicHome 导览在显示密钥后，其他页签同时展示通用 MCP 与 HTTP API 两种接入示例。
+  image:
+  ![PublicHome other tab revealed](./assets/public-home-guide-other-revealed.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: UserConsole/UserConsole/Console Home Guide Token Revealed
+  state: other tab with revealed token
+  evidence_note: 验证单 token landing 导览在显示密钥后，其他页签同时展示通用 MCP 与 HTTP API 两种接入示例。
+  image:
+  ![UserConsole landing other tab revealed](./assets/user-console-landing-guide-other-revealed.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: UserConsole/UserConsole/Token Detail Guide Token Revealed
+  state: other tab with revealed token
+  evidence_note: 验证 token detail 导览在显示密钥后，其他页签同步展示通用 MCP 与 HTTP API 两种接入示例。
+  image:
+  ![UserConsole detail other tab revealed](./assets/user-console-detail-guide-other-revealed.png)
