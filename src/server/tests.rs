@@ -7540,15 +7540,21 @@ colo=LAX
         assert_eq!(resp.status(), reqwest::StatusCode::OK);
 
         let body: serde_json::Value = resp.json().await.expect("summary windows json");
-        assert_eq!(
-            body.pointer("/today/total_requests").and_then(|v| v.as_i64()),
-            Some(10)
-        );
-        assert_eq!(
-            body.pointer("/yesterday/total_requests")
-                .and_then(|v| v.as_i64()),
-            Some(4)
-        );
+        let today_total = body.pointer("/today/total_requests").and_then(|v| v.as_i64());
+        let yesterday_total = body
+            .pointer("/yesterday/total_requests")
+            .and_then(|v| v.as_i64());
+        match (today_total, yesterday_total) {
+            (Some(10), Some(4)) => {}
+            // The endpoint uses `Local::now()` at request time. If the test setup and the
+            // request happen across a local midnight boundary, the rows we inserted for the
+            // previous "today" window legitimately move into the response's "yesterday"
+            // bucket instead of "today".
+            (Some(0), Some(10)) => {}
+            _ => panic!(
+                "unexpected summary window totals: today={today_total:?} yesterday={yesterday_total:?}"
+            ),
+        }
         let month_expected = if month_start <= yesterday_start { 14 } else { 10 };
         assert_eq!(
             body.pointer("/month/total_requests").and_then(|v| v.as_i64()),
