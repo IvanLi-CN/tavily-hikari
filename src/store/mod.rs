@@ -133,7 +133,7 @@ impl KeyStore {
             r#"
             CREATE TABLE IF NOT EXISTS request_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                api_key_id TEXT NOT NULL,
+                api_key_id TEXT,
                 auth_token_id TEXT,
                 method TEXT NOT NULL,
                 path TEXT NOT NULL,
@@ -1197,6 +1197,7 @@ impl KeyStore {
             SELECT api_key_id, created_at, result_status
             FROM request_logs
             WHERE visibility = ?
+              AND api_key_id IS NOT NULL
             ORDER BY api_key_id ASC, created_at ASC, id ASC
             "#,
         )
@@ -2472,6 +2473,21 @@ impl KeyStore {
         Ok(exists.is_some())
     }
 
+    pub(crate) async fn table_column_not_null(
+        &self,
+        table: &str,
+        column: &str,
+    ) -> Result<bool, ProxyError> {
+        let not_null = sqlx::query_scalar::<_, i64>(
+            r#"SELECT "notnull" FROM pragma_table_info(?) WHERE name = ? LIMIT 1"#,
+        )
+        .bind(table)
+        .bind(column)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(not_null.unwrap_or_default() != 0)
+    }
+
     pub(crate) async fn upgrade_api_keys_schema(&self) -> Result<(), ProxyError> {
         // Track whether legacy column existed to gate one-time migration logic
         let had_disabled_at = self.api_keys_column_exists("disabled_at").await?;
@@ -2957,7 +2973,7 @@ impl KeyStore {
                 r#"
                 CREATE TABLE IF NOT EXISTS request_logs_new (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    api_key_id TEXT NOT NULL,
+                    api_key_id TEXT,
                     auth_token_id TEXT,
                     method TEXT NOT NULL,
                     path TEXT NOT NULL,
@@ -3041,6 +3057,112 @@ impl KeyStore {
                 "#,
             )
             .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+            .execute(&mut *tx)
+            .await?;
+
+            sqlx::query("DROP TABLE request_logs")
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("ALTER TABLE request_logs_new RENAME TO request_logs")
+                .execute(&mut *tx)
+                .await?;
+
+            tx.commit().await?;
+        }
+
+        if self
+            .table_column_not_null("request_logs", "api_key_id")
+            .await?
+        {
+            let mut tx = self.pool.begin().await?;
+
+            sqlx::query(
+                r#"
+                CREATE TABLE IF NOT EXISTS request_logs_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    api_key_id TEXT,
+                    auth_token_id TEXT,
+                    method TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    query TEXT,
+                    status_code INTEGER,
+                    tavily_status_code INTEGER,
+                    error_message TEXT,
+                    result_status TEXT NOT NULL DEFAULT 'unknown',
+                    request_kind_key TEXT,
+                    request_kind_label TEXT,
+                    request_kind_detail TEXT,
+                    business_credits INTEGER,
+                    failure_kind TEXT,
+                    key_effect_code TEXT NOT NULL DEFAULT 'none',
+                    key_effect_summary TEXT,
+                    request_body BLOB,
+                    response_body BLOB,
+                    forwarded_headers TEXT,
+                    dropped_headers TEXT,
+                    visibility TEXT NOT NULL DEFAULT 'visible',
+                    created_at INTEGER NOT NULL,
+                    FOREIGN KEY (api_key_id) REFERENCES api_keys(id)
+                )
+                "#,
+            )
+            .execute(&mut *tx)
+            .await?;
+
+            sqlx::query(
+                r#"
+                INSERT INTO request_logs_new (
+                    id,
+                    api_key_id,
+                    auth_token_id,
+                    method,
+                    path,
+                    query,
+                    status_code,
+                    tavily_status_code,
+                    error_message,
+                    result_status,
+                    request_kind_key,
+                    request_kind_label,
+                    request_kind_detail,
+                    business_credits,
+                    failure_kind,
+                    key_effect_code,
+                    key_effect_summary,
+                    request_body,
+                    response_body,
+                    forwarded_headers,
+                    dropped_headers,
+                    visibility,
+                    created_at
+                )
+                SELECT
+                    id,
+                    api_key_id,
+                    auth_token_id,
+                    method,
+                    path,
+                    query,
+                    status_code,
+                    tavily_status_code,
+                    error_message,
+                    result_status,
+                    request_kind_key,
+                    request_kind_label,
+                    request_kind_detail,
+                    business_credits,
+                    failure_kind,
+                    key_effect_code,
+                    key_effect_summary,
+                    request_body,
+                    response_body,
+                    forwarded_headers,
+                    dropped_headers,
+                    visibility,
+                    created_at
+                FROM request_logs
+                "#,
+            )
             .execute(&mut *tx)
             .await?;
 
@@ -8710,35 +8832,37 @@ impl KeyStore {
         .await?;
 
         // Daily API-key rollup bucket (bucket_secs=86400, aligned to local midnight).
-        sqlx::query(
-            r#"
-            INSERT INTO api_key_usage_buckets (
-                api_key_id,
-                bucket_start,
-                bucket_secs,
-                total_requests,
-                success_count,
-                error_count,
-                quota_exhausted_count,
-                updated_at
-            ) VALUES (?, ?, 86400, 1, ?, ?, ?, ?)
-            ON CONFLICT(api_key_id, bucket_start, bucket_secs)
-            DO UPDATE SET
-                total_requests = total_requests + 1,
-                success_count = success_count + excluded.success_count,
-                error_count = error_count + excluded.error_count,
-                quota_exhausted_count = quota_exhausted_count + excluded.quota_exhausted_count,
-                updated_at = excluded.updated_at
-            "#,
-        )
-        .bind(entry.key_id)
-        .bind(bucket_start)
-        .bind(bucket_success)
-        .bind(bucket_error)
-        .bind(bucket_quota_exhausted)
-        .bind(created_at)
-        .execute(&mut *tx)
-        .await?;
+        if let Some(key_id) = entry.key_id {
+            sqlx::query(
+                r#"
+                INSERT INTO api_key_usage_buckets (
+                    api_key_id,
+                    bucket_start,
+                    bucket_secs,
+                    total_requests,
+                    success_count,
+                    error_count,
+                    quota_exhausted_count,
+                    updated_at
+                ) VALUES (?, ?, 86400, 1, ?, ?, ?, ?)
+                ON CONFLICT(api_key_id, bucket_start, bucket_secs)
+                DO UPDATE SET
+                    total_requests = total_requests + 1,
+                    success_count = success_count + excluded.success_count,
+                    error_count = error_count + excluded.error_count,
+                    quota_exhausted_count = quota_exhausted_count + excluded.quota_exhausted_count,
+                    updated_at = excluded.updated_at
+                "#,
+            )
+            .bind(key_id)
+            .bind(bucket_start)
+            .bind(bucket_success)
+            .bind(bucket_error)
+            .bind(bucket_quota_exhausted)
+            .bind(created_at)
+            .execute(&mut *tx)
+            .await?;
+        }
 
         tx.commit().await?;
 

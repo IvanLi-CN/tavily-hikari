@@ -2835,7 +2835,7 @@ mod tests {
 
         let app = Router::new()
             .route("/mcp", any(proxy_handler))
-            .route("/mcp/*path", any(proxy_handler))
+            .route("/mcp/*path", any(mcp_subpath_reject_handler))
             .route("/api/tavily/search", post(tavily_http_search))
             .route("/api/tavily/extract", post(tavily_http_extract))
             .route("/api/tavily/crawl", post(tavily_http_crawl))
@@ -12673,6 +12673,340 @@ colo=LAX
             resp.status().is_success(),
             "expected success from /mcp using query param token, got {}",
             resp.status()
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_subpath_rejects_authenticated_requests_locally_and_persists_null_key_logs() {
+        let db_path = temp_db_path("mcp-subpath-local-reject");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let upstream_addr =
+            spawn_counted_fake_forward_proxy(StatusCode::OK, Duration::from_millis(0), hits.clone())
+                .await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-mcp-subpath-local-reject".to_string()],
+            &upstream,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+        let access_token = proxy
+            .create_access_token(Some("mcp-subpath-local-reject"))
+            .await
+            .expect("create access token");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), "https://api.tavily.com".to_string()).await;
+        let client = Client::new();
+        let resp = client
+            .post(format!(
+                "http://{}/mcp/search?tavilyApiKey={}",
+                proxy_addr, access_token.token
+            ))
+            .json(&serde_json::json!({
+                "query": "why was this client pointed at /mcp/search"
+            }))
+            .send()
+            .await
+            .expect("subpath request");
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(resp.text().await.expect("plain text body"), "Not Found");
+        assert_eq!(hits.load(Ordering::SeqCst), 0, "subpath reject must not hit upstream");
+
+        let latest_token_log = proxy
+            .token_recent_logs(&access_token.id, 1, None)
+            .await
+            .expect("token recent logs")
+            .into_iter()
+            .next()
+            .expect("token log exists");
+        assert_eq!(latest_token_log.key_id, None);
+        assert_eq!(latest_token_log.request_kind_key, "mcp:raw:/mcp/search");
+        assert_eq!(latest_token_log.request_kind_label, "MCP | /mcp/search");
+        assert_eq!(latest_token_log.result_status, "error");
+        assert_eq!(
+            latest_token_log.failure_kind.as_deref(),
+            Some("mcp_path_404")
+        );
+        assert!(!latest_token_log.counts_business_quota);
+        assert_eq!(latest_token_log.business_credits, None);
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let request_row = sqlx::query(
+            r#"
+            SELECT
+                id,
+                api_key_id,
+                auth_token_id,
+                status_code,
+                tavily_status_code,
+                result_status,
+                request_kind_key,
+                request_kind_label,
+                failure_kind,
+                key_effect_code,
+                business_credits,
+                request_body,
+                response_body,
+                forwarded_headers,
+                dropped_headers
+            FROM request_logs
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("request log row");
+        let request_log_id: i64 = request_row.try_get("id").expect("request log id");
+        let request_api_key_id: Option<String> =
+            request_row.try_get("api_key_id").expect("request api key id");
+        let request_auth_token_id: Option<String> = request_row
+            .try_get("auth_token_id")
+            .expect("request auth token id");
+        let request_body: Vec<u8> = request_row.try_get("request_body").expect("request body");
+        let response_body: Vec<u8> = request_row.try_get("response_body").expect("response body");
+        assert_eq!(request_api_key_id, None);
+        assert_eq!(request_auth_token_id.as_deref(), Some(access_token.id.as_str()));
+        assert_eq!(
+            request_row.try_get::<Option<i64>, _>("status_code").unwrap(),
+            Some(404)
+        );
+        assert_eq!(
+            request_row
+                .try_get::<Option<i64>, _>("tavily_status_code")
+                .unwrap(),
+            Some(404)
+        );
+        assert_eq!(
+            request_row.try_get::<String, _>("result_status").unwrap(),
+            "error"
+        );
+        assert_eq!(
+            request_row.try_get::<String, _>("request_kind_key").unwrap(),
+            "mcp:raw:/mcp/search"
+        );
+        assert_eq!(
+            request_row.try_get::<String, _>("request_kind_label").unwrap(),
+            "MCP | /mcp/search"
+        );
+        assert_eq!(
+            request_row
+                .try_get::<Option<String>, _>("failure_kind")
+                .unwrap()
+                .as_deref(),
+            Some("mcp_path_404")
+        );
+        assert_eq!(
+            request_row.try_get::<String, _>("key_effect_code").unwrap(),
+            "none"
+        );
+        assert_eq!(
+            request_row
+                .try_get::<Option<i64>, _>("business_credits")
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&request_body)
+                .expect("request body json")
+                .get("query")
+                .and_then(|value| value.as_str()),
+            Some("why was this client pointed at /mcp/search")
+        );
+        assert_eq!(response_body, b"Not Found");
+        assert_eq!(
+            request_row.try_get::<String, _>("forwarded_headers").unwrap(),
+            "[]"
+        );
+        assert_eq!(
+            request_row.try_get::<String, _>("dropped_headers").unwrap(),
+            "[]"
+        );
+
+        let token_row = sqlx::query(
+            r#"
+            SELECT api_key_id, counts_business_quota, business_credits, request_log_id
+            FROM auth_token_logs
+            WHERE token_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(&access_token.id)
+        .fetch_one(&pool)
+        .await
+        .expect("token log row");
+        assert_eq!(
+            token_row
+                .try_get::<Option<String>, _>("api_key_id")
+                .expect("token log api key id"),
+            None
+        );
+        assert_eq!(
+            token_row
+                .try_get::<i64, _>("counts_business_quota")
+                .expect("counts business quota"),
+            0
+        );
+        assert_eq!(
+            token_row
+                .try_get::<Option<i64>, _>("business_credits")
+                .expect("token log business credits"),
+            None
+        );
+        assert_eq!(
+            token_row
+                .try_get::<Option<i64>, _>("request_log_id")
+                .expect("linked request log id"),
+            Some(request_log_id)
+        );
+
+        let verdict = proxy
+            .peek_token_quota(&access_token.id)
+            .await
+            .expect("peek token quota");
+        assert_eq!(verdict.hourly_used, 0, "subpath rejects must not charge business quota");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_subpath_keeps_missing_and_invalid_token_401_responses() {
+        let db_path = temp_db_path("mcp-subpath-auth-401");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let upstream_addr =
+            spawn_counted_fake_forward_proxy(StatusCode::OK, Duration::from_millis(0), hits.clone())
+                .await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-mcp-subpath-auth-401".to_string()],
+            &upstream,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+        let proxy_addr = spawn_proxy_server(proxy, "https://api.tavily.com".to_string()).await;
+        let client = Client::new();
+
+        let missing_resp = client
+            .post(format!("http://{}/mcp/search", proxy_addr))
+            .json(&serde_json::json!({ "query": "missing token" }))
+            .send()
+            .await
+            .expect("missing token request");
+        assert_eq!(missing_resp.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            missing_resp
+                .json::<serde_json::Value>()
+                .await
+                .expect("missing token json")
+                .get("error")
+                .and_then(|value| value.as_str()),
+            Some("missing token")
+        );
+
+        let invalid_resp = client
+            .post(format!("http://{}/mcp/search", proxy_addr))
+            .header("Authorization", "Bearer th-invalid-token")
+            .json(&serde_json::json!({ "query": "invalid token" }))
+            .send()
+            .await
+            .expect("invalid token request");
+        assert_eq!(invalid_resp.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            invalid_resp
+                .json::<serde_json::Value>()
+                .await
+                .expect("invalid token json")
+                .get("error")
+                .and_then(|value| value.as_str()),
+            Some("invalid or disabled token")
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 0, "401 rejects must not hit upstream");
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let request_log_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM request_logs")
+            .fetch_one(&pool)
+            .await
+            .expect("request log count");
+        let token_log_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM auth_token_logs")
+            .fetch_one(&pool)
+            .await
+            .expect("token log count");
+        assert_eq!(request_log_count, 0);
+        assert_eq!(token_log_count, 0);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_root_sse_get_stays_405_while_subpath_sse_get_is_local_404() {
+        let db_path = temp_db_path("mcp-root-sse-and-subpath");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let upstream_addr =
+            spawn_counted_fake_forward_proxy(StatusCode::OK, Duration::from_millis(0), hits.clone())
+                .await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-mcp-root-sse-subpath".to_string()],
+            &upstream,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+        let access_token = proxy
+            .create_access_token(Some("mcp-root-sse-subpath"))
+            .await
+            .expect("create access token");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), "https://api.tavily.com".to_string()).await;
+        let client = Client::new();
+
+        let root_resp = client
+            .get(format!("http://{}/mcp?tavilyApiKey={}", proxy_addr, access_token.token))
+            .header("Accept", "text/event-stream")
+            .send()
+            .await
+            .expect("root sse request");
+        assert_eq!(root_resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+
+        let subpath_resp = client
+            .get(format!(
+                "http://{}/mcp/sse?tavilyApiKey={}",
+                proxy_addr, access_token.token
+            ))
+            .header("Accept", "text/event-stream")
+            .send()
+            .await
+            .expect("subpath sse request");
+        assert_eq!(subpath_resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(subpath_resp.text().await.expect("subpath body"), "Not Found");
+        assert_eq!(hits.load(Ordering::SeqCst), 0, "SSE guard paths must stay local");
+
+        let latest_token_log = proxy
+            .token_recent_logs(&access_token.id, 1, None)
+            .await
+            .expect("token recent logs")
+            .into_iter()
+            .next()
+            .expect("token log exists");
+        assert_eq!(latest_token_log.request_kind_key, "mcp:raw:/mcp/sse");
+        assert_eq!(
+            latest_token_log.failure_kind.as_deref(),
+            Some("mcp_path_404")
         );
 
         let _ = std::fs::remove_file(db_path);

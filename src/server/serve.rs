@@ -222,7 +222,7 @@ pub async fn serve(
 
     router = router
         .route("/mcp", any(proxy_handler))
-        .route("/mcp/*path", any(proxy_handler));
+        .route("/mcp/*path", any(mcp_subpath_reject_handler));
 
     // 404 landing page that updates URL back to original via history API
     router = router.route("/__404", get(not_found_landing));
