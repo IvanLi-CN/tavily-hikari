@@ -447,8 +447,8 @@ const MOCK_REQUESTS: RequestLog[] = [
     http_status: 200,
     mcp_status: 429,
     business_credits: null,
-    request_kind_key: 'mcp:raw:/mcp',
-    request_kind_label: 'MCP | /mcp',
+    request_kind_key: 'mcp:unknown-payload',
+    request_kind_label: 'MCP | unknown payload',
     request_kind_detail: 'tool: crawl',
     result_status: 'error',
     created_at: now - 74,
@@ -462,7 +462,7 @@ const MOCK_REQUESTS: RequestLog[] = [
     dropped_headers: [],
     operationalClass: 'upstream_error',
     requestKindProtocolGroup: 'mcp',
-    requestKindBillingGroup: 'billable',
+    requestKindBillingGroup: 'non_billable',
   },
   {
     id: 9499,
@@ -500,8 +500,8 @@ const MOCK_REQUESTS: RequestLog[] = [
     http_status: 200,
     mcp_status: 401,
     business_credits: null,
-    request_kind_key: 'mcp:raw:/mcp',
-    request_kind_label: 'MCP | /mcp',
+    request_kind_key: 'mcp:unknown-payload',
+    request_kind_label: 'MCP | unknown payload',
     request_kind_detail: 'tool: map',
     result_status: 'error',
     created_at: now - 196,
@@ -515,7 +515,7 @@ const MOCK_REQUESTS: RequestLog[] = [
     dropped_headers: [],
     operationalClass: 'upstream_error',
     requestKindProtocolGroup: 'mcp',
-    requestKindBillingGroup: 'billable',
+    requestKindBillingGroup: 'non_billable',
   },
   {
     id: 9497,
@@ -552,7 +552,12 @@ const STORY_REQUEST_KIND_OPTIONS: TokenLogRequestKindOption[] = [
   { key: 'api:search', label: 'API | search', protocol_group: 'api', billing_group: 'billable' },
   { key: 'mcp:initialize', label: 'MCP | initialize', protocol_group: 'mcp', billing_group: 'non_billable' },
   { key: 'mcp:ping', label: 'MCP | ping', protocol_group: 'mcp', billing_group: 'non_billable' },
-  { key: 'mcp:raw:/mcp', label: 'MCP | /mcp', protocol_group: 'mcp', billing_group: 'billable' },
+  {
+    key: 'mcp:unknown-payload',
+    label: 'MCP | unknown payload',
+    protocol_group: 'mcp',
+    billing_group: 'non_billable',
+  },
 ]
 
 function buildStoryLogFacetOptions(values: Array<string | null | undefined>): Array<{ value: string; count: number }> {

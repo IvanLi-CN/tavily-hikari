@@ -105,11 +105,11 @@ describe('token log request kind helpers', () => {
     expect(
       mergeRequestKindOptionsByKey(
         {
-          'mcp:raw:/mcp/sse': {
-            key: 'mcp:raw:/mcp/sse',
-            label: 'MCP | /mcp/sse',
+          'mcp:unsupported-path': {
+            key: 'mcp:unsupported-path',
+            label: 'MCP | unsupported path',
             protocol_group: 'mcp',
-            billing_group: 'billable',
+            billing_group: 'non_billable',
           },
         },
         [{ key: 'api:search', label: 'API | search', protocol_group: 'api', billing_group: 'billable' }],
@@ -121,11 +121,11 @@ describe('token log request kind helpers', () => {
         protocol_group: 'api',
         billing_group: 'billable',
       },
-      'mcp:raw:/mcp/sse': {
-        key: 'mcp:raw:/mcp/sse',
-        label: 'MCP | /mcp/sse',
+      'mcp:unsupported-path': {
+        key: 'mcp:unsupported-path',
+        label: 'MCP | unsupported path',
         protocol_group: 'mcp',
-        billing_group: 'billable',
+        billing_group: 'non_billable',
       },
     })
   })
@@ -133,28 +133,33 @@ describe('token log request kind helpers', () => {
   it('keeps selected request kinds visible even when they drop out of the current window options', () => {
     expect(
       buildVisibleRequestKindOptions(
-        ['mcp:raw:/mcp/sse', 'api:search'],
+        ['mcp:unsupported-path', 'api:search'],
         [{ key: 'api:search', label: 'API | search', protocol_group: 'api', billing_group: 'billable' }],
         {
-          'mcp:raw:/mcp/sse': {
-            key: 'mcp:raw:/mcp/sse',
-            label: 'MCP | /mcp/sse',
+          'mcp:unsupported-path': {
+            key: 'mcp:unsupported-path',
+            label: 'MCP | unsupported path',
             protocol_group: 'mcp',
-            billing_group: 'billable',
+            billing_group: 'non_billable',
           },
         },
       ),
     ).toEqual([
       { key: 'api:search', label: 'API | search', protocol_group: 'api', billing_group: 'billable' },
-      { key: 'mcp:raw:/mcp/sse', label: 'MCP | /mcp/sse', protocol_group: 'mcp', billing_group: 'billable' },
+      {
+        key: 'mcp:unsupported-path',
+        label: 'MCP | unsupported path',
+        protocol_group: 'mcp',
+        billing_group: 'non_billable',
+      },
     ])
   })
 
   it('merges the canonical request kind catalog with dynamic options for filter menus', () => {
     const merged = mergeRequestKindCatalog([
       {
-        key: 'mcp:tool:acme-lookup',
-        label: 'MCP | Acme Lookup',
+        key: 'mcp:third-party-tool',
+        label: 'MCP | third-party tool',
         protocol_group: 'mcp',
         billing_group: 'non_billable',
         count: 7,
@@ -163,9 +168,9 @@ describe('token log request kind helpers', () => {
 
     expect(merged.some((option) => option.key === 'api:search')).toBe(true)
     expect(merged.some((option) => option.key === 'mcp:tools/list')).toBe(true)
-    expect(merged.find((option) => option.key === 'mcp:tool:acme-lookup')).toEqual({
-      key: 'mcp:tool:acme-lookup',
-      label: 'MCP | Acme Lookup',
+    expect(merged.find((option) => option.key === 'mcp:third-party-tool')).toEqual({
+      key: 'mcp:third-party-tool',
+      label: 'MCP | third-party tool',
       protocol_group: 'mcp',
       billing_group: 'non_billable',
       count: 7,

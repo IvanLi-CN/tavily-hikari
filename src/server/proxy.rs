@@ -1201,13 +1201,14 @@ fn decode_body(bytes: &[u8]) -> Option<String> {
 
 impl From<RequestLogRecord> for RequestLogView {
     fn from(record: RequestLogRecord) -> Self {
+        let request_kind_protocol_group =
+            token_request_kind_protocol_group(&record.request_kind_key).to_string();
         let operational_class = operational_class_for_request_path(
             &record.path,
             Some(&record.request_body),
             &record.result_status,
             record.failure_kind.as_deref(),
         );
-        let request_kind = classify_token_request_kind(&record.path, Some(&record.request_body));
         let request_kind_billing_group =
             token_request_kind_billing_group_for_request(&record.path, Some(&record.request_body));
         Self {
@@ -1223,6 +1224,9 @@ impl From<RequestLogRecord> for RequestLogView {
             request_kind_key: record.request_kind_key,
             request_kind_label: record.request_kind_label,
             request_kind_detail: record.request_kind_detail,
+            legacy_request_kind_key: record.legacy_request_kind_key,
+            legacy_request_kind_label: record.legacy_request_kind_label,
+            legacy_request_kind_detail: record.legacy_request_kind_detail,
             result_status: record.result_status,
             created_at: record.created_at,
             error_message: record.error_message,
@@ -1234,8 +1238,7 @@ impl From<RequestLogRecord> for RequestLogView {
             forwarded_headers: record.forwarded_headers,
             dropped_headers: record.dropped_headers,
             operational_class: operational_class.to_string(),
-            request_kind_protocol_group: token_request_kind_protocol_group(&request_kind.key)
-                .to_string(),
+            request_kind_protocol_group,
             request_kind_billing_group: request_kind_billing_group.to_string(),
         }
     }
@@ -1271,6 +1274,9 @@ impl RequestLogView {
             request_kind_key: record.request_kind_key,
             request_kind_label: record.request_kind_label,
             request_kind_detail: record.request_kind_detail,
+            legacy_request_kind_key: record.legacy_request_kind_key,
+            legacy_request_kind_label: record.legacy_request_kind_label,
+            legacy_request_kind_detail: record.legacy_request_kind_detail,
             result_status: record.result_status,
             created_at: record.created_at,
             error_message: record.error_message,

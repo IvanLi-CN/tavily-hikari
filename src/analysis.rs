@@ -767,8 +767,40 @@ pub(crate) fn build_mcp_request_kind_with_detail(
     )
 }
 
-pub(crate) fn raw_mcp_request_kind(path: &str) -> TokenRequestKind {
-    build_mcp_request_kind_named(&format!("raw:{path}"), path)
+pub(crate) fn build_api_unknown_path_kind(path: &str) -> TokenRequestKind {
+    TokenRequestKind::new(
+        "api:unknown-path",
+        "API | unknown path",
+        Some(path.to_string()),
+    )
+}
+
+pub(crate) fn build_mcp_unsupported_path_kind(path: &str) -> TokenRequestKind {
+    TokenRequestKind::new(
+        "mcp:unsupported-path",
+        "MCP | unsupported path",
+        Some(path.to_string()),
+    )
+}
+
+pub(crate) fn build_mcp_unknown_payload_kind(detail: Option<String>) -> TokenRequestKind {
+    TokenRequestKind::new("mcp:unknown-payload", "MCP | unknown payload", detail)
+}
+
+pub(crate) fn build_mcp_unknown_method_kind(method: &str) -> TokenRequestKind {
+    TokenRequestKind::new(
+        "mcp:unknown-method",
+        "MCP | unknown method",
+        Some(method.to_string()),
+    )
+}
+
+pub(crate) fn build_mcp_third_party_tool_kind(tool: &str) -> TokenRequestKind {
+    TokenRequestKind::new(
+        "mcp:third-party-tool",
+        "MCP | third-party tool",
+        Some(tool.to_string()),
+    )
 }
 
 pub(crate) fn normalize_tavily_tool_name(tool: &str) -> Option<String> {
@@ -782,35 +814,6 @@ pub(crate) fn normalize_tavily_tool_name(tool: &str) -> Option<String> {
         _ => return None,
     };
     Some(mapped.to_string())
-}
-
-pub(crate) fn normalize_request_kind_slug(raw: &str) -> Option<String> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let mut normalized = String::with_capacity(trimmed.len());
-    let mut previous_was_separator = false;
-    for ch in trimmed.chars() {
-        if ch.is_ascii_alphanumeric() {
-            normalized.push(ch.to_ascii_lowercase());
-            previous_was_separator = false;
-            continue;
-        }
-
-        if !previous_was_separator {
-            normalized.push('-');
-            previous_was_separator = true;
-        }
-    }
-
-    let slug = normalized.trim_matches('-');
-    if slug.is_empty() {
-        return None;
-    }
-
-    Some(slug.to_string())
 }
 
 pub(crate) fn request_kind_label_penalty(label: &str) -> (usize, usize, usize, String) {
@@ -831,6 +834,163 @@ pub(crate) fn request_kind_label_penalty(label: &str) -> (usize, usize, usize, S
 
 pub(crate) fn prefer_request_kind_label(current: &str, candidate: &str) -> bool {
     request_kind_label_penalty(candidate) < request_kind_label_penalty(current)
+}
+
+pub(crate) fn canonical_request_kind_label(key: &str) -> Option<&'static str> {
+    match key.trim() {
+        "api:search" => Some("API | search"),
+        "api:extract" => Some("API | extract"),
+        "api:crawl" => Some("API | crawl"),
+        "api:map" => Some("API | map"),
+        "api:research" => Some("API | research"),
+        "api:research-result" => Some("API | research result"),
+        "api:usage" => Some("API | usage"),
+        "api:unknown-path" => Some("API | unknown path"),
+        "mcp:search" => Some("MCP | search"),
+        "mcp:extract" => Some("MCP | extract"),
+        "mcp:crawl" => Some("MCP | crawl"),
+        "mcp:map" => Some("MCP | map"),
+        "mcp:research" => Some("MCP | research"),
+        "mcp:batch" => Some("MCP | batch"),
+        "mcp:initialize" => Some("MCP | initialize"),
+        "mcp:ping" => Some("MCP | ping"),
+        "mcp:tools/list" => Some("MCP | tools/list"),
+        "mcp:unsupported-path" => Some("MCP | unsupported path"),
+        "mcp:unknown-payload" => Some("MCP | unknown payload"),
+        "mcp:unknown-method" => Some("MCP | unknown method"),
+        "mcp:third-party-tool" => Some("MCP | third-party tool"),
+        key if key.starts_with("mcp:resources/") => None,
+        key if key.starts_with("mcp:prompts/") => None,
+        key if key.starts_with("mcp:notifications/") => None,
+        _ => None,
+    }
+}
+
+pub fn is_canonical_request_kind_key(key: &str) -> bool {
+    let normalized = key.trim();
+    matches!(
+        normalized,
+        "api:search"
+            | "api:extract"
+            | "api:crawl"
+            | "api:map"
+            | "api:research"
+            | "api:research-result"
+            | "api:usage"
+            | "api:unknown-path"
+            | "mcp:search"
+            | "mcp:extract"
+            | "mcp:crawl"
+            | "mcp:map"
+            | "mcp:research"
+            | "mcp:batch"
+            | "mcp:initialize"
+            | "mcp:ping"
+            | "mcp:tools/list"
+            | "mcp:unsupported-path"
+            | "mcp:unknown-payload"
+            | "mcp:unknown-method"
+            | "mcp:third-party-tool"
+    ) || normalized.starts_with("mcp:resources/")
+        || normalized.starts_with("mcp:prompts/")
+        || normalized.starts_with("mcp:notifications/")
+}
+
+pub(crate) fn token_request_kind_from_canonical_key(
+    key: &str,
+    detail: Option<String>,
+) -> Option<TokenRequestKind> {
+    let normalized = key.trim();
+    let label = canonical_request_kind_label(normalized)
+        .map(str::to_string)
+        .or_else(|| {
+            normalized
+                .strip_prefix("mcp:")
+                .filter(|value| {
+                    value.starts_with("resources/")
+                        || value.starts_with("prompts/")
+                        || value.starts_with("notifications/")
+                })
+                .map(|value| format!("MCP | {value}"))
+        })?;
+    Some(TokenRequestKind::new(normalized, label, detail))
+}
+
+fn strip_request_kind_label_prefix(label: &str) -> Option<String> {
+    let trimmed = label.trim();
+    trimmed
+        .split_once('|')
+        .map(|(_, suffix)| suffix.trim().to_string())
+        .filter(|suffix| !suffix.is_empty())
+}
+
+fn stored_third_party_tool_detail(
+    key: Option<&str>,
+    label: Option<&str>,
+    detail: Option<&str>,
+) -> Option<String> {
+    detail
+        .and_then(|value| {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        })
+        .or_else(|| {
+            key.and_then(|value| {
+                value
+                    .trim()
+                    .strip_prefix("mcp:tool:")
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+            })
+        })
+        .or_else(|| {
+            label.and_then(|value| {
+                let stripped = strip_request_kind_label_prefix(value)?;
+                (!stripped.eq_ignore_ascii_case("third-party tool")).then_some(stripped)
+            })
+        })
+}
+
+fn stored_unknown_method_detail(
+    key: Option<&str>,
+    label: Option<&str>,
+    detail: Option<&str>,
+) -> Option<String> {
+    detail
+        .and_then(|value| {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        })
+        .or_else(|| {
+            label.and_then(|value| {
+                let stripped = strip_request_kind_label_prefix(value)?;
+                if stripped.eq_ignore_ascii_case("unknown method")
+                    || stripped.eq_ignore_ascii_case("unknown payload")
+                {
+                    None
+                } else {
+                    Some(stripped)
+                }
+            })
+        })
+        .or_else(|| {
+            key.and_then(|value| {
+                let trimmed = value.trim();
+                if is_canonical_request_kind_key(trimmed)
+                    || trimmed.starts_with("mcp:tool:")
+                    || trimmed.starts_with("mcp:raw:")
+                {
+                    None
+                } else {
+                    trimmed
+                        .strip_prefix("mcp:")
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string)
+                }
+            })
+        })
 }
 
 pub(crate) fn classify_mcp_request_kind_from_message(value: &Value) -> Option<TokenRequestKind> {
@@ -858,31 +1018,31 @@ pub(crate) fn classify_mcp_request_kind_from_message(value: &Value) -> Option<To
         return match tool {
             Some(tool) => match normalize_tavily_tool_name(tool) {
                 Some(kind) => Some(build_mcp_request_kind(&kind)),
-                None => {
-                    let key = normalize_request_kind_slug(tool)
-                        .map(|slug| format!("tool:{slug}"))
-                        .unwrap_or_else(|| "tools/call".to_string());
-                    Some(build_mcp_request_kind_named(&key, tool))
-                }
+                None => Some(build_mcp_third_party_tool_kind(tool)),
             },
-            None => Some(build_mcp_request_kind("tools/call")),
+            None => Some(build_mcp_unknown_payload_kind(Some(
+                "tools/call".to_string(),
+            ))),
         };
     }
 
-    Some(build_mcp_request_kind(method))
+    Some(build_mcp_unknown_method_kind(method))
 }
 
 pub(crate) fn classify_mcp_request_kind(path: &str, body: Option<&[u8]>) -> TokenRequestKind {
+    if path != "/mcp" {
+        return build_mcp_unsupported_path_kind(path);
+    }
     let Some(body) = body else {
-        return raw_mcp_request_kind(path);
+        return build_mcp_unknown_payload_kind(Some(path.to_string()));
     };
     if body.is_empty() {
-        return raw_mcp_request_kind(path);
+        return build_mcp_unknown_payload_kind(Some(path.to_string()));
     }
 
     let parsed = match serde_json::from_slice::<Value>(body) {
         Ok(value) => value,
-        Err(_) => return raw_mcp_request_kind(path),
+        Err(_) => return build_mcp_unknown_payload_kind(Some(path.to_string())),
     };
 
     match parsed {
@@ -892,7 +1052,7 @@ pub(crate) fn classify_mcp_request_kind(path: &str, body: Option<&[u8]>) -> Toke
                 .filter_map(classify_mcp_request_kind_from_message)
                 .collect();
             if kinds.is_empty() {
-                return raw_mcp_request_kind(path);
+                return build_mcp_unknown_payload_kind(Some(path.to_string()));
             }
             let first_key = kinds[0].key.clone();
             if kinds.iter().all(|kind| kind.key == first_key) {
@@ -913,8 +1073,8 @@ pub(crate) fn classify_mcp_request_kind(path: &str, body: Option<&[u8]>) -> Toke
             )
         }
         Value::Object(_) => classify_mcp_request_kind_from_message(&parsed)
-            .unwrap_or_else(|| raw_mcp_request_kind(path)),
-        _ => raw_mcp_request_kind(path),
+            .unwrap_or_else(|| build_mcp_unknown_payload_kind(Some(path.to_string()))),
+        _ => build_mcp_unknown_payload_kind(Some(path.to_string())),
     }
 }
 
@@ -930,56 +1090,203 @@ pub fn classify_token_request_kind(path: &str, body: Option<&[u8]>) -> TokenRequ
             build_api_request_kind_named("research-result", "research result")
         }
         _ if path.starts_with("/mcp") => classify_mcp_request_kind(path, body),
-        _ => build_api_request_kind_named(&format!("raw:{path}"), path),
+        _ => build_api_unknown_path_kind(path),
     }
 }
 
-pub(crate) fn token_request_kind_fallback_key_sql() -> &'static str {
-    r#"
-    CASE
-        WHEN path = '/api/tavily/search' THEN 'api:search'
-        WHEN path = '/api/tavily/extract' THEN 'api:extract'
-        WHEN path = '/api/tavily/crawl' THEN 'api:crawl'
-        WHEN path = '/api/tavily/map' THEN 'api:map'
-        WHEN path = '/api/tavily/research' THEN 'api:research'
-        WHEN path = '/api/tavily/usage' THEN 'api:usage'
-        WHEN path LIKE '/api/tavily/research/%' THEN 'api:research-result'
-        WHEN path LIKE '/mcp%' THEN 'mcp:raw:' || path
-        ELSE 'api:raw:' || path
-    END
-    "#
+pub fn canonical_request_kind_key_for_filter(request_kind: &str) -> String {
+    let trimmed = request_kind.trim();
+    if is_canonical_request_kind_key(trimmed) {
+        return trimmed.to_string();
+    }
+    if trimmed.starts_with("api:raw:") {
+        return "api:unknown-path".to_string();
+    }
+    if trimmed.starts_with("mcp:tool:") {
+        return "mcp:third-party-tool".to_string();
+    }
+    if trimmed == "mcp:tools/call" {
+        return "mcp:unknown-payload".to_string();
+    }
+    if let Some(path) = trimmed.strip_prefix("mcp:raw:") {
+        if path == "/mcp" {
+            return "mcp:unknown-payload".to_string();
+        }
+        if path.starts_with("/mcp/") {
+            return "mcp:unsupported-path".to_string();
+        }
+    }
+    trimmed.to_string()
 }
 
-pub(crate) fn token_request_kind_fallback_label_sql() -> &'static str {
-    r#"
-    CASE
-        WHEN path = '/api/tavily/search' THEN 'API | search'
-        WHEN path = '/api/tavily/extract' THEN 'API | extract'
-        WHEN path = '/api/tavily/crawl' THEN 'API | crawl'
-        WHEN path = '/api/tavily/map' THEN 'API | map'
-        WHEN path = '/api/tavily/research' THEN 'API | research'
-        WHEN path = '/api/tavily/usage' THEN 'API | usage'
-        WHEN path LIKE '/api/tavily/research/%' THEN 'API | research result'
-        WHEN path LIKE '/mcp%' THEN 'MCP | ' || path
-        ELSE 'API | ' || path
-    END
-    "#
-}
-
-pub(crate) fn token_request_kind_needs_fallback_sql() -> &'static str {
-    r#"
-    request_kind_key IS NULL
-    OR TRIM(request_kind_key) = ''
-    OR request_kind_label IS NULL
-    OR TRIM(request_kind_label) = ''
-    OR (
-        path LIKE '/mcp/%'
-        AND (
-            request_kind_key = 'mcp:raw:/mcp'
-            OR request_kind_label = 'MCP | /mcp'
-        )
+pub(crate) fn canonical_request_kind_label_sql(kind_expr: &str) -> String {
+    let normalized = format!("LOWER(TRIM(COALESCE({kind_expr}, '')))");
+    format!(
+        "
+        CASE
+            WHEN {normalized} = 'api:search' THEN 'API | search'
+            WHEN {normalized} = 'api:extract' THEN 'API | extract'
+            WHEN {normalized} = 'api:crawl' THEN 'API | crawl'
+            WHEN {normalized} = 'api:map' THEN 'API | map'
+            WHEN {normalized} = 'api:research' THEN 'API | research'
+            WHEN {normalized} = 'api:research-result' THEN 'API | research result'
+            WHEN {normalized} = 'api:usage' THEN 'API | usage'
+            WHEN {normalized} = 'api:unknown-path' THEN 'API | unknown path'
+            WHEN {normalized} = 'mcp:search' THEN 'MCP | search'
+            WHEN {normalized} = 'mcp:extract' THEN 'MCP | extract'
+            WHEN {normalized} = 'mcp:crawl' THEN 'MCP | crawl'
+            WHEN {normalized} = 'mcp:map' THEN 'MCP | map'
+            WHEN {normalized} = 'mcp:research' THEN 'MCP | research'
+            WHEN {normalized} = 'mcp:batch' THEN 'MCP | batch'
+            WHEN {normalized} = 'mcp:initialize' THEN 'MCP | initialize'
+            WHEN {normalized} = 'mcp:ping' THEN 'MCP | ping'
+            WHEN {normalized} = 'mcp:tools/list' THEN 'MCP | tools/list'
+            WHEN {normalized} = 'mcp:unsupported-path' THEN 'MCP | unsupported path'
+            WHEN {normalized} = 'mcp:unknown-payload' THEN 'MCP | unknown payload'
+            WHEN {normalized} = 'mcp:unknown-method' THEN 'MCP | unknown method'
+            WHEN {normalized} = 'mcp:third-party-tool' THEN 'MCP | third-party tool'
+            WHEN {normalized} LIKE 'mcp:resources/%'
+                OR {normalized} LIKE 'mcp:prompts/%'
+                OR {normalized} LIKE 'mcp:notifications/%'
+                THEN 'MCP | ' || SUBSTR({normalized}, 5)
+            ELSE TRIM(COALESCE({kind_expr}, ''))
+        END
+        "
     )
-    "#
+}
+
+fn token_log_stored_kind_sql(path_expr: &str, key_expr: &str) -> String {
+    let path = format!("LOWER(COALESCE({path_expr}, ''))");
+    let key = format!("LOWER(TRIM(COALESCE({key_expr}, '')))");
+    format!(
+        "
+        CASE
+            WHEN {path} = '/api/tavily/search' THEN 'api:search'
+            WHEN {path} = '/api/tavily/extract' THEN 'api:extract'
+            WHEN {path} = '/api/tavily/crawl' THEN 'api:crawl'
+            WHEN {path} = '/api/tavily/map' THEN 'api:map'
+            WHEN {path} = '/api/tavily/research' THEN 'api:research'
+            WHEN {path} = '/api/tavily/usage' THEN 'api:usage'
+            WHEN {path} LIKE '/api/tavily/research/%' THEN 'api:research-result'
+            WHEN {path} LIKE '/mcp/%' THEN 'mcp:unsupported-path'
+            WHEN {key} IN (
+                'api:search',
+                'api:extract',
+                'api:crawl',
+                'api:map',
+                'api:research',
+                'api:research-result',
+                'api:usage',
+                'api:unknown-path',
+                'mcp:search',
+                'mcp:extract',
+                'mcp:crawl',
+                'mcp:map',
+                'mcp:research',
+                'mcp:batch',
+                'mcp:initialize',
+                'mcp:ping',
+                'mcp:tools/list',
+                'mcp:unsupported-path',
+                'mcp:unknown-payload',
+                'mcp:unknown-method',
+                'mcp:third-party-tool'
+            ) OR {key} LIKE 'mcp:resources/%'
+              OR {key} LIKE 'mcp:prompts/%'
+              OR {key} LIKE 'mcp:notifications/%'
+                THEN {key}
+            WHEN {key} LIKE 'api:raw:%' OR ({path} NOT LIKE '/mcp%' AND {path} NOT LIKE '/api/tavily/%')
+                THEN 'api:unknown-path'
+            WHEN {key} LIKE 'mcp:tool:%' THEN 'mcp:third-party-tool'
+            WHEN {key} = 'mcp:tools/call' OR {key} LIKE 'mcp:raw:%' THEN 'mcp:unknown-payload'
+            WHEN {key} LIKE 'mcp:%' AND {path} = '/mcp' THEN 'mcp:unknown-method'
+            WHEN {path} = '/mcp' THEN 'mcp:unknown-payload'
+            ELSE 'api:unknown-path'
+        END
+        "
+    )
+}
+
+fn mcp_message_request_kind_sql(value_expr: &str) -> String {
+    let method = request_body_json_text_sql(value_expr, "$.method");
+    let tool_name = request_body_json_text_sql(value_expr, "$.params.name");
+    format!(
+        "
+        CASE
+            WHEN {method} IN ('initialize', 'ping', 'tools/list') THEN 'mcp:' || {method}
+            WHEN {method} LIKE 'resources/%'
+                OR {method} LIKE 'prompts/%'
+                OR {method} LIKE 'notifications/%'
+                THEN 'mcp:' || {method}
+            WHEN {method} = 'tools/call' AND {tool_name} IN (
+                'tavily-search',
+                'tavily_search',
+                'tavily_extract',
+                'tavily-extract',
+                'tavily-crawl',
+                'tavily_crawl',
+                'tavily_map',
+                'tavily-map',
+                'tavily-research',
+                'tavily_research'
+            ) THEN
+                CASE REPLACE({tool_name}, '_', '-')
+                    WHEN 'tavily-search' THEN 'mcp:search'
+                    WHEN 'tavily-extract' THEN 'mcp:extract'
+                    WHEN 'tavily-crawl' THEN 'mcp:crawl'
+                    WHEN 'tavily-map' THEN 'mcp:map'
+                    WHEN 'tavily-research' THEN 'mcp:research'
+                    ELSE 'mcp:unknown-payload'
+                END
+            WHEN {method} = 'tools/call' AND {tool_name} <> '' THEN 'mcp:third-party-tool'
+            WHEN {method} = 'tools/call' THEN 'mcp:unknown-payload'
+            WHEN {method} <> '' THEN 'mcp:unknown-method'
+            ELSE NULL
+        END
+        "
+    )
+}
+
+pub(crate) fn token_log_request_kind_key_sql(path_expr: &str, key_expr: &str) -> String {
+    token_log_stored_kind_sql(path_expr, key_expr)
+}
+
+pub(crate) fn request_log_request_kind_key_sql(
+    path_expr: &str,
+    body_expr: &str,
+    key_expr: &str,
+) -> String {
+    let path = format!("LOWER(COALESCE({path_expr}, ''))");
+    let body_json = format!("CAST({body_expr} AS TEXT)");
+    let object_kind = mcp_message_request_kind_sql(body_expr);
+    let array_item_kind = mcp_message_request_kind_sql("items.value");
+    let token_fallback = token_log_stored_kind_sql(path_expr, key_expr);
+    format!(
+        "
+        CASE
+            WHEN {path} = '/mcp' AND json_valid({body_json}) AND json_type({body_json}) = 'object'
+                THEN COALESCE(({object_kind}), 'mcp:unknown-payload')
+            WHEN {path} = '/mcp' AND json_valid({body_json}) AND json_type({body_json}) = 'array'
+                THEN CASE
+                    WHEN NOT EXISTS (SELECT 1 FROM json_each({body_json}) AS items)
+                        THEN 'mcp:unknown-payload'
+                    WHEN EXISTS (
+                        SELECT 1 FROM json_each({body_json}) AS items
+                        WHERE ({array_item_kind}) IS NULL
+                    ) THEN 'mcp:unknown-payload'
+                    WHEN (
+                        SELECT COUNT(DISTINCT ({array_item_kind}))
+                        FROM json_each({body_json}) AS items
+                    ) = 1 THEN (
+                        SELECT MIN(({array_item_kind}))
+                        FROM json_each({body_json}) AS items
+                    )
+                    ELSE 'mcp:batch'
+                END
+            ELSE {token_fallback}
+        END
+        "
+    )
 }
 
 pub fn token_request_kind_protocol_group(key: &str) -> &'static str {
@@ -994,10 +1301,14 @@ pub fn token_request_kind_billing_group(key: &str) -> &'static str {
     let normalized = key.trim();
     if normalized == "api:research-result"
         || normalized == "api:usage"
+        || normalized == "api:unknown-path"
         || normalized.starts_with("mcp:initialize")
         || normalized.starts_with("mcp:ping")
         || normalized.starts_with("mcp:tools/list")
-        || (normalized.starts_with("mcp:tool:") && !normalized.starts_with("mcp:tool:tavily-"))
+        || normalized == "mcp:unsupported-path"
+        || normalized == "mcp:unknown-payload"
+        || normalized == "mcp:unknown-method"
+        || normalized == "mcp:third-party-tool"
         || normalized.starts_with("mcp:resources/")
         || normalized.starts_with("mcp:prompts/")
         || normalized.starts_with("mcp:notifications/")
@@ -1026,7 +1337,7 @@ pub fn token_request_kind_billing_group_for_token_log(
     counts_business_quota: bool,
 ) -> &'static str {
     let normalized = request_kind_key.trim();
-    if !counts_business_quota && (normalized == "mcp:batch" || normalized == "mcp:raw:/mcp") {
+    if !counts_business_quota && normalized == "mcp:batch" {
         "non_billable"
     } else {
         token_request_kind_billing_group(normalized)
@@ -1166,9 +1477,9 @@ pub fn operational_class_for_request_path(
 }
 
 fn token_request_kind_non_billable_mcp_sql(expr: &str) -> String {
-    let normalized = format!("TRIM({expr})");
+    let normalized = format!("LOWER(TRIM(COALESCE({expr}, '')))");
     format!(
-        "({normalized} LIKE 'mcp:%' AND ({normalized} LIKE 'mcp:initialize%' OR {normalized} LIKE 'mcp:ping%' OR {normalized} LIKE 'mcp:tools/list%' OR ({normalized} LIKE 'mcp:tool:%' AND {normalized} NOT LIKE 'mcp:tool:tavily-%') OR {normalized} LIKE 'mcp:resources/%' OR {normalized} LIKE 'mcp:prompts/%' OR {normalized} LIKE 'mcp:notifications/%'))"
+        "({normalized} IN ('mcp:initialize', 'mcp:ping', 'mcp:tools/list', 'mcp:unsupported-path', 'mcp:unknown-payload', 'mcp:unknown-method', 'mcp:third-party-tool') OR {normalized} LIKE 'mcp:resources/%' OR {normalized} LIKE 'mcp:prompts/%' OR {normalized} LIKE 'mcp:notifications/%')"
     )
 }
 
@@ -1179,20 +1490,41 @@ fn request_body_json_text_sql(expr: &str, path: &str) -> String {
 fn mcp_message_non_billable_kind_sql(value_expr: &str) -> String {
     let method = request_body_json_text_sql(value_expr, "$.method");
     let tool_name = request_body_json_text_sql(value_expr, "$.params.name");
-    let normalized_tool = format!(
-        "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE({tool_name}, ' ', '-'), '_', '-'), '/', '-'), ':', '-'), '.', '-')"
-    );
     format!(
         "
         CASE
             WHEN {method} IN ('initialize', 'ping', 'tools/list') THEN 'mcp:' || {method}
             WHEN {method} LIKE 'resources/%' OR {method} LIKE 'prompts/%' OR {method} LIKE 'notifications/%'
                 THEN 'mcp:' || {method}
-            WHEN {method} = 'tools/call'
-                AND {tool_name} <> ''
-                AND {tool_name} NOT GLOB 'tavily-*'
-                AND {tool_name} NOT GLOB 'tavily_*'
-                THEN 'mcp:tool:' || {normalized_tool}
+            WHEN {method} = 'tools/call' AND {tool_name} IN (
+                    'tavily-search',
+                    'tavily_search',
+                    'tavily_extract',
+                    'tavily-extract',
+                    'tavily-crawl',
+                    'tavily_crawl',
+                    'tavily_map',
+                    'tavily-map',
+                    'tavily-research',
+                    'tavily_research'
+                )
+                THEN NULL
+            WHEN {method} = 'tools/call' AND {tool_name} <> ''
+                AND {tool_name} NOT IN (
+                    'tavily-search',
+                    'tavily_search',
+                    'tavily_extract',
+                    'tavily-extract',
+                    'tavily-crawl',
+                    'tavily_crawl',
+                    'tavily_map',
+                    'tavily-map',
+                    'tavily-research',
+                    'tavily_research'
+                )
+                THEN 'mcp:third-party-tool'
+            WHEN {method} = 'tools/call' THEN 'mcp:unknown-payload'
+            WHEN {method} <> '' THEN 'mcp:unknown-method'
             ELSE NULL
         END
         "
@@ -1267,8 +1599,8 @@ pub(crate) fn token_log_operational_class_case_sql(
                 '{upstream_account_deactivated_401}'
             ) THEN '{upstream_error}'
             WHEN {result_status_expr} = 'error' THEN '{system_error}'
-            WHEN {request_kind_expr} IN ('mcp:batch', 'mcp:raw:/mcp')
-                AND {counts_business_quota_expr} = 0 THEN '{neutral}'
+            WHEN {request_kind_expr} = 'mcp:batch' AND {counts_business_quota_expr} = 0
+                THEN '{neutral}'
             WHEN {non_billable_mcp} THEN '{neutral}'
             WHEN {result_status_expr} = 'success' THEN '{success}'
             ELSE '{system_error}'
@@ -1357,11 +1689,14 @@ pub(crate) fn derive_token_request_kind_fallback(
     classify_token_request_kind(path, None)
 }
 
-pub(crate) fn is_stale_root_mcp_raw_request_kind(path: &str, key: &str, label: &str) -> bool {
-    path.starts_with("/mcp/") && (key.trim() == "mcp:raw:/mcp" || label.trim() == "MCP | /mcp")
+fn normalize_request_kind_field(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    })
 }
 
-pub(crate) fn finalize_token_request_kind(
+pub fn finalize_token_request_kind(
     method: &str,
     path: &str,
     query: Option<&str>,
@@ -1369,20 +1704,83 @@ pub(crate) fn finalize_token_request_kind(
     label: Option<String>,
     detail: Option<String>,
 ) -> TokenRequestKind {
-    match (
-        key.and_then(|value| {
-            let trimmed = value.trim();
-            (!trimmed.is_empty()).then(|| trimmed.to_string())
-        }),
-        label.and_then(|value| {
-            let trimmed = value.trim();
-            (!trimmed.is_empty()).then(|| trimmed.to_string())
-        }),
-    ) {
-        (Some(key), Some(label)) if !is_stale_root_mcp_raw_request_kind(path, &key, &label) => {
-            TokenRequestKind::new(key, label, detail)
+    let key = normalize_request_kind_field(key);
+    let label = normalize_request_kind_field(label);
+    let detail = normalize_request_kind_field(detail);
+
+    if let Some(stored_key) = key.as_deref() {
+        if let Some(kind) = token_request_kind_from_canonical_key(stored_key, detail.clone()) {
+            return kind;
         }
-        _ => derive_token_request_kind_fallback(method, path, query),
+
+        if stored_key.starts_with("api:raw:") {
+            return build_api_unknown_path_kind(path);
+        }
+
+        if path.starts_with("/mcp/") {
+            return build_mcp_unsupported_path_kind(path);
+        }
+
+        if path == "/mcp" {
+            if stored_key.starts_with("mcp:tool:") {
+                return build_mcp_third_party_tool_kind(
+                    stored_third_party_tool_detail(
+                        Some(stored_key),
+                        label.as_deref(),
+                        detail.as_deref(),
+                    )
+                    .as_deref()
+                    .unwrap_or("unknown"),
+                );
+            }
+
+            if stored_key == "mcp:tools/call" || stored_key.starts_with("mcp:raw:") {
+                return build_mcp_unknown_payload_kind(
+                    detail.clone().or_else(|| Some(path.to_string())),
+                );
+            }
+
+            if stored_key.starts_with("mcp:") {
+                let method_detail = stored_unknown_method_detail(
+                    Some(stored_key),
+                    label.as_deref(),
+                    detail.as_deref(),
+                )
+                .unwrap_or_else(|| "unknown".to_string());
+                return TokenRequestKind::new(
+                    "mcp:unknown-method",
+                    "MCP | unknown method",
+                    Some(method_detail),
+                );
+            }
+        }
+    }
+
+    derive_token_request_kind_fallback(method, path, query)
+}
+
+pub fn canonicalize_request_log_request_kind(
+    path: &str,
+    body: Option<&[u8]>,
+    key: Option<String>,
+    label: Option<String>,
+    detail: Option<String>,
+) -> TokenRequestKind {
+    if let Some(stored_key) = key.as_deref().map(str::trim)
+        && is_canonical_request_kind_key(stored_key)
+    {
+        return token_request_kind_from_canonical_key(
+            stored_key,
+            normalize_request_kind_field(detail),
+        )
+        .unwrap_or_else(|| classify_token_request_kind(path, body));
+    }
+
+    let classified = classify_token_request_kind(path, body);
+    if classified.key == "mcp:unknown-payload" && path == "/mcp" {
+        finalize_token_request_kind("POST", path, None, key, label, detail)
+    } else {
+        classified
     }
 }
 

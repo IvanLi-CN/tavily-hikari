@@ -5,7 +5,7 @@ import RequestKindBadge from './RequestKindBadge'
 const requestKindSections = [
   {
     title: 'API request kinds',
-    description: 'HTTP routes, result fetches, and raw fallback endpoints.',
+    description: 'HTTP routes, result fetches, and canonical unknown-path buckets.',
     items: [
       { requestKindKey: 'api:search', requestKindLabel: 'API | search' },
       { requestKindKey: 'api:extract', requestKindLabel: 'API | extract' },
@@ -14,17 +14,17 @@ const requestKindSections = [
       { requestKindKey: 'api:research', requestKindLabel: 'API | research' },
       { requestKindKey: 'api:research-result', requestKindLabel: 'API | research result' },
       { requestKindKey: 'api:usage', requestKindLabel: 'API | usage' },
-      { requestKindKey: 'api:raw:/api/internal/report', requestKindLabel: 'API | /api/internal/report' },
+      { requestKindKey: 'api:unknown-path', requestKindLabel: 'API | unknown path' },
     ],
   },
   {
     title: 'MCP request kinds',
-    description: 'Tool calls, protocol methods, batched calls, and raw transport fallbacks.',
+    description: 'Tool calls, protocol methods, batched calls, and canonical unknown buckets.',
     items: [
       { requestKindKey: 'mcp:extract', requestKindLabel: 'MCP | extract' },
       { requestKindKey: 'mcp:search', requestKindLabel: 'MCP | search' },
       { requestKindKey: 'mcp:batch', requestKindLabel: 'MCP | batch' },
-      { requestKindKey: 'mcp:tool:Acme Lookup', requestKindLabel: 'MCP | Acme Lookup' },
+      { requestKindKey: 'mcp:third-party-tool', requestKindLabel: 'MCP | third-party tool' },
       { requestKindKey: 'mcp:initialize', requestKindLabel: 'MCP | initialize' },
       { requestKindKey: 'mcp:notifications/initialized', requestKindLabel: 'MCP | notifications/initialized' },
       { requestKindKey: 'mcp:ping', requestKindLabel: 'MCP | ping' },
@@ -32,7 +32,8 @@ const requestKindSections = [
       { requestKindKey: 'mcp:resources/templates/list', requestKindLabel: 'MCP | resources/templates/list' },
       { requestKindKey: 'mcp:tools/list', requestKindLabel: 'MCP | tools/list' },
       { requestKindKey: 'mcp:resources/subscribe', requestKindLabel: 'MCP | resources/subscribe' },
-      { requestKindKey: 'mcp:raw:/mcp/sse', requestKindLabel: 'MCP | /mcp/sse' },
+      { requestKindKey: 'mcp:unsupported-path', requestKindLabel: 'MCP | unsupported path' },
+      { requestKindKey: 'mcp:unknown-method', requestKindLabel: 'MCP | unknown method' },
     ],
   },
 ] as const

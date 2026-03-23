@@ -90,9 +90,10 @@ const requestKindOptionsMock = [
   { key: "api:research", label: "API | research", protocol_group: "api", billing_group: "billable" },
   { key: "api:research-result", label: "API | research result", protocol_group: "api", billing_group: "non_billable" },
   { key: "api:search", label: "API | search", protocol_group: "api", billing_group: "billable" },
-  { key: "mcp:raw:/mcp", label: "MCP | /mcp", protocol_group: "mcp", billing_group: "billable" },
+  { key: "api:unknown-path", label: "API | unknown path", protocol_group: "api", billing_group: "non_billable" },
   { key: "mcp:extract", label: "MCP | extract", protocol_group: "mcp", billing_group: "billable" },
   { key: "mcp:initialize", label: "MCP | initialize", protocol_group: "mcp", billing_group: "non_billable" },
+  { key: "mcp:map", label: "MCP | map", protocol_group: "mcp", billing_group: "billable" },
   {
     key: "mcp:notifications/initialized",
     label: "MCP | notifications/initialized",
@@ -100,6 +101,7 @@ const requestKindOptionsMock = [
     billing_group: "non_billable",
   },
   { key: "mcp:ping", label: "MCP | ping", protocol_group: "mcp", billing_group: "non_billable" },
+  { key: "mcp:research", label: "MCP | research", protocol_group: "mcp", billing_group: "billable" },
   { key: "mcp:resources/list", label: "MCP | resources/list", protocol_group: "mcp", billing_group: "non_billable" },
   {
     key: "mcp:resources/templates/list",
@@ -108,7 +110,11 @@ const requestKindOptionsMock = [
     billing_group: "non_billable",
   },
   { key: "mcp:search", label: "MCP | search", protocol_group: "mcp", billing_group: "billable" },
+  { key: "mcp:third-party-tool", label: "MCP | third-party tool", protocol_group: "mcp", billing_group: "non_billable" },
   { key: "mcp:tools/list", label: "MCP | tools/list", protocol_group: "mcp", billing_group: "non_billable" },
+  { key: "mcp:unknown-method", label: "MCP | unknown method", protocol_group: "mcp", billing_group: "non_billable" },
+  { key: "mcp:unknown-payload", label: "MCP | unknown payload", protocol_group: "mcp", billing_group: "non_billable" },
+  { key: "mcp:unsupported-path", label: "MCP | unsupported path", protocol_group: "mcp", billing_group: "non_billable" },
 ];
 
 const storyKeyIds = ["MZli", "Qn8R", "U2vK"] as const;
@@ -211,9 +217,9 @@ const logTemplates = [
     http_status: 429,
     mcp_status: -1,
     business_credits: null,
-    request_kind_key: "mcp:raw:/mcp",
-    request_kind_label: "MCP | /mcp",
-    request_kind_detail: null,
+    request_kind_key: "mcp:unknown-payload",
+    request_kind_label: "MCP | unknown payload",
+    request_kind_detail: "tool: crawl",
     result_status: "quota_exhausted",
     key_effect_code: "marked_exhausted",
     key_effect_summary: "Automatically marked this key as exhausted",
@@ -348,11 +354,15 @@ function requestKindProtocolGroup(key: string): 'api' | 'mcp' {
 function requestKindBillingGroup(key: string): 'billable' | 'non_billable' {
   if (
     key === 'api:research-result' ||
+    key === 'api:unknown-path' ||
     key === 'api:usage' ||
     key.startsWith('mcp:initialize') ||
     key.startsWith('mcp:ping') ||
     key.startsWith('mcp:tools/list') ||
-    (key.startsWith('mcp:tool:') && !key.startsWith('mcp:tool:tavily-')) ||
+    key === 'mcp:unsupported-path' ||
+    key === 'mcp:unknown-payload' ||
+    key === 'mcp:unknown-method' ||
+    key === 'mcp:third-party-tool' ||
     key.startsWith('mcp:resources/') ||
     key.startsWith('mcp:prompts/') ||
     key.startsWith('mcp:notifications/')

@@ -68,12 +68,19 @@ export function resolveRequestKindBadgeTone(
   if (key.startsWith('api:research-result') || label === 'api | research result') return 'api-research-result'
   if (key.startsWith('api:research') || label === 'api | research') return 'api-research'
   if (key.startsWith('api:usage') || label === 'api | usage') return 'api-usage'
-  if (key.startsWith('api:raw:')) return 'api-raw'
+  if (key.startsWith('api:unknown-path') || label === 'api | unknown path' || key.startsWith('api:raw:')) {
+    return 'api-raw'
+  }
 
+  if (key.startsWith('mcp:crawl') || label === 'mcp | crawl') return 'mcp'
   if (key.startsWith('mcp:extract') || label === 'mcp | extract') return 'mcp-extract'
+  if (key.startsWith('mcp:map') || label === 'mcp | map') return 'mcp'
+  if (key.startsWith('mcp:research') || label === 'mcp | research') return 'mcp'
   if (key.startsWith('mcp:search') || label === 'mcp | search') return 'mcp-search'
   if (key.startsWith('mcp:batch') || label === 'mcp | batch') return 'mcp-batch'
-  if (key.startsWith('mcp:tool:')) return 'mcp-tool'
+  if (key.startsWith('mcp:third-party-tool') || key.startsWith('mcp:tool:') || label === 'mcp | third-party tool') {
+    return 'mcp-tool'
+  }
   if (key.startsWith('mcp:initialize') || label === 'mcp | initialize') return 'mcp-initialize'
   if (key.startsWith('mcp:notifications/') || label.startsWith('mcp | notifications/')) return 'mcp-notification'
   if (key.startsWith('mcp:ping') || label === 'mcp | ping') return 'mcp-ping'
@@ -87,7 +94,17 @@ export function resolveRequestKindBadgeTone(
   ) {
     return 'mcp-system'
   }
-  if (key.startsWith('mcp:raw:')) return 'mcp-raw'
+  if (
+    key.startsWith('mcp:unsupported-path') ||
+    key.startsWith('mcp:unknown-payload') ||
+    key.startsWith('mcp:unknown-method') ||
+    key.startsWith('mcp:raw:') ||
+    label === 'mcp | unsupported path' ||
+    label === 'mcp | unknown payload' ||
+    label === 'mcp | unknown method'
+  ) {
+    return 'mcp-raw'
+  }
 
   if (key.startsWith('api:') || label.startsWith('api |')) return 'api'
   if (key.startsWith('mcp:') || label.startsWith('mcp |')) return 'mcp'

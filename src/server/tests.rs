@@ -6687,6 +6687,9 @@ colo=LAX
             request_kind_key: "mcp:search".to_string(),
             request_kind_label: "MCP | search".to_string(),
             request_kind_detail: None,
+            legacy_request_kind_key: None,
+            legacy_request_kind_label: None,
+            legacy_request_kind_detail: None,
             counts_business_quota: true,
             result_status: "error".to_string(),
             error_message: Some("Search failed".to_string()),
@@ -6732,6 +6735,9 @@ colo=LAX
             request_kind_key: "api:search".to_string(),
             request_kind_label: "API | search".to_string(),
             request_kind_detail: None,
+            legacy_request_kind_key: None,
+            legacy_request_kind_label: None,
+            legacy_request_kind_detail: None,
             counts_business_quota: true,
             result_status: "error".to_string(),
             error_message: Some("account deactivated".to_string()),
@@ -10341,14 +10347,26 @@ colo=LAX
                 value
                     .get("request_kind_key")
                     .and_then(|kind| kind.as_str())
-                    .is_some_and(|kind| kind == "mcp:raw:/mcp/sse")
+                    .is_some_and(|kind| kind == "mcp:unsupported-path")
             })
-            .expect("legacy mcp raw log");
+            .expect("canonical unsupported-path log");
         assert_eq!(
             legacy_log
                 .get("request_kind_label")
                 .and_then(|value| value.as_str()),
-            Some("MCP | /mcp/sse")
+            Some("MCP | unsupported path")
+        );
+        assert_eq!(
+            legacy_log
+                .get("request_kind_detail")
+                .and_then(|value| value.as_str()),
+            Some("/mcp/sse")
+        );
+        assert_eq!(
+            legacy_log
+                .get("legacyRequestKindKey")
+                .and_then(|value| value.as_str()),
+            Some("mcp:raw:/mcp")
         );
         let neutral_log = logs
             .iter()
@@ -10423,9 +10441,9 @@ colo=LAX
                 value
                     .get("key")
                     .and_then(|kind| kind.as_str())
-                    .is_some_and(|kind| kind == "mcp:raw:/mcp/sse")
+                    .is_some_and(|kind| kind == "mcp:unsupported-path")
             })
-            .expect("legacy mcp raw option");
+            .expect("unsupported-path option");
         assert_eq!(
             legacy_option
                 .get("protocol_group")
@@ -10436,7 +10454,7 @@ colo=LAX
             legacy_option
                 .get("billing_group")
                 .and_then(|value| value.as_str()),
-            Some("billable")
+            Some("non_billable")
         );
         assert_eq!(
             legacy_option.get("count").and_then(|value| value.as_i64()),
@@ -10487,14 +10505,20 @@ colo=LAX
                 value
                     .get("request_kind_key")
                     .and_then(|kind| kind.as_str())
-                    .is_some_and(|kind| kind == "mcp:raw:/mcp/sse")
+                    .is_some_and(|kind| kind == "mcp:unsupported-path")
             })
-            .expect("paged legacy mcp raw log");
+            .expect("paged unsupported-path log");
         assert_eq!(
             paged_legacy_log
                 .get("request_kind_label")
                 .and_then(|value| value.as_str()),
-            Some("MCP | /mcp/sse")
+            Some("MCP | unsupported path")
+        );
+        assert_eq!(
+            paged_legacy_log
+                .get("legacyRequestKindKey")
+                .and_then(|value| value.as_str()),
+            Some("mcp:raw:/mcp")
         );
 
         let neutral_page_resp = client
@@ -10512,13 +10536,13 @@ colo=LAX
             .get("items")
             .and_then(|value| value.as_array())
             .expect("neutral token logs page items");
-        assert_eq!(neutral_items.len(), 1);
-        assert_eq!(
-            neutral_items[0]
-                .get("request_kind_key")
-                .and_then(|value| value.as_str()),
-            Some("mcp:notifications/initialized")
-        );
+        assert_eq!(neutral_items.len(), 2);
+        let neutral_kinds = neutral_items
+            .iter()
+            .filter_map(|value| value.get("request_kind_key").and_then(|inner| inner.as_str()))
+            .collect::<Vec<_>>();
+        assert!(neutral_kinds.contains(&"mcp:notifications/initialized"));
+        assert!(neutral_kinds.contains(&"mcp:unsupported-path"));
 
         let filtered_page_resp = client
             .get(format!(
@@ -10574,7 +10598,7 @@ colo=LAX
             filtered_legacy_items[0]
                 .get("request_kind_label")
                 .and_then(|value| value.as_str()),
-            Some("MCP | /mcp/sse")
+            Some("MCP | unsupported path")
         );
 
         let mut events_resp = client
@@ -13572,8 +13596,15 @@ colo=LAX
             .next()
             .expect("token log exists");
         assert_eq!(latest_token_log.key_id, None);
-        assert_eq!(latest_token_log.request_kind_key, "mcp:raw:/mcp/search");
-        assert_eq!(latest_token_log.request_kind_label, "MCP | /mcp/search");
+        assert_eq!(latest_token_log.request_kind_key, "mcp:unsupported-path");
+        assert_eq!(
+            latest_token_log.request_kind_label,
+            "MCP | unsupported path"
+        );
+        assert_eq!(
+            latest_token_log.request_kind_detail.as_deref(),
+            Some("/mcp/search")
+        );
         assert_eq!(latest_token_log.result_status, "error");
         assert_eq!(
             latest_token_log.failure_kind.as_deref(),
@@ -13635,11 +13666,11 @@ colo=LAX
         );
         assert_eq!(
             request_row.try_get::<String, _>("request_kind_key").unwrap(),
-            "mcp:raw:/mcp/search"
+            "mcp:unsupported-path"
         );
         assert_eq!(
             request_row.try_get::<String, _>("request_kind_label").unwrap(),
-            "MCP | /mcp/search"
+            "MCP | unsupported path"
         );
         assert_eq!(
             request_row
@@ -13848,7 +13879,11 @@ colo=LAX
             .into_iter()
             .next()
             .expect("token log exists");
-        assert_eq!(latest_token_log.request_kind_key, "mcp:raw:/mcp/sse");
+        assert_eq!(latest_token_log.request_kind_key, "mcp:unsupported-path");
+        assert_eq!(
+            latest_token_log.request_kind_detail.as_deref(),
+            Some("/mcp/sse")
+        );
         assert_eq!(
             latest_token_log.failure_kind.as_deref(),
             Some("mcp_path_404")

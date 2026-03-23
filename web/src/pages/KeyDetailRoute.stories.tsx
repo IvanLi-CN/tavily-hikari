@@ -63,9 +63,9 @@ function createRequestLog(id: number, isoTime: string): RequestLog {
       keyEffectSummary: null,
     },
     {
-      key: 'mcp:raw:/mcp',
-      label: 'MCP | /mcp',
-      detail: null,
+      key: 'mcp:unknown-payload',
+      label: 'MCP | unknown payload',
+      detail: 'tool: crawl',
       credits: null,
       result: 'quota_exhausted',
       keyEffectCode: 'marked_exhausted',
@@ -87,7 +87,12 @@ function createRequestLog(id: number, isoTime: string): RequestLog {
     key_id: REVIEW_KEY_ID,
     auth_token_id: tokenId,
     method: 'POST',
-    path: kind.key === 'api:extract' ? '/api/tavily/extract' : kind.key === 'api:search' ? '/api/tavily/search' : '/mcp',
+    path:
+      kind.key === 'api:extract'
+        ? '/api/tavily/extract'
+        : kind.key === 'api:search'
+          ? '/api/tavily/search'
+          : '/mcp',
     query: null,
     http_status: kind.result === 'error' ? 502 : 200,
     mcp_status: kind.result === 'quota_exhausted' ? 432 : 200,
@@ -104,9 +109,9 @@ function createRequestLog(id: number, isoTime: string): RequestLog {
     response_body: null,
     forwarded_headers: [],
     dropped_headers: [],
-    operationalClass: 'success',
-    requestKindProtocolGroup: 'api',
-    requestKindBillingGroup: 'billable',
+    operationalClass: kind.key.startsWith('mcp:') && kind.result !== 'quota_exhausted' ? 'neutral' : kind.result === 'quota_exhausted' ? 'quota_exhausted' : 'success',
+    requestKindProtocolGroup: kind.key.startsWith('mcp:') ? 'mcp' : 'api',
+    requestKindBillingGroup: kind.key === 'mcp:unknown-payload' ? 'non_billable' : 'billable',
   }
 }
 
@@ -180,7 +185,12 @@ function buildKeyLogsPage(source: RequestLog[], searchParams: URLSearchParams) {
   const requestKindOptions = [
     { key: 'api:extract', label: 'API | extract', protocol_group: 'api', billing_group: 'billable' },
     { key: 'api:search', label: 'API | search', protocol_group: 'api', billing_group: 'billable' },
-    { key: 'mcp:raw:/mcp', label: 'MCP | /mcp', protocol_group: 'mcp', billing_group: 'billable' },
+    {
+      key: 'mcp:unknown-payload',
+      label: 'MCP | unknown payload',
+      protocol_group: 'mcp',
+      billing_group: 'non_billable',
+    },
   ].map((option) => ({
     ...option,
     count: source.filter((log) => log.request_kind_key === option.key).length,

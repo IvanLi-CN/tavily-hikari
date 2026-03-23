@@ -266,7 +266,7 @@ fn analyze_mcp_attempt_marks_mixed_success_and_error_as_error() {
 }
 
 #[test]
-fn classify_token_request_kind_maps_http_routes_and_raw_paths() {
+fn classify_token_request_kind_maps_http_routes_and_unknown_paths() {
     assert_eq!(
         classify_token_request_kind("/api/tavily/search", None),
         TokenRequestKind::new("api:search", "API | search", None)
@@ -277,16 +277,24 @@ fn classify_token_request_kind_maps_http_routes_and_raw_paths() {
     );
     assert_eq!(
         classify_token_request_kind("/api/custom/raw", None),
-        TokenRequestKind::new("api:raw:/api/custom/raw", "API | /api/custom/raw", None)
+        TokenRequestKind::new(
+            "api:unknown-path",
+            "API | unknown path",
+            Some("/api/custom/raw".to_string())
+        )
     );
     assert_eq!(
         classify_token_request_kind("/mcp/sse", None),
-        TokenRequestKind::new("mcp:raw:/mcp/sse", "MCP | /mcp/sse", None)
+        TokenRequestKind::new(
+            "mcp:unsupported-path",
+            "MCP | unsupported path",
+            Some("/mcp/sse".to_string())
+        )
     );
 }
 
 #[test]
-fn classify_token_request_kind_maps_mcp_control_plane_and_tools() {
+fn classify_token_request_kind_maps_mcp_control_plane_and_canonical_unknowns() {
     let search_body = br#"{
       "jsonrpc": "2.0",
       "id": 1,
@@ -310,7 +318,11 @@ fn classify_token_request_kind_maps_mcp_control_plane_and_tools() {
     }"#;
     assert_eq!(
         classify_token_request_kind("/mcp", Some(tool_body)),
-        TokenRequestKind::new("mcp:tool:acme-lookup", "MCP | Acme Lookup", None)
+        TokenRequestKind::new(
+            "mcp:third-party-tool",
+            "MCP | third-party tool",
+            Some("Acme Lookup".to_string())
+        )
     );
 
     let tool_variant_body = br#"{
@@ -323,7 +335,11 @@ fn classify_token_request_kind_maps_mcp_control_plane_and_tools() {
     }"#;
     assert_eq!(
         classify_token_request_kind("/mcp", Some(tool_variant_body)),
-        TokenRequestKind::new("mcp:tool:acme-lookup", "MCP | acme_lookup", None)
+        TokenRequestKind::new(
+            "mcp:third-party-tool",
+            "MCP | third-party tool",
+            Some("acme_lookup".to_string())
+        )
     );
 
     let init_body = br#"{
@@ -398,26 +414,25 @@ fn token_request_kind_option_groups_match_protocol_and_billing_contract() {
         "non_billable"
     );
     assert_eq!(
-        token_request_kind_billing_group("mcp:tool:acme-lookup"),
+        token_request_kind_billing_group("mcp:third-party-tool"),
         "non_billable"
     );
     assert_eq!(
-        token_request_kind_billing_group("mcp:tool:tavily-graph"),
-        "billable"
+        token_request_kind_billing_group("mcp:unsupported-path"),
+        "non_billable"
     );
     assert_eq!(
-        token_request_kind_billing_group("mcp:raw:/mcp/sse"),
-        "billable"
+        token_request_kind_billing_group("mcp:unknown-payload"),
+        "non_billable"
     );
-    assert_eq!(token_request_kind_billing_group("mcp:raw:/mcp"), "billable");
     assert_eq!(token_request_kind_billing_group("mcp:batch"), "billable");
     assert_eq!(
-        token_request_kind_billing_group_for_token_log("mcp:raw:/mcp", false),
+        token_request_kind_billing_group_for_token_log("mcp:unknown-payload", false),
         "non_billable"
     );
     assert_eq!(
-        token_request_kind_billing_group_for_token_log("mcp:raw:/mcp/sse", false),
-        "billable"
+        token_request_kind_billing_group_for_token_log("mcp:unsupported-path", false),
+        "non_billable"
     );
     assert_eq!(
         token_request_kind_billing_group_for_request(
@@ -471,12 +486,12 @@ fn operational_class_maps_control_plane_and_failure_kinds() {
         OPERATIONAL_CLASS_NEUTRAL
     );
     assert_eq!(
-        operational_class_for_token_log("mcp:raw:/mcp", OUTCOME_UNKNOWN, None, false),
+        operational_class_for_token_log("mcp:unknown-payload", OUTCOME_UNKNOWN, None, false),
         OPERATIONAL_CLASS_NEUTRAL
     );
     assert_eq!(
-        operational_class_for_token_log("mcp:raw:/mcp/sse", OUTCOME_SUCCESS, None, false),
-        OPERATIONAL_CLASS_SUCCESS
+        operational_class_for_token_log("mcp:unsupported-path", OUTCOME_SUCCESS, None, false),
+        OPERATIONAL_CLASS_NEUTRAL
     );
     assert_eq!(
         operational_class_for_request_path(
@@ -708,18 +723,30 @@ async fn token_log_filters_and_options_use_backfilled_request_kind_columns() {
         .expect("query filtered token logs");
     assert_eq!(page.total, 1);
     assert_eq!(page.items.len(), 1);
-    assert_eq!(page.items[0].request_kind_key, "mcp:raw:/mcp/sse");
-    assert_eq!(page.items[0].request_kind_label, "MCP | /mcp/sse");
+    assert_eq!(page.items[0].request_kind_key, "mcp:unsupported-path");
+    assert_eq!(page.items[0].request_kind_label, "MCP | unsupported path");
+    assert_eq!(
+        page.items[0].request_kind_detail.as_deref(),
+        Some("/mcp/sse")
+    );
+    assert_eq!(
+        page.items[0].legacy_request_kind_key.as_deref(),
+        Some("mcp:raw:/mcp")
+    );
+    assert_eq!(
+        page.items[0].legacy_request_kind_label.as_deref(),
+        Some("MCP | /mcp")
+    );
 
     let options = repaired
         .token_log_request_kind_options(&token.id, 0, None)
         .await
         .expect("query request kind options");
     assert_eq!(options.len(), 1);
-    assert_eq!(options[0].key, "mcp:raw:/mcp/sse");
-    assert_eq!(options[0].label, "MCP | /mcp/sse");
+    assert_eq!(options[0].key, "mcp:unsupported-path");
+    assert_eq!(options[0].label, "MCP | unsupported path");
     assert_eq!(options[0].protocol_group, "mcp");
-    assert_eq!(options[0].billing_group, "billable");
+    assert_eq!(options[0].billing_group, "non_billable");
     assert_eq!(options[0].count, 1);
 
     sqlx::query(
@@ -751,23 +778,34 @@ async fn token_log_filters_and_options_use_backfilled_request_kind_columns() {
         )
         .await
         .expect("query neutral token logs");
-    assert_eq!(neutral_page.total, 1);
-    assert_eq!(neutral_page.items.len(), 1);
-    assert_eq!(neutral_page.items[0].request_kind_key, "mcp:raw:/mcp");
-    assert_eq!(neutral_page.items[0].request_kind_label, "MCP | /mcp");
+    assert_eq!(neutral_page.total, 2);
+    assert_eq!(neutral_page.items.len(), 2);
+    let neutral_kinds = neutral_page
+        .items
+        .iter()
+        .map(|item| item.request_kind_key.as_str())
+        .collect::<Vec<_>>();
+    assert!(neutral_kinds.contains(&"mcp:unknown-payload"));
+    assert!(neutral_kinds.contains(&"mcp:unsupported-path"));
+    let unsupported_path_log = neutral_page
+        .items
+        .iter()
+        .find(|item| item.request_kind_key == "mcp:unsupported-path")
+        .expect("neutral unsupported-path log");
+    assert_eq!(
+        unsupported_path_log.request_kind_detail.as_deref(),
+        Some("/mcp/sse")
+    );
+    let unknown_payload_log = neutral_page
+        .items
+        .iter()
+        .find(|item| item.request_kind_key == "mcp:unknown-payload")
+        .expect("neutral unknown-payload log");
+    assert_eq!(
+        unknown_payload_log.request_kind_label,
+        "MCP | unknown payload"
+    );
 
-    sqlx::query(
-        r#"
-        UPDATE auth_token_logs
-        SET request_kind_key = 'mcp:tool:acme-lookup',
-            request_kind_label = 'MCP | Acme Lookup'
-        WHERE token_id = ?
-        "#,
-    )
-    .bind(&token.id)
-    .execute(&repaired.key_store.pool)
-    .await
-    .expect("stamp stored request kind");
     sqlx::query(
         r#"
         INSERT INTO auth_token_logs (
@@ -786,12 +824,14 @@ async fn token_log_filters_and_options_use_backfilled_request_kind_columns() {
         .token_log_request_kind_options(&token.id, 0, None)
         .await
         .expect("query canonicalized request kind options");
-    assert_eq!(canonicalized_options.len(), 1);
-    assert_eq!(canonicalized_options[0].key, "mcp:tool:acme-lookup");
-    assert_eq!(canonicalized_options[0].label, "MCP | Acme Lookup");
-    assert_eq!(canonicalized_options[0].protocol_group, "mcp");
-    assert_eq!(canonicalized_options[0].billing_group, "non_billable");
-    assert_eq!(canonicalized_options[0].count, 3);
+    let third_party_option = canonicalized_options
+        .iter()
+        .find(|option| option.key == "mcp:third-party-tool")
+        .expect("third-party tool option exists");
+    assert_eq!(third_party_option.label, "MCP | third-party tool");
+    assert_eq!(third_party_option.protocol_group, "mcp");
+    assert_eq!(third_party_option.billing_group, "non_billable");
+    assert_eq!(third_party_option.count, 1);
 
     sqlx::query(
         r#"
@@ -811,12 +851,12 @@ async fn token_log_filters_and_options_use_backfilled_request_kind_columns() {
         .token_log_request_kind_options(&token.id, 0, None)
         .await
         .expect("query request kind options with failed raw root billable row");
-    let raw_root_option = canonicalized_with_failed_billable_raw
+    let unknown_payload_option = canonicalized_with_failed_billable_raw
         .iter()
-        .find(|option| option.key == "mcp:raw:/mcp")
-        .expect("raw root option exists");
-    assert_eq!(raw_root_option.billing_group, "billable");
-    assert_eq!(raw_root_option.count, 1);
+        .find(|option| option.key == "mcp:unknown-payload")
+        .expect("unknown payload option exists");
+    assert_eq!(unknown_payload_option.billing_group, "non_billable");
+    assert_eq!(unknown_payload_option.count, 2);
 
     sqlx::query(
         r#"
