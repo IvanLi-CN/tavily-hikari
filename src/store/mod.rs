@@ -3278,6 +3278,64 @@ impl KeyStore {
                 .await?;
         }
 
+        self.ensure_request_logs_request_kind_columns().await?;
+
+        self.ensure_request_logs_key_ids().await?;
+
+        Ok(())
+    }
+
+    pub(crate) async fn ensure_request_logs_key_ids(&self) -> Result<(), ProxyError> {
+        if !self.request_logs_column_exists("api_key_id").await? {
+            sqlx::query("ALTER TABLE request_logs ADD COLUMN api_key_id TEXT")
+                .execute(&self.pool)
+                .await?;
+
+            sqlx::query(
+                r#"
+                UPDATE request_logs
+                SET api_key_id = (
+                    SELECT id FROM api_keys WHERE api_keys.api_key = request_logs.api_key
+                )
+                "#,
+            )
+            .execute(&self.pool)
+            .await?;
+        }
+
+        if self.request_logs_column_exists("api_key").await? {
+            self.rebuild_request_logs_table(RequestLogsRebuildMode::DropLegacyApiKeyColumn)
+                .await?;
+        }
+
+        if self
+            .table_column_not_null("request_logs", "api_key_id")
+            .await?
+        {
+            self.rebuild_request_logs_table(RequestLogsRebuildMode::RelaxApiKeyIdNullability)
+                .await?;
+        }
+
+        if !self.request_logs_column_exists("request_body").await? {
+            sqlx::query("ALTER TABLE request_logs ADD COLUMN request_body BLOB")
+                .execute(&self.pool)
+                .await?;
+        }
+
+        if !self.request_logs_column_exists("auth_token_id").await? {
+            sqlx::query("ALTER TABLE request_logs ADD COLUMN auth_token_id TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
+
+        // Re-run the request-kind self-heal after structural migrations so legacy
+        // snapshots cannot be dropped by intermediate rebuild branches.
+        self.ensure_request_logs_request_kind_columns().await?;
+
+        Ok(())
+    }
+
+    async fn ensure_request_logs_request_kind_columns(&self) -> Result<(), ProxyError> {
         if !self.request_logs_column_exists("request_kind_key").await? {
             sqlx::query("ALTER TABLE request_logs ADD COLUMN request_kind_key TEXT")
                 .execute(&self.pool)
@@ -3331,54 +3389,6 @@ impl KeyStore {
 
         if !self.request_logs_column_exists("business_credits").await? {
             sqlx::query("ALTER TABLE request_logs ADD COLUMN business_credits INTEGER")
-                .execute(&self.pool)
-                .await?;
-        }
-
-        self.ensure_request_logs_key_ids().await?;
-
-        Ok(())
-    }
-
-    pub(crate) async fn ensure_request_logs_key_ids(&self) -> Result<(), ProxyError> {
-        if !self.request_logs_column_exists("api_key_id").await? {
-            sqlx::query("ALTER TABLE request_logs ADD COLUMN api_key_id TEXT")
-                .execute(&self.pool)
-                .await?;
-
-            sqlx::query(
-                r#"
-                UPDATE request_logs
-                SET api_key_id = (
-                    SELECT id FROM api_keys WHERE api_keys.api_key = request_logs.api_key
-                )
-                "#,
-            )
-            .execute(&self.pool)
-            .await?;
-        }
-
-        if self.request_logs_column_exists("api_key").await? {
-            self.rebuild_request_logs_table(RequestLogsRebuildMode::DropLegacyApiKeyColumn)
-                .await?;
-        }
-
-        if self
-            .table_column_not_null("request_logs", "api_key_id")
-            .await?
-        {
-            self.rebuild_request_logs_table(RequestLogsRebuildMode::RelaxApiKeyIdNullability)
-                .await?;
-        }
-
-        if !self.request_logs_column_exists("request_body").await? {
-            sqlx::query("ALTER TABLE request_logs ADD COLUMN request_body BLOB")
-                .execute(&self.pool)
-                .await?;
-        }
-
-        if !self.request_logs_column_exists("auth_token_id").await? {
-            sqlx::query("ALTER TABLE request_logs ADD COLUMN auth_token_id TEXT")
                 .execute(&self.pool)
                 .await?;
         }

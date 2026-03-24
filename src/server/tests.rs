@@ -44,6 +44,20 @@ mod tests {
             .expect("connect to sqlite")
     }
 
+    async fn sqlite_column_exists(
+        pool: &sqlx::SqlitePool,
+        table: &str,
+        column: &str,
+    ) -> bool {
+        let sql = format!("SELECT 1 FROM pragma_table_info('{table}') WHERE name = ? LIMIT 1");
+        sqlx::query_scalar::<_, i64>(&sql)
+            .bind(column)
+            .fetch_optional(pool)
+            .await
+            .expect("probe sqlite column")
+            .is_some()
+    }
+
     async fn create_request_log_reference_tables(pool: &sqlx::SqlitePool) {
         sqlx::query(
             r#"
@@ -8529,6 +8543,18 @@ colo=LAX
             request_row.try_get::<String, _>("key_effect_code").unwrap(),
             "none"
         );
+        assert!(
+            sqlite_column_exists(&upgraded_pool, "request_logs", "legacy_request_kind_key").await,
+            "request_logs should add legacy_request_kind_key during api_key rebuild"
+        );
+        assert!(
+            sqlite_column_exists(&upgraded_pool, "request_logs", "legacy_request_kind_label").await,
+            "request_logs should add legacy_request_kind_label during api_key rebuild"
+        );
+        assert!(
+            sqlite_column_exists(&upgraded_pool, "request_logs", "legacy_request_kind_detail").await,
+            "request_logs should add legacy_request_kind_detail during api_key rebuild"
+        );
 
         assert_eq!(
             sqlx::query_scalar::<_, Option<i64>>(
@@ -9010,6 +9036,18 @@ colo=LAX
         .await
         .expect("read api_key_id notnull");
         assert_eq!(api_key_not_null, 0, "api_key_id should be nullable after migration");
+        assert!(
+            sqlite_column_exists(&upgraded_pool, "request_logs", "legacy_request_kind_key").await,
+            "request_logs should self-heal legacy_request_kind_key after rebuild"
+        );
+        assert!(
+            sqlite_column_exists(&upgraded_pool, "request_logs", "legacy_request_kind_label").await,
+            "request_logs should self-heal legacy_request_kind_label after rebuild"
+        );
+        assert!(
+            sqlite_column_exists(&upgraded_pool, "request_logs", "legacy_request_kind_detail").await,
+            "request_logs should self-heal legacy_request_kind_detail after rebuild"
+        );
 
         assert_eq!(
             sqlx::query_scalar::<_, Option<i64>>(

@@ -181,10 +181,12 @@
 - 日志 DTO / API 已新增 `legacyRequestKind*` 审计字段；`requestKindOptions` 与 `request_kind` 过滤都按 canonical key 工作，同时兼容 legacy alias。
 - 第一方前端 catalog、badge 与筛选逻辑已切换到 canonical 口径，不再把历史 per-path / per-tool 脏值展示为独立请求类型。
 - 独立二进制 `request_kind_canonical_backfill` 已实现批量、幂等、可断点续跑的历史 canonical 化流程，并保留 legacy 快照。
+- `request_logs` 的 legacy 快照列现在会在启动迁移尾部再次自愈补齐；`request_kind_canonical_backfill` 也会在执行前自检两张日志表的 legacy 列，避免历史库因缺列卡死回填。
 
 ## 变更记录
 
 - 2026-03-24: 落地 canonical request kind catalog、legacy 快照列、兼容过滤、独立 backfill binary，并补齐后端/前端回归测试与本地验证。
+- 2026-03-24: 补齐 `request_logs` legacy 快照列的启动迁移自愈与 backfill 缺列自检，覆盖共享测试机复制的生产历史库形态。
 
 ## 风险 / 假设
 
