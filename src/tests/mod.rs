@@ -661,6 +661,47 @@ fn sanitize_headers_rewrites_origin_and_referer() {
     assert!(sanitized.forwarded.contains(&"referer".to_string()));
 }
 
+#[test]
+fn sanitize_headers_keeps_mcp_session_recovery_headers() {
+    let upstream = Url::parse("https://mcp.tavily.com/mcp").unwrap();
+    let origin = origin_from_url(&upstream);
+
+    let mut headers = HeaderMap::new();
+    headers.insert("Mcp-Session-Id", HeaderValue::from_static("session-123"));
+    headers.insert(
+        "Mcp-Protocol-Version",
+        HeaderValue::from_static("2025-03-26"),
+    );
+    headers.insert("Last-Event-Id", HeaderValue::from_static("resume-42"));
+    headers.insert("X-Forwarded-For", HeaderValue::from_static("1.2.3.4"));
+    headers.insert("X-Real-Ip", HeaderValue::from_static("1.2.3.4"));
+
+    let sanitized = sanitize_headers_inner(&headers, &upstream, &origin);
+    assert_eq!(
+        sanitized.headers.get("mcp-session-id").unwrap(),
+        &HeaderValue::from_static("session-123")
+    );
+    assert_eq!(
+        sanitized.headers.get("mcp-protocol-version").unwrap(),
+        &HeaderValue::from_static("2025-03-26")
+    );
+    assert_eq!(
+        sanitized.headers.get("last-event-id").unwrap(),
+        &HeaderValue::from_static("resume-42")
+    );
+    assert!(!sanitized.headers.contains_key("x-forwarded-for"));
+    assert!(!sanitized.headers.contains_key("x-real-ip"));
+    assert!(sanitized.forwarded.contains(&"mcp-session-id".to_string()));
+    assert!(
+        sanitized
+            .forwarded
+            .contains(&"mcp-protocol-version".to_string())
+    );
+    assert!(sanitized.forwarded.contains(&"last-event-id".to_string()));
+    assert!(sanitized.dropped.contains(&"x-forwarded-for".to_string()));
+    assert!(sanitized.dropped.contains(&"x-real-ip".to_string()));
+}
+
 fn temp_db_path(prefix: &str) -> PathBuf {
     let file = format!("{}-{}.db", prefix, nanoid!(8));
     std::env::temp_dir().join(file)

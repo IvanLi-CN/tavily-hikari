@@ -430,6 +430,134 @@ mod tests {
         (addr, hits)
     }
 
+    async fn spawn_mock_mcp_upstream_for_session_headers(
+        expected_api_key: String,
+    ) -> (
+        SocketAddr,
+        Arc<Mutex<Vec<(String, Option<String>, Option<String>, Option<String>, bool)>>>,
+    ) {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let app = Router::new().route(
+            "/mcp",
+            any({
+                let calls = calls.clone();
+                move |headers: HeaderMap,
+                      Query(params): Query<HashMap<String, String>>,
+                      Json(body): Json<Value>| {
+                    let expected_api_key = expected_api_key.clone();
+                    let calls = calls.clone();
+                    async move {
+                        let received = params.get("tavilyApiKey").cloned();
+                        assert_eq!(
+                            received.as_deref(),
+                            Some(expected_api_key.as_str()),
+                            "missing or incorrect tavilyApiKey"
+                        );
+
+                        let method = body
+                            .get("method")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        let session_id = headers
+                            .get("mcp-session-id")
+                            .and_then(|value| value.to_str().ok())
+                            .map(str::to_string);
+                        let protocol_version = headers
+                            .get("mcp-protocol-version")
+                            .and_then(|value| value.to_str().ok())
+                            .map(str::to_string);
+                        let last_event_id = headers
+                            .get("last-event-id")
+                            .and_then(|value| value.to_str().ok())
+                            .map(str::to_string);
+                        let leaked_forwarded = headers.contains_key("x-forwarded-for")
+                            || headers.contains_key("x-real-ip");
+
+                        calls.lock().expect("session header calls lock poisoned").push((
+                            method.clone(),
+                            session_id.clone(),
+                            protocol_version.clone(),
+                            last_event_id.clone(),
+                            leaked_forwarded,
+                        ));
+
+                        match method.as_str() {
+                            "initialize" => Response::builder()
+                                .status(StatusCode::OK)
+                                .header(CONTENT_TYPE, "application/json")
+                                .header("mcp-session-id", "session-123")
+                                .body(Body::from(
+                                    serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": body.get("id").cloned().unwrap_or_else(|| serde_json::json!(1)),
+                                        "result": {
+                                            "protocolVersion": "2025-03-26",
+                                            "serverInfo": { "name": "mock-mcp", "version": "1.0.0" },
+                                            "capabilities": {}
+                                        }
+                                    })
+                                    .to_string(),
+                                ))
+                                .expect("build initialize response"),
+                            "tools/list" => {
+                                assert_eq!(
+                                    session_id.as_deref(),
+                                    Some("session-123"),
+                                    "tools/list should preserve mcp-session-id"
+                                );
+                                assert_eq!(
+                                    protocol_version.as_deref(),
+                                    Some("2025-03-26"),
+                                    "tools/list should preserve mcp-protocol-version"
+                                );
+                                assert_eq!(
+                                    last_event_id.as_deref(),
+                                    Some("resume-42"),
+                                    "tools/list should preserve last-event-id"
+                                );
+                                assert!(
+                                    !leaked_forwarded,
+                                    "proxy must continue dropping x-forwarded-for/x-real-ip"
+                                );
+                                Response::builder()
+                                    .status(StatusCode::OK)
+                                    .header(CONTENT_TYPE, "application/json")
+                                    .body(Body::from(
+                                        serde_json::json!({
+                                            "jsonrpc": "2.0",
+                                            "id": body.get("id").cloned().unwrap_or_else(|| serde_json::json!(1)),
+                                            "result": {
+                                                "tools": [
+                                                    { "name": "tavily_search", "description": "mock" }
+                                                ]
+                                            }
+                                        })
+                                        .to_string(),
+                                    ))
+                                    .expect("build tools/list response")
+                            }
+                            other => (
+                                StatusCode::BAD_REQUEST,
+                                Body::from(format!("unexpected MCP method: {other}")),
+                            )
+                                .into_response(),
+                        }
+                    }
+                }
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+        (addr, calls)
+    }
+
     async fn spawn_mock_mcp_upstream_for_tavily_search_empty_body(
         expected_api_key: String,
     ) -> (SocketAddr, Arc<AtomicUsize>) {
@@ -16707,6 +16835,116 @@ colo=LAX
         );
         assert_eq!(summary.success_count, 0);
         assert_eq!(summary.quota_exhausted_count, 0);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_session_headers_are_forwarded_after_initialize() {
+        let db_path = temp_db_path("mcp-session-header-forwarding");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let expected_api_key = "tvly-mcp-session-header-key";
+        let (upstream_addr, calls) =
+            spawn_mock_mcp_upstream_for_session_headers(expected_api_key.to_string()).await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy =
+            TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
+
+        let access_token = proxy
+            .create_access_token(Some("mcp-session-header-forwarding"))
+            .await
+            .expect("create access token");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), upstream.clone()).await;
+        let url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, access_token.token
+        );
+        let client = Client::new();
+
+        let initialize = client
+            .post(&url)
+            .header("accept", "application/json, text/event-stream")
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .header("x-forwarded-for", "1.2.3.4")
+            .header("x-real-ip", "1.2.3.4")
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "init-1",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {}
+                }
+            }))
+            .send()
+            .await
+            .expect("initialize request");
+
+        assert!(
+            initialize.status().is_success(),
+            "initialize should succeed, got {}",
+            initialize.status()
+        );
+        let session_id = initialize
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("initialize response should expose mcp-session-id")
+            .to_string();
+        assert_eq!(session_id, "session-123");
+
+        let tools_list = client
+            .post(&url)
+            .header("accept", "application/json, text/event-stream")
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .header("mcp-session-id", session_id.as_str())
+            .header("last-event-id", "resume-42")
+            .header("x-forwarded-for", "1.2.3.4")
+            .header("x-real-ip", "1.2.3.4")
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "tools-1",
+                "method": "tools/list"
+            }))
+            .send()
+            .await
+            .expect("tools/list request");
+
+        assert!(
+            tools_list.status().is_success(),
+            "tools/list should succeed after initialize, got {}",
+            tools_list.status()
+        );
+        let tools_list_body: Value = tools_list.json().await.expect("parse tools/list response");
+        assert_eq!(
+            tools_list_body
+                .get("result")
+                .and_then(|value| value.get("tools"))
+                .and_then(|value| value.as_array())
+                .map(|tools| tools.len()),
+            Some(1)
+        );
+
+        let recorded = calls
+            .lock()
+            .expect("session header calls lock poisoned")
+            .clone();
+        assert_eq!(recorded.len(), 2, "expected initialize + tools/list");
+        assert_eq!(recorded[0].0, "initialize");
+        assert_eq!(recorded[0].2.as_deref(), Some("2025-03-26"));
+        assert!(!recorded[0].4, "initialize should not leak forwarded headers");
+        assert_eq!(recorded[1].0, "tools/list");
+        assert_eq!(recorded[1].1.as_deref(), Some("session-123"));
+        assert_eq!(recorded[1].2.as_deref(), Some("2025-03-26"));
+        assert_eq!(recorded[1].3.as_deref(), Some("resume-42"));
+        assert!(!recorded[1].4, "tools/list should not leak forwarded headers");
 
         let _ = std::fs::remove_file(db_path);
     }
