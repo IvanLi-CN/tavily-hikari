@@ -1,4 +1,8 @@
-import { requestMcpProbeWithToken } from './lib/mcpProbe'
+import {
+  getProbeEnvelopeError,
+  requestMcpProbeEnvelopeWithToken,
+  requestMcpProbeNotificationWithToken,
+} from './lib/mcpProbe'
 import type { TokenLogRequestKindOption } from './tokenLogRequestKinds'
 
 export interface Summary {
@@ -924,40 +928,176 @@ export interface ProbeMcpResponse {
   [key: string]: unknown
 }
 
-export async function probeMcpPing(token: string): Promise<ProbeMcpResponse> {
-  return requestMcpProbeWithToken<ProbeMcpResponse>('/mcp', token, {
-    method: 'POST',
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: 'probe-ping',
-      method: 'ping',
-      params: {},
-    }),
-  })
+export interface ProbeMcpRequestContext {
+  protocolVersion?: string | null
+  sessionId?: string | null
+  requestId?: string
 }
 
-export async function probeMcpToolsList(token: string): Promise<ProbeMcpResponse> {
-  return requestMcpProbeWithToken<ProbeMcpResponse>('/mcp', token, {
+export interface ProbeMcpInitializeContext extends ProbeMcpRequestContext {
+  clientVersion?: string | null
+}
+
+export interface ProbeMcpEnvelopeResult {
+  payload: ProbeMcpResponse
+  negotiatedProtocolVersion: string | null
+  sessionId: string | null
+  status: number
+}
+
+export interface ProbeMcpNotificationResult {
+  sessionId: string | null
+  status: number
+}
+
+function buildMcpProbeHeaders(context?: ProbeMcpRequestContext): HeadersInit | undefined {
+  const headers = new Headers()
+  if (context?.protocolVersion) {
+    headers.set('Mcp-Protocol-Version', context.protocolVersion)
+  }
+  if (context?.sessionId) {
+    headers.set('Mcp-Session-Id', context.sessionId)
+  }
+  return Array.from(headers.keys()).length > 0 ? headers : undefined
+}
+
+function resolveNegotiatedProtocolVersion(
+  payload: ProbeMcpResponse,
+  fallback?: string | null,
+): string | null {
+  const result = payload.result && typeof payload.result === 'object'
+    ? payload.result as Record<string, unknown>
+    : null
+  const protocolVersion = result?.protocolVersion
+  return typeof protocolVersion === 'string' && protocolVersion.trim().length > 0
+    ? protocolVersion
+    : fallback ?? null
+}
+
+function toProbeMcpEnvelopeResult(
+  payload: ProbeMcpResponse,
+  status: number,
+  sessionId: string | null,
+  fallbackProtocolVersion?: string | null,
+): ProbeMcpEnvelopeResult {
+  return {
+    payload,
+    negotiatedProtocolVersion: resolveNegotiatedProtocolVersion(payload, fallbackProtocolVersion),
+    sessionId,
+    status,
+  }
+}
+
+export async function probeMcpInitialize(
+  token: string,
+  context: ProbeMcpInitializeContext,
+): Promise<ProbeMcpEnvelopeResult> {
+  const response = await requestMcpProbeEnvelopeWithToken<ProbeMcpResponse>('/mcp', token, {
     method: 'POST',
+    headers: buildMcpProbeHeaders(context),
     body: JSON.stringify({
       jsonrpc: '2.0',
-      id: 'probe-tools-list',
-      method: 'tools/list',
-      params: {},
+      id: context.requestId,
+      method: 'initialize',
+      params: {
+        protocolVersion: context.protocolVersion ?? '2025-03-26',
+        capabilities: {},
+        clientInfo: {
+          name: 'Tavily Hikari UserConsole Probe',
+          version: context.clientVersion?.trim() || 'dev',
+        },
+      },
     }),
   })
+
+  return toProbeMcpEnvelopeResult(
+    response.payload,
+    response.metadata.status,
+    response.metadata.sessionId,
+    context.protocolVersion ?? '2025-03-26',
+  )
+}
+
+export async function probeMcpInitialized(
+  token: string,
+  context: ProbeMcpRequestContext,
+): Promise<ProbeMcpNotificationResult> {
+  const response = await requestMcpProbeNotificationWithToken<ProbeMcpResponse>('/mcp', token, {
+    method: 'POST',
+    headers: buildMcpProbeHeaders(context),
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      method: 'notifications/initialized',
+    }),
+  })
+
+  const error = getProbeEnvelopeError(response.payload)
+  if (error) {
+    throw new Error(error)
+  }
+
+  return {
+    sessionId: response.metadata.sessionId,
+    status: response.metadata.status,
+  }
+}
+
+export async function probeMcpPing(
+  token: string,
+  context: ProbeMcpRequestContext,
+): Promise<ProbeMcpEnvelopeResult> {
+  const response = await requestMcpProbeEnvelopeWithToken<ProbeMcpResponse>('/mcp', token, {
+    method: 'POST',
+    headers: buildMcpProbeHeaders(context),
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: context.requestId,
+      method: 'ping',
+    }),
+  })
+
+  return toProbeMcpEnvelopeResult(
+    response.payload,
+    response.metadata.status,
+    response.metadata.sessionId,
+    context.protocolVersion,
+  )
+}
+
+export async function probeMcpToolsList(
+  token: string,
+  context: ProbeMcpRequestContext,
+): Promise<ProbeMcpEnvelopeResult> {
+  const response = await requestMcpProbeEnvelopeWithToken<ProbeMcpResponse>('/mcp', token, {
+    method: 'POST',
+    headers: buildMcpProbeHeaders(context),
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: context.requestId,
+      method: 'tools/list',
+    }),
+  })
+
+  return toProbeMcpEnvelopeResult(
+    response.payload,
+    response.metadata.status,
+    response.metadata.sessionId,
+    context.protocolVersion,
+  )
 }
 
 export async function probeMcpToolsCall(
   token: string,
   toolName: string,
   argumentsPayload: unknown,
-): Promise<ProbeMcpResponse> {
-  return requestMcpProbeWithToken<ProbeMcpResponse>('/mcp', token, {
+  context: ProbeMcpRequestContext,
+): Promise<ProbeMcpEnvelopeResult> {
+  const response = await requestMcpProbeEnvelopeWithToken<ProbeMcpResponse>('/mcp', token, {
     method: 'POST',
+    headers: buildMcpProbeHeaders(context),
     body: JSON.stringify({
       jsonrpc: '2.0',
-      id: `probe-tool-call:${toolName}`,
+      id: context.requestId,
       method: 'tools/call',
       params: {
         name: toolName,
@@ -965,6 +1105,13 @@ export async function probeMcpToolsCall(
       },
     }),
   })
+
+  return toProbeMcpEnvelopeResult(
+    response.payload,
+    response.metadata.status,
+    response.metadata.sessionId,
+    context.protocolVersion,
+  )
 }
 
 export interface TavilyResearchCreateResponse {

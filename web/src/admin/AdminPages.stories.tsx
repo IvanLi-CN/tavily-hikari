@@ -61,6 +61,7 @@ import {
 
 import AdminShell, { type AdminNavItem, type AdminNavTarget } from './AdminShell'
 import DashboardOverview, { type DashboardMetricCard } from './DashboardOverview'
+import { createDashboardTodayMetrics } from './dashboardTodayMetrics'
 import ForwardProxySettingsModule from './ForwardProxySettingsModule'
 import ModulePlaceholder from './ModulePlaceholder'
 import {
@@ -1886,52 +1887,41 @@ function DashboardPageCanvas(): JSX.Element {
   const exhaustedKeys = MOCK_KEYS.filter((item) => item.status === 'exhausted').length
   const activeKeys = MOCK_KEYS.filter((item) => item.status === 'active').length
 
-  const todayMetrics: DashboardMetricCard[] = [
-    {
-      id: 'today-total',
-      label: admin.metrics.labels.total,
-      value: formatNumber(totalRequests),
-      subtitle: admin.dashboard.asOfNow,
-      comparison: {
-        label: admin.dashboard.deltaFromYesterday,
-        value: '+128 (+6.1%)',
-        direction: 'up',
-      },
+  const todayMetrics: DashboardMetricCard[] = createDashboardTodayMetrics({
+    today: {
+      total_requests: totalRequests,
+      success_count: successCount,
+      error_count: errorCount,
+      quota_exhausted_count: quotaExhaustedCount,
+      new_keys: 0,
+      new_quarantines: 0,
     },
-    {
-      id: 'today-success',
-      label: admin.metrics.labels.success,
-      value: formatNumber(successCount),
-      subtitle: `${admin.dashboard.todayShare} · ${formatPercent(successCount, totalRequests)}`,
-      comparison: {
-        label: admin.dashboard.deltaFromYesterday,
-        value: '+96 (+5.4%)',
-        direction: 'up',
-      },
+    yesterday: {
+      total_requests: totalRequests - 128,
+      success_count: successCount - 96,
+      error_count: errorCount + 12,
+      quota_exhausted_count: Math.max(0, quotaExhaustedCount - 4),
+      new_keys: 0,
+      new_quarantines: 0,
     },
-    {
-      id: 'today-errors',
-      label: admin.metrics.labels.errors,
-      value: formatNumber(errorCount),
-      subtitle: `${admin.dashboard.todayShare} · ${formatPercent(errorCount, totalRequests)}`,
-      comparison: {
-        label: admin.dashboard.deltaFromYesterday,
-        value: '-12 (-9.8%)',
-        direction: 'down',
-      },
+    labels: {
+      total: admin.metrics.labels.total,
+      success: admin.metrics.labels.success,
+      errors: admin.metrics.labels.errors,
+      quota: admin.metrics.labels.quota,
     },
-    {
-      id: 'today-quota',
-      label: admin.metrics.labels.quota,
-      value: formatNumber(quotaExhaustedCount),
-      subtitle: `${admin.dashboard.todayShare} · ${formatPercent(quotaExhaustedCount, totalRequests)}`,
-      comparison: {
-        label: admin.dashboard.deltaFromYesterday,
-        value: '+4 (+12.5%)',
-        direction: 'up',
-      },
+    strings: {
+      deltaFromYesterday: admin.dashboard.deltaFromYesterday,
+      deltaNoBaseline: admin.dashboard.deltaNoBaseline,
+      percentagePointUnit: admin.dashboard.percentagePointUnit,
+      asOfNow: admin.dashboard.asOfNow,
+      todayShare: admin.dashboard.todayShare,
     },
-  ]
+    formatters: {
+      formatNumber,
+      formatPercent,
+    },
+  })
 
   const monthMetrics: DashboardMetricCard[] = [
     {

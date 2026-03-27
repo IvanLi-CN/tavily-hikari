@@ -217,6 +217,7 @@ interface AdminTranslationsShape {
     currentStatusDescription: string
     deltaFromYesterday: string
     deltaNoBaseline: string
+    percentagePointUnit: string
     asOfNow: string
     currentSnapshot: string
     todayShare: string
@@ -1441,6 +1442,7 @@ export const translations: Record<Language, TranslationShape> = {
         currentStatusDescription: 'Live quota, active keys, and pool health right now.',
         deltaFromYesterday: 'vs same time yesterday',
         deltaNoBaseline: 'No yesterday baseline',
+        percentagePointUnit: 'pp',
         asOfNow: 'Up to now',
         currentSnapshot: 'Current snapshot',
         todayShare: 'Today share',
@@ -2653,6 +2655,7 @@ export const translations: Record<Language, TranslationShape> = {
         currentStatusDescription: '查看此刻的额度、活跃密钥与池状态。',
         deltaFromYesterday: '较昨日同刻',
         deltaNoBaseline: '昨日无基线',
+        percentagePointUnit: '个百分点',
         asOfNow: '截至当前',
         currentSnapshot: '当前快照',
         todayShare: '今日占比',
