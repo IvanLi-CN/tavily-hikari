@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 已实现（待审查）
+- Status: 进行中（快车道）
 - Created: 2026-03-27
 - Last: 2026-03-27
 
@@ -190,6 +190,7 @@ None
 
 - 2026-03-27: 新建 spec，锁定 user/token/session 强亲和、opaque session 与 `/mcp` strict privacy header 范围。
 - 2026-03-27: 完成 user/token 持久 primary affinity、MCP opaque session registry、`/mcp` strict header sanitizer、dev-open-admin 显式 token 约束，以及 disabled/quarantined/exhausted 场景的 session/rebind 回归覆盖。
+- 2026-03-27: 创建 PR #189，进入快车道 PR 收敛 / stable patch / 101 rollout 阶段。
 
 ## 参考（References）
 
