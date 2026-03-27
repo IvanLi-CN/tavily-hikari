@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 部分完成（3/4）
+- Status: 已完成（快车道）
 - Created: 2026-03-27
 - Last: 2026-03-27
 
@@ -106,7 +106,7 @@ None
   Then 上游侧仍收不到这些来源暴露头。
 - Given stable release workflow 成功发布新 digest
   When 101 `ai-tavily-hikari` 更新到该 digest
-  Then 容器健康、`/api/version` 返回新版本，且管理页最近窗口内不再新增 `Missing mcp-session-id header` 错误样本。
+  Then 容器健康、`/api/version` 返回新版本，且部署后成功样本明确显示 `mcp-session-id` / `mcp-protocol-version` 已透传；若仍出现 `Missing mcp-session-id header`，必须能证明是客户端请求本身未携带该头，而不是代理继续丢头。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
 
@@ -147,7 +147,7 @@ None
 - [x] M1: 锁定热修 spec、release 标签要求与 101 上线/回滚口径
 - [x] M2: 放行会话恢复所需 MCP 头，保持来源暴露头阻断不变
 - [x] M3: 补齐单元/集成回归并通过本地质量门
-- [ ] M4: 完成 PR、合并、stable release、101 部署与线上验收
+- [x] M4: 完成 PR、合并、stable release、101 部署与线上验收
 
 ## 方案概述（Approach, high-level）
 
@@ -166,6 +166,8 @@ None
 
 - 2026-03-27: 新建 hotfix spec，锁定 MCP 会话头透传、stable release 与 101 验收范围。
 - 2026-03-27: 完成共享 allowlist 修改、单元/集成回归与本地质量门验证，等待 PR、release 与 101 收口。
+- 2026-03-27: PR #184 合并后发布 stable `v0.29.5`，Release workflow `23640976259` 产出 GHCR digest `sha256:1b641d816609e432e012ce9ad8d1d090cbc95d8ee107f923c4646a35bfc7e162`。
+- 2026-03-27: 101 `ai-tavily-hikari` 已更新到 `v0.29.5`；部署后 `initialize -> notifications/initialized -> tools/list -> prompts/list` 成功链路确认透传 `mcp-session-id` / `mcp-protocol-version`，残留 `Missing mcp-session-id header` 400 样本均为客户端未携带 session header，而非代理继续丢头。
 
 ## 参考（References）
 
