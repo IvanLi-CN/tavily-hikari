@@ -50,6 +50,7 @@ import TokenDetail from './pages/TokenDetail'
 import { ArrowDown, ArrowUp, ArrowUpDown, ChartColumnIncreasing } from 'lucide-react'
 import AdminShell, { type AdminNavItem, type AdminNavTarget } from './admin/AdminShell'
 import DashboardOverview from './admin/DashboardOverview'
+import { createDashboardTodayMetrics } from './admin/dashboardTodayMetrics'
 import ForwardProxySettingsModule, {
   type ForwardProxyDraft,
   type ForwardProxyValidationEntry,
@@ -784,11 +785,6 @@ function formatNumber(value: number): string {
 function formatPercent(numerator: number, denominator: number): string {
   if (denominator === 0) return '—'
   return percentageFormatter.format(numerator / denominator)
-}
-
-function formatSignedNumber(value: number): string {
-  if (value > 0) return `+${formatNumber(value)}`
-  return formatNumber(value)
 }
 
 function buildWindowSubtitle(
@@ -3777,93 +3773,36 @@ function AdminDashboard(): JSX.Element {
     void Promise.all(tasks).finally(() => controller.abort())
   }
 
-  const buildTodayComparison = useCallback(
-    (
-      currentValue: number,
-      previousValue: number,
-      trend: 'higher-is-better' | 'lower-is-better' = 'higher-is-better',
-    ) => {
-      const deltaValue = currentValue - previousValue
-      const direction: 'up' | 'down' | 'flat' =
-        deltaValue > 0 ? 'up' : deltaValue < 0 ? 'down' : 'flat'
-      const tone: 'positive' | 'negative' | 'neutral' =
-        direction === 'flat'
-          ? 'neutral'
-          : trend === 'higher-is-better'
-            ? direction === 'up'
-              ? 'positive'
-              : 'negative'
-            : direction === 'down'
-              ? 'positive'
-              : 'negative'
-      let value = formatSignedNumber(deltaValue)
-      if (previousValue > 0) {
-        value = `${value} (${percentageFormatter.format(deltaValue / previousValue)})`
-      } else if (deltaValue !== 0) {
-        value = `${value} · ${adminStrings.dashboard.deltaNoBaseline}`
-      }
-      return {
-        label: adminStrings.dashboard.deltaFromYesterday,
-        value,
-        direction,
-        tone,
-      }
-    },
-    [adminStrings.dashboard.deltaFromYesterday, adminStrings.dashboard.deltaNoBaseline],
-  )
-
   const todayMetrics = useMemo(() => {
     if (!dashboardSummaryWindows) {
       return []
     }
 
-    const today = dashboardSummaryWindows.today
-    const yesterday = dashboardSummaryWindows.yesterday
-    const total = today.total_requests
-
-    return [
-      {
-        id: 'today-total',
-        label: metricsStrings.labels.total,
-        value: formatNumber(today.total_requests),
-        subtitle: adminStrings.dashboard.asOfNow,
-        comparison: buildTodayComparison(today.total_requests, yesterday.total_requests),
+    return createDashboardTodayMetrics({
+      today: dashboardSummaryWindows.today,
+      yesterday: dashboardSummaryWindows.yesterday,
+      labels: metricsStrings.labels,
+      strings: {
+        deltaFromYesterday: adminStrings.dashboard.deltaFromYesterday,
+        deltaNoBaseline: adminStrings.dashboard.deltaNoBaseline,
+        percentagePointUnit: adminStrings.dashboard.percentagePointUnit,
+        asOfNow: adminStrings.dashboard.asOfNow,
+        todayShare: adminStrings.dashboard.todayShare,
       },
-      {
-        id: 'today-success',
-        label: metricsStrings.labels.success,
-        value: formatNumber(today.success_count),
-        subtitle: buildWindowSubtitle(adminStrings.dashboard.todayShare, today.success_count, total),
-        comparison: buildTodayComparison(today.success_count, yesterday.success_count),
+      formatters: {
+        formatNumber,
+        formatPercent,
       },
-      {
-        id: 'today-errors',
-        label: metricsStrings.labels.errors,
-        value: formatNumber(today.error_count),
-        subtitle: buildWindowSubtitle(adminStrings.dashboard.todayShare, today.error_count, total),
-        comparison: buildTodayComparison(
-          today.error_count,
-          yesterday.error_count,
-          'lower-is-better',
-        ),
-      },
-      {
-        id: 'today-quota',
-        label: metricsStrings.labels.quota,
-        value: formatNumber(today.quota_exhausted_count),
-        subtitle: buildWindowSubtitle(
-          adminStrings.dashboard.todayShare,
-          today.quota_exhausted_count,
-          total,
-        ),
-        comparison: buildTodayComparison(
-          today.quota_exhausted_count,
-          yesterday.quota_exhausted_count,
-          'lower-is-better',
-        ),
-      },
-    ]
-  }, [adminStrings.dashboard.asOfNow, adminStrings.dashboard.todayShare, buildTodayComparison, dashboardSummaryWindows, metricsStrings.labels])
+    })
+  }, [
+    adminStrings.dashboard.asOfNow,
+    adminStrings.dashboard.deltaFromYesterday,
+    adminStrings.dashboard.deltaNoBaseline,
+    adminStrings.dashboard.percentagePointUnit,
+    adminStrings.dashboard.todayShare,
+    dashboardSummaryWindows,
+    metricsStrings.labels,
+  ])
 
   const monthMetrics = useMemo(() => {
     if (!dashboardSummaryWindows) {
