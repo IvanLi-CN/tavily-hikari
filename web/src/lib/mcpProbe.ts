@@ -26,6 +26,12 @@ export class McpProbeRequestError extends Error {
   }
 }
 
+export interface McpProbeResponseMetadata {
+  status: number
+  headers: Headers
+  sessionId: string | null
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : null
 }
@@ -242,11 +248,15 @@ export function resolveMcpProbeButtonState(stepStates: readonly McpProbeStepStat
   return 'partial'
 }
 
-export async function requestMcpProbeWithToken<T>(
+async function requestMcpProbeWithTokenInternal<T>(
   input: RequestInfo,
   token: string,
   init?: RequestInit,
-): Promise<T> {
+  options?: {
+    allowEmptySuccess?: boolean
+    requireEnvelope?: boolean
+  },
+): Promise<{ payload: T | null, metadata: McpProbeResponseMetadata }> {
   const headers = new Headers(init?.headers ?? {})
   headers.set('Authorization', `Bearer ${token}`)
   headers.set('Accept', MCP_PROBE_ACCEPT_HEADER)
@@ -256,8 +266,13 @@ export async function requestMcpProbeWithToken<T>(
 
   const response = await fetch(input, { ...init, headers })
   const rawBody = await response.text().catch(() => '')
+  const metadata: McpProbeResponseMetadata = {
+    status: response.status,
+    headers: new Headers(response.headers),
+    sessionId: response.headers.get('mcp-session-id'),
+  }
 
-  let payload: unknown = {}
+  let payload: unknown = null
   let parseError: Error | null = null
   if (rawBody.trim().length > 0) {
     try {
@@ -266,7 +281,7 @@ export async function requestMcpProbeWithToken<T>(
       parseError = err instanceof Error ? err : new Error('Invalid MCP probe payload')
       payload = rawBody
     }
-  } else if (response.ok) {
+  } else if (response.ok && !options?.allowEmptySuccess) {
     parseError = new Error('Empty MCP probe payload')
   }
 
@@ -281,9 +296,52 @@ export async function requestMcpProbeWithToken<T>(
     throw new McpProbeRequestError(parseError.message, response.status, payload, rawBody)
   }
 
-  if (!isMcpProbeEnvelope(payload)) {
+  if (options?.requireEnvelope !== false && !isMcpProbeEnvelope(payload)) {
     throw new McpProbeRequestError('Invalid MCP probe payload', response.status, payload, rawBody)
   }
 
-  return payload as T
+  return { payload: payload as T | null, metadata }
+}
+
+export async function requestMcpProbeEnvelopeWithToken<T>(
+  input: RequestInfo,
+  token: string,
+  init?: RequestInit,
+): Promise<{ payload: T, metadata: McpProbeResponseMetadata }> {
+  const response = await requestMcpProbeWithTokenInternal<T>(input, token, init, {
+    requireEnvelope: true,
+  })
+
+  if (response.payload == null) {
+    throw new McpProbeRequestError('Empty MCP probe payload', response.metadata.status, null, '')
+  }
+
+  return {
+    payload: response.payload,
+    metadata: response.metadata,
+  }
+}
+
+export async function requestMcpProbeNotificationWithToken<T = unknown>(
+  input: RequestInfo,
+  token: string,
+  init?: RequestInit,
+): Promise<{ payload: T | null, metadata: McpProbeResponseMetadata }> {
+  const response = await requestMcpProbeWithTokenInternal(input, token, init, {
+    allowEmptySuccess: true,
+    requireEnvelope: false,
+  })
+  return {
+    payload: response.payload as T | null,
+    metadata: response.metadata,
+  }
+}
+
+export async function requestMcpProbeWithToken<T>(
+  input: RequestInfo,
+  token: string,
+  init?: RequestInit,
+): Promise<T> {
+  const response = await requestMcpProbeEnvelopeWithToken<T>(input, token, init)
+  return response.payload
 }

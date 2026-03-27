@@ -27,12 +27,12 @@ describe('ConnectivityChecksPanel Storybook gallery', () => {
     expect(connectivityStories).not.toHaveProperty('QuotaBlocked')
   })
 
-  it('keeps the quota-blocked gallery aligned with runtime MCP ping behavior', () => {
+  it('keeps the quota-blocked gallery aligned with runtime MCP lifecycle behavior', () => {
     const quotaBlocked = connectivityStories.__testables.scenarios.find((scenario) => scenario.title === 'Quota Blocked')
 
     expect(quotaBlocked?.probeBubble?.items[0]).toEqual({
-      id: 'mcp-ping',
-      label: 'MCP service connectivity',
+      id: 'mcp-initialize',
+      label: 'MCP session initialize',
       status: 'success',
     })
   })

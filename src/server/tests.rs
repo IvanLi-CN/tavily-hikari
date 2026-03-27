@@ -500,6 +500,26 @@ mod tests {
                                     .to_string(),
                                 ))
                                 .expect("build initialize response"),
+                            "notifications/initialized" => {
+                                assert_eq!(
+                                    session_id.as_deref(),
+                                    Some("session-123"),
+                                    "notifications/initialized should preserve mcp-session-id"
+                                );
+                                assert_eq!(
+                                    protocol_version.as_deref(),
+                                    Some("2025-03-26"),
+                                    "notifications/initialized should preserve mcp-protocol-version"
+                                );
+                                assert!(
+                                    !leaked_forwarded,
+                                    "proxy must continue dropping x-forwarded-for/x-real-ip"
+                                );
+                                Response::builder()
+                                    .status(StatusCode::ACCEPTED)
+                                    .body(Body::empty())
+                                    .expect("build notifications/initialized response")
+                            }
                             "tools/list" => {
                                 assert_eq!(
                                     session_id.as_deref(),
@@ -510,11 +530,6 @@ mod tests {
                                     protocol_version.as_deref(),
                                     Some("2025-03-26"),
                                     "tools/list should preserve mcp-protocol-version"
-                                );
-                                assert_eq!(
-                                    last_event_id.as_deref(),
-                                    Some("resume-42"),
-                                    "tools/list should preserve last-event-id"
                                 );
                                 assert!(
                                     !leaked_forwarded,
@@ -16945,6 +16960,123 @@ colo=LAX
         assert_eq!(recorded[1].2.as_deref(), Some("2025-03-26"));
         assert_eq!(recorded[1].3.as_deref(), Some("resume-42"));
         assert!(!recorded[1].4, "tools/list should not leak forwarded headers");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_initialized_notification_is_forwarded_after_initialize() {
+        let db_path = temp_db_path("mcp-initialized-notification-forwarding");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let expected_api_key = "tvly-mcp-initialized-key";
+        let (upstream_addr, calls) =
+            spawn_mock_mcp_upstream_for_session_headers(expected_api_key.to_string()).await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy =
+            TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
+
+        let access_token = proxy
+            .create_access_token(Some("mcp-initialized-notification"))
+            .await
+            .expect("create access token");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), upstream.clone()).await;
+        let url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, access_token.token
+        );
+        let client = Client::new();
+
+        let initialize = client
+            .post(&url)
+            .header("accept", "application/json, text/event-stream")
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "init-2",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {},
+                    "clientInfo": { "name": "browser-probe", "version": "0.1.0" }
+                }
+            }))
+            .send()
+            .await
+            .expect("initialize request");
+
+        assert!(initialize.status().is_success());
+        let session_id = initialize
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("initialize response should expose mcp-session-id")
+            .to_string();
+
+        let initialized = client
+            .post(&url)
+            .header("accept", "application/json, text/event-stream")
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .header("mcp-session-id", session_id.as_str())
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized"
+            }))
+            .send()
+            .await
+            .expect("notifications/initialized request");
+
+        assert_eq!(
+            initialized.status(),
+            StatusCode::ACCEPTED,
+            "notifications/initialized should allow 202 empty body"
+        );
+        let initialized_body = initialized
+            .text()
+            .await
+            .expect("read notifications/initialized response body");
+        assert!(
+            initialized_body.trim().is_empty(),
+            "notifications/initialized should keep an empty 202 body"
+        );
+
+        let tools_list = client
+            .post(&url)
+            .header("accept", "application/json, text/event-stream")
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .header("mcp-session-id", session_id.as_str())
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "tools-2",
+                "method": "tools/list"
+            }))
+            .send()
+            .await
+            .expect("tools/list request");
+
+        assert!(tools_list.status().is_success());
+
+        let recorded = calls
+            .lock()
+            .expect("session header calls lock poisoned")
+            .clone();
+        assert_eq!(recorded.len(), 3, "expected initialize + initialized + tools/list");
+        assert_eq!(recorded[0].0, "initialize");
+        assert_eq!(recorded[1].0, "notifications/initialized");
+        assert_eq!(recorded[1].1.as_deref(), Some("session-123"));
+        assert_eq!(recorded[1].2.as_deref(), Some("2025-03-26"));
+        assert_eq!(recorded[1].3, None);
+        assert_eq!(recorded[2].0, "tools/list");
+        assert_eq!(recorded[2].1.as_deref(), Some("session-123"));
+        assert_eq!(recorded[2].2.as_deref(), Some("2025-03-26"));
+        assert_eq!(recorded[2].3, None);
 
         let _ = std::fs::remove_file(db_path);
     }

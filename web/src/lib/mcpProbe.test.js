@@ -6,6 +6,8 @@ import {
   getQuotaExceededWindow,
   getTokenBusinessQuotaWindow,
   parseMcpProbePayload,
+  requestMcpProbeEnvelopeWithToken,
+  requestMcpProbeNotificationWithToken,
   requestMcpProbeWithToken,
   revalidateBlockedQuotaWindow,
   resolveMcpProbeButtonState,
@@ -159,6 +161,90 @@ describe('mcpProbe helpers', () => {
     expect(headers?.get('Accept')).toBe(MCP_PROBE_ACCEPT_HEADER)
     expect(headers?.get('Content-Type')).toBe('application/json')
     expect(payload.result.tools[0]?.name).toBe('tavily_search')
+  })
+
+  it('returns response metadata for initialize envelopes and captures mcp-session-id', async () => {
+    globalThis.fetch = async () => {
+      return new Response(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: 'init-1',
+          result: {
+            protocolVersion: '2025-03-26',
+            capabilities: {},
+          },
+        }),
+        {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json',
+            'Mcp-Session-Id': 'session-123',
+          },
+        },
+      )
+    }
+
+    const response = await requestMcpProbeEnvelopeWithToken('/mcp', 'th-a1b2-secret', {
+      method: 'POST',
+      headers: {
+        'Mcp-Protocol-Version': '2025-03-26',
+      },
+      body: JSON.stringify({ method: 'initialize' }),
+    })
+
+    expect(response.metadata.status).toBe(200)
+    expect(response.metadata.sessionId).toBe('session-123')
+    expect(response.payload.result.protocolVersion).toBe('2025-03-26')
+  })
+
+  it('accepts notification-only 202 responses without requiring a JSON-RPC envelope', async () => {
+    let headers = null
+    globalThis.fetch = async (_input, init) => {
+      headers = new Headers(init?.headers ?? {})
+      return new Response(null, {
+        status: 202,
+      })
+    }
+
+    const metadata = await requestMcpProbeNotificationWithToken('/mcp', 'th-a1b2-secret', {
+      method: 'POST',
+      headers: {
+        'Mcp-Protocol-Version': '2025-03-26',
+        'Mcp-Session-Id': 'session-123',
+      },
+      body: JSON.stringify({ method: 'notifications/initialized' }),
+    })
+
+    expect(metadata.metadata.status).toBe(202)
+    expect(metadata.payload).toBeNull()
+    expect(headers?.get('Mcp-Protocol-Version')).toBe('2025-03-26')
+    expect(headers?.get('Mcp-Session-Id')).toBe('session-123')
+  })
+
+  it('keeps notification error envelopes available to callers even on HTTP 2xx', async () => {
+    globalThis.fetch = async () => {
+      return new Response(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          error: {
+            code: -32600,
+            message: 'initialized rejected',
+          },
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      )
+    }
+
+    const response = await requestMcpProbeNotificationWithToken('/mcp', 'th-a1b2-secret', {
+      method: 'POST',
+      body: JSON.stringify({ method: 'notifications/initialized' }),
+    })
+
+    expect(response.metadata.status).toBe(200)
+    expect(response.payload?.error?.message).toBe('initialized rejected')
   })
 
   it('rejects malformed 2xx probe payloads instead of treating them as success', async () => {

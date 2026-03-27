@@ -20,6 +20,8 @@ import {
   probeApiTavilyResearch,
   probeApiTavilyResearchResult,
   probeApiTavilySearch,
+  probeMcpInitialize,
+  probeMcpInitialized,
   probeMcpPing,
   probeMcpToolsCall,
   probeMcpToolsList,
@@ -72,11 +74,13 @@ import {
 const CODEX_DOC_URL = 'https://github.com/openai/codex/blob/main/docs/config.md'
 const CLAUDE_DOC_URL = 'https://code.claude.com/docs/en/mcp'
 const MCP_SPEC_URL = 'https://modelcontextprotocol.io/introduction'
+const MCP_PROBE_PROTOCOL_VERSION = '2025-03-26'
 const TAVILY_SEARCH_DOC_URL = 'https://docs.tavily.com/documentation/api-reference/endpoint/search'
 const VSCODE_DOC_URL = 'https://code.visualstudio.com/docs/copilot/customization/mcp-servers'
 const NOCODB_DOC_URL = 'https://nocodb.com/docs/product-docs/mcp'
 const USER_CONSOLE_SECRET_CACHE_TTL_MS = 2_000
 const USER_CONSOLE_SECRET_PREWARM_DELAY_MS = 120
+const BASE_MCP_PROBE_STEP_COUNT = 4
 
 type GuideLanguage = 'toml' | 'json' | 'bash'
 type GuideKey = 'codex' | 'claude' | 'vscode' | 'claudeDesktop' | 'cursor' | 'windsurf' | 'cherryStudio' | 'other'
@@ -123,7 +127,7 @@ interface McpProbeStepDefinition {
   id: string
   label: string
   billable?: boolean
-  run: (token: string) => Promise<McpProbeStepResult | null>
+  run: (token: string, context: McpProbeRunContext) => Promise<McpProbeStepResult | null>
 }
 
 interface AdvertisedMcpTool {
@@ -138,6 +142,24 @@ interface McpProbeStepResult {
   stepState?: Extract<McpProbeStepState, 'success' | 'skipped'>
 }
 
+interface McpProbeRunContext {
+  protocolVersion: string
+  sessionId: string | null
+  clientVersion: string
+  identity: McpProbeIdentityGenerator
+}
+
+interface McpProbeIdentityGenerator {
+  runSignature: string
+  nextRequestId: (kind: string, toolName?: string) => string
+  nextIdentifier: (fieldName: string) => string
+}
+
+interface McpProbeIdentityGeneratorOptions {
+  now?: number
+  random?: () => number
+}
+
 interface ApiProbeStepDefinition {
   id: string
   label: string
@@ -149,6 +171,8 @@ interface ApiProbeStepDefinition {
 
 interface McpProbeText {
   steps: {
+    mcpInitialize: string
+    mcpInitialized: string
     mcpPing: string
     mcpToolsList: string
     mcpToolCall: string
@@ -269,6 +293,124 @@ function envelopeError(payload: unknown): string | null {
   return getProbeEnvelopeError(payload)
 }
 
+function compactUtcTimestamp(timestamp: number): string {
+  return new Date(timestamp)
+    .toISOString()
+    .replace(/\.\d{3}Z$/, 'z')
+    .replace(/[-:]/g, '')
+    .toLowerCase()
+}
+
+function randomBase36Fragment(random: () => number, length: number): string {
+  let fragment = ''
+  while (fragment.length < length) {
+    fragment += Math.floor(random() * 36).toString(36)
+  }
+  return fragment.slice(0, length)
+}
+
+function splitProbeIdentityWords(value: string): string[] {
+  return value
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .split(/[^A-Za-z0-9]+/)
+    .filter(Boolean)
+    .map((word) => word.toLowerCase())
+}
+
+function slugifyProbeIdentityPart(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+}
+
+function hashProbeIdentityHex(value: string): string {
+  let hash = 0x811c9dc5
+  for (const ch of value) {
+    hash ^= ch.charCodeAt(0)
+    hash = Math.imul(hash, 0x01000193) >>> 0
+  }
+  return hash.toString(16).padStart(8, '0')
+}
+
+function buildPseudoUuid(runSignature: string, fieldName: string, counter: number): string {
+  const hex = [
+    hashProbeIdentityHex(`${runSignature}:${fieldName}:a:${counter}`),
+    hashProbeIdentityHex(`${runSignature}:${fieldName}:b:${counter}`),
+    hashProbeIdentityHex(`${runSignature}:${fieldName}:c:${counter}`),
+    hashProbeIdentityHex(`${runSignature}:${fieldName}:d:${counter}`),
+  ].join('')
+
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    `4${hex.slice(13, 16)}`,
+    `a${hex.slice(17, 20)}`,
+    hex.slice(20, 32),
+  ].join('-')
+}
+
+function createMcpProbeIdentityGenerator(
+  options: McpProbeIdentityGeneratorOptions = {},
+): McpProbeIdentityGenerator {
+  const now = options.now ?? Date.now()
+  const random = options.random ?? Math.random
+  const runSignature = `ucp-${compactUtcTimestamp(now)}-${randomBase36Fragment(random, 6)}`
+  let requestCounter = 0
+  let identifierCounter = 0
+
+  return {
+    runSignature,
+    nextRequestId: (kind: string, toolName?: string): string => {
+      requestCounter += 1
+      const requestParts = [
+        'req',
+        slugifyProbeIdentityPart(kind) || 'step',
+        toolName ? slugifyProbeIdentityPart(toolName) : '',
+        runSignature,
+        requestCounter.toString(36).padStart(2, '0'),
+      ].filter(Boolean)
+      return requestParts.join('-')
+    },
+    nextIdentifier: (fieldName: string): string => {
+      identifierCounter += 1
+      const normalized = fieldName.trim()
+      const slug = slugifyProbeIdentityPart(normalized) || 'id'
+      const serial = identifierCounter.toString(36).padStart(2, '0')
+      if (normalized.toLowerCase().includes('uuid')) {
+        return buildPseudoUuid(runSignature, normalized, identifierCounter)
+      }
+      if (normalized.toLowerCase().includes('session')) {
+        return `sess_${runSignature}_${serial}`
+      }
+      if (normalized.toLowerCase().includes('request')) {
+        return `req_${runSignature}_${serial}`
+      }
+      if (normalized.toLowerCase().includes('trace')) {
+        return `trace_${runSignature}_${serial}`
+      }
+      if (normalized.toLowerCase().includes('cursor')) {
+        return `cursor_${runSignature}_${serial}`
+      }
+      return `${slug}_${runSignature}_${serial}`
+    },
+  }
+}
+
+function isIdentifierLikePropertyName(propertyName: string): boolean {
+  const words = splitProbeIdentityWords(propertyName)
+  if (words.length === 0) return false
+
+  if (words.includes('uuid')) {
+    return true
+  }
+
+  const lastWord = words[words.length - 1]
+  return lastWord === 'id' || lastWord === 'request' || lastWord === 'session' || lastWord === 'trace' || lastWord === 'cursor'
+}
+
 function canonicalMcpProbeToolName(toolName: string): string {
   const trimmed = toolName.trim()
   const normalized = trimmed.toLowerCase().replaceAll('_', '-')
@@ -345,6 +487,7 @@ function schemaType(schema: Record<string, unknown>): string | null {
 function schemaExampleValue(
   schema: Record<string, unknown>,
   propertyName: string,
+  identity: McpProbeIdentityGenerator | null,
   depth = 0,
 ): unknown | undefined {
   if (depth > 4) return undefined
@@ -366,7 +509,7 @@ function schemaExampleValue(
     for (const variant of variants) {
       const variantSchema = asRecord(variant)
       if (!variantSchema) continue
-      const synthesized = schemaExampleValue(variantSchema, propertyName, depth + 1)
+      const synthesized = schemaExampleValue(variantSchema, propertyName, identity, depth + 1)
       if (synthesized !== undefined) return synthesized
     }
   }
@@ -389,6 +532,9 @@ function schemaExampleValue(
       }
       return typeof schema.minimum === 'number' ? schema.minimum : 0
     case 'string':
+      if ((schema.format === 'uuid' || isIdentifierLikePropertyName(propertyName)) && identity) {
+        return identity.nextIdentifier(propertyName)
+      }
       if (
         schema.format === 'uri'
         || schema.format === 'url'
@@ -402,7 +548,7 @@ function schemaExampleValue(
       return 'health check'
     case 'array': {
       const itemSchema = asRecord(schema.items)
-      const itemValue = itemSchema ? schemaExampleValue(itemSchema, propertyName, depth + 1) : undefined
+      const itemValue = itemSchema ? schemaExampleValue(itemSchema, propertyName, identity, depth + 1) : undefined
       return itemValue === undefined ? [] : [itemValue]
     }
     case 'object': {
@@ -414,7 +560,7 @@ function schemaExampleValue(
       for (const key of required) {
         const childSchema = properties ? asRecord(properties[key]) : null
         if (!childSchema) return undefined
-        const childValue = schemaExampleValue(childSchema, key, depth + 1)
+        const childValue = schemaExampleValue(childSchema, key, identity, depth + 1)
         if (childValue === undefined) return undefined
         value[key] = childValue
       }
@@ -425,9 +571,12 @@ function schemaExampleValue(
   }
 }
 
-function synthesizeMcpToolProbeArguments(inputSchema: Record<string, unknown> | null): unknown | null {
+function synthesizeMcpToolProbeArguments(
+  inputSchema: Record<string, unknown> | null,
+  identity: McpProbeIdentityGenerator,
+): unknown | null {
   if (!inputSchema) return null
-  const synthesized = schemaExampleValue(inputSchema, 'arguments')
+  const synthesized = schemaExampleValue(inputSchema, 'arguments', identity)
   return synthesized === undefined ? null : synthesized
 }
 
@@ -460,24 +609,66 @@ function buildMcpProbeStepDefinitions(
 ): McpProbeStepDefinition[] {
   return [
     {
+      id: 'mcp-initialize',
+      label: probeText.steps.mcpInitialize,
+      billable: false,
+      run: async (token: string, context: McpProbeRunContext): Promise<McpProbeStepResult | null> => {
+        const response = await probeMcpInitialize(token, {
+          requestId: context.identity.nextRequestId('initialize'),
+          protocolVersion: context.protocolVersion,
+          clientVersion: context.clientVersion,
+        })
+        const error = envelopeError(response.payload)
+        if (error) throw new Error(error)
+        context.protocolVersion = response.negotiatedProtocolVersion ?? context.protocolVersion
+        context.sessionId = response.sessionId ?? context.sessionId
+        return null
+      },
+    },
+    {
+      id: 'mcp-initialized',
+      label: probeText.steps.mcpInitialized,
+      billable: false,
+      run: async (token: string, context: McpProbeRunContext): Promise<McpProbeStepResult | null> => {
+        const response = await probeMcpInitialized(token, {
+          protocolVersion: context.protocolVersion,
+          sessionId: context.sessionId,
+        })
+        context.sessionId = response.sessionId ?? context.sessionId
+        return null
+      },
+    },
+    {
       id: 'mcp-ping',
       label: probeText.steps.mcpPing,
       billable: false,
-      run: async (token: string): Promise<McpProbeStepResult | null> => {
-        const payload = await probeMcpPing(token)
-        const error = envelopeError(payload)
+      run: async (token: string, context: McpProbeRunContext): Promise<McpProbeStepResult | null> => {
+        const response = await probeMcpPing(token, {
+          requestId: context.identity.nextRequestId('ping'),
+          protocolVersion: context.protocolVersion,
+          sessionId: context.sessionId,
+        })
+        const error = envelopeError(response.payload)
         if (error) throw new Error(error)
+        context.sessionId = response.sessionId ?? context.sessionId
+        context.protocolVersion = response.negotiatedProtocolVersion ?? context.protocolVersion
         return null
       },
     },
     {
       id: 'mcp-tools-list',
       label: probeText.steps.mcpToolsList,
-      run: async (token: string): Promise<McpProbeStepResult | null> => {
-        const payload = await probeMcpToolsList(token)
-        const error = envelopeError(payload)
+      run: async (token: string, context: McpProbeRunContext): Promise<McpProbeStepResult | null> => {
+        const response = await probeMcpToolsList(token, {
+          requestId: context.identity.nextRequestId('tools-list'),
+          protocolVersion: context.protocolVersion,
+          sessionId: context.sessionId,
+        })
+        const error = envelopeError(response.payload)
         if (error) throw new Error(error)
-        const discoveredTools = extractAdvertisedMcpTools(payload)
+        context.sessionId = response.sessionId ?? context.sessionId
+        context.protocolVersion = response.negotiatedProtocolVersion ?? context.protocolVersion
+        const discoveredTools = extractAdvertisedMcpTools(response.payload)
         if (discoveredTools.length === 0) {
           throw new Error(probeText.errors.missingAdvertisedTools)
         }
@@ -509,29 +700,31 @@ function buildMcpToolCallProbeStepDefinitions(
   }
 
   return toolEntries.flatMap(({ requestName, displayName, inputSchema }) => {
-    const safeProbeTarget = isBillableMcpProbeTool(displayName)
-    const probeArguments = mcpToolProbeArguments(displayName)
-      ?? (safeProbeTarget ? synthesizeMcpToolProbeArguments(inputSchema) : null)
-    if (probeArguments == null) {
-      return [{
-        id: `mcp-tool-call:${requestName}`,
-        label: formatTemplate(probeText.steps.mcpToolCall, { tool: requestName }),
-        billable: isBillableMcpProbeTool(displayName),
-        run: async (): Promise<McpProbeStepResult | null> => ({
-          detail: formatTemplate(probeText.skippedProbeFixture, { tool: requestName }),
-          stepState: 'skipped',
-        }),
-      }]
-    }
-
     return [{
       id: `mcp-tool-call:${requestName}`,
       label: formatTemplate(probeText.steps.mcpToolCall, { tool: requestName }),
       billable: isBillableMcpProbeTool(displayName),
-      run: async (token: string): Promise<McpProbeStepResult | null> => {
-        const payload = await probeMcpToolsCall(token, requestName, probeArguments)
-        const error = envelopeError(payload) ?? getMcpProbeResultError(payload)
+      run: async (token: string, context: McpProbeRunContext): Promise<McpProbeStepResult | null> => {
+        const safeProbeTarget = isBillableMcpProbeTool(displayName)
+        const probeArguments = mcpToolProbeArguments(displayName)
+          ?? (safeProbeTarget ? synthesizeMcpToolProbeArguments(inputSchema, context.identity) : null)
+
+        if (probeArguments == null) {
+          return {
+            detail: formatTemplate(probeText.skippedProbeFixture, { tool: requestName }),
+            stepState: 'skipped',
+          }
+        }
+
+        const response = await probeMcpToolsCall(token, requestName, probeArguments, {
+          requestId: context.identity.nextRequestId('tools-call', requestName),
+          protocolVersion: context.protocolVersion,
+          sessionId: context.sessionId,
+        })
+        const error = envelopeError(response.payload) ?? getMcpProbeResultError(response.payload)
         if (error) throw new Error(error)
+        context.sessionId = response.sessionId ?? context.sessionId
+        context.protocolVersion = response.negotiatedProtocolVersion ?? context.protocolVersion
         return null
       },
     }]
@@ -744,7 +937,7 @@ export default function UserConsole(): JSX.Element {
   const [tokenSecretError, setTokenSecretError] = useState<string | null>(null)
   const [activeGuide, setActiveGuide] = useState<GuideKey>('codex')
   const [isMobileGuide, setIsMobileGuide] = useState(false)
-  const [mcpProbe, setMcpProbe] = useState<ProbeButtonModel>(() => createProbeButtonModel(2))
+  const [mcpProbe, setMcpProbe] = useState<ProbeButtonModel>(() => createProbeButtonModel(BASE_MCP_PROBE_STEP_COUNT))
   const [apiProbe, setApiProbe] = useState<ProbeButtonModel>(() => createProbeButtonModel(6))
   const [probeBubble, setProbeBubble] = useState<ProbeBubbleModel | null>(null)
   const [manualCopyBubble, setManualCopyBubble] = useState<ManualCopyBubbleState | null>(null)
@@ -882,7 +1075,7 @@ export default function UserConsole(): JSX.Element {
 
   useEffect(() => {
     probeRunIdRef.current += 1
-    setMcpProbe(createProbeButtonModel(2))
+    setMcpProbe(createProbeButtonModel(BASE_MCP_PROBE_STEP_COUNT))
     setApiProbe(createProbeButtonModel(6))
     setProbeBubble(null)
     setManualCopyBubble(null)
@@ -1308,6 +1501,12 @@ export default function UserConsole(): JSX.Element {
     probeRunIdRef.current = runId
     const isActiveRun = () => probeRunIdRef.current === runId
     const probeText = text.detail.probe
+    const probeContext: McpProbeRunContext = {
+      protocolVersion: MCP_PROBE_PROTOCOL_VERSION,
+      sessionId: null,
+      clientVersion: versionState.status === 'ready' ? versionState.value?.frontend ?? 'dev' : 'dev',
+      identity: createMcpProbeIdentityGenerator(),
+    }
 
     const stepDefinitions = [...buildMcpProbeStepDefinitions(probeText)]
 
@@ -1385,7 +1584,7 @@ export default function UserConsole(): JSX.Element {
         stepStates.push('blocked')
       } else {
         try {
-          const result = await current.run(token)
+          const result = await current.run(token, probeContext)
           if (!isActiveRun()) return
           if (result?.discoveredTools?.length) {
             stepDefinitions.push(...buildMcpToolCallProbeStepDefinitions(probeText, result.discoveredTools))
@@ -1445,7 +1644,7 @@ export default function UserConsole(): JSX.Element {
       total: stepDefinitions.length,
     })
     setProbeBubble({ visible: true, anchor: 'mcp', items: [...completedItems] })
-  }, [anyProbeRunning, detail, route, text.detail.probe])
+  }, [anyProbeRunning, detail, route, text.detail.probe, versionState])
 
   const runApiProbe = useCallback(async () => {
     if (route.name !== 'token' || anyProbeRunning) return
@@ -2202,9 +2401,11 @@ export const __testables = {
   buildMcpProbeStepDefinitions,
   buildMcpToolCallProbeStepDefinitions,
   canonicalMcpProbeToolName,
+  createMcpProbeIdentityGenerator,
   extractAdvertisedMcpTools,
   isActiveGuideRevealContext,
   isBillableMcpProbeTool,
+  isIdentifierLikePropertyName,
   nextRunningMcpProbeModel,
   resolveGuideSamples,
   resolveGuideRevealContextKey,
@@ -2646,7 +2847,7 @@ const EN = {
         blocked: 'Blocked',
         skipped: 'Skipped',
       },
-      quotaBlocked: '{window} quota exhausted, skipping billable MCP ping.',
+      quotaBlocked: '{window} quota exhausted, skipping billable MCP tool calls.',
       quotaWindows: {
         hour: 'Hourly',
         day: 'Daily',
@@ -2661,6 +2862,8 @@ const EN = {
         done: 'Summary',
       },
       steps: {
+        mcpInitialize: 'MCP session initialize',
+        mcpInitialized: 'MCP initialized notification',
         mcpPing: 'MCP service connectivity',
         mcpToolsList: 'MCP tool discovery',
         mcpToolCall: 'Call {tool} tool',
@@ -2806,7 +3009,7 @@ const ZH = {
         blocked: '受阻',
         skipped: '已跳过',
       },
-      quotaBlocked: '{window}配额已耗尽，已跳过会消耗额度的 MCP 连通检测。',
+      quotaBlocked: '{window}配额已耗尽，已跳过会消耗额度的 MCP 工具调用。',
       quotaWindows: {
         hour: '小时',
         day: '日',
@@ -2821,6 +3024,8 @@ const ZH = {
         done: '汇总',
       },
       steps: {
+        mcpInitialize: 'MCP 会话初始化',
+        mcpInitialized: 'MCP initialized 通知',
         mcpPing: 'MCP 服务连通',
         mcpToolsList: 'MCP 工具发现',
         mcpToolCall: '调用 {tool} 工具',

@@ -6,6 +6,8 @@ const originalFetch = globalThis.fetch
 
 const mcpProbeText: Parameters<typeof __testables.buildMcpProbeStepDefinitions>[0] = {
   steps: {
+    mcpInitialize: 'MCP 会话初始化',
+    mcpInitialized: 'MCP initialized 通知',
     mcpPing: 'MCP 服务连通',
     mcpToolsList: 'MCP 工具发现',
     mcpToolCall: '调用 {tool} 工具',
@@ -42,6 +44,19 @@ function requestUrl(input: RequestInfo | URL): string {
   if (typeof input === 'string') return input
   if (input instanceof URL) return input.toString()
   return input.url
+}
+
+function createMcpProbeContext(overrides: Partial<Parameters<NonNullable<ReturnType<typeof __testables.buildMcpProbeStepDefinitions>[number]['run']>>[1]> = {}) {
+  return {
+    protocolVersion: '2025-03-26',
+    sessionId: null,
+    clientVersion: '0.29.5-test',
+    identity: __testables.createMcpProbeIdentityGenerator({
+      now: Date.UTC(2026, 2, 27, 8, 15, 42),
+      random: () => 0.123456789,
+    }),
+    ...overrides,
+  }
 }
 
 describe('UserConsole landing guide helpers', () => {
@@ -123,13 +138,17 @@ describe('UserConsole landing guide helpers', () => {
 })
 
 describe('UserConsole probe step definitions', () => {
-  it('keeps MCP ping non-billable so exhausted tokens can still test connectivity', () => {
+  it('keeps MCP lifecycle control-plane steps non-billable so exhausted tokens can still test connectivity', () => {
     const steps = __testables.buildMcpProbeStepDefinitions(mcpProbeText)
 
-    expect(steps[0]?.id).toBe('mcp-ping')
+    expect(steps[0]?.id).toBe('mcp-initialize')
     expect(steps[0]?.billable).toBe(false)
-    expect(steps[1]?.id).toBe('mcp-tools-list')
-    expect(steps[1]?.billable).toBeUndefined()
+    expect(steps[1]?.id).toBe('mcp-initialized')
+    expect(steps[1]?.billable).toBe(false)
+    expect(steps[2]?.id).toBe('mcp-ping')
+    expect(steps[2]?.billable).toBe(false)
+    expect(steps[3]?.id).toBe('mcp-tools-list')
+    expect(steps[3]?.billable).toBeUndefined()
   })
 
   it('preserves every advertised MCP tool name, including legacy aliases', () => {
@@ -152,6 +171,7 @@ describe('UserConsole probe step definitions', () => {
 
   it('does not execute schema-backed non-Tavily tools during the sweep', async () => {
     const calls: Array<{ url: string, init?: RequestInit }> = []
+    const context = createMcpProbeContext({ sessionId: 'session-123' })
     globalThis.fetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
       calls.push({ url: requestUrl(input), init })
       return new Response(JSON.stringify({ jsonrpc: '2.0', id: 'ok', result: { ok: true } }), {
@@ -189,9 +209,9 @@ describe('UserConsole probe step definitions', () => {
       '调用 Acme_Lookup 工具',
     ])
 
-    await expect(steps[0]?.run('th-zjvc-secret')).resolves.toBeNull()
-    await expect(steps[1]?.run('th-zjvc-secret')).resolves.toBeNull()
-    await expect(steps[2]?.run('th-zjvc-secret')).resolves.toEqual({
+    await expect(steps[0]?.run('th-zjvc-secret', context)).resolves.toBeNull()
+    await expect(steps[1]?.run('th-zjvc-secret', context)).resolves.toBeNull()
+    await expect(steps[2]?.run('th-zjvc-secret', context)).resolves.toEqual({
       detail: '当前本地没有 Acme_Lookup 的检测夹具，已跳过。',
       stepState: 'skipped',
     })
@@ -212,6 +232,8 @@ describe('UserConsole probe step definitions', () => {
         },
       },
     ])
+    expect(new Headers(calls[0]?.init?.headers ?? {}).get('Mcp-Session-Id')).toBe('session-123')
+    expect(new Headers(calls[0]?.init?.headers ?? {}).get('Mcp-Protocol-Version')).toBe('2025-03-26')
   })
 
   it('keeps tools/list successful even when it advertises a tool without a probe fixture', async () => {
@@ -234,12 +256,32 @@ describe('UserConsole probe step definitions', () => {
 
     const steps = __testables.buildMcpProbeStepDefinitions(mcpProbeText)
 
-    await expect(steps[1]?.run('th-zjvc-secret')).resolves.toEqual({
+    await expect(steps[3]?.run('th-zjvc-secret', createMcpProbeContext())).resolves.toEqual({
       discoveredTools: [
         { requestName: 'tavily-search', displayName: 'tavily-search', inputSchema: null },
         { requestName: 'Acme_Lookup', displayName: 'Acme_Lookup', inputSchema: null },
       ],
     })
+  })
+
+  it('surfaces JSON-RPC error envelopes from notifications/initialized instead of treating them as success', async () => {
+    globalThis.fetch = mock(async () => {
+      return new Response(JSON.stringify({
+        jsonrpc: '2.0',
+        error: {
+          code: -32600,
+          message: 'initialized rejected',
+        },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }) as typeof fetch
+
+    const steps = __testables.buildMcpProbeStepDefinitions(mcpProbeText)
+    await expect(steps[1]?.run('th-zjvc-secret', createMcpProbeContext({ sessionId: 'session-123' }))).rejects.toThrow(
+      'initialized rejected',
+    )
   })
 
   it('skips advertised tools only when discovery provides no fixture and no input schema', async () => {
@@ -249,7 +291,7 @@ describe('UserConsole probe step definitions', () => {
       inputSchema: null,
     }])
 
-    await expect(steps[0]?.run('th-zjvc-secret')).resolves.toEqual({
+    await expect(steps[0]?.run('th-zjvc-secret', createMcpProbeContext())).resolves.toEqual({
       detail: '当前本地没有 Acme_Lookup 的检测夹具，已跳过。',
       stepState: 'skipped',
     })
@@ -275,7 +317,7 @@ describe('UserConsole probe step definitions', () => {
 
     const steps = __testables.buildMcpToolCallProbeStepDefinitions(mcpProbeText, ['tavily-search'])
 
-    await expect(steps[0]?.run('th-zjvc-secret')).rejects.toThrow('Request failed with status 500')
+    await expect(steps[0]?.run('th-zjvc-secret', createMcpProbeContext())).rejects.toThrow('Request failed with status 500')
   })
 
   it('executes live MCP probe calls with the expected JSON-RPC payloads', async () => {
@@ -283,6 +325,33 @@ describe('UserConsole probe step definitions', () => {
     globalThis.fetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
       calls.push({ url: requestUrl(input), init })
       const body = JSON.parse(String(init?.body ?? '{}')) as { id?: string; method?: string }
+      if (body.method === 'initialize') {
+        return new Response(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: body.id ?? 'unknown',
+            result: {
+              protocolVersion: '2025-03-26',
+              capabilities: {},
+              serverInfo: { name: 'mock', version: '1.0.0' },
+            },
+          }),
+          {
+            status: 200,
+            headers: {
+              'Content-Type': 'application/json',
+              'Mcp-Session-Id': 'session-123',
+            },
+          },
+        )
+      }
+
+      if (body.method === 'notifications/initialized') {
+        return new Response(null, {
+          status: 202,
+        })
+      }
+
       return new Response(
         JSON.stringify({
           jsonrpc: '2.0',
@@ -308,97 +377,106 @@ describe('UserConsole probe step definitions', () => {
 
     const token = 'th-zjvc-secret'
     const baseSteps = __testables.buildMcpProbeStepDefinitions(mcpProbeText)
-    await baseSteps[0]?.run(token)
-    const toolsListResult = await baseSteps[1]?.run(token)
+    const context = createMcpProbeContext()
+    await baseSteps[0]?.run(token, context)
+    await baseSteps[1]?.run(token, context)
+    await baseSteps[2]?.run(token, context)
+    const toolsListResult = await baseSteps[3]?.run(token, context)
     const toolSteps = __testables.buildMcpToolCallProbeStepDefinitions(
       mcpProbeText,
       toolsListResult?.discoveredTools ?? [],
     )
 
     for (const step of toolSteps) {
-      await step.run(token)
+      await step.run(token, context)
     }
 
-    expect(calls).toHaveLength(7)
+    expect(calls).toHaveLength(9)
     expect(calls.every((call) => call.url === '/mcp')).toBe(true)
 
     const firstHeaders = new Headers(calls[0]?.init?.headers ?? {})
     const secondHeaders = new Headers(calls[1]?.init?.headers ?? {})
     expect(firstHeaders.get('Authorization')).toBe('Bearer th-zjvc-secret')
     expect(secondHeaders.get('Authorization')).toBe('Bearer th-zjvc-secret')
+    expect(firstHeaders.get('Mcp-Protocol-Version')).toBe('2025-03-26')
+    expect(secondHeaders.get('Mcp-Protocol-Version')).toBe('2025-03-26')
 
-    expect(JSON.parse(String(calls[0]?.init?.body ?? 'null'))).toEqual({
+    const initializeBody = JSON.parse(String(calls[0]?.init?.body ?? 'null'))
+    expect(initializeBody).toMatchObject({
       jsonrpc: '2.0',
-      id: 'probe-ping',
-      method: 'ping',
-      params: {},
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-03-26',
+        capabilities: {},
+        clientInfo: {
+          name: 'Tavily Hikari UserConsole Probe',
+          version: '0.29.5-test',
+        },
+      },
     })
+    expect(initializeBody.id).toMatch(/^req-initialize-ucp-/)
+
     expect(JSON.parse(String(calls[1]?.init?.body ?? 'null'))).toEqual({
       jsonrpc: '2.0',
-      id: 'probe-tools-list',
+      method: 'notifications/initialized',
+    })
+    expect(JSON.parse(String(calls[2]?.init?.body ?? 'null'))).toMatchObject({
+      jsonrpc: '2.0',
+      method: 'ping',
+    })
+    expect(JSON.parse(String(calls[3]?.init?.body ?? 'null'))).toMatchObject({
+      jsonrpc: '2.0',
       method: 'tools/list',
-      params: {},
     })
 
-    expect(calls.slice(2).map((call) => JSON.parse(String(call.init?.body ?? 'null')))).toEqual([
+    const notificationHeaders = new Headers(calls[1]?.init?.headers ?? {})
+    const pingHeaders = new Headers(calls[2]?.init?.headers ?? {})
+    expect(notificationHeaders.get('Mcp-Session-Id')).toBe('session-123')
+    expect(pingHeaders.get('Mcp-Session-Id')).toBe('session-123')
+
+    const toolCallBodies = calls.slice(4).map((call) => JSON.parse(String(call.init?.body ?? 'null')))
+    expect(toolCallBodies.map((body) => body.method)).toEqual([
+      'tools/call',
+      'tools/call',
+      'tools/call',
+      'tools/call',
+      'tools/call',
+    ])
+    expect(new Set(toolCallBodies.map((body) => body.id)).size).toBe(5)
+    expect(toolCallBodies.map((body) => body.params)).toEqual([
       {
-        jsonrpc: '2.0',
-        id: 'probe-tool-call:tavily_search',
-        method: 'tools/call',
-        params: {
-          name: 'tavily_search',
-          arguments: {
-            query: 'health check',
-            search_depth: 'basic',
-          },
+        name: 'tavily_search',
+        arguments: {
+          query: 'health check',
+          search_depth: 'basic',
         },
       },
       {
-        jsonrpc: '2.0',
-        id: 'probe-tool-call:tavily_extract',
-        method: 'tools/call',
-        params: {
-          name: 'tavily_extract',
-          arguments: {
-            urls: ['https://example.com'],
-          },
+        name: 'tavily_extract',
+        arguments: {
+          urls: ['https://example.com'],
         },
       },
       {
-        jsonrpc: '2.0',
-        id: 'probe-tool-call:tavily-crawl',
-        method: 'tools/call',
-        params: {
-          name: 'tavily-crawl',
-          arguments: {
-            url: 'https://example.com',
-            max_depth: 1,
-            limit: 1,
-          },
+        name: 'tavily-crawl',
+        arguments: {
+          url: 'https://example.com',
+          max_depth: 1,
+          limit: 1,
         },
       },
       {
-        jsonrpc: '2.0',
-        id: 'probe-tool-call:tavily_map',
-        method: 'tools/call',
-        params: {
-          name: 'tavily_map',
-          arguments: {
-            url: 'https://example.com',
-            max_depth: 1,
-            limit: 1,
-          },
+        name: 'tavily_map',
+        arguments: {
+          url: 'https://example.com',
+          max_depth: 1,
+          limit: 1,
         },
       },
       {
-        jsonrpc: '2.0',
-        id: 'probe-tool-call:tavily_research',
-        method: 'tools/call',
-        params: {
-          name: 'tavily_research',
-          arguments: {
-            input: 'health check',
-          },
+        name: 'tavily_research',
+        arguments: {
+          input: 'health check',
         },
       },
     ])
@@ -429,10 +507,9 @@ describe('UserConsole probe step definitions', () => {
     expect(steps).toHaveLength(1)
     expect(steps[0]?.billable).toBe(true)
 
-    await expect(steps[0]?.run('th-zjvc-secret')).resolves.toBeNull()
-    expect(JSON.parse(String(calls[0]?.init?.body ?? 'null'))).toEqual({
+    await expect(steps[0]?.run('th-zjvc-secret', createMcpProbeContext())).resolves.toBeNull()
+    expect(JSON.parse(String(calls[0]?.init?.body ?? 'null'))).toMatchObject({
       jsonrpc: '2.0',
-      id: 'probe-tool-call:tavily_agents',
       method: 'tools/call',
       params: {
         name: 'tavily_agents',
@@ -441,6 +518,74 @@ describe('UserConsole probe step definitions', () => {
         },
       },
     })
+  })
+
+  it('generates fresh identifier-like schema fields for each MCP tool-call item', async () => {
+    const calls: Array<{ url: string, init?: RequestInit }> = []
+    globalThis.fetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: requestUrl(input), init })
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 'ok', result: { ok: true } }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }) as typeof fetch
+
+    const steps = __testables.buildMcpToolCallProbeStepDefinitions(mcpProbeText, [
+      {
+        requestName: 'tavily_agents',
+        displayName: 'tavily-agents',
+        inputSchema: {
+          type: 'object',
+          required: ['query', 'requestId', 'session_id', 'traceUuid'],
+          properties: {
+            query: { type: 'string' },
+            requestId: { type: 'string' },
+            session_id: { type: 'string' },
+            traceUuid: { type: 'string', format: 'uuid' },
+          },
+        },
+      },
+      {
+        requestName: 'tavily_followup',
+        displayName: 'tavily-followup',
+        inputSchema: {
+          type: 'object',
+          required: ['query', 'requestId', 'session_id', 'traceUuid'],
+          properties: {
+            query: { type: 'string' },
+            requestId: { type: 'string' },
+            session_id: { type: 'string' },
+            traceUuid: { type: 'string', format: 'uuid' },
+          },
+        },
+      },
+    ])
+
+    const context = createMcpProbeContext({ sessionId: 'session-123' })
+    await expect(steps[0]?.run('th-zjvc-secret', context)).resolves.toBeNull()
+    await expect(steps[1]?.run('th-zjvc-secret', context)).resolves.toBeNull()
+
+    const firstArgs = JSON.parse(String(calls[0]?.init?.body ?? 'null')).params.arguments
+    const secondArgs = JSON.parse(String(calls[1]?.init?.body ?? 'null')).params.arguments
+
+    expect(firstArgs.query).toBe('health check')
+    expect(firstArgs.requestId).toMatch(/^req_ucp-/)
+    expect(firstArgs.session_id).toMatch(/^sess_ucp-/)
+    expect(firstArgs.traceUuid).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-a[0-9a-f]{3}-[0-9a-f]{12}$/)
+    expect(secondArgs.requestId).not.toBe(firstArgs.requestId)
+    expect(secondArgs.session_id).not.toBe(firstArgs.session_id)
+    expect(secondArgs.traceUuid).not.toBe(firstArgs.traceUuid)
+  })
+
+  it('only treats actual identifier-like field names as dynamic identifiers', () => {
+    expect(__testables.isIdentifierLikePropertyName('requestId')).toBe(true)
+    expect(__testables.isIdentifierLikePropertyName('session_id')).toBe(true)
+    expect(__testables.isIdentifierLikePropertyName('traceUuid')).toBe(true)
+    expect(__testables.isIdentifierLikePropertyName('cursor')).toBe(true)
+
+    expect(__testables.isIdentifierLikePropertyName('hybrid')).toBe(false)
+    expect(__testables.isIdentifierLikePropertyName('grid')).toBe(false)
+    expect(__testables.isIdentifierLikePropertyName('valid')).toBe(false)
   })
 
   it('skips Tavily tools when required schema fields cannot be synthesized safely', async () => {
@@ -464,7 +609,7 @@ describe('UserConsole probe step definitions', () => {
 
     expect(steps).toHaveLength(1)
     expect(steps[0]?.billable).toBe(true)
-    await expect(steps[0]?.run('th-zjvc-secret')).resolves.toEqual({
+    await expect(steps[0]?.run('th-zjvc-secret', createMcpProbeContext())).resolves.toEqual({
       detail: '当前本地没有 tavily-new 的检测夹具，已跳过。',
       stepState: 'skipped',
     })
@@ -491,7 +636,7 @@ describe('UserConsole probe step definitions', () => {
     expect(nextModel).toEqual({
       state: 'running',
       completed: 3,
-      total: 7,
+      total: 9,
     })
   })
 
