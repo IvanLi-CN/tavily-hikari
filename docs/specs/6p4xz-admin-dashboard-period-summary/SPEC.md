@@ -63,4 +63,8 @@
 
 ## Visual Evidence
 
-- 待本轮 Storybook 验收截图回填：应覆盖“成功/错误按百分点比较”的正常场景，以及“昨日无基线”的兜底场景。
+- source_type: `storybook_docs`; docs_entry_or_title: `Admin/Components/DashboardOverview`; scenario: `rate delta overview`; evidence_note: 验证默认 docs 场景里 `成功` / `错误` 已显示为 `pp` 比较，而 `总请求数` / `额度耗尽` 仍保留次数差。
+  ![管理仪表盘：成功率/错误率按百分点比较](./assets/dashboard-overview-rate-delta-docs.png)
+
+- source_type: `storybook_canvas`; story_id_or_title: `Admin/Components/DashboardOverview/ZeroBaseline`; state: `zero baseline`; evidence_note: 验证昨日窗口无请求时，`成功` / `错误` 使用 `昨日无基线` 兜底而不是伪造百分点差。
+  ![管理仪表盘：昨日无基线兜底场景](./assets/dashboard-overview-rate-delta-zero-baseline.png)
