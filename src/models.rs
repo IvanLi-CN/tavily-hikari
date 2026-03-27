@@ -35,6 +35,7 @@ pub struct ProxyRequest {
     pub headers: HeaderMap,
     pub body: Bytes,
     pub auth_token_id: Option<String>,
+    pub pinned_api_key_id: Option<String>,
 }
 
 /// 透传响应。
@@ -390,6 +391,29 @@ pub struct MaintenanceActor {
 pub(crate) struct KeyStateSnapshot {
     pub status: Option<String>,
     pub quarantined: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TokenPrimaryApiKeyAffinity {
+    pub token_id: String,
+    pub user_id: Option<String>,
+    pub api_key_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpSessionBinding {
+    pub proxy_session_id: String,
+    pub upstream_session_id: String,
+    pub upstream_key_id: String,
+    pub auth_token_id: Option<String>,
+    pub user_id: Option<String>,
+    pub protocol_version: Option<String>,
+    pub last_event_id: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub expires_at: i64,
+    pub revoked_at: Option<i64>,
+    pub revoke_reason: Option<String>,
 }
 
 /// 单条请求日志记录的关键信息。
@@ -835,6 +859,8 @@ pub enum ProxyError {
     },
     #[error("no API keys available in the store")]
     NoAvailableKeys,
+    #[error("pinned MCP session key is unavailable")]
+    PinnedMcpSessionUnavailable,
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
     #[error("http error: {0}")]

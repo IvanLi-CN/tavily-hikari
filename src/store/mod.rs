@@ -460,6 +460,101 @@ impl KeyStore {
 
         sqlx::query(
             r#"
+            CREATE TABLE IF NOT EXISTS user_primary_api_key_affinity (
+                user_id TEXT PRIMARY KEY,
+                api_key_id TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (api_key_id) REFERENCES api_keys(id)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_user_primary_api_key_affinity_key
+               ON user_primary_api_key_affinity(api_key_id, updated_at DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS token_primary_api_key_affinity (
+                token_id TEXT PRIMARY KEY,
+                user_id TEXT,
+                api_key_id TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (api_key_id) REFERENCES api_keys(id)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_token_primary_api_key_affinity_user
+               ON token_primary_api_key_affinity(user_id, updated_at DESC, token_id)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_token_primary_api_key_affinity_key
+               ON token_primary_api_key_affinity(api_key_id, updated_at DESC, token_id)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS mcp_sessions (
+                proxy_session_id TEXT PRIMARY KEY,
+                upstream_session_id TEXT NOT NULL,
+                upstream_key_id TEXT NOT NULL,
+                auth_token_id TEXT,
+                user_id TEXT,
+                protocol_version TEXT,
+                last_event_id TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                revoked_at INTEGER,
+                revoke_reason TEXT,
+                FOREIGN KEY (upstream_key_id) REFERENCES api_keys(id)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_mcp_sessions_user_active
+               ON mcp_sessions(user_id, revoked_at, expires_at DESC, updated_at DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_mcp_sessions_token_active
+               ON mcp_sessions(auth_token_id, revoked_at, expires_at DESC, updated_at DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_mcp_sessions_expires_at
+               ON mcp_sessions(expires_at, revoked_at)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
             CREATE TABLE IF NOT EXISTS oauth_login_states (
                 state TEXT PRIMARY KEY,
                 provider TEXT NOT NULL,
@@ -3700,7 +3795,137 @@ impl KeyStore {
             }));
         }
 
+        if let Some((id, api_key)) = sqlx::query_as::<_, (String, String)>(
+            r#"
+            SELECT id, api_key
+            FROM api_keys
+            WHERE id = ? AND status = ? AND deleted_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM api_key_quarantines q
+                  WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
+              )
+            LIMIT 1
+            "#,
+        )
+        .bind(key_id)
+        .bind(STATUS_EXHAUSTED)
+        .fetch_optional(&self.pool)
+        .await?
+        {
+            self.touch_key(&api_key, now).await?;
+            return Ok(Some(ApiKeyLease {
+                id,
+                secret: api_key,
+            }));
+        }
+
         Ok(None)
+    }
+
+    pub(crate) async fn acquire_active_key_excluding(
+        &self,
+        excluded_key_id: Option<&str>,
+    ) -> Result<ApiKeyLease, ProxyError> {
+        self.reset_monthly().await?;
+
+        let now = Utc::now().timestamp();
+
+        let active_candidate = if let Some(excluded_key_id) = excluded_key_id {
+            sqlx::query_as::<_, (String, String)>(
+                r#"
+                SELECT id, api_key
+                FROM api_keys
+                WHERE id != ? AND status = ? AND deleted_at IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM api_key_quarantines q
+                      WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
+                  )
+                ORDER BY last_used_at ASC, id ASC
+                LIMIT 1
+                "#,
+            )
+            .bind(excluded_key_id)
+            .bind(STATUS_ACTIVE)
+            .fetch_optional(&self.pool)
+            .await?
+        } else {
+            sqlx::query_as::<_, (String, String)>(
+                r#"
+                SELECT id, api_key
+                FROM api_keys
+                WHERE status = ? AND deleted_at IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM api_key_quarantines q
+                      WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
+                  )
+                ORDER BY last_used_at ASC, id ASC
+                LIMIT 1
+                "#,
+            )
+            .bind(STATUS_ACTIVE)
+            .fetch_optional(&self.pool)
+            .await?
+        };
+
+        let candidate = if let Some(candidate) = active_candidate {
+            Some(candidate)
+        } else if let Some(excluded_key_id) = excluded_key_id {
+            sqlx::query_as::<_, (String, String)>(
+                r#"
+                SELECT id, api_key
+                FROM api_keys
+                WHERE id != ? AND status = ? AND deleted_at IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM api_key_quarantines q
+                      WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
+                  )
+                ORDER BY
+                    CASE WHEN status_changed_at IS NULL THEN 1 ELSE 0 END ASC,
+                    status_changed_at ASC,
+                    id ASC
+                LIMIT 1
+                "#,
+            )
+            .bind(excluded_key_id)
+            .bind(STATUS_EXHAUSTED)
+            .fetch_optional(&self.pool)
+            .await?
+        } else {
+            sqlx::query_as::<_, (String, String)>(
+                r#"
+                SELECT id, api_key
+                FROM api_keys
+                WHERE status = ? AND deleted_at IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM api_key_quarantines q
+                      WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
+                  )
+                ORDER BY
+                    CASE WHEN status_changed_at IS NULL THEN 1 ELSE 0 END ASC,
+                    status_changed_at ASC,
+                    id ASC
+                LIMIT 1
+                "#,
+            )
+            .bind(STATUS_EXHAUSTED)
+            .fetch_optional(&self.pool)
+            .await?
+        };
+
+        let Some((id, api_key)) = candidate else {
+            return Err(ProxyError::NoAvailableKeys);
+        };
+
+        self.touch_key(&api_key, now).await?;
+        Ok(ApiKeyLease {
+            id,
+            secret: api_key,
+        })
     }
 
     pub(crate) async fn save_research_request_affinity(
@@ -4983,24 +5208,404 @@ impl KeyStore {
         Ok(items)
     }
 
-    pub(crate) async fn list_recent_api_key_bindings_for_user(
+    pub(crate) async fn get_user_primary_api_key_affinity(
         &self,
         user_id: &str,
-    ) -> Result<Vec<String>, ProxyError> {
-        sqlx::query_scalar(
+    ) -> Result<Option<String>, ProxyError> {
+        sqlx::query_scalar::<_, String>(
+            r#"SELECT api_key_id
+               FROM user_primary_api_key_affinity
+               WHERE user_id = ?
+               LIMIT 1"#,
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(ProxyError::from)
+    }
+
+    pub(crate) async fn get_token_primary_api_key_affinity(
+        &self,
+        token_id: &str,
+    ) -> Result<Option<TokenPrimaryApiKeyAffinity>, ProxyError> {
+        let row = sqlx::query_as::<_, (String, Option<String>, String)>(
+            r#"SELECT token_id, user_id, api_key_id
+               FROM token_primary_api_key_affinity
+               WHERE token_id = ?
+               LIMIT 1"#,
+        )
+        .bind(token_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(
+            |(token_id, user_id, api_key_id)| TokenPrimaryApiKeyAffinity {
+                token_id,
+                user_id,
+                api_key_id,
+            },
+        ))
+    }
+
+    pub(crate) async fn find_recent_primary_candidate_for_user(
+        &self,
+        user_id: &str,
+    ) -> Result<Option<String>, ProxyError> {
+        sqlx::query_scalar::<_, String>(
             r#"
             SELECT api_key_id
             FROM user_api_key_bindings
             WHERE user_id = ?
             ORDER BY last_success_at DESC, updated_at DESC, api_key_id DESC
-            LIMIT ?
+            LIMIT 1
             "#,
         )
         .bind(user_id)
-        .bind(USER_API_KEY_BINDING_RECENT_LIMIT)
-        .fetch_all(&self.pool)
+        .fetch_optional(&self.pool)
         .await
         .map_err(ProxyError::from)
+    }
+
+    pub(crate) async fn sync_user_primary_api_key_affinity(
+        &self,
+        user_id: &str,
+        api_key_id: &str,
+    ) -> Result<(), ProxyError> {
+        let now = Utc::now().timestamp();
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO user_primary_api_key_affinity (user_id, api_key_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                api_key_id = excluded.api_key_id,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(user_id)
+        .bind(api_key_id)
+        .bind(now)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO token_primary_api_key_affinity (
+                token_id,
+                user_id,
+                api_key_id,
+                created_at,
+                updated_at
+            )
+            SELECT token_id, user_id, ?, ?, ?
+            FROM user_token_bindings
+            WHERE user_id = ?
+            ON CONFLICT(token_id) DO UPDATE SET
+                user_id = excluded.user_id,
+                api_key_id = excluded.api_key_id,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(api_key_id)
+        .bind(now)
+        .bind(now)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn set_token_primary_api_key_affinity(
+        &self,
+        token_id: &str,
+        user_id: Option<&str>,
+        api_key_id: &str,
+    ) -> Result<(), ProxyError> {
+        let now = Utc::now().timestamp();
+        sqlx::query(
+            r#"
+            INSERT INTO token_primary_api_key_affinity (
+                token_id,
+                user_id,
+                api_key_id,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(token_id) DO UPDATE SET
+                user_id = excluded.user_id,
+                api_key_id = excluded.api_key_id,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(token_id)
+        .bind(user_id)
+        .bind(api_key_id)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn create_or_replace_mcp_session(
+        &self,
+        binding: &McpSessionBinding,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            INSERT INTO mcp_sessions (
+                proxy_session_id,
+                upstream_session_id,
+                upstream_key_id,
+                auth_token_id,
+                user_id,
+                protocol_version,
+                last_event_id,
+                created_at,
+                updated_at,
+                expires_at,
+                revoked_at,
+                revoke_reason
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(proxy_session_id) DO UPDATE SET
+                upstream_session_id = excluded.upstream_session_id,
+                upstream_key_id = excluded.upstream_key_id,
+                auth_token_id = excluded.auth_token_id,
+                user_id = excluded.user_id,
+                protocol_version = excluded.protocol_version,
+                last_event_id = excluded.last_event_id,
+                updated_at = excluded.updated_at,
+                expires_at = excluded.expires_at,
+                revoked_at = excluded.revoked_at,
+                revoke_reason = excluded.revoke_reason
+            "#,
+        )
+        .bind(&binding.proxy_session_id)
+        .bind(&binding.upstream_session_id)
+        .bind(&binding.upstream_key_id)
+        .bind(binding.auth_token_id.as_deref())
+        .bind(binding.user_id.as_deref())
+        .bind(binding.protocol_version.as_deref())
+        .bind(binding.last_event_id.as_deref())
+        .bind(binding.created_at)
+        .bind(binding.updated_at)
+        .bind(binding.expires_at)
+        .bind(binding.revoked_at)
+        .bind(binding.revoke_reason.as_deref())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn get_active_mcp_session(
+        &self,
+        proxy_session_id: &str,
+        now: i64,
+    ) -> Result<Option<McpSessionBinding>, ProxyError> {
+        let row = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                i64,
+                i64,
+                i64,
+                Option<i64>,
+                Option<String>,
+            ),
+        >(
+            r#"
+            SELECT
+                proxy_session_id,
+                upstream_session_id,
+                upstream_key_id,
+                auth_token_id,
+                user_id,
+                protocol_version,
+                last_event_id,
+                created_at,
+                updated_at,
+                expires_at,
+                revoked_at,
+                revoke_reason
+            FROM mcp_sessions
+            WHERE proxy_session_id = ?
+              AND revoked_at IS NULL
+              AND expires_at > ?
+            LIMIT 1
+            "#,
+        )
+        .bind(proxy_session_id)
+        .bind(now)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(
+            |(
+                proxy_session_id,
+                upstream_session_id,
+                upstream_key_id,
+                auth_token_id,
+                user_id,
+                protocol_version,
+                last_event_id,
+                created_at,
+                updated_at,
+                expires_at,
+                revoked_at,
+                revoke_reason,
+            )| McpSessionBinding {
+                proxy_session_id,
+                upstream_session_id,
+                upstream_key_id,
+                auth_token_id,
+                user_id,
+                protocol_version,
+                last_event_id,
+                created_at,
+                updated_at,
+                expires_at,
+                revoked_at,
+                revoke_reason,
+            },
+        ))
+    }
+
+    pub(crate) async fn touch_mcp_session(
+        &self,
+        proxy_session_id: &str,
+        protocol_version: Option<&str>,
+        last_event_id: Option<&str>,
+        now: i64,
+        expires_at: i64,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            UPDATE mcp_sessions
+            SET
+                protocol_version = COALESCE(?, protocol_version),
+                last_event_id = COALESCE(?, last_event_id),
+                updated_at = ?,
+                expires_at = ?
+            WHERE proxy_session_id = ?
+              AND revoked_at IS NULL
+            "#,
+        )
+        .bind(protocol_version)
+        .bind(last_event_id)
+        .bind(now)
+        .bind(expires_at)
+        .bind(proxy_session_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn update_mcp_session_upstream_identity(
+        &self,
+        proxy_session_id: &str,
+        upstream_session_id: &str,
+        protocol_version: Option<&str>,
+        now: i64,
+        expires_at: i64,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            UPDATE mcp_sessions
+            SET
+                upstream_session_id = ?,
+                protocol_version = COALESCE(?, protocol_version),
+                updated_at = ?,
+                expires_at = ?
+            WHERE proxy_session_id = ?
+              AND revoked_at IS NULL
+            "#,
+        )
+        .bind(upstream_session_id)
+        .bind(protocol_version)
+        .bind(now)
+        .bind(expires_at)
+        .bind(proxy_session_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn revoke_mcp_session(
+        &self,
+        proxy_session_id: &str,
+        reason: &str,
+    ) -> Result<(), ProxyError> {
+        let now = Utc::now().timestamp();
+        sqlx::query(
+            r#"
+            UPDATE mcp_sessions
+            SET revoked_at = ?, revoke_reason = ?, updated_at = ?
+            WHERE proxy_session_id = ? AND revoked_at IS NULL
+            "#,
+        )
+        .bind(now)
+        .bind(reason)
+        .bind(now)
+        .bind(proxy_session_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn revoke_mcp_sessions_for_user(
+        &self,
+        user_id: &str,
+        reason: &str,
+    ) -> Result<(), ProxyError> {
+        let now = Utc::now().timestamp();
+        sqlx::query(
+            r#"
+            UPDATE mcp_sessions
+            SET revoked_at = ?, revoke_reason = ?, updated_at = ?
+            WHERE user_id = ? AND revoked_at IS NULL
+            "#,
+        )
+        .bind(now)
+        .bind(reason)
+        .bind(now)
+        .bind(user_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn revoke_mcp_sessions_for_token(
+        &self,
+        token_id: &str,
+        reason: &str,
+    ) -> Result<(), ProxyError> {
+        let now = Utc::now().timestamp();
+        sqlx::query(
+            r#"
+            UPDATE mcp_sessions
+            SET revoked_at = ?, revoke_reason = ?, updated_at = ?
+            WHERE auth_token_id = ? AND revoked_at IS NULL
+            "#,
+        )
+        .bind(now)
+        .bind(reason)
+        .bind(now)
+        .bind(token_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     pub(crate) async fn list_api_key_binding_counts_for_users(

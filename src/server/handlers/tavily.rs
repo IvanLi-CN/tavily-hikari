@@ -500,7 +500,9 @@ async fn tavily_http_research_result(
             }
 
             let status = match err {
-                ProxyError::Http(_) | ProxyError::NoAvailableKeys => StatusCode::BAD_GATEWAY,
+                ProxyError::Http(_)
+                | ProxyError::NoAvailableKeys
+                | ProxyError::PinnedMcpSessionUnavailable => StatusCode::BAD_GATEWAY,
                 ProxyError::Database(_)
                 | ProxyError::InvalidEndpoint { .. }
                 | ProxyError::QuotaDataMissing { .. }
@@ -964,6 +966,7 @@ async fn proxy_tavily_http_endpoint(
                 let status = match err {
                     ProxyError::Http(_)
                     | ProxyError::NoAvailableKeys
+                    | ProxyError::PinnedMcpSessionUnavailable
                     | ProxyError::QuotaDataMissing { .. }
                     | ProxyError::UsageHttp { .. } => StatusCode::BAD_GATEWAY,
                     ProxyError::Database(_)
@@ -1188,7 +1191,9 @@ async fn proxy_tavily_http_endpoint(
             }
 
             let status = match err {
-                ProxyError::Http(_) | ProxyError::NoAvailableKeys => StatusCode::BAD_GATEWAY,
+                ProxyError::Http(_)
+                | ProxyError::NoAvailableKeys
+                | ProxyError::PinnedMcpSessionUnavailable => StatusCode::BAD_GATEWAY,
                 ProxyError::Database(_)
                 | ProxyError::InvalidEndpoint { .. }
                 | ProxyError::QuotaDataMissing { .. }

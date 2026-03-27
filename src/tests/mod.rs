@@ -702,6 +702,59 @@ fn sanitize_headers_keeps_mcp_session_recovery_headers() {
     assert!(sanitized.dropped.contains(&"x-real-ip".to_string()));
 }
 
+#[test]
+fn sanitize_mcp_headers_drops_fingerprint_headers_and_sets_proxy_user_agent() {
+    let mut headers = HeaderMap::new();
+    headers.insert("Accept", HeaderValue::from_static("application/json"));
+    headers.insert(
+        "Accept-Language",
+        HeaderValue::from_static("zh-CN,zh;q=0.9"),
+    );
+    headers.insert("Origin", HeaderValue::from_static("https://proxy.local"));
+    headers.insert(
+        "Referer",
+        HeaderValue::from_static("https://proxy.local/somewhere"),
+    );
+    headers.insert("Sec-CH-UA", HeaderValue::from_static("\"Chromium\""));
+    headers.insert("User-Agent", HeaderValue::from_static("Mozilla/5.0"));
+    headers.insert(
+        "Mcp-Session-Id",
+        HeaderValue::from_static("opaque-client-session"),
+    );
+    headers.insert(
+        "Mcp-Protocol-Version",
+        HeaderValue::from_static("2025-03-26"),
+    );
+
+    let sanitized = sanitize_mcp_headers_inner(&headers);
+
+    assert_eq!(
+        sanitized.headers.get("accept").unwrap(),
+        &HeaderValue::from_static("application/json")
+    );
+    assert_eq!(
+        sanitized.headers.get("mcp-session-id").unwrap(),
+        &HeaderValue::from_static("opaque-client-session")
+    );
+    assert_eq!(
+        sanitized.headers.get("mcp-protocol-version").unwrap(),
+        &HeaderValue::from_static("2025-03-26")
+    );
+    assert_eq!(
+        sanitized.headers.get("user-agent").unwrap(),
+        &HeaderValue::from_static(MCP_PROXY_USER_AGENT)
+    );
+    assert!(!sanitized.headers.contains_key("accept-language"));
+    assert!(!sanitized.headers.contains_key("origin"));
+    assert!(!sanitized.headers.contains_key("referer"));
+    assert!(!sanitized.headers.contains_key("sec-ch-ua"));
+    assert!(sanitized.forwarded.contains(&"user-agent".to_string()));
+    assert!(sanitized.dropped.contains(&"accept-language".to_string()));
+    assert!(sanitized.dropped.contains(&"origin".to_string()));
+    assert!(sanitized.dropped.contains(&"referer".to_string()));
+    assert!(sanitized.dropped.contains(&"sec-ch-ua".to_string()));
+}
+
 fn temp_db_path(prefix: &str) -> PathBuf {
     let file = format!("{}-{}.db", prefix, nanoid!(8));
     std::env::temp_dir().join(file)
@@ -756,6 +809,269 @@ async fn successful_request_logs_do_not_backfill_failure_kind() {
     .expect("fetch request log row");
     assert_eq!(row.0, OUTCOME_SUCCESS);
     assert_eq!(row.1, None);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn user_tokens_share_persistent_primary_key_affinity_after_restart() {
+    let db_path = temp_db_path("user-token-primary-affinity");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let app = Router::new().route(
+        "/mcp",
+        post(|| async {
+            Json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": { "ok": true }
+            }))
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
+    });
+
+    let upstream = format!("http://{addr}/mcp");
+    let proxy = TavilyProxy::with_endpoint(
+        vec![
+            "tvly-user-affinity-a".to_string(),
+            "tvly-user-affinity-b".to_string(),
+        ],
+        &upstream,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "linuxdo".to_string(),
+            provider_user_id: "user-primary-affinity".to_string(),
+            username: Some("user-affinity".to_string()),
+            name: Some("User Affinity".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: Some(2),
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+    let primary_token = proxy
+        .ensure_user_token_binding(&user.user_id, Some("linuxdo:primary-affinity"))
+        .await
+        .expect("bind primary token");
+    let secondary_seed = proxy
+        .create_access_token(Some("linuxdo:secondary-affinity"))
+        .await
+        .expect("create secondary token");
+    let secondary_token = proxy
+        .ensure_user_token_binding_with_preferred(
+            &user.user_id,
+            Some("linuxdo:secondary-affinity"),
+            Some(&secondary_seed.id),
+        )
+        .await
+        .expect("bind secondary token");
+
+    let request = |token_id: &str| ProxyRequest {
+        method: Method::POST,
+        path: "/mcp".to_string(),
+        query: None,
+        headers: HeaderMap::new(),
+        body: Bytes::from_static(br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#),
+        auth_token_id: Some(token_id.to_string()),
+        pinned_api_key_id: None,
+    };
+
+    let first = proxy
+        .proxy_request(request(&primary_token.id))
+        .await
+        .expect("first request succeeds");
+    assert!(first.status.is_success());
+
+    let pool = open_sqlite_pool(&db_str, false, false)
+        .await
+        .expect("open sqlite pool");
+    let user_primary: String = sqlx::query_scalar(
+        r#"SELECT api_key_id
+           FROM user_primary_api_key_affinity
+           WHERE user_id = ?
+           LIMIT 1"#,
+    )
+    .bind(&user.user_id)
+    .fetch_one(&pool)
+    .await
+    .expect("user primary affinity");
+    let secondary_primary: String = sqlx::query_scalar(
+        r#"SELECT api_key_id
+           FROM token_primary_api_key_affinity
+           WHERE token_id = ?
+           LIMIT 1"#,
+    )
+    .bind(&secondary_token.id)
+    .fetch_one(&pool)
+    .await
+    .expect("secondary token primary affinity");
+    assert_eq!(
+        secondary_primary, user_primary,
+        "all user tokens should mirror the user's primary key after the first bind"
+    );
+
+    drop(proxy);
+
+    let proxy_after_restart = TavilyProxy::with_endpoint(
+        vec![
+            "tvly-user-affinity-a".to_string(),
+            "tvly-user-affinity-b".to_string(),
+        ],
+        &upstream,
+        &db_str,
+    )
+    .await
+    .expect("proxy recreated");
+
+    let second = proxy_after_restart
+        .proxy_request(request(&secondary_token.id))
+        .await
+        .expect("second request succeeds");
+    assert!(second.status.is_success());
+
+    let api_key_ids: Vec<String> = sqlx::query_scalar(
+        r#"SELECT api_key_id
+           FROM request_logs
+           WHERE auth_token_id IN (?, ?)
+             AND path = '/mcp'
+             AND api_key_id IS NOT NULL
+           ORDER BY id ASC"#,
+    )
+    .bind(&primary_token.id)
+    .bind(&secondary_token.id)
+    .fetch_all(&pool)
+    .await
+    .expect("request log api key ids");
+    assert_eq!(api_key_ids.len(), 2);
+    assert_eq!(api_key_ids[0], api_key_ids[1]);
+    assert_eq!(api_key_ids[0], user_primary);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn token_primary_rebind_falls_back_to_exhausted_key_when_no_other_active_keys_exist() {
+    let db_path = temp_db_path("token-primary-rebind-exhausted-fallback");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let app = Router::new().route(
+        "/mcp",
+        post(|| async {
+            Json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": { "ok": true }
+            }))
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
+    });
+
+    let upstream = format!("http://{addr}/mcp");
+    let first_key = "tvly-token-rebind-exhausted-a".to_string();
+    let second_key = "tvly-token-rebind-exhausted-b".to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec![first_key.clone(), second_key.clone()],
+        &upstream,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let token = proxy
+        .create_access_token(Some("token-primary-rebind-exhausted"))
+        .await
+        .expect("create token");
+
+    let request = || ProxyRequest {
+        method: Method::POST,
+        path: "/mcp".to_string(),
+        query: None,
+        headers: HeaderMap::new(),
+        body: Bytes::from_static(br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#),
+        auth_token_id: Some(token.id.clone()),
+        pinned_api_key_id: None,
+    };
+
+    let first = proxy
+        .proxy_request(request())
+        .await
+        .expect("initial request succeeds");
+    assert!(first.status.is_success());
+
+    let pool = open_sqlite_pool(&db_str, false, false)
+        .await
+        .expect("open sqlite pool");
+    let old_key_id: String = sqlx::query_scalar(
+        r#"SELECT api_key_id
+           FROM token_primary_api_key_affinity
+           WHERE token_id = ?
+           LIMIT 1"#,
+    )
+    .bind(&token.id)
+    .fetch_one(&pool)
+    .await
+    .expect("old primary key");
+
+    let all_keys: Vec<(String, String)> = sqlx::query_as(
+        r#"SELECT id, api_key
+           FROM api_keys
+           ORDER BY id ASC"#,
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("all keys");
+    let (fallback_key_id, fallback_key_secret) = all_keys
+        .into_iter()
+        .find(|(id, _)| id != &old_key_id)
+        .expect("fallback key");
+
+    proxy
+        .mark_key_quota_exhausted_by_secret(&fallback_key_secret)
+        .await
+        .expect("mark fallback key exhausted");
+    proxy
+        .disable_key_by_id(&old_key_id)
+        .await
+        .expect("disable old primary key");
+
+    let rebound = proxy
+        .proxy_request(request())
+        .await
+        .expect("request should fall back to exhausted key");
+    assert!(rebound.status.is_success());
+    assert_eq!(
+        rebound.api_key_id.as_deref(),
+        Some(fallback_key_id.as_str())
+    );
+
+    let rebound_key_id: String = sqlx::query_scalar(
+        r#"SELECT api_key_id
+           FROM token_primary_api_key_affinity
+           WHERE token_id = ?
+           LIMIT 1"#,
+    )
+    .bind(&token.id)
+    .fetch_one(&pool)
+    .await
+    .expect("rebound primary key");
+    assert_eq!(rebound_key_id, fallback_key_id);
 
     let _ = std::fs::remove_file(db_path);
 }
@@ -4424,6 +4740,7 @@ async fn proxy_request_quarantines_key_on_mcp_unauthorized() {
         headers: HeaderMap::new(),
         body: Bytes::from_static(br#"{"jsonrpc":"2.0","id":1,"method":"tools/call"}"#),
         auth_token_id: Some("tok1".to_string()),
+        pinned_api_key_id: None,
     };
 
     let response = proxy.proxy_request(request).await.expect("proxy response");
@@ -4482,6 +4799,7 @@ async fn proxy_request_quarantines_key_on_mcp_error_body_without_http_status() {
         headers: HeaderMap::new(),
         body: Bytes::from_static(br#"{"jsonrpc":"2.0","id":1,"method":"tools/call"}"#),
         auth_token_id: Some("tok1".to_string()),
+        pinned_api_key_id: None,
     };
 
     let response = proxy.proxy_request(request).await.expect("proxy response");

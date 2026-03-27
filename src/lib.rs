@@ -378,12 +378,11 @@ pub const TOKEN_MONTHLY_LIMIT: i64 = 5000;
 // This is enforced separately from the business quota above, and counts every
 // successful token-authenticated request regardless of MCP method.
 pub const TOKEN_HOURLY_REQUEST_LIMIT: i64 = 500;
-// Soft affinity window for mapping access tokens to API keys (in seconds).
-// Within this window, a token will try to reuse the same API key if it is still active.
-const TOKEN_AFFINITY_TTL_SECS: i64 = 15 * 60;
 // Keep a request_id -> key affinity for Tavily research result polling.
 // This avoids switching keys between POST /research and GET /research/{request_id}.
 const RESEARCH_REQUEST_AFFINITY_TTL_SECS: i64 = 24 * 60 * 60;
+const MCP_SESSION_IDLE_TTL_SECS: i64 = 24 * 60 * 60;
+const MCP_PROXY_USER_AGENT: &str = "tavily-hikari-mcp-proxy/1.0";
 // Hard cap on the number of token→key affinity entries kept in memory to prevent
 // unbounded growth under churny traffic (many distinct tokens).
 const TOKEN_AFFINITY_MAX_ENTRIES: usize = 10_000;
@@ -590,11 +589,6 @@ impl TokenAffinityState {
         );
     }
 
-    /// 显式删除 token 的亲和关系。
-    fn drop_mapping(&mut self, token_id: &str) {
-        self.mappings.remove(token_id);
-    }
-
     /// 清理过期条目，并在必要时进一步驱逐部分条目以控制总体大小。
     fn prune(&mut self, now_ts: i64) {
         // 先移除所有已经过期的亲和关系。
@@ -668,17 +662,6 @@ mod affinity_tests {
 
         let cand = state.get_candidate("token-a", now + 20);
         assert_eq!(cand.as_deref(), Some("key-2"));
-    }
-
-    #[test]
-    fn drop_mapping_removes_affinity() {
-        let mut state = TokenAffinityState::new(60);
-        let now = 1_000;
-        state.record_mapping("token-a", "key-1", now);
-        state.drop_mapping("token-a");
-
-        let cand = state.get_candidate("token-a", now + 10);
-        assert!(cand.is_none());
     }
 
     #[test]

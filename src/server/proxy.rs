@@ -213,6 +213,74 @@ async fn authenticate_request_token(
     })
 }
 
+fn header_string(headers: &ReqHeaderMap, name: &'static str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn mcp_request_contains_method(body: &[u8], needle: &str) -> bool {
+    let Ok(value) = serde_json::from_slice::<Value>(body) else {
+        return false;
+    };
+
+    let matches_method = |value: &Value| {
+        value
+            .get("method")
+            .and_then(|method| method.as_str())
+            .is_some_and(|method| method == needle)
+    };
+
+    match value {
+        Value::Object(_) => matches_method(&value),
+        Value::Array(items) => items.iter().any(matches_method),
+        _ => false,
+    }
+}
+
+fn mcp_session_response(
+    status: StatusCode,
+    error: &str,
+    message: &str,
+) -> Result<Response<Body>, StatusCode> {
+    let payload = json!({
+        "error": error,
+        "message": message,
+    });
+
+    Response::builder()
+        .status(status)
+        .header(CONTENT_TYPE, "application/json; charset=utf-8")
+        .body(Body::from(payload.to_string()))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+fn mcp_session_body(error: &str, message: &str) -> Bytes {
+    Bytes::from(
+        json!({
+            "error": error,
+            "message": message,
+        })
+        .to_string(),
+    )
+}
+
+fn mcp_response_requires_reconnect(status: StatusCode, body: &[u8]) -> bool {
+    if !status.is_client_error() {
+        return false;
+    }
+
+    let lower = String::from_utf8_lossy(body).to_ascii_lowercase();
+    lower.contains("missing mcp-session-id header")
+        || lower.contains("session not found")
+        || lower.contains("unknown session")
+        || lower.contains("invalid session")
+        || lower.contains("session expired")
+}
+
 async fn mcp_subpath_reject_handler(
     State(state): State<Arc<AppState>>,
     req: Request<Body>,
@@ -225,6 +293,13 @@ async fn mcp_subpath_reject_handler(
         Ok(authenticated) => authenticated,
         Err(response) => return Ok(response),
     };
+    if authenticated.using_dev_open_admin_fallback {
+        return mcp_session_response(
+            StatusCode::UNAUTHORIZED,
+            "explicit_token_required",
+            "MCP requests must provide an explicit token when --dev-open-admin is enabled.",
+        );
+    }
     let body_bytes = body::to_bytes(body, BODY_LIMIT)
         .await
         .map_err(|_| StatusCode::BAD_REQUEST)?;
@@ -316,6 +391,86 @@ async fn proxy_handler(
     let body_bytes = body::to_bytes(body, BODY_LIMIT)
         .await
         .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let is_mcp_request = path.starts_with("/mcp");
+    if is_mcp_request && using_dev_open_admin_fallback {
+        return mcp_session_response(
+            StatusCode::UNAUTHORIZED,
+            "explicit_token_required",
+            "MCP requests must provide an explicit token when --dev-open-admin is enabled.",
+        );
+    }
+    let is_mcp_initialize = is_mcp_request && mcp_request_contains_method(&body_bytes, "initialize");
+    let incoming_proxy_session_id = if is_mcp_request {
+        header_string(&headers, "mcp-session-id")
+    } else {
+        None
+    };
+    let incoming_protocol_version = if is_mcp_request {
+        header_string(&headers, "mcp-protocol-version")
+    } else {
+        None
+    };
+    let incoming_last_event_id = if is_mcp_request {
+        header_string(&headers, "last-event-id")
+    } else {
+        None
+    };
+    let token_user_id = if is_mcp_request {
+        if let Some(token_id) = token_id.as_deref() {
+            state
+                .proxy
+                .find_user_id_by_token(token_id)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let mut pinned_api_key_id: Option<String> = None;
+    if let Some(proxy_session_id) = incoming_proxy_session_id.as_deref() {
+        let session = state
+            .proxy
+            .get_active_mcp_session(proxy_session_id)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        let Some(session) = session else {
+            return mcp_session_response(
+                StatusCode::CONFLICT,
+                "session_unavailable",
+                "MCP session is unavailable, please reconnect to initialize a new session.",
+            );
+        };
+
+        if session.auth_token_id.as_deref() != token_id.as_deref() {
+            return mcp_session_response(
+                StatusCode::FORBIDDEN,
+                "session_forbidden",
+                "This MCP session belongs to a different token. Please reconnect.",
+            );
+        }
+
+        headers.insert(
+            HeaderName::from_static("mcp-session-id"),
+            ReqHeaderValue::from_str(&session.upstream_session_id)
+                .map_err(|_| StatusCode::BAD_REQUEST)?,
+        );
+
+        let effective_protocol_version = incoming_protocol_version
+            .clone()
+            .or(session.protocol_version.clone());
+        if let Some(protocol_version) = effective_protocol_version.as_deref() {
+            headers.insert(
+                HeaderName::from_static("mcp-protocol-version"),
+                ReqHeaderValue::from_str(protocol_version)
+                    .map_err(|_| StatusCode::BAD_REQUEST)?,
+            );
+        }
+
+        pinned_api_key_id = Some(session.upstream_key_id.clone());
+    }
     let request_kind = classify_token_request_kind(&path, Some(body_bytes.as_ref()));
 
     // Billing plan (1:1 upstream credits):
@@ -633,6 +788,7 @@ async fn proxy_handler(
         headers,
         body: forwarded_body.clone(),
         auth_token_id: token_id.clone(),
+        pinned_api_key_id,
     };
 
     // Serialize per-token billable tool calls to keep `peek -> upstream -> charge` consistent.
@@ -787,7 +943,96 @@ async fn proxy_handler(
     let proxy_result = state.proxy.proxy_request(proxy_request).await;
 
     match proxy_result {
-        Ok(resp) => {
+        Ok(mut resp) => {
+            if is_mcp_request {
+                if let Some(proxy_session_id) = incoming_proxy_session_id.as_deref() {
+                    if mcp_response_requires_reconnect(resp.status, &resp.body) {
+                        let _ = state
+                            .proxy
+                            .revoke_mcp_session(proxy_session_id, "upstream_session_invalid")
+                            .await;
+                        resp.status = StatusCode::CONFLICT;
+                        resp.headers = ReqHeaderMap::new();
+                        resp.headers.insert(
+                            CONTENT_TYPE,
+                            ReqHeaderValue::from_static("application/json; charset=utf-8"),
+                        );
+                        resp.body = mcp_session_body(
+                            "session_unavailable",
+                            "Upstream MCP session expired or became unavailable. Please reconnect.",
+                        );
+                    } else {
+                        let response_protocol_version = resp
+                            .headers
+                            .get("mcp-protocol-version")
+                            .and_then(|value| value.to_str().ok())
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .map(str::to_string);
+                        let _ = state
+                            .proxy
+                            .touch_mcp_session(
+                                proxy_session_id,
+                                response_protocol_version
+                                    .as_deref()
+                                    .or(incoming_protocol_version.as_deref()),
+                                incoming_last_event_id.as_deref(),
+                            )
+                            .await;
+                        if let Some(upstream_session_id) = resp
+                            .headers
+                            .get("mcp-session-id")
+                            .and_then(|value| value.to_str().ok())
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                        {
+                            let _ = state
+                                .proxy
+                                .update_mcp_session_upstream_identity(
+                                    proxy_session_id,
+                                    upstream_session_id,
+                                    response_protocol_version
+                                        .as_deref()
+                                        .or(incoming_protocol_version.as_deref()),
+                                )
+                                .await;
+                            if let Ok(proxy_header) = ReqHeaderValue::from_str(proxy_session_id) {
+                                resp.headers
+                                    .insert(HeaderName::from_static("mcp-session-id"), proxy_header);
+                            }
+                        }
+                    }
+                } else if is_mcp_initialize && resp.status.is_success() {
+                    let upstream_session_id = resp
+                        .headers
+                        .get("mcp-session-id")
+                        .and_then(|value| value.to_str().ok())
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string);
+                    if let (Some(upstream_session_id), Some(upstream_key_id)) =
+                        (upstream_session_id.as_deref(), resp.api_key_id.as_deref())
+                    {
+                        let proxy_session_id = state
+                            .proxy
+                            .create_mcp_session(
+                                upstream_session_id,
+                                upstream_key_id,
+                                token_id.as_deref(),
+                                token_user_id.as_deref(),
+                                incoming_protocol_version.as_deref(),
+                                incoming_last_event_id.as_deref(),
+                            )
+                            .await
+                            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                        resp.headers.insert(
+                            HeaderName::from_static("mcp-session-id"),
+                            ReqHeaderValue::from_str(&proxy_session_id)
+                                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+                        );
+                    }
+                }
+            }
             let mut billing_error: Option<String> = None;
             if let Some(tid) = token_id.as_deref() {
                 let analysis = analyze_mcp_attempt(resp.status, &resp.body);
@@ -1019,6 +1264,8 @@ async fn proxy_handler(
         }
         Err(err) => {
             eprintln!("proxy error: {err}");
+            let pinned_mcp_session_unavailable =
+                matches!(&err, ProxyError::PinnedMcpSessionUnavailable);
             if let Some(tid) = token_id.as_deref() {
                 let err_str = err.to_string();
                 let _ = state
@@ -1036,6 +1283,19 @@ async fn proxy_handler(
                         &request_kind,
                     )
                     .await;
+            }
+            if pinned_mcp_session_unavailable
+                && let Some(proxy_session_id) = incoming_proxy_session_id.as_deref()
+            {
+                let _ = state
+                    .proxy
+                    .revoke_mcp_session(proxy_session_id, "pinned_key_unavailable")
+                    .await;
+                return mcp_session_response(
+                    StatusCode::CONFLICT,
+                    "session_unavailable",
+                    "The pinned MCP session key is unavailable. Please reconnect.",
+                );
             }
             Err(StatusCode::BAD_GATEWAY)
         }

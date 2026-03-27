@@ -19,7 +19,7 @@ use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::{
     Router,
-    body::{self, Body},
+    body::{self, Body, Bytes},
     extract::{Form, Path, Query, RawQuery, State},
     http::{HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode},
     response::{Json, Redirect},

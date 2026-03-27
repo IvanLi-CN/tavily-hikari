@@ -52,7 +52,6 @@ pub struct TavilyProxy {
     pub(crate) api_key_geo_origin: String,
     token_quota: TokenQuota,
     token_request_limit: TokenRequestLimit,
-    pub(crate) affinity: Arc<Mutex<TokenAffinityState>>,
     pub(crate) research_request_affinity: Arc<Mutex<TokenAffinityState>>,
     pub(crate) research_request_owner_affinity: Arc<Mutex<TokenAffinityState>>,
     // Fast in-process lock to collapse duplicate work within one instance. Cross-instance
@@ -362,7 +361,6 @@ impl TavilyProxy {
                 .unwrap_or_else(|| "https://api.country.is".to_string()),
             token_quota,
             token_request_limit,
-            affinity: Arc::new(Mutex::new(TokenAffinityState::new(TOKEN_AFFINITY_TTL_SECS))),
             research_request_affinity: Arc::new(Mutex::new(TokenAffinityState::new(
                 RESEARCH_REQUEST_AFFINITY_TTL_SECS,
             ))),
@@ -3051,52 +3049,135 @@ impl TavilyProxy {
         })
     }
 
+    async fn rebind_user_primary_affinity(
+        &self,
+        user_id: &str,
+        old_key_id: Option<&str>,
+    ) -> Result<ApiKeyLease, ProxyError> {
+        let lease = self
+            .key_store
+            .acquire_active_key_excluding(old_key_id)
+            .await?;
+        self.key_store
+            .sync_user_primary_api_key_affinity(user_id, &lease.id)
+            .await?;
+        self.key_store
+            .revoke_mcp_sessions_for_user(user_id, "primary_api_key_rebound")
+            .await?;
+        Ok(lease)
+    }
+
+    async fn rebind_token_primary_affinity(
+        &self,
+        token_id: &str,
+        old_key_id: Option<&str>,
+    ) -> Result<ApiKeyLease, ProxyError> {
+        let lease = self
+            .key_store
+            .acquire_active_key_excluding(old_key_id)
+            .await?;
+        self.key_store
+            .set_token_primary_api_key_affinity(token_id, None, &lease.id)
+            .await?;
+        self.key_store
+            .revoke_mcp_sessions_for_token(token_id, "primary_api_key_rebound")
+            .await?;
+        Ok(lease)
+    }
+
     pub(crate) async fn acquire_key_for(
         &self,
         auth_token_id: Option<&str>,
     ) -> Result<ApiKeyLease, ProxyError> {
-        let now = Utc::now().timestamp();
-
         let Some(token_id) = auth_token_id else {
             // No token id (e.g. certain internal or dev flows) → plain global scheduling.
             return self.key_store.acquire_key().await;
         };
 
         if let Some(user_id) = self.key_store.find_user_id_by_token(token_id).await? {
-            let bound_key_ids = self
+            let user_primary = self
                 .key_store
-                .list_recent_api_key_bindings_for_user(&user_id)
+                .get_user_primary_api_key_affinity(&user_id)
                 .await?;
-            for key_id in bound_key_ids {
+            let token_primary = self
+                .key_store
+                .get_token_primary_api_key_affinity(token_id)
+                .await?;
+            let legacy_primary = if user_primary.is_none() && token_primary.is_none() {
+                self.key_store
+                    .find_recent_primary_candidate_for_user(&user_id)
+                    .await?
+            } else {
+                None
+            };
+
+            let mut candidates = Vec::new();
+            if let Some(user_primary) = user_primary.as_ref() {
+                candidates.push(user_primary.clone());
+            }
+            if let Some(token_primary) = token_primary.as_ref()
+                && token_primary.user_id.as_deref() == Some(user_id.as_str())
+                && !candidates
+                    .iter()
+                    .any(|candidate| candidate == &token_primary.api_key_id)
+            {
+                candidates.push(token_primary.api_key_id.clone());
+            }
+            if let Some(legacy_primary) = legacy_primary.as_ref()
+                && !candidates
+                    .iter()
+                    .any(|candidate| candidate == legacy_primary)
+            {
+                candidates.push(legacy_primary.clone());
+            }
+
+            for key_id in candidates {
                 if let Some(lease) = self.key_store.try_acquire_specific_key(&key_id).await? {
-                    let mut state = self.affinity.lock().await;
-                    state.record_mapping(token_id, &lease.id, now);
+                    self.key_store
+                        .sync_user_primary_api_key_affinity(&user_id, &lease.id)
+                        .await?;
                     return Ok(lease);
                 }
             }
+
+            if user_primary.is_some() || token_primary.is_some() {
+                return self
+                    .rebind_user_primary_affinity(&user_id, user_primary.as_deref())
+                    .await;
+            }
+
+            let lease = self.key_store.acquire_key().await?;
+            self.key_store
+                .sync_user_primary_api_key_affinity(&user_id, &lease.id)
+                .await?;
+            return Ok(lease);
         }
 
-        // Step 1: 尝试使用当前有效的亲和 key（仅在 TTL 窗口内且未过期）。
-        let candidate_key_id = {
-            let mut state = self.affinity.lock().await;
-            state.get_candidate(token_id, now)
-        };
-
-        if let Some(key_id) = candidate_key_id {
-            if let Some(lease) = self.key_store.try_acquire_specific_key(&key_id).await? {
+        if let Some(token_primary) = self
+            .key_store
+            .get_token_primary_api_key_affinity(token_id)
+            .await?
+        {
+            if let Some(lease) = self
+                .key_store
+                .try_acquire_specific_key(&token_primary.api_key_id)
+                .await?
+            {
+                self.key_store
+                    .set_token_primary_api_key_affinity(token_id, None, &lease.id)
+                    .await?;
                 return Ok(lease);
             }
-            // 底层认为该 key 不再可用（禁用、删除等），清除亲和映射。
-            let mut state = self.affinity.lock().await;
-            state.drop_mapping(token_id);
+
+            return self
+                .rebind_token_primary_affinity(token_id, Some(&token_primary.api_key_id))
+                .await;
         }
 
-        // Step 2: 没有可用亲和 key → 使用全局 LRU 选取一把新 key，并建立新的亲和关系。
         let lease = self.key_store.acquire_key().await?;
-        {
-            let mut state = self.affinity.lock().await;
-            state.record_mapping(token_id, &lease.id, now);
-        }
+        self.key_store
+            .set_token_primary_api_key_affinity(token_id, None, &lease.id)
+            .await?;
         Ok(lease)
     }
 
@@ -3131,10 +3212,6 @@ impl TavilyProxy {
 
             if let Some(key_id) = candidate_key_id {
                 if let Some(lease) = self.key_store.try_acquire_specific_key(&key_id).await? {
-                    if let Some(token_id) = auth_token_id {
-                        let mut state = self.affinity.lock().await;
-                        state.record_mapping(token_id, &lease.id, now);
-                    }
                     return Ok(lease);
                 }
                 return Err(ProxyError::NoAvailableKeys);
@@ -3395,9 +3472,15 @@ impl TavilyProxy {
 
     /// 将请求透传到 Tavily upstream 并记录日志。
     pub async fn proxy_request(&self, request: ProxyRequest) -> Result<ProxyResponse, ProxyError> {
-        let lease = self
-            .acquire_key_for(request.auth_token_id.as_deref())
-            .await?;
+        let lease = if let Some(key_id) = request.pinned_api_key_id.as_deref() {
+            let Some(lease) = self.key_store.try_acquire_specific_key(key_id).await? else {
+                return Err(ProxyError::PinnedMcpSessionUnavailable);
+            };
+            lease
+        } else {
+            self.acquire_key_for(request.auth_token_id.as_deref())
+                .await?
+        };
 
         let mut url = self.upstream.clone();
         url.set_path(request.path.as_str());
@@ -3414,7 +3497,7 @@ impl TavilyProxy {
 
         drop(url.query_pairs_mut());
 
-        let sanitized_headers = self.sanitize_headers(&request.headers);
+        let sanitized_headers = self.sanitize_headers(&request.headers, &request.path);
         let request_method = request.method.clone();
         let request_body = request.body.clone();
         let request_url = url.clone();
@@ -6073,8 +6156,104 @@ impl TavilyProxy {
             .await
     }
 
-    pub(crate) fn sanitize_headers(&self, headers: &HeaderMap) -> SanitizedHeaders {
-        sanitize_headers_inner(headers, &self.upstream, &self.upstream_origin)
+    pub(crate) fn sanitize_headers(&self, headers: &HeaderMap, path: &str) -> SanitizedHeaders {
+        if path.starts_with("/mcp") {
+            sanitize_mcp_headers_inner(headers)
+        } else {
+            sanitize_headers_inner(headers, &self.upstream, &self.upstream_origin)
+        }
+    }
+
+    pub async fn find_user_id_by_token(
+        &self,
+        token_id: &str,
+    ) -> Result<Option<String>, ProxyError> {
+        self.key_store.find_user_id_by_token(token_id).await
+    }
+
+    pub async fn get_active_mcp_session(
+        &self,
+        proxy_session_id: &str,
+    ) -> Result<Option<McpSessionBinding>, ProxyError> {
+        self.key_store
+            .get_active_mcp_session(proxy_session_id, Utc::now().timestamp())
+            .await
+    }
+
+    pub async fn create_mcp_session(
+        &self,
+        upstream_session_id: &str,
+        upstream_key_id: &str,
+        auth_token_id: Option<&str>,
+        user_id: Option<&str>,
+        protocol_version: Option<&str>,
+        last_event_id: Option<&str>,
+    ) -> Result<String, ProxyError> {
+        let now = Utc::now().timestamp();
+        let proxy_session_id = nanoid!(24);
+        self.key_store
+            .create_or_replace_mcp_session(&McpSessionBinding {
+                proxy_session_id: proxy_session_id.clone(),
+                upstream_session_id: upstream_session_id.to_string(),
+                upstream_key_id: upstream_key_id.to_string(),
+                auth_token_id: auth_token_id.map(str::to_string),
+                user_id: user_id.map(str::to_string),
+                protocol_version: protocol_version.map(str::to_string),
+                last_event_id: last_event_id.map(str::to_string),
+                created_at: now,
+                updated_at: now,
+                expires_at: now + MCP_SESSION_IDLE_TTL_SECS,
+                revoked_at: None,
+                revoke_reason: None,
+            })
+            .await?;
+        Ok(proxy_session_id)
+    }
+
+    pub async fn touch_mcp_session(
+        &self,
+        proxy_session_id: &str,
+        protocol_version: Option<&str>,
+        last_event_id: Option<&str>,
+    ) -> Result<(), ProxyError> {
+        let now = Utc::now().timestamp();
+        self.key_store
+            .touch_mcp_session(
+                proxy_session_id,
+                protocol_version,
+                last_event_id,
+                now,
+                now + MCP_SESSION_IDLE_TTL_SECS,
+            )
+            .await
+    }
+
+    pub async fn update_mcp_session_upstream_identity(
+        &self,
+        proxy_session_id: &str,
+        upstream_session_id: &str,
+        protocol_version: Option<&str>,
+    ) -> Result<(), ProxyError> {
+        let now = Utc::now().timestamp();
+        self.key_store
+            .update_mcp_session_upstream_identity(
+                proxy_session_id,
+                upstream_session_id,
+                protocol_version,
+                now,
+                now + MCP_SESSION_IDLE_TTL_SECS,
+            )
+            .await
+    }
+
+    pub async fn revoke_mcp_session(
+        &self,
+        proxy_session_id: &str,
+        reason: &str,
+    ) -> Result<(), ProxyError> {
+        self.key_store
+            .revoke_mcp_session(proxy_session_id, reason)
+            .await
     }
 }
 
