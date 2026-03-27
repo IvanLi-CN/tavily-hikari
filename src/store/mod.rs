@@ -149,6 +149,12 @@ pub(crate) enum RequestKindCanonicalMigrationClaim {
     AlreadyDone(i64),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RequestKindCanonicalBackfillUpperBounds {
+    pub(crate) request_logs: i64,
+    pub(crate) auth_token_logs: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RequestKindSnapshot {
     key: Option<String>,
@@ -287,14 +293,22 @@ async fn read_request_kind_backfill_meta_i64(
     pool: &SqlitePool,
     key: &str,
 ) -> Result<i64, ProxyError> {
+    Ok(read_request_kind_backfill_meta_i64_optional(pool, key)
+        .await?
+        .unwrap_or(0))
+}
+
+async fn read_request_kind_backfill_meta_i64_optional(
+    pool: &SqlitePool,
+    key: &str,
+) -> Result<Option<i64>, ProxyError> {
     Ok(
         sqlx::query_scalar::<_, Option<String>>("SELECT value FROM meta WHERE key = ? LIMIT 1")
             .bind(key)
             .fetch_optional(pool)
             .await?
             .flatten()
-            .and_then(|value| value.parse::<i64>().ok())
-            .unwrap_or(0),
+            .and_then(|value| value.parse::<i64>().ok()),
     )
 }
 
@@ -339,6 +353,10 @@ fn parse_request_kind_canonical_migration_state(
     }
 }
 
+fn request_kind_canonical_migration_is_fresh(now_ts: i64, started_at: i64) -> bool {
+    now_ts.saturating_sub(started_at) < REQUEST_KIND_CANONICAL_MIGRATION_STALE_SECS
+}
+
 async fn read_meta_string_with_connection(
     conn: &mut sqlx::pool::PoolConnection<Sqlite>,
     key: &str,
@@ -369,6 +387,15 @@ async fn write_meta_string_with_connection(
     Ok(())
 }
 
+async fn read_meta_i64_with_connection(
+    conn: &mut sqlx::pool::PoolConnection<Sqlite>,
+    key: &str,
+) -> Result<Option<i64>, ProxyError> {
+    read_meta_string_with_connection(conn, key)
+        .await
+        .map(|value| value.and_then(|value| value.parse::<i64>().ok()))
+}
+
 async fn delete_meta_key_with_connection(
     conn: &mut sqlx::pool::PoolConnection<Sqlite>,
     key: &str,
@@ -377,6 +404,130 @@ async fn delete_meta_key_with_connection(
         .bind(key)
         .execute(&mut **conn)
         .await?;
+    Ok(())
+}
+
+async fn read_request_kind_canonical_migration_status(
+    pool: &SqlitePool,
+) -> Result<Option<RequestKindCanonicalMigrationState>, ProxyError> {
+    if let Some(done_at) = read_request_kind_backfill_meta_i64_optional(
+        pool,
+        META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_DONE,
+    )
+    .await?
+    {
+        return Ok(Some(RequestKindCanonicalMigrationState::Done(done_at)));
+    }
+
+    Ok(parse_request_kind_canonical_migration_state(
+        sqlx::query_scalar::<_, String>("SELECT value FROM meta WHERE key = ? LIMIT 1")
+            .bind(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE)
+            .fetch_optional(pool)
+            .await
+            .map_err(ProxyError::Database)?,
+    ))
+}
+
+async fn read_request_kind_canonical_migration_status_with_connection(
+    conn: &mut sqlx::pool::PoolConnection<Sqlite>,
+) -> Result<Option<RequestKindCanonicalMigrationState>, ProxyError> {
+    if let Some(done_at) =
+        read_meta_i64_with_connection(conn, META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_DONE)
+            .await?
+    {
+        return Ok(Some(RequestKindCanonicalMigrationState::Done(done_at)));
+    }
+
+    Ok(parse_request_kind_canonical_migration_state(
+        read_meta_string_with_connection(conn, META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE)
+            .await?,
+    ))
+}
+
+async fn read_request_kind_canonical_backfill_upper_bounds(
+    pool: &SqlitePool,
+) -> Result<Option<RequestKindCanonicalBackfillUpperBounds>, ProxyError> {
+    let request_logs = read_request_kind_backfill_meta_i64_optional(
+        pool,
+        META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_REQUEST_LOGS_UPPER_BOUND,
+    )
+    .await?;
+    let auth_token_logs = read_request_kind_backfill_meta_i64_optional(
+        pool,
+        META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_AUTH_TOKEN_LOGS_UPPER_BOUND,
+    )
+    .await?;
+    Ok(match (request_logs, auth_token_logs) {
+        (Some(request_logs), Some(auth_token_logs)) => {
+            Some(RequestKindCanonicalBackfillUpperBounds {
+                request_logs,
+                auth_token_logs,
+            })
+        }
+        _ => None,
+    })
+}
+
+async fn read_request_kind_canonical_backfill_upper_bounds_with_connection(
+    conn: &mut sqlx::pool::PoolConnection<Sqlite>,
+) -> Result<Option<RequestKindCanonicalBackfillUpperBounds>, ProxyError> {
+    let request_logs = read_meta_i64_with_connection(
+        conn,
+        META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_REQUEST_LOGS_UPPER_BOUND,
+    )
+    .await?;
+    let auth_token_logs = read_meta_i64_with_connection(
+        conn,
+        META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_AUTH_TOKEN_LOGS_UPPER_BOUND,
+    )
+    .await?;
+    Ok(match (request_logs, auth_token_logs) {
+        (Some(request_logs), Some(auth_token_logs)) => {
+            Some(RequestKindCanonicalBackfillUpperBounds {
+                request_logs,
+                auth_token_logs,
+            })
+        }
+        _ => None,
+    })
+}
+
+async fn fetch_table_max_id_with_connection(
+    conn: &mut sqlx::pool::PoolConnection<Sqlite>,
+    table: &str,
+) -> Result<i64, ProxyError> {
+    let sql = format!("SELECT COALESCE(MAX(id), 0) FROM {table}");
+    sqlx::query_scalar::<_, i64>(&sql)
+        .fetch_one(&mut **conn)
+        .await
+        .map_err(ProxyError::Database)
+}
+
+async fn capture_request_kind_canonical_backfill_upper_bounds_with_connection(
+    conn: &mut sqlx::pool::PoolConnection<Sqlite>,
+) -> Result<RequestKindCanonicalBackfillUpperBounds, ProxyError> {
+    Ok(RequestKindCanonicalBackfillUpperBounds {
+        request_logs: fetch_table_max_id_with_connection(conn, "request_logs").await?,
+        auth_token_logs: fetch_table_max_id_with_connection(conn, "auth_token_logs").await?,
+    })
+}
+
+async fn write_request_kind_canonical_backfill_upper_bounds_with_connection(
+    conn: &mut sqlx::pool::PoolConnection<Sqlite>,
+    upper_bounds: RequestKindCanonicalBackfillUpperBounds,
+) -> Result<(), ProxyError> {
+    write_meta_string_with_connection(
+        conn,
+        META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_REQUEST_LOGS_UPPER_BOUND,
+        &upper_bounds.request_logs.to_string(),
+    )
+    .await?;
+    write_meta_string_with_connection(
+        conn,
+        META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_AUTH_TOKEN_LOGS_UPPER_BOUND,
+        &upper_bounds.auth_token_logs.to_string(),
+    )
+    .await?;
     Ok(())
 }
 
@@ -476,12 +627,14 @@ async fn backfill_request_log_request_kinds_with_pool(
     batch_size: i64,
     dry_run: bool,
     migration_state_key: Option<&str>,
+    upper_bound_id: Option<i64>,
 ) -> Result<RequestKindCanonicalBackfillTableReport, ProxyError> {
     let cursor_before = read_request_kind_backfill_meta_i64(
         pool,
         META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_REQUEST_LOGS_CURSOR_V1,
     )
     .await?;
+    let upper_bound_id = upper_bound_id.unwrap_or(i64::MAX);
     let mut cursor_after = cursor_before;
     let mut rows_scanned = 0_i64;
     let mut rows_updated = 0_i64;
@@ -502,11 +655,13 @@ async fn backfill_request_log_request_kinds_with_pool(
                 legacy_request_kind_detail
             FROM request_logs
             WHERE id > ?
+              AND id <= ?
             ORDER BY id ASC
             LIMIT ?
             "#,
         )
         .bind(cursor_after)
+        .bind(upper_bound_id)
         .bind(batch_size)
         .fetch_all(pool)
         .await?;
@@ -608,12 +763,14 @@ async fn backfill_auth_token_log_request_kinds_with_pool(
     batch_size: i64,
     dry_run: bool,
     migration_state_key: Option<&str>,
+    upper_bound_id: Option<i64>,
 ) -> Result<RequestKindCanonicalBackfillTableReport, ProxyError> {
     let cursor_before = read_request_kind_backfill_meta_i64(
         pool,
         META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_AUTH_TOKEN_LOGS_CURSOR_V1,
     )
     .await?;
+    let upper_bound_id = upper_bound_id.unwrap_or(i64::MAX);
     let mut cursor_after = cursor_before;
     let mut rows_scanned = 0_i64;
     let mut rows_updated = 0_i64;
@@ -635,11 +792,13 @@ async fn backfill_auth_token_log_request_kinds_with_pool(
                 legacy_request_kind_detail
             FROM auth_token_logs
             WHERE id > ?
+              AND id <= ?
             ORDER BY id ASC
             LIMIT ?
             "#,
         )
         .bind(cursor_after)
+        .bind(upper_bound_id)
         .bind(batch_size)
         .fetch_all(pool)
         .await?;
@@ -742,6 +901,7 @@ pub(crate) async fn run_request_kind_canonical_backfill_with_pool(
     batch_size: i64,
     dry_run: bool,
     migration_state_key: Option<&str>,
+    upper_bounds: Option<RequestKindCanonicalBackfillUpperBounds>,
 ) -> Result<RequestKindCanonicalBackfillReport, ProxyError> {
     let batch_size = batch_size.max(1);
     ensure_request_kind_backfill_schema(pool).await?;
@@ -750,6 +910,7 @@ pub(crate) async fn run_request_kind_canonical_backfill_with_pool(
         batch_size,
         dry_run,
         migration_state_key,
+        upper_bounds.map(|upper_bounds| upper_bounds.request_logs),
     )
     .await?;
     let auth_token_logs = backfill_auth_token_log_request_kinds_with_pool(
@@ -757,6 +918,7 @@ pub(crate) async fn run_request_kind_canonical_backfill_with_pool(
         batch_size,
         dry_run,
         migration_state_key,
+        upper_bounds.map(|upper_bounds| upper_bounds.auth_token_logs),
     )
     .await?;
 
@@ -1789,31 +1951,41 @@ impl KeyStore {
         &self,
         now_ts: i64,
     ) -> Result<RequestKindCanonicalMigrationClaim, ProxyError> {
-        let mut conn = begin_immediate_sqlite_connection(&self.pool).await?;
-        let done_at = read_meta_string_with_connection(
-            &mut conn,
-            META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_DONE,
-        )
-        .await?
-        .and_then(|value| value.parse::<i64>().ok());
-        if let Some(done_at) = done_at {
-            write_meta_string_with_connection(
-                &mut conn,
-                META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE,
-                &RequestKindCanonicalMigrationState::Done(done_at).as_meta_value(),
-            )
-            .await?;
-            sqlx::query("COMMIT").execute(&mut *conn).await?;
-            return Ok(RequestKindCanonicalMigrationClaim::AlreadyDone(done_at));
+        match read_request_kind_canonical_migration_status(&self.pool).await? {
+            Some(RequestKindCanonicalMigrationState::Done(done_at)) => {
+                return Ok(RequestKindCanonicalMigrationClaim::AlreadyDone(done_at));
+            }
+            Some(RequestKindCanonicalMigrationState::Running(started_at))
+                if request_kind_canonical_migration_is_fresh(now_ts, started_at) =>
+            {
+                return Ok(RequestKindCanonicalMigrationClaim::RunningElsewhere(
+                    started_at,
+                ));
+            }
+            _ => {}
         }
 
-        let state = parse_request_kind_canonical_migration_state(
-            read_meta_string_with_connection(
-                &mut conn,
-                META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE,
-            )
-            .await?,
-        );
+        let mut conn = match begin_immediate_sqlite_connection(&self.pool).await {
+            Ok(conn) => conn,
+            Err(err) if is_transient_sqlite_write_error(&err) => {
+                return match read_request_kind_canonical_migration_status(&self.pool).await? {
+                    Some(RequestKindCanonicalMigrationState::Done(done_at)) => {
+                        Ok(RequestKindCanonicalMigrationClaim::AlreadyDone(done_at))
+                    }
+                    Some(RequestKindCanonicalMigrationState::Running(started_at))
+                        if request_kind_canonical_migration_is_fresh(now_ts, started_at) =>
+                    {
+                        Ok(RequestKindCanonicalMigrationClaim::RunningElsewhere(
+                            started_at,
+                        ))
+                    }
+                    _ => Err(err),
+                };
+            }
+            Err(err) => return Err(err),
+        };
+
+        let state = read_request_kind_canonical_migration_status_with_connection(&mut conn).await?;
         match state {
             Some(RequestKindCanonicalMigrationState::Done(done_at)) => {
                 write_meta_string_with_connection(
@@ -1822,11 +1994,17 @@ impl KeyStore {
                     &done_at.to_string(),
                 )
                 .await?;
+                write_meta_string_with_connection(
+                    &mut conn,
+                    META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE,
+                    &RequestKindCanonicalMigrationState::Done(done_at).as_meta_value(),
+                )
+                .await?;
                 sqlx::query("COMMIT").execute(&mut *conn).await?;
                 Ok(RequestKindCanonicalMigrationClaim::AlreadyDone(done_at))
             }
             Some(RequestKindCanonicalMigrationState::Running(started_at))
-                if now_ts - started_at < REQUEST_KIND_CANONICAL_MIGRATION_STALE_SECS =>
+                if request_kind_canonical_migration_is_fresh(now_ts, started_at) =>
             {
                 sqlx::query("COMMIT").execute(&mut *conn).await?;
                 Ok(RequestKindCanonicalMigrationClaim::RunningElsewhere(
@@ -1834,6 +2012,35 @@ impl KeyStore {
                 ))
             }
             _ => {
+                let upper_bounds = match state {
+                    Some(RequestKindCanonicalMigrationState::Running(_))
+                    | Some(RequestKindCanonicalMigrationState::Failed(_)) => {
+                        match read_request_kind_canonical_backfill_upper_bounds_with_connection(
+                            &mut conn,
+                        )
+                        .await?
+                        {
+                            Some(upper_bounds) => upper_bounds,
+                            None => {
+                                capture_request_kind_canonical_backfill_upper_bounds_with_connection(
+                                    &mut conn,
+                                )
+                                .await?
+                            }
+                        }
+                    }
+                    _ => {
+                        capture_request_kind_canonical_backfill_upper_bounds_with_connection(
+                            &mut conn,
+                        )
+                        .await?
+                    }
+                };
+                write_request_kind_canonical_backfill_upper_bounds_with_connection(
+                    &mut conn,
+                    upper_bounds,
+                )
+                .await?;
                 write_meta_string_with_connection(
                     &mut conn,
                     META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE,
@@ -1924,11 +2131,20 @@ impl KeyStore {
             }
         }
 
+        let upper_bounds = read_request_kind_canonical_backfill_upper_bounds(&self.pool)
+            .await?
+            .ok_or_else(|| {
+                ProxyError::Other(
+                    "request kind canonical migration missing persisted upper bounds".to_string(),
+                )
+            })?;
+
         match run_request_kind_canonical_backfill_with_pool(
             &self.pool,
             REQUEST_KIND_CANONICAL_BACKFILL_BATCH_SIZE,
             false,
             Some(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE),
+            Some(upper_bounds),
         )
         .await
         {

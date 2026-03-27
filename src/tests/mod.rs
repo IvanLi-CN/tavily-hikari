@@ -1173,6 +1173,20 @@ async fn startup_blocks_on_request_kind_database_migration() {
             .await
             .expect("request-kind migration done marker");
     assert!(migration_done_at > 0);
+    let request_upper_bound: i64 =
+        sqlx::query_scalar("SELECT CAST(value AS INTEGER) FROM meta WHERE key = ? LIMIT 1")
+            .bind(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_REQUEST_LOGS_UPPER_BOUND)
+            .fetch_one(&reopened.key_store.pool)
+            .await
+            .expect("request-kind request log upper bound");
+    let token_upper_bound: i64 =
+        sqlx::query_scalar("SELECT CAST(value AS INTEGER) FROM meta WHERE key = ? LIMIT 1")
+            .bind(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_AUTH_TOKEN_LOGS_UPPER_BOUND)
+            .fetch_one(&reopened.key_store.pool)
+            .await
+            .expect("request-kind token log upper bound");
+    assert!(request_upper_bound >= request_log_id);
+    assert!(token_upper_bound >= token_log_id);
     let migration_state: String =
         sqlx::query_scalar("SELECT value FROM meta WHERE key = ? LIMIT 1")
             .bind(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE)
@@ -1213,6 +1227,20 @@ async fn request_kind_database_migration_state_blocks_reentry() {
         .await
         .expect("running state recorded");
     assert_eq!(running_state, "running:100");
+    let request_upper_bound: i64 =
+        sqlx::query_scalar("SELECT CAST(value AS INTEGER) FROM meta WHERE key = ? LIMIT 1")
+            .bind(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_REQUEST_LOGS_UPPER_BOUND)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("request-kind request log upper bound");
+    let token_upper_bound: i64 =
+        sqlx::query_scalar("SELECT CAST(value AS INTEGER) FROM meta WHERE key = ? LIMIT 1")
+            .bind(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_AUTH_TOKEN_LOGS_UPPER_BOUND)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("request-kind token log upper bound");
+    assert_eq!(request_upper_bound, 0);
+    assert_eq!(token_upper_bound, 0);
 
     let second_claim = proxy
         .key_store
@@ -1253,6 +1281,268 @@ async fn request_kind_database_migration_state_blocks_reentry() {
         .await
         .expect("done state recorded");
     assert_eq!(done_state, "done:102");
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn request_kind_database_migration_claim_reads_state_without_write_lock() {
+    let db_path = temp_db_path("request-kind-migration-read-without-write-lock");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+
+    sqlx::query("DELETE FROM meta WHERE key IN (?, ?)")
+        .bind(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_DONE)
+        .bind(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("clear request-kind migration meta");
+    sqlx::query(
+        r#"
+        INSERT INTO meta (key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        "#,
+    )
+    .bind(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE)
+    .bind("running:100")
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed running state");
+
+    let mut conn = proxy
+        .key_store
+        .pool
+        .acquire()
+        .await
+        .expect("acquire write-lock connection");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *conn)
+        .await
+        .expect("begin immediate");
+
+    let claim = tokio::time::timeout(
+        std::time::Duration::from_millis(250),
+        proxy
+            .key_store
+            .try_claim_request_kind_canonical_migration_v1(101),
+    )
+    .await
+    .expect("claim should not block on unrelated write lock")
+    .expect("claim result");
+    assert_eq!(
+        claim,
+        RequestKindCanonicalMigrationClaim::RunningElsewhere(100)
+    );
+
+    sqlx::query("COMMIT")
+        .execute(&mut *conn)
+        .await
+        .expect("commit immediate transaction");
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn request_kind_database_migration_uses_persisted_upper_bounds() {
+    let db_path = temp_db_path("request-kind-migration-upper-bounds");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let token = proxy
+        .create_access_token(Some("request-kind-upper-bounds"))
+        .await
+        .expect("token created");
+
+    sqlx::query("DELETE FROM meta WHERE key IN (?, ?, ?, ?)")
+        .bind(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_DONE)
+        .bind(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE)
+        .bind(META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_REQUEST_LOGS_CURSOR_V1)
+        .bind(META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_AUTH_TOKEN_LOGS_CURSOR_V1)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("clear request-kind migration markers");
+
+    let request_log_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO request_logs (
+            api_key_id,
+            auth_token_id,
+            method,
+            path,
+            status_code,
+            tavily_status_code,
+            error_message,
+            result_status,
+            request_kind_key,
+            request_kind_label,
+            request_body,
+            response_body,
+            forwarded_headers,
+            dropped_headers,
+            visibility,
+            created_at
+        ) VALUES (
+            ?, ?, 'POST', '/mcp/search', 404, 404, 'Not Found', 'error',
+            'mcp:raw:/mcp/search', 'MCP | /mcp/search',
+            X'7B7D', X'4E6F7420466F756E64', '[]', '[]', 'visible', ?
+        )
+        RETURNING id
+        "#,
+    )
+    .bind(Option::<String>::None)
+    .bind(&token.id)
+    .bind(Utc::now().timestamp())
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("insert bounded request log");
+
+    let token_log_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO auth_token_logs (
+            token_id,
+            api_key_id,
+            method,
+            path,
+            http_status,
+            mcp_status,
+            request_kind_key,
+            request_kind_label,
+            result_status,
+            key_effect_code,
+            created_at,
+            counts_business_quota,
+            billing_state
+        ) VALUES (
+            ?, ?, 'POST', '/mcp', 200, 200,
+            'mcp:tool:acme-target', 'MCP | acme-target',
+            'success', 'none', ?, 0, 'none'
+        )
+        RETURNING id
+        "#,
+    )
+    .bind(&token.id)
+    .bind(Option::<String>::None)
+    .bind(Utc::now().timestamp() + 1)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("insert bounded token log");
+
+    let late_request_log_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO request_logs (
+            api_key_id,
+            auth_token_id,
+            method,
+            path,
+            status_code,
+            tavily_status_code,
+            error_message,
+            result_status,
+            request_kind_key,
+            request_kind_label,
+            request_body,
+            response_body,
+            forwarded_headers,
+            dropped_headers,
+            visibility,
+            created_at
+        ) VALUES (
+            ?, ?, 'POST', '/mcp/late', 404, 404, 'Not Found', 'error',
+            'mcp:raw:/mcp/late', 'MCP | /mcp/late',
+            X'7B7D', X'4E6F7420466F756E64', '[]', '[]', 'visible', ?
+        )
+        RETURNING id
+        "#,
+    )
+    .bind(Option::<String>::None)
+    .bind(&token.id)
+    .bind(Utc::now().timestamp() + 2)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("insert late request log");
+
+    let late_token_log_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO auth_token_logs (
+            token_id,
+            api_key_id,
+            method,
+            path,
+            http_status,
+            mcp_status,
+            request_kind_key,
+            request_kind_label,
+            result_status,
+            key_effect_code,
+            created_at,
+            counts_business_quota,
+            billing_state
+        ) VALUES (
+            ?, ?, 'POST', '/mcp', 200, 200,
+            'mcp:tool:acme-late', 'MCP | acme-late',
+            'success', 'none', ?, 0, 'none'
+        )
+        RETURNING id
+        "#,
+    )
+    .bind(&token.id)
+    .bind(Option::<String>::None)
+    .bind(Utc::now().timestamp() + 3)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("insert late token log");
+
+    let report = run_request_kind_canonical_backfill_with_pool(
+        &proxy.key_store.pool,
+        128,
+        false,
+        Some(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE),
+        Some(RequestKindCanonicalBackfillUpperBounds {
+            request_logs: request_log_id,
+            auth_token_logs: token_log_id,
+        }),
+    )
+    .await
+    .expect("run bounded request-kind backfill");
+
+    assert_eq!(report.request_logs.cursor_after, request_log_id);
+    assert_eq!(report.auth_token_logs.cursor_after, token_log_id);
+
+    let canonical_request_kind: String =
+        sqlx::query_scalar("SELECT request_kind_key FROM request_logs WHERE id = ?")
+            .bind(request_log_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("bounded request log canonicalized");
+    let late_request_kind: String =
+        sqlx::query_scalar("SELECT request_kind_key FROM request_logs WHERE id = ?")
+            .bind(late_request_log_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("late request log untouched");
+    assert_eq!(canonical_request_kind, "mcp:unsupported-path");
+    assert_eq!(late_request_kind, "mcp:raw:/mcp/late");
+
+    let canonical_token_kind: String =
+        sqlx::query_scalar("SELECT request_kind_key FROM auth_token_logs WHERE id = ?")
+            .bind(token_log_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("bounded token log canonicalized");
+    let late_token_kind: String =
+        sqlx::query_scalar("SELECT request_kind_key FROM auth_token_logs WHERE id = ?")
+            .bind(late_token_log_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("late token log untouched");
+    assert_eq!(canonical_token_kind, "mcp:third-party-tool");
+    assert_eq!(late_token_kind, "mcp:tool:acme-late");
 
     let _ = std::fs::remove_file(db_path);
 }

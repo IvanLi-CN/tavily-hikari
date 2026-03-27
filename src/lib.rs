@@ -464,6 +464,10 @@ const META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE: &str =
     "request_kind_canonical_migration_v1_state";
 const META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_DONE: &str =
     "request_kind_canonical_migration_v1_done";
+const META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_REQUEST_LOGS_UPPER_BOUND: &str =
+    "request_kind_canonical_migration_v1_request_logs_upper_bound";
+const META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_AUTH_TOKEN_LOGS_UPPER_BOUND: &str =
+    "request_kind_canonical_migration_v1_auth_token_logs_upper_bound";
 const META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_REQUEST_LOGS_CURSOR_V1: &str =
     "request_kind_canonical_backfill_request_logs_v1";
 const META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_AUTH_TOKEN_LOGS_CURSOR_V1: &str =
@@ -483,7 +487,8 @@ pub async fn run_request_kind_canonical_backfill(
     dry_run: bool,
 ) -> Result<RequestKindCanonicalBackfillReport, ProxyError> {
     let pool = store::open_sqlite_pool(database_path, true, false).await?;
-    store::run_request_kind_canonical_backfill_with_pool(&pool, batch_size, dry_run, None).await
+    store::run_request_kind_canonical_backfill_with_pool(&pool, batch_size, dry_run, None, None)
+        .await
 }
 
 fn token_limit_from_env(var: &str, default: i64) -> i64 {
