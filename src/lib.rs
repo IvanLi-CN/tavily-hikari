@@ -302,6 +302,9 @@ const OUTCOME_UNKNOWN: &str = "unknown";
 pub const REQUEST_LOG_VISIBILITY_VISIBLE: &str = "visible";
 pub const REQUEST_LOG_VISIBILITY_SUPPRESSED_RETRY_SHADOW: &str = "suppressed_retry_shadow";
 pub const REQUEST_KIND_CANONICAL_BACKFILL_BATCH_SIZE: i64 = 500;
+const REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS: u64 = 200;
+const REQUEST_KIND_CANONICAL_MIGRATION_WAIT_TIMEOUT_SECS: u64 = 300;
+const REQUEST_KIND_CANONICAL_MIGRATION_STALE_SECS: i64 = 300;
 const FAILURE_KIND_UPSTREAM_GATEWAY_5XX: &str = "upstream_gateway_5xx";
 const FAILURE_KIND_UPSTREAM_RATE_LIMITED_429: &str = "upstream_rate_limited_429";
 const FAILURE_KIND_UPSTREAM_ACCOUNT_DEACTIVATED_401: &str = "upstream_account_deactivated_401";
@@ -458,6 +461,8 @@ const META_KEY_FORCE_USER_RELOGIN_V1: &str = "force_user_relogin_v1";
 const META_KEY_ALLOW_REGISTRATION_V1: &str = "allow_registration_v1";
 const META_KEY_LINUXDO_SYSTEM_TAG_DEFAULTS_V1: &str = "linuxdo_system_tag_defaults_v1";
 const META_KEY_LINUXDO_SYSTEM_TAG_DEFAULTS_TUPLE_V1: &str = "linuxdo_system_tag_defaults_tuple_v1";
+const META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE: &str =
+    "request_kind_canonical_migration_v1_state";
 const META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_DONE: &str =
     "request_kind_canonical_migration_v1_done";
 const META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_REQUEST_LOGS_CURSOR_V1: &str =

@@ -128,6 +128,7 @@
 ## 回填策略
 
 - request kind 历史 canonical 化必须作为数据库迁移门禁执行：`initialize_schema()` 发现迁移未完成时，必须在返回前完成该一次性迁移，服务不得带着未升级历史数据启动成功。
+- 迁移状态必须可在数据库 `meta` 表中确认，并显式区分 `running` / `failed` / `done`；迁移 claim 必须避免并发启动时的重入。
 - 使用独立维护二进制 `request_kind_canonical_backfill` 作为手动 repair / dry-run 入口；它与数据库迁移共享同一套 backfill 逻辑。
 - 两张表分别按 `id` 升序批处理，并用 meta 高水位游标支持断点续跑；迁移完成后再写入单独的 done marker，后续启动不再重复执行该历史迁移。
 - 每批处理规则：

@@ -1056,11 +1056,12 @@ async fn startup_blocks_on_request_kind_database_migration() {
     .await
     .expect("insert legacy token log before migration");
 
-    sqlx::query("DELETE FROM meta WHERE key = ?")
+    sqlx::query("DELETE FROM meta WHERE key IN (?, ?)")
         .bind(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_DONE)
+        .bind(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE)
         .execute(&proxy.key_store.pool)
         .await
-        .expect("clear request-kind migration done marker");
+        .expect("clear request-kind migration markers");
 
     drop(proxy);
 
@@ -1172,6 +1173,79 @@ async fn startup_blocks_on_request_kind_database_migration() {
             .await
             .expect("request-kind migration done marker");
     assert!(migration_done_at > 0);
+    let migration_state: String =
+        sqlx::query_scalar("SELECT value FROM meta WHERE key = ? LIMIT 1")
+            .bind(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE)
+            .fetch_one(&reopened.key_store.pool)
+            .await
+            .expect("request-kind migration state marker");
+    assert_eq!(migration_state, format!("done:{migration_done_at}"));
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn request_kind_database_migration_state_blocks_reentry() {
+    let db_path = temp_db_path("request-kind-migration-state");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+
+    sqlx::query("DELETE FROM meta WHERE key IN (?, ?)")
+        .bind(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_DONE)
+        .bind(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("clear request-kind migration meta");
+
+    let first_claim = proxy
+        .key_store
+        .try_claim_request_kind_canonical_migration_v1(100)
+        .await
+        .expect("first migration claim");
+    assert_eq!(first_claim, RequestKindCanonicalMigrationClaim::Claimed);
+
+    let running_state: String = sqlx::query_scalar("SELECT value FROM meta WHERE key = ? LIMIT 1")
+        .bind(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("running state recorded");
+    assert_eq!(running_state, "running:100");
+
+    let second_claim = proxy
+        .key_store
+        .try_claim_request_kind_canonical_migration_v1(101)
+        .await
+        .expect("second migration claim");
+    assert_eq!(
+        second_claim,
+        RequestKindCanonicalMigrationClaim::RunningElsewhere(100)
+    );
+
+    proxy
+        .key_store
+        .finish_request_kind_canonical_migration_v1(RequestKindCanonicalMigrationState::Done(102))
+        .await
+        .expect("finish migration");
+
+    let third_claim = proxy
+        .key_store
+        .try_claim_request_kind_canonical_migration_v1(103)
+        .await
+        .expect("third migration claim");
+    assert_eq!(
+        third_claim,
+        RequestKindCanonicalMigrationClaim::AlreadyDone(102)
+    );
+
+    let done_state: String = sqlx::query_scalar("SELECT value FROM meta WHERE key = ? LIMIT 1")
+        .bind(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("done state recorded");
+    assert_eq!(done_state, "done:102");
 
     let _ = std::fs::remove_file(db_path);
 }

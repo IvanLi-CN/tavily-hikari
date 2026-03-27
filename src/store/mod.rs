@@ -125,6 +125,30 @@ struct RequestLogFilterParams<'a> {
     has_where: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RequestKindCanonicalMigrationState {
+    Running(i64),
+    Failed(i64),
+    Done(i64),
+}
+
+impl RequestKindCanonicalMigrationState {
+    fn as_meta_value(self) -> String {
+        match self {
+            Self::Running(ts) => format!("running:{ts}"),
+            Self::Failed(ts) => format!("failed:{ts}"),
+            Self::Done(ts) => format!("done:{ts}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RequestKindCanonicalMigrationClaim {
+    Claimed,
+    RunningElsewhere(i64),
+    AlreadyDone(i64),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RequestKindSnapshot {
     key: Option<String>,
@@ -290,6 +314,61 @@ async fn write_request_kind_backfill_meta_i64(
     .bind(value.to_string())
     .execute(&mut **tx)
     .await?;
+    Ok(())
+}
+
+fn parse_request_kind_canonical_migration_state(
+    value: Option<String>,
+) -> Option<RequestKindCanonicalMigrationState> {
+    let value = value?;
+    let (kind, ts) = value.split_once(':')?;
+    let ts = ts.parse::<i64>().ok()?;
+    match kind {
+        "running" => Some(RequestKindCanonicalMigrationState::Running(ts)),
+        "failed" => Some(RequestKindCanonicalMigrationState::Failed(ts)),
+        "done" => Some(RequestKindCanonicalMigrationState::Done(ts)),
+        _ => None,
+    }
+}
+
+async fn read_meta_string_with_connection(
+    conn: &mut sqlx::pool::PoolConnection<Sqlite>,
+    key: &str,
+) -> Result<Option<String>, ProxyError> {
+    sqlx::query_scalar::<_, String>("SELECT value FROM meta WHERE key = ? LIMIT 1")
+        .bind(key)
+        .fetch_optional(&mut **conn)
+        .await
+        .map_err(ProxyError::Database)
+}
+
+async fn write_meta_string_with_connection(
+    conn: &mut sqlx::pool::PoolConnection<Sqlite>,
+    key: &str,
+    value: &str,
+) -> Result<(), ProxyError> {
+    sqlx::query(
+        r#"
+        INSERT INTO meta (key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        "#,
+    )
+    .bind(key)
+    .bind(value)
+    .execute(&mut **conn)
+    .await?;
+    Ok(())
+}
+
+async fn delete_meta_key_with_connection(
+    conn: &mut sqlx::pool::PoolConnection<Sqlite>,
+    key: &str,
+) -> Result<(), ProxyError> {
+    sqlx::query("DELETE FROM meta WHERE key = ?")
+        .bind(key)
+        .execute(&mut **conn)
+        .await?;
     Ok(())
 }
 
@@ -1516,13 +1595,7 @@ impl KeyStore {
         .execute(&self.pool)
         .await?;
 
-        if self
-            .get_meta_i64(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_DONE)
-            .await?
-            .is_none()
-        {
-            self.migrate_request_kind_canonical_history_v1().await?;
-        }
+        self.ensure_request_kind_canonical_migration_v1().await?;
 
         if self
             .get_meta_i64(META_KEY_API_KEY_CREATED_AT_BACKFILL_V1)
@@ -1680,15 +1753,171 @@ impl KeyStore {
         run_request_kind_canonical_backfill_with_pool(&self.pool, batch_size, false).await
     }
 
-    pub(crate) async fn migrate_request_kind_canonical_history_v1(&self) -> Result<(), ProxyError> {
-        self.run_request_kind_canonical_backfill(REQUEST_KIND_CANONICAL_BACKFILL_BATCH_SIZE)
-            .await?;
-        self.set_meta_i64(
+    pub(crate) async fn try_claim_request_kind_canonical_migration_v1(
+        &self,
+        now_ts: i64,
+    ) -> Result<RequestKindCanonicalMigrationClaim, ProxyError> {
+        let mut conn = begin_immediate_sqlite_connection(&self.pool).await?;
+        let done_at = read_meta_string_with_connection(
+            &mut conn,
             META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_DONE,
-            Utc::now().timestamp(),
         )
-        .await?;
+        .await?
+        .and_then(|value| value.parse::<i64>().ok());
+        if let Some(done_at) = done_at {
+            write_meta_string_with_connection(
+                &mut conn,
+                META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE,
+                &RequestKindCanonicalMigrationState::Done(done_at).as_meta_value(),
+            )
+            .await?;
+            sqlx::query("COMMIT").execute(&mut *conn).await?;
+            return Ok(RequestKindCanonicalMigrationClaim::AlreadyDone(done_at));
+        }
+
+        let state = parse_request_kind_canonical_migration_state(
+            read_meta_string_with_connection(
+                &mut conn,
+                META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE,
+            )
+            .await?,
+        );
+        match state {
+            Some(RequestKindCanonicalMigrationState::Done(done_at)) => {
+                write_meta_string_with_connection(
+                    &mut conn,
+                    META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_DONE,
+                    &done_at.to_string(),
+                )
+                .await?;
+                sqlx::query("COMMIT").execute(&mut *conn).await?;
+                Ok(RequestKindCanonicalMigrationClaim::AlreadyDone(done_at))
+            }
+            Some(RequestKindCanonicalMigrationState::Running(started_at))
+                if now_ts - started_at < REQUEST_KIND_CANONICAL_MIGRATION_STALE_SECS =>
+            {
+                sqlx::query("COMMIT").execute(&mut *conn).await?;
+                Ok(RequestKindCanonicalMigrationClaim::RunningElsewhere(
+                    started_at,
+                ))
+            }
+            _ => {
+                write_meta_string_with_connection(
+                    &mut conn,
+                    META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE,
+                    &RequestKindCanonicalMigrationState::Running(now_ts).as_meta_value(),
+                )
+                .await?;
+                delete_meta_key_with_connection(
+                    &mut conn,
+                    META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_DONE,
+                )
+                .await?;
+                sqlx::query("COMMIT").execute(&mut *conn).await?;
+                Ok(RequestKindCanonicalMigrationClaim::Claimed)
+            }
+        }
+    }
+
+    pub(crate) async fn finish_request_kind_canonical_migration_v1(
+        &self,
+        state: RequestKindCanonicalMigrationState,
+    ) -> Result<(), ProxyError> {
+        let mut conn = begin_immediate_sqlite_connection(&self.pool).await?;
+        let done_at = read_meta_string_with_connection(
+            &mut conn,
+            META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_DONE,
+        )
+        .await?
+        .and_then(|value| value.parse::<i64>().ok());
+
+        if let Some(done_at) = done_at {
+            let done_state = RequestKindCanonicalMigrationState::Done(done_at);
+            write_meta_string_with_connection(
+                &mut conn,
+                META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE,
+                &done_state.as_meta_value(),
+            )
+            .await?;
+            sqlx::query("COMMIT").execute(&mut *conn).await?;
+            return Ok(());
+        }
+
+        match state {
+            RequestKindCanonicalMigrationState::Done(done_at) => {
+                write_meta_string_with_connection(
+                    &mut conn,
+                    META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_DONE,
+                    &done_at.to_string(),
+                )
+                .await?;
+                write_meta_string_with_connection(
+                    &mut conn,
+                    META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE,
+                    &state.as_meta_value(),
+                )
+                .await?;
+            }
+            RequestKindCanonicalMigrationState::Running(_) => {}
+            RequestKindCanonicalMigrationState::Failed(_) => {
+                write_meta_string_with_connection(
+                    &mut conn,
+                    META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE,
+                    &state.as_meta_value(),
+                )
+                .await?;
+            }
+        }
+
+        sqlx::query("COMMIT").execute(&mut *conn).await?;
         Ok(())
+    }
+
+    pub(crate) async fn ensure_request_kind_canonical_migration_v1(
+        &self,
+    ) -> Result<(), ProxyError> {
+        let deadline = Instant::now()
+            + Duration::from_secs(REQUEST_KIND_CANONICAL_MIGRATION_WAIT_TIMEOUT_SECS);
+        loop {
+            match self
+                .try_claim_request_kind_canonical_migration_v1(Utc::now().timestamp())
+                .await?
+            {
+                RequestKindCanonicalMigrationClaim::AlreadyDone(_) => return Ok(()),
+                RequestKindCanonicalMigrationClaim::Claimed => break,
+                RequestKindCanonicalMigrationClaim::RunningElsewhere(_) => {
+                    if Instant::now() >= deadline {
+                        return Err(ProxyError::Other(
+                            "timed out waiting for request kind canonical migration to finish"
+                                .to_string(),
+                        ));
+                    }
+                    tokio::time::sleep(Duration::from_millis(
+                        REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
+                    ))
+                    .await;
+                }
+            }
+        }
+
+        match self
+            .run_request_kind_canonical_backfill(REQUEST_KIND_CANONICAL_BACKFILL_BATCH_SIZE)
+            .await
+        {
+            Ok(_) => {
+                self.finish_request_kind_canonical_migration_v1(
+                    RequestKindCanonicalMigrationState::Done(Utc::now().timestamp()),
+                )
+                .await
+            }
+            Err(err) => {
+                self.finish_request_kind_canonical_migration_v1(
+                    RequestKindCanonicalMigrationState::Failed(Utc::now().timestamp()),
+                )
+                .await?;
+                Err(err)
+            }
+        }
     }
 
     pub(crate) async fn ensure_dev_open_admin_token(&self) -> Result<(), ProxyError> {
