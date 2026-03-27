@@ -150,6 +150,27 @@ pub struct ForwardProxyProgressNodeState {
     pub message: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct RequestKindCanonicalBackfillTableReport {
+    pub table: &'static str,
+    pub meta_key: &'static str,
+    pub dry_run: bool,
+    pub batch_size: i64,
+    pub cursor_before: i64,
+    pub cursor_after: i64,
+    pub rows_scanned: i64,
+    pub rows_updated: i64,
+    pub rows_snapshotted: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RequestKindCanonicalBackfillReport {
+    pub dry_run: bool,
+    pub batch_size: i64,
+    pub request_logs: RequestKindCanonicalBackfillTableReport,
+    pub auth_token_logs: RequestKindCanonicalBackfillTableReport,
+}
+
 impl ForwardProxyProgressEvent {
     pub fn phase(operation: &'static str, phase_key: &'static str, label: &'static str) -> Self {
         Self::Phase {
@@ -280,6 +301,7 @@ const OUTCOME_QUOTA_EXHAUSTED: &str = "quota_exhausted";
 const OUTCOME_UNKNOWN: &str = "unknown";
 pub const REQUEST_LOG_VISIBILITY_VISIBLE: &str = "visible";
 pub const REQUEST_LOG_VISIBILITY_SUPPRESSED_RETRY_SHADOW: &str = "suppressed_retry_shadow";
+pub const REQUEST_KIND_CANONICAL_BACKFILL_BATCH_SIZE: i64 = 500;
 const FAILURE_KIND_UPSTREAM_GATEWAY_5XX: &str = "upstream_gateway_5xx";
 const FAILURE_KIND_UPSTREAM_RATE_LIMITED_429: &str = "upstream_rate_limited_429";
 const FAILURE_KIND_UPSTREAM_ACCOUNT_DEACTIVATED_401: &str = "upstream_account_deactivated_401";
@@ -436,8 +458,12 @@ const META_KEY_FORCE_USER_RELOGIN_V1: &str = "force_user_relogin_v1";
 const META_KEY_ALLOW_REGISTRATION_V1: &str = "allow_registration_v1";
 const META_KEY_LINUXDO_SYSTEM_TAG_DEFAULTS_V1: &str = "linuxdo_system_tag_defaults_v1";
 const META_KEY_LINUXDO_SYSTEM_TAG_DEFAULTS_TUPLE_V1: &str = "linuxdo_system_tag_defaults_tuple_v1";
-const META_KEY_AUTH_TOKEN_LOG_REQUEST_KIND_BACKFILL_V1: &str =
-    "auth_token_log_request_kind_backfill_v1";
+const META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_DONE: &str =
+    "request_kind_canonical_migration_v1_done";
+const META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_REQUEST_LOGS_CURSOR_V1: &str =
+    "request_kind_canonical_backfill_request_logs_v1";
+const META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_AUTH_TOKEN_LOGS_CURSOR_V1: &str =
+    "request_kind_canonical_backfill_auth_token_logs_v1";
 const META_KEY_API_KEY_CREATED_AT_BACKFILL_V1: &str = "api_key_created_at_backfill_v1";
 // Cutover marker for switching business quota counters from "requests" to "credits".
 // We cannot retroactively convert legacy request counts into credits, so we reset the
@@ -446,6 +472,15 @@ const META_KEY_BUSINESS_QUOTA_CREDITS_CUTOVER_V1: &str = "business_quota_credits
 const META_KEY_BUSINESS_QUOTA_MONTHLY_REBASE_V1: &str = "business_quota_monthly_rebase_v1";
 const API_KEY_UPSERT_TRANSIENT_RETRY_BACKOFF_MS: [u64; 2] = [20, 50];
 const TOKEN_USAGE_ROLLUP_TRANSIENT_RETRY_BACKOFF_MS: [u64; 3] = [20, 50, 100];
+
+pub async fn run_request_kind_canonical_backfill(
+    database_path: &str,
+    batch_size: i64,
+    dry_run: bool,
+) -> Result<RequestKindCanonicalBackfillReport, ProxyError> {
+    let pool = store::open_sqlite_pool(database_path, true, false).await?;
+    store::run_request_kind_canonical_backfill_with_pool(&pool, batch_size, dry_run).await
+}
 
 fn token_limit_from_env(var: &str, default: i64) -> i64 {
     match std::env::var(var) {

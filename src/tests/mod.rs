@@ -724,9 +724,13 @@ async fn token_log_filters_and_options_use_backfilled_request_kind_columns() {
     let db_path = temp_db_path("token-log-request-kind-backfill");
     let db_str = db_path.to_string_lossy().to_string();
 
-    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
-        .await
-        .expect("proxy created");
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-startup-backfill".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
     let token = proxy
         .create_access_token(Some("request-kind-backfill"))
         .await
@@ -971,6 +975,203 @@ async fn token_log_filters_and_options_use_backfilled_request_kind_columns() {
         .expect("mixed mcp batch option exists");
     assert_eq!(mixed_batch_option.billing_group, "billable");
     assert_eq!(mixed_batch_option.count, 2);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn startup_blocks_on_request_kind_database_migration() {
+    let db_path = temp_db_path("request-kind-database-migration");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let token = proxy
+        .create_access_token(Some("startup-request-kind-backfill"))
+        .await
+        .expect("token created");
+    let request_log_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO request_logs (
+            api_key_id,
+            auth_token_id,
+            method,
+            path,
+            status_code,
+            tavily_status_code,
+            error_message,
+            result_status,
+            request_kind_key,
+            request_kind_label,
+            request_body,
+            response_body,
+            forwarded_headers,
+            dropped_headers,
+            visibility,
+            created_at
+        ) VALUES (
+            ?, ?, 'POST', '/mcp/search', 404, 404, 'Not Found', 'error',
+            'mcp:raw:/mcp/search', 'MCP | /mcp/search',
+            X'7B7D', X'4E6F7420466F756E64', '[]', '[]', 'visible', ?
+        )
+        RETURNING id
+        "#,
+    )
+    .bind(Option::<String>::None)
+    .bind(&token.id)
+    .bind(Utc::now().timestamp())
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("insert legacy request log before migration");
+
+    let token_log_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO auth_token_logs (
+            token_id,
+            api_key_id,
+            method,
+            path,
+            http_status,
+            mcp_status,
+            request_kind_key,
+            request_kind_label,
+            result_status,
+            key_effect_code,
+            created_at,
+            counts_business_quota,
+            billing_state
+        ) VALUES (
+            ?, ?, 'POST', '/mcp', 200, 200,
+            'mcp:tool:acme-startup', 'MCP | acme-startup',
+            'success', 'none', ?, 0, 'none'
+        )
+        RETURNING id
+        "#,
+    )
+    .bind(&token.id)
+    .bind(Option::<String>::None)
+    .bind(Utc::now().timestamp() + 1)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("insert legacy token log before migration");
+
+    sqlx::query("DELETE FROM meta WHERE key = ?")
+        .bind(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_DONE)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("clear request-kind migration done marker");
+
+    drop(proxy);
+
+    let reopened = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy reopened");
+
+    let request_row = sqlx::query(
+        r#"
+        SELECT
+            request_kind_key,
+            request_kind_label,
+            request_kind_detail,
+            legacy_request_kind_key
+        FROM request_logs
+        WHERE id = ?
+        "#,
+    )
+    .bind(request_log_id)
+    .fetch_one(&reopened.key_store.pool)
+    .await
+    .expect("request row after database migration");
+    assert_eq!(
+        request_row
+            .try_get::<String, _>("request_kind_key")
+            .unwrap(),
+        "mcp:unsupported-path"
+    );
+    assert_eq!(
+        request_row
+            .try_get::<String, _>("request_kind_label")
+            .unwrap(),
+        "MCP | unsupported path"
+    );
+    assert_eq!(
+        request_row
+            .try_get::<Option<String>, _>("request_kind_detail")
+            .unwrap()
+            .as_deref(),
+        Some("/mcp/search")
+    );
+    assert_eq!(
+        request_row
+            .try_get::<Option<String>, _>("legacy_request_kind_key")
+            .unwrap()
+            .as_deref(),
+        Some("mcp:raw:/mcp/search")
+    );
+
+    let token_row = sqlx::query(
+        r#"
+        SELECT
+            request_kind_key,
+            request_kind_label,
+            request_kind_detail,
+            legacy_request_kind_key
+        FROM auth_token_logs
+        WHERE id = ?
+        "#,
+    )
+    .bind(token_log_id)
+    .fetch_one(&reopened.key_store.pool)
+    .await
+    .expect("token row after database migration");
+    assert_eq!(
+        token_row.try_get::<String, _>("request_kind_key").unwrap(),
+        "mcp:third-party-tool"
+    );
+    assert_eq!(
+        token_row
+            .try_get::<String, _>("request_kind_label")
+            .unwrap(),
+        "MCP | third-party tool"
+    );
+    assert_eq!(
+        token_row
+            .try_get::<Option<String>, _>("request_kind_detail")
+            .unwrap()
+            .as_deref(),
+        Some("acme-startup")
+    );
+    assert_eq!(
+        token_row
+            .try_get::<Option<String>, _>("legacy_request_kind_key")
+            .unwrap()
+            .as_deref(),
+        Some("mcp:tool:acme-startup")
+    );
+
+    let request_cursor: i64 =
+        sqlx::query_scalar("SELECT CAST(value AS INTEGER) FROM meta WHERE key = ? LIMIT 1")
+            .bind(META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_REQUEST_LOGS_CURSOR_V1)
+            .fetch_one(&reopened.key_store.pool)
+            .await
+            .expect("request cursor after database migration");
+    let token_cursor: i64 =
+        sqlx::query_scalar("SELECT CAST(value AS INTEGER) FROM meta WHERE key = ? LIMIT 1")
+            .bind(META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_AUTH_TOKEN_LOGS_CURSOR_V1)
+            .fetch_one(&reopened.key_store.pool)
+            .await
+            .expect("token cursor after database migration");
+    assert!(request_cursor >= request_log_id);
+    assert!(token_cursor >= token_log_id);
+
+    let migration_done_at: i64 =
+        sqlx::query_scalar("SELECT CAST(value AS INTEGER) FROM meta WHERE key = ? LIMIT 1")
+            .bind(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_DONE)
+            .fetch_one(&reopened.key_store.pool)
+            .await
+            .expect("request-kind migration done marker");
+    assert!(migration_done_at > 0);
 
     let _ = std::fs::remove_file(db_path);
 }

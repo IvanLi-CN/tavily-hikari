@@ -125,6 +125,531 @@ struct RequestLogFilterParams<'a> {
     has_where: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RequestKindSnapshot {
+    key: Option<String>,
+    label: Option<String>,
+    detail: Option<String>,
+}
+
+impl RequestKindSnapshot {
+    fn has_any(&self) -> bool {
+        self.key.is_some() || self.label.is_some() || self.detail.is_some()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RequestKindCanonicalUpdate {
+    id: i64,
+    request_kind_key: String,
+    request_kind_label: String,
+    request_kind_detail: Option<String>,
+    legacy_request_kind_key: Option<String>,
+    legacy_request_kind_label: Option<String>,
+    legacy_request_kind_detail: Option<String>,
+    snapshotted: bool,
+}
+
+#[derive(Debug, Clone)]
+struct RequestKindBackfillRequestLogRow {
+    id: i64,
+    path: String,
+    request_body: Option<Vec<u8>>,
+    request_kind_key: Option<String>,
+    request_kind_label: Option<String>,
+    request_kind_detail: Option<String>,
+    legacy_request_kind_key: Option<String>,
+    legacy_request_kind_label: Option<String>,
+    legacy_request_kind_detail: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct RequestKindBackfillTokenLogRow {
+    id: i64,
+    method: String,
+    path: String,
+    query: Option<String>,
+    request_kind_key: Option<String>,
+    request_kind_label: Option<String>,
+    request_kind_detail: Option<String>,
+    legacy_request_kind_key: Option<String>,
+    legacy_request_kind_label: Option<String>,
+    legacy_request_kind_detail: Option<String>,
+}
+
+fn normalize_request_kind_backfill_field(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    })
+}
+
+fn resolve_request_kind_legacy_snapshot(
+    current: &RequestKindSnapshot,
+    legacy: &RequestKindSnapshot,
+    desired: &RequestKindSnapshot,
+) -> (RequestKindSnapshot, bool) {
+    let already_canonical = current == desired;
+    let should_snapshot = !already_canonical && !legacy.has_any() && current.has_any();
+    let next_legacy = if should_snapshot {
+        current.clone()
+    } else {
+        legacy.clone()
+    };
+    (next_legacy, should_snapshot)
+}
+
+async fn request_kind_backfill_table_column_exists(
+    pool: &SqlitePool,
+    table: &str,
+    column: &str,
+) -> Result<bool, ProxyError> {
+    let sql = format!("SELECT 1 FROM pragma_table_info('{table}') WHERE name = ? LIMIT 1");
+    let exists = sqlx::query_scalar::<_, i64>(&sql)
+        .bind(column)
+        .fetch_optional(pool)
+        .await?;
+    Ok(exists.is_some())
+}
+
+async fn ensure_request_kind_backfill_schema(pool: &SqlitePool) -> Result<(), ProxyError> {
+    for (table, columns) in [
+        (
+            "request_logs",
+            [
+                (
+                    "legacy_request_kind_key",
+                    "ALTER TABLE request_logs ADD COLUMN legacy_request_kind_key TEXT",
+                ),
+                (
+                    "legacy_request_kind_label",
+                    "ALTER TABLE request_logs ADD COLUMN legacy_request_kind_label TEXT",
+                ),
+                (
+                    "legacy_request_kind_detail",
+                    "ALTER TABLE request_logs ADD COLUMN legacy_request_kind_detail TEXT",
+                ),
+            ],
+        ),
+        (
+            "auth_token_logs",
+            [
+                (
+                    "legacy_request_kind_key",
+                    "ALTER TABLE auth_token_logs ADD COLUMN legacy_request_kind_key TEXT",
+                ),
+                (
+                    "legacy_request_kind_label",
+                    "ALTER TABLE auth_token_logs ADD COLUMN legacy_request_kind_label TEXT",
+                ),
+                (
+                    "legacy_request_kind_detail",
+                    "ALTER TABLE auth_token_logs ADD COLUMN legacy_request_kind_detail TEXT",
+                ),
+            ],
+        ),
+    ] {
+        for (column, alter_sql) in columns {
+            if !request_kind_backfill_table_column_exists(pool, table, column).await? {
+                sqlx::query(alter_sql).execute(pool).await?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn read_request_kind_backfill_meta_i64(
+    pool: &SqlitePool,
+    key: &str,
+) -> Result<i64, ProxyError> {
+    Ok(
+        sqlx::query_scalar::<_, Option<String>>("SELECT value FROM meta WHERE key = ? LIMIT 1")
+            .bind(key)
+            .fetch_optional(pool)
+            .await?
+            .flatten()
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or(0),
+    )
+}
+
+async fn write_request_kind_backfill_meta_i64(
+    tx: &mut Transaction<'_, Sqlite>,
+    key: &str,
+    value: i64,
+) -> Result<(), ProxyError> {
+    sqlx::query(
+        r#"
+        INSERT INTO meta (key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        "#,
+    )
+    .bind(key)
+    .bind(value.to_string())
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+fn build_request_kind_backfill_request_log_update(
+    row: RequestKindBackfillRequestLogRow,
+) -> Option<RequestKindCanonicalUpdate> {
+    let current = RequestKindSnapshot {
+        key: normalize_request_kind_backfill_field(row.request_kind_key),
+        label: normalize_request_kind_backfill_field(row.request_kind_label),
+        detail: normalize_request_kind_backfill_field(row.request_kind_detail),
+    };
+    let legacy = RequestKindSnapshot {
+        key: normalize_request_kind_backfill_field(row.legacy_request_kind_key),
+        label: normalize_request_kind_backfill_field(row.legacy_request_kind_label),
+        detail: normalize_request_kind_backfill_field(row.legacy_request_kind_detail),
+    };
+
+    let kind = canonicalize_request_log_request_kind(
+        row.path.as_str(),
+        row.request_body.as_deref(),
+        current.key.clone(),
+        current.label.clone(),
+        current.detail.clone(),
+    );
+    let desired = RequestKindSnapshot {
+        key: Some(kind.key.clone()),
+        label: Some(kind.label.clone()),
+        detail: normalize_request_kind_backfill_field(kind.detail),
+    };
+    let (next_legacy, snapshotted) =
+        resolve_request_kind_legacy_snapshot(&current, &legacy, &desired);
+
+    if current == desired && legacy == next_legacy {
+        return None;
+    }
+
+    Some(RequestKindCanonicalUpdate {
+        id: row.id,
+        request_kind_key: kind.key,
+        request_kind_label: kind.label,
+        request_kind_detail: desired.detail,
+        legacy_request_kind_key: next_legacy.key,
+        legacy_request_kind_label: next_legacy.label,
+        legacy_request_kind_detail: next_legacy.detail,
+        snapshotted,
+    })
+}
+
+fn build_request_kind_backfill_token_log_update(
+    row: RequestKindBackfillTokenLogRow,
+) -> Option<RequestKindCanonicalUpdate> {
+    let current = RequestKindSnapshot {
+        key: normalize_request_kind_backfill_field(row.request_kind_key),
+        label: normalize_request_kind_backfill_field(row.request_kind_label),
+        detail: normalize_request_kind_backfill_field(row.request_kind_detail),
+    };
+    let legacy = RequestKindSnapshot {
+        key: normalize_request_kind_backfill_field(row.legacy_request_kind_key),
+        label: normalize_request_kind_backfill_field(row.legacy_request_kind_label),
+        detail: normalize_request_kind_backfill_field(row.legacy_request_kind_detail),
+    };
+
+    let kind = finalize_token_request_kind(
+        row.method.as_str(),
+        row.path.as_str(),
+        row.query.as_deref(),
+        current.key.clone(),
+        current.label.clone(),
+        current.detail.clone(),
+    );
+    let desired = RequestKindSnapshot {
+        key: Some(kind.key.clone()),
+        label: Some(kind.label.clone()),
+        detail: normalize_request_kind_backfill_field(kind.detail),
+    };
+    let (next_legacy, snapshotted) =
+        resolve_request_kind_legacy_snapshot(&current, &legacy, &desired);
+
+    if current == desired && legacy == next_legacy {
+        return None;
+    }
+
+    Some(RequestKindCanonicalUpdate {
+        id: row.id,
+        request_kind_key: kind.key,
+        request_kind_label: kind.label,
+        request_kind_detail: desired.detail,
+        legacy_request_kind_key: next_legacy.key,
+        legacy_request_kind_label: next_legacy.label,
+        legacy_request_kind_detail: next_legacy.detail,
+        snapshotted,
+    })
+}
+
+async fn backfill_request_log_request_kinds_with_pool(
+    pool: &SqlitePool,
+    batch_size: i64,
+    dry_run: bool,
+) -> Result<RequestKindCanonicalBackfillTableReport, ProxyError> {
+    let cursor_before = read_request_kind_backfill_meta_i64(
+        pool,
+        META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_REQUEST_LOGS_CURSOR_V1,
+    )
+    .await?;
+    let mut cursor_after = cursor_before;
+    let mut rows_scanned = 0_i64;
+    let mut rows_updated = 0_i64;
+    let mut rows_snapshotted = 0_i64;
+
+    loop {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                id,
+                path,
+                request_body,
+                request_kind_key,
+                request_kind_label,
+                request_kind_detail,
+                legacy_request_kind_key,
+                legacy_request_kind_label,
+                legacy_request_kind_detail
+            FROM request_logs
+            WHERE id > ?
+            ORDER BY id ASC
+            LIMIT ?
+            "#,
+        )
+        .bind(cursor_after)
+        .bind(batch_size)
+        .fetch_all(pool)
+        .await?;
+        if rows.is_empty() {
+            break;
+        }
+
+        let parsed_rows = rows
+            .into_iter()
+            .map(|row| {
+                Ok(RequestKindBackfillRequestLogRow {
+                    id: row.try_get("id")?,
+                    path: row.try_get("path")?,
+                    request_body: row.try_get("request_body")?,
+                    request_kind_key: row.try_get("request_kind_key")?,
+                    request_kind_label: row.try_get("request_kind_label")?,
+                    request_kind_detail: row.try_get("request_kind_detail")?,
+                    legacy_request_kind_key: row.try_get("legacy_request_kind_key")?,
+                    legacy_request_kind_label: row.try_get("legacy_request_kind_label")?,
+                    legacy_request_kind_detail: row.try_get("legacy_request_kind_detail")?,
+                })
+            })
+            .collect::<Result<Vec<_>, sqlx::Error>>()?;
+        let batch_max_id = parsed_rows.last().map(|row| row.id).unwrap_or(cursor_after);
+        rows_scanned += parsed_rows.len() as i64;
+
+        let updates = parsed_rows
+            .into_iter()
+            .filter_map(build_request_kind_backfill_request_log_update)
+            .collect::<Vec<_>>();
+        rows_updated += updates.len() as i64;
+        rows_snapshotted += updates.iter().filter(|update| update.snapshotted).count() as i64;
+
+        if !dry_run {
+            let mut tx = pool.begin().await?;
+            for update in &updates {
+                sqlx::query(
+                    r#"
+                    UPDATE request_logs
+                    SET
+                        request_kind_key = ?,
+                        request_kind_label = ?,
+                        request_kind_detail = ?,
+                        legacy_request_kind_key = ?,
+                        legacy_request_kind_label = ?,
+                        legacy_request_kind_detail = ?
+                    WHERE id = ?
+                    "#,
+                )
+                .bind(&update.request_kind_key)
+                .bind(&update.request_kind_label)
+                .bind(&update.request_kind_detail)
+                .bind(&update.legacy_request_kind_key)
+                .bind(&update.legacy_request_kind_label)
+                .bind(&update.legacy_request_kind_detail)
+                .bind(update.id)
+                .execute(&mut *tx)
+                .await?;
+            }
+            write_request_kind_backfill_meta_i64(
+                &mut tx,
+                META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_REQUEST_LOGS_CURSOR_V1,
+                batch_max_id,
+            )
+            .await?;
+            tx.commit().await?;
+        }
+
+        cursor_after = if dry_run { cursor_before } else { batch_max_id };
+        if dry_run && batch_max_id > cursor_before {
+            cursor_after = batch_max_id;
+        }
+    }
+
+    Ok(RequestKindCanonicalBackfillTableReport {
+        table: "request_logs",
+        meta_key: META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_REQUEST_LOGS_CURSOR_V1,
+        dry_run,
+        batch_size,
+        cursor_before,
+        cursor_after: if dry_run { cursor_before } else { cursor_after },
+        rows_scanned,
+        rows_updated,
+        rows_snapshotted,
+    })
+}
+
+async fn backfill_auth_token_log_request_kinds_with_pool(
+    pool: &SqlitePool,
+    batch_size: i64,
+    dry_run: bool,
+) -> Result<RequestKindCanonicalBackfillTableReport, ProxyError> {
+    let cursor_before = read_request_kind_backfill_meta_i64(
+        pool,
+        META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_AUTH_TOKEN_LOGS_CURSOR_V1,
+    )
+    .await?;
+    let mut cursor_after = cursor_before;
+    let mut rows_scanned = 0_i64;
+    let mut rows_updated = 0_i64;
+    let mut rows_snapshotted = 0_i64;
+
+    loop {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                id,
+                method,
+                path,
+                query,
+                request_kind_key,
+                request_kind_label,
+                request_kind_detail,
+                legacy_request_kind_key,
+                legacy_request_kind_label,
+                legacy_request_kind_detail
+            FROM auth_token_logs
+            WHERE id > ?
+            ORDER BY id ASC
+            LIMIT ?
+            "#,
+        )
+        .bind(cursor_after)
+        .bind(batch_size)
+        .fetch_all(pool)
+        .await?;
+        if rows.is_empty() {
+            break;
+        }
+
+        let parsed_rows = rows
+            .into_iter()
+            .map(|row| {
+                Ok(RequestKindBackfillTokenLogRow {
+                    id: row.try_get("id")?,
+                    method: row.try_get("method")?,
+                    path: row.try_get("path")?,
+                    query: row.try_get("query")?,
+                    request_kind_key: row.try_get("request_kind_key")?,
+                    request_kind_label: row.try_get("request_kind_label")?,
+                    request_kind_detail: row.try_get("request_kind_detail")?,
+                    legacy_request_kind_key: row.try_get("legacy_request_kind_key")?,
+                    legacy_request_kind_label: row.try_get("legacy_request_kind_label")?,
+                    legacy_request_kind_detail: row.try_get("legacy_request_kind_detail")?,
+                })
+            })
+            .collect::<Result<Vec<_>, sqlx::Error>>()?;
+        let batch_max_id = parsed_rows.last().map(|row| row.id).unwrap_or(cursor_after);
+        rows_scanned += parsed_rows.len() as i64;
+
+        let updates = parsed_rows
+            .into_iter()
+            .filter_map(build_request_kind_backfill_token_log_update)
+            .collect::<Vec<_>>();
+        rows_updated += updates.len() as i64;
+        rows_snapshotted += updates.iter().filter(|update| update.snapshotted).count() as i64;
+
+        if !dry_run {
+            let mut tx = pool.begin().await?;
+            for update in &updates {
+                sqlx::query(
+                    r#"
+                    UPDATE auth_token_logs
+                    SET
+                        request_kind_key = ?,
+                        request_kind_label = ?,
+                        request_kind_detail = ?,
+                        legacy_request_kind_key = ?,
+                        legacy_request_kind_label = ?,
+                        legacy_request_kind_detail = ?
+                    WHERE id = ?
+                    "#,
+                )
+                .bind(&update.request_kind_key)
+                .bind(&update.request_kind_label)
+                .bind(&update.request_kind_detail)
+                .bind(&update.legacy_request_kind_key)
+                .bind(&update.legacy_request_kind_label)
+                .bind(&update.legacy_request_kind_detail)
+                .bind(update.id)
+                .execute(&mut *tx)
+                .await?;
+            }
+            write_request_kind_backfill_meta_i64(
+                &mut tx,
+                META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_AUTH_TOKEN_LOGS_CURSOR_V1,
+                batch_max_id,
+            )
+            .await?;
+            tx.commit().await?;
+        }
+
+        cursor_after = if dry_run { cursor_before } else { batch_max_id };
+        if dry_run && batch_max_id > cursor_before {
+            cursor_after = batch_max_id;
+        }
+    }
+
+    Ok(RequestKindCanonicalBackfillTableReport {
+        table: "auth_token_logs",
+        meta_key: META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_AUTH_TOKEN_LOGS_CURSOR_V1,
+        dry_run,
+        batch_size,
+        cursor_before,
+        cursor_after: if dry_run { cursor_before } else { cursor_after },
+        rows_scanned,
+        rows_updated,
+        rows_snapshotted,
+    })
+}
+
+pub(crate) async fn run_request_kind_canonical_backfill_with_pool(
+    pool: &SqlitePool,
+    batch_size: i64,
+    dry_run: bool,
+) -> Result<RequestKindCanonicalBackfillReport, ProxyError> {
+    let batch_size = batch_size.max(1);
+    ensure_request_kind_backfill_schema(pool).await?;
+    let request_logs =
+        backfill_request_log_request_kinds_with_pool(pool, batch_size, dry_run).await?;
+    let auth_token_logs =
+        backfill_auth_token_log_request_kinds_with_pool(pool, batch_size, dry_run).await?;
+
+    Ok(RequestKindCanonicalBackfillReport {
+        dry_run,
+        batch_size,
+        request_logs,
+        auth_token_logs,
+    })
+}
+
 #[derive(Debug)]
 pub(crate) struct KeyStore {
     pub(crate) pool: SqlitePool,
@@ -582,7 +1107,6 @@ impl KeyStore {
                 .await?;
         }
 
-        let mut request_kind_schema_changed = false;
         if !self
             .table_column_exists("auth_token_logs", "request_kind_key")
             .await?
@@ -590,7 +1114,6 @@ impl KeyStore {
             sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN request_kind_key TEXT")
                 .execute(&self.pool)
                 .await?;
-            request_kind_schema_changed = true;
         }
 
         if !self
@@ -600,7 +1123,6 @@ impl KeyStore {
             sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN request_kind_label TEXT")
                 .execute(&self.pool)
                 .await?;
-            request_kind_schema_changed = true;
         }
 
         if !self
@@ -610,7 +1132,6 @@ impl KeyStore {
             sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN request_kind_detail TEXT")
                 .execute(&self.pool)
                 .await?;
-            request_kind_schema_changed = true;
         }
 
         if !self
@@ -620,7 +1141,6 @@ impl KeyStore {
             sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN legacy_request_kind_key TEXT")
                 .execute(&self.pool)
                 .await?;
-            request_kind_schema_changed = true;
         }
 
         if !self
@@ -630,7 +1150,6 @@ impl KeyStore {
             sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN legacy_request_kind_label TEXT")
                 .execute(&self.pool)
                 .await?;
-            request_kind_schema_changed = true;
         }
 
         if !self
@@ -640,7 +1159,6 @@ impl KeyStore {
             sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN legacy_request_kind_detail TEXT")
                 .execute(&self.pool)
                 .await?;
-            request_kind_schema_changed = true;
         }
 
         // Upgrade: add counts_business_quota column if missing
@@ -999,6 +1517,14 @@ impl KeyStore {
         .await?;
 
         if self
+            .get_meta_i64(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_DONE)
+            .await?
+            .is_none()
+        {
+            self.migrate_request_kind_canonical_history_v1().await?;
+        }
+
+        if self
             .get_meta_i64(META_KEY_API_KEY_CREATED_AT_BACKFILL_V1)
             .await?
             .is_none()
@@ -1009,16 +1535,6 @@ impl KeyStore {
                 Utc::now().timestamp(),
             )
             .await?;
-        }
-
-        if request_kind_schema_changed
-            || self
-                .get_meta_i64(META_KEY_AUTH_TOKEN_LOG_REQUEST_KIND_BACKFILL_V1)
-                .await?
-                .is_none()
-        {
-            self.set_meta_i64(META_KEY_AUTH_TOKEN_LOG_REQUEST_KIND_BACKFILL_V1, 1)
-                .await?;
         }
 
         // Backfill API key usage buckets exactly once. This enables safe request_logs retention
@@ -1154,6 +1670,24 @@ impl KeyStore {
             }
         }
 
+        Ok(())
+    }
+
+    pub(crate) async fn run_request_kind_canonical_backfill(
+        &self,
+        batch_size: i64,
+    ) -> Result<RequestKindCanonicalBackfillReport, ProxyError> {
+        run_request_kind_canonical_backfill_with_pool(&self.pool, batch_size, false).await
+    }
+
+    pub(crate) async fn migrate_request_kind_canonical_history_v1(&self) -> Result<(), ProxyError> {
+        self.run_request_kind_canonical_backfill(REQUEST_KIND_CANONICAL_BACKFILL_BATCH_SIZE)
+            .await?;
+        self.set_meta_i64(
+            META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_DONE,
+            Utc::now().timestamp(),
+        )
+        .await?;
         Ok(())
     }
 
