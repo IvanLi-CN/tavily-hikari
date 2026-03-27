@@ -20,6 +20,15 @@ fn env_lock() -> Arc<tokio::sync::Mutex<()>> {
         .clone()
 }
 
+fn dead_request_kind_migration_owner_pid() -> u32 {
+    for candidate in [999_999_u32, 888_888, 777_777, 666_666] {
+        if !request_kind_canonical_migration_owner_pid_is_live(candidate) {
+            return candidate;
+        }
+    }
+    panic!("unable to find a dead pid candidate for request-kind migration tests");
+}
+
 async fn spawn_api_key_geo_mock_server() -> SocketAddr {
     let app = Router::new().route(
         "/geo",
@@ -1226,7 +1235,7 @@ async fn request_kind_database_migration_state_blocks_reentry() {
         .fetch_one(&proxy.key_store.pool)
         .await
         .expect("running state recorded");
-    assert_eq!(running_state, "running:100");
+    assert_eq!(running_state, format!("running:100:{}", std::process::id()));
     let request_upper_bound: i64 =
         sqlx::query_scalar("SELECT CAST(value AS INTEGER) FROM meta WHERE key = ? LIMIT 1")
             .bind(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_REQUEST_LOGS_UPPER_BOUND)
@@ -1308,7 +1317,7 @@ async fn request_kind_database_migration_claim_reads_state_without_write_lock() 
         "#,
     )
     .bind(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE)
-    .bind("running:100")
+    .bind(format!("running:100:{}", std::process::id()))
     .execute(&proxy.key_store.pool)
     .await
     .expect("seed running state");
@@ -1342,6 +1351,54 @@ async fn request_kind_database_migration_claim_reads_state_without_write_lock() 
         .execute(&mut *conn)
         .await
         .expect("commit immediate transaction");
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn request_kind_database_migration_reclaims_dead_running_owner_immediately() {
+    let db_path = temp_db_path("request-kind-migration-reclaim-dead-owner");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+
+    sqlx::query("DELETE FROM meta WHERE key IN (?, ?)")
+        .bind(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_DONE)
+        .bind(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("clear request-kind migration meta");
+    sqlx::query(
+        r#"
+        INSERT INTO meta (key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        "#,
+    )
+    .bind(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE)
+    .bind(format!(
+        "running:100:{}",
+        dead_request_kind_migration_owner_pid()
+    ))
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed dead running state");
+
+    let claim = proxy
+        .key_store
+        .try_claim_request_kind_canonical_migration_v1(101)
+        .await
+        .expect("claim should reclaim dead owner");
+    assert_eq!(claim, RequestKindCanonicalMigrationClaim::Claimed);
+
+    let running_state: String = sqlx::query_scalar("SELECT value FROM meta WHERE key = ? LIMIT 1")
+        .bind(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE)
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("running state recorded");
+    assert_eq!(running_state, format!("running:101:{}", std::process::id()));
 
     let _ = std::fs::remove_file(db_path);
 }
@@ -1416,6 +1473,134 @@ async fn request_kind_database_migration_retries_after_transient_write_lock() {
         .await
         .expect("migration done marker");
     assert!(migration_done_at.is_some());
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn request_kind_backfill_batch_retries_after_transient_write_lock() {
+    use sqlx::Connection;
+    use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
+
+    let db_path = temp_db_path("request-kind-backfill-batch-retry-after-busy");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let token = proxy
+        .create_access_token(Some("request-kind-batch-busy"))
+        .await
+        .expect("token created");
+
+    sqlx::query("DELETE FROM meta WHERE key IN (?, ?, ?, ?)")
+        .bind(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_DONE)
+        .bind(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE)
+        .bind(META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_REQUEST_LOGS_CURSOR_V1)
+        .bind(META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_AUTH_TOKEN_LOGS_CURSOR_V1)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("clear request-kind migration markers");
+
+    let request_log_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO request_logs (
+            api_key_id,
+            auth_token_id,
+            method,
+            path,
+            status_code,
+            tavily_status_code,
+            error_message,
+            result_status,
+            request_kind_key,
+            request_kind_label,
+            request_body,
+            response_body,
+            forwarded_headers,
+            dropped_headers,
+            visibility,
+            created_at
+        ) VALUES (
+            ?, ?, 'POST', '/mcp/search', 404, 404, 'Not Found', 'error',
+            'mcp:raw:/mcp/search', 'MCP | /mcp/search',
+            X'7B7D', X'4E6F7420466F756E64', '[]', '[]', 'visible', ?
+        )
+        RETURNING id
+        "#,
+    )
+    .bind(Option::<String>::None)
+    .bind(&token.id)
+    .bind(Utc::now().timestamp())
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("insert bounded request log");
+
+    let first_claim = proxy
+        .key_store
+        .try_claim_request_kind_canonical_migration_v1(100)
+        .await
+        .expect("first migration claim");
+    assert_eq!(first_claim, RequestKindCanonicalMigrationClaim::Claimed);
+
+    let request_upper_bound: i64 =
+        sqlx::query_scalar("SELECT CAST(value AS INTEGER) FROM meta WHERE key = ? LIMIT 1")
+            .bind(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_REQUEST_LOGS_UPPER_BOUND)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("request-kind request log upper bound");
+    let token_upper_bound: i64 =
+        sqlx::query_scalar("SELECT CAST(value AS INTEGER) FROM meta WHERE key = ? LIMIT 1")
+            .bind(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_AUTH_TOKEN_LOGS_UPPER_BOUND)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("request-kind token log upper bound");
+    assert_eq!(request_upper_bound, request_log_id);
+    assert_eq!(token_upper_bound, 0);
+
+    let options = SqliteConnectOptions::new()
+        .filename(&db_path)
+        .create_if_missing(false)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(std::time::Duration::from_millis(1));
+    let mut lock_conn = sqlx::SqliteConnection::connect_with(&options)
+        .await
+        .expect("connect write lock holder");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut lock_conn)
+        .await
+        .expect("hold write lock");
+
+    let release_lock = tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        sqlx::query("COMMIT")
+            .execute(&mut lock_conn)
+            .await
+            .expect("release write lock");
+    });
+
+    let report = run_request_kind_canonical_backfill_with_pool(
+        &proxy.key_store.pool,
+        128,
+        false,
+        Some(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE),
+        Some(RequestKindCanonicalBackfillUpperBounds {
+            request_logs: request_upper_bound,
+            auth_token_logs: token_upper_bound,
+        }),
+    )
+    .await
+    .expect("backfill should retry after transient busy");
+    release_lock.await.expect("join lock release");
+
+    assert_eq!(report.request_logs.cursor_after, request_log_id);
+    let canonical_request_kind: String =
+        sqlx::query_scalar("SELECT request_kind_key FROM request_logs WHERE id = ?")
+            .bind(request_log_id)
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("request log canonicalized");
+    assert_eq!(canonical_request_kind, "mcp:unsupported-path");
 
     let _ = std::fs::remove_file(db_path);
 }

@@ -127,7 +127,10 @@ struct RequestLogFilterParams<'a> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RequestKindCanonicalMigrationState {
-    Running(i64),
+    Running {
+        heartbeat_at: i64,
+        owner_pid: Option<u32>,
+    },
     Failed(i64),
     Done(i64),
 }
@@ -135,7 +138,14 @@ pub(crate) enum RequestKindCanonicalMigrationState {
 impl RequestKindCanonicalMigrationState {
     fn as_meta_value(self) -> String {
         match self {
-            Self::Running(ts) => format!("running:{ts}"),
+            Self::Running {
+                heartbeat_at,
+                owner_pid: Some(owner_pid),
+            } => format!("running:{heartbeat_at}:{owner_pid}"),
+            Self::Running {
+                heartbeat_at,
+                owner_pid: None,
+            } => format!("running:{heartbeat_at}"),
             Self::Failed(ts) => format!("failed:{ts}"),
             Self::Done(ts) => format!("done:{ts}"),
         }
@@ -344,18 +354,80 @@ fn parse_request_kind_canonical_migration_state(
     value: Option<String>,
 ) -> Option<RequestKindCanonicalMigrationState> {
     let value = value?;
-    let (kind, ts) = value.split_once(':')?;
-    let ts = ts.parse::<i64>().ok()?;
+    let mut parts = value.split(':');
+    let kind = parts.next()?;
+    let ts = parts.next()?.parse::<i64>().ok()?;
     match kind {
-        "running" => Some(RequestKindCanonicalMigrationState::Running(ts)),
-        "failed" => Some(RequestKindCanonicalMigrationState::Failed(ts)),
-        "done" => Some(RequestKindCanonicalMigrationState::Done(ts)),
+        "running" => {
+            let owner_pid = match parts.next() {
+                Some(pid) => Some(pid.parse::<u32>().ok()?),
+                None => None,
+            };
+            if parts.next().is_some() {
+                return None;
+            }
+            Some(RequestKindCanonicalMigrationState::Running {
+                heartbeat_at: ts,
+                owner_pid,
+            })
+        }
+        "failed" if parts.next().is_none() => Some(RequestKindCanonicalMigrationState::Failed(ts)),
+        "done" if parts.next().is_none() => Some(RequestKindCanonicalMigrationState::Done(ts)),
         _ => None,
     }
 }
 
 fn request_kind_canonical_migration_is_fresh(now_ts: i64, started_at: i64) -> bool {
     now_ts.saturating_sub(started_at) < REQUEST_KIND_CANONICAL_MIGRATION_STALE_SECS
+}
+
+fn current_request_kind_canonical_migration_running_state(
+    now_ts: i64,
+) -> RequestKindCanonicalMigrationState {
+    RequestKindCanonicalMigrationState::Running {
+        heartbeat_at: now_ts,
+        owner_pid: Some(std::process::id()),
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn request_kind_canonical_migration_owner_pid_is_live(owner_pid: u32) -> bool {
+    let result = unsafe { libc::kill(owner_pid as i32, 0) };
+    if result == 0 {
+        return true;
+    }
+
+    matches!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::EPERM)
+    )
+}
+
+#[cfg(not(unix))]
+pub(crate) fn request_kind_canonical_migration_owner_pid_is_live(owner_pid: u32) -> bool {
+    let _ = owner_pid;
+    true
+}
+
+fn request_kind_canonical_migration_state_blocks_reentry(
+    now_ts: i64,
+    state: RequestKindCanonicalMigrationState,
+) -> Option<i64> {
+    match state {
+        RequestKindCanonicalMigrationState::Running {
+            heartbeat_at,
+            owner_pid: Some(owner_pid),
+        } if request_kind_canonical_migration_is_fresh(now_ts, heartbeat_at)
+            && request_kind_canonical_migration_owner_pid_is_live(owner_pid) =>
+        {
+            Some(heartbeat_at)
+        }
+        RequestKindCanonicalMigrationState::Running {
+            heartbeat_at,
+            owner_pid: None,
+        } if request_kind_canonical_migration_is_fresh(now_ts, heartbeat_at) => Some(heartbeat_at),
+        _ => None,
+    }
 }
 
 async fn read_meta_string_with_connection(
@@ -697,47 +769,97 @@ async fn backfill_request_log_request_kinds_with_pool(
         rows_snapshotted += updates.iter().filter(|update| update.snapshotted).count() as i64;
 
         if !dry_run {
-            let mut tx = pool.begin().await?;
-            for update in &updates {
-                sqlx::query(
-                    r#"
-                    UPDATE request_logs
-                    SET
-                        request_kind_key = ?,
-                        request_kind_label = ?,
-                        request_kind_detail = ?,
-                        legacy_request_kind_key = ?,
-                        legacy_request_kind_label = ?,
-                        legacy_request_kind_detail = ?
-                    WHERE id = ?
-                    "#,
-                )
-                .bind(&update.request_kind_key)
-                .bind(&update.request_kind_label)
-                .bind(&update.request_kind_detail)
-                .bind(&update.legacy_request_kind_key)
-                .bind(&update.legacy_request_kind_label)
-                .bind(&update.legacy_request_kind_detail)
-                .bind(update.id)
-                .execute(&mut *tx)
-                .await?;
+            loop {
+                let mut tx = match pool.begin().await {
+                    Ok(tx) => tx,
+                    Err(err) => {
+                        let err = ProxyError::Database(err);
+                        if is_transient_sqlite_write_error(&err) {
+                            tokio::time::sleep(Duration::from_millis(
+                                REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
+                            ))
+                            .await;
+                            continue;
+                        }
+                        return Err(err);
+                    }
+                };
+
+                let batch_result: Result<(), ProxyError> = async {
+                    for update in &updates {
+                        sqlx::query(
+                            r#"
+                            UPDATE request_logs
+                            SET
+                                request_kind_key = ?,
+                                request_kind_label = ?,
+                                request_kind_detail = ?,
+                                legacy_request_kind_key = ?,
+                                legacy_request_kind_label = ?,
+                                legacy_request_kind_detail = ?
+                            WHERE id = ?
+                            "#,
+                        )
+                        .bind(&update.request_kind_key)
+                        .bind(&update.request_kind_label)
+                        .bind(&update.request_kind_detail)
+                        .bind(&update.legacy_request_kind_key)
+                        .bind(&update.legacy_request_kind_label)
+                        .bind(&update.legacy_request_kind_detail)
+                        .bind(update.id)
+                        .execute(&mut *tx)
+                        .await?;
+                    }
+                    write_request_kind_backfill_meta_i64(
+                        &mut tx,
+                        META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_REQUEST_LOGS_CURSOR_V1,
+                        batch_max_id,
+                    )
+                    .await?;
+                    if let Some(migration_state_key) = migration_state_key {
+                        write_request_kind_backfill_meta_string(
+                            &mut tx,
+                            migration_state_key,
+                            &current_request_kind_canonical_migration_running_state(
+                                Utc::now().timestamp(),
+                            )
+                            .as_meta_value(),
+                        )
+                        .await?;
+                    }
+                    Ok(())
+                }
+                .await;
+
+                match batch_result {
+                    Ok(()) => match tx.commit().await {
+                        Ok(()) => break,
+                        Err(err) => {
+                            let err = ProxyError::Database(err);
+                            if is_transient_sqlite_write_error(&err) {
+                                tokio::time::sleep(Duration::from_millis(
+                                    REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
+                                ))
+                                .await;
+                                continue;
+                            }
+                            return Err(err);
+                        }
+                    },
+                    Err(err) => {
+                        let retry = is_transient_sqlite_write_error(&err);
+                        let _ = tx.rollback().await;
+                        if retry {
+                            tokio::time::sleep(Duration::from_millis(
+                                REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
+                            ))
+                            .await;
+                            continue;
+                        }
+                        return Err(err);
+                    }
+                }
             }
-            write_request_kind_backfill_meta_i64(
-                &mut tx,
-                META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_REQUEST_LOGS_CURSOR_V1,
-                batch_max_id,
-            )
-            .await?;
-            if let Some(migration_state_key) = migration_state_key {
-                write_request_kind_backfill_meta_string(
-                    &mut tx,
-                    migration_state_key,
-                    &RequestKindCanonicalMigrationState::Running(Utc::now().timestamp())
-                        .as_meta_value(),
-                )
-                .await?;
-            }
-            tx.commit().await?;
         }
 
         cursor_after = if dry_run { cursor_before } else { batch_max_id };
@@ -835,47 +957,97 @@ async fn backfill_auth_token_log_request_kinds_with_pool(
         rows_snapshotted += updates.iter().filter(|update| update.snapshotted).count() as i64;
 
         if !dry_run {
-            let mut tx = pool.begin().await?;
-            for update in &updates {
-                sqlx::query(
-                    r#"
-                    UPDATE auth_token_logs
-                    SET
-                        request_kind_key = ?,
-                        request_kind_label = ?,
-                        request_kind_detail = ?,
-                        legacy_request_kind_key = ?,
-                        legacy_request_kind_label = ?,
-                        legacy_request_kind_detail = ?
-                    WHERE id = ?
-                    "#,
-                )
-                .bind(&update.request_kind_key)
-                .bind(&update.request_kind_label)
-                .bind(&update.request_kind_detail)
-                .bind(&update.legacy_request_kind_key)
-                .bind(&update.legacy_request_kind_label)
-                .bind(&update.legacy_request_kind_detail)
-                .bind(update.id)
-                .execute(&mut *tx)
-                .await?;
+            loop {
+                let mut tx = match pool.begin().await {
+                    Ok(tx) => tx,
+                    Err(err) => {
+                        let err = ProxyError::Database(err);
+                        if is_transient_sqlite_write_error(&err) {
+                            tokio::time::sleep(Duration::from_millis(
+                                REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
+                            ))
+                            .await;
+                            continue;
+                        }
+                        return Err(err);
+                    }
+                };
+
+                let batch_result: Result<(), ProxyError> = async {
+                    for update in &updates {
+                        sqlx::query(
+                            r#"
+                            UPDATE auth_token_logs
+                            SET
+                                request_kind_key = ?,
+                                request_kind_label = ?,
+                                request_kind_detail = ?,
+                                legacy_request_kind_key = ?,
+                                legacy_request_kind_label = ?,
+                                legacy_request_kind_detail = ?
+                            WHERE id = ?
+                            "#,
+                        )
+                        .bind(&update.request_kind_key)
+                        .bind(&update.request_kind_label)
+                        .bind(&update.request_kind_detail)
+                        .bind(&update.legacy_request_kind_key)
+                        .bind(&update.legacy_request_kind_label)
+                        .bind(&update.legacy_request_kind_detail)
+                        .bind(update.id)
+                        .execute(&mut *tx)
+                        .await?;
+                    }
+                    write_request_kind_backfill_meta_i64(
+                        &mut tx,
+                        META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_AUTH_TOKEN_LOGS_CURSOR_V1,
+                        batch_max_id,
+                    )
+                    .await?;
+                    if let Some(migration_state_key) = migration_state_key {
+                        write_request_kind_backfill_meta_string(
+                            &mut tx,
+                            migration_state_key,
+                            &current_request_kind_canonical_migration_running_state(
+                                Utc::now().timestamp(),
+                            )
+                            .as_meta_value(),
+                        )
+                        .await?;
+                    }
+                    Ok(())
+                }
+                .await;
+
+                match batch_result {
+                    Ok(()) => match tx.commit().await {
+                        Ok(()) => break,
+                        Err(err) => {
+                            let err = ProxyError::Database(err);
+                            if is_transient_sqlite_write_error(&err) {
+                                tokio::time::sleep(Duration::from_millis(
+                                    REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
+                                ))
+                                .await;
+                                continue;
+                            }
+                            return Err(err);
+                        }
+                    },
+                    Err(err) => {
+                        let retry = is_transient_sqlite_write_error(&err);
+                        let _ = tx.rollback().await;
+                        if retry {
+                            tokio::time::sleep(Duration::from_millis(
+                                REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
+                            ))
+                            .await;
+                            continue;
+                        }
+                        return Err(err);
+                    }
+                }
             }
-            write_request_kind_backfill_meta_i64(
-                &mut tx,
-                META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_AUTH_TOKEN_LOGS_CURSOR_V1,
-                batch_max_id,
-            )
-            .await?;
-            if let Some(migration_state_key) = migration_state_key {
-                write_request_kind_backfill_meta_string(
-                    &mut tx,
-                    migration_state_key,
-                    &RequestKindCanonicalMigrationState::Running(Utc::now().timestamp())
-                        .as_meta_value(),
-                )
-                .await?;
-            }
-            tx.commit().await?;
         }
 
         cursor_after = if dry_run { cursor_before } else { batch_max_id };
@@ -1956,11 +2128,13 @@ impl KeyStore {
             Some(RequestKindCanonicalMigrationState::Done(done_at)) => {
                 return Ok(RequestKindCanonicalMigrationClaim::AlreadyDone(done_at));
             }
-            Some(RequestKindCanonicalMigrationState::Running(started_at))
-                if request_kind_canonical_migration_is_fresh(now_ts, started_at) =>
+            Some(state)
+                if request_kind_canonical_migration_state_blocks_reentry(now_ts, state)
+                    .is_some() =>
             {
                 return Ok(RequestKindCanonicalMigrationClaim::RunningElsewhere(
-                    started_at,
+                    request_kind_canonical_migration_state_blocks_reentry(now_ts, state)
+                        .expect("running state should expose heartbeat"),
                 ));
             }
             _ => {}
@@ -1973,11 +2147,13 @@ impl KeyStore {
                     Some(RequestKindCanonicalMigrationState::Done(done_at)) => {
                         Ok(RequestKindCanonicalMigrationClaim::AlreadyDone(done_at))
                     }
-                    Some(RequestKindCanonicalMigrationState::Running(started_at))
-                        if request_kind_canonical_migration_is_fresh(now_ts, started_at) =>
+                    Some(state)
+                        if request_kind_canonical_migration_state_blocks_reentry(now_ts, state)
+                            .is_some() =>
                     {
                         Ok(RequestKindCanonicalMigrationClaim::RunningElsewhere(
-                            started_at,
+                            request_kind_canonical_migration_state_blocks_reentry(now_ts, state)
+                                .expect("running state should expose heartbeat"),
                         ))
                     }
                     _ => Ok(RequestKindCanonicalMigrationClaim::RetryLater),
@@ -2004,17 +2180,19 @@ impl KeyStore {
                 sqlx::query("COMMIT").execute(&mut *conn).await?;
                 Ok(RequestKindCanonicalMigrationClaim::AlreadyDone(done_at))
             }
-            Some(RequestKindCanonicalMigrationState::Running(started_at))
-                if request_kind_canonical_migration_is_fresh(now_ts, started_at) =>
+            Some(state)
+                if request_kind_canonical_migration_state_blocks_reentry(now_ts, state)
+                    .is_some() =>
             {
                 sqlx::query("COMMIT").execute(&mut *conn).await?;
                 Ok(RequestKindCanonicalMigrationClaim::RunningElsewhere(
-                    started_at,
+                    request_kind_canonical_migration_state_blocks_reentry(now_ts, state)
+                        .expect("running state should expose heartbeat"),
                 ))
             }
             _ => {
                 let upper_bounds = match state {
-                    Some(RequestKindCanonicalMigrationState::Running(_))
+                    Some(RequestKindCanonicalMigrationState::Running { .. })
                     | Some(RequestKindCanonicalMigrationState::Failed(_)) => {
                         match read_request_kind_canonical_backfill_upper_bounds_with_connection(
                             &mut conn,
@@ -2045,7 +2223,7 @@ impl KeyStore {
                 write_meta_string_with_connection(
                     &mut conn,
                     META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE,
-                    &RequestKindCanonicalMigrationState::Running(now_ts).as_meta_value(),
+                    &current_request_kind_canonical_migration_running_state(now_ts).as_meta_value(),
                 )
                 .await?;
                 delete_meta_key_with_connection(
@@ -2098,7 +2276,7 @@ impl KeyStore {
                 )
                 .await?;
             }
-            RequestKindCanonicalMigrationState::Running(_) => {}
+            RequestKindCanonicalMigrationState::Running { .. } => {}
             RequestKindCanonicalMigrationState::Failed(_) => {
                 write_meta_string_with_connection(
                     &mut conn,
