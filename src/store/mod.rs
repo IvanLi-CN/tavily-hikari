@@ -147,6 +147,7 @@ pub(crate) enum RequestKindCanonicalMigrationClaim {
     Claimed,
     RunningElsewhere(i64),
     AlreadyDone(i64),
+    RetryLater,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1979,7 +1980,7 @@ impl KeyStore {
                             started_at,
                         ))
                     }
-                    _ => Err(err),
+                    _ => Ok(RequestKindCanonicalMigrationClaim::RetryLater),
                 };
             }
             Err(err) => return Err(err),
@@ -2122,7 +2123,8 @@ impl KeyStore {
             {
                 RequestKindCanonicalMigrationClaim::AlreadyDone(_) => return Ok(()),
                 RequestKindCanonicalMigrationClaim::Claimed => break,
-                RequestKindCanonicalMigrationClaim::RunningElsewhere(_) => {
+                RequestKindCanonicalMigrationClaim::RunningElsewhere(_)
+                | RequestKindCanonicalMigrationClaim::RetryLater => {
                     tokio::time::sleep(Duration::from_millis(
                         REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
                     ))

@@ -1347,6 +1347,80 @@ async fn request_kind_database_migration_claim_reads_state_without_write_lock() 
 }
 
 #[tokio::test]
+async fn request_kind_database_migration_retries_after_transient_write_lock() {
+    use sqlx::Connection;
+    use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+
+    let db_path = temp_db_path("request-kind-migration-retry-after-busy");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    sqlx::query("DELETE FROM meta WHERE key IN (?, ?, ?, ?)")
+        .bind(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_DONE)
+        .bind(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE)
+        .bind(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_REQUEST_LOGS_UPPER_BOUND)
+        .bind(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_AUTH_TOKEN_LOGS_UPPER_BOUND)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("clear request-kind migration markers");
+    drop(proxy);
+
+    let options = SqliteConnectOptions::new()
+        .filename(&db_path)
+        .create_if_missing(false)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(std::time::Duration::from_millis(1));
+    let pool = SqlitePoolOptions::new()
+        .min_connections(1)
+        .max_connections(5)
+        .connect_with(options.clone())
+        .await
+        .expect("busy-test pool");
+    let store = KeyStore {
+        pool,
+        token_binding_cache: RwLock::new(std::collections::HashMap::new()),
+        account_quota_resolution_cache: RwLock::new(std::collections::HashMap::new()),
+        #[cfg(test)]
+        forced_pending_claim_miss_log_ids: Mutex::new(std::collections::HashSet::new()),
+        forced_quota_subject_lock_loss_subjects: std::sync::Mutex::new(
+            std::collections::HashSet::new(),
+        ),
+    };
+
+    let mut lock_conn = sqlx::SqliteConnection::connect_with(&options)
+        .await
+        .expect("connect write lock holder");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut lock_conn)
+        .await
+        .expect("hold write lock");
+
+    let release_lock = tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        sqlx::query("COMMIT")
+            .execute(&mut lock_conn)
+            .await
+            .expect("release write lock");
+    });
+
+    store
+        .ensure_request_kind_canonical_migration_v1()
+        .await
+        .expect("migration should retry after transient busy");
+    release_lock.await.expect("join lock release");
+
+    let migration_done_at = store
+        .get_meta_i64(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_DONE)
+        .await
+        .expect("migration done marker");
+    assert!(migration_done_at.is_some());
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn request_kind_database_migration_uses_persisted_upper_bounds() {
     let db_path = temp_db_path("request-kind-migration-upper-bounds");
     let db_str = db_path.to_string_lossy().to_string();
