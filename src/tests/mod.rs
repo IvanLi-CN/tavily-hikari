@@ -1422,6 +1422,7 @@ async fn request_kind_database_migration_retries_after_transient_write_lock() {
         .execute(&proxy.key_store.pool)
         .await
         .expect("clear request-kind migration markers");
+    proxy.key_store.pool.close().await;
     drop(proxy);
 
     let options = SqliteConnectOptions::new()
