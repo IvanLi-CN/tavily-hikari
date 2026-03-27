@@ -1224,6 +1224,13 @@ async fn request_kind_database_migration_state_blocks_reentry() {
         RequestKindCanonicalMigrationClaim::RunningElsewhere(100)
     );
 
+    let reclaimed_claim = proxy
+        .key_store
+        .try_claim_request_kind_canonical_migration_v1(1000)
+        .await
+        .expect("reclaimed migration claim");
+    assert_eq!(reclaimed_claim, RequestKindCanonicalMigrationClaim::Claimed);
+
     proxy
         .key_store
         .finish_request_kind_canonical_migration_v1(RequestKindCanonicalMigrationState::Done(102))

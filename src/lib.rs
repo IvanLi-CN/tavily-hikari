@@ -303,7 +303,6 @@ pub const REQUEST_LOG_VISIBILITY_VISIBLE: &str = "visible";
 pub const REQUEST_LOG_VISIBILITY_SUPPRESSED_RETRY_SHADOW: &str = "suppressed_retry_shadow";
 pub const REQUEST_KIND_CANONICAL_BACKFILL_BATCH_SIZE: i64 = 500;
 const REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS: u64 = 200;
-const REQUEST_KIND_CANONICAL_MIGRATION_WAIT_TIMEOUT_SECS: u64 = 300;
 const REQUEST_KIND_CANONICAL_MIGRATION_STALE_SECS: i64 = 300;
 const FAILURE_KIND_UPSTREAM_GATEWAY_5XX: &str = "upstream_gateway_5xx";
 const FAILURE_KIND_UPSTREAM_RATE_LIMITED_429: &str = "upstream_rate_limited_429";
@@ -484,7 +483,7 @@ pub async fn run_request_kind_canonical_backfill(
     dry_run: bool,
 ) -> Result<RequestKindCanonicalBackfillReport, ProxyError> {
     let pool = store::open_sqlite_pool(database_path, true, false).await?;
-    store::run_request_kind_canonical_backfill_with_pool(&pool, batch_size, dry_run).await
+    store::run_request_kind_canonical_backfill_with_pool(&pool, batch_size, dry_run, None).await
 }
 
 fn token_limit_from_env(var: &str, default: i64) -> i64 {

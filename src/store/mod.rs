@@ -303,6 +303,14 @@ async fn write_request_kind_backfill_meta_i64(
     key: &str,
     value: i64,
 ) -> Result<(), ProxyError> {
+    write_request_kind_backfill_meta_string(tx, key, &value.to_string()).await
+}
+
+async fn write_request_kind_backfill_meta_string(
+    tx: &mut Transaction<'_, Sqlite>,
+    key: &str,
+    value: &str,
+) -> Result<(), ProxyError> {
     sqlx::query(
         r#"
         INSERT INTO meta (key, value)
@@ -311,7 +319,7 @@ async fn write_request_kind_backfill_meta_i64(
         "#,
     )
     .bind(key)
-    .bind(value.to_string())
+    .bind(value)
     .execute(&mut **tx)
     .await?;
     Ok(())
@@ -467,6 +475,7 @@ async fn backfill_request_log_request_kinds_with_pool(
     pool: &SqlitePool,
     batch_size: i64,
     dry_run: bool,
+    migration_state_key: Option<&str>,
 ) -> Result<RequestKindCanonicalBackfillTableReport, ProxyError> {
     let cursor_before = read_request_kind_backfill_meta_i64(
         pool,
@@ -563,6 +572,15 @@ async fn backfill_request_log_request_kinds_with_pool(
                 batch_max_id,
             )
             .await?;
+            if let Some(migration_state_key) = migration_state_key {
+                write_request_kind_backfill_meta_string(
+                    &mut tx,
+                    migration_state_key,
+                    &RequestKindCanonicalMigrationState::Running(Utc::now().timestamp())
+                        .as_meta_value(),
+                )
+                .await?;
+            }
             tx.commit().await?;
         }
 
@@ -589,6 +607,7 @@ async fn backfill_auth_token_log_request_kinds_with_pool(
     pool: &SqlitePool,
     batch_size: i64,
     dry_run: bool,
+    migration_state_key: Option<&str>,
 ) -> Result<RequestKindCanonicalBackfillTableReport, ProxyError> {
     let cursor_before = read_request_kind_backfill_meta_i64(
         pool,
@@ -687,6 +706,15 @@ async fn backfill_auth_token_log_request_kinds_with_pool(
                 batch_max_id,
             )
             .await?;
+            if let Some(migration_state_key) = migration_state_key {
+                write_request_kind_backfill_meta_string(
+                    &mut tx,
+                    migration_state_key,
+                    &RequestKindCanonicalMigrationState::Running(Utc::now().timestamp())
+                        .as_meta_value(),
+                )
+                .await?;
+            }
             tx.commit().await?;
         }
 
@@ -713,13 +741,24 @@ pub(crate) async fn run_request_kind_canonical_backfill_with_pool(
     pool: &SqlitePool,
     batch_size: i64,
     dry_run: bool,
+    migration_state_key: Option<&str>,
 ) -> Result<RequestKindCanonicalBackfillReport, ProxyError> {
     let batch_size = batch_size.max(1);
     ensure_request_kind_backfill_schema(pool).await?;
-    let request_logs =
-        backfill_request_log_request_kinds_with_pool(pool, batch_size, dry_run).await?;
-    let auth_token_logs =
-        backfill_auth_token_log_request_kinds_with_pool(pool, batch_size, dry_run).await?;
+    let request_logs = backfill_request_log_request_kinds_with_pool(
+        pool,
+        batch_size,
+        dry_run,
+        migration_state_key,
+    )
+    .await?;
+    let auth_token_logs = backfill_auth_token_log_request_kinds_with_pool(
+        pool,
+        batch_size,
+        dry_run,
+        migration_state_key,
+    )
+    .await?;
 
     Ok(RequestKindCanonicalBackfillReport {
         dry_run,
@@ -1746,13 +1785,6 @@ impl KeyStore {
         Ok(())
     }
 
-    pub(crate) async fn run_request_kind_canonical_backfill(
-        &self,
-        batch_size: i64,
-    ) -> Result<RequestKindCanonicalBackfillReport, ProxyError> {
-        run_request_kind_canonical_backfill_with_pool(&self.pool, batch_size, false).await
-    }
-
     pub(crate) async fn try_claim_request_kind_canonical_migration_v1(
         &self,
         now_ts: i64,
@@ -1876,8 +1908,6 @@ impl KeyStore {
     pub(crate) async fn ensure_request_kind_canonical_migration_v1(
         &self,
     ) -> Result<(), ProxyError> {
-        let deadline = Instant::now()
-            + Duration::from_secs(REQUEST_KIND_CANONICAL_MIGRATION_WAIT_TIMEOUT_SECS);
         loop {
             match self
                 .try_claim_request_kind_canonical_migration_v1(Utc::now().timestamp())
@@ -1886,12 +1916,6 @@ impl KeyStore {
                 RequestKindCanonicalMigrationClaim::AlreadyDone(_) => return Ok(()),
                 RequestKindCanonicalMigrationClaim::Claimed => break,
                 RequestKindCanonicalMigrationClaim::RunningElsewhere(_) => {
-                    if Instant::now() >= deadline {
-                        return Err(ProxyError::Other(
-                            "timed out waiting for request kind canonical migration to finish"
-                                .to_string(),
-                        ));
-                    }
                     tokio::time::sleep(Duration::from_millis(
                         REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
                     ))
@@ -1900,9 +1924,13 @@ impl KeyStore {
             }
         }
 
-        match self
-            .run_request_kind_canonical_backfill(REQUEST_KIND_CANONICAL_BACKFILL_BATCH_SIZE)
-            .await
+        match run_request_kind_canonical_backfill_with_pool(
+            &self.pool,
+            REQUEST_KIND_CANONICAL_BACKFILL_BATCH_SIZE,
+            false,
+            Some(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE),
+        )
+        .await
         {
             Ok(_) => {
                 self.finish_request_kind_canonical_migration_v1(
