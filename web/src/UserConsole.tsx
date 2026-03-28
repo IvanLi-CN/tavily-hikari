@@ -465,6 +465,7 @@ function mcpToolProbeArguments(toolName: string): Record<string, unknown> | null
     case 'tavily-research':
       return {
         input: 'health check',
+        model: 'mini',
       }
     default:
       return null

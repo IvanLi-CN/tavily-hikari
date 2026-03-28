@@ -54,4 +54,15 @@ describe('ConnectivityChecksPanel Storybook gallery', () => {
       status: 'success',
     })
   })
+
+  it('documents the research plan-limit failure detail in the partial MCP gallery state', () => {
+    const failureScenario = connectivityStories.__testables.scenarios.find((scenario) => scenario.title === 'MCP Tool Failure')
+
+    expect(failureScenario?.probeBubble?.items).toContainEqual({
+      id: 'mcp-tool-call:tavily_research',
+      label: 'Call tavily_research tool',
+      status: 'failed',
+      detail: "This request exceeds your plan's set usage limit.",
+    })
+  })
 })

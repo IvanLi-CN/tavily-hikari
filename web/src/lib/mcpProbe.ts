@@ -184,10 +184,16 @@ export function getMcpProbeResultError(payload: unknown): string | null {
 
   const structuredContent = asRecord(result.structuredContent)
   if (structuredContent) {
+    const structuredStatus = extractProbeStatusCode(structuredContent)
+    if (structuredStatus !== null && (structuredStatus < 200 || structuredStatus >= 300)) {
+      const detailError = asRecord(structuredContent.detail)
+      const specificError = detailError ? extractProbeErrorText(detailError) : null
+      if (specificError) return specificError
+    }
+
     const structuredError = extractProbeErrorText(structuredContent)
     if (structuredError) return structuredError
 
-    const structuredStatus = extractProbeStatusCode(structuredContent)
     if (structuredStatus !== null && (structuredStatus < 200 || structuredStatus >= 300)) {
       return `Request failed with status ${structuredStatus}`
     }

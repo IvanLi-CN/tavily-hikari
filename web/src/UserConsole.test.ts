@@ -320,6 +320,34 @@ describe('UserConsole probe step definitions', () => {
     await expect(steps[0]?.run('th-zjvc-secret', createMcpProbeContext())).rejects.toThrow('Request failed with status 500')
   })
 
+  it('prefers specific upstream detail errors over generic MCP research failures', async () => {
+    globalThis.fetch = mock(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as { id?: string }
+      return new Response(JSON.stringify({
+        jsonrpc: '2.0',
+        id: body.id ?? 'unknown',
+        result: {
+          structuredContent: {
+            error: 'Research request failed',
+            status: 432,
+            detail: {
+              error: 'This request exceeds your plan\'s set usage limit.',
+            },
+          },
+        },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }) as typeof fetch
+
+    const steps = __testables.buildMcpToolCallProbeStepDefinitions(mcpProbeText, ['tavily-research'])
+
+    await expect(steps[0]?.run('th-zjvc-secret', createMcpProbeContext())).rejects.toThrow(
+      "This request exceeds your plan's set usage limit.",
+    )
+  })
+
   it('executes live MCP probe calls with the expected JSON-RPC payloads', async () => {
     const calls: Array<{ url: string, init?: RequestInit }> = []
     globalThis.fetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -477,6 +505,7 @@ describe('UserConsole probe step definitions', () => {
         name: 'tavily_research',
         arguments: {
           input: 'health check',
+          model: 'mini',
         },
       },
     ])
