@@ -4453,6 +4453,17 @@ table {
   outline-offset: 3px;
 }
 
+.recent-requests-mobile-result-button {
+  justify-content: flex-start;
+  width: auto;
+}
+
+.recent-requests-mobile-details {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid hsl(var(--border) / 0.72);
+}
+
 .log-time-cell {
   position: relative;
   display: inline-flex;
@@ -6474,6 +6485,25 @@ tbody tr:hover {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 16px;
+}
+
+.log-details-feedback {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid hsl(var(--border) / 0.72);
+  border-radius: 12px;
+  background: hsl(var(--card) / 0.76);
+}
+
+.log-details-feedback-message {
+  min-width: 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 0.86rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .log-details-section header {

@@ -122,6 +122,7 @@ import {
   clearApiKeyQuarantine,
   fetchProfile,
   fetchRequestLogs,
+  fetchRequestLogDetails,
   fetchRequestLogsPage,
   fetchSummary,
   fetchSummaryWindows,
@@ -149,6 +150,7 @@ import {
   type Paginated,
   fetchKeyMetrics,
   fetchKeyLogsPage,
+  fetchKeyLogDetails,
   fetchKeyStickyNodes,
   fetchKeyStickyUsers,
   type KeySummary,
@@ -2829,6 +2831,11 @@ function AdminDashboard(): JSX.Element {
     setRequestLogKeyFilter(value)
     setLogsPage(1)
   }, [])
+
+  const loadRequestLogBodies = useCallback(
+    (log: RequestLog, signal: AbortSignal) => fetchRequestLogDetails(log.id, signal),
+    [],
+  )
 
   // Jobs list: refetch when filter or page changes
   useEffect(() => {
@@ -8188,6 +8195,7 @@ function AdminDashboard(): JSX.Element {
           formatTimeDetail={(ts) => (ts ? `${formatTimestampWithMs(ts)} · ${formatRelativeTime(ts)}` : '—')}
           onOpenKey={openRequestKeyDrawer}
           onOpenToken={openRequestTokenDrawer}
+          loadLogBodies={loadRequestLogBodies}
         />
       )}
 
@@ -9838,6 +9846,11 @@ export function KeyDetails({
     setLogsPage(1)
   }, [])
 
+  const loadKeyLogBodies = useCallback(
+    (log: RequestLog, signal: AbortSignal) => fetchKeyLogDetails(id, log.id, signal),
+    [id],
+  )
+
   const keyLogsTotalPages = Math.max(1, Math.ceil(logsTotal / logsPerPage) || 1)
   const goPrevKeyLogsPage = () => setLogsPage((value) => Math.max(1, value - 1))
   const goNextKeyLogsPage = () => setLogsPage((value) => Math.min(keyLogsTotalPages, value + 1))
@@ -10148,6 +10161,7 @@ export function KeyDetails({
           onPerPageChange={changeKeyLogsPerPage}
           formatTime={formatTimestamp}
           formatTimeDetail={(ts) => (ts ? `${formatTimestampWithMs(ts)} · ${formatRelativeTime(ts)}` : '—')}
+          loadLogBodies={loadKeyLogBodies}
         />
     </div>
   )

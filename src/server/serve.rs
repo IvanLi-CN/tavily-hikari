@@ -135,6 +135,7 @@ pub async fn serve(
         .route("/api/keys/:id/status", patch(update_api_key_status))
         .route("/api/jobs", get(list_jobs))
         .route("/api/logs", get(list_logs))
+        .route("/api/logs/:log_id/details", get(get_log_details))
         .route("/api/user-tags", get(list_user_tags))
         .route("/api/user-tags", post(create_user_tag))
         .route("/api/user-tags/:tag_id", patch(update_user_tag))
@@ -148,6 +149,7 @@ pub async fn serve(
         .route("/api/keys/:id/metrics", get(get_key_metrics))
         .route("/api/keys/:id/logs", get(get_key_logs))
         .route("/api/keys/:id/logs/page", get(get_key_logs_page))
+        .route("/api/keys/:id/logs/:log_id/details", get(get_key_log_details))
         .route("/api/keys/:id/sticky-users", get(get_key_sticky_users))
         .route("/api/keys/:id/sticky-nodes", get(get_key_sticky_nodes))
         // Token details
@@ -164,6 +166,7 @@ pub async fn serve(
         .route("/api/tokens/leaderboard", get(get_token_leaderboard))
         .route("/api/tokens/:id/logs", get(get_token_logs))
         .route("/api/tokens/:id/logs/page", get(get_token_logs_page))
+        .route("/api/tokens/:id/logs/:log_id/details", get(get_token_log_details))
         .route("/api/tokens/:id/events", get(sse_token))
         // Access token management (admin only)
         .route("/api/tokens", get(list_tokens))

@@ -227,6 +227,21 @@ struct RequestLogView {
 }
 
 #[derive(Debug, Serialize)]
+struct RequestLogBodiesView {
+    request_body: Option<String>,
+    response_body: Option<String>,
+}
+
+impl From<RequestLogBodiesRecord> for RequestLogBodiesView {
+    fn from(value: RequestLogBodiesRecord) -> Self {
+        Self {
+            request_body: value.request_body.as_deref().and_then(decode_body),
+            response_body: value.response_body.as_deref().and_then(decode_body),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct JobLogView {
     id: i64,
@@ -657,8 +672,27 @@ async fn get_key_logs(
         .proxy
         .key_recent_logs(&id, limit, q.since)
         .await
-        .map(|logs| Json(logs.into_iter().map(RequestLogView::from).collect()))
+        .map(|logs| Json(logs.into_iter().map(RequestLogView::from_summary_record).collect()))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+async fn get_key_log_details(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((id, log_id)): Path<(String, i64)>,
+) -> Result<Json<RequestLogBodiesView>, StatusCode> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    state
+        .proxy
+        .key_request_log_bodies(&id, log_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map(RequestLogBodiesView::from)
+        .map(Json)
+        .ok_or(StatusCode::NOT_FOUND)
 }
 
 #[derive(Debug, Serialize)]
@@ -707,7 +741,11 @@ async fn get_key_logs_page(
         .await
         .map(|logs| {
             Json(KeyLogsPageView {
-                items: logs.items.into_iter().map(RequestLogView::from).collect(),
+                items: logs
+                    .items
+                    .into_iter()
+                    .map(RequestLogView::from_summary_record)
+                    .collect(),
                 total: logs.total,
                 page,
                 per_page,
@@ -1049,6 +1087,44 @@ async fn get_token_logs_page(
             })
         })
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+async fn get_log_details(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(log_id): Path<i64>,
+) -> Result<Json<RequestLogBodiesView>, StatusCode> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    state
+        .proxy
+        .request_log_bodies(log_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map(RequestLogBodiesView::from)
+        .map(Json)
+        .ok_or(StatusCode::NOT_FOUND)
+}
+
+async fn get_token_log_details(
+    State(state): State<Arc<AppState>>,
+    Path((id, log_id)): Path<(String, i64)>,
+    headers: HeaderMap,
+) -> Result<Json<RequestLogBodiesView>, StatusCode> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    state
+        .proxy
+        .token_request_log_bodies(&id, log_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map(RequestLogBodiesView::from)
+        .map(Json)
+        .ok_or(StatusCode::NOT_FOUND)
 }
 
 async fn get_token_hourly_breakdown(

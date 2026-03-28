@@ -183,6 +183,11 @@ export interface RequestLog {
   requestKindBillingGroup: 'billable' | 'non_billable'
 }
 
+export interface RequestLogBodies {
+  request_body: string | null
+  response_body: string | null
+}
+
 export interface LogFacetOption {
   value: string
   count: number
@@ -1402,6 +1407,11 @@ export function fetchKeyLogsPage(
   )
 }
 
+export function fetchKeyLogDetails(id: string, logId: number, signal?: AbortSignal): Promise<RequestLogBodies> {
+  const encoded = encodeURIComponent(id)
+  return requestJson(`/api/keys/${encoded}/logs/${encodeURIComponent(String(logId))}/details`, { signal })
+}
+
 export function fetchKeyStickyUsers(
   id: string,
   page = 1,
@@ -1460,6 +1470,10 @@ export function fetchRequestLogs(
   operationalClass?: LogOperationalClass | 'all',
 ): Promise<RequestLogsPage> {
   return fetchRequestLogsPage({ page, perPage, result, operationalClass }, signal)
+}
+
+export function fetchRequestLogDetails(logId: number, signal?: AbortSignal): Promise<RequestLogBodies> {
+  return requestJson(`/api/logs/${encodeURIComponent(String(logId))}/details`, { signal })
 }
 
 export function fetchJobs(
@@ -1688,6 +1702,11 @@ export function fetchTokenLogsPage(
   return requestJson<ServerRequestLogsPage>(`/api/tokens/${encoded}/logs/page?${params.toString()}`, { signal }).then(
     normalizeRequestLogsPage,
   )
+}
+
+export function fetchTokenLogDetails(id: string, logId: number, signal?: AbortSignal): Promise<RequestLogBodies> {
+  const encoded = encodeURIComponent(id)
+  return requestJson(`/api/tokens/${encoded}/logs/${encodeURIComponent(String(logId))}/details`, { signal })
 }
 
 export type TokenLeaderboardPeriod = 'day' | 'month' | 'all'
