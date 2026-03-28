@@ -142,6 +142,11 @@ pub async fn serve(
         .route("/api/users", get(list_users))
         .route("/api/users/:id", get(get_user_detail))
         .route("/api/users/:id/quota", patch(update_user_quota))
+        .route(
+            "/api/users/:id/broken-key-limit",
+            patch(update_user_broken_key_limit),
+        )
+        .route("/api/users/:id/broken-keys", get(get_user_monthly_broken_keys))
         .route("/api/users/:id/tags", post(bind_user_tag))
         .route("/api/users/:id/tags/:tag_id", delete(unbind_user_tag))
         // Key details
@@ -164,6 +169,7 @@ pub async fn serve(
         .route("/api/tokens/leaderboard", get(get_token_leaderboard))
         .route("/api/tokens/:id/logs", get(get_token_logs))
         .route("/api/tokens/:id/logs/page", get(get_token_logs_page))
+        .route("/api/tokens/:id/broken-keys", get(get_token_monthly_broken_keys))
         .route("/api/tokens/:id/events", get(sse_token))
         // Access token management (admin only)
         .route("/api/tokens", get(list_tokens))

@@ -316,6 +316,12 @@ const API_KEY_IP_GEO_CONNECT_TIMEOUT_SECS: u64 = 5;
 const DEV_OPEN_ADMIN_TOKEN_ID: &str = "dev";
 const DEV_OPEN_ADMIN_TOKEN_SECRET: &str = "dev-open-admin";
 const DEV_OPEN_ADMIN_TOKEN_NOTE: &str = "[system] dev-open-admin placeholder";
+pub const USER_MONTHLY_BROKEN_LIMIT_DEFAULT: i64 = 5;
+pub const UNBOUND_TOKEN_MONTHLY_BROKEN_LIMIT_DEFAULT: i64 = 2;
+const BROKEN_KEY_SUBJECT_USER: &str = "user";
+const BROKEN_KEY_SUBJECT_TOKEN: &str = "token";
+const BROKEN_KEY_SOURCE_AUTO: &str = "auto";
+const BROKEN_KEY_SOURCE_MANUAL: &str = "manual";
 
 const BLOCKED_HEADERS: &[&str] = &[
     "forwarded",
@@ -385,6 +391,7 @@ const RESEARCH_REQUEST_AFFINITY_TTL_SECS: i64 = 24 * 60 * 60;
 // unbounded growth under churny traffic (many distinct tokens).
 const TOKEN_AFFINITY_MAX_ENTRIES: usize = 10_000;
 const USER_API_KEY_BINDING_RECENT_LIMIT: i64 = 3;
+const TOKEN_API_KEY_BINDING_RECENT_LIMIT: i64 = 3;
 // Cache token -> user binding to avoid repeated DB lookups on hot request paths.
 const TOKEN_BINDING_CACHE_TTL_SECS: u64 = 30;
 const TOKEN_BINDING_CACHE_MAX_ENTRIES: usize = 10_000;

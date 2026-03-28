@@ -10468,6 +10468,84 @@ async fn manual_key_maintenance_actions_append_audit_records() {
 }
 
 #[tokio::test]
+async fn restored_keys_do_not_count_as_active_monthly_token_breakage_subjects() {
+    let db_path = temp_db_path("monthly-broken-token-restored");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-monthly-broken-token-restored".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let token = proxy
+        .create_access_token(Some("monthly-broken-token-restored"))
+        .await
+        .expect("token");
+    let key_id: String = sqlx::query_scalar("SELECT id FROM api_keys LIMIT 1")
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("fetch key id");
+    let now = Utc::now().timestamp();
+    let month_start = start_of_month(Utc::now()).timestamp();
+
+    sqlx::query(
+        r#"INSERT INTO subject_key_breakages (
+               subject_kind,
+               subject_id,
+               key_id,
+               month_start,
+               created_at,
+               updated_at,
+               latest_break_at,
+               key_status,
+               reason_code,
+               reason_summary,
+               source,
+               breaker_token_id,
+               breaker_user_id,
+               breaker_user_display_name,
+               manual_actor_display_name
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+    )
+    .bind(BROKEN_KEY_SUBJECT_TOKEN)
+    .bind(&token.id)
+    .bind(&key_id)
+    .bind(month_start)
+    .bind(now)
+    .bind(now)
+    .bind(now)
+    .bind(STATUS_EXHAUSTED)
+    .bind("manual_mark_exhausted")
+    .bind("manually exhausted")
+    .bind(BROKEN_KEY_SOURCE_MANUAL)
+    .bind(&token.id)
+    .bind(Option::<String>::None)
+    .bind(Option::<String>::None)
+    .bind(Some("Admin One"))
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert subject breakage");
+
+    let counts = proxy
+        .key_store
+        .fetch_monthly_broken_counts_for_tokens(std::slice::from_ref(&token.id), month_start)
+        .await
+        .expect("fetch counts");
+    assert_eq!(counts.get(&token.id).copied(), None);
+
+    let subjects = proxy
+        .key_store
+        .list_monthly_broken_subjects_for_tokens(std::slice::from_ref(&token.id), month_start)
+        .await
+        .expect("fetch subjects");
+    assert!(!subjects.contains(&token.id));
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn auto_key_health_actions_append_audit_records() {
     let db_path = temp_db_path("maintenance-auto");
     let db_str = db_path.to_string_lossy().to_string();

@@ -4951,6 +4951,13 @@ table {
   overflow: hidden;
 }
 
+.request-entity-drawer-content-fit {
+  margin-top: 0;
+  max-height: min(100dvh, 92dvh);
+  padding: 0;
+  overflow: hidden;
+}
+
 .request-entity-drawer-header {
   border-bottom: 1px solid hsl(var(--border) / 0.72);
   flex-shrink: 0;
@@ -4959,6 +4966,13 @@ table {
 .request-entity-drawer-body {
   min-height: 0;
   height: 100%;
+  overflow: auto;
+  padding-bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+}
+
+.request-entity-drawer-body-fit {
+  min-height: 0;
+  flex: 1 1 auto;
   overflow: auto;
   padding-bottom: calc(18px + env(safe-area-inset-bottom, 0px));
 }
@@ -5269,7 +5283,12 @@ tbody tr:hover {
 }
 
 .admin-users-compact-cell {
-  text-align: left;
+  text-align: right;
+}
+
+.jobs-table.admin-users-usage-table .admin-users-compact-cell .admin-table-value-stack {
+  align-items: flex-end;
+  text-align: right;
 }
 
 .admin-users-identity-cell code {
@@ -6325,6 +6344,22 @@ tbody tr:hover {
 
 .jobs-key-link code {
   color: inherit;
+}
+
+.monthly-broken-key-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+}
+
+.monthly-broken-key-copy-button {
+  width: 1.75rem;
+  min-width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  border-radius: 999px;
+  flex: 0 0 auto;
 }
 
 .forward-proxy-status-bubble {
@@ -7616,6 +7651,25 @@ tbody .log-details-row:hover {
   white-space: nowrap;
 }
 
+.token-leaderboard-table th:nth-child(3),
+.token-leaderboard-table td:nth-child(3),
+.token-leaderboard-table th:nth-child(4),
+.token-leaderboard-table td:nth-child(4),
+.token-leaderboard-table th:nth-child(5),
+.token-leaderboard-table td:nth-child(5),
+.token-leaderboard-table th:nth-child(6),
+.token-leaderboard-table td:nth-child(6),
+.token-leaderboard-table th:nth-child(7),
+.token-leaderboard-table td:nth-child(7),
+.token-leaderboard-table th:nth-child(8),
+.token-leaderboard-table td:nth-child(8),
+.token-leaderboard-table th:nth-child(9),
+.token-leaderboard-table td:nth-child(9),
+.token-leaderboard-table th:nth-child(10),
+.token-leaderboard-table td:nth-child(10) {
+  text-align: right;
+}
+
 .token-leaderboard-usage {
   font-weight: 700;
   color: hsl(var(--foreground));
@@ -7632,6 +7686,16 @@ tbody .log-details-row:hover {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.token-leaderboard-table td:nth-child(3) .token-leaderboard-sub,
+.token-leaderboard-table td:nth-child(4) .token-leaderboard-sub,
+.token-leaderboard-table td:nth-child(5) .token-leaderboard-sub,
+.token-leaderboard-table td:nth-child(6) .token-leaderboard-sub,
+.token-leaderboard-table td:nth-child(7) .token-leaderboard-sub,
+.token-leaderboard-table td:nth-child(8) .token-leaderboard-sub,
+.token-leaderboard-table td:nth-child(9) .token-leaderboard-sub {
+  justify-content: flex-end;
 }
 
 .token-leaderboard-sub span {
@@ -7653,7 +7717,8 @@ tbody .log-details-row:hover {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  align-items: flex-start;
+  align-items: flex-end;
+  text-align: right;
   white-space: nowrap;
   line-height: 1.25;
   max-width: clamp(160px, 18vw, 220px);
