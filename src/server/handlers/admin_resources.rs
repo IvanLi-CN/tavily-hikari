@@ -1792,7 +1792,11 @@ async fn list_logs(
         )
         .await
         .map(|logs| {
-            let view_items = logs.items.into_iter().map(RequestLogView::from).collect();
+            let view_items = logs
+                .items
+                .into_iter()
+                .map(RequestLogView::from_summary_record)
+                .collect();
             Json(PaginatedLogsView {
                 items: view_items,
                 total: logs.total,

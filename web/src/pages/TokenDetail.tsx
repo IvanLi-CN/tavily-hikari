@@ -3,6 +3,7 @@ import { Icon } from '../lib/icons'
 import { Chart as ChartJS, BarElement, CategoryScale, Legend, LinearScale, Tooltip, type ChartOptions } from 'chart.js'
 import { Bar } from 'react-chartjs-2'
 import {
+  fetchTokenLogDetails,
   fetchTokenLogsPage,
   fetchTokenUsageSeries,
   rotateTokenSecret,
@@ -725,6 +726,11 @@ export default function TokenDetail({
       )
     },
     [],
+  )
+
+  const loadTokenLogBodies = useCallback(
+    (log: RequestLog, signal: AbortSignal) => fetchTokenLogDetails(id, log.id, signal),
+    [id],
   )
 
   const syncRequestKindState = useCallback(
@@ -1488,6 +1494,7 @@ export default function TokenDetail({
         onPerPageChange={(value) => void changePerPage(value)}
         formatTime={(ts) => formatLogTime(ts, period)}
         formatTimeDetail={(ts) => (ts ? dateTimeFormatter.format(new Date(ts * 1000)) : '—')}
+        loadLogBodies={loadTokenLogBodies}
       />
     
     <Dialog open={isRotateDialogOpen} onOpenChange={setIsRotateDialogOpen}>

@@ -1065,6 +1065,9 @@ interface AdminTranslationsShape {
     requestBody: string
     responseBody: string
     noBody: string
+    loadingBody: string
+    loadBodyFailed: string
+    retryLoadBody: string
     noKeyEffect: string
     forwardedHeaders: string
     droppedHeaders: string
@@ -2320,6 +2323,9 @@ export const translations: Record<Language, TranslationShape> = {
         requestBody: 'Request Body',
         responseBody: 'Response Body',
         noBody: 'No body captured.',
+        loadingBody: 'Loading request details…',
+        loadBodyFailed: 'Failed to load request details.',
+        retryLoadBody: 'Retry',
         noKeyEffect: 'No automatic key state change',
         forwardedHeaders: 'Forwarded Headers',
         droppedHeaders: 'Dropped Headers',
@@ -3533,6 +3539,9 @@ export const translations: Record<Language, TranslationShape> = {
         requestBody: '请求体',
         responseBody: '响应体',
         noBody: '未捕获内容。',
+        loadingBody: '正在加载请求详情…',
+        loadBodyFailed: '加载请求详情失败。',
+        retryLoadBody: '重试',
         noKeyEffect: '无自动状态变更',
         forwardedHeaders: '转发的 Header',
         droppedHeaders: '被丢弃的 Header',

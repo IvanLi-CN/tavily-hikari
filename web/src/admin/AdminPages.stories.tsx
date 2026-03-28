@@ -448,9 +448,9 @@ const MOCK_REQUESTS: RequestLog[] = [
     http_status: 200,
     mcp_status: 429,
     business_credits: null,
-    request_kind_key: 'mcp:unknown-payload',
-    request_kind_label: 'MCP | unknown payload',
-    request_kind_detail: 'tool: crawl',
+    request_kind_key: 'mcp:crawl',
+    request_kind_label: 'MCP | crawl',
+    request_kind_detail: null,
     result_status: 'error',
     created_at: now - 74,
     error_message: 'Your request has been blocked due to excessive requests.',
@@ -463,7 +463,7 @@ const MOCK_REQUESTS: RequestLog[] = [
     dropped_headers: [],
     operationalClass: 'upstream_error',
     requestKindProtocolGroup: 'mcp',
-    requestKindBillingGroup: 'non_billable',
+    requestKindBillingGroup: 'billable',
   },
   {
     id: 9499,
@@ -501,9 +501,9 @@ const MOCK_REQUESTS: RequestLog[] = [
     http_status: 200,
     mcp_status: 401,
     business_credits: null,
-    request_kind_key: 'mcp:unknown-payload',
-    request_kind_label: 'MCP | unknown payload',
-    request_kind_detail: 'tool: map',
+    request_kind_key: 'mcp:map',
+    request_kind_label: 'MCP | map',
+    request_kind_detail: null,
     result_status: 'error',
     created_at: now - 196,
     error_message: 'The account associated with this API key has been deactivated.',
@@ -516,7 +516,7 @@ const MOCK_REQUESTS: RequestLog[] = [
     dropped_headers: [],
     operationalClass: 'upstream_error',
     requestKindProtocolGroup: 'mcp',
-    requestKindBillingGroup: 'non_billable',
+    requestKindBillingGroup: 'billable',
   },
   {
     id: 9497,
@@ -553,12 +553,8 @@ const STORY_REQUEST_KIND_OPTIONS: TokenLogRequestKindOption[] = [
   { key: 'api:search', label: 'API | search', protocol_group: 'api', billing_group: 'billable' },
   { key: 'mcp:initialize', label: 'MCP | initialize', protocol_group: 'mcp', billing_group: 'non_billable' },
   { key: 'mcp:ping', label: 'MCP | ping', protocol_group: 'mcp', billing_group: 'non_billable' },
-  {
-    key: 'mcp:unknown-payload',
-    label: 'MCP | unknown payload',
-    protocol_group: 'mcp',
-    billing_group: 'non_billable',
-  },
+  { key: 'mcp:crawl', label: 'MCP | crawl', protocol_group: 'mcp', billing_group: 'billable' },
+  { key: 'mcp:map', label: 'MCP | map', protocol_group: 'mcp', billing_group: 'billable' },
 ]
 
 function buildStoryLogFacetOptions(values: Array<string | null | undefined>): Array<{ value: string; count: number }> {
@@ -581,6 +577,22 @@ function buildStoryRequestKindOptions(
     ...option,
     count: logs.filter((log) => log.request_kind_key === option.key).length,
   }))
+}
+
+function stripRequestLogBodies(log: RequestLog): RequestLog {
+  return {
+    ...log,
+    request_body: null,
+    response_body: null,
+  }
+}
+
+function lookupStoryLogBodies(logId: number) {
+  const matched = MOCK_REQUESTS.find((log) => log.id === logId)
+  return {
+    request_body: matched?.request_body ?? null,
+    response_body: matched?.response_body ?? null,
+  }
 }
 
 function buildStoryRequestLogsPage(
@@ -633,7 +645,7 @@ function buildStoryRequestLogsPage(
         })
   const start = (page - 1) * perPage
   return {
-    items: filtered.slice(start, start + perPage),
+    items: filtered.slice(start, start + perPage).map(stripRequestLogBodies),
     page,
     per_page: perPage,
     total: filtered.length,
@@ -2708,6 +2720,7 @@ function RequestsPageCanvas(): JSX.Element {
         }}
         formatTime={formatTimestamp}
         formatTimeDetail={formatTimestamp}
+        loadLogBodies={(log) => Promise.resolve(lookupStoryLogBodies(log.id))}
         onOpenKey={(id) => setDrawerTarget({ kind: 'key', id })}
         onOpenToken={(id) => setDrawerTarget({ kind: 'token', id })}
       />

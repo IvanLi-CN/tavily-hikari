@@ -11645,6 +11645,85 @@ impl KeyStore {
         })
     }
 
+    fn map_request_log_bodies_row(
+        row: sqlx::sqlite::SqliteRow,
+    ) -> Result<RequestLogBodiesRecord, sqlx::Error> {
+        Ok(RequestLogBodiesRecord {
+            request_body: row.try_get("request_body")?,
+            response_body: row.try_get("response_body")?,
+        })
+    }
+
+    pub(crate) async fn fetch_request_log_bodies(
+        &self,
+        log_id: i64,
+    ) -> Result<Option<RequestLogBodiesRecord>, ProxyError> {
+        sqlx::query(
+            r#"
+            SELECT request_body, response_body
+            FROM request_logs
+            WHERE id = ? AND visibility = ?
+            LIMIT 1
+            "#,
+        )
+        .bind(log_id)
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .fetch_optional(&self.pool)
+        .await?
+        .map(Self::map_request_log_bodies_row)
+        .transpose()
+        .map_err(ProxyError::from)
+    }
+
+    pub(crate) async fn fetch_key_request_log_bodies(
+        &self,
+        key_id: &str,
+        log_id: i64,
+    ) -> Result<Option<RequestLogBodiesRecord>, ProxyError> {
+        sqlx::query(
+            r#"
+            SELECT request_body, response_body
+            FROM request_logs
+            WHERE id = ? AND api_key_id = ? AND visibility = ?
+            LIMIT 1
+            "#,
+        )
+        .bind(log_id)
+        .bind(key_id)
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .fetch_optional(&self.pool)
+        .await?
+        .map(Self::map_request_log_bodies_row)
+        .transpose()
+        .map_err(ProxyError::from)
+    }
+
+    pub(crate) async fn fetch_token_log_bodies(
+        &self,
+        token_id: &str,
+        log_id: i64,
+    ) -> Result<Option<RequestLogBodiesRecord>, ProxyError> {
+        sqlx::query(
+            r#"
+            SELECT rl.request_body, rl.response_body
+            FROM auth_token_logs atl
+            LEFT JOIN request_logs rl
+              ON rl.id = atl.request_log_id
+             AND rl.visibility = ?
+            WHERE atl.id = ? AND atl.token_id = ?
+            LIMIT 1
+            "#,
+        )
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(log_id)
+        .bind(token_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .map(Self::map_request_log_bodies_row)
+        .transpose()
+        .map_err(ProxyError::from)
+    }
+
     fn push_request_logs_scope<'a>(
         builder: &mut QueryBuilder<'a, Sqlite>,
         scoped_key_id: Option<&'a str>,

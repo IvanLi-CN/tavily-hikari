@@ -196,7 +196,11 @@ function buildKeyLogsPage(source: RequestLog[], searchParams: URLSearchParams) {
     count: source.filter((log) => log.request_kind_key === option.key).length,
   }))
   return {
-    items: filtered.slice(start, start + perPage),
+    items: filtered.slice(start, start + perPage).map((log) => ({
+      ...log,
+      request_body: null,
+      response_body: null,
+    })),
     page,
     per_page: perPage,
     total: filtered.length,
@@ -228,8 +232,27 @@ function installKeyDetailFetchMock(): () => void {
       return jsonResponse(buildKeyLogsPage(keyLogsMock, url.searchParams))
     }
 
+    const detailMatch = url.pathname.match(new RegExp(`^/api/keys/${REVIEW_KEY_ID}/logs/(\\d+)/details$`))
+    if (detailMatch) {
+      const logId = Number(detailMatch[1])
+      const log = keyLogsMock.find((item) => item.id === logId)
+      if (!log) {
+        return new Response(null, { status: 404 })
+      }
+      return jsonResponse({
+        request_body: log.request_body,
+        response_body: log.response_body,
+      })
+    }
+
     if (url.pathname === `/api/keys/${REVIEW_KEY_ID}/logs`) {
-      return jsonResponse(keyLogsMock)
+      return jsonResponse(
+        keyLogsMock.map((log) => ({
+          ...log,
+          request_body: null,
+          response_body: null,
+        })),
+      )
     }
 
     if (url.pathname === `/api/keys/${REVIEW_KEY_ID}/sticky-users`) {

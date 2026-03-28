@@ -443,6 +443,12 @@ pub struct RequestLogRecord {
     pub dropped_headers: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RequestLogBodiesRecord {
+    pub request_body: Option<Vec<u8>>,
+    pub response_body: Option<Vec<u8>>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogFacetOption {
     pub value: String,

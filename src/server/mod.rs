@@ -47,7 +47,7 @@ use tavily_hikari::{
     AuthToken, ForwardProxyHourlyBucketResponse, ForwardProxyStatsResponse,
     ForwardProxyWeightHourlyBucketResponse, LogFacetOption, OAuthAccountProfile,
     PendingBillingSettleOutcome, ProxyError, ProxyRequest, ProxyResponse, ProxySummary,
-    RequestLogRecord, StickyCreditsWindow, TavilyProxy, TokenHourlyBucket,
+    RequestLogBodiesRecord, RequestLogRecord, StickyCreditsWindow, TavilyProxy, TokenHourlyBucket,
     TokenHourlyRequestVerdict, TokenLogRecord, TokenQuotaVerdict, TokenRequestKindOption,
     TokenSummary, TokenUsageBucket, UserTokenLookup, analyze_mcp_attempt,
     canonical_request_kind_key_for_filter, classify_token_request_kind,

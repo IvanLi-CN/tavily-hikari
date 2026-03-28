@@ -1461,6 +1461,16 @@ fn decode_body(bytes: &[u8]) -> Option<String> {
 
 impl From<RequestLogRecord> for RequestLogView {
     fn from(record: RequestLogRecord) -> Self {
+        Self::from_request_record(record, true)
+    }
+}
+
+impl RequestLogView {
+    fn from_summary_record(record: RequestLogRecord) -> Self {
+        Self::from_request_record(record, false)
+    }
+
+    fn from_request_record(record: RequestLogRecord, include_bodies: bool) -> Self {
         let request_kind_protocol_group =
             token_request_kind_protocol_group(&record.request_kind_key).to_string();
         let operational_class = operational_class_for_request_log(
@@ -1492,8 +1502,12 @@ impl From<RequestLogRecord> for RequestLogView {
             failure_kind: record.failure_kind,
             key_effect_code: record.key_effect_code,
             key_effect_summary: record.key_effect_summary,
-            request_body: decode_body(&record.request_body),
-            response_body: decode_body(&record.response_body),
+            request_body: include_bodies
+                .then(|| decode_body(&record.request_body))
+                .flatten(),
+            response_body: include_bodies
+                .then(|| decode_body(&record.response_body))
+                .flatten(),
             forwarded_headers: record.forwarded_headers,
             dropped_headers: record.dropped_headers,
             operational_class: operational_class.to_string(),
@@ -1501,9 +1515,7 @@ impl From<RequestLogRecord> for RequestLogView {
             request_kind_billing_group: request_kind_billing_group.to_string(),
         }
     }
-}
 
-impl RequestLogView {
     fn from_token_record(record: TokenLogRecord, token_id: &str) -> Self {
         let request_kind_key = record.request_kind_key.clone();
         let request_kind_protocol_group =

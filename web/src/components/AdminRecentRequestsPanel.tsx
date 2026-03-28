@@ -1,7 +1,7 @@
-import { Fragment, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import type { QueryLoadState } from '../admin/queryLoadState'
-import type { LogFacetOption, RequestLog } from '../api'
+import type { LogFacetOption, RequestLog, RequestLogBodies } from '../api'
 import type { AdminTranslations } from '../i18n'
 import { Icon } from '../lib/icons'
 import {
@@ -94,7 +94,13 @@ export interface AdminRecentRequestsPanelProps {
   formatTimeDetail?: (ts: number | null) => string
   onOpenKey?: (id: string) => void
   onOpenToken?: (id: string) => void
+  loadLogBodies: (log: RequestLog, signal: AbortSignal) => Promise<RequestLogBodies>
 }
+
+type LogBodiesLoadState =
+  | { status: 'loading' }
+  | { status: 'ready'; value: RequestLogBodies }
+  | { status: 'error'; message: string }
 
 const requestKindBillingQuickFilterOptions = [
   { value: 'all', label: 'Any' },
@@ -232,33 +238,6 @@ function formatErrorMessage(log: RequestLog, strings: AdminTranslations['logs'][
   return strings.none
 }
 
-function failureKindGuidance(kind: string | null | undefined, language: Language): string | null {
-  switch (kind) {
-    case 'upstream_gateway_5xx':
-      return language === 'zh'
-        ? '这是上游网关临时故障，建议稍后重试，并检查上游连通性或代理节点健康。'
-        : 'This is a temporary upstream gateway failure. Retry later and inspect upstream connectivity or proxy health.'
-    case 'upstream_rate_limited_429':
-      return language === 'zh'
-        ? '这是 Tavily 限流，建议降低频率、切换其他 Key，或等待限流窗口恢复。'
-        : 'Tavily is rate limiting this traffic. Reduce request rate, switch keys, or wait for the limit window to reset.'
-    case 'upstream_account_deactivated_401':
-      return language === 'zh'
-        ? '该 Key 可能已失效、被撤销或账户停用，建议更换可用 Key 并检查 Tavily 后台状态。'
-        : 'The key may be invalid, revoked, or tied to a deactivated account. Replace it and check the Tavily account state.'
-    case 'transport_send_error':
-      return language === 'zh'
-        ? '这是链路发送失败，建议检查 DNS、TLS、代理链路和上游可达性。'
-        : 'This request failed before getting an upstream response. Check DNS, TLS, proxy routing, and upstream reachability.'
-    case 'mcp_accept_406':
-      return language === 'zh'
-        ? '客户端需要同时接受 application/json 与 text/event-stream，请修正 Accept 请求头。'
-        : 'The client must accept both application/json and text/event-stream. Fix the Accept header negotiation.'
-    default:
-      return null
-  }
-}
-
 function summarizeSingleFacet(
   selectedValue: string | null | undefined,
   options: LogFacetOption[] | undefined,
@@ -307,20 +286,37 @@ function summarizeRequestKindTrigger(
 
 function RecentRequestDetails({
   log,
+  logBodiesState,
+  onRetryLoadBodies,
   strings,
   language,
   formatTime,
 }: {
   log: RequestLog
+  logBodiesState?: LogBodiesLoadState
+  onRetryLoadBodies?: (() => void) | null
   strings: AdminTranslations
   language: Language
   formatTime: (ts: number | null) => string
 }): JSX.Element {
   const forwarded = (log.forwarded_headers ?? []).filter((value) => value.trim().length > 0)
   const dropped = (log.dropped_headers ?? []).filter((value) => value.trim().length > 0)
-  const requestBody = log.request_body ?? strings.logDetails.noBody
-  const responseBody = log.response_body ?? strings.logDetails.noBody
-  const guidance = failureKindGuidance(log.failure_kind, language)
+  const requestBody =
+    logBodiesState?.status === 'ready'
+      ? logBodiesState.value.request_body ?? strings.logDetails.noBody
+      : logBodiesState?.status === 'loading'
+        ? strings.logDetails.loadingBody
+        : logBodiesState?.status === 'error'
+          ? strings.logDetails.loadBodyFailed
+          : log.request_body ?? strings.logDetails.noBody
+  const responseBody =
+    logBodiesState?.status === 'ready'
+      ? logBodiesState.value.response_body ?? strings.logDetails.noBody
+      : logBodiesState?.status === 'loading'
+        ? strings.logDetails.loadingBody
+        : logBodiesState?.status === 'error'
+          ? strings.logDetails.loadBodyFailed
+          : log.response_body ?? strings.logDetails.noBody
   const requestKindLabel = log.request_kind_label ?? log.request_kind_key ?? strings.logs.errors.none
 
   return (
@@ -362,12 +358,6 @@ function RecentRequestDetails({
         </div>
       </div>
       <div className="log-details-body">
-        {log.request_kind_detail ? (
-          <div className="log-details-section">
-            <header>{strings.logDetails.requestTypeDetail}</header>
-            <pre>{log.request_kind_detail}</pre>
-          </div>
-        ) : null}
         <div className="log-details-section">
           <header>{strings.logs.table.error}</header>
           <pre>{formatErrorMessage(log, strings.logs.errors)}</pre>
@@ -380,13 +370,17 @@ function RecentRequestDetails({
           <header>{strings.logDetails.responseBody}</header>
           <pre>{responseBody}</pre>
         </div>
-        {guidance ? (
-          <div className="log-details-section">
-            <header>{strings.logDetails.solution}</header>
-            <pre>{guidance}</pre>
-          </div>
-        ) : null}
       </div>
+      {logBodiesState?.status === 'error' ? (
+        <div className="log-details-feedback" role="alert">
+          <span className="log-details-feedback-message">{logBodiesState.message}</span>
+          {onRetryLoadBodies ? (
+            <Button type="button" variant="outline" size="sm" onClick={onRetryLoadBodies}>
+              {strings.logDetails.retryLoadBody}
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
       {(forwarded.length > 0 || dropped.length > 0) && (
         <div className="log-details-headers">
           {forwarded.length > 0 ? (
@@ -453,12 +447,88 @@ export default function AdminRecentRequestsPanel({
   formatTimeDetail,
   onOpenKey,
   onOpenToken,
+  loadLogBodies,
 }: AdminRecentRequestsPanelProps): JSX.Element {
   const [expandedLogs, setExpandedLogs] = useState<Set<number>>(() => new Set())
+  const [logBodiesById, setLogBodiesById] = useState<Record<number, LogBodiesLoadState>>({})
+  const logBodyControllersRef = useRef<Map<number, AbortController>>(new Map())
 
   useEffect(() => {
     setExpandedLogs(new Set())
-  }, [logs])
+    for (const controller of logBodyControllersRef.current.values()) {
+      controller.abort()
+    }
+    logBodyControllersRef.current.clear()
+    setLogBodiesById({})
+  }, [loadLogBodies, logs])
+
+  const triggerLoadLogBodies = useCallback(
+    (log: RequestLog, force = false) => {
+      const currentState = logBodiesById[log.id]
+      if (!force && (currentState?.status === 'loading' || currentState?.status === 'ready')) {
+        return
+      }
+
+      logBodyControllersRef.current.get(log.id)?.abort()
+      const controller = new AbortController()
+      logBodyControllersRef.current.set(log.id, controller)
+      setLogBodiesById((current) => ({ ...current, [log.id]: { status: 'loading' } }))
+
+      loadLogBodies(log, controller.signal)
+        .then((value) => {
+          if (controller.signal.aborted) return
+          setLogBodiesById((current) => ({
+            ...current,
+            [log.id]: { status: 'ready', value },
+          }))
+        })
+        .catch((error) => {
+          if ((error as Error | undefined)?.name === 'AbortError' || controller.signal.aborted) {
+            return
+          }
+          const message =
+            error instanceof Error && error.message.trim().length > 0
+              ? error.message
+              : strings.logDetails.loadBodyFailed
+          setLogBodiesById((current) => ({
+            ...current,
+            [log.id]: { status: 'error', message },
+          }))
+        })
+        .finally(() => {
+          if (logBodyControllersRef.current.get(log.id) === controller) {
+            logBodyControllersRef.current.delete(log.id)
+          }
+        })
+    },
+    [loadLogBodies, logBodiesById, strings.logDetails.loadBodyFailed],
+  )
+
+  const toggleExpandedLog = useCallback(
+    (log: RequestLog) => {
+      const expanded = expandedLogs.has(log.id)
+      if (!expanded) {
+        triggerLoadLogBodies(log)
+      }
+      setExpandedLogs((current) => {
+        const next = new Set(current)
+        if (next.has(log.id)) {
+          next.delete(log.id)
+        } else {
+          next.add(log.id)
+        }
+        return next
+      })
+    },
+    [expandedLogs, triggerLoadLogBodies],
+  )
+
+  const retryLoadBodies = useCallback(
+    (log: RequestLog) => {
+      triggerLoadLogBodies(log, true)
+    },
+    [triggerLoadLogBodies],
+  )
 
   const normalizedSelectedRequestKinds = useMemo(
     () => Array.from(new Set(selectedRequestKinds.map((value) => value.trim()).filter(Boolean))),
@@ -766,6 +836,13 @@ export default function AdminRecentRequestsPanel({
           ) : (
             logs.map((log) => {
               const expanded = expandedLogs.has(log.id)
+              const resolvedLogBodiesState =
+                logBodiesById[log.id]
+                ?? (expanded
+                  ? {
+                      status: 'loading' as const,
+                    }
+                  : undefined)
               const requestKindLabel = log.request_kind_label ?? log.request_kind_key ?? strings.logs.errors.none
               const keyId = log.key_id?.trim() || null
               const tokenId = log.auth_token_id?.trim() || null
@@ -842,17 +919,7 @@ export default function AdminRecentRequestsPanel({
                         type="button"
                         variant="ghost"
                         className={`log-result-button${expanded ? ' log-result-button-active' : ''}`}
-                        onClick={() =>
-                          setExpandedLogs((current) => {
-                            const next = new Set(current)
-                            if (next.has(log.id)) {
-                              next.delete(log.id)
-                            } else {
-                              next.add(log.id)
-                            }
-                            return next
-                          })
-                        }
+                        onClick={() => toggleExpandedLog(log)}
                         aria-expanded={expanded}
                         aria-controls={`recent-request-details-${log.id}`}
                       >
@@ -882,6 +949,8 @@ export default function AdminRecentRequestsPanel({
                       >
                         <RecentRequestDetails
                           log={log}
+                          logBodiesState={resolvedLogBodiesState}
+                          onRetryLoadBodies={() => retryLoadBodies(log)}
                           strings={strings}
                           language={language}
                           formatTime={formatTime}
@@ -907,6 +976,14 @@ export default function AdminRecentRequestsPanel({
           <div className="empty-state alert">{emptyLabel}</div>
         ) : (
           logs.map((log) => {
+            const expanded = expandedLogs.has(log.id)
+            const resolvedLogBodiesState =
+              logBodiesById[log.id]
+              ?? (expanded
+                ? {
+                    status: 'loading' as const,
+                  }
+                : undefined)
             const keyId = log.key_id?.trim() || null
             const tokenId = log.auth_token_id?.trim() || null
             return (
@@ -956,12 +1033,6 @@ export default function AdminRecentRequestsPanel({
                     className={variant === 'token' ? 'user-console-mobile-request-kind' : undefined}
                   />
                 </div>
-                {log.request_kind_detail ? (
-                  <div className={mobileStackedClassName}>
-                    <span>{strings.logDetails.requestTypeDetail}</span>
-                    <strong className={variant === 'token' ? 'user-console-mobile-detail' : undefined}>{log.request_kind_detail}</strong>
-                  </div>
-                ) : null}
                 <div className={mobileKvClassName}>
                   <span>{strings.logs.table.status}</span>
                   <Tooltip>
@@ -981,9 +1052,24 @@ export default function AdminRecentRequestsPanel({
                 </div>
                 <div className={mobileKvClassName}>
                   <span>{strings.logs.table.result}</span>
-                  <StatusBadge className={variant === 'token' ? 'user-console-mobile-status' : undefined} tone={statusTone(log.result_status)}>
-                    {statusLabel(log.result_status, strings)}
-                  </StatusBadge>
+                  <button
+                    type="button"
+                    className={`log-result-button recent-requests-mobile-result-button${expanded ? ' log-result-button-active' : ''}`}
+                    onClick={() => toggleExpandedLog(log)}
+                    aria-expanded={expanded}
+                    aria-controls={`recent-request-mobile-details-${log.id}`}
+                  >
+                    <StatusBadge className={variant === 'token' ? 'user-console-mobile-status' : undefined} tone={statusTone(log.result_status)}>
+                      {statusLabel(log.result_status, strings)}
+                    </StatusBadge>
+                    <Icon
+                      icon={expanded ? 'mdi:chevron-up' : 'mdi:chevron-down'}
+                      width={18}
+                      height={18}
+                      className="log-result-icon"
+                      aria-hidden="true"
+                    />
+                  </button>
                 </div>
                 <div className={mobileStackedClassName}>
                   <span>{strings.logs.table.keyEffect}</span>
@@ -995,6 +1081,18 @@ export default function AdminRecentRequestsPanel({
                     {keyEffectBadgeLabel(log, strings)}
                   </StatusBadge>
                 </div>
+                {expanded ? (
+                  <div className="recent-requests-mobile-details" id={`recent-request-mobile-details-${log.id}`}>
+                    <RecentRequestDetails
+                      log={log}
+                      logBodiesState={resolvedLogBodiesState}
+                      onRetryLoadBodies={() => retryLoadBodies(log)}
+                      strings={strings}
+                      language={language}
+                      formatTime={formatTime}
+                    />
+                  </div>
+                ) : null}
               </article>
             )
           })

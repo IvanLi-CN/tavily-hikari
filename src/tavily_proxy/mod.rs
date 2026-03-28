@@ -4242,6 +4242,13 @@ impl TavilyProxy {
             .await
     }
 
+    pub async fn request_log_bodies(
+        &self,
+        log_id: i64,
+    ) -> Result<Option<RequestLogBodiesRecord>, ProxyError> {
+        self.key_store.fetch_request_log_bodies(log_id).await
+    }
+
     /// Rebuild API-key request buckets from visible request logs.
     pub async fn rebuild_api_key_usage_buckets(&self) -> Result<(), ProxyError> {
         self.key_store.rebuild_api_key_usage_buckets().await
@@ -4293,6 +4300,16 @@ impl TavilyProxy {
                 true,
                 false,
             )
+            .await
+    }
+
+    pub async fn key_request_log_bodies(
+        &self,
+        key_id: &str,
+        log_id: i64,
+    ) -> Result<Option<RequestLogBodiesRecord>, ProxyError> {
+        self.key_store
+            .fetch_key_request_log_bodies(key_id, log_id)
             .await
     }
 
@@ -5870,6 +5887,16 @@ impl TavilyProxy {
                 key_id,
                 operational_class,
             )
+            .await
+    }
+
+    pub async fn token_request_log_bodies(
+        &self,
+        token_id: &str,
+        log_id: i64,
+    ) -> Result<Option<RequestLogBodiesRecord>, ProxyError> {
+        self.key_store
+            .fetch_token_log_bodies(token_id, log_id)
             .await
     }
 
