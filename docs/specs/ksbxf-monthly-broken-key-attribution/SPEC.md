@@ -130,13 +130,60 @@
 
 ## Visual Evidence
 
-- 本规范只保留可复现的 Storybook 入口，不在 git 历史中提交验收截图，避免过时图像污染评审与追溯。
-- `/admin/users/usage` 列展示与排序：`admin-pages--users-usage`
-- 用户主体抽屉：`admin-pages--users-usage-breakage-drawer-proof`
-- 抽屉自适应高度回归：`admin-pages--monthly-broken-drawer-single-row`、`admin-pages--monthly-broken-drawer-long-content`、`admin-pages--monthly-broken-drawer-overflow`
-- `/admin/tokens/leaderboard` 列展示：`admin-pages--token-leaderboard-breakage`
-- token 主体抽屉：`admin-pages--token-leaderboard-breakage-drawer-proof`
-- 用户详情限额编辑区：`admin-pages--user-detail`
+- source_type: storybook_canvas
+  story_id_or_title: admin-pages--users-usage
+  state: users usage monthly broken column
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  evidence_note: 验证 `/admin/users/usage` 的 `月蹬坏` 列、双行单元格与点击入口已经落在最终页面里。
+  image:
+  ![用户用量页月蹬坏列](./assets/users-usage-monthly-broken.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: admin-pages--token-leaderboard-breakage
+  state: token leaderboard monthly broken column
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  evidence_note: 验证 `/admin/tokens/leaderboard` 的 `月蹬坏` 列、owner 次行与无记录占位已接入最终列表。
+  image:
+  ![令牌排行页月蹬坏列](./assets/token-leaderboard-monthly-broken.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: admin-pages--user-detail
+  state: user detail breakage limit section
+  target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  evidence_note: 验证用户详情页独立的月蹬坏限额编辑区，以及打开 broken keys 抽屉的入口。
+  image:
+  ![用户详情月蹬坏限额](./assets/user-detail-broken-limit.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: admin-pages--users-usage-breakage-drawer-proof
+  state: standard drawer with three items
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  evidence_note: 验证抽屉在 2 到 3 条记录时按内容自然收口，并展示可点击 key 与复制按钮。
+  image:
+  ![月蹬坏抽屉标准态](./assets/monthly-broken-drawer-standard.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: admin-pages--monthly-broken-drawer-overflow
+  state: drawer body scrolled with overflow list
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  evidence_note: 验证记录过多时抽屉高度封顶，列表区域进入内部滚动，而不是继续无限增高。
+  image:
+  ![月蹬坏抽屉滚动态](./assets/monthly-broken-drawer-overflow-scrolled.png)
 
 ## 实现里程碑（Milestones / Delivery checklist）
 
