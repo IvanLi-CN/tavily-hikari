@@ -8295,6 +8295,44 @@ colo=LAX
         assert!(inserted_admin_log.get("request_body").is_some_and(|value| value.is_null()));
         assert!(inserted_admin_log.get("response_body").is_some_and(|value| value.is_null()));
 
+        let logs_with_bodies_resp = client
+            .get(format!(
+                "http://{}/api/logs?page=1&per_page=20&include_bodies=true",
+                admin_addr
+            ))
+            .header(reqwest::header::COOKIE, admin_cookie.clone())
+            .send()
+            .await
+            .expect("fetch admin logs page with bodies");
+        assert_eq!(logs_with_bodies_resp.status(), reqwest::StatusCode::OK);
+        let logs_with_bodies: serde_json::Value = logs_with_bodies_resp
+            .json()
+            .await
+            .expect("admin logs with bodies json");
+        let inserted_admin_log_with_bodies = logs_with_bodies
+            .get("items")
+            .and_then(|value| value.as_array())
+            .and_then(|items| {
+                items.iter().find(|item| {
+                    item.get("id")
+                        .and_then(|value| value.as_i64())
+                        .is_some_and(|value| value == request_log_id)
+                })
+            })
+            .expect("inserted admin log with bodies");
+        assert_eq!(
+            inserted_admin_log_with_bodies
+                .get("request_body")
+                .and_then(|value| value.as_str()),
+            Some(r#"{"query":"incident review"}"#)
+        );
+        assert_eq!(
+            inserted_admin_log_with_bodies
+                .get("response_body")
+                .and_then(|value| value.as_str()),
+            Some(r#"{"answer":"stable"}"#)
+        );
+
         let log_detail_resp = client
             .get(format!(
                 "http://{}/api/logs/{}/details",

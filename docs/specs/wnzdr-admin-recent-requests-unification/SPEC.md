@@ -109,6 +109,7 @@
   - `key_effect`
   - `auth_token_id`
   - `key_id`
+  - `include_bodies`
 - `result` 与 `key_effect` 同时出现时返回 `400`
 - 响应新增：
   - `requestKindOptions`
@@ -117,6 +118,7 @@
   - `facets.tokens`
   - `facets.keys`
 - 共享列表响应中的 `request_body` / `response_body` 固定返回 `null`；真实 bodies 只从详情接口获取。
+- `dashboard overview` 仍属非目标范围，保留 `include_bodies=true` 的旧调用路径以继续返回内联 request/response body。
 
 ### `GET /api/keys/:id/logs/page`
 

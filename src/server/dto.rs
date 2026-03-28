@@ -502,6 +502,7 @@ struct LogsQuery {
     auth_token_id: Option<String>,
     key_id: Option<String>,
     operational_class: Option<String>,
+    include_bodies: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]

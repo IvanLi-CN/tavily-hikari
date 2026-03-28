@@ -434,7 +434,9 @@ describe('admin user tag api helpers', () => {
     await fetchRequestLogs(1, 20, 'error', undefined, 'neutral')
 
     const [input] = fetchMock.mock.calls[0] as [string]
-    expect(input).toBe('/api/logs?page=1&per_page=20&result=error&operational_class=neutral')
+    expect(input).toBe(
+      '/api/logs?page=1&per_page=20&result=error&operational_class=neutral&include_bodies=true',
+    )
   })
 
   it('fetches global log bodies from the dedicated detail endpoint', async () => {

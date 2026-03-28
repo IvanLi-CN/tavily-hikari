@@ -1771,6 +1771,7 @@ async fn list_logs(
     let request_kinds = parse_request_kind_filters(raw_query.as_deref());
     let result_status = normalize_result_status_filter(params.result.as_deref());
     let key_effect_code = normalize_key_effect_filter(params.key_effect.as_deref());
+    let include_bodies = params.include_bodies.unwrap_or(false);
     if result_status.is_some() && key_effect_code.is_some() {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -1795,7 +1796,7 @@ async fn list_logs(
             let view_items = logs
                 .items
                 .into_iter()
-                .map(RequestLogView::from_summary_record)
+                .map(|record| RequestLogView::from_request_record(record, include_bodies))
                 .collect();
             Json(PaginatedLogsView {
                 items: view_items,

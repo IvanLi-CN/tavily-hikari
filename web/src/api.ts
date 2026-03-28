@@ -237,6 +237,7 @@ export interface RequestLogsPageQuery {
   result?: LogResultFilter
   keyEffect?: string
   operationalClass?: LogOperationalClass | 'all'
+  includeBodies?: boolean
   tokenId?: string
   keyId?: string
   since?: number
@@ -271,6 +272,7 @@ function appendRequestLogsPageFilters(
     result,
     keyEffect,
     operationalClass,
+    includeBodies,
     tokenId,
     keyId,
     since,
@@ -285,6 +287,7 @@ function appendRequestLogsPageFilters(
   if (result) params.set('result', result)
   if (keyEffect?.trim()) params.set('key_effect', keyEffect.trim())
   if (operationalClass && operationalClass !== 'all') params.set('operational_class', operationalClass)
+  if (includeBodies) params.set('include_bodies', 'true')
   if (tokenId?.trim()) params.set('auth_token_id', tokenId.trim())
   if (keyId?.trim()) params.set('key_id', keyId.trim())
   if (typeof since === 'number' && Number.isFinite(since)) params.set('since', String(since))
@@ -1466,7 +1469,7 @@ export function fetchRequestLogs(
   signal?: AbortSignal,
   operationalClass?: LogOperationalClass | 'all',
 ): Promise<RequestLogsPage> {
-  return fetchRequestLogsPage({ page, perPage, result, operationalClass }, signal)
+  return fetchRequestLogsPage({ page, perPage, result, operationalClass, includeBodies: true }, signal)
 }
 
 export function fetchRequestLogDetails(logId: number, signal?: AbortSignal): Promise<RequestLogBodies> {
