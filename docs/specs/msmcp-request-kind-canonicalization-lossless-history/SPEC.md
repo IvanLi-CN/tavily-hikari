@@ -133,6 +133,7 @@
 - 迁移 claim 必须同时把 `request_logs` 与 `auth_token_logs` 的目标高水位持久化到 `meta`；单次迁移只能处理到该快照边界，重启续跑时复用同一边界，避免追逐启动后的新写入而无法收敛。
 - 使用独立维护二进制 `request_kind_canonical_backfill` 作为手动 repair / dry-run 入口；它与数据库迁移共享同一套 backfill 逻辑。
 - 两张表分别按 `id` 升序批处理，并用 meta 高水位游标支持断点续跑；迁移完成后再写入单独的 done marker，后续启动不再重复执行该历史迁移。
+- 若启动期 schema self-heal 或结构重建重新补回 request kind 相关列，必须先清除该迁移的 done / cursor / upper-bound markers，再重新执行同一数据库迁移，避免旧 done marker 让历史行保持空白 request kind。
 - 每批处理规则：
   - 计算该行 canonical request kind。
   - 若主字段与 canonical 三元组不同且 legacy 快照为空，则先写入 `legacy_request_kind_*`。

@@ -1193,7 +1193,7 @@ impl KeyStore {
         .execute(&self.pool)
         .await?;
 
-        self.upgrade_request_logs_schema().await?;
+        let mut request_kind_schema_changed = self.upgrade_request_logs_schema().await?;
 
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_request_logs_auth_token_time
@@ -1560,59 +1560,7 @@ impl KeyStore {
                 .await?;
         }
 
-        if !self
-            .table_column_exists("auth_token_logs", "request_kind_key")
-            .await?
-        {
-            sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN request_kind_key TEXT")
-                .execute(&self.pool)
-                .await?;
-        }
-
-        if !self
-            .table_column_exists("auth_token_logs", "request_kind_label")
-            .await?
-        {
-            sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN request_kind_label TEXT")
-                .execute(&self.pool)
-                .await?;
-        }
-
-        if !self
-            .table_column_exists("auth_token_logs", "request_kind_detail")
-            .await?
-        {
-            sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN request_kind_detail TEXT")
-                .execute(&self.pool)
-                .await?;
-        }
-
-        if !self
-            .table_column_exists("auth_token_logs", "legacy_request_kind_key")
-            .await?
-        {
-            sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN legacy_request_kind_key TEXT")
-                .execute(&self.pool)
-                .await?;
-        }
-
-        if !self
-            .table_column_exists("auth_token_logs", "legacy_request_kind_label")
-            .await?
-        {
-            sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN legacy_request_kind_label TEXT")
-                .execute(&self.pool)
-                .await?;
-        }
-
-        if !self
-            .table_column_exists("auth_token_logs", "legacy_request_kind_detail")
-            .await?
-        {
-            sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN legacy_request_kind_detail TEXT")
-                .execute(&self.pool)
-                .await?;
-        }
+        request_kind_schema_changed |= self.ensure_auth_token_logs_request_kind_columns().await?;
 
         // Upgrade: add counts_business_quota column if missing
         if !self
@@ -1969,6 +1917,11 @@ impl KeyStore {
         .execute(&self.pool)
         .await?;
 
+        if request_kind_schema_changed {
+            self.reset_request_kind_canonical_migration_v1_markers()
+                .await?;
+        }
+
         self.ensure_request_kind_canonical_migration_v1().await?;
 
         if self
@@ -2287,6 +2240,22 @@ impl KeyStore {
             }
         }
 
+        sqlx::query("COMMIT").execute(&mut *conn).await?;
+        Ok(())
+    }
+
+    async fn reset_request_kind_canonical_migration_v1_markers(&self) -> Result<(), ProxyError> {
+        let mut conn = begin_immediate_sqlite_connection(&self.pool).await?;
+        for key in [
+            META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_DONE,
+            META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE,
+            META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_REQUEST_LOGS_UPPER_BOUND,
+            META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_AUTH_TOKEN_LOGS_UPPER_BOUND,
+            META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_REQUEST_LOGS_CURSOR_V1,
+            META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_AUTH_TOKEN_LOGS_CURSOR_V1,
+        ] {
+            delete_meta_key_with_connection(&mut conn, key).await?;
+        }
         sqlx::query("COMMIT").execute(&mut *conn).await?;
         Ok(())
     }
@@ -4395,7 +4364,7 @@ impl KeyStore {
         Ok(exists.is_some())
     }
 
-    pub(crate) async fn upgrade_request_logs_schema(&self) -> Result<(), ProxyError> {
+    pub(crate) async fn upgrade_request_logs_schema(&self) -> Result<bool, ProxyError> {
         if !self.request_logs_column_exists("result_status").await? {
             sqlx::query(
                 "ALTER TABLE request_logs ADD COLUMN result_status TEXT NOT NULL DEFAULT 'unknown'",
@@ -4465,14 +4434,17 @@ impl KeyStore {
                 .await?;
         }
 
-        self.ensure_request_logs_request_kind_columns().await?;
+        let mut request_kind_schema_changed =
+            self.ensure_request_logs_request_kind_columns().await?;
 
-        self.ensure_request_logs_key_ids().await?;
+        request_kind_schema_changed |= self.ensure_request_logs_key_ids().await?;
 
-        Ok(())
+        Ok(request_kind_schema_changed)
     }
 
-    pub(crate) async fn ensure_request_logs_key_ids(&self) -> Result<(), ProxyError> {
+    pub(crate) async fn ensure_request_logs_key_ids(&self) -> Result<bool, ProxyError> {
+        let mut request_kind_schema_changed = false;
+
         if !self.request_logs_column_exists("api_key_id").await? {
             sqlx::query("ALTER TABLE request_logs ADD COLUMN api_key_id TEXT")
                 .execute(&self.pool)
@@ -4493,6 +4465,7 @@ impl KeyStore {
         if self.request_logs_column_exists("api_key").await? {
             self.rebuild_request_logs_table(RequestLogsRebuildMode::DropLegacyApiKeyColumn)
                 .await?;
+            request_kind_schema_changed = true;
         }
 
         if self
@@ -4501,6 +4474,7 @@ impl KeyStore {
         {
             self.rebuild_request_logs_table(RequestLogsRebuildMode::RelaxApiKeyIdNullability)
                 .await?;
+            request_kind_schema_changed = true;
         }
 
         if !self.request_logs_column_exists("request_body").await? {
@@ -4517,16 +4491,19 @@ impl KeyStore {
 
         // Re-run the request-kind self-heal after structural migrations so legacy
         // snapshots cannot be dropped by intermediate rebuild branches.
-        self.ensure_request_logs_request_kind_columns().await?;
+        request_kind_schema_changed |= self.ensure_request_logs_request_kind_columns().await?;
 
-        Ok(())
+        Ok(request_kind_schema_changed)
     }
 
-    async fn ensure_request_logs_request_kind_columns(&self) -> Result<(), ProxyError> {
+    async fn ensure_request_logs_request_kind_columns(&self) -> Result<bool, ProxyError> {
+        let mut request_kind_schema_changed = false;
+
         if !self.request_logs_column_exists("request_kind_key").await? {
             sqlx::query("ALTER TABLE request_logs ADD COLUMN request_kind_key TEXT")
                 .execute(&self.pool)
                 .await?;
+            request_kind_schema_changed = true;
         }
 
         if !self
@@ -4536,6 +4513,7 @@ impl KeyStore {
             sqlx::query("ALTER TABLE request_logs ADD COLUMN request_kind_label TEXT")
                 .execute(&self.pool)
                 .await?;
+            request_kind_schema_changed = true;
         }
 
         if !self
@@ -4545,6 +4523,7 @@ impl KeyStore {
             sqlx::query("ALTER TABLE request_logs ADD COLUMN request_kind_detail TEXT")
                 .execute(&self.pool)
                 .await?;
+            request_kind_schema_changed = true;
         }
 
         if !self
@@ -4554,6 +4533,7 @@ impl KeyStore {
             sqlx::query("ALTER TABLE request_logs ADD COLUMN legacy_request_kind_key TEXT")
                 .execute(&self.pool)
                 .await?;
+            request_kind_schema_changed = true;
         }
 
         if !self
@@ -4563,6 +4543,7 @@ impl KeyStore {
             sqlx::query("ALTER TABLE request_logs ADD COLUMN legacy_request_kind_label TEXT")
                 .execute(&self.pool)
                 .await?;
+            request_kind_schema_changed = true;
         }
 
         if !self
@@ -4572,6 +4553,7 @@ impl KeyStore {
             sqlx::query("ALTER TABLE request_logs ADD COLUMN legacy_request_kind_detail TEXT")
                 .execute(&self.pool)
                 .await?;
+            request_kind_schema_changed = true;
         }
 
         if !self.request_logs_column_exists("business_credits").await? {
@@ -4580,7 +4562,73 @@ impl KeyStore {
                 .await?;
         }
 
-        Ok(())
+        Ok(request_kind_schema_changed)
+    }
+
+    async fn ensure_auth_token_logs_request_kind_columns(&self) -> Result<bool, ProxyError> {
+        let mut request_kind_schema_changed = false;
+
+        if !self
+            .table_column_exists("auth_token_logs", "request_kind_key")
+            .await?
+        {
+            sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN request_kind_key TEXT")
+                .execute(&self.pool)
+                .await?;
+            request_kind_schema_changed = true;
+        }
+
+        if !self
+            .table_column_exists("auth_token_logs", "request_kind_label")
+            .await?
+        {
+            sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN request_kind_label TEXT")
+                .execute(&self.pool)
+                .await?;
+            request_kind_schema_changed = true;
+        }
+
+        if !self
+            .table_column_exists("auth_token_logs", "request_kind_detail")
+            .await?
+        {
+            sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN request_kind_detail TEXT")
+                .execute(&self.pool)
+                .await?;
+            request_kind_schema_changed = true;
+        }
+
+        if !self
+            .table_column_exists("auth_token_logs", "legacy_request_kind_key")
+            .await?
+        {
+            sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN legacy_request_kind_key TEXT")
+                .execute(&self.pool)
+                .await?;
+            request_kind_schema_changed = true;
+        }
+
+        if !self
+            .table_column_exists("auth_token_logs", "legacy_request_kind_label")
+            .await?
+        {
+            sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN legacy_request_kind_label TEXT")
+                .execute(&self.pool)
+                .await?;
+            request_kind_schema_changed = true;
+        }
+
+        if !self
+            .table_column_exists("auth_token_logs", "legacy_request_kind_detail")
+            .await?
+        {
+            sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN legacy_request_kind_detail TEXT")
+                .execute(&self.pool)
+                .await?;
+            request_kind_schema_changed = true;
+        }
+
+        Ok(request_kind_schema_changed)
     }
 
     pub(crate) async fn request_logs_column_exists(

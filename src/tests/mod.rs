@@ -9,6 +9,7 @@ use axum::{
     http::StatusCode,
     routing::{any, get, post},
 };
+use sqlx::Connection;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -1203,6 +1204,230 @@ async fn startup_blocks_on_request_kind_database_migration() {
             .await
             .expect("request-kind migration state marker");
     assert_eq!(migration_state, format!("done:{migration_done_at}"));
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn startup_reruns_request_kind_migration_after_request_log_self_heal() {
+    let db_path = temp_db_path("request-kind-migration-reset-after-request-log-self-heal");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let token = proxy
+        .create_access_token(Some("request-kind-self-heal-reset"))
+        .await
+        .expect("token created");
+
+    let request_log_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO request_logs (
+            api_key_id,
+            auth_token_id,
+            method,
+            path,
+            status_code,
+            tavily_status_code,
+            error_message,
+            result_status,
+            request_kind_key,
+            request_kind_label,
+            request_body,
+            response_body,
+            forwarded_headers,
+            dropped_headers,
+            visibility,
+            created_at
+        ) VALUES (
+            ?, ?, 'POST', '/mcp/search', 404, 404, 'Not Found', 'error',
+            'mcp:raw:/mcp/search', 'MCP | /mcp/search',
+            X'7B7D', X'4E6F7420466F756E64', '[]', '[]', 'visible', ?
+        )
+        RETURNING id
+        "#,
+    )
+    .bind(Option::<String>::None)
+    .bind(&token.id)
+    .bind(Utc::now().timestamp())
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("insert legacy request log before self-heal");
+
+    proxy.key_store.pool.close().await;
+    drop(proxy);
+
+    let options = SqliteConnectOptions::new()
+        .filename(&db_str)
+        .create_if_missing(false)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_secs(5));
+    let mut conn = sqlx::SqliteConnection::connect_with(&options)
+        .await
+        .expect("connect rebuild pool");
+
+    sqlx::query("PRAGMA foreign_keys = OFF")
+        .execute(&mut conn)
+        .await
+        .expect("disable foreign keys");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut conn)
+        .await
+        .expect("begin request_logs rebuild");
+    sqlx::query(
+        r#"
+        CREATE TABLE request_logs_self_heal (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            api_key_id TEXT,
+            auth_token_id TEXT,
+            method TEXT NOT NULL,
+            path TEXT NOT NULL,
+            query TEXT,
+            status_code INTEGER,
+            tavily_status_code INTEGER,
+            error_message TEXT,
+            result_status TEXT NOT NULL DEFAULT 'unknown',
+            business_credits INTEGER,
+            failure_kind TEXT,
+            key_effect_code TEXT NOT NULL DEFAULT 'none',
+            key_effect_summary TEXT,
+            request_body BLOB,
+            response_body BLOB,
+            forwarded_headers TEXT,
+            dropped_headers TEXT,
+            visibility TEXT NOT NULL DEFAULT 'visible',
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY (api_key_id) REFERENCES api_keys(id)
+        )
+        "#,
+    )
+    .execute(&mut conn)
+    .await
+    .expect("create request_logs self-heal table");
+    sqlx::query(
+        r#"
+        INSERT INTO request_logs_self_heal (
+            id,
+            api_key_id,
+            auth_token_id,
+            method,
+            path,
+            query,
+            status_code,
+            tavily_status_code,
+            error_message,
+            result_status,
+            business_credits,
+            failure_kind,
+            key_effect_code,
+            key_effect_summary,
+            request_body,
+            response_body,
+            forwarded_headers,
+            dropped_headers,
+            visibility,
+            created_at
+        )
+        SELECT
+            id,
+            api_key_id,
+            auth_token_id,
+            method,
+            path,
+            query,
+            status_code,
+            tavily_status_code,
+            error_message,
+            result_status,
+            business_credits,
+            failure_kind,
+            key_effect_code,
+            key_effect_summary,
+            request_body,
+            response_body,
+            forwarded_headers,
+            dropped_headers,
+            visibility,
+            created_at
+        FROM request_logs
+        "#,
+    )
+    .execute(&mut conn)
+    .await
+    .expect("copy request logs without request-kind columns");
+    sqlx::query("DROP TABLE request_logs")
+        .execute(&mut conn)
+        .await
+        .expect("drop request_logs");
+    sqlx::query("ALTER TABLE request_logs_self_heal RENAME TO request_logs")
+        .execute(&mut conn)
+        .await
+        .expect("rename request_logs self-heal table");
+    sqlx::query("COMMIT")
+        .execute(&mut conn)
+        .await
+        .expect("commit request_logs rebuild");
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&mut conn)
+        .await
+        .expect("re-enable foreign keys");
+    drop(conn);
+
+    let reopened = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy reopened");
+
+    let request_row = sqlx::query(
+        r#"
+        SELECT request_kind_key, request_kind_label, request_kind_detail
+        FROM request_logs
+        WHERE id = ?
+        "#,
+    )
+    .bind(request_log_id)
+    .fetch_one(&reopened.key_store.pool)
+    .await
+    .expect("request row after self-heal migration");
+    assert_eq!(
+        request_row
+            .try_get::<String, _>("request_kind_key")
+            .unwrap(),
+        "mcp:unsupported-path"
+    );
+    assert_eq!(
+        request_row
+            .try_get::<String, _>("request_kind_label")
+            .unwrap(),
+        "MCP | unsupported path"
+    );
+    assert_eq!(
+        request_row
+            .try_get::<Option<String>, _>("request_kind_detail")
+            .unwrap()
+            .as_deref(),
+        Some("/mcp/search")
+    );
+
+    assert!(
+        reopened
+            .key_store
+            .request_logs_column_exists("legacy_request_kind_key")
+            .await
+            .expect("legacy request_kind column check"),
+        "request_logs self-heal should re-add legacy request-kind columns"
+    );
+
+    let request_cursor: i64 =
+        sqlx::query_scalar("SELECT CAST(value AS INTEGER) FROM meta WHERE key = ? LIMIT 1")
+            .bind(META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_REQUEST_LOGS_CURSOR_V1)
+            .fetch_one(&reopened.key_store.pool)
+            .await
+            .expect("request cursor after self-heal migration");
+    assert!(
+        request_cursor >= request_log_id,
+        "request-kind migration should rerun after self-heal"
+    );
 
     let _ = std::fs::remove_file(db_path);
 }
