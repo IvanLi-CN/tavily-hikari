@@ -202,12 +202,6 @@ struct RequestLogView {
     request_kind_key: String,
     request_kind_label: String,
     request_kind_detail: Option<String>,
-    #[serde(rename = "legacyRequestKindKey")]
-    legacy_request_kind_key: Option<String>,
-    #[serde(rename = "legacyRequestKindLabel")]
-    legacy_request_kind_label: Option<String>,
-    #[serde(rename = "legacyRequestKindDetail")]
-    legacy_request_kind_detail: Option<String>,
     result_status: String,
     created_at: i64,
     error_message: Option<String>,
@@ -405,12 +399,6 @@ struct TokenLogView {
     request_kind_key: String,
     request_kind_label: String,
     request_kind_detail: Option<String>,
-    #[serde(rename = "legacyRequestKindKey")]
-    legacy_request_kind_key: Option<String>,
-    #[serde(rename = "legacyRequestKindLabel")]
-    legacy_request_kind_label: Option<String>,
-    #[serde(rename = "legacyRequestKindDetail")]
-    legacy_request_kind_detail: Option<String>,
     result_status: String,
     error_message: Option<String>,
     failure_kind: Option<String>,
@@ -451,9 +439,6 @@ impl From<TokenLogRecord> for TokenLogView {
             request_kind_key: r.request_kind_key,
             request_kind_label: r.request_kind_label,
             request_kind_detail: r.request_kind_detail,
-            legacy_request_kind_key: r.legacy_request_kind_key,
-            legacy_request_kind_label: r.legacy_request_kind_label,
-            legacy_request_kind_detail: r.legacy_request_kind_detail,
             result_status: r.result_status,
             error_message: r.error_message,
             failure_kind: r.failure_kind,

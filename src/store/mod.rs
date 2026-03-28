@@ -90,9 +90,6 @@ CREATE TABLE request_logs_new (
     request_kind_key TEXT,
     request_kind_label TEXT,
     request_kind_detail TEXT,
-    legacy_request_kind_key TEXT,
-    legacy_request_kind_label TEXT,
-    legacy_request_kind_detail TEXT,
     business_credits INTEGER,
     failure_kind TEXT,
     key_effect_code TEXT NOT NULL DEFAULT 'none',
@@ -107,10 +104,43 @@ CREATE TABLE request_logs_new (
 )
 "#;
 
+const AUTH_TOKEN_LOGS_REBUILT_SCHEMA_SQL: &str = r#"
+CREATE TABLE auth_token_logs_new (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_id TEXT NOT NULL,
+    method TEXT NOT NULL,
+    path TEXT NOT NULL,
+    query TEXT,
+    http_status INTEGER,
+    mcp_status INTEGER,
+    request_kind_key TEXT,
+    request_kind_label TEXT,
+    request_kind_detail TEXT,
+    result_status TEXT NOT NULL,
+    error_message TEXT,
+    failure_kind TEXT,
+    key_effect_code TEXT NOT NULL DEFAULT 'none',
+    key_effect_summary TEXT,
+    counts_business_quota INTEGER NOT NULL DEFAULT 1,
+    business_credits INTEGER,
+    billing_subject TEXT,
+    billing_state TEXT NOT NULL DEFAULT 'none',
+    api_key_id TEXT,
+    request_log_id INTEGER REFERENCES request_logs(id),
+    created_at INTEGER NOT NULL
+)
+"#;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RequestLogsRebuildMode {
     DropLegacyApiKeyColumn,
     RelaxApiKeyIdNullability,
+    DropLegacyRequestKindColumns,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuthTokenLogsRebuildMode {
+    DropLegacyRequestKindColumns,
 }
 
 struct RequestLogFilterParams<'a> {
@@ -166,29 +196,12 @@ pub(crate) struct RequestKindCanonicalBackfillUpperBounds {
     pub(crate) auth_token_logs: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct RequestKindSnapshot {
-    key: Option<String>,
-    label: Option<String>,
-    detail: Option<String>,
-}
-
-impl RequestKindSnapshot {
-    fn has_any(&self) -> bool {
-        self.key.is_some() || self.label.is_some() || self.detail.is_some()
-    }
-}
-
 #[derive(Debug, Clone)]
 struct RequestKindCanonicalUpdate {
     id: i64,
     request_kind_key: String,
     request_kind_label: String,
     request_kind_detail: Option<String>,
-    legacy_request_kind_key: Option<String>,
-    legacy_request_kind_label: Option<String>,
-    legacy_request_kind_detail: Option<String>,
-    snapshotted: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -199,9 +212,6 @@ struct RequestKindBackfillRequestLogRow {
     request_kind_key: Option<String>,
     request_kind_label: Option<String>,
     request_kind_detail: Option<String>,
-    legacy_request_kind_key: Option<String>,
-    legacy_request_kind_label: Option<String>,
-    legacy_request_kind_detail: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -213,9 +223,6 @@ struct RequestKindBackfillTokenLogRow {
     request_kind_key: Option<String>,
     request_kind_label: Option<String>,
     request_kind_detail: Option<String>,
-    legacy_request_kind_key: Option<String>,
-    legacy_request_kind_label: Option<String>,
-    legacy_request_kind_detail: Option<String>,
 }
 
 fn normalize_request_kind_backfill_field(value: Option<String>) -> Option<String> {
@@ -223,81 +230,6 @@ fn normalize_request_kind_backfill_field(value: Option<String>) -> Option<String
         let trimmed = value.trim();
         (!trimmed.is_empty()).then(|| trimmed.to_string())
     })
-}
-
-fn resolve_request_kind_legacy_snapshot(
-    current: &RequestKindSnapshot,
-    legacy: &RequestKindSnapshot,
-    desired: &RequestKindSnapshot,
-) -> (RequestKindSnapshot, bool) {
-    let already_canonical = current == desired;
-    let should_snapshot = !already_canonical && !legacy.has_any() && current.has_any();
-    let next_legacy = if should_snapshot {
-        current.clone()
-    } else {
-        legacy.clone()
-    };
-    (next_legacy, should_snapshot)
-}
-
-async fn request_kind_backfill_table_column_exists(
-    pool: &SqlitePool,
-    table: &str,
-    column: &str,
-) -> Result<bool, ProxyError> {
-    let sql = format!("SELECT 1 FROM pragma_table_info('{table}') WHERE name = ? LIMIT 1");
-    let exists = sqlx::query_scalar::<_, i64>(&sql)
-        .bind(column)
-        .fetch_optional(pool)
-        .await?;
-    Ok(exists.is_some())
-}
-
-async fn ensure_request_kind_backfill_schema(pool: &SqlitePool) -> Result<(), ProxyError> {
-    for (table, columns) in [
-        (
-            "request_logs",
-            [
-                (
-                    "legacy_request_kind_key",
-                    "ALTER TABLE request_logs ADD COLUMN legacy_request_kind_key TEXT",
-                ),
-                (
-                    "legacy_request_kind_label",
-                    "ALTER TABLE request_logs ADD COLUMN legacy_request_kind_label TEXT",
-                ),
-                (
-                    "legacy_request_kind_detail",
-                    "ALTER TABLE request_logs ADD COLUMN legacy_request_kind_detail TEXT",
-                ),
-            ],
-        ),
-        (
-            "auth_token_logs",
-            [
-                (
-                    "legacy_request_kind_key",
-                    "ALTER TABLE auth_token_logs ADD COLUMN legacy_request_kind_key TEXT",
-                ),
-                (
-                    "legacy_request_kind_label",
-                    "ALTER TABLE auth_token_logs ADD COLUMN legacy_request_kind_label TEXT",
-                ),
-                (
-                    "legacy_request_kind_detail",
-                    "ALTER TABLE auth_token_logs ADD COLUMN legacy_request_kind_detail TEXT",
-                ),
-            ],
-        ),
-    ] {
-        for (column, alter_sql) in columns {
-            if !request_kind_backfill_table_column_exists(pool, table, column).await? {
-                sqlx::query(alter_sql).execute(pool).await?;
-            }
-        }
-    }
-
-    Ok(())
 }
 
 async fn read_request_kind_backfill_meta_i64(
@@ -607,33 +539,22 @@ async fn write_request_kind_canonical_backfill_upper_bounds_with_connection(
 fn build_request_kind_backfill_request_log_update(
     row: RequestKindBackfillRequestLogRow,
 ) -> Option<RequestKindCanonicalUpdate> {
-    let current = RequestKindSnapshot {
-        key: normalize_request_kind_backfill_field(row.request_kind_key),
-        label: normalize_request_kind_backfill_field(row.request_kind_label),
-        detail: normalize_request_kind_backfill_field(row.request_kind_detail),
-    };
-    let legacy = RequestKindSnapshot {
-        key: normalize_request_kind_backfill_field(row.legacy_request_kind_key),
-        label: normalize_request_kind_backfill_field(row.legacy_request_kind_label),
-        detail: normalize_request_kind_backfill_field(row.legacy_request_kind_detail),
-    };
-
+    let current_key = normalize_request_kind_backfill_field(row.request_kind_key);
+    let current_label = normalize_request_kind_backfill_field(row.request_kind_label);
+    let current_detail = normalize_request_kind_backfill_field(row.request_kind_detail);
     let kind = canonicalize_request_log_request_kind(
         row.path.as_str(),
         row.request_body.as_deref(),
-        current.key.clone(),
-        current.label.clone(),
-        current.detail.clone(),
+        current_key.clone(),
+        current_label.clone(),
+        current_detail.clone(),
     );
-    let desired = RequestKindSnapshot {
-        key: Some(kind.key.clone()),
-        label: Some(kind.label.clone()),
-        detail: normalize_request_kind_backfill_field(kind.detail),
-    };
-    let (next_legacy, snapshotted) =
-        resolve_request_kind_legacy_snapshot(&current, &legacy, &desired);
+    let desired_detail = normalize_request_kind_backfill_field(kind.detail);
 
-    if current == desired && legacy == next_legacy {
+    if current_key.as_deref() == Some(kind.key.as_str())
+        && current_label.as_deref() == Some(kind.label.as_str())
+        && current_detail == desired_detail
+    {
         return None;
     }
 
@@ -641,45 +562,30 @@ fn build_request_kind_backfill_request_log_update(
         id: row.id,
         request_kind_key: kind.key,
         request_kind_label: kind.label,
-        request_kind_detail: desired.detail,
-        legacy_request_kind_key: next_legacy.key,
-        legacy_request_kind_label: next_legacy.label,
-        legacy_request_kind_detail: next_legacy.detail,
-        snapshotted,
+        request_kind_detail: desired_detail,
     })
 }
 
 fn build_request_kind_backfill_token_log_update(
     row: RequestKindBackfillTokenLogRow,
 ) -> Option<RequestKindCanonicalUpdate> {
-    let current = RequestKindSnapshot {
-        key: normalize_request_kind_backfill_field(row.request_kind_key),
-        label: normalize_request_kind_backfill_field(row.request_kind_label),
-        detail: normalize_request_kind_backfill_field(row.request_kind_detail),
-    };
-    let legacy = RequestKindSnapshot {
-        key: normalize_request_kind_backfill_field(row.legacy_request_kind_key),
-        label: normalize_request_kind_backfill_field(row.legacy_request_kind_label),
-        detail: normalize_request_kind_backfill_field(row.legacy_request_kind_detail),
-    };
-
+    let current_key = normalize_request_kind_backfill_field(row.request_kind_key);
+    let current_label = normalize_request_kind_backfill_field(row.request_kind_label);
+    let current_detail = normalize_request_kind_backfill_field(row.request_kind_detail);
     let kind = finalize_token_request_kind(
         row.method.as_str(),
         row.path.as_str(),
         row.query.as_deref(),
-        current.key.clone(),
-        current.label.clone(),
-        current.detail.clone(),
+        current_key.clone(),
+        current_label.clone(),
+        current_detail.clone(),
     );
-    let desired = RequestKindSnapshot {
-        key: Some(kind.key.clone()),
-        label: Some(kind.label.clone()),
-        detail: normalize_request_kind_backfill_field(kind.detail),
-    };
-    let (next_legacy, snapshotted) =
-        resolve_request_kind_legacy_snapshot(&current, &legacy, &desired);
+    let desired_detail = normalize_request_kind_backfill_field(kind.detail);
 
-    if current == desired && legacy == next_legacy {
+    if current_key.as_deref() == Some(kind.key.as_str())
+        && current_label.as_deref() == Some(kind.label.as_str())
+        && current_detail == desired_detail
+    {
         return None;
     }
 
@@ -687,11 +593,7 @@ fn build_request_kind_backfill_token_log_update(
         id: row.id,
         request_kind_key: kind.key,
         request_kind_label: kind.label,
-        request_kind_detail: desired.detail,
-        legacy_request_kind_key: next_legacy.key,
-        legacy_request_kind_label: next_legacy.label,
-        legacy_request_kind_detail: next_legacy.detail,
-        snapshotted,
+        request_kind_detail: desired_detail,
     })
 }
 
@@ -711,7 +613,6 @@ async fn backfill_request_log_request_kinds_with_pool(
     let mut cursor_after = cursor_before;
     let mut rows_scanned = 0_i64;
     let mut rows_updated = 0_i64;
-    let mut rows_snapshotted = 0_i64;
 
     loop {
         let rows = sqlx::query(
@@ -722,10 +623,7 @@ async fn backfill_request_log_request_kinds_with_pool(
                 request_body,
                 request_kind_key,
                 request_kind_label,
-                request_kind_detail,
-                legacy_request_kind_key,
-                legacy_request_kind_label,
-                legacy_request_kind_detail
+                request_kind_detail
             FROM request_logs
             WHERE id > ?
               AND id <= ?
@@ -752,9 +650,6 @@ async fn backfill_request_log_request_kinds_with_pool(
                     request_kind_key: row.try_get("request_kind_key")?,
                     request_kind_label: row.try_get("request_kind_label")?,
                     request_kind_detail: row.try_get("request_kind_detail")?,
-                    legacy_request_kind_key: row.try_get("legacy_request_kind_key")?,
-                    legacy_request_kind_label: row.try_get("legacy_request_kind_label")?,
-                    legacy_request_kind_detail: row.try_get("legacy_request_kind_detail")?,
                 })
             })
             .collect::<Result<Vec<_>, sqlx::Error>>()?;
@@ -766,7 +661,6 @@ async fn backfill_request_log_request_kinds_with_pool(
             .filter_map(build_request_kind_backfill_request_log_update)
             .collect::<Vec<_>>();
         rows_updated += updates.len() as i64;
-        rows_snapshotted += updates.iter().filter(|update| update.snapshotted).count() as i64;
 
         if !dry_run {
             loop {
@@ -793,19 +687,13 @@ async fn backfill_request_log_request_kinds_with_pool(
                             SET
                                 request_kind_key = ?,
                                 request_kind_label = ?,
-                                request_kind_detail = ?,
-                                legacy_request_kind_key = ?,
-                                legacy_request_kind_label = ?,
-                                legacy_request_kind_detail = ?
+                                request_kind_detail = ?
                             WHERE id = ?
                             "#,
                         )
                         .bind(&update.request_kind_key)
                         .bind(&update.request_kind_label)
                         .bind(&update.request_kind_detail)
-                        .bind(&update.legacy_request_kind_key)
-                        .bind(&update.legacy_request_kind_label)
-                        .bind(&update.legacy_request_kind_detail)
                         .bind(update.id)
                         .execute(&mut *tx)
                         .await?;
@@ -877,7 +765,6 @@ async fn backfill_request_log_request_kinds_with_pool(
         cursor_after: if dry_run { cursor_before } else { cursor_after },
         rows_scanned,
         rows_updated,
-        rows_snapshotted,
     })
 }
 
@@ -897,7 +784,6 @@ async fn backfill_auth_token_log_request_kinds_with_pool(
     let mut cursor_after = cursor_before;
     let mut rows_scanned = 0_i64;
     let mut rows_updated = 0_i64;
-    let mut rows_snapshotted = 0_i64;
 
     loop {
         let rows = sqlx::query(
@@ -909,10 +795,7 @@ async fn backfill_auth_token_log_request_kinds_with_pool(
                 query,
                 request_kind_key,
                 request_kind_label,
-                request_kind_detail,
-                legacy_request_kind_key,
-                legacy_request_kind_label,
-                legacy_request_kind_detail
+                request_kind_detail
             FROM auth_token_logs
             WHERE id > ?
               AND id <= ?
@@ -940,9 +823,6 @@ async fn backfill_auth_token_log_request_kinds_with_pool(
                     request_kind_key: row.try_get("request_kind_key")?,
                     request_kind_label: row.try_get("request_kind_label")?,
                     request_kind_detail: row.try_get("request_kind_detail")?,
-                    legacy_request_kind_key: row.try_get("legacy_request_kind_key")?,
-                    legacy_request_kind_label: row.try_get("legacy_request_kind_label")?,
-                    legacy_request_kind_detail: row.try_get("legacy_request_kind_detail")?,
                 })
             })
             .collect::<Result<Vec<_>, sqlx::Error>>()?;
@@ -954,7 +834,6 @@ async fn backfill_auth_token_log_request_kinds_with_pool(
             .filter_map(build_request_kind_backfill_token_log_update)
             .collect::<Vec<_>>();
         rows_updated += updates.len() as i64;
-        rows_snapshotted += updates.iter().filter(|update| update.snapshotted).count() as i64;
 
         if !dry_run {
             loop {
@@ -981,19 +860,13 @@ async fn backfill_auth_token_log_request_kinds_with_pool(
                             SET
                                 request_kind_key = ?,
                                 request_kind_label = ?,
-                                request_kind_detail = ?,
-                                legacy_request_kind_key = ?,
-                                legacy_request_kind_label = ?,
-                                legacy_request_kind_detail = ?
+                                request_kind_detail = ?
                             WHERE id = ?
                             "#,
                         )
                         .bind(&update.request_kind_key)
                         .bind(&update.request_kind_label)
                         .bind(&update.request_kind_detail)
-                        .bind(&update.legacy_request_kind_key)
-                        .bind(&update.legacy_request_kind_label)
-                        .bind(&update.legacy_request_kind_detail)
                         .bind(update.id)
                         .execute(&mut *tx)
                         .await?;
@@ -1065,7 +938,6 @@ async fn backfill_auth_token_log_request_kinds_with_pool(
         cursor_after: if dry_run { cursor_before } else { cursor_after },
         rows_scanned,
         rows_updated,
-        rows_snapshotted,
     })
 }
 
@@ -1077,7 +949,6 @@ pub(crate) async fn run_request_kind_canonical_backfill_with_pool(
     upper_bounds: Option<RequestKindCanonicalBackfillUpperBounds>,
 ) -> Result<RequestKindCanonicalBackfillReport, ProxyError> {
     let batch_size = batch_size.max(1);
-    ensure_request_kind_backfill_schema(pool).await?;
     let request_logs = backfill_request_log_request_kinds_with_pool(
         pool,
         batch_size,
@@ -1173,9 +1044,6 @@ impl KeyStore {
                 request_kind_key TEXT,
                 request_kind_label TEXT,
                 request_kind_detail TEXT,
-                legacy_request_kind_key TEXT,
-                legacy_request_kind_label TEXT,
-                legacy_request_kind_detail TEXT,
                 business_credits INTEGER,
                 failure_kind TEXT,
                 key_effect_code TEXT NOT NULL DEFAULT 'none',
@@ -1589,9 +1457,6 @@ impl KeyStore {
                 request_kind_key TEXT,
                 request_kind_label TEXT,
                 request_kind_detail TEXT,
-                legacy_request_kind_key TEXT,
-                legacy_request_kind_label TEXT,
-                legacy_request_kind_detail TEXT,
                 result_status TEXT NOT NULL,
                 error_message TEXT,
                 failure_kind TEXT,
@@ -1606,12 +1471,6 @@ impl KeyStore {
                 created_at INTEGER NOT NULL
             )
             "#,
-        )
-        .execute(&self.pool)
-        .await?;
-
-        sqlx::query(
-            r#"CREATE INDEX IF NOT EXISTS idx_token_logs_token_time ON auth_token_logs(token_id, created_at DESC, id DESC)"#,
         )
         .execute(&self.pool)
         .await?;
@@ -1669,20 +1528,6 @@ impl KeyStore {
             .await?;
         }
 
-        sqlx::query(
-            r#"CREATE INDEX IF NOT EXISTS idx_token_logs_billable_id
-               ON auth_token_logs(counts_business_quota, id)"#,
-        )
-        .execute(&self.pool)
-        .await?;
-
-        sqlx::query(
-            r#"CREATE INDEX IF NOT EXISTS idx_token_logs_token_request_kind_time
-               ON auth_token_logs(token_id, request_kind_key, created_at DESC, id DESC)"#,
-        )
-        .execute(&self.pool)
-        .await?;
-
         if !self
             .table_column_exists("auth_token_logs", "business_credits")
             .await?
@@ -1712,13 +1557,6 @@ impl KeyStore {
             .await?;
         }
 
-        sqlx::query(
-            r#"CREATE INDEX IF NOT EXISTS idx_token_logs_billing_pending
-               ON auth_token_logs(billing_state, billing_subject, id)"#,
-        )
-        .execute(&self.pool)
-        .await?;
-
         if !self
             .table_column_exists("auth_token_logs", "api_key_id")
             .await?
@@ -1727,13 +1565,6 @@ impl KeyStore {
                 .execute(&self.pool)
                 .await?;
         }
-
-        sqlx::query(
-            r#"CREATE INDEX IF NOT EXISTS idx_token_logs_api_key_time
-               ON auth_token_logs(api_key_id, created_at DESC, id DESC)"#,
-        )
-        .execute(&self.pool)
-        .await?;
 
         if !self
             .table_column_exists("auth_token_logs", "request_log_id")
@@ -1746,12 +1577,18 @@ impl KeyStore {
             .await?;
         }
 
-        sqlx::query(
-            r#"CREATE INDEX IF NOT EXISTS idx_token_logs_request_log_id
-               ON auth_token_logs(request_log_id)"#,
-        )
-        .execute(&self.pool)
-        .await?;
+        if self
+            .auth_token_logs_have_legacy_request_kind_columns()
+            .await?
+        {
+            self.rebuild_auth_token_logs_table(
+                AuthTokenLogsRebuildMode::DropLegacyRequestKindColumns,
+            )
+            .await?;
+            request_kind_schema_changed = true;
+        }
+
+        self.ensure_auth_token_logs_indexes().await?;
 
         sqlx::query(
             r#"
@@ -3883,9 +3720,6 @@ impl KeyStore {
                         request_kind_key,
                         request_kind_label,
                         request_kind_detail,
-                        legacy_request_kind_key,
-                        legacy_request_kind_label,
-                        legacy_request_kind_detail,
                         business_credits,
                         failure_kind,
                         key_effect_code,
@@ -3911,9 +3745,6 @@ impl KeyStore {
                         NULL AS request_kind_key,
                         NULL AS request_kind_label,
                         NULL AS request_kind_detail,
-                        NULL AS legacy_request_kind_key,
-                        NULL AS legacy_request_kind_label,
-                        NULL AS legacy_request_kind_detail,
                         NULL AS business_credits,
                         NULL AS failure_kind,
                         'none' AS key_effect_code,
@@ -3948,9 +3779,6 @@ impl KeyStore {
                         request_kind_key,
                         request_kind_label,
                         request_kind_detail,
-                        legacy_request_kind_key,
-                        legacy_request_kind_label,
-                        legacy_request_kind_detail,
                         business_credits,
                         failure_kind,
                         key_effect_code,
@@ -3976,9 +3804,64 @@ impl KeyStore {
                         request_kind_key,
                         request_kind_label,
                         request_kind_detail,
-                        legacy_request_kind_key,
-                        legacy_request_kind_label,
-                        legacy_request_kind_detail,
+                        business_credits,
+                        failure_kind,
+                        key_effect_code,
+                        key_effect_summary,
+                        request_body,
+                        response_body,
+                        forwarded_headers,
+                        dropped_headers,
+                        visibility,
+                        created_at
+                    FROM request_logs
+                    "#,
+                )
+                .execute(&mut **conn)
+                .await?;
+            }
+            RequestLogsRebuildMode::DropLegacyRequestKindColumns => {
+                sqlx::query(
+                    r#"
+                    INSERT INTO request_logs_new (
+                        id,
+                        api_key_id,
+                        auth_token_id,
+                        method,
+                        path,
+                        query,
+                        status_code,
+                        tavily_status_code,
+                        error_message,
+                        result_status,
+                        request_kind_key,
+                        request_kind_label,
+                        request_kind_detail,
+                        business_credits,
+                        failure_kind,
+                        key_effect_code,
+                        key_effect_summary,
+                        request_body,
+                        response_body,
+                        forwarded_headers,
+                        dropped_headers,
+                        visibility,
+                        created_at
+                    )
+                    SELECT
+                        id,
+                        api_key_id,
+                        auth_token_id,
+                        method,
+                        path,
+                        query,
+                        status_code,
+                        tavily_status_code,
+                        error_message,
+                        result_status,
+                        request_kind_key,
+                        request_kind_label,
+                        request_kind_detail,
                         business_credits,
                         failure_kind,
                         key_effect_code,
@@ -4012,6 +3895,251 @@ impl KeyStore {
 
         sqlx::query("COMMIT").execute(&mut **conn).await?;
 
+        Ok(())
+    }
+
+    async fn rebuild_auth_token_logs_table(
+        &self,
+        mode: AuthTokenLogsRebuildMode,
+    ) -> Result<(), ProxyError> {
+        let mut conn = self.pool.acquire().await?;
+        sqlx::query("PRAGMA foreign_keys = OFF")
+            .execute(&mut *conn)
+            .await?;
+
+        let rebuild_result = self
+            .rebuild_auth_token_logs_table_with_foreign_keys_disabled(&mut conn, mode)
+            .await;
+
+        if rebuild_result.is_err() {
+            let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+        }
+
+        let reenable_result = sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&mut *conn)
+            .await;
+
+        match (rebuild_result, reenable_result) {
+            (Err(err), _) => Err(err),
+            (Ok(_), Err(err)) => Err(err.into()),
+            (Ok(_), Ok(_)) => Ok(()),
+        }
+    }
+
+    async fn rebuild_auth_token_logs_table_with_foreign_keys_disabled(
+        &self,
+        conn: &mut sqlx::pool::PoolConnection<Sqlite>,
+        mode: AuthTokenLogsRebuildMode,
+    ) -> Result<(), ProxyError> {
+        sqlx::query("BEGIN IMMEDIATE").execute(&mut **conn).await?;
+        sqlx::query("DROP TABLE IF EXISTS auth_token_logs_new")
+            .execute(&mut **conn)
+            .await?;
+        sqlx::query(AUTH_TOKEN_LOGS_REBUILT_SCHEMA_SQL)
+            .execute(&mut **conn)
+            .await?;
+
+        match mode {
+            AuthTokenLogsRebuildMode::DropLegacyRequestKindColumns => {
+                sqlx::query(
+                    r#"
+                    INSERT INTO auth_token_logs_new (
+                        id,
+                        token_id,
+                        method,
+                        path,
+                        query,
+                        http_status,
+                        mcp_status,
+                        request_kind_key,
+                        request_kind_label,
+                        request_kind_detail,
+                        result_status,
+                        error_message,
+                        failure_kind,
+                        key_effect_code,
+                        key_effect_summary,
+                        counts_business_quota,
+                        business_credits,
+                        billing_subject,
+                        billing_state,
+                        api_key_id,
+                        request_log_id,
+                        created_at
+                    )
+                    SELECT
+                        id,
+                        token_id,
+                        method,
+                        path,
+                        query,
+                        http_status,
+                        mcp_status,
+                        request_kind_key,
+                        request_kind_label,
+                        request_kind_detail,
+                        result_status,
+                        error_message,
+                        failure_kind,
+                        key_effect_code,
+                        key_effect_summary,
+                        counts_business_quota,
+                        business_credits,
+                        billing_subject,
+                        billing_state,
+                        api_key_id,
+                        request_log_id,
+                        created_at
+                    FROM auth_token_logs
+                    "#,
+                )
+                .execute(&mut **conn)
+                .await?;
+            }
+        }
+
+        sqlx::query("DROP TABLE auth_token_logs")
+            .execute(&mut **conn)
+            .await?;
+        sqlx::query("ALTER TABLE auth_token_logs_new RENAME TO auth_token_logs")
+            .execute(&mut **conn)
+            .await?;
+
+        self.ensure_auth_token_logs_rebuild_references_valid(
+            conn,
+            "auth_token_logs schema migration produced invalid preserved references",
+        )
+        .await?;
+
+        sqlx::query("COMMIT").execute(&mut **conn).await?;
+        Ok(())
+    }
+
+    async fn ensure_auth_token_logs_rebuild_references_valid(
+        &self,
+        conn: &mut sqlx::pool::PoolConnection<Sqlite>,
+        context: &str,
+    ) -> Result<(), ProxyError> {
+        let rows = sqlx::query("PRAGMA foreign_key_check('auth_token_logs')")
+            .fetch_all(&mut **conn)
+            .await?;
+        if !rows.is_empty() {
+            let details = rows
+                .into_iter()
+                .take(5)
+                .map(|row| {
+                    let table = row
+                        .try_get::<String, _>(0)
+                        .unwrap_or_else(|_| "<unknown-table>".to_string());
+                    let rowid = row.try_get::<i64, _>(1).unwrap_or_default();
+                    let parent = row
+                        .try_get::<String, _>(2)
+                        .unwrap_or_else(|_| "<unknown-parent>".to_string());
+                    let fk_index = row.try_get::<i64, _>(3).unwrap_or_default();
+                    format!("{table}[rowid={rowid}] -> {parent} (fk#{fk_index})")
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+
+            return Err(ProxyError::Other(format!("{context}: {details}")));
+        }
+
+        self.ensure_auth_token_logs_child_reference_integrity(
+            conn,
+            "api_key_maintenance_records",
+            context,
+        )
+        .await
+    }
+
+    async fn ensure_auth_token_logs_child_reference_integrity(
+        &self,
+        conn: &mut sqlx::pool::PoolConnection<Sqlite>,
+        table: &str,
+        context: &str,
+    ) -> Result<(), ProxyError> {
+        let table_exists = sqlx::query_scalar::<_, i64>(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+        )
+        .bind(table)
+        .fetch_optional(&mut **conn)
+        .await?;
+        if table_exists.is_none() {
+            return Ok(());
+        }
+
+        let has_auth_token_log_id = sqlx::query_scalar::<_, i64>(
+            "SELECT 1 FROM pragma_table_info(?) WHERE name = 'auth_token_log_id' LIMIT 1",
+        )
+        .bind(table)
+        .fetch_optional(&mut **conn)
+        .await?;
+        if has_auth_token_log_id.is_none() {
+            return Ok(());
+        }
+
+        let query = format!(
+            "SELECT rowid, auth_token_log_id FROM {table} \
+             WHERE auth_token_log_id IS NOT NULL \
+               AND NOT EXISTS (SELECT 1 FROM auth_token_logs WHERE auth_token_logs.id = {table}.auth_token_log_id) \
+             ORDER BY rowid ASC LIMIT 5"
+        );
+        let rows = sqlx::query(&query).fetch_all(&mut **conn).await?;
+        if rows.is_empty() {
+            return Ok(());
+        }
+
+        let details = rows
+            .into_iter()
+            .map(|row| {
+                let rowid = row.try_get::<i64, _>("rowid").unwrap_or_default();
+                let auth_token_log_id = row
+                    .try_get::<i64, _>("auth_token_log_id")
+                    .unwrap_or_default();
+                format!("{table}[rowid={rowid}] -> auth_token_logs[id={auth_token_log_id}]")
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+
+        Err(ProxyError::Other(format!("{context}: {details}")))
+    }
+
+    async fn ensure_auth_token_logs_indexes(&self) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_token_logs_token_time ON auth_token_logs(token_id, created_at DESC, id DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_token_logs_billable_id
+               ON auth_token_logs(counts_business_quota, id)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_token_logs_token_request_kind_time
+               ON auth_token_logs(token_id, request_kind_key, created_at DESC, id DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_token_logs_billing_pending
+               ON auth_token_logs(billing_state, billing_subject, id)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_token_logs_api_key_time
+               ON auth_token_logs(api_key_id, created_at DESC, id DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_token_logs_request_log_id
+               ON auth_token_logs(request_log_id)"#,
+        )
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -4584,8 +4712,12 @@ impl KeyStore {
                 .await?;
         }
 
-        // Re-run the request-kind self-heal after structural migrations so legacy
-        // snapshots cannot be dropped by intermediate rebuild branches.
+        if self.request_logs_have_legacy_request_kind_columns().await? {
+            self.rebuild_request_logs_table(RequestLogsRebuildMode::DropLegacyRequestKindColumns)
+                .await?;
+            request_kind_schema_changed = true;
+        }
+
         request_kind_schema_changed |= self.ensure_request_logs_request_kind_columns().await?;
 
         Ok(request_kind_schema_changed)
@@ -4621,36 +4753,6 @@ impl KeyStore {
             request_kind_schema_changed = true;
         }
 
-        if !self
-            .request_logs_column_exists("legacy_request_kind_key")
-            .await?
-        {
-            sqlx::query("ALTER TABLE request_logs ADD COLUMN legacy_request_kind_key TEXT")
-                .execute(&self.pool)
-                .await?;
-            request_kind_schema_changed = true;
-        }
-
-        if !self
-            .request_logs_column_exists("legacy_request_kind_label")
-            .await?
-        {
-            sqlx::query("ALTER TABLE request_logs ADD COLUMN legacy_request_kind_label TEXT")
-                .execute(&self.pool)
-                .await?;
-            request_kind_schema_changed = true;
-        }
-
-        if !self
-            .request_logs_column_exists("legacy_request_kind_detail")
-            .await?
-        {
-            sqlx::query("ALTER TABLE request_logs ADD COLUMN legacy_request_kind_detail TEXT")
-                .execute(&self.pool)
-                .await?;
-            request_kind_schema_changed = true;
-        }
-
         if !self.request_logs_column_exists("business_credits").await? {
             sqlx::query("ALTER TABLE request_logs ADD COLUMN business_credits INTEGER")
                 .execute(&self.pool)
@@ -4658,6 +4760,18 @@ impl KeyStore {
         }
 
         Ok(request_kind_schema_changed)
+    }
+
+    async fn request_logs_have_legacy_request_kind_columns(&self) -> Result<bool, ProxyError> {
+        Ok(self
+            .request_logs_column_exists("legacy_request_kind_key")
+            .await?
+            || self
+                .request_logs_column_exists("legacy_request_kind_label")
+                .await?
+            || self
+                .request_logs_column_exists("legacy_request_kind_detail")
+                .await?)
     }
 
     async fn ensure_auth_token_logs_request_kind_columns(&self) -> Result<bool, ProxyError> {
@@ -4693,37 +4807,19 @@ impl KeyStore {
             request_kind_schema_changed = true;
         }
 
-        if !self
+        Ok(request_kind_schema_changed)
+    }
+
+    async fn auth_token_logs_have_legacy_request_kind_columns(&self) -> Result<bool, ProxyError> {
+        Ok(self
             .table_column_exists("auth_token_logs", "legacy_request_kind_key")
             .await?
-        {
-            sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN legacy_request_kind_key TEXT")
-                .execute(&self.pool)
-                .await?;
-            request_kind_schema_changed = true;
-        }
-
-        if !self
-            .table_column_exists("auth_token_logs", "legacy_request_kind_label")
-            .await?
-        {
-            sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN legacy_request_kind_label TEXT")
-                .execute(&self.pool)
-                .await?;
-            request_kind_schema_changed = true;
-        }
-
-        if !self
-            .table_column_exists("auth_token_logs", "legacy_request_kind_detail")
-            .await?
-        {
-            sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN legacy_request_kind_detail TEXT")
-                .execute(&self.pool)
-                .await?;
-            request_kind_schema_changed = true;
-        }
-
-        Ok(request_kind_schema_changed)
+            || self
+                .table_column_exists("auth_token_logs", "legacy_request_kind_label")
+                .await?
+            || self
+                .table_column_exists("auth_token_logs", "legacy_request_kind_detail")
+                .await?)
     }
 
     pub(crate) async fn request_logs_column_exists(
@@ -4831,8 +4927,7 @@ impl KeyStore {
                 r#"
                 SELECT id, api_key_id, auth_token_id, method, path, query, status_code, tavily_status_code, error_message,
                        result_status, request_kind_key, request_kind_label, request_kind_detail,
-                       legacy_request_kind_key, legacy_request_kind_label, legacy_request_kind_detail, business_credits,
-                       failure_kind, key_effect_code, key_effect_summary,
+                       business_credits, failure_kind, key_effect_code, key_effect_summary,
                        request_body, response_body, created_at, forwarded_headers, dropped_headers
                 FROM request_logs
                 WHERE api_key_id = ? AND visibility = ? AND created_at >= ?
@@ -4851,8 +4946,7 @@ impl KeyStore {
                 r#"
                 SELECT id, api_key_id, auth_token_id, method, path, query, status_code, tavily_status_code, error_message,
                        result_status, request_kind_key, request_kind_label, request_kind_detail,
-                       legacy_request_kind_key, legacy_request_kind_label, legacy_request_kind_detail, business_credits,
-                       failure_kind, key_effect_code, key_effect_summary,
+                       business_credits, failure_kind, key_effect_code, key_effect_summary,
                        request_body, response_body, created_at, forwarded_headers, dropped_headers
                 FROM request_logs
                 WHERE api_key_id = ? AND visibility = ?
@@ -9638,7 +9732,6 @@ impl KeyStore {
                 SELECT id, api_key_id, method, path, query, http_status, mcp_status,
                        CASE WHEN billing_state = 'charged' THEN business_credits ELSE NULL END AS business_credits,
                        request_kind_key, request_kind_label, request_kind_detail,
-                       legacy_request_kind_key, legacy_request_kind_label, legacy_request_kind_detail,
                        counts_business_quota, result_status, error_message, failure_kind, key_effect_code,
                        key_effect_summary, created_at
                 FROM auth_token_logs
@@ -9658,7 +9751,6 @@ impl KeyStore {
                 SELECT id, api_key_id, method, path, query, http_status, mcp_status,
                        CASE WHEN billing_state = 'charged' THEN business_credits ELSE NULL END AS business_credits,
                        request_kind_key, request_kind_label, request_kind_detail,
-                       legacy_request_kind_key, legacy_request_kind_label, legacy_request_kind_detail,
                        counts_business_quota, result_status, error_message, failure_kind, key_effect_code,
                        key_effect_summary, created_at
                 FROM auth_token_logs
@@ -9677,41 +9769,6 @@ impl KeyStore {
             .into_iter()
             .map(Self::map_token_log_row)
             .collect::<Result<Vec<_>, _>>()?)
-    }
-
-    fn normalize_request_kind_field(value: Option<String>) -> Option<String> {
-        value.and_then(|value| {
-            let trimmed = value.trim();
-            (!trimmed.is_empty()).then(|| trimmed.to_string())
-        })
-    }
-
-    fn resolve_legacy_request_kind_fields(
-        explicit_key: Option<String>,
-        explicit_label: Option<String>,
-        explicit_detail: Option<String>,
-        current_key: Option<String>,
-        current_label: Option<String>,
-        current_detail: Option<String>,
-    ) -> (Option<String>, Option<String>, Option<String>) {
-        let explicit_key = Self::normalize_request_kind_field(explicit_key);
-        let explicit_label = Self::normalize_request_kind_field(explicit_label);
-        let explicit_detail = Self::normalize_request_kind_field(explicit_detail);
-        if explicit_key.is_some() || explicit_label.is_some() || explicit_detail.is_some() {
-            return (explicit_key, explicit_label, explicit_detail);
-        }
-
-        let current_key = Self::normalize_request_kind_field(current_key);
-        let current_label = Self::normalize_request_kind_field(current_label);
-        let current_detail = Self::normalize_request_kind_field(current_detail);
-        if current_key
-            .as_deref()
-            .is_some_and(|value| !is_canonical_request_kind_key(value))
-        {
-            (current_key, current_label, current_detail)
-        } else {
-            (None, None, None)
-        }
     }
 
     fn normalize_request_kind_filters(request_kinds: &[String]) -> Vec<String> {
@@ -9793,15 +9850,6 @@ impl KeyStore {
             stored_request_kind_label.clone(),
             stored_request_kind_detail.clone(),
         );
-        let (legacy_request_kind_key, legacy_request_kind_label, legacy_request_kind_detail) =
-            Self::resolve_legacy_request_kind_fields(
-                row.try_get("legacy_request_kind_key")?,
-                row.try_get("legacy_request_kind_label")?,
-                row.try_get("legacy_request_kind_detail")?,
-                stored_request_kind_key,
-                stored_request_kind_label,
-                stored_request_kind_detail,
-            );
 
         Ok(TokenLogRecord {
             id: row.try_get("id")?,
@@ -9815,9 +9863,6 @@ impl KeyStore {
             request_kind_key: request_kind.key,
             request_kind_label: request_kind.label,
             request_kind_detail: request_kind.detail,
-            legacy_request_kind_key,
-            legacy_request_kind_label,
-            legacy_request_kind_detail,
             counts_business_quota: row.try_get::<i64, _>("counts_business_quota")? != 0,
             result_status: row.try_get("result_status")?,
             error_message: row.try_get("error_message")?,
@@ -9989,9 +10034,6 @@ impl KeyStore {
                    request_kind_key,
                    request_kind_label,
                    request_kind_detail,
-                   legacy_request_kind_key,
-                   legacy_request_kind_label,
-                   legacy_request_kind_detail,
                    counts_business_quota,
                    result_status, error_message, failure_kind, key_effect_code,
                    key_effect_summary, created_at
@@ -11503,9 +11545,6 @@ impl KeyStore {
                 request_kind_key,
                 request_kind_label,
                 request_kind_detail,
-                legacy_request_kind_key,
-                legacy_request_kind_label,
-                legacy_request_kind_detail,
                 business_credits,
                 failure_kind,
                 key_effect_code,
@@ -11579,15 +11618,6 @@ impl KeyStore {
             stored_request_kind_label.clone(),
             stored_request_kind_detail.clone(),
         );
-        let (legacy_request_kind_key, legacy_request_kind_label, legacy_request_kind_detail) =
-            Self::resolve_legacy_request_kind_fields(
-                row.try_get("legacy_request_kind_key")?,
-                row.try_get("legacy_request_kind_label")?,
-                row.try_get("legacy_request_kind_detail")?,
-                stored_request_kind_key,
-                stored_request_kind_label,
-                stored_request_kind_detail,
-            );
 
         Ok(RequestLogRecord {
             id: row.try_get("id")?,
@@ -11603,9 +11633,6 @@ impl KeyStore {
             request_kind_key: request_kind.key,
             request_kind_label: request_kind.label,
             request_kind_detail: request_kind.detail,
-            legacy_request_kind_key,
-            legacy_request_kind_label,
-            legacy_request_kind_detail,
             result_status: row.try_get("result_status")?,
             failure_kind: row.try_get("failure_kind")?,
             key_effect_code: row.try_get("key_effect_code")?,
@@ -11899,9 +11926,6 @@ impl KeyStore {
                 request_kind_key,
                 request_kind_label,
                 request_kind_detail,
-                legacy_request_kind_key,
-                legacy_request_kind_label,
-                legacy_request_kind_detail,
                 business_credits,
                 failure_kind,
                 key_effect_code,

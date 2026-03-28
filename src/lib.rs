@@ -160,7 +160,6 @@ pub struct RequestKindCanonicalBackfillTableReport {
     pub cursor_after: i64,
     pub rows_scanned: i64,
     pub rows_updated: i64,
-    pub rows_snapshotted: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]

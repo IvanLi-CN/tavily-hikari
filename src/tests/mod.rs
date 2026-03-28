@@ -1139,14 +1139,6 @@ async fn token_log_filters_and_options_use_backfilled_request_kind_columns() {
         page.items[0].request_kind_detail.as_deref(),
         Some("/mcp/sse")
     );
-    assert_eq!(
-        page.items[0].legacy_request_kind_key.as_deref(),
-        Some("mcp:raw:/mcp")
-    );
-    assert_eq!(
-        page.items[0].legacy_request_kind_label.as_deref(),
-        Some("MCP | /mcp")
-    );
 
     let options = repaired
         .token_log_request_kind_options(&token.id, 0, None)
@@ -1441,8 +1433,7 @@ async fn startup_blocks_on_request_kind_database_migration() {
         SELECT
             request_kind_key,
             request_kind_label,
-            request_kind_detail,
-            legacy_request_kind_key
+            request_kind_detail
         FROM request_logs
         WHERE id = ?
         "#,
@@ -1470,21 +1461,13 @@ async fn startup_blocks_on_request_kind_database_migration() {
             .as_deref(),
         Some("/mcp/search")
     );
-    assert_eq!(
-        request_row
-            .try_get::<Option<String>, _>("legacy_request_kind_key")
-            .unwrap()
-            .as_deref(),
-        Some("mcp:raw:/mcp/search")
-    );
 
     let token_row = sqlx::query(
         r#"
         SELECT
             request_kind_key,
             request_kind_label,
-            request_kind_detail,
-            legacy_request_kind_key
+            request_kind_detail
         FROM auth_token_logs
         WHERE id = ?
         "#,
@@ -1510,12 +1493,21 @@ async fn startup_blocks_on_request_kind_database_migration() {
             .as_deref(),
         Some("acme-startup")
     );
-    assert_eq!(
-        token_row
-            .try_get::<Option<String>, _>("legacy_request_kind_key")
-            .unwrap()
-            .as_deref(),
-        Some("mcp:tool:acme-startup")
+    assert!(
+        !reopened
+            .key_store
+            .request_logs_column_exists("legacy_request_kind_key")
+            .await
+            .expect("legacy request_kind column removed"),
+        "request_logs should drop legacy request-kind columns during startup migration"
+    );
+    assert!(
+        !reopened
+            .key_store
+            .table_column_exists("auth_token_logs", "legacy_request_kind_key")
+            .await
+            .expect("token legacy request_kind column removed"),
+        "auth_token_logs should drop legacy request-kind columns during startup migration"
     );
 
     let request_cursor: i64 =
@@ -1767,12 +1759,12 @@ async fn startup_reruns_request_kind_migration_after_request_log_self_heal() {
     );
 
     assert!(
-        reopened
+        !reopened
             .key_store
             .request_logs_column_exists("legacy_request_kind_key")
             .await
             .expect("legacy request_kind column check"),
-        "request_logs self-heal should re-add legacy request-kind columns"
+        "request_logs migration should drop legacy request-kind columns after rebuild"
     );
 
     let request_cursor: i64 =

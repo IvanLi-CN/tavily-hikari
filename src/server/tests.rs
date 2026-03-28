@@ -6860,9 +6860,6 @@ colo=LAX
             request_kind_key: "mcp:search".to_string(),
             request_kind_label: "MCP | search".to_string(),
             request_kind_detail: None,
-            legacy_request_kind_key: None,
-            legacy_request_kind_label: None,
-            legacy_request_kind_detail: None,
             counts_business_quota: true,
             result_status: "error".to_string(),
             error_message: Some("Search failed".to_string()),
@@ -6908,9 +6905,6 @@ colo=LAX
             request_kind_key: "api:search".to_string(),
             request_kind_label: "API | search".to_string(),
             request_kind_detail: None,
-            legacy_request_kind_key: None,
-            legacy_request_kind_label: None,
-            legacy_request_kind_detail: None,
             counts_business_quota: true,
             result_status: "error".to_string(),
             error_message: Some("account deactivated".to_string()),
@@ -8231,16 +8225,14 @@ colo=LAX
                 key_effect_summary,
                 request_kind_key,
                 request_kind_label,
-                legacy_request_kind_key,
-                legacy_request_kind_label,
                 request_body,
                 response_body,
                 forwarded_headers,
                 dropped_headers,
                 created_at
             ) VALUES
-                (?, 'token-backfilled-billable', 'POST', '/mcp', NULL, 200, 200, NULL, 'success', NULL, 'none', NULL, 'mcp:search', 'MCP | search', 'mcp:raw:/mcp', 'MCP | /mcp', X'6E6F742D6A736F6E', X'5B5D', '[]', '[]', ?),
-                (?, 'token-backfilled-neutral', 'POST', '/mcp', NULL, 200, 200, NULL, 'success', NULL, 'none', NULL, 'mcp:notifications/initialized', 'MCP | notifications/initialized', 'mcp:raw:/mcp', 'MCP | /mcp', X'6E6F742D6A736F6E', X'5B5D', '[]', '[]', ?)
+                (?, 'token-backfilled-billable', 'POST', '/mcp', NULL, 200, 200, NULL, 'success', NULL, 'none', NULL, 'mcp:search', 'MCP | search', X'6E6F742D6A736F6E', X'5B5D', '[]', '[]', ?),
+                (?, 'token-backfilled-neutral', 'POST', '/mcp', NULL, 200, 200, NULL, 'success', NULL, 'none', NULL, 'mcp:notifications/initialized', 'MCP | notifications/initialized', X'6E6F742D6A736F6E', X'5B5D', '[]', '[]', ?)
             "#,
         )
         .bind(&key_id)
@@ -8703,16 +8695,18 @@ colo=LAX
             "none"
         );
         assert!(
-            sqlite_column_exists(&upgraded_pool, "request_logs", "legacy_request_kind_key").await,
-            "request_logs should add legacy_request_kind_key during api_key rebuild"
+            !sqlite_column_exists(&upgraded_pool, "request_logs", "legacy_request_kind_key").await,
+            "request_logs should drop legacy_request_kind_key during api_key rebuild"
         );
         assert!(
-            sqlite_column_exists(&upgraded_pool, "request_logs", "legacy_request_kind_label").await,
-            "request_logs should add legacy_request_kind_label during api_key rebuild"
+            !sqlite_column_exists(&upgraded_pool, "request_logs", "legacy_request_kind_label")
+                .await,
+            "request_logs should drop legacy_request_kind_label during api_key rebuild"
         );
         assert!(
-            sqlite_column_exists(&upgraded_pool, "request_logs", "legacy_request_kind_detail").await,
-            "request_logs should add legacy_request_kind_detail during api_key rebuild"
+            !sqlite_column_exists(&upgraded_pool, "request_logs", "legacy_request_kind_detail")
+                .await,
+            "request_logs should drop legacy_request_kind_detail during api_key rebuild"
         );
 
         assert_eq!(
@@ -9196,16 +9190,18 @@ colo=LAX
         .expect("read api_key_id notnull");
         assert_eq!(api_key_not_null, 0, "api_key_id should be nullable after migration");
         assert!(
-            sqlite_column_exists(&upgraded_pool, "request_logs", "legacy_request_kind_key").await,
-            "request_logs should self-heal legacy_request_kind_key after rebuild"
+            !sqlite_column_exists(&upgraded_pool, "request_logs", "legacy_request_kind_key").await,
+            "request_logs should not re-add legacy_request_kind_key after rebuild"
         );
         assert!(
-            sqlite_column_exists(&upgraded_pool, "request_logs", "legacy_request_kind_label").await,
-            "request_logs should self-heal legacy_request_kind_label after rebuild"
+            !sqlite_column_exists(&upgraded_pool, "request_logs", "legacy_request_kind_label")
+                .await,
+            "request_logs should not re-add legacy_request_kind_label after rebuild"
         );
         assert!(
-            sqlite_column_exists(&upgraded_pool, "request_logs", "legacy_request_kind_detail").await,
-            "request_logs should self-heal legacy_request_kind_detail after rebuild"
+            !sqlite_column_exists(&upgraded_pool, "request_logs", "legacy_request_kind_detail")
+                .await,
+            "request_logs should not re-add legacy_request_kind_detail after rebuild"
         );
 
         assert_eq!(
@@ -10728,11 +10724,9 @@ colo=LAX
                 .and_then(|value| value.as_str()),
             Some("/mcp/sse")
         );
-        assert_eq!(
-            legacy_log
-                .get("legacyRequestKindKey")
-                .and_then(|value| value.as_str()),
-            Some("mcp:raw:/mcp")
+        assert!(
+            legacy_log.get("legacyRequestKindKey").is_none(),
+            "token log payload should not expose legacy request-kind snapshots"
         );
         let neutral_log = logs
             .iter()
@@ -10880,11 +10874,9 @@ colo=LAX
                 .and_then(|value| value.as_str()),
             Some("MCP | unsupported path")
         );
-        assert_eq!(
-            paged_legacy_log
-                .get("legacyRequestKindKey")
-                .and_then(|value| value.as_str()),
-            Some("mcp:raw:/mcp")
+        assert!(
+            paged_legacy_log.get("legacyRequestKindKey").is_none(),
+            "paged token log payload should not expose legacy request-kind snapshots"
         );
 
         let neutral_page_resp = client

@@ -159,9 +159,6 @@ export interface RequestLog {
   request_kind_key?: string
   request_kind_label?: string
   request_kind_detail?: string | null
-  legacyRequestKindKey?: string | null
-  legacyRequestKindLabel?: string | null
-  legacyRequestKindDetail?: string | null
   result_status: string
   created_at: number
   error_message: string | null

@@ -50,8 +50,19 @@ fn run_backfill(db_path: &str, batch_size: i64) {
     );
 }
 
+async fn sqlite_column_exists(pool: &sqlx::SqlitePool, table: &str, column: &str) -> bool {
+    sqlx::query_scalar::<_, i64>(&format!(
+        "SELECT 1 FROM pragma_table_info('{table}') WHERE name = ? LIMIT 1"
+    ))
+    .bind(column)
+    .fetch_optional(pool)
+    .await
+    .expect("probe sqlite column")
+    .is_some()
+}
+
 #[tokio::test]
-async fn request_kind_backfill_is_lossless_and_idempotent() {
+async fn request_kind_backfill_is_idempotent_without_legacy_snapshots() {
     let db_path = temp_db_path("request-kind-backfill-idempotent");
     let db_str = db_path.to_string_lossy().to_string();
 
@@ -148,17 +159,20 @@ async fn request_kind_backfill_is_lossless_and_idempotent() {
     .await
     .expect("insert token log");
 
+    assert!(
+        !sqlite_column_exists(&pool, "request_logs", "legacy_request_kind_key").await,
+        "current schema should not expose request_logs legacy snapshot columns"
+    );
+    assert!(
+        !sqlite_column_exists(&pool, "auth_token_logs", "legacy_request_kind_key").await,
+        "current schema should not expose auth_token_logs legacy snapshot columns"
+    );
+
     run_backfill(&db_str, 1);
 
     let request_row = sqlx::query(
         r#"
-        SELECT
-            request_kind_key,
-            request_kind_label,
-            request_kind_detail,
-            legacy_request_kind_key,
-            legacy_request_kind_label,
-            legacy_request_kind_detail
+        SELECT request_kind_key, request_kind_label, request_kind_detail
         FROM request_logs
         WHERE id = ?
         "#,
@@ -186,30 +200,10 @@ async fn request_kind_backfill_is_lossless_and_idempotent() {
             .as_deref(),
         Some("/mcp/search")
     );
-    assert_eq!(
-        request_row
-            .try_get::<Option<String>, _>("legacy_request_kind_key")
-            .unwrap()
-            .as_deref(),
-        Some("mcp:raw:/mcp/search")
-    );
-    assert_eq!(
-        request_row
-            .try_get::<Option<String>, _>("legacy_request_kind_label")
-            .unwrap()
-            .as_deref(),
-        Some("MCP | /mcp/search")
-    );
 
     let token_row = sqlx::query(
         r#"
-        SELECT
-            request_kind_key,
-            request_kind_label,
-            request_kind_detail,
-            legacy_request_kind_key,
-            legacy_request_kind_label,
-            legacy_request_kind_detail
+        SELECT request_kind_key, request_kind_label, request_kind_detail
         FROM auth_token_logs
         WHERE id = ?
         "#,
@@ -235,23 +229,10 @@ async fn request_kind_backfill_is_lossless_and_idempotent() {
             .as_deref(),
         Some("acme-lookup")
     );
-    assert_eq!(
-        token_row
-            .try_get::<Option<String>, _>("legacy_request_kind_key")
-            .unwrap()
-            .as_deref(),
-        Some("mcp:tool:acme-lookup")
-    );
 
     let request_snapshot = sqlx::query(
         r#"
-        SELECT
-            request_kind_key,
-            request_kind_label,
-            request_kind_detail,
-            legacy_request_kind_key,
-            legacy_request_kind_label,
-            legacy_request_kind_detail
+        SELECT request_kind_key, request_kind_label, request_kind_detail
         FROM request_logs
         WHERE id = ?
         "#,
@@ -262,13 +243,7 @@ async fn request_kind_backfill_is_lossless_and_idempotent() {
     .expect("request snapshot");
     let token_snapshot = sqlx::query(
         r#"
-        SELECT
-            request_kind_key,
-            request_kind_label,
-            request_kind_detail,
-            legacy_request_kind_key,
-            legacy_request_kind_label,
-            legacy_request_kind_detail
+        SELECT request_kind_key, request_kind_label, request_kind_detail
         FROM auth_token_logs
         WHERE id = ?
         "#,
@@ -282,13 +257,7 @@ async fn request_kind_backfill_is_lossless_and_idempotent() {
 
     let request_row_again = sqlx::query(
         r#"
-        SELECT
-            request_kind_key,
-            request_kind_label,
-            request_kind_detail,
-            legacy_request_kind_key,
-            legacy_request_kind_label,
-            legacy_request_kind_detail
+        SELECT request_kind_key, request_kind_label, request_kind_detail
         FROM request_logs
         WHERE id = ?
         "#,
@@ -299,13 +268,7 @@ async fn request_kind_backfill_is_lossless_and_idempotent() {
     .expect("request row after second backfill");
     let token_row_again = sqlx::query(
         r#"
-        SELECT
-            request_kind_key,
-            request_kind_label,
-            request_kind_detail,
-            legacy_request_kind_key,
-            legacy_request_kind_label,
-            legacy_request_kind_detail
+        SELECT request_kind_key, request_kind_label, request_kind_detail
         FROM auth_token_logs
         WHERE id = ?
         "#,
@@ -319,9 +282,6 @@ async fn request_kind_backfill_is_lossless_and_idempotent() {
         "request_kind_key",
         "request_kind_label",
         "request_kind_detail",
-        "legacy_request_kind_key",
-        "legacy_request_kind_label",
-        "legacy_request_kind_detail",
     ] {
         assert_eq!(
             request_snapshot

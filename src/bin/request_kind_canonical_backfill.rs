@@ -10,7 +10,7 @@ use tavily_hikari::{
 #[command(
     author,
     version,
-    about = "Canonicalize request_kind fields while preserving legacy snapshots"
+    about = "Canonicalize request_kind fields in historical logs"
 )]
 struct Cli {
     #[arg(long, env = "PROXY_DB_PATH", default_value = "data/tavily_proxy.db")]
