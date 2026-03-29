@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, mock } from 'bun:test'
 import {
   bindAdminUserTag,
   fetchAdminRegistrationSettings,
+  fetchAdminUnboundTokenUsage,
   fetchAdminUsers,
   fetchAdminUserTags,
   fetchApiKeys,
@@ -243,6 +244,31 @@ describe('admin user tag api helpers', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
     const [input] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(input).toBe('/api/users?page=1&per_page=20&q=L2&tagId=linuxdo_l2&sort=monthlySuccessRate&order=asc')
+  })
+
+  it('sends exact search and sort params when listing unbound token usage', async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            items: [],
+            total: 0,
+            page: 2,
+            perPage: 20,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    )
+    globalThis.fetch = fetchMock as typeof fetch
+
+    const result = await fetchAdminUnboundTokenUsage(2, 20, 'ops', 'quotaMonthlyUsed', 'asc')
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [input] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(input).toBe('/api/tokens/unbound-usage?page=2&per_page=20&q=ops&sort=quotaMonthlyUsed&order=asc')
+    expect(result.page).toBe(2)
+    expect(result.perPage).toBe(20)
   })
 
   it('sends repeated key group and status filters when listing paginated api keys', async () => {

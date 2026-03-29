@@ -6,6 +6,8 @@ import { ArrowDown, ArrowUp, ArrowUpDown, ChartColumnIncreasing } from 'lucide-r
 import { Fragment, type ReactNode, useEffect, useLayoutEffect, useMemo, useState } from 'react'
 
 import type {
+  AdminUnboundTokenUsageSortField,
+  AdminUnboundTokenUsageSummary,
   AdminUserDetail,
   AdminUserSummary,
   AdminUsersSortField,
@@ -89,6 +91,8 @@ import {
 const now = 1_762_380_000
 const ADMIN_USERS_DEFAULT_SORT_FIELD: AdminUsersSortField = 'lastLoginAt'
 const ADMIN_USERS_DEFAULT_SORT_ORDER: SortDirection = 'desc'
+const ADMIN_UNBOUND_TOKEN_USAGE_DEFAULT_SORT_FIELD: AdminUnboundTokenUsageSortField = 'lastUsedAt'
+const ADMIN_UNBOUND_TOKEN_USAGE_DEFAULT_SORT_ORDER: SortDirection = 'desc'
 
 function formatKeyGroupName(group: string | null | undefined, ungroupedLabel: string): string {
   const normalized = group?.trim() ?? ''
@@ -990,6 +994,66 @@ const MOCK_USER_TOKENS: AdminUserTokenSummary[] = [
   },
 ]
 
+const MOCK_UNBOUND_TOKEN_USAGE: AdminUnboundTokenUsageSummary[] = [
+  {
+    tokenId: 'qa13',
+    enabled: true,
+    note: 'Sandbox smoke traffic',
+    group: 'sandbox',
+    hourlyAnyUsed: 12,
+    hourlyAnyLimit: 500,
+    quotaHourlyUsed: 9,
+    quotaHourlyLimit: 300,
+    quotaDailyUsed: 124,
+    quotaDailyLimit: 1_500,
+    quotaMonthlyUsed: 2_912,
+    quotaMonthlyLimit: 30_000,
+    dailySuccess: 118,
+    dailyFailure: 6,
+    monthlySuccess: 2_744,
+    monthlyFailure: 168,
+    lastUsedAt: now - 180,
+  },
+  {
+    tokenId: 'ops7',
+    enabled: false,
+    note: 'Legacy import runner',
+    group: 'ops',
+    hourlyAnyUsed: 66,
+    hourlyAnyLimit: 200,
+    quotaHourlyUsed: 61,
+    quotaHourlyLimit: 120,
+    quotaDailyUsed: 402,
+    quotaDailyLimit: 800,
+    quotaMonthlyUsed: 7_884,
+    quotaMonthlyLimit: 12_000,
+    dailySuccess: 310,
+    dailyFailure: 92,
+    monthlySuccess: 5_874,
+    monthlyFailure: 2_010,
+    lastUsedAt: now - 3_600,
+  },
+  {
+    tokenId: 'tmp4',
+    enabled: true,
+    note: null,
+    group: null,
+    hourlyAnyUsed: 4,
+    hourlyAnyLimit: 100,
+    quotaHourlyUsed: 3,
+    quotaHourlyLimit: 80,
+    quotaDailyUsed: 28,
+    quotaDailyLimit: 400,
+    quotaMonthlyUsed: 301,
+    quotaMonthlyLimit: 6_000,
+    dailySuccess: 27,
+    dailyFailure: 1,
+    monthlySuccess: 296,
+    monthlyFailure: 5,
+    lastUsedAt: now - 86_400,
+  },
+]
+
 const MOCK_USER_DETAIL: AdminUserDetail = {
   ...MOCK_USERS[0],
   tokens: MOCK_USER_TOKENS,
@@ -1077,6 +1141,11 @@ const dateTimeFormatter = new Intl.DateTimeFormat(undefined, {
   minute: '2-digit',
   second: '2-digit',
 })
+const englishDateOnlyFormatter = new Intl.DateTimeFormat('en-US', {
+  year: 'numeric',
+  month: 'short',
+  day: '2-digit',
+})
 
 function formatNumber(value: number): string {
   return numberFormatter.format(value)
@@ -1111,11 +1180,7 @@ function formatDateOnly(value: number | null, language: 'en' | 'zh'): string {
     const day = String(date.getDate()).padStart(2, '0')
     return `${year}-${month}-${day}`
   }
-  return new Intl.DateTimeFormat(undefined, {
-    year: 'numeric',
-    month: 'short',
-    day: '2-digit',
-  }).format(date)
+  return englishDateOnlyFormatter.format(date)
 }
 
 function clampDisplayedQuota(value: number): number {
@@ -1163,12 +1228,32 @@ function formatSuccessRateStackValue(
   }
 }
 
+function formatCompactSuccessRateValue(success: number, failure: number, language: 'en' | 'zh'): string {
+  const total = success + failure
+  const rate = total > 0 ? formatPercent(success, total) : '—'
+  const failureLabel = language === 'zh' ? '失败' : 'Fail'
+  return `${rate} · ${failureLabel} ${formatNumber(failure)}`
+}
+
 function formatStackedTimestamp(value: number | null, language: 'en' | 'zh'): { primary: string; secondary?: string } {
   if (!value) return { primary: '—' }
   return {
     primary: formatDateOnly(value, language),
     secondary: formatClockTime(value),
   }
+}
+
+function formatUnboundTokenIdentityMeta(
+  note: string | null,
+  group: string | null,
+  groupLabel: string,
+): string {
+  const parts: string[] = []
+  const normalizedNote = note?.trim() ?? ''
+  const normalizedGroup = group?.trim() ?? ''
+  if (normalizedNote) parts.push(normalizedNote)
+  if (normalizedGroup) parts.push(`${groupLabel} ${normalizedGroup}`)
+  return parts.join(' · ') || '—'
 }
 
 function compareScalar(left: number, right: number): number {
@@ -1309,7 +1394,77 @@ function compareAdminUserSummaryRows(
   return compareUserId(left.userId, right.userId)
 }
 
-function StoryAdminUsersSortableHeader({
+function compareAdminUnboundTokenUsageRows(
+  left: AdminUnboundTokenUsageSummary,
+  right: AdminUnboundTokenUsageSummary,
+  sort: AdminUnboundTokenUsageSortField | null,
+  order: SortDirection | null,
+): number {
+  const sortField = sort ?? ADMIN_UNBOUND_TOKEN_USAGE_DEFAULT_SORT_FIELD
+  const direction = order ?? ADMIN_UNBOUND_TOKEN_USAGE_DEFAULT_SORT_ORDER
+
+  const ordering = (() => {
+    switch (sortField) {
+      case 'hourlyAnyUsed':
+        return compareQuotaUsage(
+          left.hourlyAnyUsed,
+          left.hourlyAnyLimit,
+          right.hourlyAnyUsed,
+          right.hourlyAnyLimit,
+          direction,
+        )
+      case 'quotaHourlyUsed':
+        return compareQuotaUsage(
+          left.quotaHourlyUsed,
+          left.quotaHourlyLimit,
+          right.quotaHourlyUsed,
+          right.quotaHourlyLimit,
+          direction,
+        )
+      case 'quotaDailyUsed':
+        return compareQuotaUsage(
+          left.quotaDailyUsed,
+          left.quotaDailyLimit,
+          right.quotaDailyUsed,
+          right.quotaDailyLimit,
+          direction,
+        )
+      case 'quotaMonthlyUsed':
+        return compareQuotaUsage(
+          left.quotaMonthlyUsed,
+          left.quotaMonthlyLimit,
+          right.quotaMonthlyUsed,
+          right.quotaMonthlyLimit,
+          direction,
+        )
+      case 'dailySuccessRate':
+        return compareSuccessRate(
+          left.dailySuccess,
+          left.dailyFailure,
+          right.dailySuccess,
+          right.dailyFailure,
+          direction,
+        )
+      case 'monthlySuccessRate':
+        return compareSuccessRate(
+          left.monthlySuccess,
+          left.monthlyFailure,
+          right.monthlySuccess,
+          right.monthlyFailure,
+          direction,
+        )
+      case 'lastUsedAt':
+        return compareOptionalTimestamp(left.lastUsedAt, right.lastUsedAt, direction)
+      default:
+        return 0
+    }
+  })()
+
+  if (ordering !== 0) return ordering
+  return compareUserId(left.tokenId, right.tokenId)
+}
+
+function StoryAdminUsersSortableHeader<Field extends string>({
   label,
   displayLabel,
   tooltipLabel,
@@ -1321,10 +1476,10 @@ function StoryAdminUsersSortableHeader({
   label: string
   displayLabel?: string
   tooltipLabel?: string
-  field: AdminUsersSortField
-  activeField: AdminUsersSortField
+  field: Field
+  activeField: Field
   activeOrder: SortDirection
-  onToggle: (field: AdminUsersSortField) => void
+  onToggle: (field: Field) => void
 }): JSX.Element {
   const isActive = activeField === field
   const ariaSort = !isActive ? 'none' : activeOrder === 'asc' ? 'ascending' : 'descending'
@@ -1337,6 +1492,7 @@ function StoryAdminUsersSortableHeader({
       type="button"
       variant="ghost"
       size="sm"
+      data-sort-field={field}
       className={`admin-table-sort-button${isActive ? ' is-active' : ''}`}
       onClick={() => onToggle(field)}
       aria-label={hasTooltip ? bubbleLabel : undefined}
@@ -2069,7 +2225,7 @@ function TokensPageCanvas(): JSX.Element {
           </div>
         </div>
 
-        <div className="table-wrapper jobs-table-wrapper">
+        <div className="table-wrapper jobs-table-wrapper admin-users-usage-table-wrapper">
           <table className="jobs-table tokens-table">
             <thead>
               <tr>
@@ -3366,6 +3522,330 @@ function UsersUsagePageCanvas(): JSX.Element {
   )
 }
 
+function UnboundTokenUsagePageCanvas({
+  items = MOCK_UNBOUND_TOKEN_USAGE,
+  errorMessage = null,
+}: {
+  items?: AdminUnboundTokenUsageSummary[]
+  errorMessage?: string | null
+} = {}): JSX.Element {
+  const admin = useTranslate().admin
+  const { language } = useLanguage()
+  const users = admin.users
+  const tokenStrings = admin.tokens
+  const strings = admin.unboundTokenUsage
+  const dailyRateLabel = language === 'zh' ? strings.table.dailySuccessRate : 'Daily'
+  const monthlyRateLabel = language === 'zh' ? strings.table.monthlySuccessRate : 'Monthly'
+  const [query, setQuery] = useState('')
+  const [page, setPage] = useState(1)
+  const [sortField, setSortField] = useState<AdminUnboundTokenUsageSortField | null>(null)
+  const [sortOrder, setSortOrder] = useState<SortDirection | null>(null)
+  const [selectedTokenId, setSelectedTokenId] = useState<string | null>(null)
+  const pageSize = 2
+  const normalizedQuery = query.trim().toLowerCase()
+  const effectiveSortField = sortField ?? ADMIN_UNBOUND_TOKEN_USAGE_DEFAULT_SORT_FIELD
+  const effectiveSortOrder = sortOrder ?? ADMIN_UNBOUND_TOKEN_USAGE_DEFAULT_SORT_ORDER
+  const filteredItems = items.filter((item) => {
+    if (!normalizedQuery) return true
+    return (
+      item.tokenId.toLowerCase().includes(normalizedQuery)
+      || (item.note?.toLowerCase() ?? '').includes(normalizedQuery)
+      || (item.group?.toLowerCase() ?? '').includes(normalizedQuery)
+    )
+  })
+  const sortedItems = [...filteredItems].sort((left, right) =>
+    compareAdminUnboundTokenUsageRows(left, right, sortField, sortOrder)
+  )
+  const totalPages = Math.max(1, Math.ceil(sortedItems.length / pageSize))
+  const safePage = Math.min(page, totalPages)
+  const pagedItems = sortedItems.slice((safePage - 1) * pageSize, safePage * pageSize)
+
+  const toggleSort = (field: AdminUnboundTokenUsageSortField) => {
+    const isActive = effectiveSortField === field
+    let nextSort: AdminUnboundTokenUsageSortField | null = field
+    let nextOrder: SortDirection | null = ADMIN_UNBOUND_TOKEN_USAGE_DEFAULT_SORT_ORDER
+    if (isActive && effectiveSortOrder === 'desc') {
+      nextOrder = 'asc'
+    } else if (isActive && effectiveSortOrder === 'asc') {
+      nextSort = null
+      nextOrder = null
+    }
+    setSortField(nextSort)
+    setSortOrder(nextOrder)
+    setPage(1)
+  }
+
+  return (
+    <AdminPageFrame activeModule="tokens">
+      <section className="surface panel">
+        <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
+          <div style={{ flex: '1 1 340px', minWidth: 260 }}>
+            <h2>{strings.title}</h2>
+            <p className="panel-description">{strings.description}</p>
+            <p className="panel-description" data-selected-token>{selectedTokenId ? `Opened ${selectedTokenId}` : 'No token opened yet'}</p>
+          </div>
+          <div className="admin-inline-actions" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <button type="button" className="btn btn-outline" onClick={() => openAdminStory('admin-pages--tokens')}>
+              {strings.back}
+            </button>
+            <div className="users-search-controls">
+              <input
+                type="text"
+                className="input input-bordered users-search-input"
+                placeholder={strings.searchPlaceholder}
+                value={query}
+                onChange={(event) => {
+                  setQuery(event.target.value)
+                  setPage(1)
+                }}
+              />
+              <button type="button" className="btn btn-outline">
+                {users.search}
+              </button>
+              {query.length > 0 && (
+                <button type="button" className="btn btn-ghost" onClick={() => {
+                  setQuery('')
+                  setPage(1)
+                }}>
+                  {users.clear}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="table-wrapper jobs-table-wrapper admin-users-usage-table-wrapper admin-responsive-up">
+          {pagedItems.length === 0 ? (
+            <div className="empty-state alert">{errorMessage ?? strings.empty.none}</div>
+          ) : (
+            <table className="jobs-table admin-users-table admin-users-usage-table">
+              <thead>
+                <tr>
+                  <th>{strings.table.identity}</th>
+                  <th>{strings.table.status}</th>
+                  <StoryAdminUsersSortableHeader
+                    label={strings.table.hourlyAny}
+                    field="hourlyAnyUsed"
+                    activeField={effectiveSortField}
+                    activeOrder={effectiveSortOrder}
+                    onToggle={toggleSort}
+                  />
+                  <StoryAdminUsersSortableHeader
+                    label={strings.table.hourly}
+                    field="quotaHourlyUsed"
+                    activeField={effectiveSortField}
+                    activeOrder={effectiveSortOrder}
+                    onToggle={toggleSort}
+                  />
+                  <StoryAdminUsersSortableHeader
+                    label={strings.table.daily}
+                    field="quotaDailyUsed"
+                    activeField={effectiveSortField}
+                    activeOrder={effectiveSortOrder}
+                    onToggle={toggleSort}
+                  />
+                  <StoryAdminUsersSortableHeader
+                    label={strings.table.monthly}
+                    field="quotaMonthlyUsed"
+                    activeField={effectiveSortField}
+                    activeOrder={effectiveSortOrder}
+                    onToggle={toggleSort}
+                  />
+                  <StoryAdminUsersSortableHeader
+                    label={strings.table.dailySuccessRate}
+                    displayLabel={dailyRateLabel}
+                    field="dailySuccessRate"
+                    activeField={effectiveSortField}
+                    activeOrder={effectiveSortOrder}
+                    onToggle={toggleSort}
+                  />
+                  <StoryAdminUsersSortableHeader
+                    label={strings.table.monthlySuccessRate}
+                    displayLabel={monthlyRateLabel}
+                    field="monthlySuccessRate"
+                    activeField={effectiveSortField}
+                    activeOrder={effectiveSortOrder}
+                    onToggle={toggleSort}
+                  />
+                  <StoryAdminUsersSortableHeader
+                    label={strings.table.lastUsed}
+                    field="lastUsedAt"
+                    activeField={effectiveSortField}
+                    activeOrder={effectiveSortOrder}
+                    onToggle={toggleSort}
+                  />
+                </tr>
+              </thead>
+              <tbody>
+                {pagedItems.map((item) => {
+                  const hourlyAnyMetric = formatQuotaStackValue(item.hourlyAnyUsed, item.hourlyAnyLimit)
+                  const hourlyMetric = formatQuotaStackValue(item.quotaHourlyUsed, item.quotaHourlyLimit)
+                  const dailyQuotaMetric = formatQuotaStackValue(item.quotaDailyUsed, item.quotaDailyLimit)
+                  const monthlyQuotaMetric = formatQuotaStackValue(item.quotaMonthlyUsed, item.quotaMonthlyLimit)
+                  const dailySuccessMetric = formatSuccessRateStackValue(item.dailySuccess, item.dailyFailure, language)
+                  const monthlySuccessMetric = formatSuccessRateStackValue(item.monthlySuccess, item.monthlyFailure, language)
+                  const lastUsedMetric = formatStackedTimestamp(item.lastUsedAt, language)
+                  return (
+                    <tr key={item.tokenId} data-token-row={item.tokenId}>
+                      <td className="admin-users-identity-cell">
+                        <button
+                          type="button"
+                          className="link-button admin-users-identity-button"
+                          data-token-identity={item.tokenId}
+                          onClick={() => setSelectedTokenId(item.tokenId)}
+                        >
+                          <strong>{item.tokenId}</strong>
+                        </button>
+                        <div className="panel-description admin-users-identity-meta">
+                          {formatUnboundTokenIdentityMeta(item.note, item.group, tokenStrings.groups.label)}
+                        </div>
+                      </td>
+                      <td>
+                        <StatusBadge tone={item.enabled ? 'success' : 'neutral'}>
+                          {item.enabled ? users.status.enabled : users.status.disabled}
+                        </StatusBadge>
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <div className="admin-table-value-stack">
+                          <span className={`admin-table-value-primary${hourlyAnyMetric.primaryClassName ? ` ${hourlyAnyMetric.primaryClassName}` : ''}`}>{hourlyAnyMetric.primary}</span>
+                          <span className="admin-table-value-secondary">{hourlyAnyMetric.secondary}</span>
+                        </div>
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <div className="admin-table-value-stack">
+                          <span className={`admin-table-value-primary${hourlyMetric.primaryClassName ? ` ${hourlyMetric.primaryClassName}` : ''}`}>{hourlyMetric.primary}</span>
+                          <span className="admin-table-value-secondary">{hourlyMetric.secondary}</span>
+                        </div>
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <div className="admin-table-value-stack">
+                          <span className={`admin-table-value-primary${dailyQuotaMetric.primaryClassName ? ` ${dailyQuotaMetric.primaryClassName}` : ''}`}>{dailyQuotaMetric.primary}</span>
+                          <span className="admin-table-value-secondary">{dailyQuotaMetric.secondary}</span>
+                        </div>
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <div className="admin-table-value-stack">
+                          <span className={`admin-table-value-primary${monthlyQuotaMetric.primaryClassName ? ` ${monthlyQuotaMetric.primaryClassName}` : ''}`}>{monthlyQuotaMetric.primary}</span>
+                          <span className="admin-table-value-secondary">{monthlyQuotaMetric.secondary}</span>
+                        </div>
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <div className="admin-table-value-stack">
+                          <span className="admin-table-value-primary">{dailySuccessMetric.primary}</span>
+                          <span className="admin-table-value-secondary">{dailySuccessMetric.secondary}</span>
+                        </div>
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <div className="admin-table-value-stack">
+                          <span className="admin-table-value-primary">{monthlySuccessMetric.primary}</span>
+                          <span className="admin-table-value-secondary">{monthlySuccessMetric.secondary}</span>
+                        </div>
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <div className="admin-table-value-stack">
+                          <span className="admin-table-value-primary">{lastUsedMetric.primary}</span>
+                          {lastUsedMetric.secondary && (
+                            <span className="admin-table-value-secondary">{lastUsedMetric.secondary}</span>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        <div className="admin-mobile-list admin-responsive-down">
+          {pagedItems.length === 0 ? (
+            <div className="empty-state alert">{errorMessage ?? strings.empty.none}</div>
+          ) : (
+            pagedItems.map((item) => (
+              <article key={item.tokenId} className="admin-mobile-card">
+                <div className="admin-mobile-identity-block">
+                  <div className="admin-mobile-identity-row">
+                    <span className="admin-mobile-identity-label">{strings.table.identity}</span>
+                    <button
+                      type="button"
+                      className="link-button admin-users-mobile-link"
+                      onClick={() => setSelectedTokenId(item.tokenId)}
+                    >
+                      <strong>{item.tokenId}</strong>
+                    </button>
+                  </div>
+                  <div className="panel-description admin-mobile-identity-meta">
+                    {formatUnboundTokenIdentityMeta(item.note, item.group, tokenStrings.groups.label)}
+                  </div>
+                </div>
+                <div className="admin-mobile-kv">
+                  <span>{strings.table.status}</span>
+                  <StatusBadge tone={item.enabled ? 'success' : 'neutral'}>
+                    {item.enabled ? users.status.enabled : users.status.disabled}
+                  </StatusBadge>
+                </div>
+                <div className="admin-mobile-kv">
+                  <span>{strings.table.hourlyAny}</span>
+                  <strong>{formatQuotaUsagePair(item.hourlyAnyUsed, item.hourlyAnyLimit)}</strong>
+                </div>
+                <div className="admin-mobile-kv">
+                  <span>{strings.table.hourly}</span>
+                  <strong>{formatQuotaUsagePair(item.quotaHourlyUsed, item.quotaHourlyLimit)}</strong>
+                </div>
+                <div className="admin-mobile-kv">
+                  <span>{strings.table.daily}</span>
+                  <strong>{formatQuotaUsagePair(item.quotaDailyUsed, item.quotaDailyLimit)}</strong>
+                </div>
+                <div className="admin-mobile-kv">
+                  <span>{strings.table.monthly}</span>
+                  <strong>{formatQuotaUsagePair(item.quotaMonthlyUsed, item.quotaMonthlyLimit)}</strong>
+                </div>
+                <div className="admin-mobile-kv">
+                  <span>{strings.table.dailySuccessRate}</span>
+                  <strong>{formatCompactSuccessRateValue(item.dailySuccess, item.dailyFailure, language)}</strong>
+                </div>
+                <div className="admin-mobile-kv">
+                  <span>{strings.table.monthlySuccessRate}</span>
+                  <strong>{formatCompactSuccessRateValue(item.monthlySuccess, item.monthlyFailure, language)}</strong>
+                </div>
+                <div className="admin-mobile-kv">
+                  <span>{strings.table.lastUsed}</span>
+                  <strong>{formatTimestamp(item.lastUsedAt)}</strong>
+                </div>
+              </article>
+            ))
+          )}
+        </div>
+
+        {errorMessage && (
+          <div className="surface error-banner" style={{ marginTop: 12 }}>
+            {errorMessage}
+          </div>
+        )}
+
+        {sortedItems.length > pageSize && (
+          <AdminTablePagination
+            page={safePage}
+            totalPages={totalPages}
+            pageSummary={
+              <span className="panel-description">
+                {users.pagination.replace('{page}', String(safePage)).replace('{total}', String(totalPages))}
+              </span>
+            }
+            previousLabel={tokenStrings.pagination.prev}
+            nextLabel={tokenStrings.pagination.next}
+            previousDisabled={safePage <= 1}
+            nextDisabled={safePage >= totalPages}
+            disabled={false}
+            onPrevious={() => setPage((current) => Math.max(1, current - 1))}
+            onNext={() => setPage((current) => Math.min(totalPages, current + 1))}
+          />
+        )}
+      </section>
+    </AdminPageFrame>
+  )
+}
+
 function UsersUsageTooltipProofCanvas(): JSX.Element {
   const { language } = useLanguage()
   const users = useTranslate().admin.users
@@ -3937,6 +4417,7 @@ function ProxySettingsPageCanvas(): JSX.Element {
 
 const meta = {
   title: 'Admin/Pages',
+  tags: ['autodocs'],
   parameters: {
     docs: {
       description: {
@@ -4034,6 +4515,61 @@ export const UsersUsage: Story = {
   render: () => <UsersUsagePageCanvas />,
   parameters: {
     viewport: { defaultViewport: '1440-device-desktop' },
+  },
+}
+
+export const UnboundTokenUsage: Story = {
+  render: () => <UnboundTokenUsagePageCanvas />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 80))
+    const sortButton = canvasElement.querySelector<HTMLButtonElement>('[data-sort-field="dailySuccessRate"]')
+    sortButton?.click()
+    await new Promise((resolve) => window.setTimeout(resolve, 80))
+    const firstIdentity = canvasElement.querySelector<HTMLElement>('[data-token-identity]')
+    if (firstIdentity?.textContent?.trim() !== 'tmp4') {
+      throw new Error('Expected daily success sort to move tmp4 to the first row.')
+    }
+  },
+}
+
+export const UnboundTokenUsageMobile: Story = {
+  render: () => <UnboundTokenUsagePageCanvas />,
+  parameters: {
+    viewport: { defaultViewport: '0390-device-iphone-14' },
+  },
+}
+
+export const UnboundTokenUsageEmpty: Story = {
+  render: () => <UnboundTokenUsagePageCanvas items={[]} />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+}
+
+export const UnboundTokenUsageError: Story = {
+  render: () => <UnboundTokenUsagePageCanvas items={[]} errorMessage="Unable to load unbound token usage" />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+}
+
+export const UnboundTokenUsageTokenDetailTrigger: Story = {
+  render: () => <UnboundTokenUsagePageCanvas />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 80))
+    const tokenButton = canvasElement.querySelector<HTMLButtonElement>('[data-token-identity="qa13"]')
+    tokenButton?.click()
+    await new Promise((resolve) => window.setTimeout(resolve, 80))
+    const status = canvasElement.querySelector<HTMLElement>('[data-selected-token]')
+    if (!status?.textContent?.includes('qa13')) {
+      throw new Error('Expected token detail trigger story to record qa13 as the opened token.')
+    }
   },
 }
 

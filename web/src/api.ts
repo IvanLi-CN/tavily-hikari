@@ -805,6 +805,15 @@ export type AdminUsersSortField =
   | 'lastActivity'
   | 'lastLoginAt'
 
+export type AdminUnboundTokenUsageSortField =
+  | 'hourlyAnyUsed'
+  | 'quotaHourlyUsed'
+  | 'quotaDailyUsed'
+  | 'quotaMonthlyUsed'
+  | 'dailySuccessRate'
+  | 'monthlySuccessRate'
+  | 'lastUsedAt'
+
 export type SortDirection = 'asc' | 'desc'
 
 export interface AdminUserTokenSummary {
@@ -823,6 +832,26 @@ export interface AdminUserTokenSummary {
   dailySuccess: number
   dailyFailure: number
   monthlySuccess: number
+}
+
+export interface AdminUnboundTokenUsageSummary {
+  tokenId: string
+  enabled: boolean
+  note: string | null
+  group: string | null
+  hourlyAnyUsed: number
+  hourlyAnyLimit: number
+  quotaHourlyUsed: number
+  quotaHourlyLimit: number
+  quotaDailyUsed: number
+  quotaDailyLimit: number
+  quotaMonthlyUsed: number
+  quotaMonthlyLimit: number
+  dailySuccess: number
+  dailyFailure: number
+  monthlySuccess: number
+  monthlyFailure: number
+  lastUsedAt: number | null
 }
 
 export interface AdminUserDetail extends AdminUserSummary {
@@ -1533,6 +1562,28 @@ export function fetchAdminUsers(
   return requestJson(`/api/users?${params.toString()}`, { signal })
 }
 
+export function fetchAdminUnboundTokenUsage(
+  page = 1,
+  perPage = 20,
+  query?: string,
+  sort?: AdminUnboundTokenUsageSortField | null,
+  order?: SortDirection | null,
+  signal?: AbortSignal,
+): Promise<Paginated<AdminUnboundTokenUsageSummary>> {
+  const params = new URLSearchParams({
+    page: String(page),
+    per_page: String(perPage),
+  })
+  if (query && query.trim().length > 0) {
+    params.set('q', query.trim())
+  }
+  if (sort) {
+    params.set('sort', sort)
+    params.set('order', order ?? 'desc')
+  }
+  return requestJson(`/api/tokens/unbound-usage?${params.toString()}`, { signal })
+}
+
 export function fetchAdminUserDetail(id: string, signal?: AbortSignal): Promise<AdminUserDetail> {
   const encoded = encodeURIComponent(id)
   return requestJson(`/api/users/${encoded}`, { signal })
@@ -1707,45 +1758,6 @@ export function fetchTokenLogsPage(
 export function fetchTokenLogDetails(id: string, logId: number, signal?: AbortSignal): Promise<RequestLogBodies> {
   const encoded = encodeURIComponent(id)
   return requestJson(`/api/tokens/${encoded}/logs/${encodeURIComponent(String(logId))}/details`, { signal })
-}
-
-export type TokenLeaderboardPeriod = 'day' | 'month' | 'all'
-export type TokenLeaderboardFocus = 'usage' | 'errors' | 'other'
-
-export interface TokenUsageLeaderboardItem {
-  id: string
-  enabled: boolean
-  note: string | null
-  group: string | null
-  total_requests: number
-  last_used_at: number | null
-  quota_state: string
-  // Business quota (tools/call) windows
-  quota_hourly_used: number
-  quota_hourly_limit: number
-  quota_daily_used: number
-  quota_daily_limit: number
-  // Hourly raw request limiter (any authenticated request)
-  hourly_any_used: number
-  hourly_any_limit: number
-  today_total: number
-  today_errors: number
-  today_other: number
-  month_total: number
-  month_errors: number
-  month_other: number
-  all_total: number
-  all_errors: number
-  all_other: number
-}
-
-export function fetchTokenUsageLeaderboard(
-  period: TokenLeaderboardPeriod,
-  focus: TokenLeaderboardFocus = 'usage',
-  signal?: AbortSignal,
-): Promise<TokenUsageLeaderboardItem[]> {
-  const params = new URLSearchParams({ period, focus })
-  return requestJson(`/api/tokens/leaderboard?${params.toString()}`, { signal })
 }
 
 export interface ForwardProxyWindowStats {

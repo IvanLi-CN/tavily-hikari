@@ -4795,6 +4795,13 @@ impl TavilyProxy {
             .collect())
     }
 
+    pub async fn token_log_metrics_for_tokens(
+        &self,
+        token_ids: &[String],
+    ) -> Result<HashMap<String, TokenLogMetricsSummary>, ProxyError> {
+        self.key_store.fetch_token_log_metrics_bulk(token_ids).await
+    }
+
     pub async fn list_api_key_binding_counts_for_users(
         &self,
         user_ids: &[String],
