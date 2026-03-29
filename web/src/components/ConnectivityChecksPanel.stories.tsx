@@ -32,6 +32,8 @@ interface ConnectivityScenario {
 }
 
 const allMcpToolSweepItems: ProbeBubbleModel['items'] = [
+  { id: 'mcp-initialize', label: 'MCP session initialize', status: 'success' },
+  { id: 'mcp-initialized', label: 'MCP initialized notification', status: 'success' },
   { id: 'mcp-ping', label: 'MCP service connectivity', status: 'success' },
   { id: 'mcp-tools-list', label: 'MCP tool discovery', status: 'success' },
   { id: 'mcp-tool-call:tavily_search', label: 'Call tavily_search tool', status: 'success' },
@@ -79,7 +81,7 @@ const scenarios: ConnectivityScenario[] = [
   {
     title: 'MCP Full Sweep',
     description: 'The MCP probe discovers every advertised tool and executes a full tools/call sweep before settling.',
-    mcpProbe: { state: 'success', completed: 7, total: 7 },
+    mcpProbe: { state: 'success', completed: 9, total: 9 },
     apiProbe: { state: 'success', completed: 6, total: 6 },
     mcpButtonLabel: 'MCP Ready',
     apiButtonLabel: 'API Ready',
@@ -91,8 +93,8 @@ const scenarios: ConnectivityScenario[] = [
   },
   {
     title: 'MCP Tool Failure',
-    description: 'Discovery succeeds, but one advertised MCP tool still fails during the tools/call sweep and the rollup stays partial.',
-    mcpProbe: { state: 'partial', completed: 7, total: 7 },
+    description: 'Discovery succeeds, but the research probe still surfaces a specific upstream plan-limit error during the tools/call sweep.',
+    mcpProbe: { state: 'partial', completed: 9, total: 9 },
     apiProbe: idleProbe,
     mcpButtonLabel: 'MCP Partial',
     apiButtonLabel: 'Test API',
@@ -100,20 +102,27 @@ const scenarios: ConnectivityScenario[] = [
       visible: true,
       anchor: 'mcp',
       items: [
+        { id: 'mcp-initialize', label: 'MCP session initialize', status: 'success' },
+        { id: 'mcp-initialized', label: 'MCP initialized notification', status: 'success' },
         { id: 'mcp-ping', label: 'MCP service connectivity', status: 'success' },
         { id: 'mcp-tools-list', label: 'MCP tool discovery', status: 'success' },
         { id: 'mcp-tool-call:tavily_search', label: 'Call tavily_search tool', status: 'success' },
         { id: 'mcp-tool-call:tavily_extract', label: 'Call tavily_extract tool', status: 'success' },
         { id: 'mcp-tool-call:tavily_crawl', label: 'Call tavily_crawl tool', status: 'success' },
-        { id: 'mcp-tool-call:tavily_map', label: 'Call tavily_map tool', status: 'failed', detail: '500 timeout from mock upstream' },
-        { id: 'mcp-tool-call:tavily_research', label: 'Call tavily_research tool', status: 'success' },
+        { id: 'mcp-tool-call:tavily_map', label: 'Call tavily_map tool', status: 'success' },
+        {
+          id: 'mcp-tool-call:tavily_research',
+          label: 'Call tavily_research tool',
+          status: 'failed',
+          detail: 'This request exceeds your plan\'s set usage limit.',
+        },
       ],
     },
   },
   {
     title: 'Long Tool Names',
     description: 'Structured tool rows keep long tool identifiers readable without splitting the action copy into awkward fragments.',
-    mcpProbe: { state: 'success', completed: 4, total: 4 },
+    mcpProbe: { state: 'success', completed: 6, total: 6 },
     apiProbe: idleProbe,
     mcpButtonLabel: 'MCP Ready',
     apiButtonLabel: 'Test API',
@@ -121,6 +130,8 @@ const scenarios: ConnectivityScenario[] = [
       visible: true,
       anchor: 'mcp',
       items: [
+        { id: 'mcp-initialize', label: 'MCP session initialize', status: 'success' },
+        { id: 'mcp-initialized', label: 'MCP initialized notification', status: 'success' },
         { id: 'mcp-ping', label: 'MCP service connectivity', status: 'success' },
         { id: 'mcp-tools-list', label: 'MCP tool discovery', status: 'success' },
         {
@@ -134,8 +145,8 @@ const scenarios: ConnectivityScenario[] = [
   },
   {
     title: 'Authentication Failed',
-    description: 'The preflight token fetch succeeds, but MCP handshake rejects the user token immediately.',
-    mcpProbe: { state: 'failed', completed: 0, total: 7 },
+    description: 'The preflight token fetch succeeds, but MCP initialize rejects the user token immediately.',
+    mcpProbe: { state: 'failed', completed: 0, total: 9 },
     apiProbe: idleProbe,
     mcpButtonLabel: 'MCP Failed',
     apiButtonLabel: 'Test API',
@@ -143,14 +154,14 @@ const scenarios: ConnectivityScenario[] = [
       visible: true,
       anchor: 'mcp',
       items: [
-        { id: 'mcp-ping', label: 'MCP service reachable', status: 'failed', detail: '401 invalid or disabled token' },
+        { id: 'mcp-initialize', label: 'MCP session initialize', status: 'failed', detail: '401 invalid or disabled token' },
       ],
     },
   },
   {
     title: 'Quota Blocked',
     description: 'Quota precheck blocks every billable MCP tool call while still surfacing discovery of the full advertised tool list.',
-    mcpProbe: { state: 'partial', completed: 7, total: 7 },
+    mcpProbe: { state: 'partial', completed: 9, total: 9 },
     apiProbe: idleProbe,
     mcpButtonLabel: 'MCP Blocked',
     apiButtonLabel: 'Test API',
@@ -158,6 +169,8 @@ const scenarios: ConnectivityScenario[] = [
       visible: true,
       anchor: 'mcp',
       items: [
+        { id: 'mcp-initialize', label: 'MCP session initialize', status: 'success' },
+        { id: 'mcp-initialized', label: 'MCP initialized notification', status: 'success' },
         { id: 'mcp-ping', label: 'MCP service connectivity', status: 'success' },
         { id: 'mcp-tools-list', label: 'MCP tool discovery', status: 'success' },
         { id: 'mcp-tool-call:tavily_search', label: 'Call tavily_search tool', status: 'blocked', detail: 'Skipped after quota precheck' },

@@ -202,12 +202,6 @@ struct RequestLogView {
     request_kind_key: String,
     request_kind_label: String,
     request_kind_detail: Option<String>,
-    #[serde(rename = "legacyRequestKindKey")]
-    legacy_request_kind_key: Option<String>,
-    #[serde(rename = "legacyRequestKindLabel")]
-    legacy_request_kind_label: Option<String>,
-    #[serde(rename = "legacyRequestKindDetail")]
-    legacy_request_kind_detail: Option<String>,
     result_status: String,
     created_at: i64,
     error_message: Option<String>,
@@ -224,6 +218,21 @@ struct RequestLogView {
     request_kind_protocol_group: String,
     #[serde(rename = "requestKindBillingGroup")]
     request_kind_billing_group: String,
+}
+
+#[derive(Debug, Serialize)]
+struct RequestLogBodiesView {
+    request_body: Option<String>,
+    response_body: Option<String>,
+}
+
+impl From<RequestLogBodiesRecord> for RequestLogBodiesView {
+    fn from(value: RequestLogBodiesRecord) -> Self {
+        Self {
+            request_body: value.request_body.as_deref().and_then(decode_body),
+            response_body: value.response_body.as_deref().and_then(decode_body),
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -405,12 +414,6 @@ struct TokenLogView {
     request_kind_key: String,
     request_kind_label: String,
     request_kind_detail: Option<String>,
-    #[serde(rename = "legacyRequestKindKey")]
-    legacy_request_kind_key: Option<String>,
-    #[serde(rename = "legacyRequestKindLabel")]
-    legacy_request_kind_label: Option<String>,
-    #[serde(rename = "legacyRequestKindDetail")]
-    legacy_request_kind_detail: Option<String>,
     result_status: String,
     error_message: Option<String>,
     failure_kind: Option<String>,
@@ -451,9 +454,6 @@ impl From<TokenLogRecord> for TokenLogView {
             request_kind_key: r.request_kind_key,
             request_kind_label: r.request_kind_label,
             request_kind_detail: r.request_kind_detail,
-            legacy_request_kind_key: r.legacy_request_kind_key,
-            legacy_request_kind_label: r.legacy_request_kind_label,
-            legacy_request_kind_detail: r.legacy_request_kind_detail,
             result_status: r.result_status,
             error_message: r.error_message,
             failure_kind: r.failure_kind,
@@ -502,6 +502,7 @@ struct LogsQuery {
     auth_token_id: Option<String>,
     key_id: Option<String>,
     operational_class: Option<String>,
+    include_bodies: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -657,8 +658,28 @@ async fn get_key_logs(
         .proxy
         .key_recent_logs(&id, limit, q.since)
         .await
-        .map(|logs| Json(logs.into_iter().map(RequestLogView::from).collect()))
+        .map(|logs| Json(logs.into_iter().map(RequestLogView::from_summary_record).collect()))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+#[cfg(test)]
+async fn get_key_log_details(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((id, log_id)): Path<(String, i64)>,
+) -> Result<Json<RequestLogBodiesView>, StatusCode> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    state
+        .proxy
+        .key_request_log_bodies(&id, log_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map(RequestLogBodiesView::from)
+        .map(Json)
+        .ok_or(StatusCode::NOT_FOUND)
 }
 
 #[derive(Debug, Serialize)]
@@ -707,7 +728,11 @@ async fn get_key_logs_page(
         .await
         .map(|logs| {
             Json(KeyLogsPageView {
-                items: logs.items.into_iter().map(RequestLogView::from).collect(),
+                items: logs
+                    .items
+                    .into_iter()
+                    .map(RequestLogView::from_summary_record)
+                    .collect(),
                 total: logs.total,
                 page,
                 per_page,
@@ -1052,6 +1077,45 @@ async fn get_token_logs_page(
             })
         })
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+#[cfg(test)]
+async fn get_log_details(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(log_id): Path<i64>,
+) -> Result<Json<RequestLogBodiesView>, StatusCode> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    state
+        .proxy
+        .request_log_bodies(log_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map(RequestLogBodiesView::from)
+        .map(Json)
+        .ok_or(StatusCode::NOT_FOUND)
+}
+
+async fn get_token_log_details(
+    State(state): State<Arc<AppState>>,
+    Path((id, log_id)): Path<(String, i64)>,
+    headers: HeaderMap,
+) -> Result<Json<RequestLogBodiesView>, StatusCode> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    state
+        .proxy
+        .token_request_log_bodies(&id, log_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map(RequestLogBodiesView::from)
+        .map(Json)
+        .ok_or(StatusCode::NOT_FOUND)
 }
 
 async fn get_token_hourly_breakdown(

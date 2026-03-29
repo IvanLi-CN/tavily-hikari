@@ -8,7 +8,7 @@
 
 ## 背景 / 问题陈述
 
-- 现有 `/admin/users/usage` 与 `/admin/tokens/leaderboard` 只能展示请求量、额度与成功率，管理员无法直接看到“本月哪些用户或 token 把上游 Key 蹬坏了多少把”。
+- 现有 `/admin/users/usage` 与 `/admin/tokens/leaderboard`（当前语义为“未关联 Token 用量列表”）只能展示请求量、额度与成功率，管理员无法直接看到“本月哪些用户或 token 把上游 Key 蹬坏了多少把”。
 - 系统已经有 key 隔离、额度耗尽与维护审计，但缺少面向 `user` / `token` 主体的月度归因账本，无法把自动事件与管理员手动维护统一折算到具体主体头上。
 - 用户详情页目前只有业务额度编辑，没有单独的“月蹬坏限额”入口；无主 token 的固定限额 `2` 也没有在榜单中显式展示。
 
@@ -17,9 +17,9 @@
 ### Goals
 
 - 在 `/admin/users/usage` 新增可排序的 `月蹬坏` 列，第一行显示本月唯一坏 key 数，第二行显示该用户限额；数量可点击打开抽屉查看明细。
-- 在 `/admin/tokens/leaderboard` 新增 `月蹬坏` 列，按 token 计数；仅对有相关记录的 token 显示数量/配额，无记录显示 `—`。
+- 在 `/admin/tokens/leaderboard` 的未关联 Token 用量列表新增 `月蹬坏` 列，按 token 计数；仅对有相关记录的 token 显示数量/配额，无记录显示 `—`。
 - 新增 `token_api_key_bindings` 与 `subject_key_breakages` 两个持久化真相层，统一承接自动维护与管理员手动维护归因。
-- 用户默认月蹬坏限额为 `5`，可按用户单独配置；无主 token 固定限额为 `2` 且不提供配置入口；有主 token 的榜单第二行显示 owner 用户限额。
+- 用户默认月蹬坏限额为 `5`，可按用户单独配置；无主 token 固定限额为 `2` 且不提供配置入口。
 - 抽屉明细统一展示 `keyId`、当前状态、不可用原因、最后蹬坏时间、最后蹬坏者、关联用户。
 
 ### Non-goals
@@ -44,15 +44,15 @@
   - 扩展 `/api/users`、`/api/users/:id`、`PATCH /api/users/:id/broken-key-limit`、`GET /api/users/:id/broken-keys`。
   - 新增 `/api/users` 的 `monthlyBrokenCount` 排序。
 - `src/server/dto.rs` / `src/server/serve.rs`
-  - 扩展 `/api/tokens/leaderboard` 与 `GET /api/tokens/:id/broken-keys`。
+  - 扩展 `/api/tokens/unbound-usage` 与 `GET /api/tokens/:id/broken-keys`。
 - `web/src/AdminDashboard.tsx`
   - 用户用量页新增 `月蹬坏` 列与抽屉。
-  - token leaderboard 新增 `月蹬坏` 列、owner 标识与抽屉。
+  - 未关联 Token 用量页新增 `月蹬坏` 列与抽屉。
   - 用户详情页新增独立的“月蹬坏限额”编辑区。
 - `web/src/api.ts` / `web/src/i18n.tsx`
   - 扩展前端契约与文案。
 - `web/src/admin/AdminPages.stories.tsx`
-  - 补 users usage、user detail、token leaderboard 的稳定 Storybook 入口与抽屉展示。
+  - 补 users usage、user detail、unbound token usage 的稳定 Storybook 入口与抽屉展示。
 
 ### Out of scope
 
@@ -64,14 +64,14 @@
 
 ### 接口清单（Inventory）
 
-| 接口（Name）                            | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc）   | 负责人（Owner） | 使用方（Consumers）      | 备注（Notes）                                    |
-| --------------------------------------- | ------------ | ------------- | -------------- | -------------------------- | --------------- | ------------------------ | ------------------------------------------------ |
-| `GET /api/users`                        | HTTP API     | internal      | Modify         | `./contracts/http-apis.md` | server          | admin users usage        | 新增 `monthlyBrokenCount` / `monthlyBrokenLimit` |
-| `GET /api/users/:id`                    | HTTP API     | internal      | Modify         | `./contracts/http-apis.md` | server          | admin user detail        | 新增 `monthlyBrokenLimit`                        |
-| `PATCH /api/users/:id/broken-key-limit` | HTTP API     | internal      | Add            | `./contracts/http-apis.md` | server          | admin user detail        | 单独维护用户月蹬坏限额                           |
-| `GET /api/users/:id/broken-keys`        | HTTP API     | internal      | Add            | `./contracts/http-apis.md` | server          | admin users usage/detail | 用户主体月蹬坏抽屉明细                           |
-| `GET /api/tokens/leaderboard`           | HTTP API     | internal      | Modify         | `./contracts/http-apis.md` | server          | admin token leaderboard  | 新增 owner 与 nullable `monthlyBroken*` 字段     |
-| `GET /api/tokens/:id/broken-keys`       | HTTP API     | internal      | Add            | `./contracts/http-apis.md` | server          | admin token leaderboard  | token 主体月蹬坏抽屉明细                         |
+| 接口（Name）                            | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc）   | 负责人（Owner） | 使用方（Consumers）       | 备注（Notes）                                    |
+| --------------------------------------- | ------------ | ------------- | -------------- | -------------------------- | --------------- | ------------------------- | ------------------------------------------------ |
+| `GET /api/users`                        | HTTP API     | internal      | Modify         | `./contracts/http-apis.md` | server          | admin users usage         | 新增 `monthlyBrokenCount` / `monthlyBrokenLimit` |
+| `GET /api/users/:id`                    | HTTP API     | internal      | Modify         | `./contracts/http-apis.md` | server          | admin user detail         | 新增 `monthlyBrokenLimit`                        |
+| `PATCH /api/users/:id/broken-key-limit` | HTTP API     | internal      | Add            | `./contracts/http-apis.md` | server          | admin user detail         | 单独维护用户月蹬坏限额                           |
+| `GET /api/users/:id/broken-keys`        | HTTP API     | internal      | Add            | `./contracts/http-apis.md` | server          | admin users usage/detail  | 用户主体月蹬坏抽屉明细                           |
+| `GET /api/tokens/unbound-usage`         | HTTP API     | internal      | Modify         | `./contracts/http-apis.md` | server          | admin unbound token usage | 新增 nullable `monthlyBroken*` 字段              |
+| `GET /api/tokens/:id/broken-keys`       | HTTP API     | internal      | Add            | `./contracts/http-apis.md` | server          | admin unbound token usage | token 主体月蹬坏抽屉明细                         |
 
 ### 契约文档（按 Kind 拆分）
 
@@ -100,7 +100,7 @@
   When fan-out 写账本
   Then 当时仍关联该 key 的全部用户与 token 都会记录该 key。
 - Given 某主体本月坏 key 记录存在但对应 key 已恢复可用
-  When 查询 `/api/users`、`/api/tokens/leaderboard` 或抽屉详情
+  When 查询 `/api/users`、`/api/tokens/unbound-usage` 或抽屉详情
   Then 该 key 不计入数量，也不出现在返回列表中。
 - Given 管理员查看 `/admin/users/usage`
   When 排序字段为 `monthlyBrokenCount`
@@ -110,7 +110,7 @@
   Then `monthlyBrokenCount` 与 `monthlyBrokenLimit` 为 `null`，界面显示 `—`。
 - Given 管理员在用户详情修改月蹬坏限额
   When 保存成功
-  Then `/api/users/:id` 与 `/api/users` 立即返回新的 `monthlyBrokenLimit`，榜单中该用户 owner token 的第二行也反映新值。
+  Then `/api/users/:id` 与 `/api/users` 立即返回新的 `monthlyBrokenLimit`。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
 
@@ -124,7 +124,7 @@
 
 ### UI / Browser
 
-- Storybook 至少覆盖 users usage、user detail、token leaderboard 三个落点的 `月蹬坏` 展示。
+- Storybook 至少覆盖 users usage、user detail、unbound token usage 三个落点的 `月蹬坏` 展示。
 - 浏览器验收仅使用本地 / mock upstream，不触达真实 Tavily。
 - 抽屉桌面表格与移动卡片都能展示同一批字段，不出现横向溢出。
 
@@ -134,7 +134,7 @@
   story_id_or_title: admin-pages--users-usage
   state: users usage monthly broken column
   target_program: mock-only
-  capture_scope: element
+  capture_scope: browser-viewport
   sensitive_exclusion: N/A
   submission_gate: pending-owner-approval
   evidence_note: 验证 `/admin/users/usage` 的 `月蹬坏` 列、双行单元格与点击入口已经落在最终页面里。
@@ -142,15 +142,15 @@
   ![用户用量页月蹬坏列](./assets/users-usage-monthly-broken.png)
 
 - source_type: storybook_canvas
-  story_id_or_title: admin-pages--token-leaderboard-breakage
-  state: token leaderboard monthly broken column
+  story_id_or_title: admin-pages--unbound-token-usage
+  state: unbound token usage monthly broken column
   target_program: mock-only
-  capture_scope: element
+  capture_scope: browser-viewport
   sensitive_exclusion: N/A
   submission_gate: pending-owner-approval
-  evidence_note: 验证 `/admin/tokens/leaderboard` 的 `月蹬坏` 列、owner 次行与无记录占位已接入最终列表。
+  evidence_note: 验证 `/admin/tokens/leaderboard` 的未关联 token 用量页里，`月蹬坏` 列与无记录占位已接入最终列表。
   image:
-  ![令牌排行页月蹬坏列](./assets/token-leaderboard-monthly-broken.png)
+  ![未关联 Token 用量页月蹬坏列](./assets/unbound-token-usage-monthly-broken.png)
 
 - source_type: storybook_canvas
   story_id_or_title: admin-pages--user-detail
@@ -197,7 +197,6 @@
 
 - 风险：手动维护 fan-out 依赖“当时仍关联该 key”的快照，因此历史人工维护无法可靠回补到主体级账本。
 - 风险：当前月自动回补使用现有维护记录与现有 token/user 绑定推导，只能保证本月可恢复窗口内的可靠性。
-- 假设：用户月蹬坏限额属于账户级配置，owner token 直接复用 owner 用户的限额。
 - 假设：无主 token 只在出现月蹬坏记录时展示固定限额 `2`，无记录时前端直接显示 `—`。
 
 ## 变更记录（Change log）

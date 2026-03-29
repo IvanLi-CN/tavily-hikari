@@ -444,6 +444,53 @@ pub(crate) fn sanitize_headers_inner(
     }
 }
 
+pub(crate) fn sanitize_mcp_headers_inner(headers: &HeaderMap) -> SanitizedHeaders {
+    const MCP_ALLOWED_HEADERS: &[&str] = &[
+        "accept",
+        "accept-encoding",
+        "cache-control",
+        "content-type",
+        "last-event-id",
+        "mcp-protocol-version",
+        "mcp-session-id",
+        "pragma",
+    ];
+
+    let mut sanitized = HeaderMap::new();
+    let mut forwarded = Vec::new();
+    let mut dropped = Vec::new();
+
+    for (name, value) in headers.iter() {
+        let key = name.as_str().to_ascii_lowercase();
+        let allowed = MCP_ALLOWED_HEADERS.iter().any(|allowed| key == *allowed)
+            || ALLOWED_PREFIXES
+                .iter()
+                .any(|prefix| key.starts_with(prefix));
+
+        if !allowed {
+            dropped.push(key);
+            continue;
+        }
+
+        sanitized.insert(name.clone(), value.clone());
+        forwarded.push(key);
+    }
+
+    sanitized.insert(
+        reqwest::header::USER_AGENT,
+        HeaderValue::from_static(MCP_PROXY_USER_AGENT),
+    );
+    if !forwarded.iter().any(|name| name == "user-agent") {
+        forwarded.push("user-agent".to_string());
+    }
+
+    SanitizedHeaders {
+        headers: sanitized,
+        forwarded,
+        dropped,
+    }
+}
+
 pub(crate) fn should_forward_header(name: &reqwest::header::HeaderName) -> bool {
     let lower = name.as_str().to_ascii_lowercase();
     if BLOCKED_HEADERS.iter().any(|blocked| lower == *blocked) {

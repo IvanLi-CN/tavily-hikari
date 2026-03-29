@@ -64,15 +64,13 @@ Response:
 }
 ```
 
-## `GET /api/tokens/leaderboard`
+## `GET /api/tokens/unbound-usage`
 
 - Added response fields on each item:
-  - `owner: { userId, displayName, username } | null`
   - `monthlyBrokenCount: number | null`
   - `monthlyBrokenLimit: number | null`
 - Semantics:
   - no current-month subject record => both `monthlyBroken*` fields are `null`
-  - owner token => `monthlyBrokenLimit` reuses owner user's configured limit
   - unbound token with records => `monthlyBrokenLimit = 2`
 
 ## `GET /api/tokens/:id/broken-keys?page=&per_page=`

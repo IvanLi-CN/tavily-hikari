@@ -1,6 +1,7 @@
-import type { AdminUsersSortField, SortDirection } from '../api'
+import type { AdminUnboundTokenUsageSortField, AdminUsersSortField, SortDirection } from '../api'
 
 export type AdminUsersCollectionView = 'users' | 'usage'
+export type AdminTokensCollectionView = 'tokens' | 'unbound-usage'
 
 export type AdminModuleId =
   | 'dashboard'
@@ -15,7 +16,7 @@ export type AdminModuleId =
 export type AdminPathRoute =
   | { name: 'module'; module: AdminModuleId }
   | { name: 'token'; id: string }
-  | { name: 'token-usage' }
+  | { name: 'unbound-token-usage' }
   | { name: 'user-usage' }
   | { name: 'user'; id: string }
   | { name: 'user-tags' }
@@ -51,7 +52,7 @@ export function parseAdminPath(pathname: string): AdminPathRoute {
     return { name: 'module', module: 'tokens' }
   }
   if (path === `${ADMIN_BASE}/tokens/leaderboard`) {
-    return { name: 'token-usage' }
+    return { name: 'unbound-token-usage' }
   }
   if (path.startsWith(`${ADMIN_BASE}/tokens/`)) {
     const id = decodeSegment(path.slice(`${ADMIN_BASE}/tokens/`.length))
@@ -129,7 +130,7 @@ export function isSameAdminRoute(left: AdminPathRoute, right: AdminPathRoute): b
   if (left.name === 'user-usage' && right.name === 'user-usage') {
     return true
   }
-  return left.name === 'token-usage' && right.name === 'token-usage'
+  return left.name === 'unbound-token-usage' && right.name === 'unbound-token-usage'
 }
 
 export function modulePath(module: AdminModuleId): string {
@@ -137,12 +138,65 @@ export function modulePath(module: AdminModuleId): string {
   return `${ADMIN_BASE}/${module}`
 }
 
-export function tokenDetailPath(id: string): string {
-  return `${ADMIN_BASE}/tokens/${encodeURIComponent(id)}`
+function appendTokensContext(
+  path: string,
+  query?: string,
+  page?: number | null,
+  sort?: AdminUnboundTokenUsageSortField | null,
+  order?: SortDirection | null,
+  collection?: AdminTokensCollectionView | null,
+): string {
+  const params = new URLSearchParams()
+  const normalizedQuery = query?.trim()
+  const normalizedPage = Number.isFinite(page) ? Math.max(1, Math.trunc(page as number)) : 1
+  if (normalizedQuery) params.set('q', normalizedQuery)
+  if (normalizedPage > 1) params.set('page', String(normalizedPage))
+  if (sort) {
+    params.set('sort', sort)
+    params.set('order', order ?? 'desc')
+  }
+  if (collection === 'unbound-usage') {
+    params.set('view', 'unbound-usage')
+  }
+  const search = params.toString()
+  return search ? `${path}?${search}` : path
 }
 
-export function tokenLeaderboardPath(): string {
-  return `${ADMIN_BASE}/tokens/leaderboard`
+export function tokenDetailPath(
+  id: string,
+  query?: string,
+  page?: number | null,
+  sort?: AdminUnboundTokenUsageSortField | null,
+  order?: SortDirection | null,
+  collection?: AdminTokensCollectionView | null,
+): string {
+  return appendTokensContext(
+    `${ADMIN_BASE}/tokens/${encodeURIComponent(id)}`,
+    query,
+    page,
+    sort,
+    order,
+    collection,
+  )
+}
+
+export function unboundTokenUsagePath(
+  query?: string,
+  page?: number | null,
+  sort?: AdminUnboundTokenUsageSortField | null,
+  order?: SortDirection | null,
+): string {
+  const params = new URLSearchParams()
+  const normalizedQuery = query?.trim()
+  const normalizedPage = Number.isFinite(page) ? Math.max(1, Math.trunc(page as number)) : 1
+  if (normalizedQuery) params.set('q', normalizedQuery)
+  if (normalizedPage > 1) params.set('page', String(normalizedPage))
+  if (sort) {
+    params.set('sort', sort)
+    params.set('order', order ?? 'desc')
+  }
+  const search = params.toString()
+  return search ? `${ADMIN_BASE}/tokens/leaderboard?${search}` : `${ADMIN_BASE}/tokens/leaderboard`
 }
 
 function appendUsersContext(

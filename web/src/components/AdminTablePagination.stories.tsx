@@ -73,3 +73,22 @@ export const SinglePage: Story = {
     </div>
   ),
 }
+
+export const MobileNoPerPage: Story = {
+  parameters: {
+    viewport: { defaultViewport: '0390-device-iphone-14' },
+  },
+  render: () => (
+    <div style={{ maxWidth: 390, margin: '0 auto' }}>
+      <AdminTablePagination
+        page={2}
+        totalPages={12}
+        pageSummary="第 2/12 页"
+        previousLabel="上一页"
+        nextLabel="下一页"
+        onPrevious={() => undefined}
+        onNext={() => undefined}
+      />
+    </div>
+  ),
+}

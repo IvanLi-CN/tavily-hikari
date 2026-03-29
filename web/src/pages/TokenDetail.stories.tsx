@@ -3,6 +3,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { addons } from "storybook/preview-api";
 import { SELECT_STORY } from "storybook/internal/core-events";
 
+import type { RequestLog } from "../api";
 import TokenDetail from "./TokenDetail";
 
 const tokenId = "a1b2";
@@ -91,6 +92,7 @@ const requestKindOptionsMock = [
   { key: "api:research-result", label: "API | research result", protocol_group: "api", billing_group: "non_billable" },
   { key: "api:search", label: "API | search", protocol_group: "api", billing_group: "billable" },
   { key: "api:unknown-path", label: "API | unknown path", protocol_group: "api", billing_group: "non_billable" },
+  { key: "mcp:crawl", label: "MCP | crawl", protocol_group: "mcp", billing_group: "billable" },
   { key: "mcp:extract", label: "MCP | extract", protocol_group: "mcp", billing_group: "billable" },
   { key: "mcp:initialize", label: "MCP | initialize", protocol_group: "mcp", billing_group: "non_billable" },
   { key: "mcp:map", label: "MCP | map", protocol_group: "mcp", billing_group: "billable" },
@@ -217,9 +219,9 @@ const logTemplates = [
     http_status: 429,
     mcp_status: -1,
     business_credits: null,
-    request_kind_key: "mcp:unknown-payload",
-    request_kind_label: "MCP | unknown payload",
-    request_kind_detail: "tool: crawl",
+    request_kind_key: "mcp:crawl",
+    request_kind_label: "MCP | crawl",
+    request_kind_detail: null,
     result_status: "quota_exhausted",
     key_effect_code: "marked_exhausted",
     key_effect_summary: "Automatically marked this key as exhausted",
@@ -391,7 +393,7 @@ function buildLogsMock(
   startId: number,
   createdAtStart: number,
   createdAtStep: number,
-) {
+): RequestLog[] {
   return Array.from({ length: count }, (_, idx) => {
     const template = logTemplates[idx % logTemplates.length];
     return {
@@ -402,6 +404,18 @@ function buildLogsMock(
       business_credits:
         template.business_credits == null ? null : template.business_credits + Math.floor(idx / logTemplates.length),
       created_at: createdAtStart - idx * createdAtStep,
+      request_body:
+        template.path === '/mcp'
+          ? JSON.stringify({ method: template.request_kind_key, requestId: startId + idx })
+          : JSON.stringify({ path: template.path, requestId: startId + idx }),
+      response_body:
+        template.request_kind_key === 'mcp:notifications/initialized'
+          ? null
+          : template.result_status === 'success'
+            ? JSON.stringify({ ok: true, requestId: startId + idx })
+            : JSON.stringify({ error: template.error_message ?? 'request failed' }),
+      forwarded_headers: template.path === '/mcp' ? ['x-request-id'] : ['x-request-id', 'x-forwarded-for'],
+      dropped_headers: template.path === '/mcp' ? [] : ['authorization'],
       operationalClass: requestOperationalClass(template.result_status, template.request_kind_key),
       requestKindProtocolGroup: requestKindProtocolGroup(template.request_kind_key),
       requestKindBillingGroup: requestKindBillingGroup(template.request_kind_key),
@@ -473,12 +487,12 @@ type MockEventSourceShape = EventSource & {
 const activeEventSources = new Set<MockEventSourceShape>();
 
 function buildLogPage(
-  source: typeof logsMock,
+  source: RequestLog[],
   page: number,
   requestedPerPage: number,
   responsePerPage = requestedPerPage,
 ): {
-  items: typeof logsMock;
+  items: RequestLog[];
   page: number;
   per_page: number;
   total: number;
@@ -495,7 +509,11 @@ function buildLogPage(
     count: source.filter((log) => log.request_kind_key === option.key).length,
   }));
   return {
-    items: source.slice(start, start + responsePerPage),
+    items: source.slice(start, start + responsePerPage).map((log) => ({
+      ...log,
+      request_body: null,
+      response_body: null,
+    })),
     page,
     per_page: responsePerPage,
     total: source.length,
@@ -563,7 +581,10 @@ function installFetchMock(
         auth_token_id: activeTokenId,
       }));
       const facetScopedSource = source.filter((log) => {
-        if (selectedRequestKinds.length > 0 && !selectedRequestKinds.includes(log.request_kind_key)) {
+        if (
+          selectedRequestKinds.length > 0 &&
+          !selectedRequestKinds.includes(log.request_kind_key ?? "")
+        ) {
           return false;
         }
         if (selectedKeyId && log.key_id !== selectedKeyId) {
@@ -593,6 +614,19 @@ function installFetchMock(
           : perPage;
       initialLogsResolved = true;
       return jsonResponse(buildLogPage(filteredSource, page, perPage, responsePerPage));
+    }
+
+    const detailMatch = url.pathname.match(new RegExp(`^/api/tokens/${activeTokenId}/logs/(\\d+)/details$`));
+    if (detailMatch) {
+      const logId = Number(detailMatch[1]);
+      const source = [...storyData.logs, ...storyData.logsPageTwo].find((log) => log.id === logId);
+      if (!source) {
+        return new Response(null, { status: 404 });
+      }
+      return jsonResponse({
+        request_body: source.request_body ?? null,
+        response_body: source.response_body ?? null,
+      });
     }
 
     if (url.pathname === `/api/tokens/${activeTokenId}/metrics/usage-series`) {

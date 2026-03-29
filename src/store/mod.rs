@@ -90,9 +90,6 @@ CREATE TABLE request_logs_new (
     request_kind_key TEXT,
     request_kind_label TEXT,
     request_kind_detail TEXT,
-    legacy_request_kind_key TEXT,
-    legacy_request_kind_label TEXT,
-    legacy_request_kind_detail TEXT,
     business_credits INTEGER,
     failure_kind TEXT,
     key_effect_code TEXT NOT NULL DEFAULT 'none',
@@ -107,10 +104,43 @@ CREATE TABLE request_logs_new (
 )
 "#;
 
+const AUTH_TOKEN_LOGS_REBUILT_SCHEMA_SQL: &str = r#"
+CREATE TABLE auth_token_logs_new (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_id TEXT NOT NULL,
+    method TEXT NOT NULL,
+    path TEXT NOT NULL,
+    query TEXT,
+    http_status INTEGER,
+    mcp_status INTEGER,
+    request_kind_key TEXT,
+    request_kind_label TEXT,
+    request_kind_detail TEXT,
+    result_status TEXT NOT NULL,
+    error_message TEXT,
+    failure_kind TEXT,
+    key_effect_code TEXT NOT NULL DEFAULT 'none',
+    key_effect_summary TEXT,
+    counts_business_quota INTEGER NOT NULL DEFAULT 1,
+    business_credits INTEGER,
+    billing_subject TEXT,
+    billing_state TEXT NOT NULL DEFAULT 'none',
+    api_key_id TEXT,
+    request_log_id INTEGER REFERENCES request_logs(id),
+    created_at INTEGER NOT NULL
+)
+"#;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RequestLogsRebuildMode {
     DropLegacyApiKeyColumn,
     RelaxApiKeyIdNullability,
+    DropLegacyRequestKindColumns,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuthTokenLogsRebuildMode {
+    DropLegacyRequestKindColumns,
 }
 
 struct RequestLogFilterParams<'a> {
@@ -123,6 +153,825 @@ struct RequestLogFilterParams<'a> {
     legacy_request_kind_predicate_sql: &'a str,
     legacy_request_kind_sql: &'a str,
     has_where: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RequestKindCanonicalMigrationState {
+    Running {
+        heartbeat_at: i64,
+        owner_pid: Option<u32>,
+    },
+    Failed(i64),
+    Done(i64),
+}
+
+impl RequestKindCanonicalMigrationState {
+    fn as_meta_value(self) -> String {
+        match self {
+            Self::Running {
+                heartbeat_at,
+                owner_pid: Some(owner_pid),
+            } => format!("running:{heartbeat_at}:{owner_pid}"),
+            Self::Running {
+                heartbeat_at,
+                owner_pid: None,
+            } => format!("running:{heartbeat_at}"),
+            Self::Failed(ts) => format!("failed:{ts}"),
+            Self::Done(ts) => format!("done:{ts}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RequestKindCanonicalMigrationClaim {
+    Claimed,
+    RunningElsewhere(i64),
+    AlreadyDone(i64),
+    RetryLater,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RequestKindCanonicalBackfillUpperBounds {
+    pub(crate) request_logs: i64,
+    pub(crate) auth_token_logs: i64,
+}
+
+#[derive(Debug, Clone)]
+struct RequestKindCanonicalUpdate {
+    id: i64,
+    request_kind_key: String,
+    request_kind_label: String,
+    request_kind_detail: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct RequestKindBackfillRequestLogRow {
+    id: i64,
+    path: String,
+    request_body: Option<Vec<u8>>,
+    request_kind_key: Option<String>,
+    request_kind_label: Option<String>,
+    request_kind_detail: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct RequestKindBackfillTokenLogRow {
+    id: i64,
+    method: String,
+    path: String,
+    query: Option<String>,
+    request_kind_key: Option<String>,
+    request_kind_label: Option<String>,
+    request_kind_detail: Option<String>,
+}
+
+fn normalize_request_kind_backfill_field(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    })
+}
+
+async fn read_request_kind_backfill_meta_i64(
+    pool: &SqlitePool,
+    key: &str,
+) -> Result<i64, ProxyError> {
+    Ok(read_request_kind_backfill_meta_i64_optional(pool, key)
+        .await?
+        .unwrap_or(0))
+}
+
+async fn read_request_kind_backfill_meta_i64_optional(
+    pool: &SqlitePool,
+    key: &str,
+) -> Result<Option<i64>, ProxyError> {
+    Ok(
+        sqlx::query_scalar::<_, Option<String>>("SELECT value FROM meta WHERE key = ? LIMIT 1")
+            .bind(key)
+            .fetch_optional(pool)
+            .await?
+            .flatten()
+            .and_then(|value| value.parse::<i64>().ok()),
+    )
+}
+
+async fn write_request_kind_backfill_meta_i64(
+    tx: &mut Transaction<'_, Sqlite>,
+    key: &str,
+    value: i64,
+) -> Result<(), ProxyError> {
+    write_request_kind_backfill_meta_string(tx, key, &value.to_string()).await
+}
+
+async fn write_request_kind_backfill_meta_string(
+    tx: &mut Transaction<'_, Sqlite>,
+    key: &str,
+    value: &str,
+) -> Result<(), ProxyError> {
+    sqlx::query(
+        r#"
+        INSERT INTO meta (key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        "#,
+    )
+    .bind(key)
+    .bind(value)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+fn parse_request_kind_canonical_migration_state(
+    value: Option<String>,
+) -> Option<RequestKindCanonicalMigrationState> {
+    let value = value?;
+    let mut parts = value.split(':');
+    let kind = parts.next()?;
+    let ts = parts.next()?.parse::<i64>().ok()?;
+    match kind {
+        "running" => {
+            let owner_pid = match parts.next() {
+                Some(pid) => Some(pid.parse::<u32>().ok()?),
+                None => None,
+            };
+            if parts.next().is_some() {
+                return None;
+            }
+            Some(RequestKindCanonicalMigrationState::Running {
+                heartbeat_at: ts,
+                owner_pid,
+            })
+        }
+        "failed" if parts.next().is_none() => Some(RequestKindCanonicalMigrationState::Failed(ts)),
+        "done" if parts.next().is_none() => Some(RequestKindCanonicalMigrationState::Done(ts)),
+        _ => None,
+    }
+}
+
+fn request_kind_canonical_migration_is_fresh(now_ts: i64, started_at: i64) -> bool {
+    now_ts.saturating_sub(started_at) < REQUEST_KIND_CANONICAL_MIGRATION_STALE_SECS
+}
+
+fn current_request_kind_canonical_migration_running_state(
+    now_ts: i64,
+) -> RequestKindCanonicalMigrationState {
+    RequestKindCanonicalMigrationState::Running {
+        heartbeat_at: now_ts,
+        owner_pid: Some(std::process::id()),
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn request_kind_canonical_migration_owner_pid_is_live(owner_pid: u32) -> bool {
+    let result = unsafe { libc::kill(owner_pid as i32, 0) };
+    if result == 0 {
+        return true;
+    }
+
+    matches!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::EPERM)
+    )
+}
+
+#[cfg(not(unix))]
+pub(crate) fn request_kind_canonical_migration_owner_pid_is_live(owner_pid: u32) -> bool {
+    let _ = owner_pid;
+    true
+}
+
+fn request_kind_canonical_migration_state_blocks_reentry(
+    now_ts: i64,
+    state: RequestKindCanonicalMigrationState,
+) -> Option<i64> {
+    match state {
+        RequestKindCanonicalMigrationState::Running {
+            heartbeat_at,
+            owner_pid: Some(owner_pid),
+        } if request_kind_canonical_migration_is_fresh(now_ts, heartbeat_at)
+            && request_kind_canonical_migration_owner_pid_is_live(owner_pid) =>
+        {
+            Some(heartbeat_at)
+        }
+        RequestKindCanonicalMigrationState::Running {
+            heartbeat_at,
+            owner_pid: None,
+        } if request_kind_canonical_migration_is_fresh(now_ts, heartbeat_at) => Some(heartbeat_at),
+        _ => None,
+    }
+}
+
+async fn read_meta_string_with_connection(
+    conn: &mut sqlx::pool::PoolConnection<Sqlite>,
+    key: &str,
+) -> Result<Option<String>, ProxyError> {
+    sqlx::query_scalar::<_, String>("SELECT value FROM meta WHERE key = ? LIMIT 1")
+        .bind(key)
+        .fetch_optional(&mut **conn)
+        .await
+        .map_err(ProxyError::Database)
+}
+
+async fn write_meta_string_with_connection(
+    conn: &mut sqlx::pool::PoolConnection<Sqlite>,
+    key: &str,
+    value: &str,
+) -> Result<(), ProxyError> {
+    sqlx::query(
+        r#"
+        INSERT INTO meta (key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        "#,
+    )
+    .bind(key)
+    .bind(value)
+    .execute(&mut **conn)
+    .await?;
+    Ok(())
+}
+
+async fn read_meta_i64_with_connection(
+    conn: &mut sqlx::pool::PoolConnection<Sqlite>,
+    key: &str,
+) -> Result<Option<i64>, ProxyError> {
+    read_meta_string_with_connection(conn, key)
+        .await
+        .map(|value| value.and_then(|value| value.parse::<i64>().ok()))
+}
+
+async fn delete_meta_key_with_connection(
+    conn: &mut sqlx::pool::PoolConnection<Sqlite>,
+    key: &str,
+) -> Result<(), ProxyError> {
+    sqlx::query("DELETE FROM meta WHERE key = ?")
+        .bind(key)
+        .execute(&mut **conn)
+        .await?;
+    Ok(())
+}
+
+async fn read_request_kind_canonical_migration_status(
+    pool: &SqlitePool,
+) -> Result<Option<RequestKindCanonicalMigrationState>, ProxyError> {
+    if let Some(done_at) = read_request_kind_backfill_meta_i64_optional(
+        pool,
+        META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_DONE,
+    )
+    .await?
+    {
+        return Ok(Some(RequestKindCanonicalMigrationState::Done(done_at)));
+    }
+
+    Ok(parse_request_kind_canonical_migration_state(
+        sqlx::query_scalar::<_, String>("SELECT value FROM meta WHERE key = ? LIMIT 1")
+            .bind(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE)
+            .fetch_optional(pool)
+            .await
+            .map_err(ProxyError::Database)?,
+    ))
+}
+
+async fn read_request_kind_canonical_migration_status_with_connection(
+    conn: &mut sqlx::pool::PoolConnection<Sqlite>,
+) -> Result<Option<RequestKindCanonicalMigrationState>, ProxyError> {
+    if let Some(done_at) =
+        read_meta_i64_with_connection(conn, META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_DONE)
+            .await?
+    {
+        return Ok(Some(RequestKindCanonicalMigrationState::Done(done_at)));
+    }
+
+    Ok(parse_request_kind_canonical_migration_state(
+        read_meta_string_with_connection(conn, META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE)
+            .await?,
+    ))
+}
+
+async fn read_request_kind_canonical_backfill_upper_bounds(
+    pool: &SqlitePool,
+) -> Result<Option<RequestKindCanonicalBackfillUpperBounds>, ProxyError> {
+    let request_logs = read_request_kind_backfill_meta_i64_optional(
+        pool,
+        META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_REQUEST_LOGS_UPPER_BOUND,
+    )
+    .await?;
+    let auth_token_logs = read_request_kind_backfill_meta_i64_optional(
+        pool,
+        META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_AUTH_TOKEN_LOGS_UPPER_BOUND,
+    )
+    .await?;
+    Ok(match (request_logs, auth_token_logs) {
+        (Some(request_logs), Some(auth_token_logs)) => {
+            Some(RequestKindCanonicalBackfillUpperBounds {
+                request_logs,
+                auth_token_logs,
+            })
+        }
+        _ => None,
+    })
+}
+
+async fn read_request_kind_canonical_backfill_upper_bounds_with_connection(
+    conn: &mut sqlx::pool::PoolConnection<Sqlite>,
+) -> Result<Option<RequestKindCanonicalBackfillUpperBounds>, ProxyError> {
+    let request_logs = read_meta_i64_with_connection(
+        conn,
+        META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_REQUEST_LOGS_UPPER_BOUND,
+    )
+    .await?;
+    let auth_token_logs = read_meta_i64_with_connection(
+        conn,
+        META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_AUTH_TOKEN_LOGS_UPPER_BOUND,
+    )
+    .await?;
+    Ok(match (request_logs, auth_token_logs) {
+        (Some(request_logs), Some(auth_token_logs)) => {
+            Some(RequestKindCanonicalBackfillUpperBounds {
+                request_logs,
+                auth_token_logs,
+            })
+        }
+        _ => None,
+    })
+}
+
+async fn fetch_table_max_id_with_connection(
+    conn: &mut sqlx::pool::PoolConnection<Sqlite>,
+    table: &str,
+) -> Result<i64, ProxyError> {
+    let sql = format!("SELECT COALESCE(MAX(id), 0) FROM {table}");
+    sqlx::query_scalar::<_, i64>(&sql)
+        .fetch_one(&mut **conn)
+        .await
+        .map_err(ProxyError::Database)
+}
+
+async fn capture_request_kind_canonical_backfill_upper_bounds_with_connection(
+    conn: &mut sqlx::pool::PoolConnection<Sqlite>,
+) -> Result<RequestKindCanonicalBackfillUpperBounds, ProxyError> {
+    Ok(RequestKindCanonicalBackfillUpperBounds {
+        request_logs: fetch_table_max_id_with_connection(conn, "request_logs").await?,
+        auth_token_logs: fetch_table_max_id_with_connection(conn, "auth_token_logs").await?,
+    })
+}
+
+async fn write_request_kind_canonical_backfill_upper_bounds_with_connection(
+    conn: &mut sqlx::pool::PoolConnection<Sqlite>,
+    upper_bounds: RequestKindCanonicalBackfillUpperBounds,
+) -> Result<(), ProxyError> {
+    write_meta_string_with_connection(
+        conn,
+        META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_REQUEST_LOGS_UPPER_BOUND,
+        &upper_bounds.request_logs.to_string(),
+    )
+    .await?;
+    write_meta_string_with_connection(
+        conn,
+        META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_AUTH_TOKEN_LOGS_UPPER_BOUND,
+        &upper_bounds.auth_token_logs.to_string(),
+    )
+    .await?;
+    Ok(())
+}
+
+fn build_request_kind_backfill_request_log_update(
+    row: RequestKindBackfillRequestLogRow,
+) -> Option<RequestKindCanonicalUpdate> {
+    let current_key = normalize_request_kind_backfill_field(row.request_kind_key);
+    let current_label = normalize_request_kind_backfill_field(row.request_kind_label);
+    let current_detail = normalize_request_kind_backfill_field(row.request_kind_detail);
+    let kind = canonicalize_request_log_request_kind(
+        row.path.as_str(),
+        row.request_body.as_deref(),
+        current_key.clone(),
+        current_label.clone(),
+        current_detail.clone(),
+    );
+    let desired_detail = normalize_request_kind_backfill_field(kind.detail);
+
+    if current_key.as_deref() == Some(kind.key.as_str())
+        && current_label.as_deref() == Some(kind.label.as_str())
+        && current_detail == desired_detail
+    {
+        return None;
+    }
+
+    Some(RequestKindCanonicalUpdate {
+        id: row.id,
+        request_kind_key: kind.key,
+        request_kind_label: kind.label,
+        request_kind_detail: desired_detail,
+    })
+}
+
+fn build_request_kind_backfill_token_log_update(
+    row: RequestKindBackfillTokenLogRow,
+) -> Option<RequestKindCanonicalUpdate> {
+    let current_key = normalize_request_kind_backfill_field(row.request_kind_key);
+    let current_label = normalize_request_kind_backfill_field(row.request_kind_label);
+    let current_detail = normalize_request_kind_backfill_field(row.request_kind_detail);
+    let kind = finalize_token_request_kind(
+        row.method.as_str(),
+        row.path.as_str(),
+        row.query.as_deref(),
+        current_key.clone(),
+        current_label.clone(),
+        current_detail.clone(),
+    );
+    let desired_detail = normalize_request_kind_backfill_field(kind.detail);
+
+    if current_key.as_deref() == Some(kind.key.as_str())
+        && current_label.as_deref() == Some(kind.label.as_str())
+        && current_detail == desired_detail
+    {
+        return None;
+    }
+
+    Some(RequestKindCanonicalUpdate {
+        id: row.id,
+        request_kind_key: kind.key,
+        request_kind_label: kind.label,
+        request_kind_detail: desired_detail,
+    })
+}
+
+async fn backfill_request_log_request_kinds_with_pool(
+    pool: &SqlitePool,
+    batch_size: i64,
+    dry_run: bool,
+    migration_state_key: Option<&str>,
+    upper_bound_id: Option<i64>,
+) -> Result<RequestKindCanonicalBackfillTableReport, ProxyError> {
+    let cursor_before = read_request_kind_backfill_meta_i64(
+        pool,
+        META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_REQUEST_LOGS_CURSOR_V1,
+    )
+    .await?;
+    let upper_bound_id = upper_bound_id.unwrap_or(i64::MAX);
+    let mut cursor_after = cursor_before;
+    let mut rows_scanned = 0_i64;
+    let mut rows_updated = 0_i64;
+
+    loop {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                id,
+                path,
+                request_body,
+                request_kind_key,
+                request_kind_label,
+                request_kind_detail
+            FROM request_logs
+            WHERE id > ?
+              AND id <= ?
+            ORDER BY id ASC
+            LIMIT ?
+            "#,
+        )
+        .bind(cursor_after)
+        .bind(upper_bound_id)
+        .bind(batch_size)
+        .fetch_all(pool)
+        .await?;
+        if rows.is_empty() {
+            break;
+        }
+
+        let parsed_rows = rows
+            .into_iter()
+            .map(|row| {
+                Ok(RequestKindBackfillRequestLogRow {
+                    id: row.try_get("id")?,
+                    path: row.try_get("path")?,
+                    request_body: row.try_get("request_body")?,
+                    request_kind_key: row.try_get("request_kind_key")?,
+                    request_kind_label: row.try_get("request_kind_label")?,
+                    request_kind_detail: row.try_get("request_kind_detail")?,
+                })
+            })
+            .collect::<Result<Vec<_>, sqlx::Error>>()?;
+        let batch_max_id = parsed_rows.last().map(|row| row.id).unwrap_or(cursor_after);
+        rows_scanned += parsed_rows.len() as i64;
+
+        let updates = parsed_rows
+            .into_iter()
+            .filter_map(build_request_kind_backfill_request_log_update)
+            .collect::<Vec<_>>();
+        rows_updated += updates.len() as i64;
+
+        if !dry_run {
+            loop {
+                let mut tx = match pool.begin().await {
+                    Ok(tx) => tx,
+                    Err(err) => {
+                        let err = ProxyError::Database(err);
+                        if is_transient_sqlite_write_error(&err) {
+                            tokio::time::sleep(Duration::from_millis(
+                                REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
+                            ))
+                            .await;
+                            continue;
+                        }
+                        return Err(err);
+                    }
+                };
+
+                let batch_result: Result<(), ProxyError> = async {
+                    for update in &updates {
+                        sqlx::query(
+                            r#"
+                            UPDATE request_logs
+                            SET
+                                request_kind_key = ?,
+                                request_kind_label = ?,
+                                request_kind_detail = ?
+                            WHERE id = ?
+                            "#,
+                        )
+                        .bind(&update.request_kind_key)
+                        .bind(&update.request_kind_label)
+                        .bind(&update.request_kind_detail)
+                        .bind(update.id)
+                        .execute(&mut *tx)
+                        .await?;
+                    }
+                    write_request_kind_backfill_meta_i64(
+                        &mut tx,
+                        META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_REQUEST_LOGS_CURSOR_V1,
+                        batch_max_id,
+                    )
+                    .await?;
+                    if let Some(migration_state_key) = migration_state_key {
+                        write_request_kind_backfill_meta_string(
+                            &mut tx,
+                            migration_state_key,
+                            &current_request_kind_canonical_migration_running_state(
+                                Utc::now().timestamp(),
+                            )
+                            .as_meta_value(),
+                        )
+                        .await?;
+                    }
+                    Ok(())
+                }
+                .await;
+
+                match batch_result {
+                    Ok(()) => match tx.commit().await {
+                        Ok(()) => break,
+                        Err(err) => {
+                            let err = ProxyError::Database(err);
+                            if is_transient_sqlite_write_error(&err) {
+                                tokio::time::sleep(Duration::from_millis(
+                                    REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
+                                ))
+                                .await;
+                                continue;
+                            }
+                            return Err(err);
+                        }
+                    },
+                    Err(err) => {
+                        let retry = is_transient_sqlite_write_error(&err);
+                        let _ = tx.rollback().await;
+                        if retry {
+                            tokio::time::sleep(Duration::from_millis(
+                                REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
+                            ))
+                            .await;
+                            continue;
+                        }
+                        return Err(err);
+                    }
+                }
+            }
+        }
+
+        cursor_after = if dry_run { cursor_before } else { batch_max_id };
+        if dry_run && batch_max_id > cursor_before {
+            cursor_after = batch_max_id;
+        }
+    }
+
+    Ok(RequestKindCanonicalBackfillTableReport {
+        table: "request_logs",
+        meta_key: META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_REQUEST_LOGS_CURSOR_V1,
+        dry_run,
+        batch_size,
+        cursor_before,
+        cursor_after: if dry_run { cursor_before } else { cursor_after },
+        rows_scanned,
+        rows_updated,
+    })
+}
+
+async fn backfill_auth_token_log_request_kinds_with_pool(
+    pool: &SqlitePool,
+    batch_size: i64,
+    dry_run: bool,
+    migration_state_key: Option<&str>,
+    upper_bound_id: Option<i64>,
+) -> Result<RequestKindCanonicalBackfillTableReport, ProxyError> {
+    let cursor_before = read_request_kind_backfill_meta_i64(
+        pool,
+        META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_AUTH_TOKEN_LOGS_CURSOR_V1,
+    )
+    .await?;
+    let upper_bound_id = upper_bound_id.unwrap_or(i64::MAX);
+    let mut cursor_after = cursor_before;
+    let mut rows_scanned = 0_i64;
+    let mut rows_updated = 0_i64;
+
+    loop {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                id,
+                method,
+                path,
+                query,
+                request_kind_key,
+                request_kind_label,
+                request_kind_detail
+            FROM auth_token_logs
+            WHERE id > ?
+              AND id <= ?
+            ORDER BY id ASC
+            LIMIT ?
+            "#,
+        )
+        .bind(cursor_after)
+        .bind(upper_bound_id)
+        .bind(batch_size)
+        .fetch_all(pool)
+        .await?;
+        if rows.is_empty() {
+            break;
+        }
+
+        let parsed_rows = rows
+            .into_iter()
+            .map(|row| {
+                Ok(RequestKindBackfillTokenLogRow {
+                    id: row.try_get("id")?,
+                    method: row.try_get("method")?,
+                    path: row.try_get("path")?,
+                    query: row.try_get("query")?,
+                    request_kind_key: row.try_get("request_kind_key")?,
+                    request_kind_label: row.try_get("request_kind_label")?,
+                    request_kind_detail: row.try_get("request_kind_detail")?,
+                })
+            })
+            .collect::<Result<Vec<_>, sqlx::Error>>()?;
+        let batch_max_id = parsed_rows.last().map(|row| row.id).unwrap_or(cursor_after);
+        rows_scanned += parsed_rows.len() as i64;
+
+        let updates = parsed_rows
+            .into_iter()
+            .filter_map(build_request_kind_backfill_token_log_update)
+            .collect::<Vec<_>>();
+        rows_updated += updates.len() as i64;
+
+        if !dry_run {
+            loop {
+                let mut tx = match pool.begin().await {
+                    Ok(tx) => tx,
+                    Err(err) => {
+                        let err = ProxyError::Database(err);
+                        if is_transient_sqlite_write_error(&err) {
+                            tokio::time::sleep(Duration::from_millis(
+                                REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
+                            ))
+                            .await;
+                            continue;
+                        }
+                        return Err(err);
+                    }
+                };
+
+                let batch_result: Result<(), ProxyError> = async {
+                    for update in &updates {
+                        sqlx::query(
+                            r#"
+                            UPDATE auth_token_logs
+                            SET
+                                request_kind_key = ?,
+                                request_kind_label = ?,
+                                request_kind_detail = ?
+                            WHERE id = ?
+                            "#,
+                        )
+                        .bind(&update.request_kind_key)
+                        .bind(&update.request_kind_label)
+                        .bind(&update.request_kind_detail)
+                        .bind(update.id)
+                        .execute(&mut *tx)
+                        .await?;
+                    }
+                    write_request_kind_backfill_meta_i64(
+                        &mut tx,
+                        META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_AUTH_TOKEN_LOGS_CURSOR_V1,
+                        batch_max_id,
+                    )
+                    .await?;
+                    if let Some(migration_state_key) = migration_state_key {
+                        write_request_kind_backfill_meta_string(
+                            &mut tx,
+                            migration_state_key,
+                            &current_request_kind_canonical_migration_running_state(
+                                Utc::now().timestamp(),
+                            )
+                            .as_meta_value(),
+                        )
+                        .await?;
+                    }
+                    Ok(())
+                }
+                .await;
+
+                match batch_result {
+                    Ok(()) => match tx.commit().await {
+                        Ok(()) => break,
+                        Err(err) => {
+                            let err = ProxyError::Database(err);
+                            if is_transient_sqlite_write_error(&err) {
+                                tokio::time::sleep(Duration::from_millis(
+                                    REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
+                                ))
+                                .await;
+                                continue;
+                            }
+                            return Err(err);
+                        }
+                    },
+                    Err(err) => {
+                        let retry = is_transient_sqlite_write_error(&err);
+                        let _ = tx.rollback().await;
+                        if retry {
+                            tokio::time::sleep(Duration::from_millis(
+                                REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
+                            ))
+                            .await;
+                            continue;
+                        }
+                        return Err(err);
+                    }
+                }
+            }
+        }
+
+        cursor_after = if dry_run { cursor_before } else { batch_max_id };
+        if dry_run && batch_max_id > cursor_before {
+            cursor_after = batch_max_id;
+        }
+    }
+
+    Ok(RequestKindCanonicalBackfillTableReport {
+        table: "auth_token_logs",
+        meta_key: META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_AUTH_TOKEN_LOGS_CURSOR_V1,
+        dry_run,
+        batch_size,
+        cursor_before,
+        cursor_after: if dry_run { cursor_before } else { cursor_after },
+        rows_scanned,
+        rows_updated,
+    })
+}
+
+pub(crate) async fn run_request_kind_canonical_backfill_with_pool(
+    pool: &SqlitePool,
+    batch_size: i64,
+    dry_run: bool,
+    migration_state_key: Option<&str>,
+    upper_bounds: Option<RequestKindCanonicalBackfillUpperBounds>,
+) -> Result<RequestKindCanonicalBackfillReport, ProxyError> {
+    let batch_size = batch_size.max(1);
+    let request_logs = backfill_request_log_request_kinds_with_pool(
+        pool,
+        batch_size,
+        dry_run,
+        migration_state_key,
+        upper_bounds.map(|upper_bounds| upper_bounds.request_logs),
+    )
+    .await?;
+    let auth_token_logs = backfill_auth_token_log_request_kinds_with_pool(
+        pool,
+        batch_size,
+        dry_run,
+        migration_state_key,
+        upper_bounds.map(|upper_bounds| upper_bounds.auth_token_logs),
+    )
+    .await?;
+
+    Ok(RequestKindCanonicalBackfillReport {
+        dry_run,
+        batch_size,
+        request_logs,
+        auth_token_logs,
+    })
 }
 
 #[derive(Debug)]
@@ -195,9 +1044,6 @@ impl KeyStore {
                 request_kind_key TEXT,
                 request_kind_label TEXT,
                 request_kind_detail TEXT,
-                legacy_request_kind_key TEXT,
-                legacy_request_kind_label TEXT,
-                legacy_request_kind_detail TEXT,
                 business_credits INTEGER,
                 failure_kind TEXT,
                 key_effect_code TEXT NOT NULL DEFAULT 'none',
@@ -215,7 +1061,7 @@ impl KeyStore {
         .execute(&self.pool)
         .await?;
 
-        self.upgrade_request_logs_schema().await?;
+        let mut request_kind_schema_changed = self.upgrade_request_logs_schema().await?;
 
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_request_logs_auth_token_time
@@ -531,6 +1377,101 @@ impl KeyStore {
 
         sqlx::query(
             r#"
+            CREATE TABLE IF NOT EXISTS user_primary_api_key_affinity (
+                user_id TEXT PRIMARY KEY,
+                api_key_id TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (api_key_id) REFERENCES api_keys(id)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_user_primary_api_key_affinity_key
+               ON user_primary_api_key_affinity(api_key_id, updated_at DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS token_primary_api_key_affinity (
+                token_id TEXT PRIMARY KEY,
+                user_id TEXT,
+                api_key_id TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (api_key_id) REFERENCES api_keys(id)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_token_primary_api_key_affinity_user
+               ON token_primary_api_key_affinity(user_id, updated_at DESC, token_id)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_token_primary_api_key_affinity_key
+               ON token_primary_api_key_affinity(api_key_id, updated_at DESC, token_id)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS mcp_sessions (
+                proxy_session_id TEXT PRIMARY KEY,
+                upstream_session_id TEXT NOT NULL,
+                upstream_key_id TEXT NOT NULL,
+                auth_token_id TEXT,
+                user_id TEXT,
+                protocol_version TEXT,
+                last_event_id TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                revoked_at INTEGER,
+                revoke_reason TEXT,
+                FOREIGN KEY (upstream_key_id) REFERENCES api_keys(id)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_mcp_sessions_user_active
+               ON mcp_sessions(user_id, revoked_at, expires_at DESC, updated_at DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_mcp_sessions_token_active
+               ON mcp_sessions(auth_token_id, revoked_at, expires_at DESC, updated_at DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_mcp_sessions_expires_at
+               ON mcp_sessions(expires_at, revoked_at)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
             CREATE TABLE IF NOT EXISTS oauth_login_states (
                 state TEXT PRIMARY KEY,
                 provider TEXT NOT NULL,
@@ -587,9 +1528,6 @@ impl KeyStore {
                 request_kind_key TEXT,
                 request_kind_label TEXT,
                 request_kind_detail TEXT,
-                legacy_request_kind_key TEXT,
-                legacy_request_kind_label TEXT,
-                legacy_request_kind_detail TEXT,
                 result_status TEXT NOT NULL,
                 error_message TEXT,
                 failure_kind TEXT,
@@ -604,12 +1542,6 @@ impl KeyStore {
                 created_at INTEGER NOT NULL
             )
             "#,
-        )
-        .execute(&self.pool)
-        .await?;
-
-        sqlx::query(
-            r#"CREATE INDEX IF NOT EXISTS idx_token_logs_token_time ON auth_token_logs(token_id, created_at DESC, id DESC)"#,
         )
         .execute(&self.pool)
         .await?;
@@ -653,66 +1585,7 @@ impl KeyStore {
                 .await?;
         }
 
-        let mut request_kind_schema_changed = false;
-        if !self
-            .table_column_exists("auth_token_logs", "request_kind_key")
-            .await?
-        {
-            sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN request_kind_key TEXT")
-                .execute(&self.pool)
-                .await?;
-            request_kind_schema_changed = true;
-        }
-
-        if !self
-            .table_column_exists("auth_token_logs", "request_kind_label")
-            .await?
-        {
-            sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN request_kind_label TEXT")
-                .execute(&self.pool)
-                .await?;
-            request_kind_schema_changed = true;
-        }
-
-        if !self
-            .table_column_exists("auth_token_logs", "request_kind_detail")
-            .await?
-        {
-            sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN request_kind_detail TEXT")
-                .execute(&self.pool)
-                .await?;
-            request_kind_schema_changed = true;
-        }
-
-        if !self
-            .table_column_exists("auth_token_logs", "legacy_request_kind_key")
-            .await?
-        {
-            sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN legacy_request_kind_key TEXT")
-                .execute(&self.pool)
-                .await?;
-            request_kind_schema_changed = true;
-        }
-
-        if !self
-            .table_column_exists("auth_token_logs", "legacy_request_kind_label")
-            .await?
-        {
-            sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN legacy_request_kind_label TEXT")
-                .execute(&self.pool)
-                .await?;
-            request_kind_schema_changed = true;
-        }
-
-        if !self
-            .table_column_exists("auth_token_logs", "legacy_request_kind_detail")
-            .await?
-        {
-            sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN legacy_request_kind_detail TEXT")
-                .execute(&self.pool)
-                .await?;
-            request_kind_schema_changed = true;
-        }
+        request_kind_schema_changed |= self.ensure_auth_token_logs_request_kind_columns().await?;
 
         // Upgrade: add counts_business_quota column if missing
         if !self
@@ -725,20 +1598,6 @@ impl KeyStore {
             .execute(&self.pool)
             .await?;
         }
-
-        sqlx::query(
-            r#"CREATE INDEX IF NOT EXISTS idx_token_logs_billable_id
-               ON auth_token_logs(counts_business_quota, id)"#,
-        )
-        .execute(&self.pool)
-        .await?;
-
-        sqlx::query(
-            r#"CREATE INDEX IF NOT EXISTS idx_token_logs_token_request_kind_time
-               ON auth_token_logs(token_id, request_kind_key, created_at DESC, id DESC)"#,
-        )
-        .execute(&self.pool)
-        .await?;
 
         if !self
             .table_column_exists("auth_token_logs", "business_credits")
@@ -769,13 +1628,6 @@ impl KeyStore {
             .await?;
         }
 
-        sqlx::query(
-            r#"CREATE INDEX IF NOT EXISTS idx_token_logs_billing_pending
-               ON auth_token_logs(billing_state, billing_subject, id)"#,
-        )
-        .execute(&self.pool)
-        .await?;
-
         if !self
             .table_column_exists("auth_token_logs", "api_key_id")
             .await?
@@ -784,13 +1636,6 @@ impl KeyStore {
                 .execute(&self.pool)
                 .await?;
         }
-
-        sqlx::query(
-            r#"CREATE INDEX IF NOT EXISTS idx_token_logs_api_key_time
-               ON auth_token_logs(api_key_id, created_at DESC, id DESC)"#,
-        )
-        .execute(&self.pool)
-        .await?;
 
         if !self
             .table_column_exists("auth_token_logs", "request_log_id")
@@ -803,12 +1648,18 @@ impl KeyStore {
             .await?;
         }
 
-        sqlx::query(
-            r#"CREATE INDEX IF NOT EXISTS idx_token_logs_request_log_id
-               ON auth_token_logs(request_log_id)"#,
-        )
-        .execute(&self.pool)
-        .await?;
+        if self
+            .auth_token_logs_have_legacy_request_kind_columns()
+            .await?
+        {
+            self.rebuild_auth_token_logs_table(
+                AuthTokenLogsRebuildMode::DropLegacyRequestKindColumns,
+            )
+            .await?;
+            request_kind_schema_changed = true;
+        }
+
+        self.ensure_auth_token_logs_indexes().await?;
 
         sqlx::query(
             r#"
@@ -905,6 +1756,7 @@ impl KeyStore {
                 hourly_limit INTEGER NOT NULL,
                 daily_limit INTEGER NOT NULL,
                 monthly_limit INTEGER NOT NULL,
+                monthly_broken_limit INTEGER NOT NULL DEFAULT 5,
                 inherits_defaults INTEGER NOT NULL DEFAULT 1,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
@@ -930,9 +1782,9 @@ impl KeyStore {
             .table_column_exists("account_quota_limits", "monthly_broken_limit")
             .await?
         {
-            sqlx::query(&format!(
-                "ALTER TABLE account_quota_limits ADD COLUMN monthly_broken_limit INTEGER NOT NULL DEFAULT {USER_MONTHLY_BROKEN_LIMIT_DEFAULT}",
-            ))
+            sqlx::query(
+                "ALTER TABLE account_quota_limits ADD COLUMN monthly_broken_limit INTEGER NOT NULL DEFAULT 5",
+            )
             .execute(&self.pool)
             .await?;
         }
@@ -1080,6 +1932,13 @@ impl KeyStore {
         .execute(&self.pool)
         .await?;
 
+        if request_kind_schema_changed {
+            self.reset_request_kind_canonical_migration_v1_markers()
+                .await?;
+        }
+
+        self.ensure_request_kind_canonical_migration_v1().await?;
+
         if self
             .get_meta_i64(META_KEY_API_KEY_CREATED_AT_BACKFILL_V1)
             .await?
@@ -1091,16 +1950,6 @@ impl KeyStore {
                 Utc::now().timestamp(),
             )
             .await?;
-        }
-
-        if request_kind_schema_changed
-            || self
-                .get_meta_i64(META_KEY_AUTH_TOKEN_LOG_REQUEST_KIND_BACKFILL_V1)
-                .await?
-                .is_none()
-        {
-            self.set_meta_i64(META_KEY_AUTH_TOKEN_LOG_REQUEST_KIND_BACKFILL_V1, 1)
-                .await?;
         }
 
         // Backfill API key usage buckets exactly once. This enables safe request_logs retention
@@ -1237,6 +2086,246 @@ impl KeyStore {
         }
 
         Ok(())
+    }
+
+    pub(crate) async fn try_claim_request_kind_canonical_migration_v1(
+        &self,
+        now_ts: i64,
+    ) -> Result<RequestKindCanonicalMigrationClaim, ProxyError> {
+        match read_request_kind_canonical_migration_status(&self.pool).await? {
+            Some(RequestKindCanonicalMigrationState::Done(done_at)) => {
+                return Ok(RequestKindCanonicalMigrationClaim::AlreadyDone(done_at));
+            }
+            Some(state)
+                if request_kind_canonical_migration_state_blocks_reentry(now_ts, state)
+                    .is_some() =>
+            {
+                return Ok(RequestKindCanonicalMigrationClaim::RunningElsewhere(
+                    request_kind_canonical_migration_state_blocks_reentry(now_ts, state)
+                        .expect("running state should expose heartbeat"),
+                ));
+            }
+            _ => {}
+        }
+
+        let mut conn = match begin_immediate_sqlite_connection(&self.pool).await {
+            Ok(conn) => conn,
+            Err(err) if is_transient_sqlite_write_error(&err) => {
+                return match read_request_kind_canonical_migration_status(&self.pool).await? {
+                    Some(RequestKindCanonicalMigrationState::Done(done_at)) => {
+                        Ok(RequestKindCanonicalMigrationClaim::AlreadyDone(done_at))
+                    }
+                    Some(state)
+                        if request_kind_canonical_migration_state_blocks_reentry(now_ts, state)
+                            .is_some() =>
+                    {
+                        Ok(RequestKindCanonicalMigrationClaim::RunningElsewhere(
+                            request_kind_canonical_migration_state_blocks_reentry(now_ts, state)
+                                .expect("running state should expose heartbeat"),
+                        ))
+                    }
+                    _ => Ok(RequestKindCanonicalMigrationClaim::RetryLater),
+                };
+            }
+            Err(err) => return Err(err),
+        };
+
+        let state = read_request_kind_canonical_migration_status_with_connection(&mut conn).await?;
+        match state {
+            Some(RequestKindCanonicalMigrationState::Done(done_at)) => {
+                write_meta_string_with_connection(
+                    &mut conn,
+                    META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_DONE,
+                    &done_at.to_string(),
+                )
+                .await?;
+                write_meta_string_with_connection(
+                    &mut conn,
+                    META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE,
+                    &RequestKindCanonicalMigrationState::Done(done_at).as_meta_value(),
+                )
+                .await?;
+                sqlx::query("COMMIT").execute(&mut *conn).await?;
+                Ok(RequestKindCanonicalMigrationClaim::AlreadyDone(done_at))
+            }
+            Some(state)
+                if request_kind_canonical_migration_state_blocks_reentry(now_ts, state)
+                    .is_some() =>
+            {
+                sqlx::query("COMMIT").execute(&mut *conn).await?;
+                Ok(RequestKindCanonicalMigrationClaim::RunningElsewhere(
+                    request_kind_canonical_migration_state_blocks_reentry(now_ts, state)
+                        .expect("running state should expose heartbeat"),
+                ))
+            }
+            _ => {
+                let upper_bounds = match state {
+                    Some(RequestKindCanonicalMigrationState::Running { .. })
+                    | Some(RequestKindCanonicalMigrationState::Failed(_)) => {
+                        match read_request_kind_canonical_backfill_upper_bounds_with_connection(
+                            &mut conn,
+                        )
+                        .await?
+                        {
+                            Some(upper_bounds) => upper_bounds,
+                            None => {
+                                capture_request_kind_canonical_backfill_upper_bounds_with_connection(
+                                    &mut conn,
+                                )
+                                .await?
+                            }
+                        }
+                    }
+                    _ => {
+                        capture_request_kind_canonical_backfill_upper_bounds_with_connection(
+                            &mut conn,
+                        )
+                        .await?
+                    }
+                };
+                write_request_kind_canonical_backfill_upper_bounds_with_connection(
+                    &mut conn,
+                    upper_bounds,
+                )
+                .await?;
+                write_meta_string_with_connection(
+                    &mut conn,
+                    META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE,
+                    &current_request_kind_canonical_migration_running_state(now_ts).as_meta_value(),
+                )
+                .await?;
+                delete_meta_key_with_connection(
+                    &mut conn,
+                    META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_DONE,
+                )
+                .await?;
+                sqlx::query("COMMIT").execute(&mut *conn).await?;
+                Ok(RequestKindCanonicalMigrationClaim::Claimed)
+            }
+        }
+    }
+
+    pub(crate) async fn finish_request_kind_canonical_migration_v1(
+        &self,
+        state: RequestKindCanonicalMigrationState,
+    ) -> Result<(), ProxyError> {
+        let mut conn = begin_immediate_sqlite_connection(&self.pool).await?;
+        let done_at = read_meta_string_with_connection(
+            &mut conn,
+            META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_DONE,
+        )
+        .await?
+        .and_then(|value| value.parse::<i64>().ok());
+
+        if let Some(done_at) = done_at {
+            let done_state = RequestKindCanonicalMigrationState::Done(done_at);
+            write_meta_string_with_connection(
+                &mut conn,
+                META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE,
+                &done_state.as_meta_value(),
+            )
+            .await?;
+            sqlx::query("COMMIT").execute(&mut *conn).await?;
+            return Ok(());
+        }
+
+        match state {
+            RequestKindCanonicalMigrationState::Done(done_at) => {
+                write_meta_string_with_connection(
+                    &mut conn,
+                    META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_DONE,
+                    &done_at.to_string(),
+                )
+                .await?;
+                write_meta_string_with_connection(
+                    &mut conn,
+                    META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE,
+                    &state.as_meta_value(),
+                )
+                .await?;
+            }
+            RequestKindCanonicalMigrationState::Running { .. } => {}
+            RequestKindCanonicalMigrationState::Failed(_) => {
+                write_meta_string_with_connection(
+                    &mut conn,
+                    META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE,
+                    &state.as_meta_value(),
+                )
+                .await?;
+            }
+        }
+
+        sqlx::query("COMMIT").execute(&mut *conn).await?;
+        Ok(())
+    }
+
+    async fn reset_request_kind_canonical_migration_v1_markers(&self) -> Result<(), ProxyError> {
+        let mut conn = begin_immediate_sqlite_connection(&self.pool).await?;
+        for key in [
+            META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_DONE,
+            META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE,
+            META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_REQUEST_LOGS_UPPER_BOUND,
+            META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_AUTH_TOKEN_LOGS_UPPER_BOUND,
+            META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_REQUEST_LOGS_CURSOR_V1,
+            META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_AUTH_TOKEN_LOGS_CURSOR_V1,
+        ] {
+            delete_meta_key_with_connection(&mut conn, key).await?;
+        }
+        sqlx::query("COMMIT").execute(&mut *conn).await?;
+        Ok(())
+    }
+
+    pub(crate) async fn ensure_request_kind_canonical_migration_v1(
+        &self,
+    ) -> Result<(), ProxyError> {
+        loop {
+            match self
+                .try_claim_request_kind_canonical_migration_v1(Utc::now().timestamp())
+                .await?
+            {
+                RequestKindCanonicalMigrationClaim::AlreadyDone(_) => return Ok(()),
+                RequestKindCanonicalMigrationClaim::Claimed => break,
+                RequestKindCanonicalMigrationClaim::RunningElsewhere(_)
+                | RequestKindCanonicalMigrationClaim::RetryLater => {
+                    tokio::time::sleep(Duration::from_millis(
+                        REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS,
+                    ))
+                    .await;
+                }
+            }
+        }
+
+        let upper_bounds = read_request_kind_canonical_backfill_upper_bounds(&self.pool)
+            .await?
+            .ok_or_else(|| {
+                ProxyError::Other(
+                    "request kind canonical migration missing persisted upper bounds".to_string(),
+                )
+            })?;
+
+        match run_request_kind_canonical_backfill_with_pool(
+            &self.pool,
+            REQUEST_KIND_CANONICAL_BACKFILL_BATCH_SIZE,
+            false,
+            Some(META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE),
+            Some(upper_bounds),
+        )
+        .await
+        {
+            Ok(_) => {
+                self.finish_request_kind_canonical_migration_v1(
+                    RequestKindCanonicalMigrationState::Done(Utc::now().timestamp()),
+                )
+                .await
+            }
+            Err(err) => {
+                self.finish_request_kind_canonical_migration_v1(
+                    RequestKindCanonicalMigrationState::Failed(Utc::now().timestamp()),
+                )
+                .await?;
+                Err(err)
+            }
+        }
     }
 
     pub(crate) async fn ensure_dev_open_admin_token(&self) -> Result<(), ProxyError> {
@@ -2871,9 +3960,6 @@ impl KeyStore {
                         request_kind_key,
                         request_kind_label,
                         request_kind_detail,
-                        legacy_request_kind_key,
-                        legacy_request_kind_label,
-                        legacy_request_kind_detail,
                         business_credits,
                         failure_kind,
                         key_effect_code,
@@ -2899,9 +3985,6 @@ impl KeyStore {
                         NULL AS request_kind_key,
                         NULL AS request_kind_label,
                         NULL AS request_kind_detail,
-                        NULL AS legacy_request_kind_key,
-                        NULL AS legacy_request_kind_label,
-                        NULL AS legacy_request_kind_detail,
                         NULL AS business_credits,
                         NULL AS failure_kind,
                         'none' AS key_effect_code,
@@ -2936,9 +4019,6 @@ impl KeyStore {
                         request_kind_key,
                         request_kind_label,
                         request_kind_detail,
-                        legacy_request_kind_key,
-                        legacy_request_kind_label,
-                        legacy_request_kind_detail,
                         business_credits,
                         failure_kind,
                         key_effect_code,
@@ -2964,9 +4044,64 @@ impl KeyStore {
                         request_kind_key,
                         request_kind_label,
                         request_kind_detail,
-                        legacy_request_kind_key,
-                        legacy_request_kind_label,
-                        legacy_request_kind_detail,
+                        business_credits,
+                        failure_kind,
+                        key_effect_code,
+                        key_effect_summary,
+                        request_body,
+                        response_body,
+                        forwarded_headers,
+                        dropped_headers,
+                        visibility,
+                        created_at
+                    FROM request_logs
+                    "#,
+                )
+                .execute(&mut **conn)
+                .await?;
+            }
+            RequestLogsRebuildMode::DropLegacyRequestKindColumns => {
+                sqlx::query(
+                    r#"
+                    INSERT INTO request_logs_new (
+                        id,
+                        api_key_id,
+                        auth_token_id,
+                        method,
+                        path,
+                        query,
+                        status_code,
+                        tavily_status_code,
+                        error_message,
+                        result_status,
+                        request_kind_key,
+                        request_kind_label,
+                        request_kind_detail,
+                        business_credits,
+                        failure_kind,
+                        key_effect_code,
+                        key_effect_summary,
+                        request_body,
+                        response_body,
+                        forwarded_headers,
+                        dropped_headers,
+                        visibility,
+                        created_at
+                    )
+                    SELECT
+                        id,
+                        api_key_id,
+                        auth_token_id,
+                        method,
+                        path,
+                        query,
+                        status_code,
+                        tavily_status_code,
+                        error_message,
+                        result_status,
+                        request_kind_key,
+                        request_kind_label,
+                        request_kind_detail,
                         business_credits,
                         failure_kind,
                         key_effect_code,
@@ -3000,6 +4135,251 @@ impl KeyStore {
 
         sqlx::query("COMMIT").execute(&mut **conn).await?;
 
+        Ok(())
+    }
+
+    async fn rebuild_auth_token_logs_table(
+        &self,
+        mode: AuthTokenLogsRebuildMode,
+    ) -> Result<(), ProxyError> {
+        let mut conn = self.pool.acquire().await?;
+        sqlx::query("PRAGMA foreign_keys = OFF")
+            .execute(&mut *conn)
+            .await?;
+
+        let rebuild_result = self
+            .rebuild_auth_token_logs_table_with_foreign_keys_disabled(&mut conn, mode)
+            .await;
+
+        if rebuild_result.is_err() {
+            let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+        }
+
+        let reenable_result = sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&mut *conn)
+            .await;
+
+        match (rebuild_result, reenable_result) {
+            (Err(err), _) => Err(err),
+            (Ok(_), Err(err)) => Err(err.into()),
+            (Ok(_), Ok(_)) => Ok(()),
+        }
+    }
+
+    async fn rebuild_auth_token_logs_table_with_foreign_keys_disabled(
+        &self,
+        conn: &mut sqlx::pool::PoolConnection<Sqlite>,
+        mode: AuthTokenLogsRebuildMode,
+    ) -> Result<(), ProxyError> {
+        sqlx::query("BEGIN IMMEDIATE").execute(&mut **conn).await?;
+        sqlx::query("DROP TABLE IF EXISTS auth_token_logs_new")
+            .execute(&mut **conn)
+            .await?;
+        sqlx::query(AUTH_TOKEN_LOGS_REBUILT_SCHEMA_SQL)
+            .execute(&mut **conn)
+            .await?;
+
+        match mode {
+            AuthTokenLogsRebuildMode::DropLegacyRequestKindColumns => {
+                sqlx::query(
+                    r#"
+                    INSERT INTO auth_token_logs_new (
+                        id,
+                        token_id,
+                        method,
+                        path,
+                        query,
+                        http_status,
+                        mcp_status,
+                        request_kind_key,
+                        request_kind_label,
+                        request_kind_detail,
+                        result_status,
+                        error_message,
+                        failure_kind,
+                        key_effect_code,
+                        key_effect_summary,
+                        counts_business_quota,
+                        business_credits,
+                        billing_subject,
+                        billing_state,
+                        api_key_id,
+                        request_log_id,
+                        created_at
+                    )
+                    SELECT
+                        id,
+                        token_id,
+                        method,
+                        path,
+                        query,
+                        http_status,
+                        mcp_status,
+                        request_kind_key,
+                        request_kind_label,
+                        request_kind_detail,
+                        result_status,
+                        error_message,
+                        failure_kind,
+                        key_effect_code,
+                        key_effect_summary,
+                        counts_business_quota,
+                        business_credits,
+                        billing_subject,
+                        billing_state,
+                        api_key_id,
+                        request_log_id,
+                        created_at
+                    FROM auth_token_logs
+                    "#,
+                )
+                .execute(&mut **conn)
+                .await?;
+            }
+        }
+
+        sqlx::query("DROP TABLE auth_token_logs")
+            .execute(&mut **conn)
+            .await?;
+        sqlx::query("ALTER TABLE auth_token_logs_new RENAME TO auth_token_logs")
+            .execute(&mut **conn)
+            .await?;
+
+        self.ensure_auth_token_logs_rebuild_references_valid(
+            conn,
+            "auth_token_logs schema migration produced invalid preserved references",
+        )
+        .await?;
+
+        sqlx::query("COMMIT").execute(&mut **conn).await?;
+        Ok(())
+    }
+
+    async fn ensure_auth_token_logs_rebuild_references_valid(
+        &self,
+        conn: &mut sqlx::pool::PoolConnection<Sqlite>,
+        context: &str,
+    ) -> Result<(), ProxyError> {
+        let rows = sqlx::query("PRAGMA foreign_key_check('auth_token_logs')")
+            .fetch_all(&mut **conn)
+            .await?;
+        if !rows.is_empty() {
+            let details = rows
+                .into_iter()
+                .take(5)
+                .map(|row| {
+                    let table = row
+                        .try_get::<String, _>(0)
+                        .unwrap_or_else(|_| "<unknown-table>".to_string());
+                    let rowid = row.try_get::<i64, _>(1).unwrap_or_default();
+                    let parent = row
+                        .try_get::<String, _>(2)
+                        .unwrap_or_else(|_| "<unknown-parent>".to_string());
+                    let fk_index = row.try_get::<i64, _>(3).unwrap_or_default();
+                    format!("{table}[rowid={rowid}] -> {parent} (fk#{fk_index})")
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+
+            return Err(ProxyError::Other(format!("{context}: {details}")));
+        }
+
+        self.ensure_auth_token_logs_child_reference_integrity(
+            conn,
+            "api_key_maintenance_records",
+            context,
+        )
+        .await
+    }
+
+    async fn ensure_auth_token_logs_child_reference_integrity(
+        &self,
+        conn: &mut sqlx::pool::PoolConnection<Sqlite>,
+        table: &str,
+        context: &str,
+    ) -> Result<(), ProxyError> {
+        let table_exists = sqlx::query_scalar::<_, i64>(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+        )
+        .bind(table)
+        .fetch_optional(&mut **conn)
+        .await?;
+        if table_exists.is_none() {
+            return Ok(());
+        }
+
+        let has_auth_token_log_id = sqlx::query_scalar::<_, i64>(
+            "SELECT 1 FROM pragma_table_info(?) WHERE name = 'auth_token_log_id' LIMIT 1",
+        )
+        .bind(table)
+        .fetch_optional(&mut **conn)
+        .await?;
+        if has_auth_token_log_id.is_none() {
+            return Ok(());
+        }
+
+        let query = format!(
+            "SELECT rowid, auth_token_log_id FROM {table} \
+             WHERE auth_token_log_id IS NOT NULL \
+               AND NOT EXISTS (SELECT 1 FROM auth_token_logs WHERE auth_token_logs.id = {table}.auth_token_log_id) \
+             ORDER BY rowid ASC LIMIT 5"
+        );
+        let rows = sqlx::query(&query).fetch_all(&mut **conn).await?;
+        if rows.is_empty() {
+            return Ok(());
+        }
+
+        let details = rows
+            .into_iter()
+            .map(|row| {
+                let rowid = row.try_get::<i64, _>("rowid").unwrap_or_default();
+                let auth_token_log_id = row
+                    .try_get::<i64, _>("auth_token_log_id")
+                    .unwrap_or_default();
+                format!("{table}[rowid={rowid}] -> auth_token_logs[id={auth_token_log_id}]")
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+
+        Err(ProxyError::Other(format!("{context}: {details}")))
+    }
+
+    async fn ensure_auth_token_logs_indexes(&self) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_token_logs_token_time ON auth_token_logs(token_id, created_at DESC, id DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_token_logs_billable_id
+               ON auth_token_logs(counts_business_quota, id)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_token_logs_token_request_kind_time
+               ON auth_token_logs(token_id, request_kind_key, created_at DESC, id DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_token_logs_billing_pending
+               ON auth_token_logs(billing_state, billing_subject, id)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_token_logs_api_key_time
+               ON auth_token_logs(api_key_id, created_at DESC, id DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_token_logs_request_log_id
+               ON auth_token_logs(request_log_id)"#,
+        )
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -3447,7 +4827,7 @@ impl KeyStore {
         Ok(exists.is_some())
     }
 
-    pub(crate) async fn upgrade_request_logs_schema(&self) -> Result<(), ProxyError> {
+    pub(crate) async fn upgrade_request_logs_schema(&self) -> Result<bool, ProxyError> {
         if !self.request_logs_column_exists("result_status").await? {
             sqlx::query(
                 "ALTER TABLE request_logs ADD COLUMN result_status TEXT NOT NULL DEFAULT 'unknown'",
@@ -3517,14 +4897,17 @@ impl KeyStore {
                 .await?;
         }
 
-        self.ensure_request_logs_request_kind_columns().await?;
+        let mut request_kind_schema_changed =
+            self.ensure_request_logs_request_kind_columns().await?;
 
-        self.ensure_request_logs_key_ids().await?;
+        request_kind_schema_changed |= self.ensure_request_logs_key_ids().await?;
 
-        Ok(())
+        Ok(request_kind_schema_changed)
     }
 
-    pub(crate) async fn ensure_request_logs_key_ids(&self) -> Result<(), ProxyError> {
+    pub(crate) async fn ensure_request_logs_key_ids(&self) -> Result<bool, ProxyError> {
+        let mut request_kind_schema_changed = false;
+
         if !self.request_logs_column_exists("api_key_id").await? {
             sqlx::query("ALTER TABLE request_logs ADD COLUMN api_key_id TEXT")
                 .execute(&self.pool)
@@ -3545,6 +4928,7 @@ impl KeyStore {
         if self.request_logs_column_exists("api_key").await? {
             self.rebuild_request_logs_table(RequestLogsRebuildMode::DropLegacyApiKeyColumn)
                 .await?;
+            request_kind_schema_changed = true;
         }
 
         if self
@@ -3553,6 +4937,7 @@ impl KeyStore {
         {
             self.rebuild_request_logs_table(RequestLogsRebuildMode::RelaxApiKeyIdNullability)
                 .await?;
+            request_kind_schema_changed = true;
         }
 
         if !self.request_logs_column_exists("request_body").await? {
@@ -3567,18 +4952,25 @@ impl KeyStore {
                 .await?;
         }
 
-        // Re-run the request-kind self-heal after structural migrations so legacy
-        // snapshots cannot be dropped by intermediate rebuild branches.
-        self.ensure_request_logs_request_kind_columns().await?;
+        if self.request_logs_have_legacy_request_kind_columns().await? {
+            self.rebuild_request_logs_table(RequestLogsRebuildMode::DropLegacyRequestKindColumns)
+                .await?;
+            request_kind_schema_changed = true;
+        }
 
-        Ok(())
+        request_kind_schema_changed |= self.ensure_request_logs_request_kind_columns().await?;
+
+        Ok(request_kind_schema_changed)
     }
 
-    async fn ensure_request_logs_request_kind_columns(&self) -> Result<(), ProxyError> {
+    async fn ensure_request_logs_request_kind_columns(&self) -> Result<bool, ProxyError> {
+        let mut request_kind_schema_changed = false;
+
         if !self.request_logs_column_exists("request_kind_key").await? {
             sqlx::query("ALTER TABLE request_logs ADD COLUMN request_kind_key TEXT")
                 .execute(&self.pool)
                 .await?;
+            request_kind_schema_changed = true;
         }
 
         if !self
@@ -3588,6 +4980,7 @@ impl KeyStore {
             sqlx::query("ALTER TABLE request_logs ADD COLUMN request_kind_label TEXT")
                 .execute(&self.pool)
                 .await?;
+            request_kind_schema_changed = true;
         }
 
         if !self
@@ -3597,33 +4990,7 @@ impl KeyStore {
             sqlx::query("ALTER TABLE request_logs ADD COLUMN request_kind_detail TEXT")
                 .execute(&self.pool)
                 .await?;
-        }
-
-        if !self
-            .request_logs_column_exists("legacy_request_kind_key")
-            .await?
-        {
-            sqlx::query("ALTER TABLE request_logs ADD COLUMN legacy_request_kind_key TEXT")
-                .execute(&self.pool)
-                .await?;
-        }
-
-        if !self
-            .request_logs_column_exists("legacy_request_kind_label")
-            .await?
-        {
-            sqlx::query("ALTER TABLE request_logs ADD COLUMN legacy_request_kind_label TEXT")
-                .execute(&self.pool)
-                .await?;
-        }
-
-        if !self
-            .request_logs_column_exists("legacy_request_kind_detail")
-            .await?
-        {
-            sqlx::query("ALTER TABLE request_logs ADD COLUMN legacy_request_kind_detail TEXT")
-                .execute(&self.pool)
-                .await?;
+            request_kind_schema_changed = true;
         }
 
         if !self.request_logs_column_exists("business_credits").await? {
@@ -3632,7 +4999,67 @@ impl KeyStore {
                 .await?;
         }
 
-        Ok(())
+        Ok(request_kind_schema_changed)
+    }
+
+    async fn request_logs_have_legacy_request_kind_columns(&self) -> Result<bool, ProxyError> {
+        Ok(self
+            .request_logs_column_exists("legacy_request_kind_key")
+            .await?
+            || self
+                .request_logs_column_exists("legacy_request_kind_label")
+                .await?
+            || self
+                .request_logs_column_exists("legacy_request_kind_detail")
+                .await?)
+    }
+
+    async fn ensure_auth_token_logs_request_kind_columns(&self) -> Result<bool, ProxyError> {
+        let mut request_kind_schema_changed = false;
+
+        if !self
+            .table_column_exists("auth_token_logs", "request_kind_key")
+            .await?
+        {
+            sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN request_kind_key TEXT")
+                .execute(&self.pool)
+                .await?;
+            request_kind_schema_changed = true;
+        }
+
+        if !self
+            .table_column_exists("auth_token_logs", "request_kind_label")
+            .await?
+        {
+            sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN request_kind_label TEXT")
+                .execute(&self.pool)
+                .await?;
+            request_kind_schema_changed = true;
+        }
+
+        if !self
+            .table_column_exists("auth_token_logs", "request_kind_detail")
+            .await?
+        {
+            sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN request_kind_detail TEXT")
+                .execute(&self.pool)
+                .await?;
+            request_kind_schema_changed = true;
+        }
+
+        Ok(request_kind_schema_changed)
+    }
+
+    async fn auth_token_logs_have_legacy_request_kind_columns(&self) -> Result<bool, ProxyError> {
+        Ok(self
+            .table_column_exists("auth_token_logs", "legacy_request_kind_key")
+            .await?
+            || self
+                .table_column_exists("auth_token_logs", "legacy_request_kind_label")
+                .await?
+            || self
+                .table_column_exists("auth_token_logs", "legacy_request_kind_detail")
+                .await?)
     }
 
     pub(crate) async fn request_logs_column_exists(
@@ -3740,8 +5167,7 @@ impl KeyStore {
                 r#"
                 SELECT id, api_key_id, auth_token_id, method, path, query, status_code, tavily_status_code, error_message,
                        result_status, request_kind_key, request_kind_label, request_kind_detail,
-                       legacy_request_kind_key, legacy_request_kind_label, legacy_request_kind_detail, business_credits,
-                       failure_kind, key_effect_code, key_effect_summary,
+                       business_credits, failure_kind, key_effect_code, key_effect_summary,
                        request_body, response_body, created_at, forwarded_headers, dropped_headers
                 FROM request_logs
                 WHERE api_key_id = ? AND visibility = ? AND created_at >= ?
@@ -3760,8 +5186,7 @@ impl KeyStore {
                 r#"
                 SELECT id, api_key_id, auth_token_id, method, path, query, status_code, tavily_status_code, error_message,
                        result_status, request_kind_key, request_kind_label, request_kind_detail,
-                       legacy_request_kind_key, legacy_request_kind_label, legacy_request_kind_detail, business_credits,
-                       failure_kind, key_effect_code, key_effect_summary,
+                       business_credits, failure_kind, key_effect_code, key_effect_summary,
                        request_body, response_body, created_at, forwarded_headers, dropped_headers
                 FROM request_logs
                 WHERE api_key_id = ? AND visibility = ?
@@ -3939,7 +5364,137 @@ impl KeyStore {
             }));
         }
 
+        if let Some((id, api_key)) = sqlx::query_as::<_, (String, String)>(
+            r#"
+            SELECT id, api_key
+            FROM api_keys
+            WHERE id = ? AND status = ? AND deleted_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM api_key_quarantines q
+                  WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
+              )
+            LIMIT 1
+            "#,
+        )
+        .bind(key_id)
+        .bind(STATUS_EXHAUSTED)
+        .fetch_optional(&self.pool)
+        .await?
+        {
+            self.touch_key(&api_key, now).await?;
+            return Ok(Some(ApiKeyLease {
+                id,
+                secret: api_key,
+            }));
+        }
+
         Ok(None)
+    }
+
+    pub(crate) async fn acquire_active_key_excluding(
+        &self,
+        excluded_key_id: Option<&str>,
+    ) -> Result<ApiKeyLease, ProxyError> {
+        self.reset_monthly().await?;
+
+        let now = Utc::now().timestamp();
+
+        let active_candidate = if let Some(excluded_key_id) = excluded_key_id {
+            sqlx::query_as::<_, (String, String)>(
+                r#"
+                SELECT id, api_key
+                FROM api_keys
+                WHERE id != ? AND status = ? AND deleted_at IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM api_key_quarantines q
+                      WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
+                  )
+                ORDER BY last_used_at ASC, id ASC
+                LIMIT 1
+                "#,
+            )
+            .bind(excluded_key_id)
+            .bind(STATUS_ACTIVE)
+            .fetch_optional(&self.pool)
+            .await?
+        } else {
+            sqlx::query_as::<_, (String, String)>(
+                r#"
+                SELECT id, api_key
+                FROM api_keys
+                WHERE status = ? AND deleted_at IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM api_key_quarantines q
+                      WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
+                  )
+                ORDER BY last_used_at ASC, id ASC
+                LIMIT 1
+                "#,
+            )
+            .bind(STATUS_ACTIVE)
+            .fetch_optional(&self.pool)
+            .await?
+        };
+
+        let candidate = if let Some(candidate) = active_candidate {
+            Some(candidate)
+        } else if let Some(excluded_key_id) = excluded_key_id {
+            sqlx::query_as::<_, (String, String)>(
+                r#"
+                SELECT id, api_key
+                FROM api_keys
+                WHERE id != ? AND status = ? AND deleted_at IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM api_key_quarantines q
+                      WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
+                  )
+                ORDER BY
+                    CASE WHEN status_changed_at IS NULL THEN 1 ELSE 0 END ASC,
+                    status_changed_at ASC,
+                    id ASC
+                LIMIT 1
+                "#,
+            )
+            .bind(excluded_key_id)
+            .bind(STATUS_EXHAUSTED)
+            .fetch_optional(&self.pool)
+            .await?
+        } else {
+            sqlx::query_as::<_, (String, String)>(
+                r#"
+                SELECT id, api_key
+                FROM api_keys
+                WHERE status = ? AND deleted_at IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM api_key_quarantines q
+                      WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
+                  )
+                ORDER BY
+                    CASE WHEN status_changed_at IS NULL THEN 1 ELSE 0 END ASC,
+                    status_changed_at ASC,
+                    id ASC
+                LIMIT 1
+                "#,
+            )
+            .bind(STATUS_EXHAUSTED)
+            .fetch_optional(&self.pool)
+            .await?
+        };
+
+        let Some((id, api_key)) = candidate else {
+            return Err(ProxyError::NoAvailableKeys);
+        };
+
+        self.touch_key(&api_key, now).await?;
+        Ok(ApiKeyLease {
+            id,
+            secret: api_key,
+        })
     }
 
     pub(crate) async fn save_research_request_affinity(
@@ -5222,24 +6777,404 @@ impl KeyStore {
         Ok(items)
     }
 
-    pub(crate) async fn list_recent_api_key_bindings_for_user(
+    pub(crate) async fn get_user_primary_api_key_affinity(
         &self,
         user_id: &str,
-    ) -> Result<Vec<String>, ProxyError> {
-        sqlx::query_scalar(
+    ) -> Result<Option<String>, ProxyError> {
+        sqlx::query_scalar::<_, String>(
+            r#"SELECT api_key_id
+               FROM user_primary_api_key_affinity
+               WHERE user_id = ?
+               LIMIT 1"#,
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(ProxyError::from)
+    }
+
+    pub(crate) async fn get_token_primary_api_key_affinity(
+        &self,
+        token_id: &str,
+    ) -> Result<Option<TokenPrimaryApiKeyAffinity>, ProxyError> {
+        let row = sqlx::query_as::<_, (String, Option<String>, String)>(
+            r#"SELECT token_id, user_id, api_key_id
+               FROM token_primary_api_key_affinity
+               WHERE token_id = ?
+               LIMIT 1"#,
+        )
+        .bind(token_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(
+            |(token_id, user_id, api_key_id)| TokenPrimaryApiKeyAffinity {
+                token_id,
+                user_id,
+                api_key_id,
+            },
+        ))
+    }
+
+    pub(crate) async fn find_recent_primary_candidate_for_user(
+        &self,
+        user_id: &str,
+    ) -> Result<Option<String>, ProxyError> {
+        sqlx::query_scalar::<_, String>(
             r#"
             SELECT api_key_id
             FROM user_api_key_bindings
             WHERE user_id = ?
             ORDER BY last_success_at DESC, updated_at DESC, api_key_id DESC
-            LIMIT ?
+            LIMIT 1
             "#,
         )
         .bind(user_id)
-        .bind(USER_API_KEY_BINDING_RECENT_LIMIT)
-        .fetch_all(&self.pool)
+        .fetch_optional(&self.pool)
         .await
         .map_err(ProxyError::from)
+    }
+
+    pub(crate) async fn sync_user_primary_api_key_affinity(
+        &self,
+        user_id: &str,
+        api_key_id: &str,
+    ) -> Result<(), ProxyError> {
+        let now = Utc::now().timestamp();
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO user_primary_api_key_affinity (user_id, api_key_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                api_key_id = excluded.api_key_id,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(user_id)
+        .bind(api_key_id)
+        .bind(now)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO token_primary_api_key_affinity (
+                token_id,
+                user_id,
+                api_key_id,
+                created_at,
+                updated_at
+            )
+            SELECT token_id, user_id, ?, ?, ?
+            FROM user_token_bindings
+            WHERE user_id = ?
+            ON CONFLICT(token_id) DO UPDATE SET
+                user_id = excluded.user_id,
+                api_key_id = excluded.api_key_id,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(api_key_id)
+        .bind(now)
+        .bind(now)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn set_token_primary_api_key_affinity(
+        &self,
+        token_id: &str,
+        user_id: Option<&str>,
+        api_key_id: &str,
+    ) -> Result<(), ProxyError> {
+        let now = Utc::now().timestamp();
+        sqlx::query(
+            r#"
+            INSERT INTO token_primary_api_key_affinity (
+                token_id,
+                user_id,
+                api_key_id,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(token_id) DO UPDATE SET
+                user_id = excluded.user_id,
+                api_key_id = excluded.api_key_id,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(token_id)
+        .bind(user_id)
+        .bind(api_key_id)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn create_or_replace_mcp_session(
+        &self,
+        binding: &McpSessionBinding,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            INSERT INTO mcp_sessions (
+                proxy_session_id,
+                upstream_session_id,
+                upstream_key_id,
+                auth_token_id,
+                user_id,
+                protocol_version,
+                last_event_id,
+                created_at,
+                updated_at,
+                expires_at,
+                revoked_at,
+                revoke_reason
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(proxy_session_id) DO UPDATE SET
+                upstream_session_id = excluded.upstream_session_id,
+                upstream_key_id = excluded.upstream_key_id,
+                auth_token_id = excluded.auth_token_id,
+                user_id = excluded.user_id,
+                protocol_version = excluded.protocol_version,
+                last_event_id = excluded.last_event_id,
+                updated_at = excluded.updated_at,
+                expires_at = excluded.expires_at,
+                revoked_at = excluded.revoked_at,
+                revoke_reason = excluded.revoke_reason
+            "#,
+        )
+        .bind(&binding.proxy_session_id)
+        .bind(&binding.upstream_session_id)
+        .bind(&binding.upstream_key_id)
+        .bind(binding.auth_token_id.as_deref())
+        .bind(binding.user_id.as_deref())
+        .bind(binding.protocol_version.as_deref())
+        .bind(binding.last_event_id.as_deref())
+        .bind(binding.created_at)
+        .bind(binding.updated_at)
+        .bind(binding.expires_at)
+        .bind(binding.revoked_at)
+        .bind(binding.revoke_reason.as_deref())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn get_active_mcp_session(
+        &self,
+        proxy_session_id: &str,
+        now: i64,
+    ) -> Result<Option<McpSessionBinding>, ProxyError> {
+        let row = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                i64,
+                i64,
+                i64,
+                Option<i64>,
+                Option<String>,
+            ),
+        >(
+            r#"
+            SELECT
+                proxy_session_id,
+                upstream_session_id,
+                upstream_key_id,
+                auth_token_id,
+                user_id,
+                protocol_version,
+                last_event_id,
+                created_at,
+                updated_at,
+                expires_at,
+                revoked_at,
+                revoke_reason
+            FROM mcp_sessions
+            WHERE proxy_session_id = ?
+              AND revoked_at IS NULL
+              AND expires_at > ?
+            LIMIT 1
+            "#,
+        )
+        .bind(proxy_session_id)
+        .bind(now)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(
+            |(
+                proxy_session_id,
+                upstream_session_id,
+                upstream_key_id,
+                auth_token_id,
+                user_id,
+                protocol_version,
+                last_event_id,
+                created_at,
+                updated_at,
+                expires_at,
+                revoked_at,
+                revoke_reason,
+            )| McpSessionBinding {
+                proxy_session_id,
+                upstream_session_id,
+                upstream_key_id,
+                auth_token_id,
+                user_id,
+                protocol_version,
+                last_event_id,
+                created_at,
+                updated_at,
+                expires_at,
+                revoked_at,
+                revoke_reason,
+            },
+        ))
+    }
+
+    pub(crate) async fn touch_mcp_session(
+        &self,
+        proxy_session_id: &str,
+        protocol_version: Option<&str>,
+        last_event_id: Option<&str>,
+        now: i64,
+        expires_at: i64,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            UPDATE mcp_sessions
+            SET
+                protocol_version = COALESCE(?, protocol_version),
+                last_event_id = COALESCE(?, last_event_id),
+                updated_at = ?,
+                expires_at = ?
+            WHERE proxy_session_id = ?
+              AND revoked_at IS NULL
+            "#,
+        )
+        .bind(protocol_version)
+        .bind(last_event_id)
+        .bind(now)
+        .bind(expires_at)
+        .bind(proxy_session_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn update_mcp_session_upstream_identity(
+        &self,
+        proxy_session_id: &str,
+        upstream_session_id: &str,
+        protocol_version: Option<&str>,
+        now: i64,
+        expires_at: i64,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            UPDATE mcp_sessions
+            SET
+                upstream_session_id = ?,
+                protocol_version = COALESCE(?, protocol_version),
+                updated_at = ?,
+                expires_at = ?
+            WHERE proxy_session_id = ?
+              AND revoked_at IS NULL
+            "#,
+        )
+        .bind(upstream_session_id)
+        .bind(protocol_version)
+        .bind(now)
+        .bind(expires_at)
+        .bind(proxy_session_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn revoke_mcp_session(
+        &self,
+        proxy_session_id: &str,
+        reason: &str,
+    ) -> Result<(), ProxyError> {
+        let now = Utc::now().timestamp();
+        sqlx::query(
+            r#"
+            UPDATE mcp_sessions
+            SET revoked_at = ?, revoke_reason = ?, updated_at = ?
+            WHERE proxy_session_id = ? AND revoked_at IS NULL
+            "#,
+        )
+        .bind(now)
+        .bind(reason)
+        .bind(now)
+        .bind(proxy_session_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn revoke_mcp_sessions_for_user(
+        &self,
+        user_id: &str,
+        reason: &str,
+    ) -> Result<(), ProxyError> {
+        let now = Utc::now().timestamp();
+        sqlx::query(
+            r#"
+            UPDATE mcp_sessions
+            SET revoked_at = ?, revoke_reason = ?, updated_at = ?
+            WHERE user_id = ? AND revoked_at IS NULL
+            "#,
+        )
+        .bind(now)
+        .bind(reason)
+        .bind(now)
+        .bind(user_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn revoke_mcp_sessions_for_token(
+        &self,
+        token_id: &str,
+        reason: &str,
+    ) -> Result<(), ProxyError> {
+        let now = Utc::now().timestamp();
+        sqlx::query(
+            r#"
+            UPDATE mcp_sessions
+            SET revoked_at = ?, revoke_reason = ?, updated_at = ?
+            WHERE auth_token_id = ? AND revoked_at IS NULL
+            "#,
+        )
+        .bind(now)
+        .bind(reason)
+        .bind(now)
+        .bind(token_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     pub(crate) async fn list_api_key_binding_counts_for_users(
@@ -5288,520 +7223,6 @@ impl KeyStore {
             .await?;
 
         Ok(rows.into_iter().collect())
-    }
-
-    pub(crate) async fn fetch_account_monthly_broken_limit(
-        &self,
-        user_id: &str,
-    ) -> Result<i64, ProxyError> {
-        self.ensure_account_quota_limits(user_id).await?;
-        Ok(sqlx::query_scalar::<_, i64>(
-            "SELECT COALESCE(monthly_broken_limit, ?) FROM account_quota_limits WHERE user_id = ? LIMIT 1",
-        )
-        .bind(USER_MONTHLY_BROKEN_LIMIT_DEFAULT)
-        .bind(user_id)
-        .fetch_one(&self.pool)
-        .await?)
-    }
-
-    pub(crate) async fn fetch_account_monthly_broken_limits_bulk(
-        &self,
-        user_ids: &[String],
-    ) -> Result<HashMap<String, i64>, ProxyError> {
-        if user_ids.is_empty() {
-            return Ok(HashMap::new());
-        }
-
-        self.ensure_account_quota_limits_for_users(user_ids).await?;
-        let mut builder = QueryBuilder::new("SELECT user_id, COALESCE(monthly_broken_limit, ");
-        builder.push_bind(USER_MONTHLY_BROKEN_LIMIT_DEFAULT);
-        builder.push(") FROM account_quota_limits WHERE user_id IN (");
-        {
-            let mut separated = builder.separated(", ");
-            for user_id in user_ids {
-                separated.push_bind(user_id);
-            }
-        }
-        builder.push(")");
-
-        let rows = builder
-            .build_query_as::<(String, i64)>()
-            .fetch_all(&self.pool)
-            .await?;
-        Ok(rows.into_iter().collect())
-    }
-
-    pub(crate) async fn update_account_monthly_broken_limit(
-        &self,
-        user_id: &str,
-        monthly_broken_limit: i64,
-    ) -> Result<bool, ProxyError> {
-        let exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users WHERE id = ?")
-            .bind(user_id)
-            .fetch_one(&self.pool)
-            .await?;
-        if exists == 0 {
-            return Ok(false);
-        }
-
-        self.ensure_account_quota_limits(user_id).await?;
-        let now = Utc::now().timestamp();
-        sqlx::query(
-            r#"UPDATE account_quota_limits
-               SET monthly_broken_limit = ?, updated_at = ?
-               WHERE user_id = ?"#,
-        )
-        .bind(monthly_broken_limit)
-        .bind(now)
-        .bind(user_id)
-        .execute(&self.pool)
-        .await?;
-        Ok(true)
-    }
-
-    pub(crate) async fn record_manual_key_breakage_fanout(
-        &self,
-        key_id: &str,
-        key_status: &str,
-        reason_code: Option<&str>,
-        reason_summary: Option<&str>,
-        _actor: &MaintenanceActor,
-        break_at: i64,
-    ) -> Result<(), ProxyError> {
-        let user_ids = sqlx::query_scalar::<_, String>(
-            "SELECT user_id FROM user_api_key_bindings WHERE api_key_id = ? ORDER BY user_id ASC",
-        )
-        .bind(key_id)
-        .fetch_all(&self.pool)
-        .await?;
-        let token_ids = sqlx::query_scalar::<_, String>(
-            "SELECT token_id FROM token_api_key_bindings WHERE api_key_id = ? ORDER BY token_id ASC",
-        )
-        .bind(key_id)
-        .fetch_all(&self.pool)
-        .await?;
-        if user_ids.is_empty() && token_ids.is_empty() {
-            return Ok(());
-        }
-
-        let mut tx = self.pool.begin().await?;
-        for user_id in &user_ids {
-            self.upsert_subject_key_breakage_tx(
-                &mut tx,
-                BROKEN_KEY_SUBJECT_USER,
-                user_id,
-                key_id,
-                break_at,
-                key_status,
-                reason_code,
-                reason_summary,
-                BROKEN_KEY_SOURCE_MANUAL,
-                None,
-                None,
-                None,
-                None,
-            )
-            .await?;
-        }
-        for token_id in &token_ids {
-            self.upsert_subject_key_breakage_tx(
-                &mut tx,
-                BROKEN_KEY_SUBJECT_TOKEN,
-                token_id,
-                key_id,
-                break_at,
-                key_status,
-                reason_code,
-                reason_summary,
-                BROKEN_KEY_SOURCE_MANUAL,
-                None,
-                None,
-                None,
-                None,
-            )
-            .await?;
-        }
-        tx.commit().await?;
-        Ok(())
-    }
-
-    pub(crate) async fn backfill_current_month_auto_subject_breakages(
-        &self,
-    ) -> Result<(), ProxyError> {
-        let month_start = start_of_month(Utc::now()).timestamp();
-        let rows =
-            sqlx::query_as::<_, (String, String, String, i64, Option<String>, Option<String>)>(
-                r#"
-            SELECT
-                key_id,
-                auth_token_id,
-                operation_code,
-                created_at,
-                reason_code,
-                reason_summary
-            FROM api_key_maintenance_records
-            WHERE source = ?
-              AND created_at >= ?
-              AND auth_token_id IS NOT NULL
-              AND operation_code IN (?, ?)
-            ORDER BY created_at ASC, key_id ASC
-            "#,
-            )
-            .bind(MAINTENANCE_SOURCE_SYSTEM)
-            .bind(month_start)
-            .bind(MAINTENANCE_OP_AUTO_QUARANTINE)
-            .bind(MAINTENANCE_OP_AUTO_MARK_EXHAUSTED)
-            .fetch_all(&self.pool)
-            .await?;
-        if rows.is_empty() {
-            return Ok(());
-        }
-
-        let mut token_ids: Vec<String> = rows
-            .iter()
-            .map(|(_, token_id, _, _, _, _)| token_id.clone())
-            .collect();
-        token_ids.sort_unstable();
-        token_ids.dedup();
-        let token_bindings = self.list_user_bindings_for_tokens(&token_ids).await?;
-
-        let mut user_ids: Vec<String> = token_bindings.values().cloned().collect();
-        user_ids.sort_unstable();
-        user_ids.dedup();
-        let user_map = self.get_admin_user_identities(&user_ids).await?;
-
-        let mut tx = self.pool.begin().await?;
-        for (key_id, token_id, operation_code, created_at, reason_code, reason_summary) in rows {
-            let key_status = if operation_code == MAINTENANCE_OP_AUTO_QUARANTINE {
-                KEY_EFFECT_QUARANTINED
-            } else {
-                STATUS_EXHAUSTED
-            };
-            let breaker_user_id = token_bindings.get(&token_id).cloned();
-            let breaker_identity = breaker_user_id
-                .as_ref()
-                .and_then(|user_id| user_map.get(user_id));
-            let breaker_display = breaker_identity.and_then(|identity| {
-                identity
-                    .display_name
-                    .clone()
-                    .or(identity.username.clone())
-                    .or(Some(identity.user_id.clone()))
-            });
-
-            self.upsert_subject_key_breakage_tx(
-                &mut tx,
-                BROKEN_KEY_SUBJECT_TOKEN,
-                &token_id,
-                &key_id,
-                created_at,
-                key_status,
-                reason_code.as_deref(),
-                reason_summary.as_deref(),
-                BROKEN_KEY_SOURCE_AUTO,
-                Some(&token_id),
-                breaker_user_id.as_deref(),
-                breaker_display.as_deref(),
-                None,
-            )
-            .await?;
-
-            if let Some(user_id) = breaker_user_id.as_deref() {
-                self.upsert_subject_key_breakage_tx(
-                    &mut tx,
-                    BROKEN_KEY_SUBJECT_USER,
-                    user_id,
-                    &key_id,
-                    created_at,
-                    key_status,
-                    reason_code.as_deref(),
-                    reason_summary.as_deref(),
-                    BROKEN_KEY_SOURCE_AUTO,
-                    Some(&token_id),
-                    Some(user_id),
-                    breaker_display.as_deref(),
-                    None,
-                )
-                .await?;
-            }
-        }
-        tx.commit().await?;
-        Ok(())
-    }
-
-    pub(crate) async fn fetch_monthly_broken_counts_for_users(
-        &self,
-        user_ids: &[String],
-        month_start: i64,
-    ) -> Result<HashMap<String, i64>, ProxyError> {
-        if user_ids.is_empty() {
-            return Ok(HashMap::new());
-        }
-
-        let mut builder = QueryBuilder::new(
-            r#"SELECT skb.subject_id, COUNT(*) AS broken_count
-               FROM subject_key_breakages skb
-               JOIN api_keys ak ON ak.id = skb.key_id AND ak.deleted_at IS NULL
-               LEFT JOIN api_key_quarantines aq ON aq.key_id = ak.id AND aq.cleared_at IS NULL
-               WHERE skb.subject_kind = "#,
-        );
-        builder.push_bind(BROKEN_KEY_SUBJECT_USER);
-        builder.push(" AND skb.month_start = ");
-        builder.push_bind(month_start);
-        builder.push(" AND (aq.key_id IS NOT NULL OR ak.status = ");
-        builder.push_bind(STATUS_EXHAUSTED);
-        builder.push(") AND skb.subject_id IN (");
-        {
-            let mut separated = builder.separated(", ");
-            for user_id in user_ids {
-                separated.push_bind(user_id);
-            }
-        }
-        builder.push(") GROUP BY skb.subject_id");
-
-        let rows = builder
-            .build_query_as::<(String, i64)>()
-            .fetch_all(&self.pool)
-            .await?;
-        Ok(rows.into_iter().collect())
-    }
-
-    pub(crate) async fn fetch_monthly_broken_counts_for_tokens(
-        &self,
-        token_ids: &[String],
-        month_start: i64,
-    ) -> Result<HashMap<String, i64>, ProxyError> {
-        if token_ids.is_empty() {
-            return Ok(HashMap::new());
-        }
-
-        let mut builder = QueryBuilder::new(
-            r#"SELECT skb.subject_id, COUNT(*) AS broken_count
-               FROM subject_key_breakages skb
-               JOIN api_keys ak ON ak.id = skb.key_id AND ak.deleted_at IS NULL
-               LEFT JOIN api_key_quarantines aq ON aq.key_id = ak.id AND aq.cleared_at IS NULL
-               WHERE skb.subject_kind = "#,
-        );
-        builder.push_bind(BROKEN_KEY_SUBJECT_TOKEN);
-        builder.push(" AND skb.month_start = ");
-        builder.push_bind(month_start);
-        builder.push(" AND (aq.key_id IS NOT NULL OR ak.status = ");
-        builder.push_bind(STATUS_EXHAUSTED);
-        builder.push(") AND skb.subject_id IN (");
-        {
-            let mut separated = builder.separated(", ");
-            for token_id in token_ids {
-                separated.push_bind(token_id);
-            }
-        }
-        builder.push(") GROUP BY skb.subject_id");
-
-        let rows = builder
-            .build_query_as::<(String, i64)>()
-            .fetch_all(&self.pool)
-            .await?;
-        Ok(rows.into_iter().collect())
-    }
-
-    pub(crate) async fn list_monthly_broken_subjects_for_tokens(
-        &self,
-        token_ids: &[String],
-        month_start: i64,
-    ) -> Result<HashSet<String>, ProxyError> {
-        if token_ids.is_empty() {
-            return Ok(HashSet::new());
-        }
-
-        let mut builder = QueryBuilder::new(
-            r#"SELECT DISTINCT skb.subject_id
-               FROM subject_key_breakages skb
-               JOIN api_keys ak ON ak.id = skb.key_id AND ak.deleted_at IS NULL
-               LEFT JOIN api_key_quarantines aq ON aq.key_id = ak.id AND aq.cleared_at IS NULL
-               WHERE skb.subject_kind = "#,
-        );
-        builder.push_bind(BROKEN_KEY_SUBJECT_TOKEN);
-        builder.push(" AND skb.month_start = ");
-        builder.push_bind(month_start);
-        builder.push(" AND (aq.key_id IS NOT NULL OR ak.status = ");
-        builder.push_bind(STATUS_EXHAUSTED);
-        builder.push(") AND skb.subject_id IN (");
-        {
-            let mut separated = builder.separated(", ");
-            for token_id in token_ids {
-                separated.push_bind(token_id);
-            }
-        }
-        builder.push(")");
-
-        let rows = builder
-            .build_query_scalar::<String>()
-            .fetch_all(&self.pool)
-            .await?;
-        Ok(rows.into_iter().collect())
-    }
-
-    async fn fetch_monthly_broken_related_users_for_keys(
-        &self,
-        key_ids: &[String],
-    ) -> Result<HashMap<String, Vec<MonthlyBrokenKeyRelatedUser>>, ProxyError> {
-        if key_ids.is_empty() {
-            return Ok(HashMap::new());
-        }
-
-        let mut builder = QueryBuilder::new(
-            r#"SELECT DISTINCT
-                    b.api_key_id,
-                    u.id,
-                    u.display_name,
-                    u.username
-               FROM user_api_key_bindings b
-               JOIN users u ON u.id = b.user_id
-               WHERE b.api_key_id IN ("#,
-        );
-        {
-            let mut separated = builder.separated(", ");
-            for key_id in key_ids {
-                separated.push_bind(key_id);
-            }
-        }
-        builder.push(") ORDER BY b.api_key_id ASC, u.username ASC, u.id ASC");
-
-        let rows = builder
-            .build_query_as::<(String, String, Option<String>, Option<String>)>()
-            .fetch_all(&self.pool)
-            .await?;
-        let mut map: HashMap<String, Vec<MonthlyBrokenKeyRelatedUser>> = HashMap::new();
-        for (key_id, user_id, display_name, username) in rows {
-            map.entry(key_id)
-                .or_default()
-                .push(MonthlyBrokenKeyRelatedUser {
-                    user_id,
-                    display_name,
-                    username,
-                });
-        }
-        Ok(map)
-    }
-
-    pub(crate) async fn fetch_monthly_broken_keys_page(
-        &self,
-        subject_kind: &str,
-        subject_id: &str,
-        page: i64,
-        per_page: i64,
-        month_start: i64,
-    ) -> Result<PaginatedMonthlyBrokenKeys, ProxyError> {
-        let page = page.max(1);
-        let per_page = per_page.clamp(1, 100);
-        let offset = (page - 1) * per_page;
-
-        let total = sqlx::query_scalar::<_, i64>(
-            r#"
-            SELECT COUNT(*)
-            FROM subject_key_breakages skb
-            JOIN api_keys ak ON ak.id = skb.key_id AND ak.deleted_at IS NULL
-            LEFT JOIN api_key_quarantines aq ON aq.key_id = ak.id AND aq.cleared_at IS NULL
-            WHERE skb.subject_kind = ?
-              AND skb.subject_id = ?
-              AND skb.month_start = ?
-              AND (aq.key_id IS NOT NULL OR ak.status = ?)
-            "#,
-        )
-        .bind(subject_kind)
-        .bind(subject_id)
-        .bind(month_start)
-        .bind(STATUS_EXHAUSTED)
-        .fetch_one(&self.pool)
-        .await?;
-
-        let rows = sqlx::query_as::<
-            _,
-            (
-                String,
-                String,
-                Option<String>,
-                Option<String>,
-                i64,
-                String,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-            ),
-        >(
-            r#"
-            SELECT
-                skb.key_id,
-                CASE WHEN aq.key_id IS NOT NULL THEN ? ELSE ak.status END AS current_status,
-                COALESCE(aq.reason_code, skb.reason_code) AS reason_code,
-                COALESCE(aq.reason_summary, skb.reason_summary) AS reason_summary,
-                skb.latest_break_at,
-                skb.source,
-                skb.breaker_token_id,
-                skb.breaker_user_id,
-                skb.breaker_user_display_name,
-                skb.manual_actor_display_name
-            FROM subject_key_breakages skb
-            JOIN api_keys ak ON ak.id = skb.key_id AND ak.deleted_at IS NULL
-            LEFT JOIN api_key_quarantines aq ON aq.key_id = ak.id AND aq.cleared_at IS NULL
-            WHERE skb.subject_kind = ?
-              AND skb.subject_id = ?
-              AND skb.month_start = ?
-              AND (aq.key_id IS NOT NULL OR ak.status = ?)
-            ORDER BY skb.latest_break_at DESC, skb.key_id ASC
-            LIMIT ? OFFSET ?
-            "#,
-        )
-        .bind(KEY_EFFECT_QUARANTINED)
-        .bind(subject_kind)
-        .bind(subject_id)
-        .bind(month_start)
-        .bind(STATUS_EXHAUSTED)
-        .bind(per_page)
-        .bind(offset)
-        .fetch_all(&self.pool)
-        .await?;
-
-        let key_ids: Vec<String> = rows.iter().map(|row| row.0.clone()).collect();
-        let mut related_users = self
-            .fetch_monthly_broken_related_users_for_keys(&key_ids)
-            .await?;
-        let items = rows
-            .into_iter()
-            .map(
-                |(
-                    key_id,
-                    current_status,
-                    reason_code,
-                    reason_summary,
-                    latest_break_at,
-                    source,
-                    breaker_token_id,
-                    breaker_user_id,
-                    breaker_user_display_name,
-                    manual_actor_display_name,
-                )| MonthlyBrokenKeyDetail {
-                    key_id: key_id.clone(),
-                    current_status,
-                    reason_code,
-                    reason_summary,
-                    latest_break_at,
-                    source,
-                    breaker_token_id,
-                    breaker_user_id,
-                    breaker_user_display_name,
-                    manual_actor_display_name,
-                    related_users: related_users.remove(&key_id).unwrap_or_default(),
-                },
-            )
-            .collect();
-
-        Ok(PaginatedMonthlyBrokenKeys {
-            items,
-            total,
-            page,
-            per_page,
-        })
     }
 
     pub(crate) async fn fetch_key_sticky_users_page(
@@ -6324,6 +7745,522 @@ impl KeyStore {
             );
         }
         Ok(map)
+    }
+
+    pub(crate) async fn fetch_account_monthly_broken_limit(
+        &self,
+        user_id: &str,
+    ) -> Result<i64, ProxyError> {
+        self.ensure_account_quota_limits(user_id).await?;
+        Ok(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COALESCE(monthly_broken_limit, ?) FROM account_quota_limits WHERE user_id = ? LIMIT 1",
+            )
+            .bind(USER_MONTHLY_BROKEN_LIMIT_DEFAULT)
+            .bind(user_id)
+            .fetch_one(&self.pool)
+            .await?,
+        )
+    }
+
+    pub(crate) async fn fetch_account_monthly_broken_limits_bulk(
+        &self,
+        user_ids: &[String],
+    ) -> Result<HashMap<String, i64>, ProxyError> {
+        if user_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        self.ensure_account_quota_limits_for_users(user_ids).await?;
+        let mut builder = QueryBuilder::new("SELECT user_id, COALESCE(monthly_broken_limit, ");
+        builder.push_bind(USER_MONTHLY_BROKEN_LIMIT_DEFAULT);
+        builder.push(") FROM account_quota_limits WHERE user_id IN (");
+        {
+            let mut separated = builder.separated(", ");
+            for user_id in user_ids {
+                separated.push_bind(user_id);
+            }
+        }
+        builder.push(")");
+
+        let rows = builder
+            .build_query_as::<(String, i64)>()
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().collect())
+    }
+
+    pub(crate) async fn update_account_monthly_broken_limit(
+        &self,
+        user_id: &str,
+        monthly_broken_limit: i64,
+    ) -> Result<bool, ProxyError> {
+        let exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users WHERE id = ?")
+            .bind(user_id)
+            .fetch_one(&self.pool)
+            .await?;
+        if exists == 0 {
+            return Ok(false);
+        }
+
+        self.ensure_account_quota_limits(user_id).await?;
+        let now = Utc::now().timestamp();
+        sqlx::query(
+            r#"UPDATE account_quota_limits
+               SET monthly_broken_limit = ?, updated_at = ?
+               WHERE user_id = ?"#,
+        )
+        .bind(monthly_broken_limit)
+        .bind(now)
+        .bind(user_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(true)
+    }
+
+    pub(crate) async fn record_manual_key_breakage_fanout(
+        &self,
+        key_id: &str,
+        key_status: &str,
+        reason_code: Option<&str>,
+        reason_summary: Option<&str>,
+        _actor: &MaintenanceActor,
+        break_at: i64,
+    ) -> Result<(), ProxyError> {
+        let user_ids = sqlx::query_scalar::<_, String>(
+            "SELECT user_id FROM user_api_key_bindings WHERE api_key_id = ? ORDER BY user_id ASC",
+        )
+        .bind(key_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let token_ids = sqlx::query_scalar::<_, String>(
+            "SELECT token_id FROM token_api_key_bindings WHERE api_key_id = ? ORDER BY token_id ASC",
+        )
+        .bind(key_id)
+        .fetch_all(&self.pool)
+        .await?;
+        if user_ids.is_empty() && token_ids.is_empty() {
+            return Ok(());
+        }
+
+        let mut tx = self.pool.begin().await?;
+        for user_id in &user_ids {
+            self.upsert_subject_key_breakage_tx(
+                &mut tx,
+                BROKEN_KEY_SUBJECT_USER,
+                user_id,
+                key_id,
+                break_at,
+                key_status,
+                reason_code,
+                reason_summary,
+                BROKEN_KEY_SOURCE_MANUAL,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await?;
+        }
+        for token_id in &token_ids {
+            self.upsert_subject_key_breakage_tx(
+                &mut tx,
+                BROKEN_KEY_SUBJECT_TOKEN,
+                token_id,
+                key_id,
+                break_at,
+                key_status,
+                reason_code,
+                reason_summary,
+                BROKEN_KEY_SOURCE_MANUAL,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn backfill_current_month_auto_subject_breakages(
+        &self,
+    ) -> Result<(), ProxyError> {
+        let month_start = start_of_month(Utc::now()).timestamp();
+        let rows =
+            sqlx::query_as::<_, (String, String, String, i64, Option<String>, Option<String>)>(
+                r#"
+            SELECT
+                key_id,
+                auth_token_id,
+                operation_code,
+                created_at,
+                reason_code,
+                reason_summary
+            FROM api_key_maintenance_records
+            WHERE source = ?
+              AND created_at >= ?
+              AND auth_token_id IS NOT NULL
+              AND operation_code IN (?, ?)
+            ORDER BY created_at ASC, key_id ASC
+            "#,
+            )
+            .bind(MAINTENANCE_SOURCE_SYSTEM)
+            .bind(month_start)
+            .bind(MAINTENANCE_OP_AUTO_QUARANTINE)
+            .bind(MAINTENANCE_OP_AUTO_MARK_EXHAUSTED)
+            .fetch_all(&self.pool)
+            .await?;
+        if rows.is_empty() {
+            return Ok(());
+        }
+
+        let mut token_ids: Vec<String> = rows
+            .iter()
+            .map(|(_, token_id, _, _, _, _)| token_id.clone())
+            .collect();
+        token_ids.sort_unstable();
+        token_ids.dedup();
+        let token_bindings = self.list_user_bindings_for_tokens(&token_ids).await?;
+
+        let mut user_ids: Vec<String> = token_bindings.values().cloned().collect();
+        user_ids.sort_unstable();
+        user_ids.dedup();
+        let user_map = self.get_admin_user_identities(&user_ids).await?;
+
+        let mut tx = self.pool.begin().await?;
+        for (key_id, token_id, operation_code, created_at, reason_code, reason_summary) in rows {
+            let key_status = if operation_code == MAINTENANCE_OP_AUTO_QUARANTINE {
+                KEY_EFFECT_QUARANTINED
+            } else {
+                STATUS_EXHAUSTED
+            };
+            let breaker_user_id = token_bindings.get(&token_id).cloned();
+            let breaker_identity = breaker_user_id
+                .as_ref()
+                .and_then(|user_id| user_map.get(user_id));
+            let breaker_display = breaker_identity.and_then(|identity| {
+                identity
+                    .display_name
+                    .clone()
+                    .or(identity.username.clone())
+                    .or(Some(identity.user_id.clone()))
+            });
+
+            self.upsert_subject_key_breakage_tx(
+                &mut tx,
+                BROKEN_KEY_SUBJECT_TOKEN,
+                &token_id,
+                &key_id,
+                created_at,
+                key_status,
+                reason_code.as_deref(),
+                reason_summary.as_deref(),
+                BROKEN_KEY_SOURCE_AUTO,
+                Some(&token_id),
+                breaker_user_id.as_deref(),
+                breaker_display.as_deref(),
+                None,
+            )
+            .await?;
+
+            if let Some(user_id) = breaker_user_id.as_deref() {
+                self.upsert_subject_key_breakage_tx(
+                    &mut tx,
+                    BROKEN_KEY_SUBJECT_USER,
+                    user_id,
+                    &key_id,
+                    created_at,
+                    key_status,
+                    reason_code.as_deref(),
+                    reason_summary.as_deref(),
+                    BROKEN_KEY_SOURCE_AUTO,
+                    Some(&token_id),
+                    Some(user_id),
+                    breaker_display.as_deref(),
+                    None,
+                )
+                .await?;
+            }
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn fetch_monthly_broken_counts_for_users(
+        &self,
+        user_ids: &[String],
+        month_start: i64,
+    ) -> Result<HashMap<String, i64>, ProxyError> {
+        if user_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut builder = QueryBuilder::new(
+            r#"SELECT skb.subject_id, COUNT(*) AS broken_count
+               FROM subject_key_breakages skb
+               JOIN api_keys ak ON ak.id = skb.key_id AND ak.deleted_at IS NULL
+               LEFT JOIN api_key_quarantines aq ON aq.key_id = ak.id AND aq.cleared_at IS NULL
+               WHERE skb.subject_kind = "#,
+        );
+        builder.push_bind(BROKEN_KEY_SUBJECT_USER);
+        builder.push(" AND skb.month_start = ");
+        builder.push_bind(month_start);
+        builder.push(" AND (aq.key_id IS NOT NULL OR ak.status = ");
+        builder.push_bind(STATUS_EXHAUSTED);
+        builder.push(") AND skb.subject_id IN (");
+        {
+            let mut separated = builder.separated(", ");
+            for user_id in user_ids {
+                separated.push_bind(user_id);
+            }
+        }
+        builder.push(") GROUP BY skb.subject_id");
+
+        let rows = builder
+            .build_query_as::<(String, i64)>()
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().collect())
+    }
+
+    pub(crate) async fn fetch_monthly_broken_counts_for_tokens(
+        &self,
+        token_ids: &[String],
+        month_start: i64,
+    ) -> Result<HashMap<String, i64>, ProxyError> {
+        if token_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut builder = QueryBuilder::new(
+            r#"SELECT skb.subject_id, COUNT(*) AS broken_count
+               FROM subject_key_breakages skb
+               JOIN api_keys ak ON ak.id = skb.key_id AND ak.deleted_at IS NULL
+               LEFT JOIN api_key_quarantines aq ON aq.key_id = ak.id AND aq.cleared_at IS NULL
+               WHERE skb.subject_kind = "#,
+        );
+        builder.push_bind(BROKEN_KEY_SUBJECT_TOKEN);
+        builder.push(" AND skb.month_start = ");
+        builder.push_bind(month_start);
+        builder.push(" AND (aq.key_id IS NOT NULL OR ak.status = ");
+        builder.push_bind(STATUS_EXHAUSTED);
+        builder.push(") AND skb.subject_id IN (");
+        {
+            let mut separated = builder.separated(", ");
+            for token_id in token_ids {
+                separated.push_bind(token_id);
+            }
+        }
+        builder.push(") GROUP BY skb.subject_id");
+
+        let rows = builder
+            .build_query_as::<(String, i64)>()
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().collect())
+    }
+
+    pub(crate) async fn list_monthly_broken_subjects_for_tokens(
+        &self,
+        token_ids: &[String],
+        month_start: i64,
+    ) -> Result<HashSet<String>, ProxyError> {
+        if token_ids.is_empty() {
+            return Ok(HashSet::new());
+        }
+
+        let mut builder = QueryBuilder::new(
+            r#"SELECT DISTINCT skb.subject_id
+               FROM subject_key_breakages skb
+               JOIN api_keys ak ON ak.id = skb.key_id AND ak.deleted_at IS NULL
+               LEFT JOIN api_key_quarantines aq ON aq.key_id = ak.id AND aq.cleared_at IS NULL
+               WHERE skb.subject_kind = "#,
+        );
+        builder.push_bind(BROKEN_KEY_SUBJECT_TOKEN);
+        builder.push(" AND skb.month_start = ");
+        builder.push_bind(month_start);
+        builder.push(" AND (aq.key_id IS NOT NULL OR ak.status = ");
+        builder.push_bind(STATUS_EXHAUSTED);
+        builder.push(") AND skb.subject_id IN (");
+        {
+            let mut separated = builder.separated(", ");
+            for token_id in token_ids {
+                separated.push_bind(token_id);
+            }
+        }
+        builder.push(")");
+
+        let rows = builder
+            .build_query_scalar::<String>()
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().collect())
+    }
+
+    async fn fetch_monthly_broken_related_users_for_keys(
+        &self,
+        key_ids: &[String],
+    ) -> Result<HashMap<String, Vec<MonthlyBrokenKeyRelatedUser>>, ProxyError> {
+        if key_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut builder = QueryBuilder::new(
+            r#"SELECT DISTINCT
+                    b.api_key_id,
+                    u.id,
+                    u.display_name,
+                    u.username
+               FROM user_api_key_bindings b
+               JOIN users u ON u.id = b.user_id
+               WHERE b.api_key_id IN ("#,
+        );
+        {
+            let mut separated = builder.separated(", ");
+            for key_id in key_ids {
+                separated.push_bind(key_id);
+            }
+        }
+        builder.push(") ORDER BY b.api_key_id ASC, u.username ASC, u.id ASC");
+
+        let rows = builder
+            .build_query_as::<(String, String, Option<String>, Option<String>)>()
+            .fetch_all(&self.pool)
+            .await?;
+        let mut map: HashMap<String, Vec<MonthlyBrokenKeyRelatedUser>> = HashMap::new();
+        for (key_id, user_id, display_name, username) in rows {
+            map.entry(key_id)
+                .or_default()
+                .push(MonthlyBrokenKeyRelatedUser {
+                    user_id,
+                    display_name,
+                    username,
+                });
+        }
+        Ok(map)
+    }
+
+    pub(crate) async fn fetch_monthly_broken_keys_page(
+        &self,
+        subject_kind: &str,
+        subject_id: &str,
+        page: i64,
+        per_page: i64,
+        month_start: i64,
+    ) -> Result<PaginatedMonthlyBrokenKeys, ProxyError> {
+        let page = page.max(1);
+        let per_page = per_page.clamp(1, 100);
+        let offset = (page - 1) * per_page;
+
+        let total = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COUNT(*)
+            FROM subject_key_breakages skb
+            JOIN api_keys ak ON ak.id = skb.key_id AND ak.deleted_at IS NULL
+            LEFT JOIN api_key_quarantines aq ON aq.key_id = ak.id AND aq.cleared_at IS NULL
+            WHERE skb.subject_kind = ?
+              AND skb.subject_id = ?
+              AND skb.month_start = ?
+              AND (aq.key_id IS NOT NULL OR ak.status = ?)
+            "#,
+        )
+        .bind(subject_kind)
+        .bind(subject_id)
+        .bind(month_start)
+        .bind(STATUS_EXHAUSTED)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let rows = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+                i64,
+                String,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+            ),
+        >(
+            r#"
+            SELECT
+                skb.key_id,
+                CASE WHEN aq.key_id IS NOT NULL THEN ? ELSE ak.status END AS current_status,
+                COALESCE(aq.reason_code, skb.reason_code) AS reason_code,
+                COALESCE(aq.reason_summary, skb.reason_summary) AS reason_summary,
+                skb.latest_break_at,
+                skb.source,
+                skb.breaker_token_id,
+                skb.breaker_user_id,
+                skb.breaker_user_display_name,
+                skb.manual_actor_display_name
+            FROM subject_key_breakages skb
+            JOIN api_keys ak ON ak.id = skb.key_id AND ak.deleted_at IS NULL
+            LEFT JOIN api_key_quarantines aq ON aq.key_id = ak.id AND aq.cleared_at IS NULL
+            WHERE skb.subject_kind = ?
+              AND skb.subject_id = ?
+              AND skb.month_start = ?
+              AND (aq.key_id IS NOT NULL OR ak.status = ?)
+            ORDER BY skb.latest_break_at DESC, skb.key_id ASC
+            LIMIT ? OFFSET ?
+            "#,
+        )
+        .bind(KEY_EFFECT_QUARANTINED)
+        .bind(subject_kind)
+        .bind(subject_id)
+        .bind(month_start)
+        .bind(STATUS_EXHAUSTED)
+        .bind(per_page)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let key_ids: Vec<String> = rows.iter().map(|row| row.0.clone()).collect();
+        let mut related_users = self
+            .fetch_monthly_broken_related_users_for_keys(&key_ids)
+            .await?;
+        let items = rows
+            .into_iter()
+            .map(
+                |(
+                    key_id,
+                    current_status,
+                    reason_code,
+                    reason_summary,
+                    latest_break_at,
+                    source,
+                    breaker_token_id,
+                    breaker_user_id,
+                    breaker_user_display_name,
+                    manual_actor_display_name,
+                )| MonthlyBrokenKeyDetail {
+                    key_id: key_id.clone(),
+                    current_status,
+                    reason_code,
+                    reason_summary,
+                    latest_break_at,
+                    source,
+                    breaker_token_id,
+                    breaker_user_id,
+                    breaker_user_display_name,
+                    manual_actor_display_name,
+                    related_users: related_users.remove(&key_id).unwrap_or_default(),
+                },
+            )
+            .collect();
+
+        Ok(PaginatedMonthlyBrokenKeys {
+            items,
+            total,
+            page,
+            per_page,
+        })
     }
 
     pub(crate) async fn seed_linuxdo_system_tags(&self) -> Result<(), ProxyError> {
@@ -7224,6 +9161,87 @@ impl KeyStore {
                     (
                         user_id,
                         UserLogMetricsSummary {
+                            daily_success,
+                            daily_failure,
+                            monthly_success,
+                            monthly_failure,
+                            last_activity,
+                        },
+                    )
+                },
+            )
+            .collect())
+    }
+
+    pub(crate) async fn fetch_token_log_metrics_bulk(
+        &self,
+        token_ids: &[String],
+    ) -> Result<HashMap<String, TokenLogMetricsSummary>, ProxyError> {
+        if token_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let now = Utc::now();
+        let month_start = start_of_month(now).timestamp();
+        let day_start = start_of_day(now).timestamp();
+
+        let mut builder = QueryBuilder::new(
+            r#"
+            SELECT
+              l.token_id,
+              COALESCE(SUM(CASE WHEN l.result_status = "#,
+        );
+        builder.push_bind(OUTCOME_SUCCESS);
+        builder.push(" AND l.created_at >= ");
+        builder.push_bind(day_start);
+        builder.push(" THEN 1 ELSE 0 END), 0) AS daily_success, ");
+        builder.push("COALESCE(SUM(CASE WHEN l.result_status = ");
+        builder.push_bind(OUTCOME_ERROR);
+        builder.push(" AND l.created_at >= ");
+        builder.push_bind(day_start);
+        builder.push(" THEN 1 ELSE 0 END), 0) AS daily_failure, ");
+        builder.push("COALESCE(SUM(CASE WHEN l.result_status = ");
+        builder.push_bind(OUTCOME_SUCCESS);
+        builder.push(" AND l.created_at >= ");
+        builder.push_bind(month_start);
+        builder.push(" THEN 1 ELSE 0 END), 0) AS monthly_success, ");
+        builder.push("COALESCE(SUM(CASE WHEN l.result_status = ");
+        builder.push_bind(OUTCOME_ERROR);
+        builder.push(" AND l.created_at >= ");
+        builder.push_bind(month_start);
+        builder.push(" THEN 1 ELSE 0 END), 0) AS monthly_failure, ");
+        builder.push(
+            r#"MAX(l.created_at) AS last_activity
+            FROM auth_token_logs l
+            WHERE l.token_id IN ("#,
+        );
+        {
+            let mut separated = builder.separated(", ");
+            for token_id in token_ids {
+                separated.push_bind(token_id);
+            }
+        }
+        builder.push(") GROUP BY l.token_id");
+
+        let rows = builder
+            .build_query_as::<(String, i64, i64, i64, i64, Option<i64>)>()
+            .fetch_all(&self.pool)
+            .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(
+                    token_id,
+                    daily_success,
+                    daily_failure,
+                    monthly_success,
+                    monthly_failure,
+                    last_activity,
+                )| {
+                    (
+                        token_id,
+                        TokenLogMetricsSummary {
                             daily_success,
                             daily_failure,
                             monthly_success,
@@ -8200,15 +10218,12 @@ impl KeyStore {
         let claimed = if force_claim_miss {
             None
         } else {
-            sqlx::query_as::<
-                _,
-                (i64, Option<String>, i64, Option<String>, String, Option<i64>, String),
-            >(
+            sqlx::query_as::<_, (i64, Option<String>, i64, Option<String>, String, Option<i64>)>(
                 r#"
                 UPDATE auth_token_logs
                 SET billing_state = ?
                 WHERE id = ? AND billing_state = ?
-                RETURNING COALESCE(business_credits, 0), billing_subject, created_at, api_key_id, result_status, request_log_id, token_id
+                RETURNING COALESCE(business_credits, 0), billing_subject, created_at, api_key_id, result_status, request_log_id
                 "#,
             )
             .bind(BILLING_STATE_CHARGED)
@@ -8218,15 +10233,8 @@ impl KeyStore {
             .await?
         };
 
-        let Some((
-            credits,
-            billing_subject,
-            created_at,
-            api_key_id,
-            result_status,
-            request_log_id,
-            token_id,
-        )) = claimed
+        let Some((credits, billing_subject, created_at, api_key_id, result_status, request_log_id)) =
+            claimed
         else {
             let billing_state = sqlx::query_scalar::<_, String>(
                 "SELECT billing_state FROM auth_token_logs WHERE id = ? LIMIT 1",
@@ -8362,8 +10370,6 @@ impl KeyStore {
 
                 if result_status == OUTCOME_SUCCESS {
                     self.refresh_user_api_key_binding(&mut tx, user_id, api_key_id, created_at)
-                        .await?;
-                    self.refresh_token_api_key_binding(&mut tx, &token_id, api_key_id, created_at)
                         .await?;
                 }
             }
@@ -8570,7 +10576,6 @@ impl KeyStore {
                 SELECT id, api_key_id, method, path, query, http_status, mcp_status,
                        CASE WHEN billing_state = 'charged' THEN business_credits ELSE NULL END AS business_credits,
                        request_kind_key, request_kind_label, request_kind_detail,
-                       legacy_request_kind_key, legacy_request_kind_label, legacy_request_kind_detail,
                        counts_business_quota, result_status, error_message, failure_kind, key_effect_code,
                        key_effect_summary, created_at
                 FROM auth_token_logs
@@ -8590,7 +10595,6 @@ impl KeyStore {
                 SELECT id, api_key_id, method, path, query, http_status, mcp_status,
                        CASE WHEN billing_state = 'charged' THEN business_credits ELSE NULL END AS business_credits,
                        request_kind_key, request_kind_label, request_kind_detail,
-                       legacy_request_kind_key, legacy_request_kind_label, legacy_request_kind_detail,
                        counts_business_quota, result_status, error_message, failure_kind, key_effect_code,
                        key_effect_summary, created_at
                 FROM auth_token_logs
@@ -8609,41 +10613,6 @@ impl KeyStore {
             .into_iter()
             .map(Self::map_token_log_row)
             .collect::<Result<Vec<_>, _>>()?)
-    }
-
-    fn normalize_request_kind_field(value: Option<String>) -> Option<String> {
-        value.and_then(|value| {
-            let trimmed = value.trim();
-            (!trimmed.is_empty()).then(|| trimmed.to_string())
-        })
-    }
-
-    fn resolve_legacy_request_kind_fields(
-        explicit_key: Option<String>,
-        explicit_label: Option<String>,
-        explicit_detail: Option<String>,
-        current_key: Option<String>,
-        current_label: Option<String>,
-        current_detail: Option<String>,
-    ) -> (Option<String>, Option<String>, Option<String>) {
-        let explicit_key = Self::normalize_request_kind_field(explicit_key);
-        let explicit_label = Self::normalize_request_kind_field(explicit_label);
-        let explicit_detail = Self::normalize_request_kind_field(explicit_detail);
-        if explicit_key.is_some() || explicit_label.is_some() || explicit_detail.is_some() {
-            return (explicit_key, explicit_label, explicit_detail);
-        }
-
-        let current_key = Self::normalize_request_kind_field(current_key);
-        let current_label = Self::normalize_request_kind_field(current_label);
-        let current_detail = Self::normalize_request_kind_field(current_detail);
-        if current_key
-            .as_deref()
-            .is_some_and(|value| !is_canonical_request_kind_key(value))
-        {
-            (current_key, current_label, current_detail)
-        } else {
-            (None, None, None)
-        }
     }
 
     fn normalize_request_kind_filters(request_kinds: &[String]) -> Vec<String> {
@@ -8725,15 +10694,6 @@ impl KeyStore {
             stored_request_kind_label.clone(),
             stored_request_kind_detail.clone(),
         );
-        let (legacy_request_kind_key, legacy_request_kind_label, legacy_request_kind_detail) =
-            Self::resolve_legacy_request_kind_fields(
-                row.try_get("legacy_request_kind_key")?,
-                row.try_get("legacy_request_kind_label")?,
-                row.try_get("legacy_request_kind_detail")?,
-                stored_request_kind_key,
-                stored_request_kind_label,
-                stored_request_kind_detail,
-            );
 
         Ok(TokenLogRecord {
             id: row.try_get("id")?,
@@ -8747,9 +10707,6 @@ impl KeyStore {
             request_kind_key: request_kind.key,
             request_kind_label: request_kind.label,
             request_kind_detail: request_kind.detail,
-            legacy_request_kind_key,
-            legacy_request_kind_label,
-            legacy_request_kind_detail,
             counts_business_quota: row.try_get::<i64, _>("counts_business_quota")? != 0,
             result_status: row.try_get("result_status")?,
             error_message: row.try_get("error_message")?,
@@ -8921,9 +10878,6 @@ impl KeyStore {
                    request_kind_key,
                    request_kind_label,
                    request_kind_detail,
-                   legacy_request_kind_key,
-                   legacy_request_kind_label,
-                   legacy_request_kind_detail,
                    counts_business_quota,
                    result_status, error_message, failure_kind, key_effect_code,
                    key_effect_summary, created_at
@@ -10435,9 +12389,6 @@ impl KeyStore {
                 request_kind_key,
                 request_kind_label,
                 request_kind_detail,
-                legacy_request_kind_key,
-                legacy_request_kind_label,
-                legacy_request_kind_detail,
                 business_credits,
                 failure_kind,
                 key_effect_code,
@@ -10511,15 +12462,6 @@ impl KeyStore {
             stored_request_kind_label.clone(),
             stored_request_kind_detail.clone(),
         );
-        let (legacy_request_kind_key, legacy_request_kind_label, legacy_request_kind_detail) =
-            Self::resolve_legacy_request_kind_fields(
-                row.try_get("legacy_request_kind_key")?,
-                row.try_get("legacy_request_kind_label")?,
-                row.try_get("legacy_request_kind_detail")?,
-                stored_request_kind_key,
-                stored_request_kind_label,
-                stored_request_kind_detail,
-            );
 
         Ok(RequestLogRecord {
             id: row.try_get("id")?,
@@ -10535,9 +12477,6 @@ impl KeyStore {
             request_kind_key: request_kind.key,
             request_kind_label: request_kind.label,
             request_kind_detail: request_kind.detail,
-            legacy_request_kind_key,
-            legacy_request_kind_label,
-            legacy_request_kind_detail,
             result_status: row.try_get("result_status")?,
             failure_kind: row.try_get("failure_kind")?,
             key_effect_code: row.try_get("key_effect_code")?,
@@ -10548,6 +12487,85 @@ impl KeyStore {
             forwarded_headers: forwarded,
             dropped_headers: dropped,
         })
+    }
+
+    fn map_request_log_bodies_row(
+        row: sqlx::sqlite::SqliteRow,
+    ) -> Result<RequestLogBodiesRecord, sqlx::Error> {
+        Ok(RequestLogBodiesRecord {
+            request_body: row.try_get("request_body")?,
+            response_body: row.try_get("response_body")?,
+        })
+    }
+
+    pub(crate) async fn fetch_request_log_bodies(
+        &self,
+        log_id: i64,
+    ) -> Result<Option<RequestLogBodiesRecord>, ProxyError> {
+        sqlx::query(
+            r#"
+            SELECT request_body, response_body
+            FROM request_logs
+            WHERE id = ? AND visibility = ?
+            LIMIT 1
+            "#,
+        )
+        .bind(log_id)
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .fetch_optional(&self.pool)
+        .await?
+        .map(Self::map_request_log_bodies_row)
+        .transpose()
+        .map_err(ProxyError::from)
+    }
+
+    pub(crate) async fn fetch_key_request_log_bodies(
+        &self,
+        key_id: &str,
+        log_id: i64,
+    ) -> Result<Option<RequestLogBodiesRecord>, ProxyError> {
+        sqlx::query(
+            r#"
+            SELECT request_body, response_body
+            FROM request_logs
+            WHERE id = ? AND api_key_id = ? AND visibility = ?
+            LIMIT 1
+            "#,
+        )
+        .bind(log_id)
+        .bind(key_id)
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .fetch_optional(&self.pool)
+        .await?
+        .map(Self::map_request_log_bodies_row)
+        .transpose()
+        .map_err(ProxyError::from)
+    }
+
+    pub(crate) async fn fetch_token_log_bodies(
+        &self,
+        token_id: &str,
+        log_id: i64,
+    ) -> Result<Option<RequestLogBodiesRecord>, ProxyError> {
+        sqlx::query(
+            r#"
+            SELECT rl.request_body, rl.response_body
+            FROM auth_token_logs atl
+            LEFT JOIN request_logs rl
+              ON rl.id = atl.request_log_id
+             AND rl.visibility = ?
+            WHERE atl.id = ? AND atl.token_id = ?
+            LIMIT 1
+            "#,
+        )
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(log_id)
+        .bind(token_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .map(Self::map_request_log_bodies_row)
+        .transpose()
+        .map_err(ProxyError::from)
     }
 
     fn push_request_logs_scope<'a>(
@@ -10831,9 +12849,6 @@ impl KeyStore {
                 request_kind_key,
                 request_kind_label,
                 request_kind_detail,
-                legacy_request_kind_key,
-                legacy_request_kind_label,
-                legacy_request_kind_detail,
                 business_credits,
                 failure_kind,
                 key_effect_code,

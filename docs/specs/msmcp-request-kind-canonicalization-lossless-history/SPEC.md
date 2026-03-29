@@ -20,7 +20,7 @@
 - 为 `request_logs` 与 `auth_token_logs` 新增 `legacy_request_kind_key/label/detail`，无损保留旧主字段快照。
 - 新写入与查询 facet 全部切到 canonical 分类，不再产生 path/tool-name 动态 key。
 - 保留原始 `method/path/query/request_body/response_body` 事实字段，并把必要的 path / method / tool-name 细节放入 canonical `request_kind_detail`。
-- 提供独立 backfill binary，按批把两张日志表的历史主字段 canonical 化，同时保留 legacy 快照，避免启动迁移重写大表。
+- 提供独立 backfill binary，并要求启动初始化在对外提供服务前补齐未完成批次，确保服务启动成功即可视为 request kind 历史升级完成。
 
 ### Non-goals
 
@@ -43,7 +43,7 @@
 - `src/store/mod.rs`
   - 两张日志表 schema 新增 `legacy_request_kind_*`。
   - 查询、facet、过滤统一按 canonical kind 工作。
-  - 新增历史 canonical backfill 所需的持久化/游标辅助能力。
+  - 新增历史 canonical backfill 所需的持久化/游标辅助能力，并在启动初始化中强制收敛未完成批次。
 - `src/server/{dto,proxy}.rs`
   - DTO/view 暴露 canonical `requestKind*` 与新增 `legacyRequestKind*` 审计字段。
   - `request_kind` 查询参数兼容 legacy alias，但默认命中 canonical 结果。
@@ -127,13 +127,19 @@
 
 ## 回填策略
 
-- 使用独立维护二进制 `request_kind_canonical_backfill`，不在启动流程里做全量重写。
-- 两张表分别按 `id` 升序批处理，并用 meta 高水位游标支持断点续跑。
+- request kind 历史 canonical 化必须作为数据库迁移门禁执行：`initialize_schema()` 发现迁移未完成时，必须在返回前完成该一次性迁移，服务不得带着未升级历史数据启动成功。
+- 迁移状态必须可在数据库 `meta` 表中确认，并显式区分 `running` / `failed` / `done`；迁移 claim 必须避免并发启动时的重入。
+- `running` 状态除时间戳外还必须持久化当前迁移 owner 的进程标识；启动侧仅在 owner 仍存活且 lease 仍新鲜时把该状态视为“别的实例正在执行”，owner 已死亡时允许立即接管，而不是固定等待 stale timeout。
+- 迁移 claim 必须同时把 `request_logs` 与 `auth_token_logs` 的目标高水位持久化到 `meta`；单次迁移只能处理到该快照边界，重启续跑时复用同一边界，避免追逐启动后的新写入而无法收敛。
+- 使用独立维护二进制 `request_kind_canonical_backfill` 作为手动 repair / dry-run 入口；它与数据库迁移共享同一套 backfill 逻辑。
+- 两张表分别按 `id` 升序批处理，并用 meta 高水位游标支持断点续跑；迁移完成后再写入单独的 done marker，后续启动不再重复执行该历史迁移。
+- 若启动期 schema self-heal 或结构重建重新补回 request kind 相关列，必须先清除该迁移的 done / cursor / upper-bound markers，再重新执行同一数据库迁移，避免旧 done marker 让历史行保持空白 request kind。
 - 每批处理规则：
   - 计算该行 canonical request kind。
   - 若主字段与 canonical 三元组不同且 legacy 快照为空，则先写入 `legacy_request_kind_*`。
   - 将主字段回写成 canonical 三元组。
   - 不改 `method/path/query/request_body/response_body/failure_kind/business_credits/key_effect_*`。
+- 批次事务若命中瞬时 `SQLITE_BUSY` / `SQLITE_LOCKED`，必须在迁移内部重试并续跑同一批，而不是把服务启动直接打断。
 - binary 必须幂等：重复运行不覆盖已存在的 legacy 快照，也不重复改写已 canonical 化的行。
 
 ## 验收标准（Acceptance Criteria）
@@ -180,13 +186,16 @@
 - 后端分类器与 SQL 聚合规则已统一到同一白名单 catalog；`mcp:raw:*`、`api:raw:*`、`mcp:tool:*` 不再作为主分类继续生成或聚合。
 - 日志 DTO / API 已新增 `legacyRequestKind*` 审计字段；`requestKindOptions` 与 `request_kind` 过滤都按 canonical key 工作，同时兼容 legacy alias。
 - 第一方前端 catalog、badge 与筛选逻辑已切换到 canonical 口径，不再把历史 per-path / per-tool 脏值展示为独立请求类型。
-- 独立二进制 `request_kind_canonical_backfill` 已实现批量、幂等、可断点续跑的历史 canonical 化流程，并保留 legacy 快照。
+- 独立二进制 `request_kind_canonical_backfill` 与数据库迁移共享批量、幂等、可断点续跑的历史 canonical 化逻辑，并保留 legacy 快照。
 - `request_logs` 的 legacy 快照列现在会在启动迁移尾部再次自愈补齐；`request_kind_canonical_backfill` 也会在执行前自检两张日志表的 legacy 列，避免历史库因缺列卡死回填。
+- request kind 数据库迁移的 `running` state 现在会把 owner PID 一起落库；重启时只有“lease 新鲜且 owner 仍活着”才会继续等待，从而避免已崩溃 owner 留下固定 5 分钟冷启动窗口。
+- request kind 历史回填批次现在对瞬时 SQLite 写锁冲突做内部重试，claim 阶段与实际 batch write 阶段都不会因为短暂 `busy/locked` 直接终止启动。
 
 ## 变更记录
 
 - 2026-03-24: 落地 canonical request kind catalog、legacy 快照列、兼容过滤、独立 backfill binary，并补齐后端/前端回归测试与本地验证。
 - 2026-03-24: 补齐 `request_logs` legacy 快照列的启动迁移自愈与 backfill 缺列自检，覆盖共享测试机复制的生产历史库形态。
+- 2026-03-28: 兼容窗口收尾改由 follow-up spec `pnfzs-request-kind-legacy-snapshot-removal` 承接，删除 legacy snapshot 列与对外字段不再属于本 spec 范围。
 
 ## 风险 / 假设
 

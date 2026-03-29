@@ -1,28 +1,19 @@
-import { Icon } from "./lib/icons";
-import { StatusBadge, type StatusTone } from "./components/StatusBadge";
-import AdminRecentRequestsPanel, {
-  type RecentRequestsOutcomeFilter,
-} from "./components/AdminRecentRequestsPanel";
-import AdminTablePagination from "./components/AdminTablePagination";
-import AdminLoadingRegion from "./components/AdminLoadingRegion";
-import AdminTableShell from "./components/AdminTableShell";
-import { ApiKeysValidationDialog } from "./components/ApiKeysValidationDialog";
-import JobKeyLink from "./components/JobKeyLink";
-import ManualCopyBubble from "./components/ManualCopyBubble";
-import QuotaRangeField from "./components/QuotaRangeField";
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
-import { createPortal } from "react-dom";
-import ThemeToggle from "./components/ThemeToggle";
-import AdminReturnToConsoleLink from "./components/AdminReturnToConsoleLink";
-import AdminPanelHeader from "./components/AdminPanelHeader";
-import { Button } from "./components/ui/button";
+import { Icon } from './lib/icons'
+import { StatusBadge, type StatusTone } from './components/StatusBadge'
+import AdminRecentRequestsPanel, { type RecentRequestsOutcomeFilter } from './components/AdminRecentRequestsPanel'
+import AdminTablePagination from './components/AdminTablePagination'
+import AdminLoadingRegion from './components/AdminLoadingRegion'
+import AdminTableShell from './components/AdminTableShell'
+import { ApiKeysValidationDialog } from './components/ApiKeysValidationDialog'
+import JobKeyLink from './components/JobKeyLink'
+import ManualCopyBubble from './components/ManualCopyBubble'
+import QuotaRangeField from './components/QuotaRangeField'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
+import ThemeToggle from './components/ThemeToggle'
+import AdminReturnToConsoleLink from './components/AdminReturnToConsoleLink'
+import AdminPanelHeader from './components/AdminPanelHeader'
+import { Button } from './components/ui/button'
 import {
   Dialog,
   DialogContent,
@@ -30,9 +21,12 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "./components/ui/dialog";
-import { Drawer, DrawerContent } from "./components/ui/drawer";
-import { Input } from "./components/ui/input";
+} from './components/ui/dialog'
+import {
+  Drawer,
+  DrawerContent,
+} from './components/ui/drawer'
+import { Input } from './components/ui/input'
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -41,53 +35,35 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from "./components/ui/dropdown-menu";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "./components/ui/select";
-import SegmentedTabs from "./components/ui/SegmentedTabs";
-import { Card } from "./components/ui/card";
-import { Badge } from "./components/ui/badge";
-import { Switch } from "./components/ui/switch";
-import { Table } from "./components/ui/table";
-import { Textarea } from "./components/ui/textarea";
-import { AnchoredInfoDisclosure } from "./components/ui/anchored-info-disclosure";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "./components/ui/tooltip";
-import TokenUsageHeader from "./components/TokenUsageHeader";
-import TokenDetail from "./pages/TokenDetail";
-import {
-  ArrowDown,
-  ArrowUp,
-  ArrowUpDown,
-  ChartColumnIncreasing,
-} from "lucide-react";
-import AdminShell, {
-  type AdminNavItem,
-  type AdminNavTarget,
-} from "./admin/AdminShell";
-import DashboardOverview from "./admin/DashboardOverview";
+} from './components/ui/dropdown-menu'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './components/ui/select'
+import SegmentedTabs from './components/ui/SegmentedTabs'
+import { Card } from './components/ui/card'
+import { Badge } from './components/ui/badge'
+import { Switch } from './components/ui/switch'
+import { Table } from './components/ui/table'
+import { Textarea } from './components/ui/textarea'
+import { AnchoredInfoDisclosure } from './components/ui/anchored-info-disclosure'
+import { Tooltip, TooltipContent, TooltipTrigger } from './components/ui/tooltip'
+import TokenDetail from './pages/TokenDetail'
+import { ArrowDown, ArrowUp, ArrowUpDown, ChartColumnIncreasing } from 'lucide-react'
+import AdminShell, { type AdminNavItem, type AdminNavTarget } from './admin/AdminShell'
+import DashboardOverview from './admin/DashboardOverview'
+import { createDashboardTodayMetrics } from './admin/dashboardTodayMetrics'
+import { fetchAllMonthlyBrokenKeyItems } from './admin/fetchAllMonthlyBrokenKeyItems'
 import ForwardProxySettingsModule, {
   type ForwardProxyDraft,
   type ForwardProxyValidationEntry,
-} from "./admin/ForwardProxySettingsModule";
-import { fetchAllMonthlyBrokenKeyItems } from "./admin/fetchAllMonthlyBrokenKeyItems";
-import KeyStickyPanels from "./admin/KeyStickyPanels";
-import ModulePlaceholder from "./admin/ModulePlaceholder";
+} from './admin/ForwardProxySettingsModule'
+import KeyStickyPanels from './admin/KeyStickyPanels'
+import ModulePlaceholder from './admin/ModulePlaceholder'
 import {
   type QueryLoadState,
   getBlockingLoadState,
   getRefreshingLoadState,
   isBlockingLoadState,
   isRefreshingLoadState,
-} from "./admin/queryLoadState";
+} from './admin/queryLoadState'
 import {
   buildQuotaSliderTrack,
   clampQuotaSliderStageIndex,
@@ -99,7 +75,7 @@ import {
   parseQuotaDraftValue,
   type QuotaSliderField,
   type QuotaSliderSeed,
-} from "./admin/quotaSlider";
+} from './admin/quotaSlider'
 import {
   type AdminUsersCollectionView,
   type AdminModuleId,
@@ -111,28 +87,28 @@ import {
   parseAdminPath,
   buildAdminUsersPath,
   tokenDetailPath,
-  tokenLeaderboardPath,
+  unboundTokenUsagePath,
   userDetailPath,
   userTagCreatePath,
   userTagEditPath,
   userTagsPath,
   userUsagePath,
-} from "./admin/routes";
-import { useLanguage, useTranslate, type AdminTranslations } from "./i18n";
-import { extractApiKeyImportEntriesFromText } from "./lib/api-key-extract";
-import { ADMIN_USER_CONSOLE_HREF } from "./lib/adminUserConsoleEntry";
+} from './admin/routes'
+import { useLanguage, useTranslate, type AdminTranslations } from './i18n'
+import { extractApiKeyImportEntriesFromText } from './lib/api-key-extract'
+import { ADMIN_USER_CONSOLE_HREF } from './lib/adminUserConsoleEntry'
 import {
   copyText,
   isCopyIntentKey,
   selectAllReadonlyText,
   shouldPrewarmSecretCopy,
   type CopyTextOptions,
-} from "./lib/clipboard";
+} from './lib/clipboard'
 import {
   operationalClassGuidance,
   operationalClassLabel,
   operationalClassTone,
-} from "./lib/logOperationalClass";
+} from './lib/logOperationalClass'
 import {
   fetchApiKeys,
   fetchApiKeySecret,
@@ -146,6 +122,7 @@ import {
   clearApiKeyQuarantine,
   fetchProfile,
   fetchRequestLogs,
+  fetchRequestLogDetails,
   fetchRequestLogsPage,
   fetchSummary,
   fetchSummaryWindows,
@@ -166,13 +143,10 @@ import {
   setTokenEnabled,
   updateTokenNote,
   createTokensBatch,
-  fetchTokenUsageLeaderboard,
-  type TokenUsageLeaderboardItem,
-  type TokenLeaderboardPeriod,
-  type TokenLeaderboardFocus,
   type Paginated,
   fetchKeyMetrics,
   fetchKeyLogsPage,
+  fetchKeyLogDetails,
   fetchKeyStickyNodes,
   fetchKeyStickyUsers,
   type KeySummary,
@@ -184,25 +158,28 @@ import {
   type AdminUsersSortField,
   type TokenGroup,
   fetchAdminUsers,
+  fetchAdminUserBrokenKeys,
+  fetchAdminUnboundTokenUsage,
   fetchAdminUserDetail,
   fetchAdminRegistrationSettings,
+  fetchTokenBrokenKeys,
   updateAdminUserQuota,
   updateAdminUserBrokenKeyLimit,
   updateAdminRegistrationSettings,
-  fetchAdminUserBrokenKeys,
   fetchAdminUserTags,
   createAdminUserTag,
   updateAdminUserTag,
   deleteAdminUserTag,
   bindAdminUserTag,
   unbindAdminUserTag,
-  fetchTokenBrokenKeys,
   type AdminUserSummary,
+  type AdminUnboundTokenUsageSortField,
+  type AdminUnboundTokenUsageSummary,
   type AdminUserDetail,
   type AdminUserTag,
   type AdminUserTagBinding,
-  type MonthlyBrokenKeyDetail,
   type SortDirection,
+  type MonthlyBrokenKeyDetail,
   type ForwardProxySettings,
   type ForwardProxyStatsResponse,
   type ForwardProxyDashboardSummaryResponse,
@@ -216,12 +193,12 @@ import {
   revalidateForwardProxyWithProgress,
   updateForwardProxySettingsWithProgress,
   validateForwardProxyCandidateWithProgress,
-} from "./api";
+} from './api'
 import {
   createDialogProgressState,
   type ForwardProxyDialogProgressState,
   updateDialogProgressState,
-} from "./admin/forwardProxyDialogProgress";
+} from './admin/forwardProxyDialogProgress'
 import {
   buildRequestKindQuickFilterSelection,
   defaultTokenLogRequestKindQuickFilters,
@@ -232,238 +209,205 @@ import {
   type TokenLogRequestKindOption,
   type TokenLogRequestKindQuickBilling,
   type TokenLogRequestKindQuickProtocol,
-} from "./tokenLogRequestKinds";
-import { finalizeForwardProxyRevalidate } from "./admin/forwardProxyRevalidate";
+} from './tokenLogRequestKinds'
+import { finalizeForwardProxyRevalidate } from './admin/forwardProxyRevalidate'
 
-const REFRESH_INTERVAL_MS = 30_000;
-const LOGS_PER_PAGE = 20;
-const LOGS_MAX_PAGES = 10;
-const DASHBOARD_RECENT_LOGS_PER_PAGE = 64;
-const MONTHLY_BROKEN_DRAWER_PAGE_SIZE = 100;
-const DASHBOARD_RECENT_JOBS_PER_PAGE = 20;
-const DEFAULT_KEYS_PER_PAGE = 20;
-const USERS_PER_PAGE = 20;
+const REFRESH_INTERVAL_MS = 30_000
+const LOGS_PER_PAGE = 20
+const LOGS_MAX_PAGES = 10
+const DASHBOARD_RECENT_LOGS_PER_PAGE = 64
+const DASHBOARD_RECENT_JOBS_PER_PAGE = 20
+const DEFAULT_KEYS_PER_PAGE = 20
+const USERS_PER_PAGE = 20
 // Auto-collapse behavior for the API keys batch overlay (empty textarea only):
 // The user wants "delay + close animation" to total 500ms.
-const KEYS_BATCH_CLOSE_ANIMATION_MS = 200;
-const KEYS_BATCH_AUTO_COLLAPSE_TOTAL_MS = 500;
-const KEYS_BATCH_AUTO_COLLAPSE_DELAY_MS = Math.max(
-  0,
-  KEYS_BATCH_AUTO_COLLAPSE_TOTAL_MS - KEYS_BATCH_CLOSE_ANIMATION_MS,
-);
-const API_KEYS_IMPORT_CHUNK_SIZE = 1000;
-const DASHBOARD_EXHAUSTED_KEYS_PAGE_SIZE = 5;
-const DASHBOARD_TOKENS_PAGE_SIZE = 100;
-const DASHBOARD_TOKENS_MAX_PAGES = 10;
-const USER_TAG_DISPLAY_LIMIT = 3;
-const NEW_USER_TAG_CARD_ID = "__new__";
-const ADMIN_USERS_DEFAULT_SORT_FIELD: AdminUsersSortField = "lastLoginAt";
-const ADMIN_USERS_DEFAULT_SORT_ORDER: SortDirection = "desc";
+const KEYS_BATCH_CLOSE_ANIMATION_MS = 200
+const KEYS_BATCH_AUTO_COLLAPSE_TOTAL_MS = 500
+const KEYS_BATCH_AUTO_COLLAPSE_DELAY_MS = Math.max(0, KEYS_BATCH_AUTO_COLLAPSE_TOTAL_MS - KEYS_BATCH_CLOSE_ANIMATION_MS)
+const API_KEYS_IMPORT_CHUNK_SIZE = 1000
+const DASHBOARD_EXHAUSTED_KEYS_PAGE_SIZE = 5
+const DASHBOARD_TOKENS_PAGE_SIZE = 100
+const DASHBOARD_TOKENS_MAX_PAGES = 10
+const USER_TAG_DISPLAY_LIMIT = 3
+const MONTHLY_BROKEN_DRAWER_PAGE_SIZE = 100
+const NEW_USER_TAG_CARD_ID = '__new__'
+const ADMIN_USERS_DEFAULT_SORT_FIELD: AdminUsersSortField = 'lastLoginAt'
+const ADMIN_USERS_DEFAULT_SORT_ORDER: SortDirection = 'desc'
 const ADMIN_USERS_SORT_FIELDS: readonly AdminUsersSortField[] = [
-  "hourlyAnyUsed",
-  "quotaHourlyUsed",
-  "quotaDailyUsed",
-  "quotaMonthlyUsed",
-  "dailySuccessRate",
-  "monthlySuccessRate",
-  "monthlyBrokenCount",
-  "lastActivity",
-  "lastLoginAt",
-];
+  'hourlyAnyUsed',
+  'quotaHourlyUsed',
+  'quotaDailyUsed',
+  'quotaMonthlyUsed',
+  'dailySuccessRate',
+  'monthlySuccessRate',
+  'monthlyBrokenCount',
+  'lastActivity',
+  'lastLoginAt',
+]
 const ADMIN_USERS_OVERVIEW_SORT_FIELDS = new Set<AdminUsersSortField>([
-  "quotaDailyUsed",
-  "quotaMonthlyUsed",
-  "lastActivity",
-  "lastLoginAt",
-]);
+  'quotaDailyUsed',
+  'quotaMonthlyUsed',
+  'lastActivity',
+  'lastLoginAt',
+])
+const ADMIN_UNBOUND_TOKEN_USAGE_DEFAULT_SORT_FIELD: AdminUnboundTokenUsageSortField = 'lastUsedAt'
+const ADMIN_UNBOUND_TOKEN_USAGE_DEFAULT_SORT_ORDER: SortDirection = 'desc'
+const ADMIN_UNBOUND_TOKEN_USAGE_SORT_FIELDS: readonly AdminUnboundTokenUsageSortField[] = [
+  'hourlyAnyUsed',
+  'quotaHourlyUsed',
+  'quotaDailyUsed',
+  'quotaMonthlyUsed',
+  'dailySuccessRate',
+  'monthlySuccessRate',
+  'lastUsedAt',
+]
 
-type UserQuotaSnapshot = Record<QuotaSliderField, QuotaSliderSeed>;
+type UserQuotaSnapshot = Record<QuotaSliderField, QuotaSliderSeed>
 
 type UserTagFormState = {
-  tagId: string | null;
-  name: string;
-  displayName: string;
-  icon: string;
-  effectKind: string;
-  hourlyAnyDelta: string;
-  hourlyDelta: string;
-  dailyDelta: string;
-  monthlyDelta: string;
-};
+  tagId: string | null
+  name: string
+  displayName: string
+  icon: string
+  effectKind: string
+  hourlyAnyDelta: string
+  hourlyDelta: string
+  dailyDelta: string
+  monthlyDelta: string
+}
 
-type UserTagLike = Pick<
-  AdminUserTagBinding,
-  "displayName" | "icon" | "systemKey" | "effectKind"
-> & {
-  source?: string | null;
-};
+type UserTagLike = Pick<AdminUserTagBinding, 'displayName' | 'icon' | 'systemKey' | 'effectKind'> & {
+  source?: string | null
+}
 
-type DashboardSiteStatusState = DashboardSiteStatusSnapshot;
+type DashboardSiteStatusState = DashboardSiteStatusSnapshot
 type DashboardTokenSnapshot =
-  | { kind: "ok"; items: AuthToken[]; truncated: boolean }
-  | { kind: "error" };
+  | { kind: 'ok'; items: AuthToken[]; truncated: boolean }
+  | { kind: 'error' }
 type DashboardJobsSnapshot =
-  | { kind: "ok"; data: Paginated<JobLogView> }
-  | { kind: "error" };
+  | { kind: 'ok'; data: Paginated<JobLogView> }
+  | { kind: 'error' }
 
 const EMPTY_USER_TAG_FORM: UserTagFormState = {
   tagId: null,
-  name: "",
-  displayName: "",
-  icon: "",
-  effectKind: "quota_delta",
-  hourlyAnyDelta: "0",
-  hourlyDelta: "0",
-  dailyDelta: "0",
-  monthlyDelta: "0",
-};
+  name: '',
+  displayName: '',
+  icon: '',
+  effectKind: 'quota_delta',
+  hourlyAnyDelta: '0',
+  hourlyDelta: '0',
+  dailyDelta: '0',
+  monthlyDelta: '0',
+}
 
 function splitMultilineEntries(value: string): string[] {
-  const seen = new Set<string>();
-  const entries: string[] = [];
+  const seen = new Set<string>()
+  const entries: string[] = []
   for (const rawLine of value.split(/\r?\n/)) {
-    const normalized = rawLine.trim();
-    if (!normalized || seen.has(normalized)) continue;
-    seen.add(normalized);
-    entries.push(normalized);
+    const normalized = rawLine.trim()
+    if (!normalized || seen.has(normalized)) continue
+    seen.add(normalized)
+    entries.push(normalized)
   }
-  return entries;
+  return entries
 }
 
 function buildUserQuotaSnapshot(detail: AdminUserDetail): UserQuotaSnapshot {
   return {
-    hourlyAnyLimit: createQuotaSliderSeed(
-      "hourlyAnyLimit",
-      detail.hourlyAnyUsed,
-      detail.quotaBase.hourlyAnyLimit,
-    ),
-    hourlyLimit: createQuotaSliderSeed(
-      "hourlyLimit",
-      detail.quotaHourlyUsed,
-      detail.quotaBase.hourlyLimit,
-    ),
-    dailyLimit: createQuotaSliderSeed(
-      "dailyLimit",
-      detail.quotaDailyUsed,
-      detail.quotaBase.dailyLimit,
-    ),
-    monthlyLimit: createQuotaSliderSeed(
-      "monthlyLimit",
-      detail.quotaMonthlyUsed,
-      detail.quotaBase.monthlyLimit,
-    ),
-  };
+    hourlyAnyLimit: createQuotaSliderSeed('hourlyAnyLimit', detail.hourlyAnyUsed, detail.quotaBase.hourlyAnyLimit),
+    hourlyLimit: createQuotaSliderSeed('hourlyLimit', detail.quotaHourlyUsed, detail.quotaBase.hourlyLimit),
+    dailyLimit: createQuotaSliderSeed('dailyLimit', detail.quotaDailyUsed, detail.quotaBase.dailyLimit),
+    monthlyLimit: createQuotaSliderSeed('monthlyLimit', detail.quotaMonthlyUsed, detail.quotaBase.monthlyLimit),
+  }
 }
 
 function clampDisplayedQuota(value: number): number {
-  return Math.max(0, value);
+  return Math.max(0, value)
 }
 
 function formatQuotaLimitValue(value: number): string {
-  return formatNumber(clampDisplayedQuota(value));
+  return formatNumber(clampDisplayedQuota(value))
 }
 
 function formatQuotaUsagePair(used: number, limit: number): string {
-  return `${formatNumber(Math.max(0, used))} / ${formatQuotaLimitValue(limit)}`;
+  return `${formatNumber(Math.max(0, used))} / ${formatQuotaLimitValue(limit)}`
 }
 
 type AdminTableStackedValue = {
-  primary: string;
-  secondary?: string | null;
-  primaryClassName?: string | null;
-};
-
-function quotaUsagePrimaryClassName(
-  used: number,
-  limit: number,
-): string | null {
-  const normalizedUsed = Math.max(0, used);
-  const normalizedLimit = Math.max(0, limit);
-
-  if (normalizedLimit <= 0) {
-    return normalizedUsed > 0 ? "admin-table-value-primary-danger" : null;
-  }
-
-  const usageRatio = normalizedUsed / normalizedLimit;
-  if (usageRatio >= 1) return "admin-table-value-primary-danger";
-  if (usageRatio > 0.9) return "admin-table-value-primary-warning";
-  return null;
+  primary: string
+  secondary?: string | null
+  primaryClassName?: string | null
 }
 
-function formatQuotaStackValue(
-  used: number,
-  limit: number,
-): AdminTableStackedValue {
+function quotaUsagePrimaryClassName(used: number, limit: number): string | null {
+  const normalizedUsed = Math.max(0, used)
+  const normalizedLimit = Math.max(0, limit)
+
+  if (normalizedLimit <= 0) {
+    return normalizedUsed > 0 ? 'admin-table-value-primary-danger' : null
+  }
+
+  const usageRatio = normalizedUsed / normalizedLimit
+  if (usageRatio >= 1) return 'admin-table-value-primary-danger'
+  if (usageRatio > 0.9) return 'admin-table-value-primary-warning'
+  return null
+}
+
+function formatQuotaStackValue(used: number, limit: number): AdminTableStackedValue {
   return {
     primary: formatNumber(Math.max(0, used)),
     secondary: formatQuotaLimitValue(limit),
     primaryClassName: quotaUsagePrimaryClassName(used, limit),
-  };
+  }
 }
 
 function formatSuccessRateStackValue(
   success: number,
   failure: number,
-  language: "en" | "zh",
+  language: 'en' | 'zh',
 ): AdminTableStackedValue {
-  const total = success + failure;
+  const total = success + failure
   return {
     primary: formatPercent(success, total),
-    secondary:
-      language === "zh"
-        ? `失败 ${formatNumber(failure)}`
-        : `Fail ${formatNumber(failure)}`,
-  };
+    secondary: language === 'zh' ? `失败 ${formatNumber(failure)}` : `Fail ${formatNumber(failure)}`,
+  }
 }
 
-function formatCompactSuccessRateValue(
-  success: number,
-  failure: number,
-  language: "en" | "zh",
-): string {
-  const total = success + failure;
-  const rate = formatPercent(success, total);
-  const failureLabel = language === "zh" ? "失败" : "Fail";
-  return `${rate} · ${failureLabel} ${formatNumber(failure)}`;
+function formatCompactSuccessRateValue(success: number, failure: number, language: 'en' | 'zh'): string {
+  const total = success + failure
+  const rate = formatPercent(success, total)
+  const failureLabel = language === 'zh' ? '失败' : 'Fail'
+  return `${rate} · ${failureLabel} ${formatNumber(failure)}`
 }
 
 function formatStackedTimestamp(
   value: number | null,
-  language: "en" | "zh",
+  language: 'en' | 'zh',
 ): AdminTableStackedValue {
   if (!value) {
-    return { primary: "—" };
+    return { primary: '—' }
   }
   return {
-    primary:
-      language === "zh"
-        ? formatDateOnly(value)
-        : dateOnlyFormatter.format(new Date(value * 1000)),
+    primary: formatDateOnly(value, language),
     secondary: formatClockTime(value),
-  };
-}
-
-function monthlyBrokenPrimaryClassName(
-  count: number,
-  limit: number,
-): string | null {
-  if (limit <= 0) {
-    return count > 0 ? "admin-table-value-primary-danger" : null;
   }
-  if (count >= limit) return "admin-table-value-primary-danger";
-  if (count > 0) return "admin-table-value-primary-warning";
-  return null;
 }
 
-function formatMonthlyBrokenStackValue(
-  count: number,
-  limit: number,
-): AdminTableStackedValue {
+function monthlyBrokenPrimaryClassName(count: number, limit: number): string | null {
+  if (limit <= 0) {
+    return count > 0 ? 'admin-table-value-primary-danger' : null
+  }
+  if (count >= limit) return 'admin-table-value-primary-danger'
+  if (count > 0) return 'admin-table-value-primary-warning'
+  return null
+}
+
+function formatMonthlyBrokenStackValue(count: number, limit: number): AdminTableStackedValue {
   return {
     primary: formatNumber(Math.max(0, count)),
     secondary: formatQuotaLimitValue(limit),
     primaryClassName: monthlyBrokenPrimaryClassName(count, limit),
-  };
+  }
 }
 
 function MonthlyBrokenCountTrigger({
@@ -472,55 +416,47 @@ function MonthlyBrokenCountTrigger({
   ariaLabel,
   className,
 }: {
-  count: number;
-  onOpen?: (() => void) | null;
-  ariaLabel: string;
-  className?: string | null;
+  count: number
+  onOpen?: (() => void) | null
+  ariaLabel: string
+  className?: string | null
 }): JSX.Element {
-  const primary = formatNumber(Math.max(0, count));
+  const primary = formatNumber(Math.max(0, count))
   if (count <= 0 || !onOpen) {
-    return (
-      <span
-        className={`admin-table-value-primary${className ? ` ${className}` : ""}`}
-      >
-        {primary}
-      </span>
-    );
+    return <span className={`admin-table-value-primary${className ? ` ${className}` : ''}`}>{primary}</span>
   }
   return (
     <button
       type="button"
-      className={`link-button admin-table-value-link${className ? ` ${className}` : ""}`}
+      className={`link-button admin-table-value-link${className ? ` ${className}` : ''}`}
       onClick={onOpen}
       aria-label={ariaLabel}
     >
       {primary}
     </button>
-  );
+  )
 }
 
 function formatMonthlyBrokenRelatedUsers(
-  users: MonthlyBrokenKeyDetail["relatedUsers"],
+  users: MonthlyBrokenKeyDetail['relatedUsers'],
   emptyLabel: string,
 ): string {
-  if (users.length === 0) return emptyLabel;
-  return users
-    .map((user) => user.displayName || user.username || user.userId)
-    .join(", ");
+  if (users.length === 0) return emptyLabel
+  return users.map((user) => user.displayName || user.username || user.userId).join(', ')
 }
 
 function formatMonthlyBrokenBreaker(
   item: MonthlyBrokenKeyDetail,
   strings: {
-    breakerSystem: string;
-    breakerUnknown: string;
+    breakerSystem: string
+    breakerUnknown: string
   },
 ): string {
-  if (item.breakerUserDisplayName) return item.breakerUserDisplayName;
-  if (item.breakerUserId) return item.breakerUserId;
-  if (item.breakerTokenId) return item.breakerTokenId;
-  if (item.source === "manual") return strings.breakerSystem;
-  return strings.breakerUnknown;
+  if (item.breakerUserDisplayName) return item.breakerUserDisplayName
+  if (item.breakerUserId) return item.breakerUserId
+  if (item.breakerTokenId) return item.breakerTokenId
+  if (item.source === 'manual') return strings.breakerSystem
+  return strings.breakerUnknown
 }
 
 function MonthlyBrokenKeyValue({
@@ -533,16 +469,16 @@ function MonthlyBrokenKeyValue({
   onOpenKey,
   onCopy,
 }: {
-  keyId: string;
-  ungroupedLabel: string;
-  detailLabel: string;
-  copyLabel: string;
-  copiedLabel: string;
-  copyState: "loading" | "copied" | null | undefined;
-  onOpenKey?: (id: string) => void;
-  onCopy: (anchorEl: HTMLButtonElement) => void | Promise<void>;
+  keyId: string
+  ungroupedLabel: string
+  detailLabel: string
+  copyLabel: string
+  copiedLabel: string
+  copyState: 'loading' | 'copied' | null | undefined
+  onOpenKey?: (id: string) => void
+  onCopy: (anchorEl: HTMLButtonElement) => void | Promise<void>
 }): JSX.Element {
-  const copyText = copyState === "copied" ? copiedLabel : copyLabel;
+  const copyText = copyState === 'copied' ? copiedLabel : copyLabel
   return (
     <div className="monthly-broken-key-value">
       <JobKeyLink
@@ -555,51 +491,58 @@ function MonthlyBrokenKeyValue({
       />
       <Button
         type="button"
-        variant={copyState === "copied" ? "success" : "ghost"}
+        variant={copyState === 'copied' ? 'success' : 'ghost'}
         size="icon"
         className="monthly-broken-key-copy-button shadow-none"
         title={copyText}
         aria-label={copyText}
         onClick={(event) => void onCopy(event.currentTarget)}
-        disabled={copyState === "loading"}
+        disabled={copyState === 'loading'}
       >
         <Icon
-          icon={copyState === "copied" ? "mdi:check" : "mdi:content-copy"}
+          icon={copyState === 'copied' ? 'mdi:check' : 'mdi:content-copy'}
           width={16}
           height={16}
           aria-hidden="true"
         />
       </Button>
     </div>
-  );
+  )
 }
 
-function isAdminUsersSortField(
-  value: string | null,
-): value is AdminUsersSortField {
-  return (
-    value != null &&
-    ADMIN_USERS_SORT_FIELDS.includes(value as AdminUsersSortField)
-  );
-}
-
-function formatKeyGroupName(
-  group: string | null | undefined,
-  ungroupedLabel: string,
+function formatUnboundTokenIdentityMeta(
+  note: string | null,
+  group: string | null,
+  groupLabel: string,
 ): string {
-  const normalized = group?.trim() ?? "";
-  return normalized.length > 0 ? normalized : ungroupedLabel;
+  const parts: string[] = []
+  const normalizedNote = note?.trim() ?? ''
+  const normalizedGroup = group?.trim() ?? ''
+  if (normalizedNote) parts.push(normalizedNote)
+  if (normalizedGroup) parts.push(`${groupLabel} ${normalizedGroup}`)
+  return parts.join(' · ') || '—'
+}
+
+function isAdminUsersSortField(value: string | null): value is AdminUsersSortField {
+  return value != null && ADMIN_USERS_SORT_FIELDS.includes(value as AdminUsersSortField)
+}
+
+function isAdminUnboundTokenUsageSortField(value: string | null): value is AdminUnboundTokenUsageSortField {
+  return value != null && ADMIN_UNBOUND_TOKEN_USAGE_SORT_FIELDS.includes(value as AdminUnboundTokenUsageSortField)
+}
+
+function formatKeyGroupName(group: string | null | undefined, ungroupedLabel: string): string {
+  const normalized = group?.trim() ?? ''
+  return normalized.length > 0 ? normalized : ungroupedLabel
 }
 
 function formatRegistrationValue(value: string | null | undefined): string {
-  const normalized = value?.trim() ?? "";
-  return normalized.length > 0 ? normalized : "—";
+  const normalized = value?.trim() ?? ''
+  return normalized.length > 0 ? normalized : '—'
 }
 
 function toggleSelection(values: string[], value: string): string[] {
-  return values.includes(value)
-    ? values.filter((item) => item !== value)
-    : [...values, value];
+  return values.includes(value) ? values.filter((item) => item !== value) : [...values, value]
 }
 
 function summarizeFilterSelection(
@@ -608,246 +551,241 @@ function summarizeFilterSelection(
   allLabel: string,
   selectedSuffix: string,
 ): string {
-  if (selectedLabels.length === 0) return `${label}: ${allLabel}`;
-  if (selectedLabels.length === 1) return `${label}: ${selectedLabels[0]}`;
-  return `${label}: ${selectedLabels.length} ${selectedSuffix}`;
+  if (selectedLabels.length === 0) return `${label}: ${allLabel}`
+  if (selectedLabels.length === 1) return `${label}: ${selectedLabels[0]}`
+  return `${label}: ${selectedLabels.length} ${selectedSuffix}`
 }
 
 const adminTableStackStyle = {
-  display: "flex",
-  flexDirection: "column",
+  display: 'flex',
+  flexDirection: 'column',
   gap: 4,
   minWidth: 0,
-} as const;
+} as const
 
 const adminTableFieldStyle = {
-  whiteSpace: "nowrap",
+  whiteSpace: 'nowrap',
   lineHeight: 1.35,
-} as const;
+} as const
 
 const adminTableSecondaryFieldStyle = {
   ...adminTableFieldStyle,
-  fontSize: "0.92em",
+  fontSize: '0.92em',
   opacity: 0.68,
-} as const;
+} as const
 
 const adminTableInlineFieldStyle = {
-  display: "inline-flex",
-  alignItems: "center",
+  display: 'inline-flex',
+  alignItems: 'center',
   gap: 8,
-  whiteSpace: "nowrap",
+  whiteSpace: 'nowrap',
   lineHeight: 1.35,
-  position: "relative",
+  position: 'relative',
   paddingRight: 40,
-} as const;
+} as const
 
 const adminTableHeaderStackStyle = {
-  display: "flex",
-  flexDirection: "column",
+  display: 'flex',
+  flexDirection: 'column',
   gap: 2,
   minHeight: 40,
-  justifyContent: "center",
-} as const;
+  justifyContent: 'center',
+} as const
 
 const keysUtilityRowStyle = {
-  display: "flex",
-  alignItems: "stretch",
-  justifyContent: "space-between",
+  display: 'flex',
+  alignItems: 'stretch',
+  justifyContent: 'space-between',
   gap: 16,
-  flexWrap: "wrap",
+  flexWrap: 'wrap',
   marginBottom: 16,
-} as const;
+} as const
 
 const keysFilterClusterStyle = {
-  display: "flex",
-  alignItems: "center",
+  display: 'flex',
+  alignItems: 'center',
   gap: 8,
-  flexWrap: "wrap",
-  flex: "1 1 360px",
+  flexWrap: 'wrap',
+  flex: '1 1 360px',
   minWidth: 260,
-} as const;
+} as const
 
 const keysQuickAddCardStyle = {
-  flex: "0 1 420px",
+  flex: '0 1 420px',
   minWidth: 300,
-  width: "min(420px, 100%)",
+  width: 'min(420px, 100%)',
   padding: 0,
-} as const;
+} as const
 
 const keysQuickAddActionsStyle = {
-  display: "flex",
-  alignItems: "center",
+  display: 'flex',
+  alignItems: 'center',
   gap: 8,
-  flexWrap: "nowrap",
-  width: "100%",
-} as const;
+  flexWrap: 'nowrap',
+  width: '100%',
+} as const
 
 function formatSignedQuotaDelta(value: number): string {
   if (value > 0) {
-    return `+${formatNumber(value)}`;
+    return `+${formatNumber(value)}`
   }
-  return formatNumber(value);
+  return formatNumber(value)
 }
 
 function getAdminUsersQueryFromLocation(): string {
-  return new URLSearchParams(window.location.search).get("q")?.trim() ?? "";
+  return new URLSearchParams(window.location.search).get('q')?.trim() ?? ''
 }
 
 function getAdminUsersTagFilterFromLocation(): string | null {
-  const tagId =
-    new URLSearchParams(window.location.search).get("tagId")?.trim() ?? "";
-  return tagId.length > 0 ? tagId : null;
+  const tagId = new URLSearchParams(window.location.search).get('tagId')?.trim() ?? ''
+  return tagId.length > 0 ? tagId : null
 }
 
 function getAdminUsersPageFromLocation(): number {
-  const rawPage =
-    new URLSearchParams(window.location.search).get("page")?.trim() ?? "";
-  const parsedPage = Number.parseInt(rawPage, 10);
-  return Number.isFinite(parsedPage) && parsedPage > 1 ? parsedPage : 1;
+  const rawPage = new URLSearchParams(window.location.search).get('page')?.trim() ?? ''
+  const parsedPage = Number.parseInt(rawPage, 10)
+  return Number.isFinite(parsedPage) && parsedPage > 1 ? parsedPage : 1
 }
 
 function getAdminUsersSortFromLocation(): AdminUsersSortField | null {
-  const rawSort =
-    new URLSearchParams(window.location.search).get("sort")?.trim() ?? "";
-  return isAdminUsersSortField(rawSort) ? rawSort : null;
+  const rawSort = new URLSearchParams(window.location.search).get('sort')?.trim() ?? ''
+  return isAdminUsersSortField(rawSort) ? rawSort : null
 }
 
 function getAdminUsersSortDirectionFromLocation(): SortDirection | null {
-  if (getAdminUsersSortFromLocation() == null) return null;
-  const rawOrder = new URLSearchParams(window.location.search)
-    .get("order")
-    ?.trim();
-  return rawOrder === "asc" ? "asc" : "desc";
+  if (getAdminUsersSortFromLocation() == null) return null
+  const rawOrder = new URLSearchParams(window.location.search).get('order')?.trim()
+  return rawOrder === 'asc' ? 'asc' : 'desc'
 }
 
 function getAdminUsersCollectionFromLocation(): AdminUsersCollectionView {
-  return new URLSearchParams(window.location.search).get("view") === "usage"
-    ? "usage"
-    : "users";
+  return new URLSearchParams(window.location.search).get('view') === 'usage' ? 'usage' : 'users'
 }
 
-function isAdminUsersOverviewSortField(
-  value: AdminUsersSortField | null,
-): boolean {
-  return value != null && ADMIN_USERS_OVERVIEW_SORT_FIELDS.has(value);
+function getAdminUnboundTokenUsageQueryFromLocation(): string {
+  return new URLSearchParams(window.location.search).get('q')?.trim() ?? ''
+}
+
+function getAdminUnboundTokenUsagePageFromLocation(): number {
+  const rawPage = new URLSearchParams(window.location.search).get('page')?.trim() ?? ''
+  const parsedPage = Number.parseInt(rawPage, 10)
+  return Number.isFinite(parsedPage) && parsedPage > 1 ? parsedPage : 1
+}
+
+function getAdminUnboundTokenUsageSortFromLocation(): AdminUnboundTokenUsageSortField | null {
+  const rawSort = new URLSearchParams(window.location.search).get('sort')?.trim() ?? ''
+  return isAdminUnboundTokenUsageSortField(rawSort) ? rawSort : null
+}
+
+function getAdminUnboundTokenUsageSortDirectionFromLocation(): SortDirection | null {
+  if (getAdminUnboundTokenUsageSortFromLocation() == null) return null
+  const rawOrder = new URLSearchParams(window.location.search).get('order')?.trim()
+  return rawOrder === 'asc' ? 'asc' : 'desc'
+}
+
+function getAdminTokensCollectionFromLocation(): 'tokens' | 'unbound-usage' {
+  return new URLSearchParams(window.location.search).get('view') === 'unbound-usage'
+    ? 'unbound-usage'
+    : 'tokens'
+}
+
+function isAdminUsersOverviewSortField(value: AdminUsersSortField | null): boolean {
+  return value != null && ADMIN_USERS_OVERVIEW_SORT_FIELDS.has(value)
 }
 
 function getAdminKeysPageFromLocation(): number {
-  const rawPage =
-    new URLSearchParams(window.location.search).get("page")?.trim() ?? "";
-  const parsedPage = Number.parseInt(rawPage, 10);
-  return Number.isFinite(parsedPage) && parsedPage > 1 ? parsedPage : 1;
+  const rawPage = new URLSearchParams(window.location.search).get('page')?.trim() ?? ''
+  const parsedPage = Number.parseInt(rawPage, 10)
+  return Number.isFinite(parsedPage) && parsedPage > 1 ? parsedPage : 1
 }
 
 function getAdminKeysPerPageFromLocation(): number {
-  const rawPerPage =
-    new URLSearchParams(window.location.search).get("perPage")?.trim() ?? "";
-  const parsedPerPage = Number.parseInt(rawPerPage, 10);
-  if (!Number.isFinite(parsedPerPage)) return DEFAULT_KEYS_PER_PAGE;
-  return Math.min(100, Math.max(1, parsedPerPage));
+  const rawPerPage = new URLSearchParams(window.location.search).get('perPage')?.trim() ?? ''
+  const parsedPerPage = Number.parseInt(rawPerPage, 10)
+  if (!Number.isFinite(parsedPerPage)) return DEFAULT_KEYS_PER_PAGE
+  return Math.min(100, Math.max(1, parsedPerPage))
 }
 
-function getAdminKeysValuesFromLocation(name: "group" | "status"): string[] {
-  const values = new URLSearchParams(window.location.search).getAll(name);
-  const normalized = new Set<string>();
+function getAdminKeysValuesFromLocation(name: 'group' | 'status'): string[] {
+  const values = new URLSearchParams(window.location.search).getAll(name)
+  const normalized = new Set<string>()
   for (const value of values) {
-    const trimmed = value.trim();
-    if (!trimmed && name !== "group") continue;
-    normalized.add(name === "status" ? trimmed.toLowerCase() : trimmed);
+    const trimmed = value.trim()
+    if (!trimmed && name !== 'group') continue
+    normalized.add(name === 'status' ? trimmed.toLowerCase() : trimmed)
   }
-  return Array.from(normalized);
+  return Array.from(normalized)
 }
 
 function getAdminKeysRegistrationIpFromLocation(): string {
-  return (
-    new URLSearchParams(window.location.search).get("registrationIp")?.trim() ??
-    ""
-  );
+  return new URLSearchParams(window.location.search).get('registrationIp')?.trim() ?? ''
 }
 
 function getAdminKeysRegionsFromLocation(): string[] {
-  const values = new URLSearchParams(window.location.search).getAll("region");
-  const normalized = new Set<string>();
+  const values = new URLSearchParams(window.location.search).getAll('region')
+  const normalized = new Set<string>()
   for (const value of values) {
-    const trimmed = value.trim();
-    if (!trimmed) continue;
-    normalized.add(trimmed);
+    const trimmed = value.trim()
+    if (!trimmed) continue
+    normalized.add(trimmed)
   }
-  return Array.from(normalized);
+  return Array.from(normalized)
 }
 
 function getUserTagIconSrc(icon: string | null | undefined): string | null {
-  if (icon === "linuxdo") {
-    return "/linuxdo-logo.svg";
+  if (icon === 'linuxdo') {
+    return '/linuxdo-logo.svg'
   }
-  return null;
+  return null
 }
 
-function isSystemUserTag(tag: {
-  systemKey?: string | null;
-  source?: string | null;
-}): boolean {
-  return Boolean(tag.systemKey) || tag.source === "system_linuxdo";
+function isSystemUserTag(tag: { systemKey?: string | null; source?: string | null }): boolean {
+  return Boolean(tag.systemKey) || tag.source === 'system_linuxdo'
 }
 
 function createUserTagFormState(tag?: AdminUserTag | null): UserTagFormState {
   if (!tag) {
-    return { ...EMPTY_USER_TAG_FORM };
+    return { ...EMPTY_USER_TAG_FORM }
   }
   return {
     tagId: tag.id,
     name: tag.name,
     displayName: tag.displayName,
-    icon: tag.icon ?? "",
+    icon: tag.icon ?? '',
     effectKind: tag.effectKind,
     hourlyAnyDelta: String(tag.hourlyAnyDelta),
     hourlyDelta: String(tag.hourlyDelta),
     dailyDelta: String(tag.dailyDelta),
     monthlyDelta: String(tag.monthlyDelta),
-  };
+  }
 }
 
 function UserTagBadge({
   tag,
   usersStrings,
 }: {
-  tag: UserTagLike;
-  usersStrings: AdminTranslations["users"];
+  tag: UserTagLike
+  usersStrings: AdminTranslations['users']
 }): JSX.Element {
-  const iconSrc = getUserTagIconSrc(tag.icon);
-  const isSystem = isSystemUserTag(tag);
-  const isBlockAll = tag.effectKind === "block_all";
+  const iconSrc = getUserTagIconSrc(tag.icon)
+  const isSystem = isSystemUserTag(tag)
+  const isBlockAll = tag.effectKind === 'block_all'
   const classes = [
-    "user-tag-pill",
-    isSystem ? "user-tag-pill-system" : "",
-    isBlockAll ? "user-tag-pill-block" : "",
+    'user-tag-pill',
+    isSystem ? 'user-tag-pill-system' : '',
+    isBlockAll ? 'user-tag-pill-block' : '',
   ]
     .filter(Boolean)
-    .join(" ");
+    .join(' ')
 
   return (
     <Badge variant="outline" className={classes} title={tag.displayName}>
-      {iconSrc && (
-        <img
-          src={iconSrc}
-          alt=""
-          className="user-tag-pill-icon"
-          aria-hidden="true"
-        />
-      )}
+      {iconSrc && <img src={iconSrc} alt="" className="user-tag-pill-icon" aria-hidden="true" />}
       <span>{tag.displayName}</span>
-      {isSystem && (
-        <span className="user-tag-pill-meta">
-          {usersStrings.catalog.scopeSystemShort}
-        </span>
-      )}
-      {isBlockAll && (
-        <span className="user-tag-pill-meta">
-          {usersStrings.catalog.blockShort}
-        </span>
-      )}
+      {isSystem && <span className="user-tag-pill-meta">{usersStrings.catalog.scopeSystemShort}</span>}
+      {isBlockAll && <span className="user-tag-pill-meta">{usersStrings.catalog.blockShort}</span>}
     </Badge>
-  );
+  )
 }
 
 function UserTagBadgeList({
@@ -856,207 +794,123 @@ function UserTagBadgeList({
   emptyLabel,
   limit = USER_TAG_DISPLAY_LIMIT,
 }: {
-  tags: AdminUserTagBinding[];
-  usersStrings: AdminTranslations["users"];
-  emptyLabel: string;
-  limit?: number;
+  tags: AdminUserTagBinding[]
+  usersStrings: AdminTranslations['users']
+  emptyLabel: string
+  limit?: number
 }): JSX.Element {
   if (tags.length === 0) {
-    return <span className="panel-description">{emptyLabel}</span>;
+    return <span className="panel-description">{emptyLabel}</span>
   }
 
-  const visibleTags = tags.slice(0, limit);
-  const overflow = Math.max(0, tags.length - visibleTags.length);
+  const visibleTags = tags.slice(0, limit)
+  const overflow = Math.max(0, tags.length - visibleTags.length)
 
   return (
     <div className="user-tag-pill-list">
       {visibleTags.map((tag) => (
-        <UserTagBadge
-          key={`${tag.tagId}:${tag.source}`}
-          tag={tag}
-          usersStrings={usersStrings}
-        />
+        <UserTagBadge key={`${tag.tagId}:${tag.source}`} tag={tag} usersStrings={usersStrings} />
       ))}
-      {overflow > 0 && (
-        <Badge variant="outline" className="user-tag-pill-overflow">
-          +{overflow}
-        </Badge>
-      )}
+      {overflow > 0 && <Badge variant="outline" className="user-tag-pill-overflow">+{overflow}</Badge>}
     </div>
-  );
+  )
 }
 
-function leaderboardPrimaryValue(
-  item: TokenUsageLeaderboardItem,
-  period: "day" | "month" | "all",
-  focus: "usage" | "errors" | "other",
-): number {
-  const metrics =
-    period === "day"
-      ? {
-          usage: item.today_total ?? 0,
-          errors: item.today_errors ?? 0,
-          other: item.today_other ?? 0,
-        }
-      : period === "month"
-        ? {
-            usage: item.month_total ?? 0,
-            errors: item.month_errors ?? 0,
-            other: item.month_other ?? 0,
-          }
-        : {
-            usage: item.all_total ?? 0,
-            errors: item.all_errors ?? 0,
-            other: item.all_other ?? 0,
-          };
-  return metrics[focus] ?? 0;
-}
-
-function sortLeaderboard(
-  items: TokenUsageLeaderboardItem[],
-  period: "day" | "month" | "all",
-  focus: "usage" | "errors" | "other",
-): TokenUsageLeaderboardItem[] {
-  return [...items].sort(
-    (a, b) =>
-      leaderboardPrimaryValue(b, period, focus) -
-        leaderboardPrimaryValue(a, period, focus) ||
-      b.total_requests - a.total_requests,
-  );
-}
-
-type MetricKey = "usage" | "errors" | "other";
-
-function pickPrimaryForPeriod(
-  item: TokenUsageLeaderboardItem,
-  period: "day" | "month" | "all",
-  focus: MetricKey,
-): { primaryKey: MetricKey; values: Record<MetricKey, number> } {
-  const values: Record<MetricKey, number> =
-    period === "day"
-      ? {
-          usage: item.today_total ?? 0,
-          errors: item.today_errors ?? 0,
-          other: item.today_other ?? 0,
-        }
-      : period === "month"
-        ? {
-            usage: item.month_total ?? 0,
-            errors: item.month_errors ?? 0,
-            other: item.month_other ?? 0,
-          }
-        : {
-            usage: item.all_total ?? 0,
-            errors: item.all_errors ?? 0,
-            other: item.all_other ?? 0,
-          };
-
-  return { primaryKey: focus, values };
-}
-
-const numberFormatter = new Intl.NumberFormat("en-US", {
+const numberFormatter = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 0,
-});
+})
 
-const percentageFormatter = new Intl.NumberFormat("en-US", {
-  style: "percent",
+const percentageFormatter = new Intl.NumberFormat('en-US', {
+  style: 'percent',
   minimumFractionDigits: 0,
   maximumFractionDigits: 1,
-});
+})
 
 const dateTimeFormatter = new Intl.DateTimeFormat(undefined, {
-  dateStyle: "medium",
-  timeStyle: "medium",
-});
+  dateStyle: 'medium',
+  timeStyle: 'medium',
+})
 
 // Date/time without year for compact "Last Used" rendering
 const dateTimeNoYearFormatter = new Intl.DateTimeFormat(undefined, {
-  month: "short",
-  day: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-  second: "2-digit",
+  month: 'short',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
   hour12: false,
-});
+})
 
-const dateOnlyFormatter = new Intl.DateTimeFormat(undefined, {
-  year: "numeric",
-  month: "short",
-  day: "2-digit",
-});
+const englishDateOnlyFormatter = new Intl.DateTimeFormat('en-US', {
+  year: 'numeric',
+  month: 'short',
+  day: '2-digit',
+})
 
 // Time-only formatter for compact "Updated HH:MM:SS"
 const timeOnlyFormatter = new Intl.DateTimeFormat(undefined, {
-  hour: "2-digit",
-  minute: "2-digit",
-  second: "2-digit",
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
   hour12: false,
-});
+})
 
 const tooltipTimeFormatter = new Intl.DateTimeFormat(undefined, {
-  year: "numeric",
-  month: "short",
-  day: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-  second: "2-digit",
+  year: 'numeric',
+  month: 'short',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
   hour12: false,
   fractionalSecondDigits: 3,
-});
+})
 
 const relativeTimeFormatter = new Intl.RelativeTimeFormat(undefined, {
-  numeric: "auto",
-});
+  numeric: 'auto',
+})
 
 function formatClockTime(value: number | null): string {
-  if (!value) return "—";
-  return timeOnlyFormatter.format(new Date(value * 1000));
+  if (!value) return '—'
+  return timeOnlyFormatter.format(new Date(value * 1000))
 }
 
 function formatTimestampWithMs(value: number | null): string {
-  if (!value) return "—";
-  return tooltipTimeFormatter.format(new Date(value * 1000));
+  if (!value) return '—'
+  return tooltipTimeFormatter.format(new Date(value * 1000))
 }
 
 function formatRelativeTime(value: number | null): string {
-  if (!value) return "—";
-  const nowSeconds = Date.now() / 1000;
-  const diffSeconds = value - nowSeconds;
-  const divisions: Array<{
-    amount: number;
-    unit: Intl.RelativeTimeFormatUnit;
-  }> = [
-    { amount: 60, unit: "second" },
-    { amount: 60, unit: "minute" },
-    { amount: 24, unit: "hour" },
-    { amount: 7, unit: "day" },
-    { amount: 4.34524, unit: "week" },
-    { amount: 12, unit: "month" },
-    { amount: Number.POSITIVE_INFINITY, unit: "year" },
-  ];
+  if (!value) return '—'
+  const nowSeconds = Date.now() / 1000
+  const diffSeconds = value - nowSeconds
+  const divisions: Array<{ amount: number; unit: Intl.RelativeTimeFormatUnit }> = [
+    { amount: 60, unit: 'second' },
+    { amount: 60, unit: 'minute' },
+    { amount: 24, unit: 'hour' },
+    { amount: 7, unit: 'day' },
+    { amount: 4.34524, unit: 'week' },
+    { amount: 12, unit: 'month' },
+    { amount: Number.POSITIVE_INFINITY, unit: 'year' },
+  ]
 
-  let duration = diffSeconds;
+  let duration = diffSeconds
   for (const division of divisions) {
     if (Math.abs(duration) < division.amount) {
-      return relativeTimeFormatter.format(Math.round(duration), division.unit);
+      return relativeTimeFormatter.format(Math.round(duration), division.unit)
     }
-    duration /= division.amount;
+    duration /= division.amount
   }
-  return relativeTimeFormatter.format(Math.round(duration), "year");
+  return relativeTimeFormatter.format(Math.round(duration), 'year')
 }
 
 function formatNumber(value: number): string {
-  return numberFormatter.format(value);
+  return numberFormatter.format(value)
 }
 
 function formatPercent(numerator: number, denominator: number): string {
-  if (denominator === 0) return "—";
-  return percentageFormatter.format(numerator / denominator);
-}
-
-function formatSignedNumber(value: number): string {
-  if (value > 0) return `+${formatNumber(value)}`;
-  return formatNumber(value);
+  if (denominator === 0) return '—'
+  return percentageFormatter.format(numerator / denominator)
 }
 
 function buildWindowSubtitle(
@@ -1064,38 +918,41 @@ function buildWindowSubtitle(
   value: number,
   total: number,
 ): string {
-  return total > 0 ? `${label} · ${formatPercent(value, total)}` : label;
+  return total > 0 ? `${label} · ${formatPercent(value, total)}` : label
 }
 
 function formatTimestamp(value: number | null): string {
   if (!value) {
-    return "—";
+    return '—'
   }
-  return dateTimeFormatter.format(new Date(value * 1000));
+  return dateTimeFormatter.format(new Date(value * 1000))
 }
 
 function formatTimestampNoYear(value: number | null): string {
-  if (!value) return "—";
-  return dateTimeNoYearFormatter.format(new Date(value * 1000));
+  if (!value) return '—'
+  return dateTimeNoYearFormatter.format(new Date(value * 1000))
 }
 
-function formatDateOnly(value: number | null): string {
-  if (!value) return "—";
-  const d = new Date(value * 1000);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+function formatDateOnly(value: number | null, language: 'en' | 'zh'): string {
+  if (!value) return '—'
+  const date = new Date(value * 1000)
+  if (language === 'zh') {
+    const year = date.getFullYear()
+    const month = String(date.getMonth() + 1).padStart(2, '0')
+    const day = String(date.getDate()).padStart(2, '0')
+    return `${year}-${month}-${day}`
+  }
+  return englishDateOnlyFormatter.format(date)
 }
 
-function tokenOwnerPrimary(owner: AuthToken["owner"]): string {
-  if (!owner) return "";
-  return owner.displayName || owner.userId;
+function tokenOwnerPrimary(owner: AuthToken['owner']): string {
+  if (!owner) return ''
+  return owner.displayName || owner.userId
 }
 
-function tokenOwnerSecondary(owner: AuthToken["owner"]): string | null {
-  if (!owner?.username) return null;
-  return `@${owner.username}`;
+function tokenOwnerSecondary(owner: AuthToken['owner']): string | null {
+  if (!owner?.username) return null
+  return `@${owner.username}`
 }
 
 function TokenOwnerValue({
@@ -1104,32 +961,28 @@ function TokenOwnerValue({
   onOpenUser,
   compact = false,
 }: {
-  owner: AuthToken["owner"];
-  emptyLabel: string;
-  onOpenUser: (userId: string) => void;
-  compact?: boolean;
+  owner: AuthToken['owner']
+  emptyLabel: string
+  onOpenUser: (userId: string) => void
+  compact?: boolean
 }): JSX.Element {
   if (!owner) {
-    return <span className="token-owner-empty">{emptyLabel}</span>;
+    return <span className="token-owner-empty">{emptyLabel}</span>
   }
 
-  const secondary = tokenOwnerSecondary(owner);
+  const secondary = tokenOwnerSecondary(owner)
   return (
-    <div
-      className={`token-owner-block${compact ? " token-owner-block-compact" : ""}`}
-    >
+    <div className={`token-owner-block${compact ? ' token-owner-block-compact' : ''}`}>
       <button
         type="button"
-        className={`link-button token-owner-trigger${compact ? " token-owner-trigger-compact" : ""}`}
+        className={`link-button token-owner-trigger${compact ? ' token-owner-trigger-compact' : ''}`}
         onClick={() => onOpenUser(owner.userId)}
       >
         <span className="token-owner-link">{tokenOwnerPrimary(owner)}</span>
-        {secondary ? (
-          <span className="token-owner-secondary">{secondary}</span>
-        ) : null}
+        {secondary ? <span className="token-owner-secondary">{secondary}</span> : null}
       </button>
     </div>
-  );
+  )
 }
 
 function AdminTableValueStack({
@@ -1138,28 +991,20 @@ function AdminTableValueStack({
   primaryClassName,
   className,
 }: {
-  primary: string;
-  secondary?: string | null;
-  primaryClassName?: string | null;
-  className?: string;
+  primary: string
+  secondary?: string | null
+  primaryClassName?: string | null
+  className?: string
 }): JSX.Element {
   return (
-    <div
-      className={`admin-table-value-stack${className ? ` ${className}` : ""}`}
-    >
-      <span
-        className={`admin-table-value-primary${primaryClassName ? ` ${primaryClassName}` : ""}`}
-      >
-        {primary}
-      </span>
-      {secondary ? (
-        <span className="admin-table-value-secondary">{secondary}</span>
-      ) : null}
+    <div className={`admin-table-value-stack${className ? ` ${className}` : ''}`}>
+      <span className={`admin-table-value-primary${primaryClassName ? ` ${primaryClassName}` : ''}`}>{primary}</span>
+      {secondary ? <span className="admin-table-value-secondary">{secondary}</span> : null}
     </div>
-  );
+  )
 }
 
-function AdminUsersSortableHeader({
+function AdminUsersSortableHeader<Field extends string>({
   label,
   displayLabel,
   tooltipLabel,
@@ -1168,53 +1013,39 @@ function AdminUsersSortableHeader({
   activeOrder,
   onToggle,
 }: {
-  label: string;
-  displayLabel?: string;
-  tooltipLabel?: string;
-  field: AdminUsersSortField;
-  activeField: AdminUsersSortField | null;
-  activeOrder: SortDirection | null;
-  onToggle: (field: AdminUsersSortField) => void;
+  label: string
+  displayLabel?: string
+  tooltipLabel?: string
+  field: Field
+  activeField: Field | null
+  activeOrder: SortDirection | null
+  onToggle: (field: Field) => void
 }): JSX.Element {
-  const isActive = activeField === field;
-  const ariaSort = !isActive
-    ? "none"
-    : activeOrder === "asc"
-      ? "ascending"
-      : "descending";
-  const SortIndicatorIcon = !isActive
-    ? ArrowUpDown
-    : activeOrder === "asc"
-      ? ArrowUp
-      : ArrowDown;
-  const visibleLabel = displayLabel ?? label;
-  const bubbleLabel = tooltipLabel ?? label;
-  const hasTooltip = bubbleLabel.trim() !== visibleLabel.trim();
+  const isActive = activeField === field
+  const ariaSort = !isActive ? 'none' : activeOrder === 'asc' ? 'ascending' : 'descending'
+  const SortIndicatorIcon = !isActive ? ArrowUpDown : activeOrder === 'asc' ? ArrowUp : ArrowDown
+  const visibleLabel = displayLabel ?? label
+  const bubbleLabel = tooltipLabel ?? label
+  const hasTooltip = bubbleLabel.trim() !== visibleLabel.trim()
   const trigger = (
     <Button
       type="button"
       variant="ghost"
       size="sm"
-      className={`admin-table-sort-button${isActive ? " is-active" : ""}`}
+      className={`admin-table-sort-button${isActive ? ' is-active' : ''}`}
       onClick={() => onToggle(field)}
       aria-label={hasTooltip ? bubbleLabel : undefined}
     >
       <span className="admin-table-sort-label">{visibleLabel}</span>
-      <SortIndicatorIcon
-        className="admin-table-sort-indicator"
-        aria-hidden="true"
-      />
+      <SortIndicatorIcon className="admin-table-sort-indicator" aria-hidden="true" />
     </Button>
-  );
+  )
   return (
     <th aria-sort={ariaSort}>
       {hasTooltip ? (
         <Tooltip>
           <TooltipTrigger asChild>{trigger}</TooltipTrigger>
-          <TooltipContent
-            className="max-w-[min(18rem,calc(100vw-2rem))]"
-            side="top"
-          >
+          <TooltipContent className="max-w-[min(18rem,calc(100vw-2rem))]" side="top">
             {bubbleLabel}
           </TooltipContent>
         </Tooltip>
@@ -1222,271 +1053,214 @@ function AdminUsersSortableHeader({
         trigger
       )}
     </th>
-  );
+  )
 }
 
 function statusTone(status: string): StatusTone {
-  const normalized = status.toLowerCase();
-  if (
-    normalized === "active" ||
-    normalized === "success" ||
-    normalized === "completed"
-  )
-    return "success";
-  if (normalized === "quarantined") return "warning";
-  if (
-    normalized === "exhausted" ||
-    normalized === "quota_exhausted" ||
-    normalized === "retry_exhausted"
-  )
-    return "warning";
-  if (
-    normalized === "running" ||
-    normalized === "in_progress" ||
-    normalized === "queued" ||
-    normalized === "pending"
-  ) {
-    return "info";
+  const normalized = status.toLowerCase()
+  if (normalized === 'active' || normalized === 'success' || normalized === 'completed') return 'success'
+  if (normalized === 'quarantined') return 'warning'
+  if (normalized === 'exhausted' || normalized === 'quota_exhausted' || normalized === 'retry_exhausted') return 'warning'
+  if (normalized === 'running' || normalized === 'in_progress' || normalized === 'queued' || normalized === 'pending') {
+    return 'info'
   }
-  if (
-    normalized === "error" ||
-    normalized === "failed" ||
-    normalized === "timeout" ||
-    normalized === "cancelled" ||
-    normalized === "canceled"
-  ) {
-    return "error";
+  if (normalized === 'error' || normalized === 'failed' || normalized === 'timeout' || normalized === 'cancelled' || normalized === 'canceled') {
+    return 'error'
   }
-  if (normalized === "deleted") return "neutral";
-  return "neutral";
+  if (normalized === 'deleted') return 'neutral'
+  return 'neutral'
 }
 
 function quotaTone(quotaState: string): StatusTone {
-  const normalized = quotaState.toLowerCase();
-  if (normalized === "hour") return "warning";
-  if (normalized === "day") return "error";
-  if (normalized === "month") return "info";
-  return "success";
+  const normalized = quotaState.toLowerCase()
+  if (normalized === 'hour') return 'warning'
+  if (normalized === 'day') return 'error'
+  if (normalized === 'month') return 'info'
+  return 'success'
 }
 
 function statusLabel(status: string, strings: AdminTranslations): string {
-  const normalized = status.toLowerCase();
-  return strings.statuses[normalized] ?? status;
+  const normalized = status.toLowerCase()
+  return strings.statuses[normalized] ?? status
 }
 
-function requestLogTone(
-  log: Pick<RequestLog, "operationalClass" | "result_status">,
-): StatusTone {
-  return operationalClassTone(log.operationalClass ?? log.result_status);
+function requestLogTone(log: Pick<RequestLog, 'operationalClass' | 'result_status'>): StatusTone {
+  return operationalClassTone(log.operationalClass ?? log.result_status)
 }
 
 function requestLogLabel(
-  log: Pick<RequestLog, "operationalClass" | "result_status">,
-  language: "en" | "zh",
+  log: Pick<RequestLog, 'operationalClass' | 'result_status'>,
+  language: 'en' | 'zh',
 ): string {
-  return operationalClassLabel(
-    log.operationalClass ?? log.result_status,
-    language,
-  );
+  return operationalClassLabel(log.operationalClass ?? log.result_status, language)
 }
 
-function keyBadgeStatus(
-  item: Pick<ApiKeyStats, "status" | "quarantine">,
-): string {
-  return item.quarantine ? "quarantined" : item.status;
+function keyBadgeStatus(item: Pick<ApiKeyStats, 'status' | 'quarantine'>): string {
+  return item.quarantine ? 'quarantined' : item.status
 }
 
-function jobTypeLabel(
-  jobType: string,
-  strings: AdminTranslations["jobs"],
-): string {
-  const normalized = jobType.trim();
-  if (!normalized) return "—";
+function jobTypeLabel(jobType: string, strings: AdminTranslations['jobs']): string {
+  const normalized = jobType.trim()
+  if (!normalized) return '—'
 
-  const direct = strings.types?.[normalized];
-  if (direct) return direct;
+  const direct = strings.types?.[normalized]
+  if (direct) return direct
 
   const aliases: Record<string, string> = {
-    usage_aggregation: "token_usage_rollup",
-    log_cleanup: "auth_token_logs_gc",
-  };
-  const aliasTarget = aliases[normalized];
+    usage_aggregation: 'token_usage_rollup',
+    log_cleanup: 'auth_token_logs_gc',
+  }
+  const aliasTarget = aliases[normalized]
   if (aliasTarget && strings.types?.[aliasTarget]) {
-    return strings.types[aliasTarget];
+    return strings.types[aliasTarget]
   }
 
   return normalized
-    .replace(/[\/_]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+    .replace(/[\/_]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 function jobStatusLabel(status: string): string {
-  const normalized = status.trim().toLowerCase();
-  if (!normalized) return "—";
+  const normalized = status.trim().toLowerCase()
+  if (!normalized) return '—'
 
   const aliases: Record<string, string> = {
-    success: "Success",
-    running: "Running",
-    in_progress: "In progress",
-    pending: "Pending",
-    queued: "Queued",
-    completed: "Completed",
-    error: "Error",
-    failed: "Failed",
-    quota_exhausted: "Quota exhausted",
-    retry_exhausted: "Retry exhausted",
-    timeout: "Timed out",
-    cancelled: "Canceled",
-    canceled: "Canceled",
-  };
-  const alias = aliases[normalized];
-  if (alias) return alias;
+    success: 'Success',
+    running: 'Running',
+    in_progress: 'In progress',
+    pending: 'Pending',
+    queued: 'Queued',
+    completed: 'Completed',
+    error: 'Error',
+    failed: 'Failed',
+    quota_exhausted: 'Quota exhausted',
+    retry_exhausted: 'Retry exhausted',
+    timeout: 'Timed out',
+    cancelled: 'Canceled',
+    canceled: 'Canceled',
+  }
+  const alias = aliases[normalized]
+  if (alias) return alias
 
   return normalized
-    .replace(/[\/_]+/g, " ")
-    .replace(/\s+/g, " ")
+    .replace(/[\/_]+/g, ' ')
+    .replace(/\s+/g, ' ')
     .trim()
-    .replace(/\b[a-z]/g, (ch) => ch.toUpperCase());
+    .replace(/\b[a-z]/g, (ch) => ch.toUpperCase())
 }
 
 function formatErrorMessage(
   log: RequestLog,
-  errorsStrings: AdminTranslations["logs"]["errors"],
-  language: "en" | "zh",
+  errorsStrings: AdminTranslations['logs']['errors'],
+  language: 'en' | 'zh',
 ): string {
-  const message = log.error_message?.trim();
+  const message = log.error_message?.trim()
   if (message) {
-    return message;
+    return message
   }
 
-  if (log.operationalClass === "neutral") {
-    return language === "zh"
-      ? "MCP 控制面 / 非计费请求"
-      : "MCP control-plane / non-billable request";
+  if (log.operationalClass === 'neutral') {
+    return language === 'zh'
+      ? 'MCP 控制面 / 非计费请求'
+      : 'MCP control-plane / non-billable request'
   }
 
-  const status = log.result_status.toLowerCase();
-  if (status === "quota_exhausted") {
+  const status = log.result_status.toLowerCase()
+  if (status === 'quota_exhausted') {
     if (log.http_status != null) {
-      return errorsStrings.quotaExhaustedHttp.replace(
-        "{http}",
-        String(log.http_status),
-      );
+      return errorsStrings.quotaExhaustedHttp.replace('{http}', String(log.http_status))
     }
-    return errorsStrings.quotaExhausted;
+    return errorsStrings.quotaExhausted
   }
 
-  if (status === "error") {
+  if (status === 'error') {
     if (log.http_status != null && log.mcp_status != null) {
       return errorsStrings.requestFailedHttpMcp
-        .replace("{http}", String(log.http_status))
-        .replace("{mcp}", String(log.mcp_status));
+        .replace('{http}', String(log.http_status))
+        .replace('{mcp}', String(log.mcp_status))
     }
     if (log.http_status != null) {
-      return errorsStrings.requestFailedHttp.replace(
-        "{http}",
-        String(log.http_status),
-      );
+      return errorsStrings.requestFailedHttp.replace('{http}', String(log.http_status))
     }
     if (log.mcp_status != null) {
-      return errorsStrings.requestFailedMcp.replace(
-        "{mcp}",
-        String(log.mcp_status),
-      );
+      return errorsStrings.requestFailedMcp.replace('{mcp}', String(log.mcp_status))
     }
-    return errorsStrings.requestFailedGeneric;
+    return errorsStrings.requestFailedGeneric
   }
 
-  if (status === "success") {
-    return errorsStrings.none;
+  if (status === 'success') {
+    return errorsStrings.none
   }
 
   if (log.http_status != null) {
-    return errorsStrings.httpStatus.replace("{http}", String(log.http_status));
+    return errorsStrings.httpStatus.replace('{http}', String(log.http_status))
   }
 
-  return errorsStrings.none;
+  return errorsStrings.none
 }
 
 function formatKeyEffectSummary(
   log: RequestLog,
   strings: AdminTranslations,
-  language: "en" | "zh",
+  language: 'en' | 'zh',
 ): string {
-  const summary = log.key_effect_summary?.trim();
-  switch ((log.key_effect_code ?? "").trim()) {
-    case "quarantined":
-      return language === "zh"
-        ? "系统已自动隔离该 Key"
-        : "The system automatically quarantined this key";
-    case "marked_exhausted":
-      return language === "zh"
-        ? "系统已自动将该 Key 标记为耗尽"
-        : "The system automatically marked this key as exhausted";
-    case "restored_active":
-      return language === "zh"
-        ? "系统已自动将 exhausted Key 恢复为 active"
-        : "The system automatically restored this exhausted key to active";
-    case "cleared_quarantine":
-      return language === "zh"
-        ? "管理员已解除该 Key 的隔离"
-        : "An admin cleared the quarantine on this key";
-    case "none":
-      return strings.logDetails.noKeyEffect;
+  const summary = log.key_effect_summary?.trim()
+  switch ((log.key_effect_code ?? '').trim()) {
+    case 'quarantined':
+      return language === 'zh' ? '系统已自动隔离该 Key' : 'The system automatically quarantined this key'
+    case 'marked_exhausted':
+      return language === 'zh' ? '系统已自动将该 Key 标记为耗尽' : 'The system automatically marked this key as exhausted'
+    case 'restored_active':
+      return language === 'zh'
+        ? '系统已自动将 exhausted Key 恢复为 active'
+        : 'The system automatically restored this exhausted key to active'
+    case 'cleared_quarantine':
+      return language === 'zh' ? '管理员已解除该 Key 的隔离' : 'An admin cleared the quarantine on this key'
+    case 'none':
+      return strings.logDetails.noKeyEffect
     default:
-      return summary && summary.length > 0
-        ? summary
-        : strings.logDetails.noKeyEffect;
+      return summary && summary.length > 0 ? summary : strings.logDetails.noKeyEffect
   }
 }
 
-function formatRequestStatusPair(
-  httpStatus: number | null,
-  mcpStatus: number | null,
-): string {
-  return `${httpStatus ?? "—"} / ${mcpStatus ?? "—"}`;
+function formatRequestStatusPair(httpStatus: number | null, mcpStatus: number | null): string {
+  return `${httpStatus ?? '—'} / ${mcpStatus ?? '—'}`
 }
 
-function formatRequestStatusTooltip(
-  log: RequestLog,
-  strings: AdminTranslations,
-): string {
-  return `${strings.logs.table.httpStatus}: ${log.http_status ?? "—"} · ${strings.logs.table.mcpStatus}: ${log.mcp_status ?? "—"}`;
+function formatRequestStatusTooltip(log: RequestLog, strings: AdminTranslations): string {
+  return `${strings.logs.table.httpStatus}: ${log.http_status ?? '—'} · ${strings.logs.table.mcpStatus}: ${log.mcp_status ?? '—'}`
 }
 
 function keyEffectTone(code: string | null | undefined): StatusTone {
-  switch ((code ?? "").trim()) {
-    case "quarantined":
-      return "error";
-    case "marked_exhausted":
-      return "warning";
-    case "restored_active":
-    case "cleared_quarantine":
-      return "success";
+  switch ((code ?? '').trim()) {
+    case 'quarantined':
+      return 'error'
+    case 'marked_exhausted':
+      return 'warning'
+    case 'restored_active':
+    case 'cleared_quarantine':
+      return 'success'
     default:
-      return "neutral";
+      return 'neutral'
   }
 }
 
-function keyEffectBadgeLabel(
-  log: RequestLog,
-  strings: AdminTranslations,
-): string {
-  switch ((log.key_effect_code ?? "").trim()) {
-    case "quarantined":
-      return strings.logs.keyEffects.quarantined;
-    case "marked_exhausted":
-      return strings.logs.keyEffects.markedExhausted;
-    case "restored_active":
-      return strings.logs.keyEffects.restoredActive;
-    case "cleared_quarantine":
-      return strings.logs.keyEffects.clearedQuarantine;
-    case "none":
-    case "":
-      return strings.logs.keyEffects.none;
+function keyEffectBadgeLabel(log: RequestLog, strings: AdminTranslations): string {
+  switch ((log.key_effect_code ?? '').trim()) {
+    case 'quarantined':
+      return strings.logs.keyEffects.quarantined
+    case 'marked_exhausted':
+      return strings.logs.keyEffects.markedExhausted
+    case 'restored_active':
+      return strings.logs.keyEffects.restoredActive
+    case 'cleared_quarantine':
+      return strings.logs.keyEffects.clearedQuarantine
+    case 'none':
+    case '':
+      return strings.logs.keyEffects.none
     default:
-      return strings.logs.keyEffects.unknown;
+      return strings.logs.keyEffects.unknown
   }
 }
 
@@ -1495,889 +1269,702 @@ const emptyRequestLogFacets: RequestLogFacets = {
   keyEffects: [],
   tokens: [],
   keys: [],
-};
-
-interface ManualCopyBubbleState {
-  anchorEl: HTMLElement | null;
-  title: string;
-  description: string;
-  fieldLabel: string;
-  value: string;
-  multiline?: boolean;
 }
 
-type ManualCopyDialogState = Omit<ManualCopyBubbleState, "anchorEl">;
+interface ManualCopyBubbleState {
+  anchorEl: HTMLElement | null
+  title: string
+  description: string
+  fieldLabel: string
+  value: string
+  multiline?: boolean
+}
+
+type ManualCopyDialogState = Omit<ManualCopyBubbleState, 'anchorEl'>
 
 function AdminDashboard(): JSX.Element {
-  const [route, setRoute] = useState<AdminPathRoute>(() =>
-    parseAdminPath(window.location.pathname),
-  );
-  const { language } = useLanguage();
-  const translations = useTranslate();
-  const adminStrings = translations.admin;
-  const headerStrings = adminStrings.header;
-  const loadingStateStrings = adminStrings.loadingStates;
-  const userConsoleHref = ADMIN_USER_CONSOLE_HREF;
-  const tokenStrings = adminStrings.tokens;
-  const tokenLeaderboardStrings = adminStrings.tokenLeaderboard;
+  const [route, setRoute] = useState<AdminPathRoute>(() => parseAdminPath(window.location.pathname))
+  const { language } = useLanguage()
+  const translations = useTranslate()
+  const adminStrings = translations.admin
+  const headerStrings = adminStrings.header
+  const loadingStateStrings = adminStrings.loadingStates
+  const userConsoleHref = ADMIN_USER_CONSOLE_HREF
+  const tokenStrings = adminStrings.tokens
+  const unboundTokenUsageStrings = adminStrings.unboundTokenUsage
   const quotaLabels = tokenStrings.quotaStates ?? {
-    normal: "Normal",
-    hour: "1 hour limit",
-    day: "24 hour limit",
-    month: "Monthly limit",
-  };
-  const metricsStrings = adminStrings.metrics;
-  const keyStrings = adminStrings.keys;
-  const logStrings = adminStrings.logs;
-  const jobsStrings = adminStrings.jobs;
-  const proxySettingsStrings = adminStrings.proxySettings;
-  const footerStrings = adminStrings.footer;
-  const errorStrings = adminStrings.errors;
-  const [summary, setSummary] = useState<Summary | null>(null);
-  const [dashboardSummaryWindows, setDashboardSummaryWindows] =
-    useState<SummaryWindowsResponse | null>(null);
-  const [dashboardSiteStatusSnapshot, setDashboardSiteStatusSnapshot] =
-    useState<DashboardSiteStatusState | null>(null);
-  const [keys, setKeys] = useState<ApiKeyStats[]>([]);
-  const [dashboardKeys, setDashboardKeys] = useState<ApiKeyStats[]>([]);
-  const [keysTotal, setKeysTotal] = useState(0);
-  const [keysPage, setKeysPage] = useState(getAdminKeysPageFromLocation);
-  const [keysPerPage, setKeysPerPage] = useState(
-    getAdminKeysPerPageFromLocation,
-  );
-  const [keysLoadState, setKeysLoadState] =
-    useState<QueryLoadState>("initial_loading");
-  const [keysError, setKeysError] = useState<string | null>(null);
-  const [keyGroupFacets, setKeyGroupFacets] = useState<
-    Array<{ value: string; count: number }>
-  >([]);
-  const [keyStatusFacets, setKeyStatusFacets] = useState<
-    Array<{ value: string; count: number }>
-  >([]);
-  const [keyRegionFacets, setKeyRegionFacets] = useState<
-    Array<{ value: string; count: number }>
-  >([]);
-  const [tokens, setTokens] = useState<AuthToken[]>([]);
-  const [dashboardTokens, setDashboardTokens] = useState<AuthToken[]>([]);
-  const [dashboardTokenCoverage, setDashboardTokenCoverage] = useState<
-    "ok" | "truncated" | "error"
-  >("ok");
-  const [dashboardOverviewLoaded, setDashboardOverviewLoaded] = useState(false);
-  const [tokensPage, setTokensPage] = useState(1);
-  const tokensPerPage = 10;
-  const [tokensTotal, setTokensTotal] = useState(0);
-  const [tokensLoadState, setTokensLoadState] =
-    useState<QueryLoadState>("initial_loading");
-  const [tokenGroups, setTokenGroups] = useState<TokenGroup[]>([]);
-  const [selectedTokenGroupName, setSelectedTokenGroupName] = useState<
-    string | null
-  >(null);
-  const [selectedTokenUngrouped, setSelectedTokenUngrouped] = useState(false);
-  const [tokenGroupsExpanded, setTokenGroupsExpanded] = useState(false);
-  const [tokenGroupsCollapsedOverflowing, setTokenGroupsCollapsedOverflowing] =
-    useState(false);
-  const [tokenLeaderboard, setTokenLeaderboard] = useState<
-    TokenUsageLeaderboardItem[]
-  >([]);
-  const [tokenLeaderboardLoadState, setTokenLeaderboardLoadState] =
-    useState<QueryLoadState>("initial_loading");
-  const [tokenLeaderboardError, setTokenLeaderboardError] = useState<
-    string | null
-  >(null);
-  const [tokenLeaderboardPeriod, setTokenLeaderboardPeriod] =
-    useState<TokenLeaderboardPeriod>("day");
-  const [tokenLeaderboardFocus, setTokenLeaderboardFocus] =
-    useState<TokenLeaderboardFocus>("usage");
-  const [tokenLeaderboardNonce, setTokenLeaderboardNonce] = useState(0);
-  const [logs, setLogs] = useState<RequestLog[]>([]);
-  const [dashboardLogs, setDashboardLogs] = useState<RequestLog[]>([]);
-  const [logsTotal, setLogsTotal] = useState(0);
-  const [logsPage, setLogsPage] = useState(1);
-  const [logsPerPage, setLogsPerPage] = useState(LOGS_PER_PAGE);
-  const [requestLogRequestKindOptions, setRequestLogRequestKindOptions] =
-    useState<TokenLogRequestKindOption[]>([]);
-  const [requestLogSelectedKinds, setRequestLogSelectedKinds] = useState<
-    string[]
-  >([]);
-  const [requestLogQuickBilling, setRequestLogQuickBilling] =
-    useState<TokenLogRequestKindQuickBilling>("all");
-  const [requestLogQuickProtocol, setRequestLogQuickProtocol] =
-    useState<TokenLogRequestKindQuickProtocol>("all");
-  const [requestLogFacets, setRequestLogFacets] = useState<RequestLogFacets>(
-    emptyRequestLogFacets,
-  );
-  const [requestLogOutcomeFilter, setRequestLogOutcomeFilter] =
-    useState<RecentRequestsOutcomeFilter | null>(null);
-  const [requestLogKeyFilter, setRequestLogKeyFilter] = useState<string | null>(
-    null,
-  );
-  const [requestsLoadState, setRequestsLoadState] =
-    useState<QueryLoadState>("initial_loading");
-  const [requestsError, setRequestsError] = useState<string | null>(null);
-  const [requestEntityDrawer, setRequestEntityDrawer] = useState<{
-    kind: "key" | "token";
-    id: string;
-  } | null>(null);
+    normal: 'Normal',
+    hour: '1 hour limit',
+    day: '24 hour limit',
+    month: 'Monthly limit',
+  }
+  const metricsStrings = adminStrings.metrics
+  const keyStrings = adminStrings.keys
+  const logStrings = adminStrings.logs
+  const jobsStrings = adminStrings.jobs
+  const proxySettingsStrings = adminStrings.proxySettings
+  const footerStrings = adminStrings.footer
+  const errorStrings = adminStrings.errors
+  const [summary, setSummary] = useState<Summary | null>(null)
+  const [dashboardSummaryWindows, setDashboardSummaryWindows] = useState<SummaryWindowsResponse | null>(null)
+  const [dashboardSiteStatusSnapshot, setDashboardSiteStatusSnapshot] = useState<DashboardSiteStatusState | null>(null)
+  const [keys, setKeys] = useState<ApiKeyStats[]>([])
+  const [dashboardKeys, setDashboardKeys] = useState<ApiKeyStats[]>([])
+  const [keysTotal, setKeysTotal] = useState(0)
+  const [keysPage, setKeysPage] = useState(getAdminKeysPageFromLocation)
+  const [keysPerPage, setKeysPerPage] = useState(getAdminKeysPerPageFromLocation)
+  const [keysLoadState, setKeysLoadState] = useState<QueryLoadState>('initial_loading')
+  const [keysError, setKeysError] = useState<string | null>(null)
+  const [keyGroupFacets, setKeyGroupFacets] = useState<Array<{ value: string; count: number }>>([])
+  const [keyStatusFacets, setKeyStatusFacets] = useState<Array<{ value: string; count: number }>>([])
+  const [keyRegionFacets, setKeyRegionFacets] = useState<Array<{ value: string; count: number }>>([])
+  const [tokens, setTokens] = useState<AuthToken[]>([])
+  const [dashboardTokens, setDashboardTokens] = useState<AuthToken[]>([])
+  const [dashboardTokenCoverage, setDashboardTokenCoverage] = useState<'ok' | 'truncated' | 'error'>('ok')
+  const [dashboardOverviewLoaded, setDashboardOverviewLoaded] = useState(false)
+  const [tokensPage, setTokensPage] = useState(1)
+  const tokensPerPage = 10
+  const [tokensTotal, setTokensTotal] = useState(0)
+  const [tokensLoadState, setTokensLoadState] = useState<QueryLoadState>('initial_loading')
+  const [tokenGroups, setTokenGroups] = useState<TokenGroup[]>([])
+  const [selectedTokenGroupName, setSelectedTokenGroupName] = useState<string | null>(null)
+  const [selectedTokenUngrouped, setSelectedTokenUngrouped] = useState(false)
+  const [tokenGroupsExpanded, setTokenGroupsExpanded] = useState(false)
+  const [tokenGroupsCollapsedOverflowing, setTokenGroupsCollapsedOverflowing] = useState(false)
+  const [unboundTokenUsage, setUnboundTokenUsage] = useState<AdminUnboundTokenUsageSummary[]>([])
+  const [unboundTokenUsageTotal, setUnboundTokenUsageTotal] = useState(0)
+  const [unboundTokenUsagePage, setUnboundTokenUsagePage] = useState(() => getAdminUnboundTokenUsagePageFromLocation())
+  const [unboundTokenUsageQueryInput, setUnboundTokenUsageQueryInput] =
+    useState(() => getAdminUnboundTokenUsageQueryFromLocation())
+  const [unboundTokenUsageQuery, setUnboundTokenUsageQuery] =
+    useState(() => getAdminUnboundTokenUsageQueryFromLocation())
+  const [unboundTokenUsageSort, setUnboundTokenUsageSort] =
+    useState<AdminUnboundTokenUsageSortField | null>(() => getAdminUnboundTokenUsageSortFromLocation())
+  const [unboundTokenUsageSortOrder, setUnboundTokenUsageSortOrder] =
+    useState<SortDirection | null>(() => getAdminUnboundTokenUsageSortDirectionFromLocation())
+  const [unboundTokenUsageLoadState, setUnboundTokenUsageLoadState] = useState<QueryLoadState>('initial_loading')
+  const [unboundTokenUsageError, setUnboundTokenUsageError] = useState<string | null>(null)
+  const [logs, setLogs] = useState<RequestLog[]>([])
+  const [dashboardLogs, setDashboardLogs] = useState<RequestLog[]>([])
+  const [logsTotal, setLogsTotal] = useState(0)
+  const [logsPage, setLogsPage] = useState(1)
+  const [logsPerPage, setLogsPerPage] = useState(LOGS_PER_PAGE)
+  const [requestLogRequestKindOptions, setRequestLogRequestKindOptions] = useState<TokenLogRequestKindOption[]>([])
+  const [requestLogSelectedKinds, setRequestLogSelectedKinds] = useState<string[]>([])
+  const [requestLogQuickBilling, setRequestLogQuickBilling] = useState<TokenLogRequestKindQuickBilling>('all')
+  const [requestLogQuickProtocol, setRequestLogQuickProtocol] = useState<TokenLogRequestKindQuickProtocol>('all')
+  const [requestLogFacets, setRequestLogFacets] = useState<RequestLogFacets>(emptyRequestLogFacets)
+  const [requestLogOutcomeFilter, setRequestLogOutcomeFilter] = useState<RecentRequestsOutcomeFilter | null>(null)
+  const [requestLogKeyFilter, setRequestLogKeyFilter] = useState<string | null>(null)
+  const [requestsLoadState, setRequestsLoadState] = useState<QueryLoadState>('initial_loading')
+  const [requestsError, setRequestsError] = useState<string | null>(null)
+  const [requestEntityDrawer, setRequestEntityDrawer] = useState<{ kind: 'key' | 'token'; id: string } | null>(null)
   const [monthlyBrokenDrawer, setMonthlyBrokenDrawer] = useState<{
-    subjectKind: "user" | "token";
-    id: string;
-    label: string;
-  } | null>(null);
-  const [monthlyBrokenDrawerItems, setMonthlyBrokenDrawerItems] = useState<
-    MonthlyBrokenKeyDetail[]
-  >([]);
+    subjectKind: 'user' | 'token'
+    id: string
+    label: string
+  } | null>(null)
+  const [monthlyBrokenDrawerItems, setMonthlyBrokenDrawerItems] = useState<MonthlyBrokenKeyDetail[]>([])
   const [monthlyBrokenDrawerLoadState, setMonthlyBrokenDrawerLoadState] =
-    useState<QueryLoadState>("initial_loading");
-  const [monthlyBrokenDrawerError, setMonthlyBrokenDrawerError] = useState<
-    string | null
-  >(null);
-  const [jobs, setJobs] = useState<JobLogView[]>([]);
-  const [dashboardJobs, setDashboardJobs] = useState<JobLogView[]>([]);
-  const [jobFilter, setJobFilter] = useState<
-    "all" | "quota" | "usage" | "logs" | "geo"
-  >("all");
-  const [jobsPage, setJobsPage] = useState(1);
-  const jobsPerPage = 10;
-  const [jobsTotal, setJobsTotal] = useState(0);
-  const [jobsLoadState, setJobsLoadState] =
-    useState<QueryLoadState>("initial_loading");
-  const [jobsError, setJobsError] = useState<string | null>(null);
-  const [users, setUsers] = useState<AdminUserSummary[]>([]);
-  const [usersTotal, setUsersTotal] = useState(0);
-  const [usersPage, setUsersPage] = useState(() =>
-    getAdminUsersPageFromLocation(),
-  );
-  const [usersQueryInput, setUsersQueryInput] = useState(() =>
-    getAdminUsersQueryFromLocation(),
-  );
-  const [usersQuery, setUsersQuery] = useState(() =>
-    getAdminUsersQueryFromLocation(),
-  );
-  const [usersTagFilterId, setUsersTagFilterId] = useState<string | null>(() =>
-    getAdminUsersTagFilterFromLocation(),
-  );
-  const [usersSort, setUsersSort] = useState<AdminUsersSortField | null>(() =>
-    getAdminUsersSortFromLocation(),
-  );
-  const [usersSortOrder, setUsersSortOrder] = useState<SortDirection | null>(
-    () => getAdminUsersSortDirectionFromLocation(),
-  );
-  const [usersLoadState, setUsersLoadState] =
-    useState<QueryLoadState>("initial_loading");
-  const isUsersModuleRoute =
-    route.name === "module" && route.module === "users";
-  const isUserUsageRoute = route.name === "user-usage";
-  const isUsersCollectionRoute = isUsersModuleRoute || isUserUsageRoute;
-  const [usersError, setUsersError] = useState<string | null>(null);
-  const [allowRegistration, setAllowRegistration] = useState<boolean | null>(
-    null,
-  );
-  const [registrationSettingsLoaded, setRegistrationSettingsLoaded] =
-    useState(false);
-  const [registrationSettingsLoading, setRegistrationSettingsLoading] =
-    useState(false);
-  const [registrationSettingsSaving, setRegistrationSettingsSaving] =
-    useState(false);
-  const [registrationSettingsError, setRegistrationSettingsError] = useState<
-    string | null
-  >(null);
-  const [selectedUserDetail, setSelectedUserDetail] =
-    useState<AdminUserDetail | null>(null);
-  const [userDetailLoading, setUserDetailLoading] = useState(false);
-  const [userQuotaSnapshot, setUserQuotaSnapshot] =
-    useState<UserQuotaSnapshot | null>(null);
-  const [userQuotaDraft, setUserQuotaDraft] = useState<Record<
-    QuotaSliderField,
-    string
-  > | null>(null);
-  const [savingUserQuota, setSavingUserQuota] = useState(false);
-  const [userQuotaError, setUserQuotaError] = useState<string | null>(null);
-  const [userQuotaSavedAt, setUserQuotaSavedAt] = useState<number | null>(null);
-  const [userBrokenLimitDraft, setUserBrokenLimitDraft] = useState("");
-  const [savingUserBrokenLimit, setSavingUserBrokenLimit] = useState(false);
-  const [userBrokenLimitError, setUserBrokenLimitError] = useState<
-    string | null
-  >(null);
-  const [userBrokenLimitSavedAt, setUserBrokenLimitSavedAt] = useState<
-    number | null
-  >(null);
-  const [tagCatalog, setTagCatalog] = useState<AdminUserTag[]>([]);
-  const [tagCatalogLoading, setTagCatalogLoading] = useState(false);
-  const [tagCatalogLoadedOnce, setTagCatalogLoadedOnce] = useState(false);
-  const [tagCatalogError, setTagCatalogError] = useState<string | null>(null);
-  const [activeUserTagEditorId, setActiveUserTagEditorId] = useState<
-    string | null
-  >(null);
-  const [userTagCatalogDraft, setUserTagCatalogDraft] =
-    useState<UserTagFormState>({ ...EMPTY_USER_TAG_FORM });
-  const [savingUserTagCatalog, setSavingUserTagCatalog] = useState(false);
-  const [deletingUserTagId, setDeletingUserTagId] = useState<string | null>(
-    null,
-  );
-  const [pendingUserTagDelete, setPendingUserTagDelete] =
-    useState<AdminUserTag | null>(null);
-  const [selectedBindableTagId, setSelectedBindableTagId] = useState("");
-  const [savingUserTagBinding, setSavingUserTagBinding] = useState(false);
-  const [userTagError, setUserTagError] = useState<string | null>(null);
-  const [forwardProxySettings, setForwardProxySettings] =
-    useState<ForwardProxySettings | null>(null);
+    useState<QueryLoadState>('initial_loading')
+  const [monthlyBrokenDrawerError, setMonthlyBrokenDrawerError] = useState<string | null>(null)
+  const [jobs, setJobs] = useState<JobLogView[]>([])
+  const [dashboardJobs, setDashboardJobs] = useState<JobLogView[]>([])
+  const [jobFilter, setJobFilter] = useState<'all' | 'quota' | 'usage' | 'logs' | 'geo'>('all')
+  const [jobsPage, setJobsPage] = useState(1)
+  const jobsPerPage = 10
+  const [jobsTotal, setJobsTotal] = useState(0)
+  const [jobsLoadState, setJobsLoadState] = useState<QueryLoadState>('initial_loading')
+  const [jobsError, setJobsError] = useState<string | null>(null)
+  const [users, setUsers] = useState<AdminUserSummary[]>([])
+  const [usersTotal, setUsersTotal] = useState(0)
+  const [usersPage, setUsersPage] = useState(() => getAdminUsersPageFromLocation())
+  const [usersQueryInput, setUsersQueryInput] = useState(() => getAdminUsersQueryFromLocation())
+  const [usersQuery, setUsersQuery] = useState(() => getAdminUsersQueryFromLocation())
+  const [usersTagFilterId, setUsersTagFilterId] = useState<string | null>(() => getAdminUsersTagFilterFromLocation())
+  const [usersSort, setUsersSort] = useState<AdminUsersSortField | null>(() => getAdminUsersSortFromLocation())
+  const [usersSortOrder, setUsersSortOrder] = useState<SortDirection | null>(() => getAdminUsersSortDirectionFromLocation())
+  const [usersLoadState, setUsersLoadState] = useState<QueryLoadState>('initial_loading')
+  const isUsersModuleRoute = route.name === 'module' && route.module === 'users'
+  const isUserUsageRoute = route.name === 'user-usage'
+  const isUsersCollectionRoute = isUsersModuleRoute || isUserUsageRoute
+  const [usersError, setUsersError] = useState<string | null>(null)
+  const [allowRegistration, setAllowRegistration] = useState<boolean | null>(null)
+  const [registrationSettingsLoaded, setRegistrationSettingsLoaded] = useState(false)
+  const [registrationSettingsLoading, setRegistrationSettingsLoading] = useState(false)
+  const [registrationSettingsSaving, setRegistrationSettingsSaving] = useState(false)
+  const [registrationSettingsError, setRegistrationSettingsError] = useState<string | null>(null)
+  const [selectedUserDetail, setSelectedUserDetail] = useState<AdminUserDetail | null>(null)
+  const [userDetailLoading, setUserDetailLoading] = useState(false)
+  const [userQuotaSnapshot, setUserQuotaSnapshot] = useState<UserQuotaSnapshot | null>(null)
+  const [userQuotaDraft, setUserQuotaDraft] = useState<Record<QuotaSliderField, string> | null>(null)
+  const [savingUserQuota, setSavingUserQuota] = useState(false)
+  const [userQuotaError, setUserQuotaError] = useState<string | null>(null)
+  const [userQuotaSavedAt, setUserQuotaSavedAt] = useState<number | null>(null)
+  const [userBrokenLimitDraft, setUserBrokenLimitDraft] = useState('')
+  const [savingUserBrokenLimit, setSavingUserBrokenLimit] = useState(false)
+  const [userBrokenLimitError, setUserBrokenLimitError] = useState<string | null>(null)
+  const [userBrokenLimitSavedAt, setUserBrokenLimitSavedAt] = useState<number | null>(null)
+  const [tagCatalog, setTagCatalog] = useState<AdminUserTag[]>([])
+  const [tagCatalogLoading, setTagCatalogLoading] = useState(false)
+  const [tagCatalogLoadedOnce, setTagCatalogLoadedOnce] = useState(false)
+  const [tagCatalogError, setTagCatalogError] = useState<string | null>(null)
+  const [activeUserTagEditorId, setActiveUserTagEditorId] = useState<string | null>(null)
+  const [userTagCatalogDraft, setUserTagCatalogDraft] = useState<UserTagFormState>({ ...EMPTY_USER_TAG_FORM })
+  const [savingUserTagCatalog, setSavingUserTagCatalog] = useState(false)
+  const [deletingUserTagId, setDeletingUserTagId] = useState<string | null>(null)
+  const [pendingUserTagDelete, setPendingUserTagDelete] = useState<AdminUserTag | null>(null)
+  const [selectedBindableTagId, setSelectedBindableTagId] = useState('')
+  const [savingUserTagBinding, setSavingUserTagBinding] = useState(false)
+  const [userTagError, setUserTagError] = useState<string | null>(null)
+  const [forwardProxySettings, setForwardProxySettings] = useState<ForwardProxySettings | null>(null)
   const [forwardProxySettingsLoadState, setForwardProxySettingsLoadState] =
-    useState<QueryLoadState>("initial_loading");
-  const [forwardProxySettingsError, setForwardProxySettingsError] = useState<
-    string | null
-  >(null);
-  const [forwardProxyStats, setForwardProxyStats] =
-    useState<ForwardProxyStatsResponse | null>(null);
+    useState<QueryLoadState>('initial_loading')
+  const [forwardProxySettingsError, setForwardProxySettingsError] = useState<string | null>(null)
+  const [forwardProxyStats, setForwardProxyStats] = useState<ForwardProxyStatsResponse | null>(null)
   const [forwardProxyStatsLoadState, setForwardProxyStatsLoadState] =
-    useState<QueryLoadState>("initial_loading");
-  const [forwardProxyStatsError, setForwardProxyStatsError] = useState<
-    string | null
-  >(null);
-  const [forwardProxySaving, setForwardProxySaving] = useState(false);
-  const [forwardProxySaveError, setForwardProxySaveError] = useState<
-    string | null
-  >(null);
-  const [forwardProxyRevalidating, setForwardProxyRevalidating] =
-    useState(false);
-  const [forwardProxyRevalidateError, setForwardProxyRevalidateError] =
-    useState<string | null>(null);
+    useState<QueryLoadState>('initial_loading')
+  const [forwardProxyStatsError, setForwardProxyStatsError] = useState<string | null>(null)
+  const [forwardProxySaving, setForwardProxySaving] = useState(false)
+  const [forwardProxySaveError, setForwardProxySaveError] = useState<string | null>(null)
+  const [forwardProxyRevalidating, setForwardProxyRevalidating] = useState(false)
+  const [forwardProxyRevalidateError, setForwardProxyRevalidateError] = useState<string | null>(null)
   const [forwardProxyRevalidateProgress, setForwardProxyRevalidateProgress] =
-    useState<ForwardProxyDialogProgressState | null>(null);
-  const [forwardProxySavedAt, setForwardProxySavedAt] = useState<number | null>(
-    null,
-  );
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const pollingTimerRef = useRef<number | null>(null);
-  const dashboardSignalsTimerRef = useRef<number | null>(null);
-  const routeRef = useRef<AdminPathRoute>(route);
-  const baseDataLoadedRef = useRef(false);
-  const dashboardOverviewVersionRef = useRef(0);
-  const dashboardSignalsVersionRef = useRef(0);
-  const tokenLeaderboardQueryKeyRef = useRef<string | null>(null);
-  const tokenLeaderboardNonceRef = useRef(0);
-  const requestsLoadedRef = useRef(false);
-  const jobsLoadedRef = useRef(false);
-  const keysLoadedRef = useRef(false);
-  const usersLoadedRef = useRef(false);
-  const keysQueryKeyRef = useRef<string | null>(null);
-  const usersQueryKeyRef = useRef<string | null>(null);
-  const baseDataAbortRef = useRef<AbortController | null>(null);
-  const requestsAbortRef = useRef<AbortController | null>(null);
-  const jobsAbortRef = useRef<AbortController | null>(null);
-  const keysAbortRef = useRef<AbortController | null>(null);
-  const usersAbortRef = useRef<AbortController | null>(null);
-  const forwardProxySettingsAbortRef = useRef<AbortController | null>(null);
-  const forwardProxyStatsAbortRef = useRef<AbortController | null>(null);
-  const forwardProxySettingsLoadedRef = useRef(false);
-  const forwardProxyStatsLoadedRef = useRef(false);
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-  const [version, setVersion] = useState<{
-    backend: string;
-    frontend: string;
-  } | null>(null);
-  const [profile, setProfile] = useState<Profile | null>(null);
-  const secretCacheRef = useRef<Map<string, string>>(new Map());
-  const secretRequestCacheRef = useRef<Map<string, Promise<string>>>(new Map());
-  const tokenSecretCacheRef = useRef<Map<string, string>>(new Map());
-  const tokenSecretRequestCacheRef = useRef<Map<string, Promise<string>>>(
-    new Map(),
-  );
-  const tokenSecretVersionRef = useRef<Map<string, number>>(new Map());
-  const secretWarmTimerRef = useRef<Map<string, number>>(new Map());
-  const secretWarmAbortRef = useRef<Map<string, AbortController>>(new Map());
-  const tokenGroupsListRef = useRef<HTMLDivElement | null>(null);
-  const [copyState, setCopyState] = useState<Map<string, "loading" | "copied">>(
-    () => new Map(),
-  );
-  const [manualCopyBubble, setManualCopyBubble] =
-    useState<ManualCopyBubbleState | null>(null);
-  const [manualCopyDialog, setManualCopyDialog] =
-    useState<ManualCopyDialogState | null>(null);
-  const manualCopyDialogFieldRef = useRef<HTMLInputElement | null>(null);
-  const [expandedLogs, setExpandedLogs] = useState<Set<number>>(
-    () => new Set(),
-  );
+    useState<ForwardProxyDialogProgressState | null>(null)
+  const [forwardProxySavedAt, setForwardProxySavedAt] = useState<number | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const pollingTimerRef = useRef<number | null>(null)
+  const dashboardSignalsTimerRef = useRef<number | null>(null)
+  const routeRef = useRef<AdminPathRoute>(route)
+  const baseDataLoadedRef = useRef(false)
+  const dashboardOverviewVersionRef = useRef(0)
+  const dashboardSignalsVersionRef = useRef(0)
+  const unboundTokenUsageQueryKeyRef = useRef<string | null>(null)
+  const requestsLoadedRef = useRef(false)
+  const jobsLoadedRef = useRef(false)
+  const keysLoadedRef = useRef(false)
+  const usersLoadedRef = useRef(false)
+  const unboundTokenUsageLoadedRef = useRef(false)
+  const keysQueryKeyRef = useRef<string | null>(null)
+  const usersQueryKeyRef = useRef<string | null>(null)
+  const baseDataAbortRef = useRef<AbortController | null>(null)
+  const requestsAbortRef = useRef<AbortController | null>(null)
+  const jobsAbortRef = useRef<AbortController | null>(null)
+  const keysAbortRef = useRef<AbortController | null>(null)
+  const usersAbortRef = useRef<AbortController | null>(null)
+  const unboundTokenUsageAbortRef = useRef<AbortController | null>(null)
+  const forwardProxySettingsAbortRef = useRef<AbortController | null>(null)
+  const forwardProxyStatsAbortRef = useRef<AbortController | null>(null)
+  const forwardProxySettingsLoadedRef = useRef(false)
+  const forwardProxyStatsLoadedRef = useRef(false)
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
+  const [version, setVersion] = useState<{ backend: string; frontend: string } | null>(null)
+  const [profile, setProfile] = useState<Profile | null>(null)
+  const secretCacheRef = useRef<Map<string, string>>(new Map())
+  const secretRequestCacheRef = useRef<Map<string, Promise<string>>>(new Map())
+  const tokenSecretCacheRef = useRef<Map<string, string>>(new Map())
+  const tokenSecretRequestCacheRef = useRef<Map<string, Promise<string>>>(new Map())
+  const tokenSecretVersionRef = useRef<Map<string, number>>(new Map())
+  const secretWarmTimerRef = useRef<Map<string, number>>(new Map())
+  const secretWarmAbortRef = useRef<Map<string, AbortController>>(new Map())
+  const tokenGroupsListRef = useRef<HTMLDivElement | null>(null)
+  const [copyState, setCopyState] = useState<Map<string, 'loading' | 'copied'>>(() => new Map())
+  const [manualCopyBubble, setManualCopyBubble] = useState<ManualCopyBubbleState | null>(null)
+  const [manualCopyDialog, setManualCopyDialog] = useState<ManualCopyDialogState | null>(null)
+  const manualCopyDialogFieldRef = useRef<HTMLInputElement | null>(null)
+  const [expandedLogs, setExpandedLogs] = useState<Set<number>>(() => new Set())
   type AddKeysBatchReportState =
-    | { kind: "success"; response: AddApiKeysBatchResponse }
-    | {
-        kind: "error";
-        message: string;
-        input_lines: number;
-        valid_lines: number;
-      };
+    | { kind: 'success'; response: AddApiKeysBatchResponse }
+    | { kind: 'error'; message: string; input_lines: number; valid_lines: number }
 
-  const [newKeysText, setNewKeysText] = useState("");
-  const [newKeysGroup, setNewKeysGroup] = useState("");
-  const [selectedKeyGroups, setSelectedKeyGroups] = useState<string[]>(() =>
-    getAdminKeysValuesFromLocation("group"),
-  );
-  const [selectedKeyStatuses, setSelectedKeyStatuses] = useState<string[]>(() =>
-    getAdminKeysValuesFromLocation("status"),
-  );
-  const [selectedKeyRegistrationIp, setSelectedKeyRegistrationIp] = useState(
-    getAdminKeysRegistrationIpFromLocation,
-  );
-  const [keyRegistrationIpInput, setKeyRegistrationIpInput] = useState(
-    getAdminKeysRegistrationIpFromLocation,
-  );
-  const [selectedKeyRegions, setSelectedKeyRegions] = useState<string[]>(() =>
-    getAdminKeysRegionsFromLocation(),
-  );
-  const [keysBatchExpanded, setKeysBatchExpanded] = useState(false);
-  const [keysBatchClosing, setKeysBatchClosing] = useState(false);
-  const keysBatchOpenReasonRef = useRef<"hover" | "focus" | null>(null);
-  const keysBatchSuppressNextHoverRef = useRef(false);
-  const keysBatchLastPointerRef = useRef<{ x: number; y: number } | null>(null);
-  const keysBatchAutoCollapseTimerRef = useRef<number | null>(null);
-  const keysBatchCloseTimerRef = useRef<number | null>(null);
-  const keysBatchAnchorRef = useRef<HTMLDivElement | null>(null);
-  const keysBatchCollapsedInputRef = useRef<HTMLInputElement | null>(null);
-  const keysBatchTextareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const keysBatchFooterRef = useRef<HTMLDivElement | null>(null);
-  const keysBatchOverlayRef = useRef<HTMLDivElement | null>(null);
-  const [keysBatchReport, setKeysBatchReport] =
-    useState<AddKeysBatchReportState | null>(null);
+  const [newKeysText, setNewKeysText] = useState('')
+  const [newKeysGroup, setNewKeysGroup] = useState('')
+  const [selectedKeyGroups, setSelectedKeyGroups] = useState<string[]>(() => getAdminKeysValuesFromLocation('group'))
+  const [selectedKeyStatuses, setSelectedKeyStatuses] = useState<string[]>(() => getAdminKeysValuesFromLocation('status'))
+  const [selectedKeyRegistrationIp, setSelectedKeyRegistrationIp] = useState(getAdminKeysRegistrationIpFromLocation)
+  const [keyRegistrationIpInput, setKeyRegistrationIpInput] = useState(getAdminKeysRegistrationIpFromLocation)
+  const [selectedKeyRegions, setSelectedKeyRegions] = useState<string[]>(() => getAdminKeysRegionsFromLocation())
+  const [keysBatchExpanded, setKeysBatchExpanded] = useState(false)
+  const [keysBatchClosing, setKeysBatchClosing] = useState(false)
+  const keysBatchOpenReasonRef = useRef<'hover' | 'focus' | null>(null)
+  const keysBatchSuppressNextHoverRef = useRef(false)
+  const keysBatchLastPointerRef = useRef<{ x: number; y: number } | null>(null)
+  const keysBatchAutoCollapseTimerRef = useRef<number | null>(null)
+  const keysBatchCloseTimerRef = useRef<number | null>(null)
+  const keysBatchAnchorRef = useRef<HTMLDivElement | null>(null)
+  const keysBatchCollapsedInputRef = useRef<HTMLInputElement | null>(null)
+  const keysBatchTextareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const keysBatchFooterRef = useRef<HTMLDivElement | null>(null)
+  const keysBatchOverlayRef = useRef<HTMLDivElement | null>(null)
+  const [keysBatchReport, setKeysBatchReport] = useState<AddKeysBatchReportState | null>(null)
 
   type KeyValidationStatus =
-    | "pending"
-    | "duplicate_in_input"
-    | "ok"
-    | "ok_exhausted"
-    | "unauthorized"
-    | "forbidden"
-    | "invalid"
-    | "error";
+    | 'pending'
+    | 'duplicate_in_input'
+    | 'ok'
+    | 'ok_exhausted'
+    | 'unauthorized'
+    | 'forbidden'
+    | 'invalid'
+    | 'error'
 
   type KeyValidationRow = {
-    api_key: string;
-    status: KeyValidationStatus;
-    registration_ip?: string | null;
-    registration_region?: string | null;
-    assigned_proxy_key?: string | null;
-    assigned_proxy_label?: string | null;
-    assigned_proxy_match_kind?: ValidateKeyResult["assigned_proxy_match_kind"];
-    quota_limit?: number;
-    quota_remaining?: number;
-    detail?: string;
-    attempts: number;
-  };
+    api_key: string
+    status: KeyValidationStatus
+    registration_ip?: string | null
+    registration_region?: string | null
+    assigned_proxy_key?: string | null
+    assigned_proxy_label?: string | null
+    assigned_proxy_match_kind?: ValidateKeyResult['assigned_proxy_match_kind']
+    quota_limit?: number
+    quota_remaining?: number
+    detail?: string
+    attempts: number
+  }
 
   type KeysValidationState = {
-    group: string;
-    input_lines: number;
-    valid_lines: number;
-    unique_in_input: number;
-    duplicate_in_input: number;
-    checking: boolean;
-    importing: boolean;
-    rows: KeyValidationRow[];
-    imported_api_keys: string[];
-    registration_ip_by_key: Record<string, string>;
-    importReport?: AddApiKeysBatchResponse;
-    importWarning?: string;
-    importError?: string;
-  };
+    group: string
+    input_lines: number
+    valid_lines: number
+    unique_in_input: number
+    duplicate_in_input: number
+    checking: boolean
+    importing: boolean
+    rows: KeyValidationRow[]
+    imported_api_keys: string[]
+    registration_ip_by_key: Record<string, string>
+    importReport?: AddApiKeysBatchResponse
+    importWarning?: string
+    importError?: string
+  }
 
-  const keysValidateAbortRef = useRef<AbortController | null>(null);
-  const keysValidateRunIdRef = useRef(0);
-  const [keysValidation, setKeysValidation] =
-    useState<KeysValidationState | null>(null);
-  const [newTokenNote, setNewTokenNote] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [togglingId, setTogglingId] = useState<string | null>(null);
-  const [clearingQuarantineId, setClearingQuarantineId] = useState<
-    string | null
-  >(null);
-  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
-  const [pendingDisableId, setPendingDisableId] = useState<string | null>(null);
-  const [pendingTokenDeleteId, setPendingTokenDeleteId] = useState<
-    string | null
-  >(null);
-  const [editingTokenId, setEditingTokenId] = useState<string | null>(null);
-  const [editingTokenNote, setEditingTokenNote] = useState("");
-  const [savingTokenNote, setSavingTokenNote] = useState(false);
-  const [sseConnected, setSseConnected] = useState(false);
-  const [expandedJobs, setExpandedJobs] = useState<Set<number>>(
-    () => new Set(),
-  );
+  const keysValidateAbortRef = useRef<AbortController | null>(null)
+  const keysValidateRunIdRef = useRef(0)
+  const [keysValidation, setKeysValidation] = useState<KeysValidationState | null>(null)
+  const [newTokenNote, setNewTokenNote] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [togglingId, setTogglingId] = useState<string | null>(null)
+  const [clearingQuarantineId, setClearingQuarantineId] = useState<string | null>(null)
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
+  const [pendingDisableId, setPendingDisableId] = useState<string | null>(null)
+  const [pendingTokenDeleteId, setPendingTokenDeleteId] = useState<string | null>(null)
+  const [editingTokenId, setEditingTokenId] = useState<string | null>(null)
+  const [editingTokenNote, setEditingTokenNote] = useState('')
+  const [savingTokenNote, setSavingTokenNote] = useState(false)
+  const [sseConnected, setSseConnected] = useState(false)
+  const [expandedJobs, setExpandedJobs] = useState<Set<number>>(() => new Set())
   // Batch dialog state
-  const [batchDialogOpen, setBatchDialogOpen] = useState(false);
-  const [batchGroup, setBatchGroup] = useState("");
-  const [batchCount, setBatchCount] = useState(10);
-  const [batchCreating, setBatchCreating] = useState(false);
-  const [batchShareText, setBatchShareText] = useState<string | null>(null);
-  const isAdmin = profile?.isAdmin ?? false;
-  const keysBatchVisible = keysBatchExpanded || keysBatchClosing;
+  const [batchDialogOpen, setBatchDialogOpen] = useState(false)
+  const [batchGroup, setBatchGroup] = useState('')
+  const [batchCount, setBatchCount] = useState(10)
+  const [batchCreating, setBatchCreating] = useState(false)
+  const [batchShareText, setBatchShareText] = useState<string | null>(null)
+  const isAdmin = profile?.isAdmin ?? false
+  const keysBatchVisible = keysBatchExpanded || keysBatchClosing
   const manualCopyText = useMemo(
-    () =>
-      language === "zh"
+    () => (
+      language === 'zh'
         ? {
-            title: "请手动复制",
-            description:
-              "当前浏览器拦截了自动复制，下面已选中原文，可直接手动复制。",
-            close: "关闭",
+            title: '请手动复制',
+            description: '当前浏览器拦截了自动复制，下面已选中原文，可直接手动复制。',
+            close: '关闭',
             fields: {
-              keyId: "上游 Key ID",
-              apiKey: "完整 API Key",
-              token: "完整 Token",
-              shareLink: "分享链接",
+              apiKey: '完整 API Key',
+              keyId: '上游 Key ID',
+              token: '完整 Token',
+              shareLink: '分享链接',
             },
             createToken: {
-              title: "令牌已创建，请手动复制",
-              description:
-                "自动复制失败，下面保留了完整令牌，请先手动复制后再继续操作。",
+              title: '令牌已创建，请手动复制',
+              description: '自动复制失败，下面保留了完整令牌，请先手动复制后再继续操作。',
             },
           }
         : {
-            title: "Manual copy required",
-            description:
-              "This browser blocked automatic copy. The original value is selected below for manual copy.",
-            close: "Close",
+            title: 'Manual copy required',
+            description: 'This browser blocked automatic copy. The original value is selected below for manual copy.',
+            close: 'Close',
             fields: {
-              keyId: "Key ID",
-              apiKey: "Full API Key",
-              token: "Full Token",
-              shareLink: "Share Link",
+              apiKey: 'Full API Key',
+              keyId: 'Upstream Key ID',
+              token: 'Full Token',
+              shareLink: 'Share Link',
             },
             createToken: {
-              title: "Token created — copy manually",
-              description:
-                "Automatic copy failed. The full token is selected below so you can copy it before continuing.",
+              title: 'Token created — copy manually',
+              description: 'Automatic copy failed. The full token is selected below so you can copy it before continuing.',
             },
-          },
+          }
+    ),
     [language],
-  );
+  )
 
   useEffect(() => {
-    if (!manualCopyDialog) return;
+    if (!manualCopyDialog) return
     const frame = window.requestAnimationFrame(() => {
-      selectAllReadonlyText(manualCopyDialogFieldRef.current);
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [manualCopyDialog]);
+      selectAllReadonlyText(manualCopyDialogFieldRef.current)
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [manualCopyDialog])
 
   useEffect(() => {
     return () => {
       for (const timer of secretWarmTimerRef.current.values()) {
-        window.clearTimeout(timer);
+        window.clearTimeout(timer)
       }
       for (const controller of secretWarmAbortRef.current.values()) {
-        controller.abort();
+        controller.abort()
       }
-    };
-  }, []);
+    }
+  }, [])
 
   const clearKeysBatchAutoCollapseTimer = useCallback(() => {
     if (keysBatchAutoCollapseTimerRef.current != null) {
-      window.clearTimeout(keysBatchAutoCollapseTimerRef.current);
-      keysBatchAutoCollapseTimerRef.current = null;
+      window.clearTimeout(keysBatchAutoCollapseTimerRef.current)
+      keysBatchAutoCollapseTimerRef.current = null
     }
-  }, []);
+  }, [])
 
   const clearKeysBatchCloseTimer = useCallback(() => {
     if (keysBatchCloseTimerRef.current != null) {
-      window.clearTimeout(keysBatchCloseTimerRef.current);
-      keysBatchCloseTimerRef.current = null;
+      window.clearTimeout(keysBatchCloseTimerRef.current)
+      keysBatchCloseTimerRef.current = null
     }
-  }, []);
+  }, [])
 
-  useEffect(
-    () => () => {
-      clearKeysBatchAutoCollapseTimer();
-      clearKeysBatchCloseTimer();
-    },
-    [clearKeysBatchAutoCollapseTimer, clearKeysBatchCloseTimer],
-  );
+  useEffect(() => () => {
+    clearKeysBatchAutoCollapseTimer()
+    clearKeysBatchCloseTimer()
+  }, [clearKeysBatchAutoCollapseTimer, clearKeysBatchCloseTimer])
 
   useEffect(() => {
-    setManualCopyBubble(null);
-    setManualCopyDialog(null);
-  }, [route]);
+    setManualCopyBubble(null)
+    setManualCopyDialog(null)
+  }, [route])
 
   useEffect(() => {
-    if (!keysBatchExpanded) return;
-    if (keysBatchOpenReasonRef.current === "focus") {
-      window.requestAnimationFrame(() => keysBatchTextareaRef.current?.focus());
+    if (!keysBatchExpanded) return
+    if (keysBatchOpenReasonRef.current === 'focus') {
+      window.requestAnimationFrame(() => keysBatchTextareaRef.current?.focus())
     }
-  }, [keysBatchExpanded]);
+  }, [keysBatchExpanded])
 
   useEffect(() => {
     const recordPointer = (event: PointerEvent) => {
-      keysBatchLastPointerRef.current = { x: event.clientX, y: event.clientY };
-    };
-    window.addEventListener("pointermove", recordPointer, { passive: true });
-    window.addEventListener("pointerdown", recordPointer);
+      keysBatchLastPointerRef.current = { x: event.clientX, y: event.clientY }
+    }
+    window.addEventListener('pointermove', recordPointer, { passive: true })
+    window.addEventListener('pointerdown', recordPointer)
     return () => {
-      window.removeEventListener("pointermove", recordPointer);
-      window.removeEventListener("pointerdown", recordPointer);
-    };
-  }, []);
+      window.removeEventListener('pointermove', recordPointer)
+      window.removeEventListener('pointerdown', recordPointer)
+    }
+  }, [])
 
   const maybeSuppressHoverReopen = useCallback(() => {
-    const anchor = keysBatchAnchorRef.current;
-    const pointer = keysBatchLastPointerRef.current;
-    if (!anchor || !pointer) return;
-    const rect = anchor.getBoundingClientRect();
+    const anchor = keysBatchAnchorRef.current
+    const pointer = keysBatchLastPointerRef.current
+    if (!anchor || !pointer) return
+    const rect = anchor.getBoundingClientRect()
     if (
       pointer.x >= rect.left &&
       pointer.x <= rect.right &&
       pointer.y >= rect.top &&
       pointer.y <= rect.bottom
     ) {
-      keysBatchSuppressNextHoverRef.current = true;
+      keysBatchSuppressNextHoverRef.current = true
     }
-  }, []);
+  }, [])
 
   const beginKeysBatchClose = useCallback(() => {
-    if (!keysBatchVisible) return;
+    if (!keysBatchVisible) return
 
-    clearKeysBatchAutoCollapseTimer();
-    clearKeysBatchCloseTimer();
+    clearKeysBatchAutoCollapseTimer()
+    clearKeysBatchCloseTimer()
 
-    maybeSuppressHoverReopen();
-    keysBatchOpenReasonRef.current = null;
-    setKeysBatchExpanded(false);
+    maybeSuppressHoverReopen()
+    keysBatchOpenReasonRef.current = null
+    setKeysBatchExpanded(false)
 
-    const prefersReducedMotion =
-      window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ?? false;
+    const prefersReducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ?? false
     if (prefersReducedMotion) {
-      setKeysBatchClosing(false);
-      return;
+      setKeysBatchClosing(false)
+      return
     }
 
-    setKeysBatchClosing(true);
+    setKeysBatchClosing(true)
     keysBatchCloseTimerRef.current = window.setTimeout(() => {
-      keysBatchCloseTimerRef.current = null;
-      setKeysBatchClosing(false);
-    }, KEYS_BATCH_CLOSE_ANIMATION_MS);
+      keysBatchCloseTimerRef.current = null
+      setKeysBatchClosing(false)
+    }, KEYS_BATCH_CLOSE_ANIMATION_MS)
   }, [
     clearKeysBatchAutoCollapseTimer,
     clearKeysBatchCloseTimer,
     keysBatchVisible,
     maybeSuppressHoverReopen,
-  ]);
+  ])
 
   const scheduleKeysBatchAutoCollapse = useCallback(
-    (mode: "blur" | "hover") => {
-      if (!keysBatchExpanded) return;
+    (mode: 'blur' | 'hover') => {
+      if (!keysBatchExpanded) return
 
-      const textarea = keysBatchTextareaRef.current;
-      if (!textarea) return;
-      if (textarea.value.trim().length !== 0) return;
+      const textarea = keysBatchTextareaRef.current
+      if (!textarea) return
+      if (textarea.value.trim().length !== 0) return
 
-      clearKeysBatchAutoCollapseTimer();
+      clearKeysBatchAutoCollapseTimer()
       keysBatchAutoCollapseTimerRef.current = window.setTimeout(() => {
-        keysBatchAutoCollapseTimerRef.current = null;
+        keysBatchAutoCollapseTimerRef.current = null
 
-        const currentOverlay = keysBatchOverlayRef.current;
-        const currentTextarea = keysBatchTextareaRef.current;
-        if (!currentOverlay || !currentTextarea) return;
-        if (currentTextarea.value.trim().length !== 0) return;
+        const currentOverlay = keysBatchOverlayRef.current
+        const currentTextarea = keysBatchTextareaRef.current
+        if (!currentOverlay || !currentTextarea) return
+        if (currentTextarea.value.trim().length !== 0) return
 
         // If the user re-focused the overlay before the timeout, keep it open.
-        const active = document.activeElement;
-        if (active instanceof Node && currentOverlay.contains(active)) return;
+        const active = document.activeElement
+        if (active instanceof Node && currentOverlay.contains(active)) return
 
-        if (mode === "hover") {
-          const pointer = keysBatchLastPointerRef.current;
-          const anchor = keysBatchAnchorRef.current;
+        if (mode === 'hover') {
+          const pointer = keysBatchLastPointerRef.current
+          const anchor = keysBatchAnchorRef.current
           if (pointer && anchor) {
-            const anchorRect = anchor.getBoundingClientRect();
-            const overlayRect = currentOverlay.getBoundingClientRect();
+            const anchorRect = anchor.getBoundingClientRect()
+            const overlayRect = currentOverlay.getBoundingClientRect()
             const containsPointer = (rect: DOMRect) =>
-              pointer.x >= rect.left &&
-              pointer.x <= rect.right &&
-              pointer.y >= rect.top &&
-              pointer.y <= rect.bottom;
-            if (containsPointer(anchorRect) || containsPointer(overlayRect))
-              return;
+              pointer.x >= rect.left && pointer.x <= rect.right && pointer.y >= rect.top && pointer.y <= rect.bottom
+            if (containsPointer(anchorRect) || containsPointer(overlayRect)) return
           }
         }
 
-        beginKeysBatchClose();
-      }, KEYS_BATCH_AUTO_COLLAPSE_DELAY_MS);
+        beginKeysBatchClose()
+      }, KEYS_BATCH_AUTO_COLLAPSE_DELAY_MS)
     },
     [beginKeysBatchClose, clearKeysBatchAutoCollapseTimer, keysBatchExpanded],
-  );
+  )
 
   useEffect(() => {
-    if (!keysBatchExpanded) return;
+    if (!keysBatchExpanded) return
 
     const handlePointerDown = (event: PointerEvent) => {
-      const root = keysBatchAnchorRef.current;
-      const overlay = keysBatchOverlayRef.current;
-      if (!root && !overlay) return;
-      const target = event.target;
+      const root = keysBatchAnchorRef.current
+      const overlay = keysBatchOverlayRef.current
+      if (!root && !overlay) return
+      const target = event.target
       if (
         target instanceof Node &&
         (root == null || !root.contains(target)) &&
         (overlay == null || !overlay.contains(target))
       ) {
-        beginKeysBatchClose();
+        beginKeysBatchClose()
       }
-    };
+    }
 
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        beginKeysBatchClose();
+      if (event.key === 'Escape') {
+        beginKeysBatchClose()
       }
-    };
+    }
 
-    document.addEventListener("pointerdown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
+    document.addEventListener('pointerdown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
     return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [beginKeysBatchClose, keysBatchExpanded]);
+      document.removeEventListener('pointerdown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [beginKeysBatchClose, keysBatchExpanded])
 
-  const copyStateKey = useCallback(
-    (
-      scope: "brokenKeys" | "keys" | "logs" | "tokens",
-      identifier: string | number,
-    ) => {
-      return `${scope}:${identifier}`;
-    },
-    [],
-  );
+  const copyStateKey = useCallback((scope: 'brokenKeys' | 'keys' | 'logs' | 'tokens', identifier: string | number) => {
+    return `${scope}:${identifier}`
+  }, [])
 
-  const updateCopyState = useCallback(
-    (key: string, next: "loading" | "copied" | null) => {
-      setCopyState((previous) => {
-        const clone = new Map(previous);
-        if (next === null) {
-          clone.delete(key);
-        } else {
-          clone.set(key, next);
-        }
-        return clone;
-      });
-    },
-    [],
-  );
+  const updateCopyState = useCallback((key: string, next: 'loading' | 'copied' | null) => {
+    setCopyState((previous) => {
+      const clone = new Map(previous)
+      if (next === null) {
+        clone.delete(key)
+      } else {
+        clone.set(key, next)
+      }
+      return clone
+    })
+  }, [])
 
-  const copyToClipboard = useCallback(
-    async (value: string, options?: CopyTextOptions) => {
-      return await copyText(value, options);
-    },
-    [],
-  );
+  const copyToClipboard = useCallback(async (value: string, options?: CopyTextOptions) => {
+    return await copyText(value, options)
+  }, [])
 
   const openManualCopyBubble = useCallback((state: ManualCopyBubbleState) => {
-    setManualCopyBubble(state);
-  }, []);
+    setManualCopyBubble(state)
+  }, [])
 
-  const resolveApiKeySecret = useCallback(
-    async (id: string, signal?: AbortSignal) => {
-      const cached = secretCacheRef.current.get(id);
-      if (cached) {
-        return cached;
-      }
+  const resolveApiKeySecret = useCallback(async (id: string, signal?: AbortSignal) => {
+    const cached = secretCacheRef.current.get(id)
+    if (cached) {
+      return cached
+    }
 
-      const pending = secretRequestCacheRef.current.get(id);
-      if (pending) {
-        return await pending;
-      }
+    const pending = secretRequestCacheRef.current.get(id)
+    if (pending) {
+      return await pending
+    }
 
-      const request = fetchApiKeySecret(id, signal)
-        .then((result) => {
-          if (!signal?.aborted) {
-            secretCacheRef.current.set(id, result.api_key);
-          }
-          return result.api_key;
-        })
-        .finally(() => {
-          secretRequestCacheRef.current.delete(id);
-        });
+    const request = fetchApiKeySecret(id, signal)
+      .then((result) => {
+        if (!signal?.aborted) {
+          secretCacheRef.current.set(id, result.api_key)
+        }
+        return result.api_key
+      })
+      .finally(() => {
+        secretRequestCacheRef.current.delete(id)
+      })
 
-      secretRequestCacheRef.current.set(id, request);
-      return await request;
-    },
-    [],
-  );
+    secretRequestCacheRef.current.set(id, request)
+    return await request
+  }, [])
 
-  const resolveTokenSecret = useCallback(
-    async (id: string, signal?: AbortSignal) => {
-      const cached = tokenSecretCacheRef.current.get(id);
-      if (cached) {
-        return cached;
-      }
+  const resolveTokenSecret = useCallback(async (id: string, signal?: AbortSignal) => {
+    const cached = tokenSecretCacheRef.current.get(id)
+    if (cached) {
+      return cached
+    }
 
-      const pending = tokenSecretRequestCacheRef.current.get(id);
-      if (pending) {
-        return await pending;
-      }
+    const pending = tokenSecretRequestCacheRef.current.get(id)
+    if (pending) {
+      return await pending
+    }
 
-      const requestVersion = tokenSecretVersionRef.current.get(id) ?? 0;
-      let request: Promise<string>;
-      request = fetchTokenSecret(id, signal)
-        .then((result) => {
-          if (
-            !signal?.aborted &&
-            (tokenSecretVersionRef.current.get(id) ?? 0) === requestVersion
-          ) {
-            tokenSecretCacheRef.current.set(id, result.token);
-          }
-          return result.token;
-        })
-        .finally(() => {
-          if (tokenSecretRequestCacheRef.current.get(id) === request) {
-            tokenSecretRequestCacheRef.current.delete(id);
-          }
-        });
+    const requestVersion = tokenSecretVersionRef.current.get(id) ?? 0
+    let request: Promise<string>
+    request = fetchTokenSecret(id, signal)
+      .then((result) => {
+        if (!signal?.aborted && (tokenSecretVersionRef.current.get(id) ?? 0) === requestVersion) {
+          tokenSecretCacheRef.current.set(id, result.token)
+        }
+        return result.token
+      })
+      .finally(() => {
+        if (tokenSecretRequestCacheRef.current.get(id) === request) {
+          tokenSecretRequestCacheRef.current.delete(id)
+        }
+      })
 
-      tokenSecretRequestCacheRef.current.set(id, request);
-      return await request;
-    },
-    [],
-  );
+    tokenSecretRequestCacheRef.current.set(id, request)
+    return await request
+  }, [])
 
-  const shouldPrewarmAdminSecretCopy = useMemo(
-    () => shouldPrewarmSecretCopy(),
-    [],
-  );
+  const shouldPrewarmAdminSecretCopy = useMemo(() => shouldPrewarmSecretCopy(), [])
 
   const clearSecretWarmTimer = useCallback((key: string) => {
-    const timer = secretWarmTimerRef.current.get(key);
+    const timer = secretWarmTimerRef.current.get(key)
     if (timer != null) {
-      window.clearTimeout(timer);
-      secretWarmTimerRef.current.delete(key);
+      window.clearTimeout(timer)
+      secretWarmTimerRef.current.delete(key)
     }
-  }, []);
+  }, [])
 
   const dropSecretWarmRequest = useCallback((key: string) => {
-    const separatorIndex = key.indexOf(":");
-    if (separatorIndex < 0) return;
-    const scope = key.slice(0, separatorIndex);
-    const id = key.slice(separatorIndex + 1);
-    if (!id) return;
-    if (scope === "token") {
-      tokenSecretRequestCacheRef.current.delete(id);
-      return;
+    const separatorIndex = key.indexOf(':')
+    if (separatorIndex < 0) return
+    const scope = key.slice(0, separatorIndex)
+    const id = key.slice(separatorIndex + 1)
+    if (!id) return
+    if (scope === 'token') {
+      tokenSecretRequestCacheRef.current.delete(id)
+      return
     }
-    if (scope === "key") {
-      secretRequestCacheRef.current.delete(id);
+    if (scope === 'key') {
+      secretRequestCacheRef.current.delete(id)
     }
-  }, []);
+  }, [])
 
-  const cancelSecretWarm = useCallback(
-    (key: string) => {
-      clearSecretWarmTimer(key);
-      const controller = secretWarmAbortRef.current.get(key);
-      if (controller) {
-        controller.abort();
-        secretWarmAbortRef.current.delete(key);
-        dropSecretWarmRequest(key);
-      }
-    },
-    [clearSecretWarmTimer, dropSecretWarmRequest],
-  );
+  const cancelSecretWarm = useCallback((key: string) => {
+    clearSecretWarmTimer(key)
+    const controller = secretWarmAbortRef.current.get(key)
+    if (controller) {
+      controller.abort()
+      secretWarmAbortRef.current.delete(key)
+      dropSecretWarmRequest(key)
+    }
+  }, [clearSecretWarmTimer, dropSecretWarmRequest])
 
-  const commitSecretWarm = useCallback(
-    (key: string) => {
-      clearSecretWarmTimer(key);
-      secretWarmAbortRef.current.delete(key);
-    },
-    [clearSecretWarmTimer],
-  );
+  const commitSecretWarm = useCallback((key: string) => {
+    clearSecretWarmTimer(key)
+    secretWarmAbortRef.current.delete(key)
+  }, [clearSecretWarmTimer])
 
-  const warmTokenSecret = useCallback(
-    (id: string) => {
-      if (!shouldPrewarmAdminSecretCopy) return;
-      const key = `token:${id}`;
-      clearSecretWarmTimer(key);
-      if (
-        tokenSecretCacheRef.current.has(id) ||
-        tokenSecretRequestCacheRef.current.has(id)
-      )
-        return;
-      const controller = new AbortController();
-      const requestVersion = tokenSecretVersionRef.current.get(id) ?? 0;
-      secretWarmAbortRef.current.set(key, controller);
-      void resolveTokenSecret(id, controller.signal)
-        .then((token) => {
-          if (secretWarmAbortRef.current.get(key) !== controller) return;
-          if ((tokenSecretVersionRef.current.get(id) ?? 0) === requestVersion) {
-            tokenSecretCacheRef.current.set(id, token);
-          }
-        })
-        .catch(() => undefined)
-        .finally(() => {
-          if (secretWarmAbortRef.current.get(key) === controller) {
-            secretWarmAbortRef.current.delete(key);
-          }
-        });
-    },
-    [clearSecretWarmTimer, resolveTokenSecret, shouldPrewarmAdminSecretCopy],
-  );
+  const warmTokenSecret = useCallback((id: string) => {
+    if (!shouldPrewarmAdminSecretCopy) return
+    const key = `token:${id}`
+    clearSecretWarmTimer(key)
+    if (tokenSecretCacheRef.current.has(id) || tokenSecretRequestCacheRef.current.has(id)) return
+    const controller = new AbortController()
+    const requestVersion = tokenSecretVersionRef.current.get(id) ?? 0
+    secretWarmAbortRef.current.set(key, controller)
+    void resolveTokenSecret(id, controller.signal)
+      .then((token) => {
+        if (secretWarmAbortRef.current.get(key) !== controller) return
+        if ((tokenSecretVersionRef.current.get(id) ?? 0) === requestVersion) {
+          tokenSecretCacheRef.current.set(id, token)
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (secretWarmAbortRef.current.get(key) === controller) {
+          secretWarmAbortRef.current.delete(key)
+        }
+      })
+  }, [clearSecretWarmTimer, resolveTokenSecret, shouldPrewarmAdminSecretCopy])
 
-  const warmApiKeySecret = useCallback(
-    (id: string) => {
-      if (!shouldPrewarmAdminSecretCopy) return;
-      const key = `key:${id}`;
-      clearSecretWarmTimer(key);
-      if (
-        secretCacheRef.current.has(id) ||
-        secretRequestCacheRef.current.has(id)
-      )
-        return;
-      const controller = new AbortController();
-      secretWarmAbortRef.current.set(key, controller);
-      void resolveApiKeySecret(id, controller.signal)
-        .then((secret) => {
-          if (secretWarmAbortRef.current.get(key) !== controller) return;
-          secretCacheRef.current.set(id, secret);
-        })
-        .catch(() => undefined)
-        .finally(() => {
-          if (secretWarmAbortRef.current.get(key) === controller) {
-            secretWarmAbortRef.current.delete(key);
-          }
-        });
-    },
-    [clearSecretWarmTimer, resolveApiKeySecret, shouldPrewarmAdminSecretCopy],
-  );
+  const warmApiKeySecret = useCallback((id: string) => {
+    if (!shouldPrewarmAdminSecretCopy) return
+    const key = `key:${id}`
+    clearSecretWarmTimer(key)
+    if (secretCacheRef.current.has(id) || secretRequestCacheRef.current.has(id)) return
+    const controller = new AbortController()
+    secretWarmAbortRef.current.set(key, controller)
+    void resolveApiKeySecret(id, controller.signal)
+      .then((secret) => {
+        if (secretWarmAbortRef.current.get(key) !== controller) return
+        secretCacheRef.current.set(id, secret)
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (secretWarmAbortRef.current.get(key) === controller) {
+          secretWarmAbortRef.current.delete(key)
+        }
+      })
+  }, [clearSecretWarmTimer, resolveApiKeySecret, shouldPrewarmAdminSecretCopy])
 
-  const scheduleSecretWarm = useCallback(
-    (key: string, warmup: () => void) => {
-      if (!shouldPrewarmAdminSecretCopy) return;
-      clearSecretWarmTimer(key);
-      const timer = window.setTimeout(() => {
-        secretWarmTimerRef.current.delete(key);
-        warmup();
-      }, 120);
-      secretWarmTimerRef.current.set(key, timer);
-    },
-    [clearSecretWarmTimer, shouldPrewarmAdminSecretCopy],
-  );
+  const scheduleSecretWarm = useCallback((key: string, warmup: () => void) => {
+    if (!shouldPrewarmAdminSecretCopy) return
+    clearSecretWarmTimer(key)
+    const timer = window.setTimeout(() => {
+      secretWarmTimerRef.current.delete(key)
+      warmup()
+    }, 120)
+    secretWarmTimerRef.current.set(key, timer)
+  }, [clearSecretWarmTimer, shouldPrewarmAdminSecretCopy])
 
   const handleTokenSecretRotated = useCallback((id: string, token: string) => {
-    tokenSecretVersionRef.current.set(
-      id,
-      (tokenSecretVersionRef.current.get(id) ?? 0) + 1,
-    );
-    tokenSecretRequestCacheRef.current.delete(id);
-    tokenSecretCacheRef.current.set(id, token);
-  }, []);
+    tokenSecretVersionRef.current.set(id, (tokenSecretVersionRef.current.get(id) ?? 0) + 1)
+    tokenSecretRequestCacheRef.current.delete(id)
+    tokenSecretCacheRef.current.set(id, token)
+  }, [])
 
   const beginManagedRequest = useCallback(
-    (
-      ref: { current: AbortController | null },
-      upstreamSignal?: AbortSignal,
-    ) => {
-      ref.current?.abort();
-      const controller = new AbortController();
-      ref.current = controller;
-      const forwardAbort = () => controller.abort();
+    (ref: { current: AbortController | null }, upstreamSignal?: AbortSignal) => {
+      ref.current?.abort()
+      const controller = new AbortController()
+      ref.current = controller
+      const forwardAbort = () => controller.abort()
       if (upstreamSignal) {
         if (upstreamSignal.aborted) {
-          controller.abort();
+          controller.abort()
         } else {
-          upstreamSignal.addEventListener("abort", forwardAbort, {
-            once: true,
-          });
+          upstreamSignal.addEventListener('abort', forwardAbort, { once: true })
         }
       }
       return {
@@ -2385,110 +1972,104 @@ function AdminDashboard(): JSX.Element {
         abort: () => controller.abort(),
         cleanup: () => {
           if (upstreamSignal) {
-            upstreamSignal.removeEventListener("abort", forwardAbort);
+            upstreamSignal.removeEventListener('abort', forwardAbort)
           }
           if (ref.current === controller) {
-            ref.current = null;
+            ref.current = null
           }
         },
-      };
-    },
-    [],
-  );
-
-  const loadAllTokensForDashboard = useCallback(
-    async (
-      signal?: AbortSignal,
-    ): Promise<{ items: AuthToken[]; truncated: boolean }> => {
-      const perPage = DASHBOARD_TOKENS_PAGE_SIZE;
-      const maxPages = DASHBOARD_TOKENS_MAX_PAGES;
-      let page = 1;
-      let total = Number.POSITIVE_INFINITY;
-      const items: AuthToken[] = [];
-
-      while (page <= maxPages && items.length < total) {
-        const result = await fetchTokens(page, perPage, undefined, signal);
-        if (signal?.aborted) break;
-        items.push(...result.items);
-        total = result.total;
-        if (result.items.length < perPage) break;
-        page += 1;
       }
-
-      const truncated = items.length < total;
-      return { items, truncated };
     },
     [],
-  );
+  )
+
+  const loadAllTokensForDashboard = useCallback(async (
+    signal?: AbortSignal,
+  ): Promise<{ items: AuthToken[]; truncated: boolean }> => {
+    const perPage = DASHBOARD_TOKENS_PAGE_SIZE
+    const maxPages = DASHBOARD_TOKENS_MAX_PAGES
+    let page = 1
+    let total = Number.POSITIVE_INFINITY
+    const items: AuthToken[] = []
+
+    while (page <= maxPages && items.length < total) {
+      const result = await fetchTokens(page, perPage, undefined, signal)
+      if (signal?.aborted) break
+      items.push(...result.items)
+      total = result.total
+      if (result.items.length < perPage) break
+      page += 1
+    }
+
+    const truncated = items.length < total
+    return { items, truncated }
+  }, [])
 
   const loadExhaustedKeysForDashboard = useCallback(
     async (signal?: AbortSignal): Promise<ApiKeyStats[]> => {
       const result = await fetchApiKeys(
         1,
         DASHBOARD_EXHAUSTED_KEYS_PAGE_SIZE,
-        { statuses: ["exhausted"] },
+        { statuses: ['exhausted'] },
         signal,
-      );
-      return result.items;
+      )
+      return result.items
     },
     [],
-  );
+  )
 
   const loadDashboardSignalsSnapshot = useCallback(
     async (
       signal?: AbortSignal,
-    ): Promise<{
-      tokenSnapshot: DashboardTokenSnapshot;
-      jobsSnapshot: DashboardJobsSnapshot;
-    }> => {
+    ): Promise<{ tokenSnapshot: DashboardTokenSnapshot; jobsSnapshot: DashboardJobsSnapshot }> => {
       const [tokenSnapshot, jobsSnapshot] = await Promise.all([
         loadAllTokensForDashboard(signal)
-          .then((value) => ({ kind: "ok" as const, ...value }))
-          .catch(() => ({ kind: "error" as const })),
-        fetchJobs(1, DASHBOARD_RECENT_JOBS_PER_PAGE, "all", signal)
-          .then((data) => ({ kind: "ok" as const, data }))
-          .catch(() => ({ kind: "error" as const })),
-      ]);
-      return { tokenSnapshot, jobsSnapshot };
+          .then((value) => ({ kind: 'ok' as const, ...value }))
+          .catch(() => ({ kind: 'error' as const })),
+        fetchJobs(1, DASHBOARD_RECENT_JOBS_PER_PAGE, 'all', signal)
+          .then((data) => ({ kind: 'ok' as const, data }))
+          .catch(() => ({ kind: 'error' as const })),
+      ])
+      return { tokenSnapshot, jobsSnapshot }
     },
     [loadAllTokensForDashboard],
-  );
+  )
 
   const applyDashboardSignalsSnapshot = useCallback(
     ({
       tokenSnapshot,
       jobsSnapshot,
     }: {
-      tokenSnapshot: DashboardTokenSnapshot;
-      jobsSnapshot: DashboardJobsSnapshot;
+      tokenSnapshot: DashboardTokenSnapshot
+      jobsSnapshot: DashboardJobsSnapshot
     }) => {
-      if (tokenSnapshot.kind === "ok") {
-        setDashboardTokens(tokenSnapshot.items);
-        setDashboardTokenCoverage(tokenSnapshot.truncated ? "truncated" : "ok");
+      if (tokenSnapshot.kind === 'ok') {
+        setDashboardTokens(tokenSnapshot.items)
+        setDashboardTokenCoverage(tokenSnapshot.truncated ? 'truncated' : 'ok')
       } else {
-        setDashboardTokenCoverage("error");
+        setDashboardTokenCoverage('error')
       }
-      if (jobsSnapshot.kind === "ok") {
-        setDashboardJobs(jobsSnapshot.data.items);
+      if (jobsSnapshot.kind === 'ok') {
+        setDashboardJobs(jobsSnapshot.data.items)
       }
     },
     [],
-  );
+  )
 
   const handleCopySecret = useCallback(
     async (id: string, stateKey: string, anchorEl?: HTMLElement | null) => {
-      setManualCopyBubble(null);
-      commitSecretWarm(`key:${id}`);
-      updateCopyState(stateKey, "loading");
+      setManualCopyBubble(null)
+      commitSecretWarm(`key:${id}`)
+      updateCopyState(stateKey, 'loading')
       try {
-        const hasCachedSecret = secretCacheRef.current.has(id);
-        const secret = await resolveApiKeySecret(id);
+        const hasCachedSecret = secretCacheRef.current.has(id)
+        const secret = await resolveApiKeySecret(id)
         const copyResult = await copyToClipboard(
           secret,
           hasCachedSecret ? { preferExecCommand: true } : undefined,
-        );
+        )
         if (!copyResult.ok) {
-          updateCopyState(stateKey, null);
+          updateCopyState(stateKey, null)
           if (anchorEl) {
             openManualCopyBubble({
               anchorEl,
@@ -2496,17 +2077,17 @@ function AdminDashboard(): JSX.Element {
               description: manualCopyText.description,
               fieldLabel: manualCopyText.fields.apiKey,
               value: secret,
-            });
+            })
           }
-          return;
+          return
         }
-        setManualCopyBubble(null);
-        updateCopyState(stateKey, "copied");
-        window.setTimeout(() => updateCopyState(stateKey, null), 2000);
+        setManualCopyBubble(null)
+        updateCopyState(stateKey, 'copied')
+        window.setTimeout(() => updateCopyState(stateKey, null), 2000)
       } catch (err) {
-        console.error(err);
-        setError(err instanceof Error ? err.message : errorStrings.copyKey);
-        updateCopyState(stateKey, null);
+        console.error(err)
+        setError(err instanceof Error ? err.message : errorStrings.copyKey)
+        updateCopyState(stateKey, null)
       }
     },
     [
@@ -2519,18 +2100,16 @@ function AdminDashboard(): JSX.Element {
       commitSecretWarm,
       updateCopyState,
     ],
-  );
+  )
 
   const handleCopyMonthlyBrokenKeyId = useCallback(
     async (keyId: string, stateKey: string, anchorEl?: HTMLElement | null) => {
-      setManualCopyBubble(null);
-      updateCopyState(stateKey, "loading");
+      setManualCopyBubble(null)
+      updateCopyState(stateKey, 'loading')
       try {
-        const copyResult = await copyToClipboard(keyId, {
-          preferExecCommand: true,
-        });
+        const copyResult = await copyToClipboard(keyId, { preferExecCommand: true })
         if (!copyResult.ok) {
-          updateCopyState(stateKey, null);
+          updateCopyState(stateKey, null)
           if (anchorEl) {
             openManualCopyBubble({
               anchorEl,
@@ -2538,146 +2117,126 @@ function AdminDashboard(): JSX.Element {
               description: manualCopyText.description,
               fieldLabel: manualCopyText.fields.keyId,
               value: keyId,
-            });
+            })
           }
-          return;
+          return
         }
-        setManualCopyBubble(null);
-        updateCopyState(stateKey, "copied");
-        window.setTimeout(() => updateCopyState(stateKey, null), 2000);
+        setManualCopyBubble(null)
+        updateCopyState(stateKey, 'copied')
+        window.setTimeout(() => updateCopyState(stateKey, null), 2000)
       } catch (err) {
-        console.error(err);
-        setError(err instanceof Error ? err.message : errorStrings.copyKey);
-        updateCopyState(stateKey, null);
+        console.error(err)
+        setError(err instanceof Error ? err.message : errorStrings.copyKey)
+        updateCopyState(stateKey, null)
       }
     },
-    [
-      copyToClipboard,
-      errorStrings.copyKey,
-      manualCopyText,
-      openManualCopyBubble,
-      setError,
-      updateCopyState,
-    ],
-  );
+    [copyToClipboard, errorStrings.copyKey, manualCopyText, openManualCopyBubble, setError, updateCopyState],
+  )
 
   const loadData = useCallback(
     async ({
       signal,
-      reason = "refresh",
+      reason = 'refresh',
       showGlobalLoading = false,
     }: {
-      signal?: AbortSignal;
-      reason?: "initial" | "switch" | "refresh";
-      showGlobalLoading?: boolean;
+      signal?: AbortSignal
+      reason?: 'initial' | 'switch' | 'refresh'
+      showGlobalLoading?: boolean
     } = {}) => {
-      const request = beginManagedRequest(baseDataAbortRef, signal);
+      const request = beginManagedRequest(baseDataAbortRef, signal)
       setTokensLoadState(
-        reason === "refresh"
+        reason === 'refresh'
           ? getRefreshingLoadState(baseDataLoadedRef.current)
           : getBlockingLoadState(baseDataLoadedRef.current),
-      );
-      if (reason !== "refresh") {
-        setTokens([]);
-        setTokensTotal(0);
+      )
+      if (reason !== 'refresh') {
+        setTokens([])
+        setTokensTotal(0)
       }
       try {
-        const [summaryData, ver, profileData, tokenData, tokenGroupsData] =
-          await Promise.all([
-            fetchSummary(request.signal),
-            fetchVersion(request.signal).catch(() => null),
-            fetchProfile(request.signal).catch(() => null),
-            fetchTokens(
-              tokensPage,
-              tokensPerPage,
-              {
-                group: selectedTokenGroupName,
-                ungrouped: selectedTokenUngrouped,
-              },
-              request.signal,
-            ).catch(
-              () =>
-                ({
-                  items: [],
-                  total: 0,
-                  page: tokensPage,
-                  perPage: tokensPerPage,
-                }) as Paginated<AuthToken>,
-            ),
-            fetchTokenGroups(request.signal).catch(() => [] as TokenGroup[]),
-          ]);
+        const [summaryData, ver, profileData, tokenData, tokenGroupsData] = await Promise.all([
+          fetchSummary(request.signal),
+          fetchVersion(request.signal).catch(() => null),
+          fetchProfile(request.signal).catch(() => null),
+          fetchTokens(
+            tokensPage,
+            tokensPerPage,
+            { group: selectedTokenGroupName, ungrouped: selectedTokenUngrouped },
+            request.signal,
+          ).catch(
+            () =>
+              ({
+                items: [],
+                total: 0,
+                page: tokensPage,
+                perPage: tokensPerPage,
+              }) as Paginated<AuthToken>,
+          ),
+          fetchTokenGroups(request.signal).catch(() => [] as TokenGroup[]),
+        ])
 
         if (request.signal.aborted) {
-          return;
+          return
         }
 
-        setProfile(profileData ?? null);
-        setSummary(summaryData);
-        setTokens(tokenData.items);
-        setTokensTotal(tokenData.total);
-        setTokenGroups(tokenGroupsData);
-        setVersion(ver ?? null);
-        setLastUpdated(new Date());
-        setError(null);
-        setTokensLoadState("ready");
-        baseDataLoadedRef.current = true;
+        setProfile(profileData ?? null)
+        setSummary(summaryData)
+        setTokens(tokenData.items)
+        setTokensTotal(tokenData.total)
+        setTokenGroups(tokenGroupsData)
+        setVersion(ver ?? null)
+        setLastUpdated(new Date())
+        setError(null)
+        setTokensLoadState('ready')
+        baseDataLoadedRef.current = true
       } catch (err) {
-        if ((err as Error).name === "AbortError") {
-          return;
+        if ((err as Error).name === 'AbortError') {
+          return
         }
-        setError(
-          err instanceof Error ? err.message : "Unexpected error occurred",
-        );
-        setTokensLoadState("error");
+        setError(err instanceof Error ? err.message : 'Unexpected error occurred')
+        setTokensLoadState('error')
       } finally {
         if (showGlobalLoading && !request.signal.aborted) {
-          setLoading(false);
+          setLoading(false)
         }
-        request.cleanup();
+        request.cleanup()
       }
     },
-    [
-      beginManagedRequest,
-      tokensPage,
-      selectedTokenGroupName,
-      selectedTokenUngrouped,
-    ],
-  );
+    [beginManagedRequest, tokensPage, selectedTokenGroupName, selectedTokenUngrouped],
+  )
 
   const loadDashboardOverview = useCallback(
     async (signal?: AbortSignal) => {
-      const requestVersion = ++dashboardOverviewVersionRef.current;
-      const signalVersion = ++dashboardSignalsVersionRef.current;
+      const requestVersion = ++dashboardOverviewVersionRef.current
+      const signalVersion = ++dashboardSignalsVersionRef.current
       try {
         const dashboardWindowsRequest = fetchSummaryWindows(signal)
-          .then((data) => ({ kind: "ok" as const, data }))
+          .then((data) => ({ kind: 'ok' as const, data }))
           .catch((error: unknown) => ({
-            kind: "error" as const,
+            kind: 'error' as const,
             status:
-              typeof error === "object" && error && "status" in error
-                ? ((error as { status?: number }).status ?? null)
+              typeof error === 'object' && error && 'status' in error
+                ? (error as { status?: number }).status ?? null
                 : null,
-          }));
+          }))
         const dashboardSummaryRequest = fetchSummary(signal)
-          .then((data) => ({ kind: "ok" as const, data }))
+          .then((data) => ({ kind: 'ok' as const, data }))
           .catch((error: unknown) => ({
-            kind: "error" as const,
+            kind: 'error' as const,
             status:
-              typeof error === "object" && error && "status" in error
-                ? ((error as { status?: number }).status ?? null)
+              typeof error === 'object' && error && 'status' in error
+                ? (error as { status?: number }).status ?? null
                 : null,
-          }));
-        const dashboardForwardProxyRequest = fetchForwardProxyDashboardSummary(
-          signal,
-        )
-          .then((data) => ({ kind: "ok" as const, data }))
+          }))
+        const dashboardForwardProxyRequest = fetchForwardProxyDashboardSummary(signal)
+          .then((data) => ({ kind: 'ok' as const, data }))
           .catch((error: unknown) => ({
-            kind: "error" as const,
+            kind: 'error' as const,
             status:
-              typeof error === "object" && error && "status" in error
-                ? ((error as { status?: number }).status ?? null)
+              typeof error === 'object' && error && 'status' in error
+                ? (error as { status?: number }).status ?? null
                 : null,
-          }));
+          }))
         const [
           dashboardSummaryWindowsResult,
           dashboardSummarySnapshotResult,
@@ -2690,15 +2249,8 @@ function AdminDashboard(): JSX.Element {
           dashboardSummaryRequest,
           dashboardForwardProxyRequest,
           loadDashboardSignalsSnapshot(signal),
-          loadExhaustedKeysForDashboard(signal).catch(
-            () => [] as ApiKeyStats[],
-          ),
-          fetchRequestLogs(
-            1,
-            DASHBOARD_RECENT_LOGS_PER_PAGE,
-            undefined,
-            signal,
-          ).catch(
+          loadExhaustedKeysForDashboard(signal).catch(() => [] as ApiKeyStats[]),
+          fetchRequestLogs(1, DASHBOARD_RECENT_LOGS_PER_PAGE, undefined, signal).catch(
             () =>
               ({
                 items: [],
@@ -2707,38 +2259,36 @@ function AdminDashboard(): JSX.Element {
                 perPage: DASHBOARD_RECENT_LOGS_PER_PAGE,
               }) as Paginated<RequestLog>,
           ),
-        ]);
+        ])
 
         if (signal?.aborted) {
-          return;
+          return
         }
-        const overviewStale =
-          requestVersion !== dashboardOverviewVersionRef.current;
-        const signalsStale =
-          signalVersion !== dashboardSignalsVersionRef.current;
+        const overviewStale = requestVersion !== dashboardOverviewVersionRef.current
+        const signalsStale = signalVersion !== dashboardSignalsVersionRef.current
 
         const dashboardAuthExpired =
-          (dashboardSummaryWindowsResult.kind === "error" &&
+          (dashboardSummaryWindowsResult.kind === 'error' &&
             dashboardSummaryWindowsResult.status === 403) ||
-          (dashboardSummarySnapshotResult.kind === "error" &&
+          (dashboardSummarySnapshotResult.kind === 'error' &&
             dashboardSummarySnapshotResult.status === 403) ||
-          (dashboardForwardProxyResult.kind === "error" &&
-            dashboardForwardProxyResult.status === 403);
+          (dashboardForwardProxyResult.kind === 'error' &&
+            dashboardForwardProxyResult.status === 403)
 
         const nextSummary =
-          !dashboardAuthExpired && dashboardSummarySnapshotResult.kind === "ok"
+          !dashboardAuthExpired && dashboardSummarySnapshotResult.kind === 'ok'
             ? dashboardSummarySnapshotResult.data
-            : null;
+            : null
         const nextSummaryWindows =
-          !dashboardAuthExpired && dashboardSummaryWindowsResult.kind === "ok"
+          !dashboardAuthExpired && dashboardSummaryWindowsResult.kind === 'ok'
             ? dashboardSummaryWindowsResult.data
-            : null;
+            : null
         const nextForwardProxySummary: ForwardProxyDashboardSummaryResponse | null =
-          !dashboardAuthExpired && dashboardForwardProxyResult.kind === "ok"
+          !dashboardAuthExpired && dashboardForwardProxyResult.kind === 'ok'
             ? dashboardForwardProxyResult.data
-            : null;
+            : null
         if (!overviewStale) {
-          setDashboardSummaryWindows(nextSummaryWindows);
+          setDashboardSummaryWindows(nextSummaryWindows)
           setDashboardSiteStatusSnapshot(
             nextSummary
               ? {
@@ -2747,197 +2297,188 @@ function AdminDashboard(): JSX.Element {
                   activeKeys: nextSummary.active_keys,
                   quarantinedKeys: nextSummary.quarantined_keys,
                   exhaustedKeys: nextSummary.exhausted_keys,
-                  availableProxyNodes:
-                    nextForwardProxySummary?.availableNodes ?? null,
+                  availableProxyNodes: nextForwardProxySummary?.availableNodes ?? null,
                   totalProxyNodes: nextForwardProxySummary?.totalNodes ?? null,
                 }
               : null,
-          );
+          )
         }
         if (!signalsStale) {
-          applyDashboardSignalsSnapshot(dashboardSignalsSnapshot);
+          applyDashboardSignalsSnapshot(dashboardSignalsSnapshot)
         }
         if (!overviewStale) {
-          setDashboardKeys(dashboardKeysData);
-          setDashboardLogs(dashboardLogsData.items);
+          setDashboardKeys(dashboardKeysData)
+          setDashboardLogs(dashboardLogsData.items)
         }
       } catch (err) {
-        if ((err as Error).name === "AbortError") {
-          return;
+        if ((err as Error).name === 'AbortError') {
+          return
         }
-        const overviewStale =
-          requestVersion !== dashboardOverviewVersionRef.current;
+        const overviewStale = requestVersion !== dashboardOverviewVersionRef.current
         if (overviewStale) {
-          return;
+          return
         }
-        setDashboardSummaryWindows(null);
-        setDashboardSiteStatusSnapshot(null);
-        setDashboardTokens([]);
-        setDashboardTokenCoverage("error");
-        setDashboardKeys([]);
-        setDashboardLogs([]);
-        setDashboardJobs([]);
+        setDashboardSummaryWindows(null)
+        setDashboardSiteStatusSnapshot(null)
+        setDashboardTokens([])
+        setDashboardTokenCoverage('error')
+        setDashboardKeys([])
+        setDashboardLogs([])
+        setDashboardJobs([])
       } finally {
-        if (
-          !(signal?.aborted ?? false) &&
-          requestVersion === dashboardOverviewVersionRef.current
-        ) {
-          setDashboardOverviewLoaded(true);
+        if (!(signal?.aborted ?? false) && requestVersion === dashboardOverviewVersionRef.current) {
+          setDashboardOverviewLoaded(true)
         }
       }
     },
-    [
-      applyDashboardSignalsSnapshot,
-      loadDashboardSignalsSnapshot,
-      loadExhaustedKeysForDashboard,
-    ],
-  );
+    [applyDashboardSignalsSnapshot, loadDashboardSignalsSnapshot, loadExhaustedKeysForDashboard],
+  )
 
   const refreshDashboardSignals = useCallback(
     async (signal?: AbortSignal) => {
-      const requestVersion = ++dashboardSignalsVersionRef.current;
-      const snapshot = await loadDashboardSignalsSnapshot(signal);
-      if (
-        signal?.aborted ||
-        requestVersion !== dashboardSignalsVersionRef.current
-      ) {
-        return;
+      const requestVersion = ++dashboardSignalsVersionRef.current
+      const snapshot = await loadDashboardSignalsSnapshot(signal)
+      if (signal?.aborted || requestVersion !== dashboardSignalsVersionRef.current) {
+        return
       }
-      applyDashboardSignalsSnapshot(snapshot);
+      applyDashboardSignalsSnapshot(snapshot)
     },
     [applyDashboardSignalsSnapshot, loadDashboardSignalsSnapshot],
-  );
+  )
 
   useEffect(() => {
-    routeRef.current = route;
-  }, [route]);
+    routeRef.current = route
+  }, [route])
 
-  const loadTokenLeaderboard = useCallback(
+  const loadUnboundTokenUsage = useCallback(
     async ({
       signal,
-      reason = "refresh",
+      reason = 'refresh',
     }: {
-      signal?: AbortSignal;
-      reason?: "initial" | "switch" | "refresh";
+      signal?: AbortSignal
+      reason?: 'initial' | 'switch' | 'refresh'
     } = {}) => {
+      const request = beginManagedRequest(unboundTokenUsageAbortRef, signal)
       try {
-        setTokenLeaderboardLoadState(
-          reason === "refresh"
-            ? getRefreshingLoadState(
-                tokenLeaderboardQueryKeyRef.current != null,
-              )
-            : getBlockingLoadState(tokenLeaderboardQueryKeyRef.current != null),
-        );
-        setTokenLeaderboardError(null);
-        if (reason !== "refresh") {
-          setTokenLeaderboard([]);
+        setUnboundTokenUsageLoadState(
+          reason === 'refresh'
+            ? getRefreshingLoadState(unboundTokenUsageQueryKeyRef.current != null)
+            : getBlockingLoadState(unboundTokenUsageQueryKeyRef.current != null),
+        )
+        setUnboundTokenUsageError(null)
+        if (reason !== 'refresh') {
+          setUnboundTokenUsage([])
+          setUnboundTokenUsageTotal(0)
         }
-        const items = await fetchTokenUsageLeaderboard(
-          tokenLeaderboardPeriod,
-          tokenLeaderboardFocus,
-          signal,
-        );
-        if (signal?.aborted) return;
-        const sorted = sortLeaderboard(
-          items,
-          tokenLeaderboardPeriod,
-          tokenLeaderboardFocus,
-        ).slice(0, 50);
-        setTokenLeaderboard(sorted);
-        setTokenLeaderboardLoadState("ready");
-        tokenLeaderboardQueryKeyRef.current = `${tokenLeaderboardPeriod}:${tokenLeaderboardFocus}`;
-        tokenLeaderboardNonceRef.current = tokenLeaderboardNonce;
+        const paged = await fetchAdminUnboundTokenUsage(
+          unboundTokenUsagePage,
+          USERS_PER_PAGE,
+          unboundTokenUsageQuery,
+          unboundTokenUsageSort,
+          unboundTokenUsageSortOrder,
+          request.signal,
+        )
+        if (request.signal.aborted) return
+        setUnboundTokenUsage(paged.items)
+        setUnboundTokenUsageTotal(paged.total)
+        setUnboundTokenUsageLoadState('ready')
+        unboundTokenUsageLoadedRef.current = true
+        unboundTokenUsageQueryKeyRef.current = [
+          unboundTokenUsagePage,
+          unboundTokenUsageQuery,
+          unboundTokenUsageSort ?? '',
+          unboundTokenUsageSortOrder ?? '',
+        ].join(':')
       } catch (err) {
-        if (signal?.aborted) return;
-        console.error(err);
-        setTokenLeaderboard([]);
-        setTokenLeaderboardError(
-          err instanceof Error ? err.message : tokenLeaderboardStrings.error,
-        );
-        setTokenLeaderboardLoadState("error");
+        if (request.signal.aborted) return
+        console.error(err)
+        setUnboundTokenUsage([])
+        setUnboundTokenUsageTotal(0)
+        setUnboundTokenUsageError(err instanceof Error ? err.message : unboundTokenUsageStrings.error)
+        setUnboundTokenUsageLoadState('error')
+      } finally {
+        request.cleanup()
       }
     },
     [
-      tokenLeaderboardFocus,
-      tokenLeaderboardNonce,
-      tokenLeaderboardPeriod,
-      tokenLeaderboardStrings.error,
+      beginManagedRequest,
+      unboundTokenUsagePage,
+      unboundTokenUsageQuery,
+      unboundTokenUsageSort,
+      unboundTokenUsageSortOrder,
+      unboundTokenUsageStrings.error,
     ],
-  );
+  )
 
   const loadForwardProxySettingsData = useCallback(
     async ({
       signal,
-      reason = "refresh",
+      reason = 'refresh',
     }: {
-      signal?: AbortSignal;
-      reason?: "initial" | "switch" | "refresh";
+      signal?: AbortSignal
+      reason?: 'initial' | 'switch' | 'refresh'
     } = {}) => {
-      const request = beginManagedRequest(forwardProxySettingsAbortRef, signal);
+      const request = beginManagedRequest(forwardProxySettingsAbortRef, signal)
       setForwardProxySettingsLoadState(
-        reason === "refresh"
+        reason === 'refresh'
           ? getRefreshingLoadState(forwardProxySettingsLoadedRef.current)
           : getBlockingLoadState(forwardProxySettingsLoadedRef.current),
-      );
-      setForwardProxySettingsError(null);
+      )
+      setForwardProxySettingsError(null)
 
       try {
-        const nextSettings = await fetchForwardProxySettings(request.signal);
-        if (request.signal.aborted) return;
-        setForwardProxySettings(nextSettings);
-        setForwardProxySettingsLoadState("ready");
-        setLastUpdated(new Date());
-        forwardProxySettingsLoadedRef.current = true;
+        const nextSettings = await fetchForwardProxySettings(request.signal)
+        if (request.signal.aborted) return
+        setForwardProxySettings(nextSettings)
+        setForwardProxySettingsLoadState('ready')
+        setLastUpdated(new Date())
+        forwardProxySettingsLoadedRef.current = true
       } catch (err) {
-        if (request.signal.aborted) return;
-        console.error(err);
-        setForwardProxySettingsError(
-          err instanceof Error ? err.message : loadingStateStrings.error,
-        );
-        setForwardProxySettingsLoadState("error");
+        if (request.signal.aborted) return
+        console.error(err)
+        setForwardProxySettingsError(err instanceof Error ? err.message : loadingStateStrings.error)
+        setForwardProxySettingsLoadState('error')
       } finally {
-        request.cleanup();
+        request.cleanup()
       }
     },
     [beginManagedRequest, loadingStateStrings.error],
-  );
+  )
 
   const loadForwardProxyStatsData = useCallback(
     async ({
       signal,
-      reason = "refresh",
+      reason = 'refresh',
     }: {
-      signal?: AbortSignal;
-      reason?: "initial" | "switch" | "refresh";
+      signal?: AbortSignal
+      reason?: 'initial' | 'switch' | 'refresh'
     } = {}) => {
-      const request = beginManagedRequest(forwardProxyStatsAbortRef, signal);
+      const request = beginManagedRequest(forwardProxyStatsAbortRef, signal)
       setForwardProxyStatsLoadState(
-        reason === "refresh"
+        reason === 'refresh'
           ? getRefreshingLoadState(forwardProxyStatsLoadedRef.current)
           : getBlockingLoadState(forwardProxyStatsLoadedRef.current),
-      );
-      setForwardProxyStatsError(null);
+      )
+      setForwardProxyStatsError(null)
 
       try {
-        const nextStats = await fetchForwardProxyStats(request.signal);
-        if (request.signal.aborted) return;
-        setForwardProxyStats(nextStats);
-        setForwardProxyStatsLoadState("ready");
-        setLastUpdated(new Date());
-        forwardProxyStatsLoadedRef.current = true;
+        const nextStats = await fetchForwardProxyStats(request.signal)
+        if (request.signal.aborted) return
+        setForwardProxyStats(nextStats)
+        setForwardProxyStatsLoadState('ready')
+        setLastUpdated(new Date())
+        forwardProxyStatsLoadedRef.current = true
       } catch (err) {
-        if (request.signal.aborted) return;
-        console.error(err);
-        setForwardProxyStatsError(
-          err instanceof Error ? err.message : loadingStateStrings.error,
-        );
-        setForwardProxyStatsLoadState("error");
+        if (request.signal.aborted) return
+        console.error(err)
+        setForwardProxyStatsError(err instanceof Error ? err.message : loadingStateStrings.error)
+        setForwardProxyStatsLoadState('error')
       } finally {
-        request.cleanup();
+        request.cleanup()
       }
     },
     [beginManagedRequest, loadingStateStrings.error],
-  );
+  )
 
   const validateForwardProxyCandidates = useCallback(
     async (
@@ -2946,71 +2487,62 @@ function AdminDashboard(): JSX.Element {
       onProgress?: (event: ForwardProxyProgressEvent) => void,
       signal?: AbortSignal,
     ): Promise<ForwardProxyValidationEntry[]> => {
-      const results = new Array<ForwardProxyValidationEntry>(rawValues.length);
-      let hadFatalError = false;
-      const fallbackPhaseKey =
-        kind === "subscriptionUrl" ? "normalize_input" : "parse_input";
+      const results = new Array<ForwardProxyValidationEntry>(rawValues.length)
+      let hadFatalError = false
+      const fallbackPhaseKey = kind === 'subscriptionUrl' ? 'normalize_input' : 'parse_input'
       const fallbackLabel =
-        kind === "subscriptionUrl"
+        kind === 'subscriptionUrl'
           ? proxySettingsStrings.progress.steps.normalize_input
-          : proxySettingsStrings.progress.steps.parse_input;
+          : proxySettingsStrings.progress.steps.parse_input
       const emitValidationError = (
         message: string,
-        lastPhase?: Extract<
-          ForwardProxyProgressEvent,
-          { type: "phase" }
-        > | null,
+        lastPhase?: Extract<ForwardProxyProgressEvent, { type: 'phase' }> | null,
         detail?: string,
       ) => {
         onProgress?.({
-          type: "error",
-          operation: "validate",
+          type: 'error',
+          operation: 'validate',
           phaseKey: lastPhase?.phaseKey ?? fallbackPhaseKey,
           label: lastPhase?.label ?? fallbackLabel,
           current: lastPhase?.current,
           total: lastPhase?.total,
           message,
           detail: lastPhase?.detail ?? detail,
-        });
-      };
+        })
+      }
 
       if (rawValues.length === 1) {
-        const value = rawValues[0];
-        let lastPhase: Extract<
-          ForwardProxyProgressEvent,
-          { type: "phase" }
-        > | null = null;
+        const value = rawValues[0]
+        let lastPhase: Extract<ForwardProxyProgressEvent, { type: 'phase' }> | null = null
         try {
           const result = await validateForwardProxyCandidateWithProgress(
             { kind, value },
             (event) => {
-              if (event.type === "complete") return;
-              if (event.type === "phase") {
-                lastPhase = event;
+              if (event.type === 'complete') return
+              if (event.type === 'phase') {
+                lastPhase = event
               }
-              onProgress?.(event);
+              onProgress?.(event)
             },
             signal,
-          );
+          )
           results[0] = {
             id: `${kind}:0:${value}`,
             kind,
             value,
             result,
-          } satisfies ForwardProxyValidationEntry;
+          } satisfies ForwardProxyValidationEntry
           if (!result.ok) {
-            emitValidationError(result.message, lastPhase, value);
+            emitValidationError(result.message, lastPhase, value)
           }
         } catch (err) {
-          if (signal?.aborted || (err as Error).name === "AbortError") {
-            throw err;
+          if (signal?.aborted || (err as Error).name === 'AbortError') {
+            throw err
           }
-          hadFatalError = true;
+          hadFatalError = true
           const message =
-            err instanceof Error
-              ? err.message
-              : proxySettingsStrings.validation.requestFailed;
-          emitValidationError(message, lastPhase, value);
+            err instanceof Error ? err.message : proxySettingsStrings.validation.requestFailed
+          emitValidationError(message, lastPhase, value)
           results[0] = {
             id: `${kind}:0:${value}`,
             kind,
@@ -3022,118 +2554,111 @@ function AdminDashboard(): JSX.Element {
               discoveredNodes: 0,
               latencyMs: null,
             },
-          } satisfies ForwardProxyValidationEntry;
+          } satisfies ForwardProxyValidationEntry
         }
       } else {
-        let introEmitted = false;
-        const probeStarted = new Set<number>();
-        const lastPhaseByIndex = new Array<Extract<
-          ForwardProxyProgressEvent,
-          { type: "phase" }
-        > | null>(rawValues.length).fill(null);
+        let introEmitted = false
+        const probeStarted = new Set<number>()
+        const lastPhaseByIndex = new Array<Extract<ForwardProxyProgressEvent, { type: 'phase' }> | null>(
+          rawValues.length,
+        ).fill(null)
 
-        await Promise.all(
-          rawValues.map(async (value, index) => {
-            try {
-              const result = await validateForwardProxyCandidateWithProgress(
-                { kind, value },
-                (event) => {
-                  if (!onProgress || event.type === "complete") return;
+        await Promise.all(rawValues.map(async (value, index) => {
+          try {
+            const result = await validateForwardProxyCandidateWithProgress(
+              { kind, value },
+              (event) => {
+                if (!onProgress || event.type === 'complete') return
 
-                  if (event.type === "phase") {
-                    lastPhaseByIndex[index] = event;
-                    if (
-                      (event.phaseKey === "parse_input" ||
-                        event.phaseKey === "normalize_input" ||
-                        event.phaseKey === "fetch_subscription") &&
-                      !introEmitted
-                    ) {
-                      introEmitted = true;
-                      onProgress(event);
-                      return;
-                    }
-
-                    if (event.phaseKey === "probe_nodes") {
-                      probeStarted.add(index);
-                      onProgress({
-                        ...event,
-                        current: probeStarted.size,
-                        total: rawValues.length,
-                      });
-                      return;
-                    }
-
-                    if (event.phaseKey === "generate_result") {
-                      return;
-                    }
+                if (event.type === 'phase') {
+                  lastPhaseByIndex[index] = event
+                  if (
+                    (event.phaseKey === 'parse_input' ||
+                      event.phaseKey === 'normalize_input' ||
+                      event.phaseKey === 'fetch_subscription') &&
+                    !introEmitted
+                  ) {
+                    introEmitted = true
+                    onProgress(event)
+                    return
                   }
 
-                  onProgress(event);
-                },
-                signal,
-              );
-              results[index] = {
-                id: `${kind}:${index}:${value}`,
-                kind,
-                value,
-                result,
-              } satisfies ForwardProxyValidationEntry;
-            } catch (err) {
-              if (signal?.aborted || (err as Error).name === "AbortError") {
-                throw err;
-              }
-              hadFatalError = true;
-              const message =
-                err instanceof Error
-                  ? err.message
-                  : proxySettingsStrings.validation.requestFailed;
-              emitValidationError(message, lastPhaseByIndex[index], value);
-              results[index] = {
-                id: `${kind}:${index}:${value}`,
-                kind,
-                value,
-                result: {
-                  ok: false,
-                  message,
-                  normalizedValue: value,
-                  discoveredNodes: 0,
-                  latencyMs: null,
-                },
-              } satisfies ForwardProxyValidationEntry;
-            }
-          }),
-        );
+                  if (event.phaseKey === 'probe_nodes') {
+                    probeStarted.add(index)
+                    onProgress({
+                      ...event,
+                      current: probeStarted.size,
+                      total: rawValues.length,
+                    })
+                    return
+                  }
 
-        const hasAnySuccess = results.some((entry) => entry?.result.ok);
+                  if (event.phaseKey === 'generate_result') {
+                    return
+                  }
+                }
+
+                onProgress(event)
+              },
+              signal,
+            )
+            results[index] = {
+              id: `${kind}:${index}:${value}`,
+              kind,
+              value,
+              result,
+            } satisfies ForwardProxyValidationEntry
+          } catch (err) {
+            if (signal?.aborted || (err as Error).name === 'AbortError') {
+              throw err
+            }
+            hadFatalError = true
+            const message =
+              err instanceof Error ? err.message : proxySettingsStrings.validation.requestFailed
+            emitValidationError(message, lastPhaseByIndex[index], value)
+            results[index] = {
+              id: `${kind}:${index}:${value}`,
+              kind,
+              value,
+              result: {
+                ok: false,
+                message,
+                normalizedValue: value,
+                discoveredNodes: 0,
+                latencyMs: null,
+              },
+            } satisfies ForwardProxyValidationEntry
+          }
+        }))
+
+        const hasAnySuccess = results.some((entry) => entry?.result.ok)
         if (!hadFatalError && hasAnySuccess) {
           onProgress?.({
-            type: "phase",
-            operation: "validate",
-            phaseKey: "generate_result",
+            type: 'phase',
+            operation: 'validate',
+            phaseKey: 'generate_result',
             label: proxySettingsStrings.progress.steps.generate_result,
             current: rawValues.length,
             total: rawValues.length,
-          });
+          })
         } else if (!hadFatalError && !hasAnySuccess) {
           emitValidationError(
             proxySettingsStrings.validation.requestFailed,
             lastPhaseByIndex.find((event) => event != null) ?? null,
-          );
+          )
         }
       }
 
-      const hasAnySuccess = results.some((entry) => entry?.result.ok);
+      const hasAnySuccess = results.some((entry) => entry?.result.ok)
       if (!hadFatalError && hasAnySuccess) {
         onProgress?.({
-          type: "complete",
-          operation: "validate",
+          type: 'complete',
+          operation: 'validate',
           payload: null,
-        });
+        })
       }
 
-      return results.filter(
-        (entry): entry is ForwardProxyValidationEntry => entry != null,
-      );
+      return results.filter((entry): entry is ForwardProxyValidationEntry => entry != null)
     },
     [
       proxySettingsStrings.progress.steps.generate_result,
@@ -3141,276 +2666,231 @@ function AdminDashboard(): JSX.Element {
       proxySettingsStrings.progress.steps.parse_input,
       proxySettingsStrings.validation.requestFailed,
     ],
-  );
+  )
 
-  const saveForwardProxySettings = useCallback(
-    async (
-      nextDraft: ForwardProxyDraft,
-      onProgress?: (event: ForwardProxyProgressEvent) => void,
-      options?: { skipBootstrapProbe?: boolean },
-    ) => {
-      const parsedInterval = Number.parseInt(
-        nextDraft.subscriptionUpdateIntervalSecs.trim(),
-        10,
-      );
-      if (!Number.isFinite(parsedInterval) || parsedInterval <= 0) {
-        setForwardProxySaveError(proxySettingsStrings.config.invalidInterval);
-        throw new Error(proxySettingsStrings.config.invalidInterval);
-      }
+  const saveForwardProxySettings = useCallback(async (
+    nextDraft: ForwardProxyDraft,
+    onProgress?: (event: ForwardProxyProgressEvent) => void,
+    options?: { skipBootstrapProbe?: boolean },
+  ) => {
+    const parsedInterval = Number.parseInt(nextDraft.subscriptionUpdateIntervalSecs.trim(), 10)
+    if (!Number.isFinite(parsedInterval) || parsedInterval <= 0) {
+      setForwardProxySaveError(proxySettingsStrings.config.invalidInterval)
+      throw new Error(proxySettingsStrings.config.invalidInterval)
+    }
 
-      setForwardProxySaveError(null);
-      setForwardProxySaving(true);
+    setForwardProxySaveError(null)
+    setForwardProxySaving(true)
 
+    try {
+      const nextSettings = await updateForwardProxySettingsWithProgress(
+        {
+          proxyUrls: splitMultilineEntries(nextDraft.proxyUrlsText),
+          subscriptionUrls: splitMultilineEntries(nextDraft.subscriptionUrlsText),
+          subscriptionUpdateIntervalSecs: parsedInterval,
+          insertDirect: nextDraft.insertDirect,
+          egressSocks5Enabled: nextDraft.egressSocks5Enabled,
+          egressSocks5Url: nextDraft.egressSocks5Url.trim(),
+          skipBootstrapProbe: options?.skipBootstrapProbe ?? false,
+        },
+        onProgress,
+      )
+      setForwardProxySettings(nextSettings)
+      setForwardProxySettingsLoadState('ready')
+      setForwardProxySettingsError(null)
+      setForwardProxySavedAt(Date.now())
+      setLastUpdated(new Date())
+      forwardProxySettingsLoadedRef.current = true
+      onProgress?.({
+        type: 'phase',
+        operation: 'save',
+        phaseKey: 'refresh_ui',
+        label: 'Refreshing settings and stats',
+      })
       try {
-        const nextSettings = await updateForwardProxySettingsWithProgress(
-          {
-            proxyUrls: splitMultilineEntries(nextDraft.proxyUrlsText),
-            subscriptionUrls: splitMultilineEntries(
-              nextDraft.subscriptionUrlsText,
-            ),
-            subscriptionUpdateIntervalSecs: parsedInterval,
-            insertDirect: nextDraft.insertDirect,
-            egressSocks5Enabled: nextDraft.egressSocks5Enabled,
-            egressSocks5Url: nextDraft.egressSocks5Url.trim(),
-            skipBootstrapProbe: options?.skipBootstrapProbe ?? false,
-          },
-          onProgress,
-        );
-        setForwardProxySettings(nextSettings);
-        setForwardProxySettingsLoadState("ready");
-        setForwardProxySettingsError(null);
-        setForwardProxySavedAt(Date.now());
-        setLastUpdated(new Date());
-        forwardProxySettingsLoadedRef.current = true;
-        onProgress?.({
-          type: "phase",
-          operation: "save",
-          phaseKey: "refresh_ui",
-          label: "Refreshing settings and stats",
-        });
-        try {
-          await loadForwardProxyStatsData({ reason: "refresh" });
-        } catch (refreshErr) {
-          console.error(refreshErr);
-        } finally {
-          onProgress?.({
-            type: "complete",
-            operation: "save",
-            payload: null,
-          });
-        }
-      } catch (err) {
-        console.error(err);
-        const message =
-          err instanceof Error
-            ? err.message
-            : proxySettingsStrings.config.saveFailed;
-        setForwardProxySaveError(message);
-        throw err instanceof Error ? err : new Error(message);
+        await loadForwardProxyStatsData({ reason: 'refresh' })
+      } catch (refreshErr) {
+        console.error(refreshErr)
       } finally {
-        setForwardProxySaving(false);
+        onProgress?.({
+          type: 'complete',
+          operation: 'save',
+          payload: null,
+        })
       }
-    },
-    [
-      loadForwardProxyStatsData,
-      proxySettingsStrings.config.invalidInterval,
-      proxySettingsStrings.config.saveFailed,
-    ],
-  );
+    } catch (err) {
+      console.error(err)
+      const message = err instanceof Error ? err.message : proxySettingsStrings.config.saveFailed
+      setForwardProxySaveError(message)
+      throw err instanceof Error ? err : new Error(message)
+    } finally {
+      setForwardProxySaving(false)
+    }
+  }, [
+    loadForwardProxyStatsData,
+    proxySettingsStrings.config.invalidInterval,
+    proxySettingsStrings.config.saveFailed,
+  ])
 
   const revalidateForwardProxy = useCallback(async () => {
-    setForwardProxyRevalidateError(null);
-    setForwardProxyRevalidating(true);
+    setForwardProxyRevalidateError(null)
+    setForwardProxyRevalidating(true)
     setForwardProxyRevalidateProgress(
-      createDialogProgressState(
-        proxySettingsStrings.progress,
-        "subscription",
-        "revalidate",
-      ),
-    );
+      createDialogProgressState(proxySettingsStrings.progress, 'subscription', 'revalidate'),
+    )
 
     try {
       const nextSettings = await revalidateForwardProxyWithProgress((event) => {
         setForwardProxyRevalidateProgress((current) => {
-          const base =
-            current ??
-            createDialogProgressState(
-              proxySettingsStrings.progress,
-              "subscription",
-              "revalidate",
-            );
-          return updateDialogProgressState(
-            base,
-            proxySettingsStrings.progress,
-            event,
-          );
-        });
-      });
-      setForwardProxySettings(nextSettings);
-      setForwardProxySettingsLoadState("ready");
-      setForwardProxySettingsError(null);
-      setForwardProxySavedAt(Date.now());
-      setLastUpdated(new Date());
-      forwardProxySettingsLoadedRef.current = true;
+          const base = current ?? createDialogProgressState(proxySettingsStrings.progress, 'subscription', 'revalidate')
+          return updateDialogProgressState(base, proxySettingsStrings.progress, event)
+        })
+      })
+      setForwardProxySettings(nextSettings)
+      setForwardProxySettingsLoadState('ready')
+      setForwardProxySettingsError(null)
+      setForwardProxySavedAt(Date.now())
+      setLastUpdated(new Date())
+      forwardProxySettingsLoadedRef.current = true
       await finalizeForwardProxyRevalidate(
         loadForwardProxyStatsData,
         () => {
           setForwardProxyRevalidateProgress((current) => {
-            const base =
-              current ??
-              createDialogProgressState(
-                proxySettingsStrings.progress,
-                "subscription",
-                "revalidate",
-              );
-            return updateDialogProgressState(
-              base,
-              proxySettingsStrings.progress,
-              {
-                type: "phase",
-                operation: "revalidate",
-                phaseKey: "refresh_ui",
-                label: proxySettingsStrings.progress.steps.refresh_ui,
-              },
-            );
-          });
+            const base = current ?? createDialogProgressState(proxySettingsStrings.progress, 'subscription', 'revalidate')
+            return updateDialogProgressState(base, proxySettingsStrings.progress, {
+              type: 'phase',
+              operation: 'revalidate',
+              phaseKey: 'refresh_ui',
+              label: proxySettingsStrings.progress.steps.refresh_ui,
+            })
+          })
         },
         () => {
           setForwardProxyRevalidateProgress((current) => {
-            const base =
-              current ??
-              createDialogProgressState(
-                proxySettingsStrings.progress,
-                "subscription",
-                "revalidate",
-              );
-            return updateDialogProgressState(
-              base,
-              proxySettingsStrings.progress,
-              {
-                type: "complete",
-                operation: "revalidate",
-                payload: null,
-              },
-            );
-          });
+            const base = current ?? createDialogProgressState(proxySettingsStrings.progress, 'subscription', 'revalidate')
+            return updateDialogProgressState(base, proxySettingsStrings.progress, {
+              type: 'complete',
+              operation: 'revalidate',
+              payload: null,
+            })
+          })
         },
-      );
+      )
     } catch (err) {
-      console.error(err);
-      const message =
-        err instanceof Error
-          ? err.message
-          : proxySettingsStrings.validation.requestFailed;
-      setForwardProxyRevalidateError(message);
+      console.error(err)
+      const message = err instanceof Error ? err.message : proxySettingsStrings.validation.requestFailed
+      setForwardProxyRevalidateError(message)
       setForwardProxyRevalidateProgress((current) => {
-        const base =
-          current ??
-          createDialogProgressState(
-            proxySettingsStrings.progress,
-            "subscription",
-            "revalidate",
-          );
+        const base = current ?? createDialogProgressState(proxySettingsStrings.progress, 'subscription', 'revalidate')
         return updateDialogProgressState(base, proxySettingsStrings.progress, {
-          type: "error",
-          operation: "revalidate",
+          type: 'error',
+          operation: 'revalidate',
           message,
-        });
-      });
+        })
+      })
     } finally {
-      setForwardProxyRevalidating(false);
+      setForwardProxyRevalidating(false)
     }
   }, [
     loadForwardProxyStatsData,
     proxySettingsStrings.progress,
     proxySettingsStrings.validation.requestFailed,
-  ]);
+  ])
 
   useEffect(() => {
-    const controller = new AbortController();
+    const controller = new AbortController()
     if (!baseDataLoadedRef.current) {
-      setLoading(true);
+      setLoading(true)
     }
     void loadData({
       signal: controller.signal,
-      reason: baseDataLoadedRef.current ? "switch" : "initial",
+      reason: baseDataLoadedRef.current ? 'switch' : 'initial',
       showGlobalLoading: !baseDataLoadedRef.current,
-    });
-    return () => controller.abort();
-  }, [loadData]);
+    })
+    return () => controller.abort()
+  }, [loadData])
 
   useLayoutEffect(() => {
-    if (!(route.name === "module" && route.module === "dashboard")) {
-      return;
+    if (!(route.name === 'module' && route.module === 'dashboard')) {
+      return
     }
-    dashboardOverviewVersionRef.current += 1;
-    setDashboardOverviewLoaded(false);
-    setDashboardSummaryWindows(null);
-    setDashboardSiteStatusSnapshot(null);
-  }, [route]);
+    dashboardOverviewVersionRef.current += 1
+    setDashboardOverviewLoaded(false)
+    setDashboardSummaryWindows(null)
+    setDashboardSiteStatusSnapshot(null)
+  }, [route])
 
   useEffect(() => {
-    if (!(route.name === "module" && route.module === "dashboard")) {
-      return;
+    if (!(route.name === 'module' && route.module === 'dashboard')) {
+      return
     }
-    const controller = new AbortController();
-    void loadDashboardOverview(controller.signal);
-    return () => controller.abort();
-  }, [route, loadDashboardOverview]);
+    const controller = new AbortController()
+    void loadDashboardOverview(controller.signal)
+    return () => controller.abort()
+  }, [route, loadDashboardOverview])
 
   useEffect(() => {
-    const controller = new AbortController();
-    const queryKey = `${tokenLeaderboardPeriod}:${tokenLeaderboardFocus}`;
-    const isRefreshOnly =
-      tokenLeaderboardQueryKeyRef.current === queryKey &&
-      tokenLeaderboardNonceRef.current !== tokenLeaderboardNonce;
-    void loadTokenLeaderboard({
+    if (route.name !== 'unbound-token-usage') {
+      return
+    }
+    const controller = new AbortController()
+    const nextQueryKey = [
+      unboundTokenUsagePage,
+      unboundTokenUsageQuery,
+      unboundTokenUsageSort ?? '',
+      unboundTokenUsageSortOrder ?? '',
+    ].join(':')
+    const reason =
+      unboundTokenUsageLoadedRef.current && unboundTokenUsageQueryKeyRef.current === nextQueryKey
+        ? 'refresh'
+        : unboundTokenUsageLoadedRef.current
+          ? 'switch'
+          : 'initial'
+    void loadUnboundTokenUsage({
       signal: controller.signal,
-      reason: isRefreshOnly
-        ? "refresh"
-        : tokenLeaderboardQueryKeyRef.current
-          ? "switch"
-          : "initial",
-    });
-    return () => controller.abort();
+      reason,
+    })
+    return () => controller.abort()
   }, [
-    loadTokenLeaderboard,
-    tokenLeaderboardFocus,
-    tokenLeaderboardNonce,
-    tokenLeaderboardPeriod,
-  ]);
+    loadUnboundTokenUsage,
+    route,
+    unboundTokenUsagePage,
+    unboundTokenUsageQuery,
+    unboundTokenUsageSort,
+    unboundTokenUsageSortOrder,
+  ])
 
   useEffect(() => {
-    if (!(route.name === "module" && route.module === "proxy-settings")) {
-      return;
+    if (!(route.name === 'module' && route.module === 'proxy-settings')) {
+      return
     }
 
-    const controller = new AbortController();
+    const controller = new AbortController()
     void Promise.all([
       loadForwardProxySettingsData({
         signal: controller.signal,
-        reason: forwardProxySettingsLoadedRef.current ? "switch" : "initial",
+        reason: forwardProxySettingsLoadedRef.current ? 'switch' : 'initial',
       }),
       loadForwardProxyStatsData({
         signal: controller.signal,
-        reason: forwardProxyStatsLoadedRef.current ? "switch" : "initial",
+        reason: forwardProxyStatsLoadedRef.current ? 'switch' : 'initial',
       }),
-    ]);
+    ])
 
-    return () => controller.abort();
-  }, [route, loadForwardProxySettingsData, loadForwardProxyStatsData]);
+    return () => controller.abort()
+  }, [route, loadForwardProxySettingsData, loadForwardProxyStatsData])
 
   useEffect(() => {
-    if (!(route.name === "module" && route.module === "proxy-settings")) {
-      return;
+    if (!(route.name === 'module' && route.module === 'proxy-settings')) {
+      return
     }
 
     const timer = window.setInterval(() => {
-      void loadForwardProxyStatsData({ reason: "refresh" });
-    }, REFRESH_INTERVAL_MS);
+      void loadForwardProxyStatsData({ reason: 'refresh' })
+    }, REFRESH_INTERVAL_MS)
 
-    return () => window.clearInterval(timer);
-  }, [route, loadForwardProxyStatsData]);
+    return () => window.clearInterval(timer)
+  }, [route, loadForwardProxyStatsData])
 
   const requestLogQuickFilters = useMemo(
     () => ({
@@ -3418,24 +2898,15 @@ function AdminDashboard(): JSX.Element {
       protocol: requestLogQuickProtocol,
     }),
     [requestLogQuickBilling, requestLogQuickProtocol],
-  );
+  )
   const requestLogSelectedKindsNormalized = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          requestLogSelectedKinds.map((value) => value.trim()).filter(Boolean),
-        ),
-      ),
+    () => Array.from(new Set(requestLogSelectedKinds.map((value) => value.trim()).filter(Boolean))),
     [requestLogSelectedKinds],
-  );
+  )
   const requestLogQuickSelection = useMemo(
-    () =>
-      buildRequestKindQuickFilterSelection(
-        requestLogRequestKindOptions,
-        requestLogQuickFilters,
-      ),
+    () => buildRequestKindQuickFilterSelection(requestLogRequestKindOptions, requestLogQuickFilters),
     [requestLogQuickFilters, requestLogRequestKindOptions],
-  );
+  )
   const requestLogEffectiveKinds = useMemo(
     () =>
       resolveEffectiveRequestKindSelection(
@@ -3443,54 +2914,43 @@ function AdminDashboard(): JSX.Element {
         requestLogQuickFilters,
         requestLogQuickSelection,
       ),
-    [
-      requestLogQuickFilters,
-      requestLogQuickSelection,
-      requestLogSelectedKindsNormalized,
-    ],
-  );
+    [requestLogQuickFilters, requestLogQuickSelection, requestLogSelectedKindsNormalized],
+  )
   const requestLogEffectiveKindsKey = useMemo(
-    () => requestLogEffectiveKinds.join("\u0001"),
+    () => requestLogEffectiveKinds.join('\u0001'),
     [requestLogEffectiveKinds],
-  );
+  )
   const requestLogHasEmptyMatch = useMemo(
-    () =>
-      hasActiveRequestKindQuickFilters(requestLogQuickFilters) &&
-      requestLogQuickSelection.length === 0,
+    () => hasActiveRequestKindQuickFilters(requestLogQuickFilters) && requestLogQuickSelection.length === 0,
     [requestLogQuickFilters, requestLogQuickSelection.length],
-  );
+  )
   const requestLogResultFilter =
-    requestLogOutcomeFilter?.kind === "result"
-      ? (requestLogOutcomeFilter.value as
-          | "success"
-          | "error"
-          | "quota_exhausted")
-      : undefined;
+    requestLogOutcomeFilter?.kind === 'result'
+      ? (requestLogOutcomeFilter.value as 'success' | 'error' | 'quota_exhausted')
+      : undefined
   const requestLogKeyEffectFilter =
-    requestLogOutcomeFilter?.kind === "keyEffect"
-      ? requestLogOutcomeFilter.value
-      : undefined;
+    requestLogOutcomeFilter?.kind === 'keyEffect' ? requestLogOutcomeFilter.value : undefined
 
   // Logs list: backend pagination & result filter
   useEffect(() => {
-    const request = beginManagedRequest(requestsAbortRef);
-    setRequestsLoadState(getBlockingLoadState(requestsLoadedRef.current));
-    setRequestsError(null);
-    setLogs([]);
-    setLogsTotal(0);
-    setExpandedLogs(new Set());
-    setRequestLogFacets(emptyRequestLogFacets);
+    const request = beginManagedRequest(requestsAbortRef)
+    setRequestsLoadState(getBlockingLoadState(requestsLoadedRef.current))
+    setRequestsError(null)
+    setLogs([])
+    setLogsTotal(0)
+    setExpandedLogs(new Set())
+    setRequestLogFacets(emptyRequestLogFacets)
 
     if (requestLogHasEmptyMatch) {
-      setLogs([]);
-      setLogsTotal(0);
-      setRequestsLoadState("ready");
-      requestsLoadedRef.current = true;
-      request.cleanup();
+      setLogs([])
+      setLogsTotal(0)
+      setRequestsLoadState('ready')
+      requestsLoadedRef.current = true
+      request.cleanup()
       return () => {
-        request.abort();
-        request.cleanup();
-      };
+        request.abort()
+        request.cleanup()
+      }
     }
 
     fetchRequestLogsPage(
@@ -3505,32 +2965,30 @@ function AdminDashboard(): JSX.Element {
       request.signal,
     )
       .then((result) => {
-        if (request.signal.aborted) return;
-        setLogs(result.items);
-        setLogsTotal(result.total);
-        setRequestLogRequestKindOptions(result.requestKindOptions);
-        setRequestLogFacets(result.facets);
-        setRequestsLoadState("ready");
-        requestsLoadedRef.current = true;
+        if (request.signal.aborted) return
+        setLogs(result.items)
+        setLogsTotal(result.total)
+        setRequestLogRequestKindOptions(result.requestKindOptions)
+        setRequestLogFacets(result.facets)
+        setRequestsLoadState('ready')
+        requestsLoadedRef.current = true
       })
       .catch((err) => {
-        if (request.signal.aborted) return;
-        console.error(err);
-        setLogs([]);
-        setLogsTotal(0);
-        setRequestsError(
-          err instanceof Error ? err.message : loadingStateStrings.error,
-        );
-        setRequestsLoadState("error");
+        if (request.signal.aborted) return
+        console.error(err)
+        setLogs([])
+        setLogsTotal(0)
+        setRequestsError(err instanceof Error ? err.message : loadingStateStrings.error)
+        setRequestsLoadState('error')
       })
       .finally(() => {
-        request.cleanup();
-      });
+        request.cleanup()
+      })
 
     return () => {
-      request.abort();
-      request.cleanup();
-    };
+      request.abort()
+      request.cleanup()
+    }
   }, [
     beginManagedRequest,
     logsPage,
@@ -3540,43 +2998,34 @@ function AdminDashboard(): JSX.Element {
     requestLogKeyEffectFilter,
     requestLogKeyFilter,
     requestLogResultFilter,
-  ]);
+  ])
 
   const handleRequestLogQuickFilters = useCallback(
-    (
-      billing: TokenLogRequestKindQuickBilling,
-      protocol: TokenLogRequestKindQuickProtocol,
-    ) => {
-      const nextFilters = { billing, protocol };
-      setRequestLogQuickBilling(billing);
-      setRequestLogQuickProtocol(protocol);
+    (billing: TokenLogRequestKindQuickBilling, protocol: TokenLogRequestKindQuickProtocol) => {
+      const nextFilters = { billing, protocol }
+      setRequestLogQuickBilling(billing)
+      setRequestLogQuickProtocol(protocol)
       setRequestLogSelectedKinds(
-        buildRequestKindQuickFilterSelection(
-          requestLogRequestKindOptions,
-          nextFilters,
-        ),
-      );
-      setLogsPage(1);
+        buildRequestKindQuickFilterSelection(requestLogRequestKindOptions, nextFilters),
+      )
+      setLogsPage(1)
     },
     [requestLogRequestKindOptions],
-  );
+  )
 
   const handleToggleRequestLogKind = useCallback(
     (key: string) => {
-      const nextSelected = toggleRequestKindSelection(
-        requestLogEffectiveKinds,
-        key,
-      );
+      const nextSelected = toggleRequestKindSelection(requestLogEffectiveKinds, key)
       const nextQuickFilters = resolveManualRequestKindQuickFilters(
         nextSelected,
         requestLogQuickFilters,
         requestLogQuickSelection,
         requestLogRequestKindOptions,
-      );
-      setRequestLogSelectedKinds(nextSelected);
-      setRequestLogQuickBilling(nextQuickFilters.billing);
-      setRequestLogQuickProtocol(nextQuickFilters.protocol);
-      setLogsPage(1);
+      )
+      setRequestLogSelectedKinds(nextSelected)
+      setRequestLogQuickBilling(nextQuickFilters.billing)
+      setRequestLogQuickProtocol(nextQuickFilters.protocol)
+      setLogsPage(1)
     },
     [
       requestLogEffectiveKinds,
@@ -3584,85 +3033,84 @@ function AdminDashboard(): JSX.Element {
       requestLogQuickSelection,
       requestLogRequestKindOptions,
     ],
-  );
+  )
 
   const handleClearRequestLogKinds = useCallback(() => {
-    setRequestLogSelectedKinds([]);
-    setRequestLogQuickBilling(defaultTokenLogRequestKindQuickFilters.billing);
-    setRequestLogQuickProtocol(defaultTokenLogRequestKindQuickFilters.protocol);
-    setLogsPage(1);
-  }, []);
+    setRequestLogSelectedKinds([])
+    setRequestLogQuickBilling(defaultTokenLogRequestKindQuickFilters.billing)
+    setRequestLogQuickProtocol(defaultTokenLogRequestKindQuickFilters.protocol)
+    setLogsPage(1)
+  }, [])
 
-  const handleRequestLogOutcomeFilter = useCallback(
-    (value: RecentRequestsOutcomeFilter | null) => {
-      setRequestLogOutcomeFilter(value);
-      setLogsPage(1);
-    },
-    [],
-  );
+  const handleRequestLogOutcomeFilter = useCallback((value: RecentRequestsOutcomeFilter | null) => {
+    setRequestLogOutcomeFilter(value)
+    setLogsPage(1)
+  }, [])
 
   const handleRequestLogKeyFilter = useCallback((value: string | null) => {
-    setRequestLogKeyFilter(value);
-    setLogsPage(1);
-  }, []);
+    setRequestLogKeyFilter(value)
+    setLogsPage(1)
+  }, [])
+
+  const loadRequestLogBodies = useCallback(
+    (log: RequestLog, signal: AbortSignal) => fetchRequestLogDetails(log.id, signal),
+    [],
+  )
 
   // Jobs list: refetch when filter or page changes
   useEffect(() => {
-    const request = beginManagedRequest(jobsAbortRef);
-    setJobsLoadState(getBlockingLoadState(jobsLoadedRef.current));
-    setJobsError(null);
-    setJobs([]);
-    setJobsTotal(0);
-    setExpandedJobs(new Set());
+    const request = beginManagedRequest(jobsAbortRef)
+    setJobsLoadState(getBlockingLoadState(jobsLoadedRef.current))
+    setJobsError(null)
+    setJobs([])
+    setJobsTotal(0)
+    setExpandedJobs(new Set())
     fetchJobs(jobsPage, jobsPerPage, jobFilter, request.signal)
       .then((result) => {
         if (!request.signal.aborted) {
-          setJobs(result.items);
-          setJobsTotal(result.total);
-          setJobsLoadState("ready");
-          jobsLoadedRef.current = true;
+          setJobs(result.items)
+          setJobsTotal(result.total)
+          setJobsLoadState('ready')
+          jobsLoadedRef.current = true
         }
       })
       .catch(() => {
         if (!request.signal.aborted) {
-          setJobs([]);
-          setJobsTotal(0);
-          setJobsError(loadingStateStrings.error);
-          setJobsLoadState("error");
+          setJobs([])
+          setJobsTotal(0)
+          setJobsError(loadingStateStrings.error)
+          setJobsLoadState('error')
         }
       })
       .finally(() => {
-        request.cleanup();
-      });
+        request.cleanup()
+      })
     return () => {
-      request.abort();
-      request.cleanup();
-    };
-  }, [beginManagedRequest, jobFilter, jobsPage]);
+      request.abort()
+      request.cleanup()
+    }
+  }, [beginManagedRequest, jobFilter, jobsPage])
 
   useEffect(() => {
-    if (!(route.name === "module" && route.module === "keys")) return;
+    if (!(route.name === 'module' && route.module === 'keys')) return
 
-    const request = beginManagedRequest(keysAbortRef);
+    const request = beginManagedRequest(keysAbortRef)
     const nextQueryKey = [
       keysPage,
       keysPerPage,
-      selectedKeyGroups.join("\u0000"),
-      selectedKeyStatuses.join("\u0000"),
+      selectedKeyGroups.join('\u0000'),
+      selectedKeyStatuses.join('\u0000'),
       selectedKeyRegistrationIp,
-      selectedKeyRegions.join("\u0000"),
-    ].join(":");
-    const sameQueryRefresh =
-      keysLoadedRef.current && keysQueryKeyRef.current === nextQueryKey;
+      selectedKeyRegions.join('\u0000'),
+    ].join(':')
+    const sameQueryRefresh = keysLoadedRef.current && keysQueryKeyRef.current === nextQueryKey
     setKeysLoadState(
-      sameQueryRefresh
-        ? getRefreshingLoadState(true)
-        : getBlockingLoadState(keysLoadedRef.current),
-    );
-    setKeysError(null);
+      sameQueryRefresh ? getRefreshingLoadState(true) : getBlockingLoadState(keysLoadedRef.current),
+    )
+    setKeysError(null)
     if (!sameQueryRefresh) {
-      setKeys([]);
-      setKeysTotal(0);
+      setKeys([])
+      setKeysTotal(0)
     }
 
     fetchApiKeys(
@@ -3677,17 +3125,17 @@ function AdminDashboard(): JSX.Element {
       request.signal,
     )
       .then((result) => {
-        if (request.signal.aborted) return;
-        setKeys(result.items);
-        setKeysTotal(result.total);
-        setKeysPage(result.page);
-        setKeysPerPage(result.perPage);
-        setKeyGroupFacets(result.facets.groups);
-        setKeyStatusFacets(result.facets.statuses);
-        setKeyRegionFacets(result.facets.regions);
-        setKeysLoadState("ready");
-        keysLoadedRef.current = true;
-        keysQueryKeyRef.current = nextQueryKey;
+        if (request.signal.aborted) return
+        setKeys(result.items)
+        setKeysTotal(result.total)
+        setKeysPage(result.page)
+        setKeysPerPage(result.perPage)
+        setKeyGroupFacets(result.facets.groups)
+        setKeyStatusFacets(result.facets.statuses)
+        setKeyRegionFacets(result.facets.regions)
+        setKeysLoadState('ready')
+        keysLoadedRef.current = true
+        keysQueryKeyRef.current = nextQueryKey
         const normalizedLocation = buildAdminKeysPath({
           page: result.page,
           perPage: result.perPage,
@@ -3695,33 +3143,31 @@ function AdminDashboard(): JSX.Element {
           statuses: selectedKeyStatuses,
           registrationIp: selectedKeyRegistrationIp,
           regions: selectedKeyRegions,
-        });
-        const currentLocation = `${window.location.pathname}${window.location.search}`;
+        })
+        const currentLocation = `${window.location.pathname}${window.location.search}`
         if (currentLocation !== normalizedLocation) {
-          window.history.replaceState(null, "", normalizedLocation);
+          window.history.replaceState(null, '', normalizedLocation)
         }
       })
       .catch((err) => {
-        if (request.signal.aborted) return;
-        console.error(err);
-        setKeys([]);
-        setKeysTotal(0);
-        setKeyGroupFacets([]);
-        setKeyStatusFacets([]);
-        setKeyRegionFacets([]);
-        setKeysError(
-          err instanceof Error ? err.message : loadingStateStrings.error,
-        );
-        setKeysLoadState("error");
+        if (request.signal.aborted) return
+        console.error(err)
+        setKeys([])
+        setKeysTotal(0)
+        setKeyGroupFacets([])
+        setKeyStatusFacets([])
+        setKeyRegionFacets([])
+        setKeysError(err instanceof Error ? err.message : loadingStateStrings.error)
+        setKeysLoadState('error')
       })
       .finally(() => {
-        request.cleanup();
-      });
+        request.cleanup()
+      })
 
     return () => {
-      request.abort();
-      request.cleanup();
-    };
+      request.abort()
+      request.cleanup()
+    }
   }, [
     beginManagedRequest,
     keysPage,
@@ -3732,79 +3178,67 @@ function AdminDashboard(): JSX.Element {
     selectedKeyRegistrationIp,
     selectedKeyRegions,
     selectedKeyStatuses,
-  ]);
+  ])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      const normalized = usersQueryInput.trim();
+      const normalized = usersQueryInput.trim()
       setUsersQuery((previous) => {
-        if (previous === normalized) return previous;
-        setUsersPage(1);
-        return normalized;
-      });
-    }, 250);
-    return () => window.clearTimeout(timer);
-  }, [usersQueryInput]);
+        if (previous === normalized) return previous
+        setUsersPage(1)
+        return normalized
+      })
+    }, 250)
+    return () => window.clearTimeout(timer)
+  }, [usersQueryInput])
 
   useEffect(() => {
-    const usersRouteActive = isUsersCollectionRoute || route.name === "user";
-    if (!usersRouteActive) return;
+    const usersRouteActive =
+      isUsersCollectionRoute || route.name === 'user'
+    if (!usersRouteActive) return
 
-    const request = beginManagedRequest(usersAbortRef);
+    const request = beginManagedRequest(usersAbortRef)
     const nextQueryKey = [
       usersPage,
       usersQuery,
-      usersTagFilterId ?? "",
-      usersSort ?? "",
-      usersSortOrder ?? "",
-    ].join(":");
-    const sameQueryRefresh =
-      usersLoadedRef.current && usersQueryKeyRef.current === nextQueryKey;
+      usersTagFilterId ?? '',
+      usersSort ?? '',
+      usersSortOrder ?? '',
+    ].join(':')
+    const sameQueryRefresh = usersLoadedRef.current && usersQueryKeyRef.current === nextQueryKey
     setUsersLoadState(
-      sameQueryRefresh
-        ? getRefreshingLoadState(true)
-        : getBlockingLoadState(usersLoadedRef.current),
-    );
-    setUsersError(null);
-    if (!sameQueryRefresh) {
-      setUsers([]);
-      setUsersTotal(0);
-    }
-    fetchAdminUsers(
-      usersPage,
-      USERS_PER_PAGE,
-      usersQuery,
-      usersTagFilterId,
-      usersSort,
-      usersSortOrder,
-      request.signal,
+      sameQueryRefresh ? getRefreshingLoadState(true) : getBlockingLoadState(usersLoadedRef.current),
     )
+    setUsersError(null)
+    if (!sameQueryRefresh) {
+      setUsers([])
+      setUsersTotal(0)
+    }
+    fetchAdminUsers(usersPage, USERS_PER_PAGE, usersQuery, usersTagFilterId, usersSort, usersSortOrder, request.signal)
       .then((result) => {
-        if (request.signal.aborted) return;
-        setUsers(result.items);
-        setUsersTotal(result.total);
-        setUsersLoadState("ready");
-        usersLoadedRef.current = true;
-        usersQueryKeyRef.current = nextQueryKey;
+        if (request.signal.aborted) return
+        setUsers(result.items)
+        setUsersTotal(result.total)
+        setUsersLoadState('ready')
+        usersLoadedRef.current = true
+        usersQueryKeyRef.current = nextQueryKey
       })
       .catch((err) => {
-        if (request.signal.aborted) return;
-        console.error(err);
-        setUsers([]);
-        setUsersTotal(0);
-        setUsersError(
-          err instanceof Error ? err.message : loadingStateStrings.error,
-        );
-        setUsersLoadState("error");
+        if (request.signal.aborted) return
+        console.error(err)
+        setUsers([])
+        setUsersTotal(0)
+        setUsersError(err instanceof Error ? err.message : loadingStateStrings.error)
+        setUsersLoadState('error')
       })
       .finally(() => {
-        request.cleanup();
-      });
+        request.cleanup()
+      })
 
     return () => {
-      request.abort();
-      request.cleanup();
-    };
+      request.abort()
+      request.cleanup()
+    }
   }, [
     beginManagedRequest,
     isUsersCollectionRoute,
@@ -3814,468 +3248,409 @@ function AdminDashboard(): JSX.Element {
     usersSort,
     usersSortOrder,
     usersTagFilterId,
-  ]);
+  ])
 
   useEffect(() => {
     const userTagRouteActive =
-      (route.name === "module" && route.module === "users") ||
-      route.name === "user" ||
-      route.name === "user-tags" ||
-      route.name === "user-tag-editor";
-    if (!userTagRouteActive) return;
+      (route.name === 'module' && route.module === 'users')
+      || route.name === 'user'
+      || route.name === 'user-tags'
+      || route.name === 'user-tag-editor'
+    if (!userTagRouteActive) return
 
-    const controller = new AbortController();
-    setTagCatalogLoading(true);
-    setTagCatalogError(null);
+    const controller = new AbortController()
+    setTagCatalogLoading(true)
+    setTagCatalogError(null)
     fetchAdminUserTags(controller.signal)
       .then((tags) => {
-        if (controller.signal.aborted) return;
-        setTagCatalog(tags);
+        if (controller.signal.aborted) return
+        setTagCatalog(tags)
       })
       .catch((err) => {
-        if (controller.signal.aborted) return;
-        console.error(err);
-        setTagCatalog([]);
-        setTagCatalogError(
-          err instanceof Error
-            ? err.message
-            : adminStrings.users.catalog.loadFailed,
-        );
+        if (controller.signal.aborted) return
+        console.error(err)
+        setTagCatalog([])
+        setTagCatalogError(err instanceof Error ? err.message : adminStrings.users.catalog.loadFailed)
       })
       .finally(() => {
         if (!controller.signal.aborted) {
-          setTagCatalogLoading(false);
-          setTagCatalogLoadedOnce(true);
+          setTagCatalogLoading(false)
+          setTagCatalogLoadedOnce(true)
         }
-      });
+      })
 
-    return () => controller.abort();
-  }, [route, adminStrings.users.catalog.loadFailed]);
+    return () => controller.abort()
+  }, [route, adminStrings.users.catalog.loadFailed])
 
   useEffect(() => {
     const usersRouteActive =
-      isUsersCollectionRoute ||
-      route.name === "user" ||
-      route.name === "user-tags" ||
-      route.name === "user-tag-editor";
-    if (!usersRouteActive) return;
+      isUsersCollectionRoute
+      || route.name === 'user'
+      || route.name === 'user-tags'
+      || route.name === 'user-tag-editor'
+    if (!usersRouteActive) return
 
-    const controller = new AbortController();
-    setRegistrationSettingsLoading(true);
-    setRegistrationSettingsError(null);
+    const controller = new AbortController()
+    setRegistrationSettingsLoading(true)
+    setRegistrationSettingsError(null)
     fetchAdminRegistrationSettings(controller.signal)
       .then((settings) => {
-        if (controller.signal.aborted) return;
-        setAllowRegistration(settings.allowRegistration);
-        setRegistrationSettingsLoaded(true);
+        if (controller.signal.aborted) return
+        setAllowRegistration(settings.allowRegistration)
+        setRegistrationSettingsLoaded(true)
       })
       .catch((err) => {
-        if (controller.signal.aborted) return;
-        console.error(err);
-        setAllowRegistration(null);
+        if (controller.signal.aborted) return
+        console.error(err)
+        setAllowRegistration(null)
         setRegistrationSettingsError(
-          err instanceof Error
-            ? err.message
-            : adminStrings.users.registration.loadFailed,
-        );
+          err instanceof Error ? err.message : adminStrings.users.registration.loadFailed,
+        )
       })
       .finally(() => {
         if (!controller.signal.aborted) {
-          setRegistrationSettingsLoading(false);
+          setRegistrationSettingsLoading(false)
         }
-      });
+      })
 
-    return () => controller.abort();
-  }, [
-    adminStrings.users.registration.loadFailed,
-    isUsersCollectionRoute,
-    route,
-  ]);
+    return () => controller.abort()
+  }, [adminStrings.users.registration.loadFailed, isUsersCollectionRoute, route])
 
   useEffect(() => {
-    if (!isUsersCollectionRoute) return;
-    const locationQuery = getAdminUsersQueryFromLocation();
-    const locationTagFilterId = getAdminUsersTagFilterFromLocation();
-    const locationPage = getAdminUsersPageFromLocation();
-    const locationSort = getAdminUsersSortFromLocation();
-    const locationSortOrder = getAdminUsersSortDirectionFromLocation();
-    const normalizedSort =
-      isUsersModuleRoute && !isAdminUsersOverviewSortField(locationSort)
-        ? null
-        : locationSort;
-    const normalizedSortOrder = normalizedSort ? locationSortOrder : null;
-    setUsersPage((previous) =>
-      previous === locationPage ? previous : locationPage,
-    );
-    setUsersQueryInput((previous) =>
-      previous === locationQuery ? previous : locationQuery,
-    );
-    setUsersQuery((previous) =>
-      previous === locationQuery ? previous : locationQuery,
-    );
-    setUsersTagFilterId((previous) =>
-      previous === locationTagFilterId ? previous : locationTagFilterId,
-    );
-    setUsersSort((previous) =>
-      previous === normalizedSort ? previous : normalizedSort,
-    );
-    setUsersSortOrder((previous) =>
-      previous === normalizedSortOrder ? previous : normalizedSortOrder,
-    );
-  }, [isUserUsageRoute, isUsersCollectionRoute, isUsersModuleRoute, route]);
+    if (!isUsersCollectionRoute) return
+    const locationQuery = getAdminUsersQueryFromLocation()
+    const locationTagFilterId = getAdminUsersTagFilterFromLocation()
+    const locationPage = getAdminUsersPageFromLocation()
+    const locationSort = getAdminUsersSortFromLocation()
+    const locationSortOrder = getAdminUsersSortDirectionFromLocation()
+    const normalizedSort = isUsersModuleRoute && !isAdminUsersOverviewSortField(locationSort)
+      ? null
+      : locationSort
+    const normalizedSortOrder = normalizedSort ? locationSortOrder : null
+    setUsersPage((previous) => (previous === locationPage ? previous : locationPage))
+    setUsersQueryInput((previous) => (previous === locationQuery ? previous : locationQuery))
+    setUsersQuery((previous) => (previous === locationQuery ? previous : locationQuery))
+    setUsersTagFilterId((previous) => (previous === locationTagFilterId ? previous : locationTagFilterId))
+    setUsersSort((previous) => (previous === normalizedSort ? previous : normalizedSort))
+    setUsersSortOrder((previous) => (previous === normalizedSortOrder ? previous : normalizedSortOrder))
+  }, [isUserUsageRoute, isUsersCollectionRoute, isUsersModuleRoute, route])
 
   useEffect(() => {
-    if (!(route.name === "module" && route.module === "keys")) return;
-    const locationPage = getAdminKeysPageFromLocation();
-    const locationPerPage = getAdminKeysPerPageFromLocation();
-    const locationGroups = getAdminKeysValuesFromLocation("group");
-    const locationStatuses = getAdminKeysValuesFromLocation("status");
-    const locationRegistrationIp = getAdminKeysRegistrationIpFromLocation();
-    const locationRegions = getAdminKeysRegionsFromLocation();
-    setKeysPage((previous) =>
-      previous === locationPage ? previous : locationPage,
-    );
-    setKeysPerPage((previous) =>
-      previous === locationPerPage ? previous : locationPerPage,
-    );
+    if (route.name !== 'unbound-token-usage') return
+    const locationQuery = getAdminUnboundTokenUsageQueryFromLocation()
+    const locationPage = getAdminUnboundTokenUsagePageFromLocation()
+    const locationSort = getAdminUnboundTokenUsageSortFromLocation()
+    const locationSortOrder = getAdminUnboundTokenUsageSortDirectionFromLocation()
+    setUnboundTokenUsagePage((previous) => (previous === locationPage ? previous : locationPage))
+    setUnboundTokenUsageQueryInput((previous) => (previous === locationQuery ? previous : locationQuery))
+    setUnboundTokenUsageQuery((previous) => (previous === locationQuery ? previous : locationQuery))
+    setUnboundTokenUsageSort((previous) => (previous === locationSort ? previous : locationSort))
+    setUnboundTokenUsageSortOrder((previous) => (previous === locationSortOrder ? previous : locationSortOrder))
+  }, [route])
+
+  useEffect(() => {
+    if (!(route.name === 'module' && route.module === 'keys')) return
+    const locationPage = getAdminKeysPageFromLocation()
+    const locationPerPage = getAdminKeysPerPageFromLocation()
+    const locationGroups = getAdminKeysValuesFromLocation('group')
+    const locationStatuses = getAdminKeysValuesFromLocation('status')
+    const locationRegistrationIp = getAdminKeysRegistrationIpFromLocation()
+    const locationRegions = getAdminKeysRegionsFromLocation()
+    setKeysPage((previous) => (previous === locationPage ? previous : locationPage))
+    setKeysPerPage((previous) => (previous === locationPerPage ? previous : locationPerPage))
     setSelectedKeyGroups((previous) =>
-      previous.length === locationGroups.length &&
-      previous.every((value, index) => value === locationGroups[index])
+      previous.length === locationGroups.length && previous.every((value, index) => value === locationGroups[index])
         ? previous
         : locationGroups,
-    );
+    )
     setSelectedKeyStatuses((previous) =>
-      previous.length === locationStatuses.length &&
-      previous.every((value, index) => value === locationStatuses[index])
+      previous.length === locationStatuses.length && previous.every((value, index) => value === locationStatuses[index])
         ? previous
         : locationStatuses,
-    );
-    setSelectedKeyRegistrationIp((previous) =>
-      previous === locationRegistrationIp ? previous : locationRegistrationIp,
-    );
-    setKeyRegistrationIpInput((previous) =>
-      previous === locationRegistrationIp ? previous : locationRegistrationIp,
-    );
+    )
+    setSelectedKeyRegistrationIp((previous) => (previous === locationRegistrationIp ? previous : locationRegistrationIp))
+    setKeyRegistrationIpInput((previous) => (previous === locationRegistrationIp ? previous : locationRegistrationIp))
     setSelectedKeyRegions((previous) =>
-      previous.length === locationRegions.length &&
-      previous.every((value, index) => value === locationRegions[index])
+      previous.length === locationRegions.length && previous.every((value, index) => value === locationRegions[index])
         ? previous
         : locationRegions,
-    );
-  }, [route]);
+    )
+  }, [route])
 
   useEffect(() => {
-    if (route.name !== "user-tag-editor") return;
+    if (route.name !== 'user-tag-editor') return
 
-    if (route.mode === "create") {
-      setActiveUserTagEditorId(NEW_USER_TAG_CARD_ID);
-      setUserTagCatalogDraft({ ...EMPTY_USER_TAG_FORM });
-      setTagCatalogError(null);
-      return;
+    if (route.mode === 'create') {
+      setActiveUserTagEditorId(NEW_USER_TAG_CARD_ID)
+      setUserTagCatalogDraft({ ...EMPTY_USER_TAG_FORM })
+      setTagCatalogError(null)
+      return
     }
 
-    const editingTag = tagCatalog.find((tag) => tag.id === route.id);
+    const editingTag = tagCatalog.find((tag) => tag.id === route.id)
     if (editingTag) {
-      setActiveUserTagEditorId(editingTag.id);
-      setUserTagCatalogDraft(createUserTagFormState(editingTag));
-      setTagCatalogError(null);
+      setActiveUserTagEditorId(editingTag.id)
+      setUserTagCatalogDraft(createUserTagFormState(editingTag))
+      setTagCatalogError(null)
     } else if (tagCatalogLoadedOnce && !tagCatalogLoading) {
-      setActiveUserTagEditorId(null);
-      setTagCatalogError(adminStrings.users.catalog.tagNotFound);
+      setActiveUserTagEditorId(null)
+      setTagCatalogError(adminStrings.users.catalog.tagNotFound)
     }
-  }, [
-    route,
-    tagCatalog,
-    tagCatalogLoadedOnce,
-    tagCatalogLoading,
-    adminStrings.users.catalog.tagNotFound,
-  ]);
+  }, [route, tagCatalog, tagCatalogLoadedOnce, tagCatalogLoading, adminStrings.users.catalog.tagNotFound])
 
   useEffect(() => {
-    if (route.name !== "user") return;
-    const controller = new AbortController();
-    setUserDetailLoading(true);
-    setUserQuotaError(null);
+    if (route.name !== 'user') return
+    const controller = new AbortController()
+    setUserDetailLoading(true)
+    setUserQuotaError(null)
     fetchAdminUserDetail(route.id, controller.signal)
       .then((detail) => {
-        if (controller.signal.aborted) return;
-        setSelectedUserDetail(detail);
-        setUserQuotaSnapshot(buildUserQuotaSnapshot(detail));
+        if (controller.signal.aborted) return
+        setSelectedUserDetail(detail)
+        setUserQuotaSnapshot(buildUserQuotaSnapshot(detail))
         setUserQuotaDraft({
           hourlyAnyLimit: String(detail.quotaBase.hourlyAnyLimit),
           hourlyLimit: String(detail.quotaBase.hourlyLimit),
           dailyLimit: String(detail.quotaBase.dailyLimit),
           monthlyLimit: String(detail.quotaBase.monthlyLimit),
-        });
-        setUserBrokenLimitDraft(String(detail.monthlyBrokenLimit));
-        setUserBrokenLimitError(null);
-        setUserBrokenLimitSavedAt(null);
-        setSelectedBindableTagId("");
-        setUserTagError(null);
+        })
+        setUserBrokenLimitDraft(String(detail.monthlyBrokenLimit))
+        setSelectedBindableTagId('')
+        setUserTagError(null)
       })
       .catch((err) => {
-        if (controller.signal.aborted) return;
-        console.error(err);
-        setSelectedUserDetail(null);
-        setUserQuotaSnapshot(null);
-        setUserQuotaDraft(null);
-        setUserBrokenLimitDraft("");
+        if (controller.signal.aborted) return
+        console.error(err)
+        setSelectedUserDetail(null)
+        setUserQuotaSnapshot(null)
+        setUserQuotaDraft(null)
+        setUserBrokenLimitDraft('')
       })
       .finally(() => {
         if (!controller.signal.aborted) {
-          setUserDetailLoading(false);
+          setUserDetailLoading(false)
         }
-      });
-    return () => controller.abort();
-  }, [route]);
+      })
+    return () => controller.abort()
+  }, [route])
 
   useEffect(() => {
-    if (!monthlyBrokenDrawer) return;
-    const controller = new AbortController();
-    setMonthlyBrokenDrawerLoadState("initial_loading");
-    setMonthlyBrokenDrawerError(null);
-    fetchAllMonthlyBrokenKeyItems((page, signal) =>
-      monthlyBrokenDrawer.subjectKind === "user"
-        ? fetchAdminUserBrokenKeys(
-            monthlyBrokenDrawer.id,
-            page,
-            MONTHLY_BROKEN_DRAWER_PAGE_SIZE,
-            signal,
-          )
-        : fetchTokenBrokenKeys(
-            monthlyBrokenDrawer.id,
-            page,
-            MONTHLY_BROKEN_DRAWER_PAGE_SIZE,
-            signal,
-          ),
+    if (!monthlyBrokenDrawer) return
+    const controller = new AbortController()
+    setMonthlyBrokenDrawerLoadState('initial_loading')
+    setMonthlyBrokenDrawerError(null)
+    fetchAllMonthlyBrokenKeyItems(
+      (page, signal) =>
+        monthlyBrokenDrawer.subjectKind === 'user'
+          ? fetchAdminUserBrokenKeys(
+              monthlyBrokenDrawer.id,
+              page,
+              MONTHLY_BROKEN_DRAWER_PAGE_SIZE,
+              signal,
+            )
+          : fetchTokenBrokenKeys(
+              monthlyBrokenDrawer.id,
+              page,
+              MONTHLY_BROKEN_DRAWER_PAGE_SIZE,
+              signal,
+            ),
+      controller.signal,
     )
       .then((items) => {
-        if (controller.signal.aborted) return;
-        setMonthlyBrokenDrawerItems(items);
-        setMonthlyBrokenDrawerLoadState("ready");
+        if (controller.signal.aborted) return
+        setMonthlyBrokenDrawerItems(items)
+        setMonthlyBrokenDrawerLoadState('ready')
       })
       .catch((err) => {
-        if (controller.signal.aborted) return;
-        console.error(err);
-        setMonthlyBrokenDrawerItems([]);
-        setMonthlyBrokenDrawerError(
-          err instanceof Error ? err.message : loadingStateStrings.error,
-        );
-        setMonthlyBrokenDrawerLoadState("error");
-      });
-    return () => controller.abort();
-  }, [loadingStateStrings.error, monthlyBrokenDrawer]);
+        if (controller.signal.aborted) return
+        console.error(err)
+        setMonthlyBrokenDrawerItems([])
+        setMonthlyBrokenDrawerError(err instanceof Error ? err.message : loadingStateStrings.error)
+        setMonthlyBrokenDrawerLoadState('error')
+      })
+    return () => controller.abort()
+  }, [loadingStateStrings.error, monthlyBrokenDrawer])
 
   // Automatic fallback polling when SSE is not connected
   useEffect(() => {
     if (sseConnected) {
       if (pollingTimerRef.current != null) {
-        window.clearInterval(pollingTimerRef.current);
-        pollingTimerRef.current = null;
+        window.clearInterval(pollingTimerRef.current)
+        pollingTimerRef.current = null
       }
-      return;
+      return
     }
 
     if (pollingTimerRef.current == null) {
       const refreshFallback = () => {
-        const controller = new AbortController();
-        const tasks: Array<Promise<unknown>> = [
-          loadData({ signal: controller.signal, reason: "refresh" }),
-        ];
-        if (route.name === "module" && route.module === "dashboard") {
-          tasks.push(loadDashboardOverview(controller.signal));
+        const controller = new AbortController()
+        const tasks: Array<Promise<unknown>> = [loadData({ signal: controller.signal, reason: 'refresh' })]
+        if (route.name === 'module' && route.module === 'dashboard') {
+          tasks.push(loadDashboardOverview(controller.signal))
         }
-        void Promise.all(tasks).finally(() => controller.abort());
-      };
+        if (route.name === 'unbound-token-usage') {
+          tasks.push(loadUnboundTokenUsage({ signal: controller.signal, reason: 'refresh' }))
+        }
+        void Promise.all(tasks).finally(() => controller.abort())
+      }
 
-      refreshFallback();
+      refreshFallback()
       pollingTimerRef.current = window.setInterval(() => {
-        refreshFallback();
-      }, REFRESH_INTERVAL_MS) as unknown as number;
+        refreshFallback()
+      }, REFRESH_INTERVAL_MS) as unknown as number
     }
 
     return () => {
       if (pollingTimerRef.current != null) {
-        window.clearInterval(pollingTimerRef.current);
-        pollingTimerRef.current = null;
+        window.clearInterval(pollingTimerRef.current)
+        pollingTimerRef.current = null
       }
-    };
-  }, [sseConnected, loadData, loadDashboardOverview, route]);
+    }
+  }, [sseConnected, loadData, loadDashboardOverview, loadUnboundTokenUsage, route])
 
   useEffect(() => {
-    if (
-      !(route.name === "module" && route.module === "dashboard") ||
-      !sseConnected
-    ) {
+    if (!(route.name === 'module' && route.module === 'dashboard') || !sseConnected) {
       if (dashboardSignalsTimerRef.current != null) {
-        window.clearInterval(dashboardSignalsTimerRef.current);
-        dashboardSignalsTimerRef.current = null;
+        window.clearInterval(dashboardSignalsTimerRef.current)
+        dashboardSignalsTimerRef.current = null
       }
-      return;
+      return
     }
 
     if (dashboardSignalsTimerRef.current == null) {
       dashboardSignalsTimerRef.current = window.setInterval(() => {
-        const controller = new AbortController();
-        void refreshDashboardSignals(controller.signal).finally(() =>
-          controller.abort(),
-        );
-      }, REFRESH_INTERVAL_MS) as unknown as number;
+        const controller = new AbortController()
+        void refreshDashboardSignals(controller.signal)
+          .finally(() => controller.abort())
+      }, REFRESH_INTERVAL_MS) as unknown as number
     }
 
     return () => {
       if (dashboardSignalsTimerRef.current != null) {
-        window.clearInterval(dashboardSignalsTimerRef.current);
-        dashboardSignalsTimerRef.current = null;
+        window.clearInterval(dashboardSignalsTimerRef.current)
+        dashboardSignalsTimerRef.current = null
       }
-    };
-  }, [refreshDashboardSignals, route, sseConnected]);
+    }
+  }, [refreshDashboardSignals, route, sseConnected])
 
   // Detect whether the collapsed token groups row overflows horizontally.
   // If everything fits in a single line, we hide the "more" toggle button.
   useEffect(() => {
-    if (
-      !Array.isArray(tokenGroups) ||
-      tokenGroups.length === 0 ||
-      tokenGroupsExpanded
-    ) {
-      setTokenGroupsCollapsedOverflowing(false);
-      return;
+    if (!Array.isArray(tokenGroups) || tokenGroups.length === 0 || tokenGroupsExpanded) {
+      setTokenGroupsCollapsedOverflowing(false)
+      return
     }
-    const el = tokenGroupsListRef.current;
-    if (!el) return;
+    const el = tokenGroupsListRef.current
+    if (!el) return
 
     const measure = () => {
-      const overflowing = el.scrollWidth > el.clientWidth;
-      setTokenGroupsCollapsedOverflowing(overflowing);
-    };
+      const overflowing = el.scrollWidth > el.clientWidth
+      setTokenGroupsCollapsedOverflowing(overflowing)
+    }
 
-    measure();
-    window.addEventListener("resize", measure);
-    return () => window.removeEventListener("resize", measure);
-  }, [
-    tokenGroups,
-    tokenGroupsExpanded,
-    selectedTokenGroupName,
-    selectedTokenUngrouped,
-  ]);
+    measure()
+    window.addEventListener('resize', measure)
+    return () => window.removeEventListener('resize', measure)
+  }, [tokenGroups, tokenGroupsExpanded, selectedTokenGroupName, selectedTokenUngrouped])
 
   // Establish SSE connection to receive live dashboard updates
   useEffect(() => {
-    let es: EventSource | null = null;
-    let reconnectTimer: number | null = null;
+    let es: EventSource | null = null
+    let reconnectTimer: number | null = null
 
     const scheduleReconnect = () => {
       if (reconnectTimer != null) {
-        return;
+        return
       }
       reconnectTimer = window.setTimeout(() => {
-        reconnectTimer = null;
-        connect();
-      }, 1000) as unknown as number;
-    };
+        reconnectTimer = null
+        connect()
+      }, 1000) as unknown as number
+    }
 
     const connect = () => {
       if (es) {
-        try {
-          es.close();
-        } catch {}
-        es = null;
+        try { es.close() } catch {}
+        es = null
       }
-      es = new EventSource("/api/events");
-      es.onopen = () => {
-        setSseConnected(true);
-      };
+      es = new EventSource('/api/events')
+      es.onopen = () => { setSseConnected(true) }
       es.onerror = () => {
         // Trigger fallback polling; attempt reconnect automatically
-        setSseConnected(false);
-      };
-      es.addEventListener("degraded", () => {
-        if (
-          !(
-            routeRef.current.name === "module" &&
-            routeRef.current.module === "dashboard"
-          )
-        ) {
-          return;
+        setSseConnected(false)
+      }
+      es.addEventListener('degraded', () => {
+        if (!(routeRef.current.name === 'module' && routeRef.current.module === 'dashboard')) {
+          return
         }
-        setSseConnected(false);
+        setSseConnected(false)
         if (es) {
-          try {
-            es.close();
-          } catch {}
-          es = null;
+          try { es.close() } catch {}
+          es = null
         }
-        scheduleReconnect();
-      });
-      es.addEventListener("snapshot", (ev: MessageEvent) => {
+        scheduleReconnect()
+      })
+      es.addEventListener('snapshot', (ev: MessageEvent) => {
         try {
-          const data = JSON.parse(ev.data) as DashboardSnapshotEvent;
-          setSseConnected(true);
-          setSummary(data.summary);
-          if (
-            routeRef.current.name === "module" &&
-            routeRef.current.module === "dashboard"
-          ) {
-            dashboardOverviewVersionRef.current += 1;
-            setDashboardSummaryWindows(data.summaryWindows);
+          const data = JSON.parse(ev.data) as DashboardSnapshotEvent
+          setSseConnected(true)
+          setSummary(data.summary)
+          if (routeRef.current.name === 'module' && routeRef.current.module === 'dashboard') {
+            dashboardOverviewVersionRef.current += 1
+            setDashboardSummaryWindows(data.summaryWindows)
             setDashboardSiteStatusSnapshot({
               ...data.siteStatus,
               availableProxyNodes: data.siteStatus.availableProxyNodes,
               totalProxyNodes: data.siteStatus.totalProxyNodes,
-            });
-            setDashboardOverviewLoaded(true);
+            })
+            setDashboardOverviewLoaded(true)
           }
-          setDashboardKeys(data.keys);
-          setDashboardLogs(data.logs);
-          setLastUpdated(new Date());
-          setError(null);
-          setLoading(false);
+          setDashboardKeys(data.keys)
+          setDashboardLogs(data.logs)
+          setLastUpdated(new Date())
+          setError(null)
+          setLoading(false)
         } catch (e) {
-          console.error("SSE parse error", e);
+          console.error('SSE parse error', e)
         }
-      });
-    };
+      })
+    }
 
-    connect();
+    connect()
     return () => {
       if (reconnectTimer != null) {
-        window.clearTimeout(reconnectTimer);
-        reconnectTimer = null;
+        window.clearTimeout(reconnectTimer)
+        reconnectTimer = null
       }
       if (es) {
-        try {
-          es.close();
-        } catch {}
+        try { es.close() } catch {}
       }
-      setSseConnected(false);
-    };
-  }, []);
+      setSseConnected(false)
+    }
+  }, [])
 
   useEffect(() => {
     const onPopState = () => {
-      setRoute(parseAdminPath(window.location.pathname));
-    };
-    window.addEventListener("popstate", onPopState);
-    return () => window.removeEventListener("popstate", onPopState);
-  }, []);
+      setRoute(parseAdminPath(window.location.pathname))
+    }
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [])
 
   const navigateToPath = useCallback((path: string) => {
-    const nextUrl = new URL(path, window.location.origin);
-    const nextRoute = parseAdminPath(nextUrl.pathname);
-    const nextLocation = `${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}`;
-    const currentLocation = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    const nextUrl = new URL(path, window.location.origin)
+    const nextRoute = parseAdminPath(nextUrl.pathname)
+    const nextLocation = `${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}`
+    const currentLocation = `${window.location.pathname}${window.location.search}${window.location.hash}`
     if (currentLocation !== nextLocation) {
-      window.history.pushState(null, "", nextLocation);
+      window.history.pushState(null, '', nextLocation)
     }
-    setRoute((previous) =>
-      isSameAdminRoute(previous, nextRoute) ? previous : nextRoute,
-    );
-  }, []);
+    setRoute((previous) => (isSameAdminRoute(previous, nextRoute) ? previous : nextRoute))
+  }, [])
 
   const navigateModule = useCallback(
     (target: AdminNavTarget) => {
-      if (target === "user-usage") {
+      if (target === 'user-usage') {
         navigateToPath(
           userUsagePath(
             getAdminUsersQueryFromLocation(),
@@ -4284,13 +3659,13 @@ function AdminDashboard(): JSX.Element {
             getAdminUsersSortFromLocation(),
             getAdminUsersSortDirectionFromLocation(),
           ),
-        );
-        return;
+        )
+        return
       }
-      navigateToPath(modulePath(target));
+      navigateToPath(modulePath(target))
     },
     [navigateToPath],
-  );
+  )
 
   const navigateKey = useCallback(
     (id: string, options?: { preserveKeysContext?: boolean }) => {
@@ -4304,10 +3679,10 @@ function AdminDashboard(): JSX.Element {
             registrationIp: selectedKeyRegistrationIp,
             regions: selectedKeyRegions,
           }),
-        );
-        return;
+        )
+        return
       }
-      navigateToPath(keyDetailPath(id));
+      navigateToPath(keyDetailPath(id))
     },
     [
       keysPage,
@@ -4318,59 +3693,72 @@ function AdminDashboard(): JSX.Element {
       selectedKeyRegions,
       selectedKeyStatuses,
     ],
-  );
+  )
 
   const navigateToken = useCallback(
-    (id: string) => {
-      navigateToPath(tokenDetailPath(id));
+    (id: string, options?: { preserveUnboundUsageContext?: boolean }) => {
+      if (options?.preserveUnboundUsageContext) {
+        navigateToPath(
+          tokenDetailPath(
+            id,
+            unboundTokenUsageQuery,
+            unboundTokenUsagePage,
+            unboundTokenUsageSort,
+            unboundTokenUsageSortOrder,
+            'unbound-usage',
+          ),
+        )
+        return
+      }
+      navigateToPath(tokenDetailPath(id))
     },
-    [navigateToPath],
-  );
+    [
+      navigateToPath,
+      unboundTokenUsagePage,
+      unboundTokenUsageQuery,
+      unboundTokenUsageSort,
+      unboundTokenUsageSortOrder,
+    ],
+  )
+
+  const navigateBackFromTokenDetail = useCallback(() => {
+    if (getAdminTokensCollectionFromLocation() === 'unbound-usage') {
+      navigateToPath(
+        unboundTokenUsagePath(
+          getAdminUnboundTokenUsageQueryFromLocation(),
+          getAdminUnboundTokenUsagePageFromLocation(),
+          getAdminUnboundTokenUsageSortFromLocation(),
+          getAdminUnboundTokenUsageSortDirectionFromLocation(),
+        ),
+      )
+      return
+    }
+    navigateModule('tokens')
+  }, [navigateModule, navigateToPath])
 
   const openRequestKeyDrawer = useCallback((id: string) => {
-    setRequestEntityDrawer({ kind: "key", id });
-  }, []);
+    setRequestEntityDrawer({ kind: 'key', id })
+  }, [])
 
   const openRequestTokenDrawer = useCallback((id: string) => {
-    setRequestEntityDrawer({ kind: "token", id });
-  }, []);
+    setRequestEntityDrawer({ kind: 'token', id })
+  }, [])
 
   const closeRequestEntityDrawer = useCallback(() => {
-    setRequestEntityDrawer(null);
-  }, []);
+    setRequestEntityDrawer(null)
+  }, [])
 
   const navigateUser = useCallback(
     (id: string, options?: { preserveUsersContext?: boolean }) => {
       if (options?.preserveUsersContext) {
-        const collection =
-          isUserUsageRoute || getAdminUsersCollectionFromLocation() === "usage"
-            ? "usage"
-            : undefined;
-        navigateToPath(
-          userDetailPath(
-            id,
-            usersQuery,
-            usersTagFilterId,
-            usersPage,
-            usersSort,
-            usersSortOrder,
-            collection,
-          ),
-        );
-        return;
+        const collection = isUserUsageRoute || getAdminUsersCollectionFromLocation() === 'usage' ? 'usage' : undefined
+        navigateToPath(userDetailPath(id, usersQuery, usersTagFilterId, usersPage, usersSort, usersSortOrder, collection))
+        return
       }
-      navigateToPath(userDetailPath(id));
+      navigateToPath(userDetailPath(id))
     },
-    [
-      isUserUsageRoute,
-      navigateToPath,
-      usersPage,
-      usersQuery,
-      usersSort,
-      usersSortOrder,
-      usersTagFilterId,
-    ],
-  );
+    [isUserUsageRoute, navigateToPath, usersPage, usersQuery, usersSort, usersSortOrder, usersTagFilterId],
+  )
 
   const buildUsersCollectionPath = useCallback(
     (
@@ -4379,101 +3767,102 @@ function AdminDashboard(): JSX.Element {
       page?: number | null,
       sort?: AdminUsersSortField | null,
       order?: SortDirection | null,
-    ) =>
-      isUserUsageRoute || getAdminUsersCollectionFromLocation() === "usage"
+    ) => (
+      isUserUsageRoute || getAdminUsersCollectionFromLocation() === 'usage'
         ? userUsagePath(query, tagId, page, sort, order)
-        : buildAdminUsersPath(query, tagId, page, sort, order),
+        : buildAdminUsersPath(query, tagId, page, sort, order)
+    ),
     [isUserUsageRoute],
-  );
+  )
 
   const navigateUsersSearch = useCallback(
     (
       query: string,
       options?: {
-        tagId?: string | null;
-        page?: number | null;
-        sort?: AdminUsersSortField | null;
-        order?: SortDirection | null;
+        tagId?: string | null
+        page?: number | null
+        sort?: AdminUsersSortField | null
+        order?: SortDirection | null
       },
     ) => {
-      const normalized = query.trim();
-      const normalizedTagId = options?.tagId?.trim() ?? null;
-      const normalizedPage =
-        options?.page != null ? Math.max(1, options.page) : 1;
-      const hasExplicitSort =
-        options != null &&
-        Object.prototype.hasOwnProperty.call(options, "sort");
-      const hasExplicitOrder =
-        options != null &&
-        Object.prototype.hasOwnProperty.call(options, "order");
-      const normalizedSort = hasExplicitSort
-        ? (options?.sort ?? null)
-        : usersSort;
+      const normalized = query.trim()
+      const normalizedTagId = options?.tagId?.trim() ?? null
+      const normalizedPage = options?.page != null ? Math.max(1, options.page) : 1
+      const hasExplicitSort = options != null && Object.prototype.hasOwnProperty.call(options, 'sort')
+      const hasExplicitOrder = options != null && Object.prototype.hasOwnProperty.call(options, 'order')
+      const normalizedSort = hasExplicitSort ? options?.sort ?? null : usersSort
       const normalizedOrder = normalizedSort
         ? hasExplicitOrder
-          ? (options?.order ?? ADMIN_USERS_DEFAULT_SORT_ORDER)
-          : (usersSortOrder ?? ADMIN_USERS_DEFAULT_SORT_ORDER)
-        : null;
-      setUsersPage(normalizedPage);
-      setUsersQueryInput(normalized);
-      setUsersQuery(normalized);
-      setUsersTagFilterId(normalizedTagId);
-      setUsersSort(normalizedSort);
-      setUsersSortOrder(normalizedOrder);
-      navigateToPath(
-        buildUsersCollectionPath(
-          normalized,
-          normalizedTagId,
-          normalizedPage,
-          normalizedSort,
-          normalizedOrder,
-        ),
-      );
+          ? options?.order ?? ADMIN_USERS_DEFAULT_SORT_ORDER
+          : usersSortOrder ?? ADMIN_USERS_DEFAULT_SORT_ORDER
+        : null
+      setUsersPage(normalizedPage)
+      setUsersQueryInput(normalized)
+      setUsersQuery(normalized)
+      setUsersTagFilterId(normalizedTagId)
+      setUsersSort(normalizedSort)
+      setUsersSortOrder(normalizedOrder)
+      navigateToPath(buildUsersCollectionPath(normalized, normalizedTagId, normalizedPage, normalizedSort, normalizedOrder))
     },
     [buildUsersCollectionPath, navigateToPath, usersSort, usersSortOrder],
-  );
+  )
+
+  const navigateUnboundTokenUsageSearch = useCallback(
+    (
+      query: string,
+      options?: {
+        page?: number | null
+        sort?: AdminUnboundTokenUsageSortField | null
+        order?: SortDirection | null
+      },
+    ) => {
+      const normalized = query.trim()
+      const normalizedPage = options?.page != null ? Math.max(1, options.page) : 1
+      const hasExplicitSort = options != null && Object.prototype.hasOwnProperty.call(options, 'sort')
+      const hasExplicitOrder = options != null && Object.prototype.hasOwnProperty.call(options, 'order')
+      const normalizedSort = hasExplicitSort ? options?.sort ?? null : unboundTokenUsageSort
+      const normalizedOrder = normalizedSort
+        ? hasExplicitOrder
+          ? options?.order ?? ADMIN_UNBOUND_TOKEN_USAGE_DEFAULT_SORT_ORDER
+          : unboundTokenUsageSortOrder ?? ADMIN_UNBOUND_TOKEN_USAGE_DEFAULT_SORT_ORDER
+        : null
+      setUnboundTokenUsagePage(normalizedPage)
+      setUnboundTokenUsageQueryInput(normalized)
+      setUnboundTokenUsageQuery(normalized)
+      setUnboundTokenUsageSort(normalizedSort)
+      setUnboundTokenUsageSortOrder(normalizedOrder)
+      navigateToPath(unboundTokenUsagePath(normalized, normalizedPage, normalizedSort, normalizedOrder))
+    },
+    [navigateToPath, unboundTokenUsageSort, unboundTokenUsageSortOrder],
+  )
 
   const navigateKeysList = useCallback(
     (options?: {
-      page?: number | null;
-      perPage?: number | null;
-      groups?: string[] | null;
-      statuses?: string[] | null;
-      registrationIp?: string | null;
-      regions?: string[] | null;
+      page?: number | null
+      perPage?: number | null
+      groups?: string[] | null
+      statuses?: string[] | null
+      registrationIp?: string | null
+      regions?: string[] | null
     }) => {
-      const page =
-        options?.page != null ? Math.max(1, Math.trunc(options.page)) : 1;
-      const perPage =
-        options?.perPage != null
-          ? Math.max(1, Math.trunc(options.perPage))
-          : DEFAULT_KEYS_PER_PAGE;
-      const groups = Array.from(
-        new Set((options?.groups ?? []).map((value) => value.trim())),
-      );
+      const page = options?.page != null ? Math.max(1, Math.trunc(options.page)) : 1
+      const perPage = options?.perPage != null ? Math.max(1, Math.trunc(options.perPage)) : DEFAULT_KEYS_PER_PAGE
+      const groups = Array.from(new Set((options?.groups ?? []).map((value) => value.trim())))
       const statuses = Array.from(
-        new Set(
-          (options?.statuses ?? [])
-            .map((value) => value.trim())
-            .filter((value) => value.length > 0),
-        ),
-      );
-      const registrationIp = options?.registrationIp?.trim() ?? "";
+        new Set((options?.statuses ?? []).map((value) => value.trim()).filter((value) => value.length > 0)),
+      )
+      const registrationIp = options?.registrationIp?.trim() ?? ''
       const regions = Array.from(
-        new Set(
-          (options?.regions ?? [])
-            .map((value) => value.trim())
-            .filter((value) => value.length > 0),
-        ),
-      );
+        new Set((options?.regions ?? []).map((value) => value.trim()).filter((value) => value.length > 0)),
+      )
 
-      setKeysPage(page);
-      setKeysPerPage(perPage);
-      setSelectedKeyGroups(groups);
-      setSelectedKeyStatuses(statuses);
-      setSelectedKeyRegistrationIp(registrationIp);
-      setKeyRegistrationIpInput(registrationIp);
-      setSelectedKeyRegions(regions);
+      setKeysPage(page)
+      setKeysPerPage(perPage)
+      setSelectedKeyGroups(groups)
+      setSelectedKeyStatuses(statuses)
+      setSelectedKeyRegistrationIp(registrationIp)
+      setKeyRegistrationIpInput(registrationIp)
+      setSelectedKeyRegions(regions)
       navigateToPath(
         buildAdminKeysPath({
           page,
@@ -4483,16 +3872,16 @@ function AdminDashboard(): JSX.Element {
           registrationIp,
           regions,
         }),
-      );
+      )
     },
     [navigateToPath],
-  );
+  )
 
   useEffect(() => {
-    if (!(route.name === "module" && route.module === "keys")) return;
+    if (!(route.name === 'module' && route.module === 'keys')) return
     const timer = window.setTimeout(() => {
-      const normalized = keyRegistrationIpInput.trim();
-      if (normalized === selectedKeyRegistrationIp) return;
+      const normalized = keyRegistrationIpInput.trim()
+      if (normalized === selectedKeyRegistrationIp) return
       navigateKeysList({
         page: 1,
         perPage: keysPerPage,
@@ -4500,9 +3889,9 @@ function AdminDashboard(): JSX.Element {
         statuses: selectedKeyStatuses,
         registrationIp: normalized,
         regions: selectedKeyRegions,
-      });
-    }, 250);
-    return () => window.clearTimeout(timer);
+      })
+    }, 250)
+    return () => window.clearTimeout(timer)
   }, [
     keyRegistrationIpInput,
     keysPerPage,
@@ -4512,49 +3901,24 @@ function AdminDashboard(): JSX.Element {
     selectedKeyRegistrationIp,
     selectedKeyRegions,
     selectedKeyStatuses,
-  ]);
+  ])
 
   const navigateUserTags = useCallback(() => {
-    const query =
-      route.name === "module" && route.module === "users"
-        ? usersQuery
-        : getAdminUsersQueryFromLocation();
-    const tagId =
-      route.name === "module" && route.module === "users"
-        ? usersTagFilterId
-        : getAdminUsersTagFilterFromLocation();
-    const page =
-      route.name === "module" && route.module === "users"
-        ? usersPage
-        : getAdminUsersPageFromLocation();
-    const sort =
-      route.name === "module" && route.module === "users"
-        ? usersSort
-        : getAdminUsersSortFromLocation();
-    const order =
-      route.name === "module" && route.module === "users"
-        ? usersSortOrder
-        : getAdminUsersSortDirectionFromLocation();
-    const collection =
-      isUserUsageRoute || getAdminUsersCollectionFromLocation() === "usage"
-        ? "usage"
-        : undefined;
-    navigateToPath(userTagsPath(query, tagId, page, sort, order, collection));
-  }, [
-    isUserUsageRoute,
-    navigateToPath,
-    route,
-    usersPage,
-    usersQuery,
-    usersSort,
-    usersSortOrder,
-    usersTagFilterId,
-  ]);
+    const query = route.name === 'module' && route.module === 'users' ? usersQuery : getAdminUsersQueryFromLocation()
+    const tagId = route.name === 'module' && route.module === 'users'
+      ? usersTagFilterId
+      : getAdminUsersTagFilterFromLocation()
+    const page = route.name === 'module' && route.module === 'users' ? usersPage : getAdminUsersPageFromLocation()
+    const sort = route.name === 'module' && route.module === 'users' ? usersSort : getAdminUsersSortFromLocation()
+    const order = route.name === 'module' && route.module === 'users' ? usersSortOrder : getAdminUsersSortDirectionFromLocation()
+    const collection = isUserUsageRoute || getAdminUsersCollectionFromLocation() === 'usage' ? 'usage' : undefined
+    navigateToPath(userTagsPath(query, tagId, page, sort, order, collection))
+  }, [isUserUsageRoute, navigateToPath, route, usersPage, usersQuery, usersSort, usersSortOrder, usersTagFilterId])
 
   const navigateUserTagCreate = useCallback(() => {
-    setActiveUserTagEditorId(NEW_USER_TAG_CARD_ID);
-    setUserTagCatalogDraft({ ...EMPTY_USER_TAG_FORM });
-    setTagCatalogError(null);
+    setActiveUserTagEditorId(NEW_USER_TAG_CARD_ID)
+    setUserTagCatalogDraft({ ...EMPTY_USER_TAG_FORM })
+    setTagCatalogError(null)
     navigateToPath(
       userTagCreatePath(
         getAdminUsersQueryFromLocation(),
@@ -4564,16 +3928,16 @@ function AdminDashboard(): JSX.Element {
         getAdminUsersSortDirectionFromLocation(),
         getAdminUsersCollectionFromLocation(),
       ),
-    );
-  }, [navigateToPath]);
+    )
+  }, [navigateToPath])
 
   const navigateUserTagEdit = useCallback(
     (id: string) => {
-      const editingTag = tagCatalog.find((tag) => tag.id === id);
+      const editingTag = tagCatalog.find((tag) => tag.id === id)
       if (editingTag) {
-        setActiveUserTagEditorId(editingTag.id);
-        setUserTagCatalogDraft(createUserTagFormState(editingTag));
-        setTagCatalogError(null);
+        setActiveUserTagEditorId(editingTag.id)
+        setUserTagCatalogDraft(createUserTagFormState(editingTag))
+        setTagCatalogError(null)
       }
       navigateToPath(
         userTagEditPath(
@@ -4585,38 +3949,32 @@ function AdminDashboard(): JSX.Element {
           getAdminUsersSortDirectionFromLocation(),
           getAdminUsersCollectionFromLocation(),
         ),
-      );
+      )
     },
     [navigateToPath, tagCatalog],
-  );
+  )
 
-  const navigateTokenLeaderboard = useCallback(() => {
-    navigateToPath(tokenLeaderboardPath());
-  }, [navigateToPath]);
+  const navigateUnboundTokenUsage = useCallback(() => {
+    navigateToPath(unboundTokenUsagePath())
+  }, [navigateToPath])
 
   const handleManualRefresh = () => {
-    const controller = new AbortController();
-    setLoading(true);
-    setTokenLeaderboardNonce((value) => value + 1);
-    const tasks: Array<Promise<unknown>> = [
-      loadData({
-        signal: controller.signal,
-        reason: "refresh",
-        showGlobalLoading: true,
-      }),
-    ];
-    if (route.name === "module" && route.module === "requests") {
-      const request = beginManagedRequest(requestsAbortRef, controller.signal);
-      setRequestsLoadState(getRefreshingLoadState(requestsLoadedRef.current));
-      setRequestsError(null);
+    const controller = new AbortController()
+    setLoading(true)
+    const tasks: Array<Promise<unknown>> = [loadData({ signal: controller.signal, reason: 'refresh', showGlobalLoading: true })]
+    if (route.name === 'unbound-token-usage') {
+      tasks.push(loadUnboundTokenUsage({ signal: controller.signal, reason: 'refresh' }))
+    }
+    if (route.name === 'module' && route.module === 'requests') {
+      const request = beginManagedRequest(requestsAbortRef, controller.signal)
+      setRequestsLoadState(getRefreshingLoadState(requestsLoadedRef.current))
+      setRequestsError(null)
       tasks.push(
         fetchRequestLogsPage(
           {
             page: logsPage,
             perPage: logsPerPage,
-            requestKinds: requestLogHasEmptyMatch
-              ? []
-              : requestLogEffectiveKinds,
+            requestKinds: requestLogHasEmptyMatch ? [] : requestLogEffectiveKinds,
             result: requestLogResultFilter,
             keyEffect: requestLogKeyEffectFilter,
             keyId: requestLogKeyFilter ?? undefined,
@@ -4624,55 +3982,48 @@ function AdminDashboard(): JSX.Element {
           request.signal,
         )
           .then((result) => {
-            if (request.signal.aborted) return;
-            setLogs(result.items);
-            setLogsTotal(result.total);
-            setRequestLogRequestKindOptions(result.requestKindOptions);
-            setRequestLogFacets(result.facets);
-            setRequestsLoadState("ready");
+            if (request.signal.aborted) return
+            setLogs(result.items)
+            setLogsTotal(result.total)
+            setRequestLogRequestKindOptions(result.requestKindOptions)
+            setRequestLogFacets(result.facets)
+            setRequestsLoadState('ready')
           })
           .catch((err) => {
-            if (request.signal.aborted) return;
-            console.error(err);
-            setRequestsError(
-              err instanceof Error ? err.message : loadingStateStrings.error,
-            );
-            setRequestsLoadState("error");
+            if (request.signal.aborted) return
+            console.error(err)
+            setRequestsError(err instanceof Error ? err.message : loadingStateStrings.error)
+            setRequestsLoadState('error')
           })
           .finally(() => {
-            request.cleanup();
+            request.cleanup()
           }),
-      );
+      )
     }
-    if (route.name === "module" && route.module === "jobs") {
-      const request = beginManagedRequest(jobsAbortRef, controller.signal);
-      setJobsLoadState(getRefreshingLoadState(jobsLoadedRef.current));
-      setJobsError(null);
+    if (route.name === 'module' && route.module === 'jobs') {
+      const request = beginManagedRequest(jobsAbortRef, controller.signal)
+      setJobsLoadState(getRefreshingLoadState(jobsLoadedRef.current))
+      setJobsError(null)
       tasks.push(
-        fetchJobs(jobsPage, jobsPerPage, jobFilter, request.signal)
-          .then((result) => {
-            if (request.signal.aborted) return;
-            setJobs(result.items);
-            setJobsTotal(result.total);
-            setJobsLoadState("ready");
-          })
-          .catch((err) => {
-            if (request.signal.aborted) return;
-            console.error(err);
-            setJobsError(
-              err instanceof Error ? err.message : loadingStateStrings.error,
-            );
-            setJobsLoadState("error");
-          })
-          .finally(() => {
-            request.cleanup();
-          }),
-      );
+        fetchJobs(jobsPage, jobsPerPage, jobFilter, request.signal).then((result) => {
+          if (request.signal.aborted) return
+          setJobs(result.items)
+          setJobsTotal(result.total)
+          setJobsLoadState('ready')
+        }).catch((err) => {
+          if (request.signal.aborted) return
+          console.error(err)
+          setJobsError(err instanceof Error ? err.message : loadingStateStrings.error)
+          setJobsLoadState('error')
+        }).finally(() => {
+          request.cleanup()
+        }),
+      )
     }
-    if (isUsersCollectionRoute || route.name === "user") {
-      const request = beginManagedRequest(usersAbortRef, controller.signal);
-      setUsersLoadState(getRefreshingLoadState(usersLoadedRef.current));
-      setUsersError(null);
+    if (isUsersCollectionRoute || route.name === 'user') {
+      const request = beginManagedRequest(usersAbortRef, controller.signal)
+      setUsersLoadState(getRefreshingLoadState(usersLoadedRef.current))
+      setUsersError(null)
       tasks.push(
         fetchAdminUsers(
           usersPage,
@@ -4682,50 +4033,39 @@ function AdminDashboard(): JSX.Element {
           usersSort,
           usersSortOrder,
           request.signal,
-        )
-          .then((result) => {
-            if (request.signal.aborted) return;
-            setUsers(result.items);
-            setUsersTotal(result.total);
-            setUsersLoadState("ready");
-          })
-          .catch((err) => {
-            if (request.signal.aborted) return;
-            console.error(err);
-            setUsersError(
-              err instanceof Error ? err.message : loadingStateStrings.error,
-            );
-            setUsersLoadState("error");
-          })
-          .finally(() => {
-            request.cleanup();
-          }),
-      );
+        ).then((result) => {
+          if (request.signal.aborted) return
+          setUsers(result.items)
+          setUsersTotal(result.total)
+          setUsersLoadState('ready')
+        }).catch((err) => {
+          if (request.signal.aborted) return
+          console.error(err)
+          setUsersError(err instanceof Error ? err.message : loadingStateStrings.error)
+          setUsersLoadState('error')
+        }).finally(() => {
+          request.cleanup()
+        }),
+      )
     }
-    if (route.name === "module" && route.module === "proxy-settings") {
+    if (route.name === 'module' && route.module === 'proxy-settings') {
       tasks.push(
-        loadForwardProxySettingsData({
-          signal: controller.signal,
-          reason: "refresh",
-        }),
-        loadForwardProxyStatsData({
-          signal: controller.signal,
-          reason: "refresh",
-        }),
-      );
+        loadForwardProxySettingsData({ signal: controller.signal, reason: 'refresh' }),
+        loadForwardProxyStatsData({ signal: controller.signal, reason: 'refresh' }),
+      )
     }
-    if (route.name === "module" && route.module === "keys") {
-      const request = beginManagedRequest(keysAbortRef, controller.signal);
+    if (route.name === 'module' && route.module === 'keys') {
+      const request = beginManagedRequest(keysAbortRef, controller.signal)
       const nextQueryKey = [
         keysPage,
         keysPerPage,
-        selectedKeyGroups.join("\u0000"),
-        selectedKeyStatuses.join("\u0000"),
+        selectedKeyGroups.join('\u0000'),
+        selectedKeyStatuses.join('\u0000'),
         selectedKeyRegistrationIp,
-        selectedKeyRegions.join("\u0000"),
-      ].join(":");
-      setKeysLoadState(getRefreshingLoadState(keysLoadedRef.current));
-      setKeysError(null);
+        selectedKeyRegions.join('\u0000'),
+      ].join(':')
+      setKeysLoadState(getRefreshingLoadState(keysLoadedRef.current))
+      setKeysError(null)
       tasks.push(
         fetchApiKeys(
           keysPage,
@@ -4739,17 +4079,17 @@ function AdminDashboard(): JSX.Element {
           request.signal,
         )
           .then((result) => {
-            if (request.signal.aborted) return;
-            setKeys(result.items);
-            setKeysTotal(result.total);
-            setKeysPage(result.page);
-            setKeysPerPage(result.perPage);
-            setKeyGroupFacets(result.facets.groups);
-            setKeyStatusFacets(result.facets.statuses);
-            setKeyRegionFacets(result.facets.regions);
-            setKeysLoadState("ready");
-            keysLoadedRef.current = true;
-            keysQueryKeyRef.current = nextQueryKey;
+            if (request.signal.aborted) return
+            setKeys(result.items)
+            setKeysTotal(result.total)
+            setKeysPage(result.page)
+            setKeysPerPage(result.perPage)
+            setKeyGroupFacets(result.facets.groups)
+            setKeyStatusFacets(result.facets.statuses)
+            setKeyRegionFacets(result.facets.regions)
+            setKeysLoadState('ready')
+            keysLoadedRef.current = true
+            keysQueryKeyRef.current = nextQueryKey
             const normalizedLocation = buildAdminKeysPath({
               page: result.page,
               perPage: result.perPage,
@@ -4757,179 +4097,89 @@ function AdminDashboard(): JSX.Element {
               statuses: selectedKeyStatuses,
               registrationIp: selectedKeyRegistrationIp,
               regions: selectedKeyRegions,
-            });
-            const currentLocation = `${window.location.pathname}${window.location.search}`;
+            })
+            const currentLocation = `${window.location.pathname}${window.location.search}`
             if (currentLocation !== normalizedLocation) {
-              window.history.replaceState(null, "", normalizedLocation);
+              window.history.replaceState(null, '', normalizedLocation)
             }
           })
           .catch((err) => {
-            if (request.signal.aborted) return;
-            console.error(err);
-            setKeysError(
-              err instanceof Error ? err.message : loadingStateStrings.error,
-            );
-            setKeysLoadState("error");
+            if (request.signal.aborted) return
+            console.error(err)
+            setKeysError(err instanceof Error ? err.message : loadingStateStrings.error)
+            setKeysLoadState('error')
           })
           .finally(() => {
-            request.cleanup();
+            request.cleanup()
           }),
-      );
+      )
     }
-    if (route.name === "module" && route.module === "dashboard") {
-      tasks.push(loadDashboardOverview(controller.signal));
+    if (route.name === 'module' && route.module === 'dashboard') {
+      tasks.push(loadDashboardOverview(controller.signal))
     }
-    void Promise.all(tasks).finally(() => controller.abort());
-  };
-
-  const buildTodayComparison = useCallback(
-    (
-      currentValue: number,
-      previousValue: number,
-      trend: "higher-is-better" | "lower-is-better" = "higher-is-better",
-    ) => {
-      const deltaValue = currentValue - previousValue;
-      const direction: "up" | "down" | "flat" =
-        deltaValue > 0 ? "up" : deltaValue < 0 ? "down" : "flat";
-      const tone: "positive" | "negative" | "neutral" =
-        direction === "flat"
-          ? "neutral"
-          : trend === "higher-is-better"
-            ? direction === "up"
-              ? "positive"
-              : "negative"
-            : direction === "down"
-              ? "positive"
-              : "negative";
-      let value = formatSignedNumber(deltaValue);
-      if (previousValue > 0) {
-        value = `${value} (${percentageFormatter.format(deltaValue / previousValue)})`;
-      } else if (deltaValue !== 0) {
-        value = `${value} · ${adminStrings.dashboard.deltaNoBaseline}`;
-      }
-      return {
-        label: adminStrings.dashboard.deltaFromYesterday,
-        value,
-        direction,
-        tone,
-      };
-    },
-    [
-      adminStrings.dashboard.deltaFromYesterday,
-      adminStrings.dashboard.deltaNoBaseline,
-    ],
-  );
+    void Promise.all(tasks).finally(() => controller.abort())
+  }
 
   const todayMetrics = useMemo(() => {
     if (!dashboardSummaryWindows) {
-      return [];
+      return []
     }
 
-    const today = dashboardSummaryWindows.today;
-    const yesterday = dashboardSummaryWindows.yesterday;
-    const total = today.total_requests;
-
-    return [
-      {
-        id: "today-total",
-        label: metricsStrings.labels.total,
-        value: formatNumber(today.total_requests),
-        subtitle: adminStrings.dashboard.asOfNow,
-        comparison: buildTodayComparison(
-          today.total_requests,
-          yesterday.total_requests,
-        ),
+    return createDashboardTodayMetrics({
+      today: dashboardSummaryWindows.today,
+      yesterday: dashboardSummaryWindows.yesterday,
+      labels: metricsStrings.labels,
+      strings: {
+        deltaFromYesterday: adminStrings.dashboard.deltaFromYesterday,
+        deltaNoBaseline: adminStrings.dashboard.deltaNoBaseline,
+        percentagePointUnit: adminStrings.dashboard.percentagePointUnit,
+        asOfNow: adminStrings.dashboard.asOfNow,
+        todayShare: adminStrings.dashboard.todayShare,
       },
-      {
-        id: "today-success",
-        label: metricsStrings.labels.success,
-        value: formatNumber(today.success_count),
-        subtitle: buildWindowSubtitle(
-          adminStrings.dashboard.todayShare,
-          today.success_count,
-          total,
-        ),
-        comparison: buildTodayComparison(
-          today.success_count,
-          yesterday.success_count,
-        ),
+      formatters: {
+        formatNumber,
+        formatPercent,
       },
-      {
-        id: "today-errors",
-        label: metricsStrings.labels.errors,
-        value: formatNumber(today.error_count),
-        subtitle: buildWindowSubtitle(
-          adminStrings.dashboard.todayShare,
-          today.error_count,
-          total,
-        ),
-        comparison: buildTodayComparison(
-          today.error_count,
-          yesterday.error_count,
-          "lower-is-better",
-        ),
-      },
-      {
-        id: "today-quota",
-        label: metricsStrings.labels.quota,
-        value: formatNumber(today.quota_exhausted_count),
-        subtitle: buildWindowSubtitle(
-          adminStrings.dashboard.todayShare,
-          today.quota_exhausted_count,
-          total,
-        ),
-        comparison: buildTodayComparison(
-          today.quota_exhausted_count,
-          yesterday.quota_exhausted_count,
-          "lower-is-better",
-        ),
-      },
-    ];
+    })
   }, [
     adminStrings.dashboard.asOfNow,
+    adminStrings.dashboard.deltaFromYesterday,
+    adminStrings.dashboard.deltaNoBaseline,
+    adminStrings.dashboard.percentagePointUnit,
     adminStrings.dashboard.todayShare,
-    buildTodayComparison,
     dashboardSummaryWindows,
     metricsStrings.labels,
-  ]);
+  ])
 
   const monthMetrics = useMemo(() => {
     if (!dashboardSummaryWindows) {
-      return [];
+      return []
     }
 
-    const month = dashboardSummaryWindows.month;
-    const total = month.total_requests;
+    const month = dashboardSummaryWindows.month
+    const total = month.total_requests
 
     return [
       {
-        id: "month-total",
+        id: 'month-total',
         label: metricsStrings.labels.total,
         value: formatNumber(month.total_requests),
         subtitle: adminStrings.dashboard.monthToDate,
       },
       {
-        id: "month-success",
+        id: 'month-success',
         label: metricsStrings.labels.success,
         value: formatNumber(month.success_count),
-        subtitle: buildWindowSubtitle(
-          adminStrings.dashboard.monthShare,
-          month.success_count,
-          total,
-        ),
+        subtitle: buildWindowSubtitle(adminStrings.dashboard.monthShare, month.success_count, total),
       },
       {
-        id: "month-errors",
+        id: 'month-errors',
         label: metricsStrings.labels.errors,
         value: formatNumber(month.error_count),
-        subtitle: buildWindowSubtitle(
-          adminStrings.dashboard.monthShare,
-          month.error_count,
-          total,
-        ),
+        subtitle: buildWindowSubtitle(adminStrings.dashboard.monthShare, month.error_count, total),
       },
       {
-        id: "month-quota",
+        id: 'month-quota',
         label: metricsStrings.labels.quota,
         value: formatNumber(month.quota_exhausted_count),
         subtitle: buildWindowSubtitle(
@@ -4939,38 +4189,38 @@ function AdminDashboard(): JSX.Element {
         ),
       },
       {
-        id: "month-new-keys",
+        id: 'month-new-keys',
         label: metricsStrings.labels.newKeys,
         value: formatNumber(month.new_keys),
         subtitle: adminStrings.dashboard.monthAdded,
       },
       {
-        id: "month-new-quarantines",
+        id: 'month-new-quarantines',
         label: metricsStrings.labels.newQuarantines,
         value: formatNumber(month.new_quarantines),
         subtitle: adminStrings.dashboard.monthAdded,
       },
-    ];
+    ]
   }, [
     adminStrings.dashboard.monthAdded,
     adminStrings.dashboard.monthShare,
     adminStrings.dashboard.monthToDate,
     dashboardSummaryWindows,
     metricsStrings.labels,
-  ]);
+  ])
 
   const statusMetrics = useMemo(() => {
     if (!dashboardSiteStatusSnapshot) {
-      return [];
+      return []
     }
 
     const allKeysAvailable =
       dashboardSiteStatusSnapshot.quarantinedKeys === 0 &&
-      dashboardSiteStatusSnapshot.exhaustedKeys === 0;
+      dashboardSiteStatusSnapshot.exhaustedKeys === 0
 
     return [
       {
-        id: "remaining",
+        id: 'remaining',
         label: metricsStrings.labels.remaining,
         value: formatNumber(dashboardSiteStatusSnapshot.remainingQuota),
         subtitle:
@@ -4979,13 +4229,13 @@ function AdminDashboard(): JSX.Element {
             : adminStrings.dashboard.currentSnapshot,
       },
       {
-        id: "keys",
+        id: 'keys',
         label: metricsStrings.labels.keys,
         value: formatNumber(dashboardSiteStatusSnapshot.activeKeys),
         subtitle: adminStrings.dashboard.currentSnapshot,
       },
       {
-        id: "quarantined",
+        id: 'quarantined',
         label: metricsStrings.labels.quarantined,
         value: formatNumber(dashboardSiteStatusSnapshot.quarantinedKeys),
         subtitle:
@@ -4996,22 +4246,20 @@ function AdminDashboard(): JSX.Element {
               : adminStrings.dashboard.currentSnapshot,
       },
       {
-        id: "exhausted",
+        id: 'exhausted',
         label: metricsStrings.labels.exhausted,
         value: formatNumber(dashboardSiteStatusSnapshot.exhaustedKeys),
-        subtitle: allKeysAvailable
-          ? metricsStrings.subtitles.keysAll
-          : metricsStrings.subtitles.keysExhausted.replace(
-              "{count}",
-              formatNumber(dashboardSiteStatusSnapshot.exhaustedKeys),
-            ),
+        subtitle:
+          allKeysAvailable
+            ? metricsStrings.subtitles.keysAll
+            : metricsStrings.subtitles.keysExhausted.replace('{count}', formatNumber(dashboardSiteStatusSnapshot.exhaustedKeys)),
       },
       {
-        id: "proxy-available",
+        id: 'proxy-available',
         label: metricsStrings.labels.proxyAvailable,
         value:
           dashboardSiteStatusSnapshot.availableProxyNodes == null
-            ? "—"
+            ? '—'
             : formatNumber(dashboardSiteStatusSnapshot.availableProxyNodes),
         subtitle:
           dashboardSiteStatusSnapshot.availableProxyNodes != null &&
@@ -5021,41 +4269,33 @@ function AdminDashboard(): JSX.Element {
             : adminStrings.dashboard.currentSnapshot,
       },
       {
-        id: "proxy-total",
+        id: 'proxy-total',
         label: metricsStrings.labels.proxyTotal,
         value:
           dashboardSiteStatusSnapshot.totalProxyNodes == null
-            ? "—"
+            ? '—'
             : formatNumber(dashboardSiteStatusSnapshot.totalProxyNodes),
         subtitle: adminStrings.dashboard.currentSnapshot,
       },
-    ];
-  }, [
-    adminStrings.dashboard.currentSnapshot,
-    dashboardSiteStatusSnapshot,
-    keyStrings.quarantine.badge,
-    metricsStrings,
-  ]);
+    ]
+  }, [adminStrings.dashboard.currentSnapshot, dashboardSiteStatusSnapshot, keyStrings.quarantine.badge, metricsStrings])
 
-  const dashboardStatusLoading = !dashboardOverviewLoaded;
+  const dashboardStatusLoading = !dashboardOverviewLoaded
 
   const namedKeyGroups = keyGroupFacets
     .filter((group) => group.value.trim().length > 0)
-    .map((group) => ({ name: group.value, keyCount: group.count }));
-  const hasKeyGroups = keyGroupFacets.length > 0;
+    .map((group) => ({ name: group.value, keyCount: group.count }))
+  const hasKeyGroups = keyGroupFacets.length > 0
 
   const keyGroupFilterOptions = useMemo(
     () =>
       keyGroupFacets.map((group) => ({
         value: group.value,
-        label:
-          group.value.trim().length > 0
-            ? group.value
-            : keyStrings.groups.ungrouped,
+        label: group.value.trim().length > 0 ? group.value : keyStrings.groups.ungrouped,
         count: group.count,
       })),
     [keyGroupFacets, keyStrings.groups.ungrouped],
-  );
+  )
 
   const keyStatusFilterOptions = useMemo(
     () =>
@@ -5067,7 +4307,7 @@ function AdminDashboard(): JSX.Element {
         }))
         .sort((left, right) => left.label.localeCompare(right.label)),
     [adminStrings, keyStatusFacets],
-  );
+  )
 
   const keyRegionFilterOptions = useMemo(
     () =>
@@ -5077,29 +4317,23 @@ function AdminDashboard(): JSX.Element {
         count: region.count,
       })),
     [keyRegionFacets],
-  );
+  )
 
-  const ungroupedTokenGroup = tokenGroups.find(
-    (group) => group.name.trim().length === 0,
-  );
-  const namedTokenGroups = tokenGroups.filter(
-    (group) => group.name.trim().length > 0,
-  );
-  const hasTokenGroups = tokenGroups.length > 0;
+  const ungroupedTokenGroup = tokenGroups.find((group) => group.name.trim().length === 0)
+  const namedTokenGroups = tokenGroups.filter((group) => group.name.trim().length > 0)
+  const hasTokenGroups = tokenGroups.length > 0
 
   const tokenList = useMemo(() => {
     if (selectedTokenUngrouped) {
-      return tokens.filter((item) => (item.group ?? "").trim().length === 0);
+      return tokens.filter((item) => (item.group ?? '').trim().length === 0)
     }
     if (selectedTokenGroupName != null) {
-      return tokens.filter(
-        (item) => (item.group ?? "").trim() === selectedTokenGroupName,
-      );
+      return tokens.filter((item) => (item.group ?? '').trim() === selectedTokenGroupName)
     }
-    return tokens;
-  }, [selectedTokenGroupName, selectedTokenUngrouped, tokens]);
+    return tokens
+  }, [selectedTokenGroupName, selectedTokenUngrouped, tokens])
 
-  const visibleKeys = keys;
+  const visibleKeys = keys
 
   const selectedKeyGroupLabels = useMemo(
     () =>
@@ -5107,7 +4341,7 @@ function AdminDashboard(): JSX.Element {
         .filter((option) => selectedKeyGroups.includes(option.value))
         .map((option) => option.label),
     [keyGroupFilterOptions, selectedKeyGroups],
-  );
+  )
 
   const selectedKeyStatusLabels = useMemo(
     () =>
@@ -5115,7 +4349,7 @@ function AdminDashboard(): JSX.Element {
         .filter((option) => selectedKeyStatuses.includes(option.value))
         .map((option) => option.label),
     [keyStatusFilterOptions, selectedKeyStatuses],
-  );
+  )
 
   const selectedKeyRegionLabels = useMemo(
     () =>
@@ -5123,7 +4357,7 @@ function AdminDashboard(): JSX.Element {
         .filter((option) => selectedKeyRegions.includes(option.value))
         .map((option) => option.label),
     [keyRegionFilterOptions, selectedKeyRegions],
-  );
+  )
 
   const keyGroupFilterSummary = useMemo(
     () =>
@@ -5133,13 +4367,8 @@ function AdminDashboard(): JSX.Element {
         keyStrings.groups.all,
         keyStrings.filters.selectedSuffix,
       ),
-    [
-      keyStrings.filters.selectedSuffix,
-      keyStrings.groups.all,
-      keyStrings.groups.label,
-      selectedKeyGroupLabels,
-    ],
-  );
+    [keyStrings.filters.selectedSuffix, keyStrings.groups.all, keyStrings.groups.label, selectedKeyGroupLabels],
+  )
 
   const keyStatusFilterSummary = useMemo(
     () =>
@@ -5149,17 +4378,12 @@ function AdminDashboard(): JSX.Element {
         keyStrings.groups.all,
         keyStrings.filters.selectedSuffix,
       ),
-    [
-      keyStrings.filters.selectedSuffix,
-      keyStrings.filters.status,
-      keyStrings.groups.all,
-      selectedKeyStatusLabels,
-    ],
-  );
+    [keyStrings.filters.selectedSuffix, keyStrings.filters.status, keyStrings.groups.all, selectedKeyStatusLabels],
+  )
 
   const keysBatchParsed = useMemo(() => {
-    return extractApiKeyImportEntriesFromText(newKeysText);
-  }, [newKeysText]);
+    return extractApiKeyImportEntriesFromText(newKeysText)
+  }, [newKeysText])
 
   const keyRegionFilterSummary = useMemo(
     () =>
@@ -5169,46 +4393,39 @@ function AdminDashboard(): JSX.Element {
         keyStrings.groups.all,
         keyStrings.filters.selectedSuffix,
       ),
-    [
-      keyStrings.filters.region,
-      keyStrings.filters.selectedSuffix,
-      keyStrings.groups.all,
-      selectedKeyRegionLabels,
-    ],
-  );
+    [keyStrings.filters.region, keyStrings.filters.selectedSuffix, keyStrings.groups.all, selectedKeyRegionLabels],
+  )
 
   const keysBatchFirstLine = useMemo(() => {
-    return newKeysText.split(/\r?\n/)[0] ?? "";
-  }, [newKeysText]);
+    return newKeysText.split(/\r?\n/)[0] ?? ''
+  }, [newKeysText])
 
   const keysBatchFailures = useMemo(() => {
-    if (!keysBatchReport || keysBatchReport.kind !== "success") return [];
-    return keysBatchReport.response.results.filter(
-      (item) => item.status === "failed",
-    );
-  }, [keysBatchReport]);
+    if (!keysBatchReport || keysBatchReport.kind !== 'success') return []
+    return keysBatchReport.response.results.filter((item) => item.status === 'failed')
+  }, [keysBatchReport])
 
   const keysValidationImportedSet = useMemo(
     () => new Set(keysValidation?.imported_api_keys ?? []),
     [keysValidation?.imported_api_keys],
-  );
+  )
 
   const keysValidationVisibleRows = useMemo(() => {
-    const rows = keysValidation?.rows ?? [];
-    if (keysValidationImportedSet.size === 0) return rows;
-    return rows.filter((row) => !keysValidationImportedSet.has(row.api_key));
-  }, [keysValidation?.rows, keysValidationImportedSet]);
+    const rows = keysValidation?.rows ?? []
+    if (keysValidationImportedSet.size === 0) return rows
+    return rows.filter((row) => !keysValidationImportedSet.has(row.api_key))
+  }, [keysValidation?.rows, keysValidationImportedSet])
 
   const keysValidationVisibleState = useMemo(() => {
-    if (!keysValidation) return null;
-    if (keysValidationImportedSet.size === 0) return keysValidation;
-    const uniqueVisible = new Set<string>();
-    let duplicateVisible = 0;
+    if (!keysValidation) return null
+    if (keysValidationImportedSet.size === 0) return keysValidation
+    const uniqueVisible = new Set<string>()
+    let duplicateVisible = 0
     for (const row of keysValidationVisibleRows) {
-      if (row.status === "duplicate_in_input") {
-        duplicateVisible += 1;
+      if (row.status === 'duplicate_in_input') {
+        duplicateVisible += 1
       } else {
-        uniqueVisible.add(row.api_key);
+        uniqueVisible.add(row.api_key)
       }
     }
     return {
@@ -5216,457 +4433,403 @@ function AdminDashboard(): JSX.Element {
       rows: keysValidationVisibleRows,
       unique_in_input: uniqueVisible.size,
       duplicate_in_input: duplicateVisible,
-    };
-  }, [keysValidation, keysValidationImportedSet, keysValidationVisibleRows]);
+    }
+  }, [keysValidation, keysValidationImportedSet, keysValidationVisibleRows])
 
   const keysValidationCounts = useMemo(() => {
-    const rows = keysValidationVisibleRows;
-    let pending = 0;
-    let duplicate = 0;
-    let ok = 0;
-    let exhausted = 0;
-    let invalid = 0;
-    let errorCount = 0;
+    const rows = keysValidationVisibleRows
+    let pending = 0
+    let duplicate = 0
+    let ok = 0
+    let exhausted = 0
+    let invalid = 0
+    let errorCount = 0
     for (const row of rows) {
       switch (row.status) {
-        case "pending":
-          pending += 1;
-          break;
-        case "duplicate_in_input":
-          duplicate += 1;
-          break;
-        case "ok":
-          ok += 1;
-          break;
-        case "ok_exhausted":
-          exhausted += 1;
-          break;
-        case "unauthorized":
-        case "forbidden":
-        case "invalid":
-          invalid += 1;
-          break;
-        case "error":
-          errorCount += 1;
-          break;
+        case 'pending':
+          pending += 1
+          break
+        case 'duplicate_in_input':
+          duplicate += 1
+          break
+        case 'ok':
+          ok += 1
+          break
+        case 'ok_exhausted':
+          exhausted += 1
+          break
+        case 'unauthorized':
+        case 'forbidden':
+        case 'invalid':
+          invalid += 1
+          break
+        case 'error':
+          errorCount += 1
+          break
       }
     }
-    const checked = ok + exhausted + invalid + errorCount;
+    const checked = ok + exhausted + invalid + errorCount
     const totalToCheck = new Set(
       rows
-        .filter((row) => row.status !== "duplicate_in_input")
+        .filter((row) => row.status !== 'duplicate_in_input')
         .map((row) => row.api_key),
-    ).size;
-    return {
-      pending,
-      duplicate,
-      ok,
-      exhausted,
-      invalid,
-      error: errorCount,
-      checked,
-      totalToCheck,
-    };
-  }, [keysValidationVisibleRows]);
+    ).size
+    return { pending, duplicate, ok, exhausted, invalid, error: errorCount, checked, totalToCheck }
+  }, [keysValidationVisibleRows])
 
   const keysValidationValidKeys = useMemo(() => {
-    const set = new Set<string>();
+    const set = new Set<string>()
     for (const row of keysValidationVisibleRows) {
-      if (row.status === "ok" || row.status === "ok_exhausted") {
-        set.add(row.api_key);
+      if (row.status === 'ok' || row.status === 'ok_exhausted') {
+        set.add(row.api_key)
       }
     }
-    return Array.from(set);
-  }, [keysValidationVisibleRows]);
+    return Array.from(set)
+  }, [keysValidationVisibleRows])
 
   const keysValidationExhaustedKeys = useMemo(() => {
-    const set = new Set<string>();
+    const set = new Set<string>()
     for (const row of keysValidationVisibleRows) {
-      if (row.status === "ok_exhausted") {
-        set.add(row.api_key);
+      if (row.status === 'ok_exhausted') {
+        set.add(row.api_key)
       }
     }
-    return Array.from(set);
-  }, [keysValidationVisibleRows]);
+    return Array.from(set)
+  }, [keysValidationVisibleRows])
 
   const updateKeysBatchOverlayLayout = useCallback(() => {
-    if (!keysBatchExpanded) return;
-    const anchor = keysBatchAnchorRef.current;
-    const anchorInput = keysBatchCollapsedInputRef.current;
-    const overlay = keysBatchOverlayRef.current;
-    const textarea = keysBatchTextareaRef.current;
-    if (!anchor || !overlay || !textarea) return;
+    if (!keysBatchExpanded) return
+    const anchor = keysBatchAnchorRef.current
+    const anchorInput = keysBatchCollapsedInputRef.current
+    const overlay = keysBatchOverlayRef.current
+    const textarea = keysBatchTextareaRef.current
+    if (!anchor || !overlay || !textarea) return
 
-    const anchorRect = anchor.getBoundingClientRect();
-    const layoutAnchorRect = (anchorInput ?? anchor).getBoundingClientRect();
-    const visualViewport = window.visualViewport;
-    const visibleBottom = visualViewport
-      ? visualViewport.offsetTop + visualViewport.height
-      : window.innerHeight;
+    const anchorRect = anchor.getBoundingClientRect()
+    const layoutAnchorRect = (anchorInput ?? anchor).getBoundingClientRect()
+    const visualViewport = window.visualViewport
+    const visibleBottom = visualViewport ? visualViewport.offsetTop + visualViewport.height : window.innerHeight
 
-    const viewportWidth = window.innerWidth;
+    const viewportWidth = window.innerWidth
     // The overlay is the "expanded" version of the collapsed controls:
     // keep its position anchored to the original control, but expand the card width for a proper
     // multi-line paste experience (matching the pre-existing wide overlay feel).
-    const overlayWidth = Math.max(0, Math.min(720, viewportWidth - 32));
-    const leftMin = 16;
-    const leftMax = Math.max(leftMin, viewportWidth - leftMin - overlayWidth);
+    const overlayWidth = Math.max(0, Math.min(720, viewportWidth - 32))
+    const leftMin = 16
+    const leftMax = Math.max(leftMin, viewportWidth - leftMin - overlayWidth)
     // Right-align to the collapsed control group so expansion grows leftwards instead of jumping
     // off-screen (the controls live on the right side of the header).
-    const preferredLeft = anchorRect.right - overlayWidth;
-    const left = Math.min(leftMax, Math.max(leftMin, preferredLeft));
-    const topPreferred = layoutAnchorRect.top;
+    const preferredLeft = anchorRect.right - overlayWidth
+    const left = Math.min(leftMax, Math.max(leftMin, preferredLeft))
+    const topPreferred = layoutAnchorRect.top
 
-    overlay.style.left = `${Math.round(left)}px`;
-    overlay.style.width = `${Math.round(overlayWidth)}px`;
+    overlay.style.left = `${Math.round(left)}px`
+    overlay.style.width = `${Math.round(overlayWidth)}px`
 
     const fitTextarea = () => {
       // Reset first so scrollHeight reflects full content.
-      textarea.style.height = "auto";
+      textarea.style.height = 'auto'
 
-      const textareaRect = textarea.getBoundingClientRect();
-      const footer = keysBatchFooterRef.current;
-      const footerHeight = footer ? footer.getBoundingClientRect().height : 0;
+      const textareaRect = textarea.getBoundingClientRect()
+      const footer = keysBatchFooterRef.current
+      const footerHeight = footer ? footer.getBoundingClientRect().height : 0
 
-      const viewportBottom = visibleBottom - 16;
-      const documentBottom =
-        document.documentElement.scrollHeight - window.scrollY - 16;
-      const availableBottom = Math.min(viewportBottom, documentBottom);
+      const viewportBottom = visibleBottom - 16
+      const documentBottom = document.documentElement.scrollHeight - window.scrollY - 16
+      const availableBottom = Math.min(viewportBottom, documentBottom)
 
-      const maxTextareaHeight = Math.max(
-        120,
-        availableBottom - textareaRect.top - footerHeight - 24,
-      );
-      const desiredHeight = Math.min(textarea.scrollHeight, maxTextareaHeight);
+      const maxTextareaHeight = Math.max(120, availableBottom - textareaRect.top - footerHeight - 24)
+      const desiredHeight = Math.min(textarea.scrollHeight, maxTextareaHeight)
 
-      textarea.style.height = `${Math.max(120, desiredHeight)}px`;
-      textarea.style.overflowY =
-        textarea.scrollHeight > maxTextareaHeight ? "auto" : "hidden";
-    };
+      textarea.style.height = `${Math.max(120, desiredHeight)}px`
+      textarea.style.overflowY = textarea.scrollHeight > maxTextareaHeight ? 'auto' : 'hidden'
+    }
 
     // Expand in-place from the collapsed control position.
-    overlay.style.top = `${Math.round(topPreferred)}px`;
-    fitTextarea();
+    overlay.style.top = `${Math.round(topPreferred)}px`
+    fitTextarea()
 
-    const overlayRect = overlay.getBoundingClientRect();
-    const overflowBottom = overlayRect.bottom - (visibleBottom - 16);
+    const overlayRect = overlay.getBoundingClientRect()
+    const overflowBottom = overlayRect.bottom - (visibleBottom - 16)
     if (overflowBottom > 0) {
       // Keep the overlay anchored; just re-fit the textarea height so the card stays within view.
       // This preserves the "expands from the input" mental model.
-      fitTextarea();
+      fitTextarea()
     }
-  }, [keysBatchExpanded]);
+  }, [keysBatchExpanded])
 
   useLayoutEffect(() => {
-    if (!keysBatchExpanded) return;
-    updateKeysBatchOverlayLayout();
-  }, [keysBatchExpanded, newKeysText, updateKeysBatchOverlayLayout]);
+    if (!keysBatchExpanded) return
+    updateKeysBatchOverlayLayout()
+  }, [keysBatchExpanded, newKeysText, updateKeysBatchOverlayLayout])
 
   useEffect(() => {
-    if (!keysBatchExpanded) return;
-    const onResize = () => updateKeysBatchOverlayLayout();
-    const onScroll = () => updateKeysBatchOverlayLayout();
-    window.addEventListener("resize", onResize);
-    window.addEventListener("scroll", onScroll, { passive: true });
-    window.visualViewport?.addEventListener("resize", onResize);
-    window.visualViewport?.addEventListener("scroll", onScroll, {
-      passive: true,
-    });
+    if (!keysBatchExpanded) return
+    const onResize = () => updateKeysBatchOverlayLayout()
+    const onScroll = () => updateKeysBatchOverlayLayout()
+    window.addEventListener('resize', onResize)
+    window.addEventListener('scroll', onScroll, { passive: true })
+    window.visualViewport?.addEventListener('resize', onResize)
+    window.visualViewport?.addEventListener('scroll', onScroll, { passive: true })
     return () => {
-      window.removeEventListener("resize", onResize);
-      window.removeEventListener("scroll", onScroll);
-      window.visualViewport?.removeEventListener("resize", onResize);
-      window.visualViewport?.removeEventListener("scroll", onScroll);
-    };
-  }, [keysBatchExpanded, updateKeysBatchOverlayLayout]);
+      window.removeEventListener('resize', onResize)
+      window.removeEventListener('scroll', onScroll)
+      window.visualViewport?.removeEventListener('resize', onResize)
+      window.visualViewport?.removeEventListener('scroll', onScroll)
+    }
+  }, [keysBatchExpanded, updateKeysBatchOverlayLayout])
 
   useEffect(() => {
-    if (!keysBatchExpanded) return;
-    const raf = window.requestAnimationFrame(() =>
-      updateKeysBatchOverlayLayout(),
-    );
-    return () => window.cancelAnimationFrame(raf);
-  }, [keysBatchExpanded, updateKeysBatchOverlayLayout]);
+    if (!keysBatchExpanded) return
+    const raf = window.requestAnimationFrame(() => updateKeysBatchOverlayLayout())
+    return () => window.cancelAnimationFrame(raf)
+  }, [keysBatchExpanded, updateKeysBatchOverlayLayout])
 
   const logsTotalPagesRaw = useMemo(
     () => Math.max(1, Math.ceil(logsTotal / logsPerPage)),
     [logsPerPage, logsTotal],
-  );
+  )
 
-  const logsTotalPages = Math.min(logsTotalPagesRaw, LOGS_MAX_PAGES);
+  const logsTotalPages = Math.min(logsTotalPagesRaw, LOGS_MAX_PAGES)
 
-  const safeLogsPage = Math.min(logsPage, logsTotalPages);
-  const tokensBlocking = isBlockingLoadState(tokensLoadState);
-  const tokensRefreshing = isRefreshingLoadState(tokensLoadState);
-  const requestsBlocking = isBlockingLoadState(requestsLoadState);
-  const requestsRefreshing = isRefreshingLoadState(requestsLoadState);
-  const jobsBlocking = isBlockingLoadState(jobsLoadState);
-  const jobsRefreshing = isRefreshingLoadState(jobsLoadState);
-  const usersBlocking = isBlockingLoadState(usersLoadState);
-  const usersRefreshing = isRefreshingLoadState(usersLoadState);
-  const effectiveUsersSort = usersSort ?? ADMIN_USERS_DEFAULT_SORT_FIELD;
-  const effectiveUsersSortOrder =
-    usersSortOrder ?? ADMIN_USERS_DEFAULT_SORT_ORDER;
-  const tokenLeaderboardBlocking = isBlockingLoadState(
-    tokenLeaderboardLoadState,
-  );
-  const tokenLeaderboardRefreshing = isRefreshingLoadState(
-    tokenLeaderboardLoadState,
-  );
-  const forwardProxySettingsBlocking = isBlockingLoadState(
-    forwardProxySettingsLoadState,
-  );
-  const forwardProxyStatsBlocking = isBlockingLoadState(
-    forwardProxyStatsLoadState,
-  );
+  const safeLogsPage = Math.min(logsPage, logsTotalPages)
+  const tokensBlocking = isBlockingLoadState(tokensLoadState)
+  const tokensRefreshing = isRefreshingLoadState(tokensLoadState)
+  const requestsBlocking = isBlockingLoadState(requestsLoadState)
+  const requestsRefreshing = isRefreshingLoadState(requestsLoadState)
+  const jobsBlocking = isBlockingLoadState(jobsLoadState)
+  const jobsRefreshing = isRefreshingLoadState(jobsLoadState)
+  const usersBlocking = isBlockingLoadState(usersLoadState)
+  const usersRefreshing = isRefreshingLoadState(usersLoadState)
+  const effectiveUsersSort = usersSort ?? ADMIN_USERS_DEFAULT_SORT_FIELD
+  const effectiveUsersSortOrder = usersSortOrder ?? ADMIN_USERS_DEFAULT_SORT_ORDER
+  const unboundTokenUsageBlocking = isBlockingLoadState(unboundTokenUsageLoadState)
+  const unboundTokenUsageRefreshing = isRefreshingLoadState(unboundTokenUsageLoadState)
+  const effectiveUnboundTokenUsageSort =
+    unboundTokenUsageSort ?? ADMIN_UNBOUND_TOKEN_USAGE_DEFAULT_SORT_FIELD
+  const effectiveUnboundTokenUsageSortOrder =
+    unboundTokenUsageSortOrder ?? ADMIN_UNBOUND_TOKEN_USAGE_DEFAULT_SORT_ORDER
+  const forwardProxySettingsBlocking = isBlockingLoadState(forwardProxySettingsLoadState)
+  const forwardProxyStatsBlocking = isBlockingLoadState(forwardProxyStatsLoadState)
   const activeModuleBlocking =
-    (route.name === "module" && route.module === "tokens" && tokensBlocking) ||
-    (route.name === "module" &&
-      route.module === "requests" &&
-      requestsBlocking) ||
-    (route.name === "module" && route.module === "jobs" && jobsBlocking) ||
-    ((isUsersCollectionRoute || route.name === "user") && usersBlocking) ||
-    (route.name === "module" &&
-      route.module === "proxy-settings" &&
-      (forwardProxySettingsBlocking || forwardProxyStatsBlocking)) ||
-    (route.name === "token-usage" && tokenLeaderboardBlocking);
+    (route.name === 'module' && route.module === 'tokens' && tokensBlocking)
+    || (route.name === 'module' && route.module === 'requests' && requestsBlocking)
+    || (route.name === 'module' && route.module === 'jobs' && jobsBlocking)
+    || (isUsersCollectionRoute || route.name === 'user') && usersBlocking
+    || (route.name === 'module' && route.module === 'proxy-settings'
+      && (forwardProxySettingsBlocking || forwardProxyStatsBlocking))
+    || (route.name === 'unbound-token-usage' && unboundTokenUsageBlocking)
 
-  const displayName = profile?.displayName ?? null;
+  const displayName = profile?.displayName ?? null
 
   const toggleLogExpansion = useCallback((id: number) => {
     setExpandedLogs((previous) => {
-      const next = new Set(previous);
+      const next = new Set(previous)
       if (next.has(id)) {
-        next.delete(id);
+        next.delete(id)
       } else {
-        next.add(id);
+        next.add(id)
       }
-      return next;
-    });
-  }, []);
+      return next
+    })
+  }, [])
 
   const toggleJobExpansion = useCallback((id: number) => {
     setExpandedJobs((previous) => {
-      const next = new Set(previous);
+      const next = new Set(previous)
       if (next.has(id)) {
-        next.delete(id);
+        next.delete(id)
       } else {
-        next.add(id);
+        next.add(id)
       }
-      return next;
-    });
-  }, []);
+      return next
+    })
+  }, [])
 
   const closeKeysValidationDialog = useCallback(() => {
-    keysValidateAbortRef.current?.abort();
-    keysValidateAbortRef.current = null;
-    setKeysValidation(null);
-  }, []);
+    keysValidateAbortRef.current?.abort()
+    keysValidateAbortRef.current = null
+    setKeysValidation(null)
+  }, [])
 
-  useEffect(
-    () => () => {
-      keysValidateAbortRef.current?.abort();
-      keysValidateAbortRef.current = null;
-    },
-    [],
-  );
+  useEffect(() => () => {
+    keysValidateAbortRef.current?.abort()
+    keysValidateAbortRef.current = null
+  }, [])
 
   const coerceValidationStatus = (raw: string): KeyValidationStatus => {
-    switch ((raw || "").toLowerCase()) {
-      case "pending":
-        return "pending";
-      case "duplicate_in_input":
-        return "duplicate_in_input";
-      case "ok":
-        return "ok";
-      case "ok_exhausted":
-        return "ok_exhausted";
-      case "unauthorized":
-        return "unauthorized";
-      case "forbidden":
-        return "forbidden";
-      case "invalid":
-        return "invalid";
-      case "error":
-        return "error";
+    switch ((raw || '').toLowerCase()) {
+      case 'pending':
+        return 'pending'
+      case 'duplicate_in_input':
+        return 'duplicate_in_input'
+      case 'ok':
+        return 'ok'
+      case 'ok_exhausted':
+        return 'ok_exhausted'
+      case 'unauthorized':
+        return 'unauthorized'
+      case 'forbidden':
+        return 'forbidden'
+      case 'invalid':
+        return 'invalid'
+      case 'error':
+        return 'error'
       default:
-        return "error";
+        return 'error'
     }
-  };
+  }
 
-  const applyValidationResults = useCallback(
-    (results: ValidateKeyResult[], runId: number) => {
-      setKeysValidation((prev) => {
-        if (!prev) return prev;
-        if (runId !== keysValidateRunIdRef.current) return prev;
-        const byKey = new Map<string, ValidateKeyResult>();
-        for (const result of results) {
-          const current = byKey.get(result.api_key);
-          const isUsable =
-            result.status !== "duplicate_in_input" &&
-            result.status !== "pending";
-          if (!current || isUsable) {
-            byKey.set(result.api_key, result);
-          }
-        }
-        const nextRows = prev.rows.map((row): KeyValidationRow => {
-          const res = byKey.get(row.api_key);
-          if (row.status === "duplicate_in_input") {
-            return {
-              ...row,
-              registration_ip: res?.registration_ip ?? row.registration_ip,
-              registration_region:
-                res?.registration_region ?? row.registration_region,
-              assigned_proxy_key: res
-                ? res.assigned_proxy_key
-                : row.assigned_proxy_key,
-              assigned_proxy_label: res
-                ? res.assigned_proxy_label
-                : row.assigned_proxy_label,
-              assigned_proxy_match_kind: res
-                ? res.assigned_proxy_match_kind
-                : row.assigned_proxy_match_kind,
-            };
-          }
-          if (!res) return row;
-          const status = coerceValidationStatus(res.status);
-          return {
-            ...row,
-            status,
-            registration_ip: res.registration_ip ?? row.registration_ip,
-            registration_region:
-              res.registration_region ?? row.registration_region,
-            assigned_proxy_key: res.assigned_proxy_key,
-            assigned_proxy_label: res.assigned_proxy_label,
-            assigned_proxy_match_kind: res.assigned_proxy_match_kind,
-            quota_limit: res.quota_limit,
-            quota_remaining: res.quota_remaining,
-            detail: res.detail,
-          };
-        });
-        return { ...prev, rows: nextRows };
-      });
-    },
-    [],
-  );
-
-  const markKeysPendingForRetry = useCallback(
-    (apiKeys: string[], runId: number) => {
-      setKeysValidation((prev) => {
-        if (!prev) return prev;
-        if (runId !== keysValidateRunIdRef.current) return prev;
-        const set = new Set(apiKeys);
-        const rows = prev.rows.map((row): KeyValidationRow => {
-          if (!set.has(row.api_key)) return row;
-          if (row.status === "duplicate_in_input") return row;
-          return {
-            ...row,
-            status: "pending" as const,
-            assigned_proxy_key: undefined,
-            assigned_proxy_label: undefined,
-            assigned_proxy_match_kind: undefined,
-            detail: undefined,
-            quota_limit: undefined,
-            quota_remaining: undefined,
-            attempts: row.attempts + 1,
-          };
-        });
-        return { ...prev, rows };
-      });
-    },
-    [],
-  );
-
-  const runValidateKeys = useCallback(
-    async (
-      items: { api_key: string; registration_ip?: string | null }[],
-      runId: number,
-    ) => {
-      const controller = new AbortController();
-      keysValidateAbortRef.current?.abort();
-      keysValidateAbortRef.current = controller;
-
-      const CHUNK_SIZE = 25;
-      for (let i = 0; i < items.length; i += CHUNK_SIZE) {
-        const chunk = items.slice(i, i + CHUNK_SIZE);
-        if (chunk.length === 0) continue;
-        try {
-          const resp = await validateApiKeys(chunk, controller.signal);
-          applyValidationResults(resp.results, runId);
-        } catch (err) {
-          const message =
-            err instanceof Error ? err.message : "Failed to validate keys";
-          applyValidationResults(
-            chunk.map((item) => ({
-              api_key: item.api_key,
-              registration_ip: item.registration_ip,
-              status: "error",
-              detail: message,
-            })),
-            runId,
-          );
+  const applyValidationResults = useCallback((results: ValidateKeyResult[], runId: number) => {
+    setKeysValidation((prev) => {
+      if (!prev) return prev
+      if (runId !== keysValidateRunIdRef.current) return prev
+      const byKey = new Map<string, ValidateKeyResult>()
+      for (const result of results) {
+        const current = byKey.get(result.api_key)
+        const isUsable =
+          result.status !== 'duplicate_in_input' && result.status !== 'pending'
+        if (!current || isUsable) {
+          byKey.set(result.api_key, result)
         }
       }
+      const nextRows = prev.rows.map((row): KeyValidationRow => {
+        const res = byKey.get(row.api_key)
+        if (row.status === 'duplicate_in_input') {
+          return {
+            ...row,
+            registration_ip: res?.registration_ip ?? row.registration_ip,
+            registration_region: res?.registration_region ?? row.registration_region,
+            assigned_proxy_key: res ? res.assigned_proxy_key : row.assigned_proxy_key,
+            assigned_proxy_label: res ? res.assigned_proxy_label : row.assigned_proxy_label,
+            assigned_proxy_match_kind: res
+              ? res.assigned_proxy_match_kind
+              : row.assigned_proxy_match_kind,
+          }
+        }
+        if (!res) return row
+        const status = coerceValidationStatus(res.status)
+        return {
+          ...row,
+          status,
+          registration_ip: res.registration_ip ?? row.registration_ip,
+          registration_region: res.registration_region ?? row.registration_region,
+          assigned_proxy_key: res.assigned_proxy_key,
+          assigned_proxy_label: res.assigned_proxy_label,
+          assigned_proxy_match_kind: res.assigned_proxy_match_kind,
+          quota_limit: res.quota_limit,
+          quota_remaining: res.quota_remaining,
+          detail: res.detail,
+        }
+      })
+      return { ...prev, rows: nextRows }
+    })
+  }, [])
 
-      // Only mark "checking" as done if this is still the active run.
-      setKeysValidation((prev) => {
-        if (!prev) return prev;
-        if (runId !== keysValidateRunIdRef.current) return prev;
-        return { ...prev, checking: false };
-      });
-      // Avoid clobbering a newer validation run's abort controller.
-      if (keysValidateAbortRef.current === controller) {
-        keysValidateAbortRef.current = null;
+  const markKeysPendingForRetry = useCallback((apiKeys: string[], runId: number) => {
+    setKeysValidation((prev) => {
+      if (!prev) return prev
+      if (runId !== keysValidateRunIdRef.current) return prev
+      const set = new Set(apiKeys)
+      const rows = prev.rows.map((row): KeyValidationRow => {
+        if (!set.has(row.api_key)) return row
+        if (row.status === 'duplicate_in_input') return row
+        return {
+          ...row,
+          status: 'pending' as const,
+          assigned_proxy_key: undefined,
+          assigned_proxy_label: undefined,
+          assigned_proxy_match_kind: undefined,
+          detail: undefined,
+          quota_limit: undefined,
+          quota_remaining: undefined,
+          attempts: row.attempts + 1,
+        }
+      })
+      return { ...prev, rows }
+    })
+  }, [])
+
+  const runValidateKeys = useCallback(async (items: { api_key: string; registration_ip?: string | null }[], runId: number) => {
+    const controller = new AbortController()
+    keysValidateAbortRef.current?.abort()
+    keysValidateAbortRef.current = controller
+
+    const CHUNK_SIZE = 25
+    for (let i = 0; i < items.length; i += CHUNK_SIZE) {
+      const chunk = items.slice(i, i + CHUNK_SIZE)
+      if (chunk.length === 0) continue
+      try {
+        const resp = await validateApiKeys(chunk, controller.signal)
+        applyValidationResults(resp.results, runId)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to validate keys'
+        applyValidationResults(
+          chunk.map((item) => ({
+            api_key: item.api_key,
+            registration_ip: item.registration_ip,
+            status: 'error',
+            detail: message,
+          })),
+          runId,
+        )
       }
-    },
-    [applyValidationResults],
-  );
+    }
+
+    // Only mark "checking" as done if this is still the active run.
+    setKeysValidation((prev) => {
+      if (!prev) return prev
+      if (runId !== keysValidateRunIdRef.current) return prev
+      return { ...prev, checking: false }
+    })
+    // Avoid clobbering a newer validation run's abort controller.
+    if (keysValidateAbortRef.current === controller) {
+      keysValidateAbortRef.current = null
+    }
+  }, [applyValidationResults])
 
   const handleAddKey = async () => {
-    const rawLines = newKeysText.split(/\r?\n/);
-    const parsedEntries = extractApiKeyImportEntriesFromText(newKeysText);
-    if (parsedEntries.length === 0) return;
+    const rawLines = newKeysText.split(/\r?\n/)
+    const parsedEntries = extractApiKeyImportEntriesFromText(newKeysText)
+    if (parsedEntries.length === 0) return
 
-    const group = newKeysGroup.trim();
+    const group = newKeysGroup.trim()
 
-    const seen = new Set<string>();
-    const rows: KeyValidationRow[] = [];
-    const uniqueEntries: {
-      api_key: string;
-      registration_ip?: string | null;
-    }[] = [];
-    const registrationIpByKey: Record<string, string> = {};
-    let duplicateCount = 0;
+    const seen = new Set<string>()
+    const rows: KeyValidationRow[] = []
+    const uniqueEntries: { api_key: string; registration_ip?: string | null }[] = []
+    const registrationIpByKey: Record<string, string> = {}
+    let duplicateCount = 0
     for (const entry of parsedEntries) {
-      const api_key = entry.api_key;
+      const api_key = entry.api_key
       if (seen.has(api_key)) {
-        duplicateCount += 1;
+        duplicateCount += 1
         rows.push({
           api_key,
           registration_ip: entry.registration_ip,
-          status: "duplicate_in_input",
+          status: 'duplicate_in_input',
           attempts: 0,
-        });
-        continue;
+        })
+        continue
       }
-      seen.add(api_key);
+      seen.add(api_key)
       uniqueEntries.push({
         api_key,
         registration_ip: entry.registration_ip,
-      });
+      })
       if (entry.registration_ip) {
-        registrationIpByKey[api_key] = entry.registration_ip;
+        registrationIpByKey[api_key] = entry.registration_ip
       }
       rows.push({
         api_key,
         registration_ip: entry.registration_ip,
-        status: "pending",
+        status: 'pending',
         attempts: 0,
-      });
+      })
     }
 
-    keysValidateRunIdRef.current = (keysValidateRunIdRef.current ?? 0) + 1;
-    const runId = keysValidateRunIdRef.current;
+    keysValidateRunIdRef.current = (keysValidateRunIdRef.current ?? 0) + 1
+    const runId = keysValidateRunIdRef.current
     setKeysValidation({
       group,
       input_lines: rawLines.length,
@@ -5678,103 +4841,85 @@ function AdminDashboard(): JSX.Element {
       rows,
       imported_api_keys: [],
       registration_ip_by_key: registrationIpByKey,
-    });
+    })
 
     // Collapse the in-place overlay once we hand off to the dialog.
-    setNewKeysText("");
-    setNewKeysGroup("");
-    beginKeysBatchClose();
+    setNewKeysText('')
+    setNewKeysGroup('')
+    beginKeysBatchClose()
 
-    await runValidateKeys(uniqueEntries, runId);
-  };
+    await runValidateKeys(uniqueEntries, runId)
+  }
 
   const handleRetryFailedValidation = async () => {
-    if (!keysValidation) return;
-    if (keysValidation.checking || keysValidation.importing) return;
+    if (!keysValidation) return
+    if (keysValidation.checking || keysValidation.importing) return
 
-    const failed = new Set<string>();
+    const failed = new Set<string>()
     for (const row of keysValidation.rows) {
-      if (
-        row.status === "unauthorized" ||
-        row.status === "forbidden" ||
-        row.status === "invalid" ||
-        row.status === "error"
-      ) {
-        failed.add(row.api_key);
+      if (row.status === 'unauthorized' || row.status === 'forbidden' || row.status === 'invalid' || row.status === 'error') {
+        failed.add(row.api_key)
       }
     }
-    const failedKeys = Array.from(failed);
-    if (failedKeys.length === 0) return;
+    const failedKeys = Array.from(failed)
+    if (failedKeys.length === 0) return
     const failedItems = failedKeys.map((api_key) => ({
       api_key,
-      registration_ip:
-        keysValidation.registration_ip_by_key[api_key] ?? undefined,
-    }));
+      registration_ip: keysValidation.registration_ip_by_key[api_key] ?? undefined,
+    }))
 
-    keysValidateRunIdRef.current = (keysValidateRunIdRef.current ?? 0) + 1;
-    const runId = keysValidateRunIdRef.current;
-    setKeysValidation((prev) =>
-      prev
-        ? {
-            ...prev,
-            checking: true,
-            importError: undefined,
-            importWarning: undefined,
-          }
-        : prev,
-    );
-    markKeysPendingForRetry(failedKeys, runId);
-    await runValidateKeys(failedItems, runId);
-  };
+    keysValidateRunIdRef.current = (keysValidateRunIdRef.current ?? 0) + 1
+    const runId = keysValidateRunIdRef.current
+    setKeysValidation((prev) => prev ? ({
+      ...prev,
+      checking: true,
+      importError: undefined,
+      importWarning: undefined,
+    }) : prev)
+    markKeysPendingForRetry(failedKeys, runId)
+    await runValidateKeys(failedItems, runId)
+  }
 
   const handleRetryOneValidation = async (api_key: string) => {
-    if (!keysValidation) return;
-    if (keysValidation.checking || keysValidation.importing) return;
-    keysValidateRunIdRef.current = (keysValidateRunIdRef.current ?? 0) + 1;
-    const runId = keysValidateRunIdRef.current;
-    setKeysValidation((prev) =>
-      prev
-        ? {
-            ...prev,
-            checking: true,
-            importError: undefined,
-            importWarning: undefined,
-          }
-        : prev,
-    );
-    markKeysPendingForRetry([api_key], runId);
-    await runValidateKeys(
-      [
-        {
-          api_key,
-          registration_ip:
-            keysValidation.registration_ip_by_key[api_key] ?? undefined,
-        },
-      ],
-      runId,
-    );
-  };
+    if (!keysValidation) return
+    if (keysValidation.checking || keysValidation.importing) return
+    keysValidateRunIdRef.current = (keysValidateRunIdRef.current ?? 0) + 1
+    const runId = keysValidateRunIdRef.current
+    setKeysValidation((prev) => prev ? ({
+      ...prev,
+      checking: true,
+      importError: undefined,
+      importWarning: undefined,
+    }) : prev)
+    markKeysPendingForRetry([api_key], runId)
+    await runValidateKeys([
+      {
+        api_key,
+        registration_ip: keysValidation.registration_ip_by_key[api_key] ?? undefined,
+      },
+    ], runId)
+  }
 
   const handleImportValidatedKeys = async () => {
-    if (!keysValidation) return;
-    if (keysValidation.checking || keysValidation.importing) return;
-    if (keysValidationValidKeys.length === 0) return;
+    if (!keysValidation) return
+    if (keysValidation.checking || keysValidation.importing) return
+    if (keysValidationValidKeys.length === 0) return
 
-    const importRunId = keysValidateRunIdRef.current;
-    const group = keysValidation.group.trim();
-    const normalizedGroup = group.length > 0 ? group : undefined;
-    const exhaustedSet = new Set(keysValidationExhaustedKeys);
+    const importRunId = keysValidateRunIdRef.current
+    const group = keysValidation.group.trim()
+    const normalizedGroup = group.length > 0 ? group : undefined
+    const exhaustedSet = new Set(keysValidationExhaustedKeys)
     setKeysValidation((prev) => {
-      if (!prev) return prev;
-      if (importRunId !== keysValidateRunIdRef.current) return prev;
+      if (!prev) return prev
+      if (importRunId !== keysValidateRunIdRef.current) return prev
       return {
         ...prev,
         importing: true,
         importError: undefined,
         importWarning: undefined,
         importReport: undefined,
-      };
-    });
+      }
+    })
     try {
       const response: AddApiKeysBatchResponse = {
         summary: {
@@ -5788,191 +4933,150 @@ function AdminDashboard(): JSX.Element {
           failed: 0,
         },
         results: [],
-      };
-      let markExhaustedFailedCount = 0;
-      const validationRowByKey = new Map<string, KeyValidationRow>();
+      }
+      let markExhaustedFailedCount = 0
+      const validationRowByKey = new Map<string, KeyValidationRow>()
       for (const row of keysValidation.rows) {
-        const current = validationRowByKey.get(row.api_key);
+        const current = validationRowByKey.get(row.api_key)
         const isUsable =
-          row.status !== "duplicate_in_input" && row.status !== "pending";
+          row.status !== 'duplicate_in_input' && row.status !== 'pending'
         if (!current || isUsable) {
-          validationRowByKey.set(row.api_key, row);
+          validationRowByKey.set(row.api_key, row)
         }
       }
 
-      for (
-        let i = 0;
-        i < keysValidationValidKeys.length;
-        i += API_KEYS_IMPORT_CHUNK_SIZE
-      ) {
-        const chunk = keysValidationValidKeys.slice(
-          i,
-          i + API_KEYS_IMPORT_CHUNK_SIZE,
-        );
-        const exhaustedInChunk = chunk.filter((apiKey) =>
-          exhaustedSet.has(apiKey),
-        );
+      for (let i = 0; i < keysValidationValidKeys.length; i += API_KEYS_IMPORT_CHUNK_SIZE) {
+        const chunk = keysValidationValidKeys.slice(i, i + API_KEYS_IMPORT_CHUNK_SIZE)
+        const exhaustedInChunk = chunk.filter((apiKey) => exhaustedSet.has(apiKey))
         const chunkItems: AddApiKeysBatchItem[] = chunk.map((api_key) => ({
           api_key,
-          registration_ip:
-            keysValidation.registration_ip_by_key[api_key] ?? undefined,
-          assigned_proxy_key:
-            validationRowByKey.get(api_key)?.assigned_proxy_key ?? undefined,
-        }));
-        const chunkResponse = await addApiKeysBatch(
-          chunkItems,
-          normalizedGroup,
-          exhaustedInChunk,
-        );
-        response.summary.input_lines += chunkResponse.summary.input_lines;
-        response.summary.valid_lines += chunkResponse.summary.valid_lines;
-        response.summary.unique_in_input +=
-          chunkResponse.summary.unique_in_input;
-        response.summary.created += chunkResponse.summary.created;
-        response.summary.undeleted += chunkResponse.summary.undeleted;
-        response.summary.existed += chunkResponse.summary.existed;
-        response.summary.duplicate_in_input +=
-          chunkResponse.summary.duplicate_in_input;
-        response.summary.failed += chunkResponse.summary.failed;
+          registration_ip: keysValidation.registration_ip_by_key[api_key] ?? undefined,
+          assigned_proxy_key: validationRowByKey.get(api_key)?.assigned_proxy_key ?? undefined,
+        }))
+        const chunkResponse = await addApiKeysBatch(chunkItems, normalizedGroup, exhaustedInChunk)
+        response.summary.input_lines += chunkResponse.summary.input_lines
+        response.summary.valid_lines += chunkResponse.summary.valid_lines
+        response.summary.unique_in_input += chunkResponse.summary.unique_in_input
+        response.summary.created += chunkResponse.summary.created
+        response.summary.undeleted += chunkResponse.summary.undeleted
+        response.summary.existed += chunkResponse.summary.existed
+        response.summary.duplicate_in_input += chunkResponse.summary.duplicate_in_input
+        response.summary.failed += chunkResponse.summary.failed
         for (const result of chunkResponse.results) {
-          if (!exhaustedSet.has(result.api_key)) continue;
-          if (result.status === "failed") continue;
-          if (result.marked_exhausted === true) continue;
-          markExhaustedFailedCount += 1;
+          if (!exhaustedSet.has(result.api_key)) continue
+          if (result.status === 'failed') continue
+          if (result.marked_exhausted === true) continue
+          markExhaustedFailedCount += 1
         }
-        response.results.push(...chunkResponse.results);
+        response.results.push(...chunkResponse.results)
       }
 
-      const importedByResponse = new Set<string>();
+      const importedByResponse = new Set<string>()
       for (const result of response.results) {
-        if (
-          result.status === "created" ||
-          result.status === "undeleted" ||
-          result.status === "existed"
-        ) {
-          importedByResponse.add(result.api_key);
+        if (result.status === 'created' || result.status === 'undeleted' || result.status === 'existed') {
+          importedByResponse.add(result.api_key)
         }
       }
 
-      const imported = new Set(keysValidation.imported_api_keys);
-      for (const apiKey of importedByResponse) imported.add(apiKey);
-      const shouldAutoClose = keysValidation.rows.every((row) =>
-        imported.has(row.api_key),
-      );
+      const imported = new Set(keysValidation.imported_api_keys)
+      for (const apiKey of importedByResponse) imported.add(apiKey)
+      const shouldAutoClose = keysValidation.rows.every((row) => imported.has(row.api_key))
       setKeysValidation((prev) => {
-        if (!prev) return prev;
-        if (importRunId !== keysValidateRunIdRef.current) return prev;
-        const warning =
-          markExhaustedFailedCount > 0
-            ? keyStrings.validation.import.exhaustedMarkFailed.replace(
-                "{count}",
-                String(markExhaustedFailedCount),
-              )
-            : undefined;
+        if (!prev) return prev
+        if (importRunId !== keysValidateRunIdRef.current) return prev
+        const warning = markExhaustedFailedCount > 0
+          ? keyStrings.validation.import.exhaustedMarkFailed.replace('{count}', String(markExhaustedFailedCount))
+          : undefined
         return {
           ...prev,
           importing: false,
           imported_api_keys: Array.from(imported),
           importReport: response,
           importWarning: warning,
-        };
-      });
+        }
+      })
       if (shouldAutoClose && importRunId === keysValidateRunIdRef.current) {
-        window.requestAnimationFrame(() => closeKeysValidationDialog());
+        window.requestAnimationFrame(() => closeKeysValidationDialog())
       }
-      await Promise.all([refreshBaseData(), refreshKeysList()]);
+      await Promise.all([refreshBaseData(), refreshKeysList()])
     } catch (err) {
-      console.error(err);
-      const message =
-        err instanceof Error ? err.message : errorStrings.addKeysBatch;
+      console.error(err)
+      const message = err instanceof Error ? err.message : errorStrings.addKeysBatch
       setKeysValidation((prev) => {
-        if (!prev) return prev;
-        if (importRunId !== keysValidateRunIdRef.current) return prev;
-        return {
-          ...prev,
-          importing: false,
-          importWarning: undefined,
-          importError: message,
-        };
-      });
+        if (!prev) return prev
+        if (importRunId !== keysValidateRunIdRef.current) return prev
+        return { ...prev, importing: false, importWarning: undefined, importError: message }
+      })
     }
-  };
+  }
 
   const handleAddToken = async (anchorEl?: HTMLElement | null) => {
-    const note = newTokenNote.trim();
-    void anchorEl;
-    setManualCopyBubble(null);
-    setManualCopyDialog(null);
-    setSubmitting(true);
+    const note = newTokenNote.trim()
+    void anchorEl
+    setManualCopyBubble(null)
+    setManualCopyDialog(null)
+    setSubmitting(true)
     try {
-      const { token } = await createToken(note || undefined);
-      setNewTokenNote("");
-      const copyResult = await copyToClipboard(token);
+      const { token } = await createToken(note || undefined)
+      setNewTokenNote('')
+      const copyResult = await copyToClipboard(token)
       if (!copyResult.ok) {
         setManualCopyDialog({
           title: manualCopyText.createToken.title,
           description: manualCopyText.createToken.description,
           fieldLabel: manualCopyText.fields.token,
           value: token,
-        });
+        })
       }
-      const controller = new AbortController();
-      setLoading(true);
-      await loadData({
-        signal: controller.signal,
-        reason: "refresh",
-        showGlobalLoading: true,
-      });
-      controller.abort();
+      const controller = new AbortController()
+      setLoading(true)
+      await loadData({ signal: controller.signal, reason: 'refresh', showGlobalLoading: true })
+      controller.abort()
     } catch (err) {
-      console.error(err);
-      setError(err instanceof Error ? err.message : errorStrings.createToken);
+      console.error(err)
+      setError(err instanceof Error ? err.message : errorStrings.createToken)
     } finally {
-      setSubmitting(false);
+      setSubmitting(false)
     }
-  };
+  }
 
-  const totalPages = useMemo(
-    () => Math.max(1, Math.ceil(tokensTotal / tokensPerPage)),
-    [tokensTotal],
-  );
-  const keysTotalPages = useMemo(
-    () => Math.max(1, Math.ceil(keysTotal / keysPerPage)),
-    [keysPerPage, keysTotal],
-  );
-  const keysHasFilters =
-    selectedKeyGroups.length > 0 ||
-    selectedKeyStatuses.length > 0 ||
-    selectedKeyRegions.length > 0 ||
-    selectedKeyRegistrationIp.length > 0;
-  const keysBlocking = isBlockingLoadState(keysLoadState);
-  const keysRefreshing = isRefreshingLoadState(keysLoadState);
+  const totalPages = useMemo(() => Math.max(1, Math.ceil(tokensTotal / tokensPerPage)), [tokensTotal])
+  const keysTotalPages = useMemo(() => Math.max(1, Math.ceil(keysTotal / keysPerPage)), [keysPerPage, keysTotal])
+  const keysHasFilters = (
+    selectedKeyGroups.length > 0
+    || selectedKeyStatuses.length > 0
+    || selectedKeyRegions.length > 0
+    || selectedKeyRegistrationIp.length > 0
+  )
+  const keysBlocking = isBlockingLoadState(keysLoadState)
+  const keysRefreshing = isRefreshingLoadState(keysLoadState)
 
   const goPrevPage = () => {
-    setTokensPage((p) => Math.max(1, p - 1));
-  };
+    setTokensPage((p) => Math.max(1, p - 1))
+  }
   const goNextPage = () => {
-    setTokensPage((p) => Math.min(totalPages, p + 1));
-  };
+    setTokensPage((p) => Math.min(totalPages, p + 1))
+  }
 
-  const hasLogsPagination = logsTotal > logsPerPage;
-  const usersTotalPages = useMemo(
-    () => Math.max(1, Math.ceil(usersTotal / USERS_PER_PAGE)),
-    [usersTotal],
-  );
+  const hasLogsPagination = logsTotal > logsPerPage
+  const usersTotalPages = useMemo(() => Math.max(1, Math.ceil(usersTotal / USERS_PER_PAGE)), [usersTotal])
+  const unboundTokenUsageTotalPages = useMemo(
+    () => Math.max(1, Math.ceil(unboundTokenUsageTotal / USERS_PER_PAGE)),
+    [unboundTokenUsageTotal],
+  )
 
   const goPrevLogsPage = () => {
-    setLogsPage((p) => Math.max(1, p - 1));
-  };
+    setLogsPage((p) => Math.max(1, p - 1))
+  }
 
   const goNextLogsPage = () => {
-    setLogsPage((p) => Math.min(logsTotalPages, p + 1));
-  };
+    setLogsPage((p) => Math.min(logsTotalPages, p + 1))
+  }
 
   const changeLogsPerPage = (value: number) => {
-    setLogsPerPage(value);
-    setLogsPage(1);
-  };
+    setLogsPerPage(value)
+    setLogsPage(1)
+  }
 
   const goPrevUsersPage = () => {
     navigateUsersSearch(usersQuery, {
@@ -5980,8 +5084,8 @@ function AdminDashboard(): JSX.Element {
       page: usersPage - 1,
       sort: usersSort,
       order: usersSortOrder,
-    });
-  };
+    })
+  }
 
   const goNextUsersPage = () => {
     navigateUsersSearch(usersQuery, {
@@ -5989,53 +5093,89 @@ function AdminDashboard(): JSX.Element {
       page: usersPage + 1,
       sort: usersSort,
       order: usersSortOrder,
-    });
-  };
+    })
+  }
 
   const applyUserSearch = () => {
-    navigateUsersSearch(usersQueryInput, {
-      tagId: usersTagFilterId,
-      page: 1,
-      sort: usersSort,
-      order: usersSortOrder,
-    });
-  };
+    navigateUsersSearch(usersQueryInput, { tagId: usersTagFilterId, page: 1, sort: usersSort, order: usersSortOrder })
+  }
 
   const resetUserSearch = () => {
-    navigateUsersSearch("", {
-      tagId: null,
-      page: 1,
-      sort: usersSort,
-      order: usersSortOrder,
-    });
-  };
+    navigateUsersSearch('', { tagId: null, page: 1, sort: usersSort, order: usersSortOrder })
+  }
 
   const toggleUsersSort = useCallback(
     (field: AdminUsersSortField) => {
-      const isActive = effectiveUsersSort === field;
-      let nextSort: AdminUsersSortField | null = field;
-      let nextOrder: SortDirection | null = ADMIN_USERS_DEFAULT_SORT_ORDER;
-      if (isActive && effectiveUsersSortOrder === "desc") {
-        nextOrder = "asc";
-      } else if (isActive && effectiveUsersSortOrder === "asc") {
-        nextSort = null;
-        nextOrder = null;
+      const isActive = effectiveUsersSort === field
+      let nextSort: AdminUsersSortField | null = field
+      let nextOrder: SortDirection | null = ADMIN_USERS_DEFAULT_SORT_ORDER
+      if (isActive && effectiveUsersSortOrder === 'desc') {
+        nextOrder = 'asc'
+      } else if (isActive && effectiveUsersSortOrder === 'asc') {
+        nextSort = null
+        nextOrder = null
       }
-      navigateUsersSearch(usersQuery, {
-        tagId: usersTagFilterId,
+      navigateUsersSearch(usersQuery, { tagId: usersTagFilterId, page: 1, sort: nextSort, order: nextOrder })
+    },
+    [effectiveUsersSort, effectiveUsersSortOrder, navigateUsersSearch, usersQuery, usersTagFilterId],
+  )
+
+  const goPrevUnboundTokenUsagePage = () => {
+    navigateUnboundTokenUsageSearch(unboundTokenUsageQuery, {
+      page: unboundTokenUsagePage - 1,
+      sort: unboundTokenUsageSort,
+      order: unboundTokenUsageSortOrder,
+    })
+  }
+
+  const goNextUnboundTokenUsagePage = () => {
+    navigateUnboundTokenUsageSearch(unboundTokenUsageQuery, {
+      page: unboundTokenUsagePage + 1,
+      sort: unboundTokenUsageSort,
+      order: unboundTokenUsageSortOrder,
+    })
+  }
+
+  const applyUnboundTokenUsageSearch = () => {
+    navigateUnboundTokenUsageSearch(unboundTokenUsageQueryInput, {
+      page: 1,
+      sort: unboundTokenUsageSort,
+      order: unboundTokenUsageSortOrder,
+    })
+  }
+
+  const resetUnboundTokenUsageSearch = () => {
+    navigateUnboundTokenUsageSearch('', {
+      page: 1,
+      sort: unboundTokenUsageSort,
+      order: unboundTokenUsageSortOrder,
+    })
+  }
+
+  const toggleUnboundTokenUsageSort = useCallback(
+    (field: AdminUnboundTokenUsageSortField) => {
+      const isActive = effectiveUnboundTokenUsageSort === field
+      let nextSort: AdminUnboundTokenUsageSortField | null = field
+      let nextOrder: SortDirection | null = ADMIN_UNBOUND_TOKEN_USAGE_DEFAULT_SORT_ORDER
+      if (isActive && effectiveUnboundTokenUsageSortOrder === 'desc') {
+        nextOrder = 'asc'
+      } else if (isActive && effectiveUnboundTokenUsageSortOrder === 'asc') {
+        nextSort = null
+        nextOrder = null
+      }
+      navigateUnboundTokenUsageSearch(unboundTokenUsageQuery, {
         page: 1,
         sort: nextSort,
         order: nextOrder,
-      });
+      })
     },
     [
-      effectiveUsersSort,
-      effectiveUsersSortOrder,
-      navigateUsersSearch,
-      usersQuery,
-      usersTagFilterId,
+      effectiveUnboundTokenUsageSort,
+      effectiveUnboundTokenUsageSortOrder,
+      navigateUnboundTokenUsageSearch,
+      unboundTokenUsageQuery,
     ],
-  );
+  )
 
   const goPrevKeysPage = () => {
     navigateKeysList({
@@ -6045,8 +5185,8 @@ function AdminDashboard(): JSX.Element {
       statuses: selectedKeyStatuses,
       registrationIp: selectedKeyRegistrationIp,
       regions: selectedKeyRegions,
-    });
-  };
+    })
+  }
 
   const goNextKeysPage = () => {
     navigateKeysList({
@@ -6056,8 +5196,8 @@ function AdminDashboard(): JSX.Element {
       statuses: selectedKeyStatuses,
       registrationIp: selectedKeyRegistrationIp,
       regions: selectedKeyRegions,
-    });
-  };
+    })
+  }
 
   const changeKeysPerPage = (nextPerPage: number) => {
     navigateKeysList({
@@ -6067,73 +5207,62 @@ function AdminDashboard(): JSX.Element {
       statuses: selectedKeyStatuses,
       registrationIp: selectedKeyRegistrationIp,
       regions: selectedKeyRegions,
-    });
-  };
+    })
+  }
 
   const refreshBaseData = async (options?: { includeKeys?: boolean }) => {
-    const controller = new AbortController();
-    setLoading(true);
+    const controller = new AbortController()
+    setLoading(true)
     try {
-      await loadData({
-        signal: controller.signal,
-        reason: "refresh",
-        showGlobalLoading: true,
-      });
-      if (
-        options?.includeKeys &&
-        route.name === "module" &&
-        route.module === "keys"
-      ) {
-        await refreshKeysList();
+      await loadData({ signal: controller.signal, reason: 'refresh', showGlobalLoading: true })
+      if (options?.includeKeys && route.name === 'module' && route.module === 'keys') {
+        await refreshKeysList()
       }
     } finally {
-      controller.abort();
+      controller.abort()
     }
-  };
+  }
 
   const refreshKeysList = async () => {
-    const pagedKeys = await fetchApiKeys(keysPage, keysPerPage, {
-      groups: selectedKeyGroups,
-      statuses: selectedKeyStatuses,
-      registrationIp: selectedKeyRegistrationIp,
-      regions: selectedKeyRegions,
-    });
-    setKeys(pagedKeys.items);
-    setKeysTotal(pagedKeys.total);
-    setKeysPage(pagedKeys.page);
-    setKeysPerPage(pagedKeys.perPage);
-    setKeyGroupFacets(pagedKeys.facets.groups);
-    setKeyStatusFacets(pagedKeys.facets.statuses);
-    setKeyRegionFacets(pagedKeys.facets.regions);
-    return pagedKeys;
-  };
-  const toggleAllowRegistration = async () => {
-    if (
-      registrationSettingsSaving ||
-      registrationSettingsLoading ||
-      allowRegistration === null
+    const pagedKeys = await fetchApiKeys(
+      keysPage,
+      keysPerPage,
+      {
+        groups: selectedKeyGroups,
+        statuses: selectedKeyStatuses,
+        registrationIp: selectedKeyRegistrationIp,
+        regions: selectedKeyRegions,
+      },
     )
-      return;
-    const previous = allowRegistration;
-    const next = !previous;
-    setAllowRegistration(next);
-    setRegistrationSettingsSaving(true);
-    setRegistrationSettingsError(null);
+    setKeys(pagedKeys.items)
+    setKeysTotal(pagedKeys.total)
+    setKeysPage(pagedKeys.page)
+    setKeysPerPage(pagedKeys.perPage)
+    setKeyGroupFacets(pagedKeys.facets.groups)
+    setKeyStatusFacets(pagedKeys.facets.statuses)
+    setKeyRegionFacets(pagedKeys.facets.regions)
+    return pagedKeys
+  }
+  const toggleAllowRegistration = async () => {
+    if (registrationSettingsSaving || registrationSettingsLoading || allowRegistration === null) return
+    const previous = allowRegistration
+    const next = !previous
+    setAllowRegistration(next)
+    setRegistrationSettingsSaving(true)
+    setRegistrationSettingsError(null)
     try {
-      const result = await updateAdminRegistrationSettings(next);
-      setAllowRegistration(result.allowRegistration);
+      const result = await updateAdminRegistrationSettings(next)
+      setAllowRegistration(result.allowRegistration)
     } catch (err) {
-      console.error(err);
-      setAllowRegistration(previous);
+      console.error(err)
+      setAllowRegistration(previous)
       setRegistrationSettingsError(
-        err instanceof Error
-          ? err.message
-          : adminStrings.users.registration.saveFailed,
-      );
+        err instanceof Error ? err.message : adminStrings.users.registration.saveFailed,
+      )
     } finally {
-      setRegistrationSettingsSaving(false);
+      setRegistrationSettingsSaving(false)
     }
-  };
+  }
   const refreshUsersList = async () => {
     const pagedUsers = await fetchAdminUsers(
       usersPage,
@@ -6142,349 +5271,286 @@ function AdminDashboard(): JSX.Element {
       usersTagFilterId,
       usersSort,
       usersSortOrder,
-    );
-    setUsers(pagedUsers.items);
-    setUsersTotal(pagedUsers.total);
-    return pagedUsers;
-  };
+    )
+    setUsers(pagedUsers.items)
+    setUsersTotal(pagedUsers.total)
+    return pagedUsers
+  }
 
   const refreshUserDetail = async (userId: string) => {
-    const detail = await fetchAdminUserDetail(userId);
-    setSelectedUserDetail(detail);
-    setUserQuotaSnapshot(buildUserQuotaSnapshot(detail));
+    const detail = await fetchAdminUserDetail(userId)
+    setSelectedUserDetail(detail)
+    setUserQuotaSnapshot(buildUserQuotaSnapshot(detail))
     setUserQuotaDraft({
       hourlyAnyLimit: String(detail.quotaBase.hourlyAnyLimit),
       hourlyLimit: String(detail.quotaBase.hourlyLimit),
       dailyLimit: String(detail.quotaBase.dailyLimit),
       monthlyLimit: String(detail.quotaBase.monthlyLimit),
-    });
-    setUserBrokenLimitDraft(String(detail.monthlyBrokenLimit));
-    setSelectedBindableTagId("");
-    return detail;
-  };
+    })
+    setUserBrokenLimitDraft(String(detail.monthlyBrokenLimit))
+    setSelectedBindableTagId('')
+    return detail
+  }
 
-  const openMonthlyBrokenDrawer = (
-    subjectKind: "user" | "token",
-    id: string,
-    label: string,
-  ) => {
-    setMonthlyBrokenDrawer({ subjectKind, id, label });
-  };
+  const openMonthlyBrokenDrawer = (subjectKind: 'user' | 'token', id: string, label: string) => {
+    setMonthlyBrokenDrawer({ subjectKind, id, label })
+  }
 
   const closeMonthlyBrokenDrawer = () => {
-    setMonthlyBrokenDrawer(null);
-    setMonthlyBrokenDrawerItems([]);
-    setMonthlyBrokenDrawerError(null);
-    setMonthlyBrokenDrawerLoadState("initial_loading");
-  };
+    setMonthlyBrokenDrawer(null)
+    setMonthlyBrokenDrawerItems([])
+    setMonthlyBrokenDrawerError(null)
+    setMonthlyBrokenDrawerLoadState('initial_loading')
+  }
 
   const refreshTagCatalog = async () => {
-    const tags = await fetchAdminUserTags();
-    setTagCatalog(tags);
-    return tags;
-  };
+    const tags = await fetchAdminUserTags()
+    setTagCatalog(tags)
+    return tags
+  }
 
   const updateQuotaDraftField = (field: QuotaSliderField, value: string) => {
-    const normalizedValue = normalizeQuotaDraftInput(value);
-    if (normalizedValue == null) return;
+    const normalizedValue = normalizeQuotaDraftInput(value)
+    if (normalizedValue == null) return
     setUserQuotaDraft((previous) => {
-      if (!previous) return previous;
-      return { ...previous, [field]: normalizedValue };
-    });
-    setUserQuotaSavedAt(null);
-    setUserQuotaError(null);
-  };
+      if (!previous) return previous
+      return { ...previous, [field]: normalizedValue }
+    })
+    setUserQuotaSavedAt(null)
+    setUserQuotaError(null)
+  }
 
   const updateUserBrokenLimitDraft = (value: string) => {
-    const normalizedValue = normalizeQuotaDraftInput(value);
-    if (normalizedValue == null) return;
-    setUserBrokenLimitDraft(normalizedValue);
-    setUserBrokenLimitError(null);
-    setUserBrokenLimitSavedAt(null);
-  };
+    const normalizedValue = normalizeQuotaDraftInput(value)
+    if (normalizedValue == null) return
+    setUserBrokenLimitDraft(normalizedValue)
+    setUserBrokenLimitError(null)
+    setUserBrokenLimitSavedAt(null)
+  }
 
-  const updateUserTagCatalogField = (
-    field: keyof UserTagFormState,
-    value: string,
-  ) => {
-    setUserTagCatalogDraft((previous) => ({ ...previous, [field]: value }));
-    setTagCatalogError(null);
-  };
+  const updateUserTagCatalogField = (field: keyof UserTagFormState, value: string) => {
+    setUserTagCatalogDraft((previous) => ({ ...previous, [field]: value }))
+    setTagCatalogError(null)
+  }
 
   const cancelUserTagCatalogEdit = () => {
-    setActiveUserTagEditorId(null);
-    setUserTagCatalogDraft({ ...EMPTY_USER_TAG_FORM });
-    setTagCatalogError(null);
-    if (route.name === "user-tag-editor") {
-      navigateUserTags();
+    setActiveUserTagEditorId(null)
+    setUserTagCatalogDraft({ ...EMPTY_USER_TAG_FORM })
+    setTagCatalogError(null)
+    if (route.name === 'user-tag-editor') {
+      navigateUserTags()
     }
-  };
+  }
 
   const beginCreateUserTag = () => {
-    navigateUserTagCreate();
-  };
+    navigateUserTagCreate()
+  }
 
   const beginEditUserTag = (tag: AdminUserTag) => {
-    navigateUserTagEdit(tag.id);
-  };
+    navigateUserTagEdit(tag.id)
+  }
 
   const saveUserQuota = async () => {
-    if (route.name !== "user" || !userQuotaDraft) return;
+    if (route.name !== 'user' || !userQuotaDraft) return
     const payload = {
       hourlyAnyLimit: Number.parseInt(userQuotaDraft.hourlyAnyLimit, 10),
       hourlyLimit: Number.parseInt(userQuotaDraft.hourlyLimit, 10),
       dailyLimit: Number.parseInt(userQuotaDraft.dailyLimit, 10),
       monthlyLimit: Number.parseInt(userQuotaDraft.monthlyLimit, 10),
-    };
+    }
     if (
-      !Number.isFinite(payload.hourlyAnyLimit) ||
-      payload.hourlyAnyLimit < 0 ||
-      !Number.isFinite(payload.hourlyLimit) ||
-      payload.hourlyLimit < 0 ||
-      !Number.isFinite(payload.dailyLimit) ||
-      payload.dailyLimit < 0 ||
-      !Number.isFinite(payload.monthlyLimit) ||
-      payload.monthlyLimit < 0
+      !Number.isFinite(payload.hourlyAnyLimit) || payload.hourlyAnyLimit < 0
+      || !Number.isFinite(payload.hourlyLimit) || payload.hourlyLimit < 0
+      || !Number.isFinite(payload.dailyLimit) || payload.dailyLimit < 0
+      || !Number.isFinite(payload.monthlyLimit) || payload.monthlyLimit < 0
     ) {
-      setUserQuotaError(adminStrings.users.quota.invalid);
-      return;
+      setUserQuotaError(adminStrings.users.quota.invalid)
+      return
     }
-    setSavingUserQuota(true);
-    setUserQuotaError(null);
+    setSavingUserQuota(true)
+    setUserQuotaError(null)
     try {
-      await updateAdminUserQuota(route.id, payload);
-      await Promise.all([refreshUserDetail(route.id), refreshUsersList()]);
-      setUserQuotaSavedAt(Date.now());
+      await updateAdminUserQuota(route.id, payload)
+      await Promise.all([
+        refreshUserDetail(route.id),
+        refreshUsersList(),
+      ])
+      setUserQuotaSavedAt(Date.now())
     } catch (err) {
-      console.error(err);
-      setUserQuotaError(
-        err instanceof Error
-          ? err.message
-          : adminStrings.users.quota.saveFailed,
-      );
+      console.error(err)
+      setUserQuotaError(err instanceof Error ? err.message : adminStrings.users.quota.saveFailed)
     } finally {
-      setSavingUserQuota(false);
+      setSavingUserQuota(false)
     }
-  };
+  }
 
   const saveUserBrokenLimit = async () => {
-    if (route.name !== "user") return;
-    const monthlyBrokenLimit = Number.parseInt(userBrokenLimitDraft, 10);
+    if (route.name !== 'user') return
+    const monthlyBrokenLimit = Number.parseInt(userBrokenLimitDraft, 10)
     if (!Number.isFinite(monthlyBrokenLimit) || monthlyBrokenLimit < 0) {
-      setUserBrokenLimitError(adminStrings.users.brokenKeys.invalid);
-      return;
+      setUserBrokenLimitError(adminStrings.users.brokenKeys.invalid)
+      return
     }
-    setSavingUserBrokenLimit(true);
-    setUserBrokenLimitError(null);
+    setSavingUserBrokenLimit(true)
+    setUserBrokenLimitError(null)
     try {
-      await updateAdminUserBrokenKeyLimit(route.id, { monthlyBrokenLimit });
-      await Promise.all([refreshUserDetail(route.id), refreshUsersList()]);
-      setUserBrokenLimitSavedAt(Date.now());
+      await updateAdminUserBrokenKeyLimit(route.id, { monthlyBrokenLimit })
+      await Promise.all([refreshUserDetail(route.id), refreshUsersList()])
+      setUserBrokenLimitSavedAt(Date.now())
     } catch (err) {
-      console.error(err);
+      console.error(err)
       setUserBrokenLimitError(
-        err instanceof Error
-          ? err.message
-          : adminStrings.users.brokenKeys.saveFailed,
-      );
+        err instanceof Error ? err.message : adminStrings.users.brokenKeys.saveFailed,
+      )
     } finally {
-      setSavingUserBrokenLimit(false);
+      setSavingUserBrokenLimit(false)
     }
-  };
+  }
 
   const saveUserTagCatalog = async () => {
     const editingTag = userTagCatalogDraft.tagId
-      ? (tagCatalog.find((tag) => tag.id === userTagCatalogDraft.tagId) ?? null)
-      : null;
-    const isSystemEditing = editingTag?.systemKey != null;
+      ? tagCatalog.find((tag) => tag.id === userTagCatalogDraft.tagId) ?? null
+      : null
+    const isSystemEditing = editingTag?.systemKey != null
     const parsedDeltas = {
       hourlyAnyDelta: Number.parseInt(userTagCatalogDraft.hourlyAnyDelta, 10),
       hourlyDelta: Number.parseInt(userTagCatalogDraft.hourlyDelta, 10),
       dailyDelta: Number.parseInt(userTagCatalogDraft.dailyDelta, 10),
       monthlyDelta: Number.parseInt(userTagCatalogDraft.monthlyDelta, 10),
-    };
-    const effectKind =
-      userTagCatalogDraft.effectKind === "block_all"
-        ? "block_all"
-        : "quota_delta";
-    const deltasAreValid = Object.values(parsedDeltas).every((value) =>
-      Number.isFinite(value),
-    );
-    if (
-      !isSystemEditing &&
-      (userTagCatalogDraft.name.trim().length === 0 ||
-        userTagCatalogDraft.displayName.trim().length === 0)
-    ) {
-      setTagCatalogError(adminStrings.users.catalog.invalid);
-      return;
+    }
+    const effectKind = userTagCatalogDraft.effectKind === 'block_all' ? 'block_all' : 'quota_delta'
+    const deltasAreValid = Object.values(parsedDeltas).every((value) => Number.isFinite(value))
+    if (!isSystemEditing && (userTagCatalogDraft.name.trim().length === 0 || userTagCatalogDraft.displayName.trim().length === 0)) {
+      setTagCatalogError(adminStrings.users.catalog.invalid)
+      return
     }
     if (!deltasAreValid) {
-      setTagCatalogError(adminStrings.users.catalog.invalid);
-      return;
+      setTagCatalogError(adminStrings.users.catalog.invalid)
+      return
     }
 
     const payload = {
-      name: isSystemEditing
-        ? (editingTag?.name ?? userTagCatalogDraft.name.trim())
-        : userTagCatalogDraft.name.trim(),
+      name: isSystemEditing ? editingTag?.name ?? userTagCatalogDraft.name.trim() : userTagCatalogDraft.name.trim(),
       displayName: isSystemEditing
-        ? (editingTag?.displayName ?? userTagCatalogDraft.displayName.trim())
+        ? editingTag?.displayName ?? userTagCatalogDraft.displayName.trim()
         : userTagCatalogDraft.displayName.trim(),
-      icon: isSystemEditing
-        ? (editingTag?.icon ?? null)
-        : userTagCatalogDraft.icon.trim() || null,
+      icon: isSystemEditing ? editingTag?.icon ?? null : (userTagCatalogDraft.icon.trim() || null),
       effectKind,
-      hourlyAnyDelta:
-        effectKind === "block_all" ? 0 : parsedDeltas.hourlyAnyDelta,
-      hourlyDelta: effectKind === "block_all" ? 0 : parsedDeltas.hourlyDelta,
-      dailyDelta: effectKind === "block_all" ? 0 : parsedDeltas.dailyDelta,
-      monthlyDelta: effectKind === "block_all" ? 0 : parsedDeltas.monthlyDelta,
-    };
+      hourlyAnyDelta: effectKind === 'block_all' ? 0 : parsedDeltas.hourlyAnyDelta,
+      hourlyDelta: effectKind === 'block_all' ? 0 : parsedDeltas.hourlyDelta,
+      dailyDelta: effectKind === 'block_all' ? 0 : parsedDeltas.dailyDelta,
+      monthlyDelta: effectKind === 'block_all' ? 0 : parsedDeltas.monthlyDelta,
+    }
 
-    setSavingUserTagCatalog(true);
-    setTagCatalogError(null);
+    setSavingUserTagCatalog(true)
+    setTagCatalogError(null)
     try {
       if (editingTag) {
-        await updateAdminUserTag(editingTag.id, payload);
+        await updateAdminUserTag(editingTag.id, payload)
       } else {
-        await createAdminUserTag(payload);
+        await createAdminUserTag(payload)
       }
       await Promise.all([
         refreshTagCatalog(),
         refreshUsersList(),
-        route.name === "user"
-          ? refreshUserDetail(route.id)
-          : Promise.resolve(null),
-      ]);
-      cancelUserTagCatalogEdit();
+        route.name === 'user' ? refreshUserDetail(route.id) : Promise.resolve(null),
+      ])
+      cancelUserTagCatalogEdit()
     } catch (err) {
-      console.error(err);
-      setTagCatalogError(
-        err instanceof Error
-          ? err.message
-          : adminStrings.users.catalog.saveFailed,
-      );
+      console.error(err)
+      setTagCatalogError(err instanceof Error ? err.message : adminStrings.users.catalog.saveFailed)
     } finally {
-      setSavingUserTagCatalog(false);
+      setSavingUserTagCatalog(false)
     }
-  };
+  }
 
   const requestUserTagCatalogDelete = (tag: AdminUserTag) => {
-    if (tag.systemKey) return;
-    setTagCatalogError(null);
-    setPendingUserTagDelete(tag);
-  };
+    if (tag.systemKey) return
+    setTagCatalogError(null)
+    setPendingUserTagDelete(tag)
+  }
 
   const closeUserTagDeleteDialog = () => {
-    if (deletingUserTagId) return;
-    setPendingUserTagDelete(null);
-  };
+    if (deletingUserTagId) return
+    setPendingUserTagDelete(null)
+  }
 
   const confirmUserTagCatalogDelete = async () => {
-    const tag = pendingUserTagDelete;
-    if (!tag || tag.systemKey) return;
-    setDeletingUserTagId(tag.id);
-    setTagCatalogError(null);
+    const tag = pendingUserTagDelete
+    if (!tag || tag.systemKey) return
+    setDeletingUserTagId(tag.id)
+    setTagCatalogError(null)
     try {
-      await deleteAdminUserTag(tag.id);
+      await deleteAdminUserTag(tag.id)
       await Promise.all([
         refreshTagCatalog(),
         refreshUsersList(),
-        route.name === "user"
-          ? refreshUserDetail(route.id)
-          : Promise.resolve(null),
-      ]);
+        route.name === 'user' ? refreshUserDetail(route.id) : Promise.resolve(null),
+      ])
       if (userTagCatalogDraft.tagId === tag.id) {
-        cancelUserTagCatalogEdit();
+        cancelUserTagCatalogEdit()
       }
-      setPendingUserTagDelete((current) =>
-        current?.id === tag.id ? null : current,
-      );
+      setPendingUserTagDelete((current) => (current?.id === tag.id ? null : current))
     } catch (err) {
-      console.error(err);
-      setTagCatalogError(
-        err instanceof Error
-          ? err.message
-          : adminStrings.users.catalog.deleteFailed,
-      );
+      console.error(err)
+      setTagCatalogError(err instanceof Error ? err.message : adminStrings.users.catalog.deleteFailed)
     } finally {
-      setDeletingUserTagId(null);
+      setDeletingUserTagId(null)
     }
-  };
+  }
 
   const bindSelectedUserTag = async () => {
-    if (route.name !== "user" || !selectedBindableTagId) return;
-    setSavingUserTagBinding(true);
-    setUserTagError(null);
+    if (route.name !== 'user' || !selectedBindableTagId) return
+    setSavingUserTagBinding(true)
+    setUserTagError(null)
     try {
-      await bindAdminUserTag(route.id, selectedBindableTagId);
-      await Promise.all([
-        refreshUserDetail(route.id),
-        refreshUsersList(),
-        refreshTagCatalog(),
-      ]);
-      setSelectedBindableTagId("");
+      await bindAdminUserTag(route.id, selectedBindableTagId)
+      await Promise.all([refreshUserDetail(route.id), refreshUsersList(), refreshTagCatalog()])
+      setSelectedBindableTagId('')
     } catch (err) {
-      console.error(err);
-      setUserTagError(
-        err instanceof Error
-          ? err.message
-          : adminStrings.users.userTags.bindFailed,
-      );
+      console.error(err)
+      setUserTagError(err instanceof Error ? err.message : adminStrings.users.userTags.bindFailed)
     } finally {
-      setSavingUserTagBinding(false);
+      setSavingUserTagBinding(false)
     }
-  };
+  }
 
   const unbindSelectedUserTag = async (tag: AdminUserTagBinding) => {
-    if (
-      route.name !== "user" ||
-      isSystemUserTag(tag) ||
-      tag.source !== "manual"
-    )
-      return;
-    setSavingUserTagBinding(true);
-    setUserTagError(null);
+    if (route.name !== 'user' || isSystemUserTag(tag) || tag.source !== 'manual') return
+    setSavingUserTagBinding(true)
+    setUserTagError(null)
     try {
-      await unbindAdminUserTag(route.id, tag.tagId);
-      await Promise.all([
-        refreshUserDetail(route.id),
-        refreshUsersList(),
-        refreshTagCatalog(),
-      ]);
+      await unbindAdminUserTag(route.id, tag.tagId)
+      await Promise.all([refreshUserDetail(route.id), refreshUsersList(), refreshTagCatalog()])
     } catch (err) {
-      console.error(err);
-      setUserTagError(
-        err instanceof Error
-          ? err.message
-          : adminStrings.users.userTags.unbindFailed,
-      );
+      console.error(err)
+      setUserTagError(err instanceof Error ? err.message : adminStrings.users.userTags.unbindFailed)
     } finally {
-      setSavingUserTagBinding(false);
+      setSavingUserTagBinding(false)
     }
-  };
+  }
 
   const handleSelectTokenGroupAll = () => {
-    setSelectedTokenGroupName(null);
-    setSelectedTokenUngrouped(false);
-    setTokensPage(1);
-  };
+    setSelectedTokenGroupName(null)
+    setSelectedTokenUngrouped(false)
+    setTokensPage(1)
+  }
 
   const handleSelectTokenGroupUngrouped = () => {
-    setSelectedTokenGroupName(null);
-    setSelectedTokenUngrouped(true);
-    setTokensPage(1);
-  };
+    setSelectedTokenGroupName(null)
+    setSelectedTokenUngrouped(true)
+    setTokensPage(1)
+  }
 
   const handleSelectTokenGroupNamed = (group: string) => {
-    setSelectedTokenGroupName(group);
-    setSelectedTokenUngrouped(false);
-    setTokensPage(1);
-  };
+    setSelectedTokenGroupName(group)
+    setSelectedTokenUngrouped(false)
+    setTokensPage(1)
+  }
 
   const toggleTokenGroupsExpanded = () => {
-    setTokenGroupsExpanded((previous) => !previous);
-  };
+    setTokenGroupsExpanded((previous) => !previous)
+  }
 
   const handleToggleKeyGroupFilter = (group: string) => {
     navigateKeysList({
@@ -6494,8 +5560,8 @@ function AdminDashboard(): JSX.Element {
       statuses: selectedKeyStatuses,
       registrationIp: selectedKeyRegistrationIp,
       regions: selectedKeyRegions,
-    });
-  };
+    })
+  }
 
   const handleToggleKeyStatusFilter = (status: string) => {
     navigateKeysList({
@@ -6505,8 +5571,8 @@ function AdminDashboard(): JSX.Element {
       statuses: toggleSelection(selectedKeyStatuses, status),
       registrationIp: selectedKeyRegistrationIp,
       regions: selectedKeyRegions,
-    });
-  };
+    })
+  }
 
   const handleToggleKeyRegionFilter = (region: string) => {
     navigateKeysList({
@@ -6516,8 +5582,8 @@ function AdminDashboard(): JSX.Element {
       statuses: selectedKeyStatuses,
       registrationIp: selectedKeyRegistrationIp,
       regions: toggleSelection(selectedKeyRegions, region),
-    });
-  };
+    })
+  }
 
   const handleClearKeyGroupFilters = () => {
     navigateKeysList({
@@ -6527,8 +5593,8 @@ function AdminDashboard(): JSX.Element {
       statuses: selectedKeyStatuses,
       registrationIp: selectedKeyRegistrationIp,
       regions: selectedKeyRegions,
-    });
-  };
+    })
+  }
 
   const handleClearKeyStatusFilters = () => {
     navigateKeysList({
@@ -6538,8 +5604,8 @@ function AdminDashboard(): JSX.Element {
       statuses: [],
       registrationIp: selectedKeyRegistrationIp,
       regions: selectedKeyRegions,
-    });
-  };
+    })
+  }
 
   const handleClearKeyRegionFilters = () => {
     navigateKeysList({
@@ -6549,83 +5615,69 @@ function AdminDashboard(): JSX.Element {
       statuses: selectedKeyStatuses,
       registrationIp: selectedKeyRegistrationIp,
       regions: [],
-    });
-  };
+    })
+  }
 
   const handleClearKeyRegistrationIpFilter = () => {
-    setKeyRegistrationIpInput("");
+    setKeyRegistrationIpInput('')
     navigateKeysList({
       page: 1,
       perPage: keysPerPage,
       groups: selectedKeyGroups,
       statuses: selectedKeyStatuses,
-      registrationIp: "",
+      registrationIp: '',
       regions: selectedKeyRegions,
-    });
-  };
+    })
+  }
 
   const openBatchDialog = () => {
-    setBatchGroup("");
-    setBatchCount(10);
-    setBatchShareText(null);
-    setBatchDialogOpen(true);
-  };
+    setBatchGroup('')
+    setBatchCount(10)
+    setBatchShareText(null)
+    setBatchDialogOpen(true)
+  }
   const submitBatchCreate = async () => {
-    const group = batchGroup.trim();
-    if (!group) return;
-    setBatchCreating(true);
+    const group = batchGroup.trim()
+    if (!group) return
+    setBatchCreating(true)
     try {
-      const res = await createTokensBatch(
-        group,
-        Math.max(1, Math.min(1000, batchCount)),
-        newTokenNote.trim() || undefined,
-      );
-      const links = res.tokens
-        .map((t) => `${window.location.origin}/#${encodeURIComponent(t)}`)
-        .join("\n");
-      setBatchShareText(links);
+      const res = await createTokensBatch(group, Math.max(1, Math.min(1000, batchCount)), newTokenNote.trim() || undefined)
+      const links = res.tokens.map((t) => `${window.location.origin}/#${encodeURIComponent(t)}`).join('\n')
+      setBatchShareText(links)
       // refresh list to first page
-      setTokensPage(1);
-      const controller = new AbortController();
-      setLoading(true);
-      await loadData({
-        signal: controller.signal,
-        reason: "refresh",
-        showGlobalLoading: true,
-      });
-      controller.abort();
+      setTokensPage(1)
+      const controller = new AbortController()
+      setLoading(true)
+      await loadData({ signal: controller.signal, reason: 'refresh', showGlobalLoading: true })
+      controller.abort()
     } catch (err) {
-      console.error(err);
-      setError(err instanceof Error ? err.message : errorStrings.createToken);
+      console.error(err)
+      setError(err instanceof Error ? err.message : errorStrings.createToken)
     } finally {
-      setBatchCreating(false);
+      setBatchCreating(false)
     }
-  };
+  }
   const closeBatchDialog = () => {
-    setBatchDialogOpen(false);
-  };
+    setBatchDialogOpen(false)
+  }
 
   const closeKeysBatchReportDialog = () => {
-    setKeysBatchReport(null);
-  };
+    setKeysBatchReport(null)
+  }
 
-  const handleCopyToken = async (
-    id: string,
-    stateKey: string,
-    anchorEl?: HTMLElement | null,
-  ) => {
-    setManualCopyBubble(null);
-    commitSecretWarm(`token:${id}`);
-    updateCopyState(stateKey, "loading");
+  const handleCopyToken = async (id: string, stateKey: string, anchorEl?: HTMLElement | null) => {
+    setManualCopyBubble(null)
+    commitSecretWarm(`token:${id}`)
+    updateCopyState(stateKey, 'loading')
     try {
-      const hasCachedToken = tokenSecretCacheRef.current.has(id);
-      const token = await resolveTokenSecret(id);
+      const hasCachedToken = tokenSecretCacheRef.current.has(id)
+      const token = await resolveTokenSecret(id)
       const copyResult = await copyToClipboard(
         token,
         hasCachedToken ? { preferExecCommand: true } : undefined,
-      );
+      )
       if (!copyResult.ok) {
-        updateCopyState(stateKey, null);
+        updateCopyState(stateKey, null)
         if (anchorEl) {
           openManualCopyBubble({
             anchorEl,
@@ -6633,38 +5685,34 @@ function AdminDashboard(): JSX.Element {
             description: manualCopyText.description,
             fieldLabel: manualCopyText.fields.token,
             value: token,
-          });
+          })
         }
-        return;
+        return
       }
-      setManualCopyBubble(null);
-      updateCopyState(stateKey, "copied");
-      window.setTimeout(() => updateCopyState(stateKey, null), 2000);
+      setManualCopyBubble(null)
+      updateCopyState(stateKey, 'copied')
+      window.setTimeout(() => updateCopyState(stateKey, null), 2000)
     } catch (err) {
-      console.error(err);
-      setError(err instanceof Error ? err.message : errorStrings.copyToken);
-      updateCopyState(stateKey, null);
+      console.error(err)
+      setError(err instanceof Error ? err.message : errorStrings.copyToken)
+      updateCopyState(stateKey, null)
     }
-  };
+  }
 
-  const handleShareToken = async (
-    id: string,
-    stateKey: string,
-    anchorEl?: HTMLElement | null,
-  ) => {
-    setManualCopyBubble(null);
-    commitSecretWarm(`token:${id}`);
-    updateCopyState(stateKey, "loading");
+  const handleShareToken = async (id: string, stateKey: string, anchorEl?: HTMLElement | null) => {
+    setManualCopyBubble(null)
+    commitSecretWarm(`token:${id}`)
+    updateCopyState(stateKey, 'loading')
     try {
-      const hasCachedToken = tokenSecretCacheRef.current.has(id);
-      const token = await resolveTokenSecret(id);
-      const shareUrl = `${window.location.origin}/#${encodeURIComponent(token)}`;
+      const hasCachedToken = tokenSecretCacheRef.current.has(id)
+      const token = await resolveTokenSecret(id)
+      const shareUrl = `${window.location.origin}/#${encodeURIComponent(token)}`
       const copyResult = await copyToClipboard(
         shareUrl,
         hasCachedToken ? { preferExecCommand: true } : undefined,
-      );
+      )
       if (!copyResult.ok) {
-        updateCopyState(stateKey, null);
+        updateCopyState(stateKey, null)
         if (anchorEl) {
           openManualCopyBubble({
             anchorEl,
@@ -6672,327 +5720,239 @@ function AdminDashboard(): JSX.Element {
             description: manualCopyText.description,
             fieldLabel: manualCopyText.fields.shareLink,
             value: shareUrl,
-          });
+          })
         }
-        return;
+        return
       }
-      setManualCopyBubble(null);
-      updateCopyState(stateKey, "copied");
-      window.setTimeout(() => updateCopyState(stateKey, null), 2000);
+      setManualCopyBubble(null)
+      updateCopyState(stateKey, 'copied')
+      window.setTimeout(() => updateCopyState(stateKey, null), 2000)
     } catch (err) {
-      console.error(err);
-      setError(err instanceof Error ? err.message : errorStrings.copyToken);
-      updateCopyState(stateKey, null);
+      console.error(err)
+      setError(err instanceof Error ? err.message : errorStrings.copyToken)
+      updateCopyState(stateKey, null)
     }
-  };
+  }
 
   const toggleToken = async (id: string, enabled: boolean) => {
-    setTogglingId(id);
+    setTogglingId(id)
     try {
-      await setTokenEnabled(id, !enabled);
-      const controller = new AbortController();
-      setLoading(true);
-      await loadData({
-        signal: controller.signal,
-        reason: "refresh",
-        showGlobalLoading: true,
-      });
-      controller.abort();
+      await setTokenEnabled(id, !enabled)
+      const controller = new AbortController()
+      setLoading(true)
+      await loadData({ signal: controller.signal, reason: 'refresh', showGlobalLoading: true })
+      controller.abort()
     } catch (err) {
-      console.error(err);
-      setError(err instanceof Error ? err.message : errorStrings.toggleToken);
+      console.error(err)
+      setError(err instanceof Error ? err.message : errorStrings.toggleToken)
     } finally {
-      setTogglingId(null);
+      setTogglingId(null)
     }
-  };
+  }
 
   const openTokenDeleteConfirm = (id: string) => {
-    if (!id) return;
-    setPendingTokenDeleteId(id);
-  };
+    if (!id) return
+    setPendingTokenDeleteId(id)
+  }
 
   const confirmTokenDelete = async () => {
-    if (!pendingTokenDeleteId) return;
-    const id = pendingTokenDeleteId;
-    setDeletingId(id);
+    if (!pendingTokenDeleteId) return
+    const id = pendingTokenDeleteId
+    setDeletingId(id)
     try {
-      await deleteToken(id);
-      setPendingTokenDeleteId(null);
-      const controller = new AbortController();
-      setLoading(true);
-      await loadData({
-        signal: controller.signal,
-        reason: "refresh",
-        showGlobalLoading: true,
-      });
-      controller.abort();
+      await deleteToken(id)
+      setPendingTokenDeleteId(null)
+      const controller = new AbortController()
+      setLoading(true)
+      await loadData({ signal: controller.signal, reason: 'refresh', showGlobalLoading: true })
+      controller.abort()
     } catch (err) {
-      console.error(err);
-      setError(err instanceof Error ? err.message : errorStrings.deleteToken);
+      console.error(err)
+      setError(err instanceof Error ? err.message : errorStrings.deleteToken)
     } finally {
-      setDeletingId(null);
+      setDeletingId(null)
     }
-  };
+  }
 
   const cancelTokenDelete = () => {
-    setPendingTokenDeleteId(null);
-  };
+    setPendingTokenDeleteId(null)
+  }
 
   const openTokenNoteEdit = (id: string, current: string | null) => {
-    setEditingTokenId(id);
-    setEditingTokenNote(current ?? "");
-  };
+    setEditingTokenId(id)
+    setEditingTokenNote(current ?? '')
+  }
 
   const saveTokenNote = async () => {
-    if (!editingTokenId) return;
-    setSavingTokenNote(true);
+    if (!editingTokenId) return
+    setSavingTokenNote(true)
     try {
-      await updateTokenNote(editingTokenId, editingTokenNote);
-      setEditingTokenId(null);
-      setEditingTokenNote("");
-      const controller = new AbortController();
-      setLoading(true);
-      await loadData({
-        signal: controller.signal,
-        reason: "refresh",
-        showGlobalLoading: true,
-      });
-      controller.abort();
+      await updateTokenNote(editingTokenId, editingTokenNote)
+      setEditingTokenId(null)
+      setEditingTokenNote('')
+      const controller = new AbortController()
+      setLoading(true)
+      await loadData({ signal: controller.signal, reason: 'refresh', showGlobalLoading: true })
+      controller.abort()
     } catch (err) {
-      console.error(err);
-      setError(
-        err instanceof Error ? err.message : errorStrings.updateTokenNote,
-      );
+      console.error(err)
+      setError(err instanceof Error ? err.message : errorStrings.updateTokenNote)
     } finally {
-      setSavingTokenNote(false);
+      setSavingTokenNote(false)
     }
-  };
+  }
 
   const cancelTokenNote = () => {
-    setEditingTokenId(null);
-    setEditingTokenNote("");
-  };
+    setEditingTokenId(null)
+    setEditingTokenNote('')
+  }
 
   const openDeleteConfirm = (id: string) => {
-    if (!id) return;
-    setPendingDeleteId(id);
-  };
+    if (!id) return
+    setPendingDeleteId(id)
+  }
 
   const confirmDelete = async () => {
-    if (!pendingDeleteId) return;
-    const id = pendingDeleteId;
-    setDeletingId(id);
+    if (!pendingDeleteId) return
+    const id = pendingDeleteId
+    setDeletingId(id)
     try {
-      await deleteApiKey(id);
-      setPendingDeleteId(null);
-      await refreshBaseData({ includeKeys: true });
+      await deleteApiKey(id)
+      setPendingDeleteId(null)
+      await refreshBaseData({ includeKeys: true })
     } catch (err) {
-      console.error(err);
-      setError(err instanceof Error ? err.message : errorStrings.deleteKey);
+      console.error(err)
+      setError(err instanceof Error ? err.message : errorStrings.deleteKey)
     } finally {
-      setDeletingId(null);
+      setDeletingId(null)
     }
-  };
+  }
 
   const cancelDelete = () => {
-    setPendingDeleteId(null);
-  };
+    setPendingDeleteId(null)
+  }
 
   const handleToggleDisable = async (id: string, toDisabled: boolean) => {
-    if (!id) return;
-    setTogglingId(id);
+    if (!id) return
+    setTogglingId(id)
     try {
-      await setKeyStatus(id, toDisabled ? "disabled" : "active");
-      await refreshBaseData({ includeKeys: true });
+      await setKeyStatus(id, toDisabled ? 'disabled' : 'active')
+      await refreshBaseData({ includeKeys: true })
     } catch (err) {
-      console.error(err);
-      setError(err instanceof Error ? err.message : errorStrings.toggleKey);
+      console.error(err)
+      setError(err instanceof Error ? err.message : errorStrings.toggleKey)
     } finally {
-      setTogglingId(null);
+      setTogglingId(null)
     }
-  };
+  }
 
   const handleClearQuarantine = async (id: string) => {
-    if (!id) return;
-    setClearingQuarantineId(id);
+    if (!id) return
+    setClearingQuarantineId(id)
     try {
-      await clearApiKeyQuarantine(id);
-      await refreshBaseData({ includeKeys: true });
+      await clearApiKeyQuarantine(id)
+      await refreshBaseData({ includeKeys: true })
     } catch (err) {
-      console.error(err);
-      setError(
-        err instanceof Error ? err.message : errorStrings.clearQuarantine,
-      );
+      console.error(err)
+      setError(err instanceof Error ? err.message : errorStrings.clearQuarantine)
     } finally {
-      setClearingQuarantineId(null);
+      setClearingQuarantineId(null)
     }
-  };
+  }
 
   // Disable confirm flow
   const openDisableConfirm = (id: string) => {
-    if (!id) return;
-    setPendingDisableId(id);
-  };
+    if (!id) return
+    setPendingDisableId(id)
+  }
 
   const confirmDisable = async () => {
-    if (!pendingDisableId) return;
-    const id = pendingDisableId;
-    await handleToggleDisable(id, true);
-    setPendingDisableId(null);
-  };
+    if (!pendingDisableId) return
+    const id = pendingDisableId
+    await handleToggleDisable(id, true)
+    setPendingDisableId(null)
+  }
 
   const cancelDisable = () => {
-    setPendingDisableId(null);
-  };
+    setPendingDisableId(null)
+  }
 
-  const tokenLeaderboardView = useMemo(() => {
-    if (!tokenLeaderboard || tokenLeaderboard.length === 0) return [];
-    return sortLeaderboard(
-      tokenLeaderboard,
-      tokenLeaderboardPeriod,
-      tokenLeaderboardFocus,
-    ).slice(0, 50);
-  }, [tokenLeaderboard, tokenLeaderboardPeriod, tokenLeaderboardFocus]);
   const navItems: AdminNavItem[] = [
-    {
-      target: "dashboard",
-      label: adminStrings.nav.dashboard,
-      icon: <Icon icon="mdi:view-dashboard-outline" width={18} height={18} />,
-    },
-    {
-      target: "user-usage",
-      label: adminStrings.nav.usage,
-      icon: <ChartColumnIncreasing size={18} strokeWidth={2.2} />,
-    },
-    {
-      target: "tokens",
-      label: adminStrings.nav.tokens,
-      icon: <Icon icon="mdi:key-chain-variant" width={18} height={18} />,
-    },
-    {
-      target: "keys",
-      label: adminStrings.nav.keys,
-      icon: <Icon icon="mdi:key-outline" width={18} height={18} />,
-    },
-    {
-      target: "requests",
-      label: adminStrings.nav.requests,
-      icon: <Icon icon="mdi:file-document-outline" width={18} height={18} />,
-    },
-    {
-      target: "jobs",
-      label: adminStrings.nav.jobs,
-      icon: <Icon icon="mdi:calendar-clock-outline" width={18} height={18} />,
-    },
-    {
-      target: "users",
-      label: adminStrings.nav.users,
-      icon: <Icon icon="mdi:account-group-outline" width={18} height={18} />,
-    },
-    {
-      target: "alerts",
-      label: adminStrings.nav.alerts,
-      icon: <Icon icon="mdi:bell-ring-outline" width={18} height={18} />,
-    },
-    {
-      target: "proxy-settings",
-      label: adminStrings.nav.proxySettings,
-      icon: <Icon icon="mdi:tune-variant" width={18} height={18} />,
-    },
-  ];
+    { target: 'dashboard', label: adminStrings.nav.dashboard, icon: <Icon icon="mdi:view-dashboard-outline" width={18} height={18} /> },
+    { target: 'user-usage', label: adminStrings.nav.usage, icon: <ChartColumnIncreasing size={18} strokeWidth={2.2} /> },
+    { target: 'tokens', label: adminStrings.nav.tokens, icon: <Icon icon="mdi:key-chain-variant" width={18} height={18} /> },
+    { target: 'keys', label: adminStrings.nav.keys, icon: <Icon icon="mdi:key-outline" width={18} height={18} /> },
+    { target: 'requests', label: adminStrings.nav.requests, icon: <Icon icon="mdi:file-document-outline" width={18} height={18} /> },
+    { target: 'jobs', label: adminStrings.nav.jobs, icon: <Icon icon="mdi:calendar-clock-outline" width={18} height={18} /> },
+    { target: 'users', label: adminStrings.nav.users, icon: <Icon icon="mdi:account-group-outline" width={18} height={18} /> },
+    { target: 'alerts', label: adminStrings.nav.alerts, icon: <Icon icon="mdi:bell-ring-outline" width={18} height={18} /> },
+    { target: 'proxy-settings', label: adminStrings.nav.proxySettings, icon: <Icon icon="mdi:tune-variant" width={18} height={18} /> },
+  ]
   const activeNavItem: AdminNavTarget =
-    route.name === "user-usage"
-      ? "user-usage"
-      : route.name === "module"
+    route.name === 'user-usage'
+      ? 'user-usage'
+      : route.name === 'module'
         ? route.module
-        : route.name === "key"
-          ? "keys"
-          : route.name === "user" ||
-              route.name === "user-tags" ||
-              route.name === "user-tag-editor"
-            ? "users"
-            : "tokens";
+        : route.name === 'key'
+          ? 'keys'
+          : route.name === 'user'
+              || route.name === 'user-tags'
+              || route.name === 'user-tag-editor'
+            ? 'users'
+            : 'tokens'
   const activeModule: AdminModuleId =
-    route.name === "module"
+    route.name === 'module'
       ? route.module
-      : route.name === "key"
-        ? "keys"
-        : route.name === "user" ||
-            route.name === "user-usage" ||
-            route.name === "user-tags" ||
-            route.name === "user-tag-editor"
-          ? "users"
-          : "tokens";
-  const usersStrings = adminStrings.users;
-  const registrationStatusText =
-    registrationSettingsLoading && !registrationSettingsLoaded
-      ? usersStrings.registration.description
-      : registrationSettingsSaving
-        ? usersStrings.registration.saving
-        : allowRegistration === null
-          ? usersStrings.registration.unavailable
-          : allowRegistration
-            ? usersStrings.registration.enabled
-            : usersStrings.registration.disabled;
+      : route.name === 'key'
+        ? 'keys'
+        : route.name === 'user'
+            || route.name === 'user-usage'
+            || route.name === 'user-tags'
+            || route.name === 'user-tag-editor'
+          ? 'users'
+          : 'tokens'
+  const usersStrings = adminStrings.users
+  const registrationStatusText = registrationSettingsLoading && !registrationSettingsLoaded
+    ? usersStrings.registration.description
+    : registrationSettingsSaving
+      ? usersStrings.registration.saving
+      : allowRegistration === null
+        ? usersStrings.registration.unavailable
+      : allowRegistration
+        ? usersStrings.registration.enabled
+        : usersStrings.registration.disabled
 
-  const registrationInlineStatus =
-    registrationSettingsError ??
-    (registrationSettingsSaving ? registrationStatusText : null);
+  const registrationInlineStatus = registrationSettingsError ?? (registrationSettingsSaving ? registrationStatusText : null)
   const sortedTagCatalog = useMemo(
-    () =>
-      [...tagCatalog].sort(
-        (left, right) =>
-          right.userCount - left.userCount ||
-          left.displayName.localeCompare(right.displayName),
-      ),
+    () => [...tagCatalog].sort((left, right) => right.userCount - left.userCount || left.displayName.localeCompare(right.displayName)),
     [tagCatalog],
-  );
-  const editingCatalogTag =
-    activeUserTagEditorId && activeUserTagEditorId !== NEW_USER_TAG_CARD_ID
-      ? (tagCatalog.find((tag) => tag.id === activeUserTagEditorId) ?? null)
-      : null;
-  const editingSystemTag = editingCatalogTag?.systemKey != null;
-  const tagCatalogEffectIsBlockAll =
-    userTagCatalogDraft.effectKind === "block_all";
-  const bindableCustomTags =
-    route.name === "user" && selectedUserDetail
-      ? tagCatalog.filter(
-          (tag) =>
-            !tag.systemKey &&
-            !selectedUserDetail.tags.some(
-              (boundTag) => boundTag.tagId === tag.id,
-            ),
-        )
-      : [];
-  const visibleTagCards: Array<AdminUserTag | null> =
-    activeUserTagEditorId === NEW_USER_TAG_CARD_ID
-      ? [null, ...sortedTagCatalog]
-      : sortedTagCatalog;
+  )
+  const editingCatalogTag = activeUserTagEditorId && activeUserTagEditorId !== NEW_USER_TAG_CARD_ID
+    ? tagCatalog.find((tag) => tag.id === activeUserTagEditorId) ?? null
+    : null
+  const editingSystemTag = editingCatalogTag?.systemKey != null
+  const tagCatalogEffectIsBlockAll = userTagCatalogDraft.effectKind === 'block_all'
+  const bindableCustomTags = route.name === 'user' && selectedUserDetail
+    ? tagCatalog.filter((tag) => !tag.systemKey && !selectedUserDetail.tags.some((boundTag) => boundTag.tagId === tag.id))
+    : []
+  const visibleTagCards: Array<AdminUserTag | null> = activeUserTagEditorId === NEW_USER_TAG_CARD_ID
+    ? [null, ...sortedTagCatalog]
+    : sortedTagCatalog
 
   const renderUserTagSummaryPanel = (): JSX.Element => (
     <section className="surface panel">
-      <div className="panel-header" style={{ gap: 12, flexWrap: "wrap" }}>
+      <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
         <div>
           <h2>{usersStrings.catalog.summaryTitle}</h2>
-          <p className="panel-description">
-            {usersStrings.catalog.summaryDescription}
-          </p>
+          <p className="panel-description">{usersStrings.catalog.summaryDescription}</p>
         </div>
-        <button
-          type="button"
-          className="btn btn-outline"
-          onClick={navigateUserTags}
-        >
+        <button type="button" className="btn btn-outline" onClick={navigateUserTags}>
           {usersStrings.userTags.manageCatalog}
         </button>
       </div>
 
       {tagCatalogError && (
-        <div
-          className="alert alert-error"
-          role="alert"
-          style={{ marginBottom: 12 }}
-        >
+        <div className="alert alert-error" role="alert" style={{ marginBottom: 12 }}>
           {tagCatalogError}
         </div>
       )}
@@ -7000,20 +5960,15 @@ function AdminDashboard(): JSX.Element {
       {tagCatalogLoading ? (
         <div className="empty-state alert">{usersStrings.catalog.loading}</div>
       ) : sortedTagCatalog.length === 0 ? (
-        <div className="empty-state alert">
-          {usersStrings.catalog.summaryEmpty}
-        </div>
+        <div className="empty-state alert">{usersStrings.catalog.summaryEmpty}</div>
       ) : (
         <div className="user-tag-summary-grid">
           {sortedTagCatalog.map((tag) => {
-            const isSystem = tag.systemKey != null;
-            const isBlockAll = tag.effectKind === "block_all";
-            const cardClasses = [
-              "user-tag-summary-card",
-              isBlockAll ? "user-tag-summary-card-block" : "",
-            ]
+            const isSystem = tag.systemKey != null
+            const isBlockAll = tag.effectKind === 'block_all'
+            const cardClasses = ['user-tag-summary-card', isBlockAll ? 'user-tag-summary-card-block' : '']
               .filter(Boolean)
-              .join(" ");
+              .join(' ')
 
             return (
               <article className={cardClasses} key={tag.id}>
@@ -7027,70 +5982,55 @@ function AdminDashboard(): JSX.Element {
                     }}
                     usersStrings={usersStrings}
                   />
-                  <StatusBadge
-                    tone={isSystem ? "info" : isBlockAll ? "error" : "neutral"}
-                  >
-                    {isSystem
-                      ? usersStrings.catalog.scopeSystem
-                      : usersStrings.catalog.scopeCustom}
+                  <StatusBadge tone={isSystem ? 'info' : isBlockAll ? 'error' : 'neutral'}>
+                    {isSystem ? usersStrings.catalog.scopeSystem : usersStrings.catalog.scopeCustom}
                   </StatusBadge>
                 </div>
                 <div className="user-tag-summary-count">
                   <strong>{formatNumber(tag.userCount)}</strong>
-                  <span className="panel-description">
-                    {usersStrings.catalog.summaryAccounts}
-                  </span>
+                  <span className="panel-description">{usersStrings.catalog.summaryAccounts}</span>
                 </div>
               </article>
-            );
+            )
           })}
         </div>
       )}
     </section>
-  );
+  )
 
   const renderUserTagEffectToggle = (): JSX.Element => (
-    <div
-      className="user-tag-effect-toggle"
-      role="group"
-      aria-label={usersStrings.catalog.fields.effect}
-    >
-      {(
-        [
-          ["quota_delta", usersStrings.catalog.effectKinds.quotaDelta],
-          ["block_all", usersStrings.catalog.effectKinds.blockAll],
-        ] as const
-      ).map(([effectKind, label]) => {
-        const isActive = userTagCatalogDraft.effectKind === effectKind;
+    <div className="user-tag-effect-toggle" role="group" aria-label={usersStrings.catalog.fields.effect}>
+      {([
+        ['quota_delta', usersStrings.catalog.effectKinds.quotaDelta],
+        ['block_all', usersStrings.catalog.effectKinds.blockAll],
+      ] as const).map(([effectKind, label]) => {
+        const isActive = userTagCatalogDraft.effectKind === effectKind
         return (
           <Button
             key={effectKind}
             type="button"
-            variant={isActive ? "secondary" : "outline"}
+            variant={isActive ? 'secondary' : 'outline'}
             size="xs"
-            className={`user-tag-effect-chip${isActive ? " is-active" : ""}`}
-            onClick={() => updateUserTagCatalogField("effectKind", effectKind)}
+            className={`user-tag-effect-chip${isActive ? ' is-active' : ''}`}
+            onClick={() => updateUserTagCatalogField('effectKind', effectKind)}
             disabled={savingUserTagCatalog}
           >
             {label}
           </Button>
-        );
+        )
       })}
     </div>
-  );
+  )
 
   const renderUserTagCatalogCard = (tag: AdminUserTag | null): JSX.Element => {
-    const isNewCard = tag == null;
+    const isNewCard = tag == null
     const isEditing = isNewCard
       ? activeUserTagEditorId === NEW_USER_TAG_CARD_ID
-      : activeUserTagEditorId === tag.id;
-    const isSystem = tag?.systemKey != null;
+      : activeUserTagEditorId === tag.id
+    const isSystem = tag?.systemKey != null
     const viewTag = isEditing
       ? {
-          displayName:
-            userTagCatalogDraft.displayName ||
-            userTagCatalogDraft.name ||
-            usersStrings.catalog.formCreateTitle,
+          displayName: userTagCatalogDraft.displayName || userTagCatalogDraft.name || usersStrings.catalog.formCreateTitle,
           icon: userTagCatalogDraft.icon,
           systemKey: tag?.systemKey ?? null,
           effectKind: userTagCatalogDraft.effectKind,
@@ -7099,17 +6039,17 @@ function AdminDashboard(): JSX.Element {
           displayName: tag?.displayName ?? usersStrings.catalog.formCreateTitle,
           icon: tag?.icon ?? null,
           systemKey: tag?.systemKey ?? null,
-          effectKind: tag?.effectKind ?? "quota_delta",
-        };
-    const isBlockAll = viewTag.effectKind === "block_all";
-    const iconSrc = getUserTagIconSrc(viewTag.icon);
+          effectKind: tag?.effectKind ?? 'quota_delta',
+        }
+    const isBlockAll = viewTag.effectKind === 'block_all'
+    const iconSrc = getUserTagIconSrc(viewTag.icon)
     const cardClasses = [
-      "user-tag-catalog-card",
-      isEditing ? "user-tag-catalog-card-active" : "",
-      isNewCard ? "user-tag-catalog-card-draft" : "",
+      'user-tag-catalog-card',
+      isEditing ? 'user-tag-catalog-card-active' : '',
+      isNewCard ? 'user-tag-catalog-card-draft' : '',
     ]
       .filter(Boolean)
-      .join(" ");
+      .join(' ')
 
     return (
       <Card className={cardClasses} key={tag?.id ?? NEW_USER_TAG_CARD_ID}>
@@ -7121,9 +6061,7 @@ function AdminDashboard(): JSX.Element {
                   type="text"
                   className="user-tag-inline-input user-tag-inline-input-display"
                   value={userTagCatalogDraft.displayName}
-                  onChange={(event) =>
-                    updateUserTagCatalogField("displayName", event.target.value)
-                  }
+                  onChange={(event) => updateUserTagCatalogField('displayName', event.target.value)}
                   disabled={editingSystemTag || savingUserTagCatalog}
                   placeholder={usersStrings.catalog.fields.displayName}
                 />
@@ -7132,9 +6070,7 @@ function AdminDashboard(): JSX.Element {
                     type="text"
                     className="user-tag-inline-input"
                     value={userTagCatalogDraft.name}
-                    onChange={(event) =>
-                      updateUserTagCatalogField("name", event.target.value)
-                    }
+                    onChange={(event) => updateUserTagCatalogField('name', event.target.value)}
                     disabled={editingSystemTag || savingUserTagCatalog}
                     placeholder={usersStrings.catalog.fields.name}
                   />
@@ -7142,9 +6078,7 @@ function AdminDashboard(): JSX.Element {
                     type="text"
                     className="user-tag-inline-input"
                     value={userTagCatalogDraft.icon}
-                    onChange={(event) =>
-                      updateUserTagCatalogField("icon", event.target.value)
-                    }
+                    onChange={(event) => updateUserTagCatalogField('icon', event.target.value)}
                     disabled={editingSystemTag || savingUserTagCatalog}
                     placeholder={usersStrings.catalog.iconPlaceholder}
                   />
@@ -7157,7 +6091,7 @@ function AdminDashboard(): JSX.Element {
                 </div>
                 <div className="panel-description user-tag-catalog-subtitle">
                   <code>{tag?.name}</code>
-                  {iconSrc ? ` · ${viewTag.icon}` : ""}
+                  {iconSrc ? ` · ${viewTag.icon}` : ''}
                 </div>
               </>
             )}
@@ -7198,9 +6132,7 @@ function AdminDashboard(): JSX.Element {
                     title={usersStrings.catalog.actions.delete}
                     aria-label={usersStrings.catalog.actions.delete}
                     onClick={() => requestUserTagCatalogDelete(tag)}
-                    disabled={
-                      savingUserTagCatalog || deletingUserTagId === tag.id
-                    }
+                    disabled={savingUserTagCatalog || deletingUserTagId === tag.id}
                   >
                     <Icon icon="mdi:trash-can-outline" width={16} height={16} />
                   </Button>
@@ -7239,21 +6171,13 @@ function AdminDashboard(): JSX.Element {
         </div>
 
         <div className="user-tag-catalog-card-meta">
-          <Badge
-            variant={isSystem ? "info" : "neutral"}
-            className="user-tag-meta-badge"
-          >
-            {isSystem
-              ? usersStrings.catalog.scopeSystem
-              : usersStrings.catalog.scopeCustom}
+          <Badge variant={isSystem ? 'info' : 'neutral'} className="user-tag-meta-badge">
+            {isSystem ? usersStrings.catalog.scopeSystem : usersStrings.catalog.scopeCustom}
           </Badge>
           {isEditing ? (
             renderUserTagEffectToggle()
           ) : (
-            <Badge
-              variant={isBlockAll ? "destructive" : "success"}
-              className="user-tag-meta-badge"
-            >
+            <Badge variant={isBlockAll ? 'destructive' : 'success'} className="user-tag-meta-badge">
               {isBlockAll
                 ? usersStrings.catalog.effectKinds.blockAll
                 : usersStrings.catalog.effectKinds.quotaDelta}
@@ -7265,56 +6189,28 @@ function AdminDashboard(): JSX.Element {
             size="xs"
             className="user-tag-catalog-users user-tag-catalog-users-button"
             onClick={() =>
-              tag &&
-              navigateUsersSearch(tag.displayName, {
-                tagId: tag.id,
-                sort: usersSort,
-                order: usersSortOrder,
-              })
+              tag && navigateUsersSearch(tag.displayName, { tagId: tag.id, sort: usersSort, order: usersSortOrder })
             }
             disabled={isNewCard}
           >
-            <span className="user-tag-catalog-users-label">
-              {usersStrings.catalog.columns.users}
-            </span>
+            <span className="user-tag-catalog-users-label">{usersStrings.catalog.columns.users}</span>
             <strong>{formatNumber(tag?.userCount ?? 0)}</strong>
           </Button>
         </div>
 
         <div className="user-tag-catalog-body">
           {isBlockAll ? (
-            <div
-              className="alert alert-warning user-tag-catalog-block-note"
-              role="note"
-            >
+            <div className="alert alert-warning user-tag-catalog-block-note" role="note">
               {usersStrings.catalog.blockDescription}
             </div>
           ) : (
             <dl className="user-tag-catalog-delta-grid">
-              {(
-                [
-                  [
-                    "hourlyAnyDelta",
-                    tag?.hourlyAnyDelta ?? 0,
-                    usersStrings.quota.hourlyAny,
-                  ],
-                  [
-                    "hourlyDelta",
-                    tag?.hourlyDelta ?? 0,
-                    usersStrings.quota.hourly,
-                  ],
-                  [
-                    "dailyDelta",
-                    tag?.dailyDelta ?? 0,
-                    usersStrings.quota.daily,
-                  ],
-                  [
-                    "monthlyDelta",
-                    tag?.monthlyDelta ?? 0,
-                    usersStrings.quota.monthly,
-                  ],
-                ] as const
-              ).map(([field, value, label]) => (
+              {([
+                ['hourlyAnyDelta', tag?.hourlyAnyDelta ?? 0, usersStrings.quota.hourlyAny],
+                ['hourlyDelta', tag?.hourlyDelta ?? 0, usersStrings.quota.hourly],
+                ['dailyDelta', tag?.dailyDelta ?? 0, usersStrings.quota.daily],
+                ['monthlyDelta', tag?.monthlyDelta ?? 0, usersStrings.quota.monthly],
+              ] as const).map(([field, value, label]) => (
                 <div className="user-tag-catalog-delta-item" key={field}>
                   <dt>{label}</dt>
                   <dd>
@@ -7323,12 +6219,8 @@ function AdminDashboard(): JSX.Element {
                         type="number"
                         className="user-tag-delta-input"
                         value={userTagCatalogDraft[field]}
-                        onChange={(event) =>
-                          updateUserTagCatalogField(field, event.target.value)
-                        }
-                        disabled={
-                          savingUserTagCatalog || tagCatalogEffectIsBlockAll
-                        }
+                        onChange={(event) => updateUserTagCatalogField(field, event.target.value)}
+                        disabled={savingUserTagCatalog || tagCatalogEffectIsBlockAll}
                       />
                     ) : (
                       formatSignedQuotaDelta(value)
@@ -7340,8 +6232,8 @@ function AdminDashboard(): JSX.Element {
           )}
         </div>
       </Card>
-    );
-  };
+    )
+  }
 
   const renderUserTagCatalogIndexPage = (): JSX.Element => (
     <AdminShell
@@ -7351,12 +6243,10 @@ function AdminDashboard(): JSX.Element {
       onSelectItem={navigateModule}
     >
       <section className="surface panel">
-        <div className="panel-header" style={{ gap: 12, flexWrap: "wrap" }}>
+        <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
           <div>
             <h2>{usersStrings.catalog.title}</h2>
-            <p className="panel-description">
-              {usersStrings.catalog.description}
-            </p>
+            <p className="panel-description">{usersStrings.catalog.description}</p>
           </div>
           <div className="user-tag-page-actions">
             <button
@@ -7396,9 +6286,7 @@ function AdminDashboard(): JSX.Element {
 
       <section className="surface panel">
         {tagCatalogLoading ? (
-          <div className="empty-state alert">
-            {usersStrings.catalog.loading}
-          </div>
+          <div className="empty-state alert">{usersStrings.catalog.loading}</div>
         ) : visibleTagCards.length === 0 ? (
           <div className="empty-state alert">{usersStrings.catalog.empty}</div>
         ) : (
@@ -7408,22 +6296,14 @@ function AdminDashboard(): JSX.Element {
         )}
       </section>
 
-      <Dialog
-        open={pendingUserTagDelete != null}
-        onOpenChange={(open) => {
-          if (!open) closeUserTagDeleteDialog();
-        }}
-      >
+      <Dialog open={pendingUserTagDelete != null} onOpenChange={(open) => { if (!open) closeUserTagDeleteDialog() }}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>{usersStrings.catalog.deleteDialogTitle}</DialogTitle>
             <DialogDescription>
               {pendingUserTagDelete
-                ? usersStrings.catalog.deleteConfirm.replace(
-                    "{name}",
-                    pendingUserTagDelete.displayName,
-                  )
-                : usersStrings.catalog.deleteConfirm.replace("{name}", "")}
+                ? usersStrings.catalog.deleteConfirm.replace('{name}', pendingUserTagDelete.displayName)
+                : usersStrings.catalog.deleteConfirm.replace('{name}', '')}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="gap-2 sm:justify-end">
@@ -7447,9 +6327,9 @@ function AdminDashboard(): JSX.Element {
         </DialogContent>
       </Dialog>
     </AdminShell>
-  );
+  )
 
-  if (route.name === "key") {
+  if (route.name === 'key') {
     return (
       <AdminShell
         activeItem={activeNavItem}
@@ -7460,16 +6340,14 @@ function AdminDashboard(): JSX.Element {
         <KeyDetails
           key={route.id}
           id={route.id}
-          onOpenUser={(userId) =>
-            navigateUser(userId, { preserveUsersContext: true })
-          }
+          onOpenUser={(userId) => navigateUser(userId, { preserveUsersContext: true })}
           onBack={() =>
             navigateToPath(
               buildAdminKeysPath({
                 page: getAdminKeysPageFromLocation(),
                 perPage: getAdminKeysPerPageFromLocation(),
-                groups: getAdminKeysValuesFromLocation("group"),
-                statuses: getAdminKeysValuesFromLocation("status"),
+                groups: getAdminKeysValuesFromLocation('group'),
+                statuses: getAdminKeysValuesFromLocation('status'),
                 registrationIp: getAdminKeysRegistrationIpFromLocation(),
                 regions: getAdminKeysRegionsFromLocation(),
               }),
@@ -7477,9 +6355,9 @@ function AdminDashboard(): JSX.Element {
           }
         />
       </AdminShell>
-    );
+    )
   }
-  if (route.name === "token") {
+  if (route.name === 'token') {
     return (
       <AdminShell
         activeItem={activeNavItem}
@@ -7490,24 +6368,22 @@ function AdminDashboard(): JSX.Element {
         <TokenDetail
           key={route.id}
           id={route.id}
-          onBack={() => navigateModule("tokens")}
+          onBack={navigateBackFromTokenDetail}
           onOpenKey={navigateKey}
           onOpenUser={navigateUser}
           onSecretRotated={handleTokenSecretRotated}
         />
       </AdminShell>
-    );
+    )
   }
-  if (route.name === "user-tags" || route.name === "user-tag-editor") {
-    return renderUserTagCatalogIndexPage();
+  if (route.name === 'user-tags' || route.name === 'user-tag-editor') {
+    return renderUserTagCatalogIndexPage()
   }
-  if (route.name === "user") {
-    const detail = selectedUserDetail;
-    const tokenItems = detail?.tokens ?? [];
-    const boundTags = detail?.tags ?? [];
-    const hasBlockAllTag = boundTags.some(
-      (tag) => tag.effectKind === "block_all",
-    );
+  if (route.name === 'user') {
+    const detail = selectedUserDetail
+    const tokenItems = detail?.tokens ?? []
+    const boundTags = detail?.tags ?? []
+    const hasBlockAllTag = boundTags.some((tag) => tag.effectKind === 'block_all')
 
     return (
       <AdminShell
@@ -7521,7 +6397,7 @@ function AdminDashboard(): JSX.Element {
             <div>
               <h2>{usersStrings.detail.title}</h2>
               <p className="panel-description">
-                {usersStrings.detail.subtitle.replace("{id}", route.id)}
+                {usersStrings.detail.subtitle.replace('{id}', route.id)}
               </p>
             </div>
             <div className="admin-inline-actions">
@@ -7565,15 +6441,11 @@ function AdminDashboard(): JSX.Element {
 
         {userDetailLoading ? (
           <section className="surface panel">
-            <div className="empty-state alert">
-              {usersStrings.empty.loading}
-            </div>
+            <div className="empty-state alert">{usersStrings.empty.loading}</div>
           </section>
         ) : !detail ? (
           <section className="surface panel">
-            <div className="empty-state alert">
-              {usersStrings.empty.notFound}
-            </div>
+            <div className="empty-state alert">{usersStrings.empty.notFound}</div>
           </section>
         ) : (
           <>
@@ -7581,83 +6453,50 @@ function AdminDashboard(): JSX.Element {
               <div className="panel-header">
                 <div>
                   <h2>{usersStrings.detail.identityTitle}</h2>
-                  <p className="panel-description">
-                    {usersStrings.detail.identityDescription}
-                  </p>
+                  <p className="panel-description">{usersStrings.detail.identityDescription}</p>
                 </div>
               </div>
               <div className="token-info-grid">
                 <div className="token-info-card">
-                  <span className="token-info-label">
-                    {usersStrings.detail.userId}
-                  </span>
+                  <span className="token-info-label">{usersStrings.detail.userId}</span>
                   <span className="token-info-value">
                     <code>{detail.userId}</code>
                   </span>
                 </div>
                 <div className="token-info-card">
-                  <span className="token-info-label">
-                    {usersStrings.table.displayName}
-                  </span>
-                  <span className="token-info-value">
-                    {detail.displayName || "—"}
-                  </span>
+                  <span className="token-info-label">{usersStrings.table.displayName}</span>
+                  <span className="token-info-value">{detail.displayName || '—'}</span>
                 </div>
                 <div className="token-info-card">
-                  <span className="token-info-label">
-                    {usersStrings.table.username}
-                  </span>
-                  <span className="token-info-value">
-                    {detail.username || "—"}
-                  </span>
+                  <span className="token-info-label">{usersStrings.table.username}</span>
+                  <span className="token-info-value">{detail.username || '—'}</span>
                 </div>
                 <div className="token-info-card">
-                  <span className="token-info-label">
-                    {usersStrings.table.status}
-                  </span>
+                  <span className="token-info-label">{usersStrings.table.status}</span>
                   <span className="token-info-value">
-                    <StatusBadge tone={detail.active ? "success" : "neutral"}>
-                      {detail.active
-                        ? usersStrings.status.active
-                        : usersStrings.status.inactive}
+                    <StatusBadge tone={detail.active ? 'success' : 'neutral'}>
+                      {detail.active ? usersStrings.status.active : usersStrings.status.inactive}
                     </StatusBadge>
                   </span>
                 </div>
                 <div className="token-info-card">
-                  <span className="token-info-label">
-                    {usersStrings.table.lastLogin}
-                  </span>
-                  <span className="token-info-value">
-                    {formatTimestamp(detail.lastLoginAt)}
-                  </span>
+                  <span className="token-info-label">{usersStrings.table.lastLogin}</span>
+                  <span className="token-info-value">{formatTimestamp(detail.lastLoginAt)}</span>
                 </div>
                 <div className="token-info-card">
-                  <span className="token-info-label">
-                    {usersStrings.table.tokenCount}
-                  </span>
-                  <span className="token-info-value">
-                    {formatNumber(detail.tokenCount)}
-                  </span>
+                  <span className="token-info-label">{usersStrings.table.tokenCount}</span>
+                  <span className="token-info-value">{formatNumber(detail.tokenCount)}</span>
                 </div>
               </div>
             </section>
 
             <section className="surface panel">
-              <div
-                className="panel-header"
-                style={{ gap: 12, flexWrap: "wrap" }}
-              >
+              <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
                 <div>
                   <h2>{usersStrings.userTags.title}</h2>
-                  <p className="panel-description">
-                    {usersStrings.userTags.description}
-                  </p>
+                  <p className="panel-description">{usersStrings.userTags.description}</p>
                 </div>
-                <button
-                  type="button"
-                  className="btn btn-outline"
-                  onClick={navigateUserTags}
-                >
+                <button type="button" className="btn btn-outline" onClick={navigateUserTags}>
                   {usersStrings.userTags.manageCatalog}
                 </button>
               </div>
@@ -7672,16 +6511,10 @@ function AdminDashboard(): JSX.Element {
                   <select
                     className="select select-bordered"
                     value={selectedBindableTagId}
-                    onChange={(event) =>
-                      setSelectedBindableTagId(event.target.value)
-                    }
-                    disabled={
-                      savingUserTagBinding || bindableCustomTags.length === 0
-                    }
+                    onChange={(event) => setSelectedBindableTagId(event.target.value)}
+                    disabled={savingUserTagBinding || bindableCustomTags.length === 0}
                   >
-                    <option value="">
-                      {usersStrings.userTags.bindPlaceholder}
-                    </option>
+                    <option value="">{usersStrings.userTags.bindPlaceholder}</option>
                     {bindableCustomTags.map((tag) => (
                       <option key={tag.id} value={tag.id}>
                         {tag.displayName}
@@ -7694,45 +6527,29 @@ function AdminDashboard(): JSX.Element {
                     onClick={() => void bindSelectedUserTag()}
                     disabled={savingUserTagBinding || !selectedBindableTagId}
                   >
-                    {savingUserTagBinding
-                      ? usersStrings.userTags.binding
-                      : usersStrings.userTags.bindAction}
+                    {savingUserTagBinding ? usersStrings.userTags.binding : usersStrings.userTags.bindAction}
                   </button>
                 </div>
               </div>
 
               {boundTags.length === 0 ? (
-                <div className="empty-state alert" style={{ marginTop: 12 }}>
-                  {usersStrings.userTags.empty}
-                </div>
+                <div className="empty-state alert" style={{ marginTop: 12 }}>{usersStrings.userTags.empty}</div>
               ) : (
                 <div className="user-tag-binding-list">
                   {boundTags.map((tag) => {
-                    const isSystem = isSystemUserTag(tag);
+                    const isSystem = isSystemUserTag(tag)
                     return (
-                      <article
-                        className="user-tag-binding-card"
-                        key={`${tag.tagId}:${tag.source}`}
-                      >
+                      <article className="user-tag-binding-card" key={`${tag.tagId}:${tag.source}`}>
                         <div className="user-tag-binding-card-head">
                           <div className="user-tag-pill-list">
-                            <UserTagBadge
-                              tag={tag}
-                              usersStrings={usersStrings}
-                            />
-                            <StatusBadge tone={isSystem ? "info" : "neutral"}>
-                              {tag.source === "system_linuxdo"
+                            <UserTagBadge tag={tag} usersStrings={usersStrings} />
+                            <StatusBadge tone={isSystem ? 'info' : 'neutral'}>
+                              {tag.source === 'system_linuxdo'
                                 ? usersStrings.userTags.sourceSystem
                                 : usersStrings.userTags.sourceManual}
                             </StatusBadge>
-                            <StatusBadge
-                              tone={
-                                tag.effectKind === "block_all"
-                                  ? "error"
-                                  : "success"
-                              }
-                            >
-                              {tag.effectKind === "block_all"
+                            <StatusBadge tone={tag.effectKind === 'block_all' ? 'error' : 'success'}>
+                              {tag.effectKind === 'block_all'
                                 ? usersStrings.catalog.effectKinds.blockAll
                                 : usersStrings.catalog.effectKinds.quotaDelta}
                             </StatusBadge>
@@ -7741,68 +6558,137 @@ function AdminDashboard(): JSX.Element {
                             type="button"
                             className="btn btn-ghost btn-sm"
                             onClick={() => void unbindSelectedUserTag(tag)}
-                            disabled={
-                              savingUserTagBinding ||
-                              isSystem ||
-                              tag.source !== "manual"
-                            }
+                            disabled={savingUserTagBinding || isSystem || tag.source !== 'manual'}
                           >
-                            {isSystem || tag.source !== "manual"
+                            {isSystem || tag.source !== 'manual'
                               ? usersStrings.userTags.readOnly
                               : usersStrings.userTags.unbindAction}
                           </button>
                         </div>
                         <div className="token-compact-pair">
                           <div className="token-compact-field">
-                            <span className="token-compact-label">
-                              {usersStrings.quota.hourlyAny}
-                            </span>
-                            <span className="token-compact-value">
-                              {formatSignedQuotaDelta(tag.hourlyAnyDelta)}
-                            </span>
+                            <span className="token-compact-label">{usersStrings.quota.hourlyAny}</span>
+                            <span className="token-compact-value">{formatSignedQuotaDelta(tag.hourlyAnyDelta)}</span>
                           </div>
                           <div className="token-compact-field">
-                            <span className="token-compact-label">
-                              {usersStrings.quota.hourly}
-                            </span>
-                            <span className="token-compact-value">
-                              {formatSignedQuotaDelta(tag.hourlyDelta)}
-                            </span>
+                            <span className="token-compact-label">{usersStrings.quota.hourly}</span>
+                            <span className="token-compact-value">{formatSignedQuotaDelta(tag.hourlyDelta)}</span>
                           </div>
                           <div className="token-compact-field">
-                            <span className="token-compact-label">
-                              {usersStrings.quota.daily}
-                            </span>
-                            <span className="token-compact-value">
-                              {formatSignedQuotaDelta(tag.dailyDelta)}
-                            </span>
+                            <span className="token-compact-label">{usersStrings.quota.daily}</span>
+                            <span className="token-compact-value">{formatSignedQuotaDelta(tag.dailyDelta)}</span>
                           </div>
                           <div className="token-compact-field">
-                            <span className="token-compact-label">
-                              {usersStrings.quota.monthly}
-                            </span>
-                            <span className="token-compact-value">
-                              {formatSignedQuotaDelta(tag.monthlyDelta)}
-                            </span>
+                            <span className="token-compact-label">{usersStrings.quota.monthly}</span>
+                            <span className="token-compact-value">{formatSignedQuotaDelta(tag.monthlyDelta)}</span>
                           </div>
                         </div>
                       </article>
-                    );
+                    )
                   })}
                 </div>
               )}
             </section>
 
             <section className="surface panel">
+              <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
+                <div>
+                  <h2>{usersStrings.quota.title}</h2>
+                  <p className="panel-description">{usersStrings.quota.description}</p>
+                </div>
+                <StatusBadge tone={detail.quotaBase.inheritsDefaults ? 'info' : 'neutral'}>
+                  {detail.quotaBase.inheritsDefaults
+                    ? usersStrings.quota.inheritsDefaults
+                    : usersStrings.quota.customized}
+                </StatusBadge>
+              </div>
+              <div className="quota-grid">
+                {([
+                  {
+                    field: 'hourlyAnyLimit',
+                    label: usersStrings.quota.hourlyAny,
+                    used: detail.hourlyAnyUsed,
+                    currentLimit: detail.quotaBase.hourlyAnyLimit,
+                  },
+                  {
+                    field: 'hourlyLimit',
+                    label: usersStrings.quota.hourly,
+                    used: detail.quotaHourlyUsed,
+                    currentLimit: detail.quotaBase.hourlyLimit,
+                  },
+                  {
+                    field: 'dailyLimit',
+                    label: usersStrings.quota.daily,
+                    used: detail.quotaDailyUsed,
+                    currentLimit: detail.quotaBase.dailyLimit,
+                  },
+                  {
+                    field: 'monthlyLimit',
+                    label: usersStrings.quota.monthly,
+                    used: detail.quotaMonthlyUsed,
+                    currentLimit: detail.quotaBase.monthlyLimit,
+                  },
+                ] as const).map((item) => {
+                  const sliderSeed = userQuotaSnapshot?.[item.field] ?? createQuotaSliderSeed(item.field, item.used, item.currentLimit)
+                  const draftValue = userQuotaDraft?.[item.field] ?? String(sliderSeed.initialLimit)
+                  const parsedDraft = parseQuotaDraftValue(draftValue, sliderSeed.initialLimit)
+                  const sliderPosition = getQuotaSliderStagePosition(sliderSeed.stages, parsedDraft)
+                  return (
+                    <QuotaRangeField
+                      key={item.field}
+                      label={item.label}
+                      sliderName={`${item.field}-slider`}
+                      sliderMin={0}
+                      sliderMax={Math.max(0, sliderSeed.stages.length - 1)}
+                      sliderValue={sliderPosition}
+                      sliderAriaLabel={item.label}
+                      sliderStyle={{ background: buildQuotaSliderTrack(sliderSeed.stages, sliderSeed.used, parsedDraft) }}
+                      onSliderChange={(nextValue) => {
+                        const nextIndex = clampQuotaSliderStageIndex(sliderSeed.stages, nextValue)
+                        updateQuotaDraftField(item.field, String(getQuotaSliderStageValue(sliderSeed.stages, nextIndex)))
+                      }}
+                      helperText={
+                        <>
+                          {formatNumber(sliderSeed.used)} / {formatNumber(parsedDraft)}
+                        </>
+                      }
+                      inputName={item.field}
+                      inputValue={formatQuotaDraftInput(draftValue)}
+                      inputAriaLabel={`${item.label} input`}
+                      onInputChange={(nextValue) => updateQuotaDraftField(item.field, nextValue)}
+                    />
+                  )
+                })}
+              </div>
               <div
-                className="panel-header"
-                style={{ gap: 12, flexWrap: "wrap" }}
+                style={{
+                  marginTop: 16,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 12,
+                  flexWrap: 'wrap',
+                }}
               >
+                <span className="panel-description">
+                  {userQuotaSavedAt
+                    ? usersStrings.quota.savedAt.replace(
+                        '{time}',
+                        timeOnlyFormatter.format(new Date(userQuotaSavedAt)),
+                      )
+                    : usersStrings.quota.hint}
+                </span>
+                <Button type="button" onClick={() => void saveUserQuota()} disabled={savingUserQuota}>
+                  {savingUserQuota ? usersStrings.quota.saving : usersStrings.quota.save}
+                </Button>
+              </div>
+            </section>
+
+            <section className="surface panel">
+              <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
                 <div>
                   <h2>{usersStrings.brokenKeys.limitTitle}</h2>
-                  <p className="panel-description">
-                    {usersStrings.brokenKeys.limitDescription}
-                  </p>
+                  <p className="panel-description">{usersStrings.brokenKeys.limitDescription}</p>
                 </div>
                 {detail.monthlyBrokenCount > 0 ? (
                   <Button
@@ -7810,7 +6696,7 @@ function AdminDashboard(): JSX.Element {
                     variant="outline"
                     onClick={() =>
                       openMonthlyBrokenDrawer(
-                        "user",
+                        'user',
                         detail.userId,
                         detail.displayName || detail.username || detail.userId,
                       )
@@ -7822,42 +6708,30 @@ function AdminDashboard(): JSX.Element {
               </div>
               <div className="token-info-grid">
                 <div className="token-info-card">
-                  <span className="token-info-label">
-                    {usersStrings.usage.table.monthlyBroken}
-                  </span>
-                  <span className="token-info-value">
-                    {formatNumber(detail.monthlyBrokenCount)}
-                  </span>
+                  <span className="token-info-label">{usersStrings.usage.table.monthlyBroken}</span>
+                  <span className="token-info-value">{formatNumber(detail.monthlyBrokenCount)}</span>
                 </div>
                 <div className="token-info-card">
-                  <span className="token-info-label">
-                    {usersStrings.brokenKeys.limitField}
-                  </span>
-                  <span className="token-info-value">
-                    {formatNumber(detail.monthlyBrokenLimit)}
-                  </span>
+                  <span className="token-info-label">{usersStrings.brokenKeys.limitField}</span>
+                  <span className="token-info-value">{formatNumber(detail.monthlyBrokenLimit)}</span>
                 </div>
               </div>
               <div
                 style={{
                   marginTop: 16,
-                  display: "flex",
+                  display: 'flex',
                   gap: 12,
-                  alignItems: "flex-end",
-                  flexWrap: "wrap",
+                  alignItems: 'flex-end',
+                  flexWrap: 'wrap',
                 }}
               >
-                <label style={{ display: "grid", gap: 6, minWidth: 220 }}>
-                  <span className="token-info-label">
-                    {usersStrings.brokenKeys.limitField}
-                  </span>
+                <label style={{ display: 'grid', gap: 6, minWidth: 220 }}>
+                  <span className="token-info-label">{usersStrings.brokenKeys.limitField}</span>
                   <Input
                     type="text"
                     inputMode="numeric"
                     value={userBrokenLimitDraft}
-                    onChange={(event) =>
-                      updateUserBrokenLimitDraft(event.target.value)
-                    }
+                    onChange={(event) => updateUserBrokenLimitDraft(event.target.value)}
                     aria-label={usersStrings.brokenKeys.limitField}
                   />
                 </label>
@@ -7866,232 +6740,52 @@ function AdminDashboard(): JSX.Element {
                   onClick={() => void saveUserBrokenLimit()}
                   disabled={savingUserBrokenLimit}
                 >
-                  {savingUserBrokenLimit
-                    ? usersStrings.brokenKeys.saving
-                    : usersStrings.brokenKeys.save}
+                  {savingUserBrokenLimit ? usersStrings.brokenKeys.saving : usersStrings.brokenKeys.save}
                 </Button>
               </div>
               <div style={{ marginTop: 12 }}>
                 <span className="panel-description">
                   {userBrokenLimitSavedAt
                     ? usersStrings.brokenKeys.savedAt.replace(
-                        "{time}",
-                        timeOnlyFormatter.format(
-                          new Date(userBrokenLimitSavedAt),
-                        ),
+                        '{time}',
+                        timeOnlyFormatter.format(new Date(userBrokenLimitSavedAt)),
                       )
                     : usersStrings.brokenKeys.hint}
                 </span>
               </div>
               {userBrokenLimitError ? (
-                <div
-                  className="alert alert-error"
-                  role="alert"
-                  style={{ marginTop: 12 }}
-                >
+                <div className="alert alert-error" role="alert" style={{ marginTop: 12 }}>
                   {userBrokenLimitError}
                 </div>
               ) : null}
             </section>
 
             <section className="surface panel">
-              <div
-                className="panel-header"
-                style={{ gap: 12, flexWrap: "wrap" }}
-              >
-                <div>
-                  <h2>{usersStrings.quota.title}</h2>
-                  <p className="panel-description">
-                    {usersStrings.quota.description}
-                  </p>
-                </div>
-                <StatusBadge
-                  tone={detail.quotaBase.inheritsDefaults ? "info" : "neutral"}
-                >
-                  {detail.quotaBase.inheritsDefaults
-                    ? usersStrings.quota.inheritsDefaults
-                    : usersStrings.quota.customized}
-                </StatusBadge>
-              </div>
-              <div className="quota-grid">
-                {(
-                  [
-                    {
-                      field: "hourlyAnyLimit",
-                      label: usersStrings.quota.hourlyAny,
-                      used: detail.hourlyAnyUsed,
-                      currentLimit: detail.quotaBase.hourlyAnyLimit,
-                    },
-                    {
-                      field: "hourlyLimit",
-                      label: usersStrings.quota.hourly,
-                      used: detail.quotaHourlyUsed,
-                      currentLimit: detail.quotaBase.hourlyLimit,
-                    },
-                    {
-                      field: "dailyLimit",
-                      label: usersStrings.quota.daily,
-                      used: detail.quotaDailyUsed,
-                      currentLimit: detail.quotaBase.dailyLimit,
-                    },
-                    {
-                      field: "monthlyLimit",
-                      label: usersStrings.quota.monthly,
-                      used: detail.quotaMonthlyUsed,
-                      currentLimit: detail.quotaBase.monthlyLimit,
-                    },
-                  ] as const
-                ).map((item) => {
-                  const sliderSeed =
-                    userQuotaSnapshot?.[item.field] ??
-                    createQuotaSliderSeed(
-                      item.field,
-                      item.used,
-                      item.currentLimit,
-                    );
-                  const draftValue =
-                    userQuotaDraft?.[item.field] ??
-                    String(sliderSeed.initialLimit);
-                  const parsedDraft = parseQuotaDraftValue(
-                    draftValue,
-                    sliderSeed.initialLimit,
-                  );
-                  const sliderPosition = getQuotaSliderStagePosition(
-                    sliderSeed.stages,
-                    parsedDraft,
-                  );
-                  return (
-                    <QuotaRangeField
-                      key={item.field}
-                      label={item.label}
-                      sliderName={`${item.field}-slider`}
-                      sliderMin={0}
-                      sliderMax={Math.max(0, sliderSeed.stages.length - 1)}
-                      sliderValue={sliderPosition}
-                      sliderAriaLabel={item.label}
-                      sliderStyle={{
-                        background: buildQuotaSliderTrack(
-                          sliderSeed.stages,
-                          sliderSeed.used,
-                          parsedDraft,
-                        ),
-                      }}
-                      onSliderChange={(nextValue) => {
-                        const nextIndex = clampQuotaSliderStageIndex(
-                          sliderSeed.stages,
-                          nextValue,
-                        );
-                        updateQuotaDraftField(
-                          item.field,
-                          String(
-                            getQuotaSliderStageValue(
-                              sliderSeed.stages,
-                              nextIndex,
-                            ),
-                          ),
-                        );
-                      }}
-                      helperText={
-                        <>
-                          {formatNumber(sliderSeed.used)} /{" "}
-                          {formatNumber(parsedDraft)}
-                        </>
-                      }
-                      inputName={item.field}
-                      inputValue={formatQuotaDraftInput(draftValue)}
-                      inputAriaLabel={`${item.label} input`}
-                      onInputChange={(nextValue) =>
-                        updateQuotaDraftField(item.field, nextValue)
-                      }
-                    />
-                  );
-                })}
-              </div>
-              <div
-                style={{
-                  marginTop: 16,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  gap: 12,
-                  flexWrap: "wrap",
-                }}
-              >
-                <span className="panel-description">
-                  {userQuotaSavedAt
-                    ? usersStrings.quota.savedAt.replace(
-                        "{time}",
-                        timeOnlyFormatter.format(new Date(userQuotaSavedAt)),
-                      )
-                    : usersStrings.quota.hint}
-                </span>
-                <Button
-                  type="button"
-                  onClick={() => void saveUserQuota()}
-                  disabled={savingUserQuota}
-                >
-                  {savingUserQuota
-                    ? usersStrings.quota.saving
-                    : usersStrings.quota.save}
-                </Button>
-              </div>
-            </section>
-
-            <section className="surface panel">
               <div className="panel-header">
                 <div>
                   <h2>{usersStrings.effectiveQuota.title}</h2>
-                  <p className="panel-description">
-                    {usersStrings.effectiveQuota.description}
-                  </p>
+                  <p className="panel-description">{usersStrings.effectiveQuota.description}</p>
                 </div>
               </div>
               {hasBlockAllTag && (
-                <div
-                  className="alert alert-warning"
-                  role="status"
-                  style={{ marginBottom: 12 }}
-                >
+                <div className="alert alert-warning" role="status" style={{ marginBottom: 12 }}>
                   {usersStrings.effectiveQuota.blockAllNotice}
                 </div>
               )}
               <div className="token-info-grid">
-                {(
-                  [
-                    [
-                      "hourlyAny",
-                      usersStrings.quota.hourlyAny,
-                      detail.effectiveQuota.hourlyAnyLimit,
-                    ],
-                    [
-                      "hourly",
-                      usersStrings.quota.hourly,
-                      detail.effectiveQuota.hourlyLimit,
-                    ],
-                    [
-                      "daily",
-                      usersStrings.quota.daily,
-                      detail.effectiveQuota.dailyLimit,
-                    ],
-                    [
-                      "monthly",
-                      usersStrings.quota.monthly,
-                      detail.effectiveQuota.monthlyLimit,
-                    ],
-                  ] as const
-                ).map(([key, label, value]) => (
+                {([
+                  ['hourlyAny', usersStrings.quota.hourlyAny, detail.effectiveQuota.hourlyAnyLimit],
+                  ['hourly', usersStrings.quota.hourly, detail.effectiveQuota.hourlyLimit],
+                  ['daily', usersStrings.quota.daily, detail.effectiveQuota.dailyLimit],
+                  ['monthly', usersStrings.quota.monthly, detail.effectiveQuota.monthlyLimit],
+                ] as const).map(([key, label, value]) => (
                   <div className="token-info-card" key={key}>
                     <span className="token-info-label">{label}</span>
-                    <span className="token-info-value">
-                      {formatQuotaLimitValue(value)}
-                    </span>
+                    <span className="token-info-value">{formatQuotaLimitValue(value)}</span>
                   </div>
                 ))}
               </div>
-              <div
-                className="table-wrapper jobs-table-wrapper"
-                style={{ marginTop: 12 }}
-              >
+              <div className="table-wrapper jobs-table-wrapper" style={{ marginTop: 12 }}>
                 <table className="jobs-table admin-users-table user-tag-breakdown-table">
                   <thead>
                     <tr>
@@ -8106,62 +6800,40 @@ function AdminDashboard(): JSX.Element {
                   </thead>
                   <tbody>
                     {detail.quotaBreakdown.map((entry, index) => {
-                      const isAbsoluteRow =
-                        entry.kind === "base" || entry.kind === "effective";
+                      const isAbsoluteRow = entry.kind === 'base' || entry.kind === 'effective'
                       const breakdownLabel =
-                        entry.kind === "base"
+                        entry.kind === 'base'
                           ? usersStrings.effectiveQuota.baseLabel
-                          : entry.kind === "effective"
+                          : entry.kind === 'effective'
                             ? usersStrings.effectiveQuota.effectiveLabel
-                            : entry.label;
-                      const formatBreakdownValue = (value: number) =>
-                        isAbsoluteRow
-                          ? formatQuotaLimitValue(value)
-                          : formatSignedQuotaDelta(value);
+                            : entry.label
+                      const formatBreakdownValue = (value: number) => (
+                        isAbsoluteRow ? formatQuotaLimitValue(value) : formatSignedQuotaDelta(value)
+                      )
                       return (
-                        <tr
-                          key={`${entry.kind}:${entry.tagId ?? "row"}:${index}`}
-                        >
+                        <tr key={`${entry.kind}:${entry.tagId ?? 'row'}:${index}`}>
                           <td>
                             <div className="token-compact-pair">
                               <div className="token-compact-field">
-                                <span className="token-compact-value">
-                                  {breakdownLabel}
-                                </span>
+                                <span className="token-compact-value">{breakdownLabel}</span>
                               </div>
                               {entry.tagName && (
                                 <div className="token-compact-field">
-                                  <code className="token-compact-value">
-                                    {entry.tagName}
-                                  </code>
+                                  <code className="token-compact-value">{entry.tagName}</code>
                                 </div>
                               )}
                             </div>
                           </td>
+                          <td>{entry.source ? (entry.source === 'system_linuxdo' ? usersStrings.userTags.sourceSystem : usersStrings.userTags.sourceManual) : '—'}</td>
                           <td>
-                            {entry.source
-                              ? entry.source === "system_linuxdo"
-                                ? usersStrings.userTags.sourceSystem
-                                : usersStrings.userTags.sourceManual
-                              : "—"}
-                          </td>
-                          <td>
-                            <StatusBadge
-                              tone={
-                                entry.effectKind === "block_all"
-                                  ? "error"
-                                  : "neutral"
-                              }
-                            >
-                              {entry.effectKind === "block_all"
+                            <StatusBadge tone={entry.effectKind === 'block_all' ? 'error' : 'neutral'}>
+                              {entry.effectKind === 'block_all'
                                 ? usersStrings.catalog.effectKinds.blockAll
-                                : entry.effectKind === "base"
+                                : entry.effectKind === 'base'
                                   ? usersStrings.effectiveQuota.baseLabel
-                                  : entry.kind === "effective" ||
-                                      entry.effectKind === "effective"
+                                  : entry.kind === 'effective' || entry.effectKind === 'effective'
                                     ? usersStrings.effectiveQuota.effectiveLabel
-                                    : usersStrings.catalog.effectKinds
-                                        .quotaDelta}
+                                    : usersStrings.catalog.effectKinds.quotaDelta}
                             </StatusBadge>
                           </td>
                           <td>{formatBreakdownValue(entry.hourlyAnyDelta)}</td>
@@ -8169,7 +6841,7 @@ function AdminDashboard(): JSX.Element {
                           <td>{formatBreakdownValue(entry.dailyDelta)}</td>
                           <td>{formatBreakdownValue(entry.monthlyDelta)}</td>
                         </tr>
-                      );
+                      )
                     })}
                   </tbody>
                 </table>
@@ -8180,16 +6852,12 @@ function AdminDashboard(): JSX.Element {
               <div className="panel-header">
                 <div>
                   <h2>{usersStrings.detail.tokensTitle}</h2>
-                  <p className="panel-description">
-                    {usersStrings.detail.tokensDescription}
-                  </p>
+                  <p className="panel-description">{usersStrings.detail.tokensDescription}</p>
                 </div>
               </div>
               <div className="table-wrapper jobs-table-wrapper">
                 {tokenItems.length === 0 ? (
-                  <div className="empty-state alert">
-                    {usersStrings.empty.noTokens}
-                  </div>
+                  <div className="empty-state alert">{usersStrings.empty.noTokens}</div>
                 ) : (
                   <Table className="jobs-table admin-users-table admin-user-tokens-table">
                     <thead>
@@ -8204,139 +6872,87 @@ function AdminDashboard(): JSX.Element {
                     </thead>
                     <tbody>
                       {tokenItems.map((token) => {
-                        const hourlyAnyText = formatQuotaUsagePair(
-                          token.hourlyAnyUsed,
-                          token.hourlyAnyLimit,
-                        );
-                        const hourlyText = formatQuotaUsagePair(
-                          token.quotaHourlyUsed,
-                          token.quotaHourlyLimit,
-                        );
-                        const dailyText = formatQuotaUsagePair(
-                          token.quotaDailyUsed,
-                          token.quotaDailyLimit,
-                        );
-                        const monthlyText = formatQuotaUsagePair(
-                          token.quotaMonthlyUsed,
-                          token.quotaMonthlyLimit,
-                        );
-                        const successDailyText = `${formatNumber(token.dailySuccess)} / ${formatNumber(token.dailyFailure)}`;
-                        const successMonthlyText = formatNumber(
-                          token.monthlySuccess,
-                        );
+                        const hourlyAnyText = formatQuotaUsagePair(token.hourlyAnyUsed, token.hourlyAnyLimit)
+                        const hourlyText = formatQuotaUsagePair(token.quotaHourlyUsed, token.quotaHourlyLimit)
+                        const dailyText = formatQuotaUsagePair(token.quotaDailyUsed, token.quotaDailyLimit)
+                        const monthlyText = formatQuotaUsagePair(token.quotaMonthlyUsed, token.quotaMonthlyLimit)
+                        const successDailyText = `${formatNumber(token.dailySuccess)} / ${formatNumber(token.dailyFailure)}`
+                        const successMonthlyText = formatNumber(token.monthlySuccess)
                         return (
                           <tr key={token.tokenId}>
                             <td>
                               <div className="token-compact-pair">
                                 <div className="token-compact-field">
-                                  <code className="token-compact-value">
-                                    {token.tokenId}
-                                  </code>
+                                  <code className="token-compact-value">{token.tokenId}</code>
                                 </div>
                                 <div className="token-compact-field">
-                                  <span className="token-compact-value">
-                                    {token.note || "—"}
-                                  </span>
+                                  <span className="token-compact-value">{token.note || '—'}</span>
                                 </div>
                               </div>
                             </td>
                             <td>
                               <div className="token-compact-pair">
                                 <div className="token-compact-field">
-                                  <StatusBadge
-                                    tone={token.enabled ? "success" : "neutral"}
-                                  >
-                                    {token.enabled
-                                      ? usersStrings.status.enabled
-                                      : usersStrings.status.disabled}
+                                  <StatusBadge tone={token.enabled ? 'success' : 'neutral'}>
+                                    {token.enabled ? usersStrings.status.enabled : usersStrings.status.disabled}
                                   </StatusBadge>
                                 </div>
                                 <div className="token-compact-field">
-                                  <span className="token-compact-value">
-                                    {formatTimestamp(token.lastUsedAt)}
-                                  </span>
+                                  <span className="token-compact-value">{formatTimestamp(token.lastUsedAt)}</span>
                                 </div>
                               </div>
                             </td>
                             <td>
                               <div className="token-compact-pair">
                                 <div className="token-compact-field">
-                                  <span className="token-compact-label">
-                                    {usersStrings.tokens.table.hourlyAny}
-                                  </span>
-                                  <span className="token-compact-value">
-                                    {hourlyAnyText}
-                                  </span>
+                                  <span className="token-compact-label">{usersStrings.tokens.table.hourlyAny}</span>
+                                  <span className="token-compact-value">{hourlyAnyText}</span>
                                 </div>
                                 <div className="token-compact-field">
-                                  <span className="token-compact-label">
-                                    {usersStrings.tokens.table.hourly}
-                                  </span>
-                                  <span className="token-compact-value">
-                                    {hourlyText}
-                                  </span>
+                                  <span className="token-compact-label">{usersStrings.tokens.table.hourly}</span>
+                                  <span className="token-compact-value">{hourlyText}</span>
                                 </div>
                               </div>
                             </td>
                             <td>
                               <div className="token-compact-pair">
                                 <div className="token-compact-field">
-                                  <span className="token-compact-label">
-                                    {usersStrings.tokens.table.daily}
-                                  </span>
-                                  <span className="token-compact-value">
-                                    {dailyText}
-                                  </span>
+                                  <span className="token-compact-label">{usersStrings.tokens.table.daily}</span>
+                                  <span className="token-compact-value">{dailyText}</span>
                                 </div>
                                 <div className="token-compact-field">
-                                  <span className="token-compact-label">
-                                    {usersStrings.tokens.table.monthly}
-                                  </span>
-                                  <span className="token-compact-value">
-                                    {monthlyText}
-                                  </span>
+                                  <span className="token-compact-label">{usersStrings.tokens.table.monthly}</span>
+                                  <span className="token-compact-value">{monthlyText}</span>
                                 </div>
                               </div>
                             </td>
                             <td>
                               <div className="token-compact-pair">
                                 <div className="token-compact-field">
-                                  <span className="token-compact-label">
-                                    {usersStrings.tokens.table.successDaily}
-                                  </span>
-                                  <span className="token-compact-value">
-                                    {successDailyText}
-                                  </span>
+                                  <span className="token-compact-label">{usersStrings.tokens.table.successDaily}</span>
+                                  <span className="token-compact-value">{successDailyText}</span>
                                 </div>
                                 <div className="token-compact-field">
-                                  <span className="token-compact-label">
-                                    {usersStrings.tokens.table.successMonthly}
-                                  </span>
-                                  <span className="token-compact-value">
-                                    {successMonthlyText}
-                                  </span>
+                                  <span className="token-compact-label">{usersStrings.tokens.table.successMonthly}</span>
+                                  <span className="token-compact-value">{successMonthlyText}</span>
                                 </div>
                               </div>
                             </td>
                             <td>
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8 rounded-full p-0 shadow-none"
-                                title={usersStrings.tokens.actions.view}
-                                aria-label={usersStrings.tokens.actions.view}
-                                onClick={() => navigateToken(token.tokenId)}
-                              >
-                                <Icon
-                                  icon="mdi:eye-outline"
-                                  width={16}
-                                  height={16}
-                                />
-                              </Button>
+<Button
+  type="button"
+  variant="ghost"
+  size="icon"
+  className="h-8 w-8 rounded-full p-0 shadow-none"
+  title={usersStrings.tokens.actions.view}
+  aria-label={usersStrings.tokens.actions.view}
+  onClick={() => navigateToken(token.tokenId)}
+>
+  <Icon icon="mdi:eye-outline" width={16} height={16} />
+</Button>
                             </td>
                           </tr>
-                        );
+                        )
                       })}
                     </tbody>
                   </Table>
@@ -8346,20 +6962,14 @@ function AdminDashboard(): JSX.Element {
           </>
         )}
       </AdminShell>
-    );
+    )
   }
 
-  if (route.name === "user-usage") {
-    const backSort = isAdminUsersOverviewSortField(usersSort)
-      ? usersSort
-      : null;
-    const backOrder = backSort ? usersSortOrder : null;
-    const usageDailyRateLabel =
-      language === "zh" ? usersStrings.usage.table.dailySuccessRate : "Daily";
-    const usageMonthlyRateLabel =
-      language === "zh"
-        ? usersStrings.usage.table.monthlySuccessRate
-        : "Monthly";
+  if (route.name === 'user-usage') {
+    const backSort = isAdminUsersOverviewSortField(usersSort) ? usersSort : null
+    const backOrder = backSort ? usersSortOrder : null
+    const usageDailyRateLabel = language === 'zh' ? usersStrings.usage.table.dailySuccessRate : 'Daily'
+    const usageMonthlyRateLabel = language === 'zh' ? usersStrings.usage.table.monthlySuccessRate : 'Monthly'
 
     return (
       <AdminShell
@@ -8369,31 +6979,16 @@ function AdminDashboard(): JSX.Element {
         onSelectItem={navigateModule}
       >
         <section className="surface panel">
-          <div className="panel-header" style={{ gap: 12, flexWrap: "wrap" }}>
-            <div style={{ flex: "1 1 340px", minWidth: 260 }}>
+          <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
+            <div style={{ flex: '1 1 340px', minWidth: 260 }}>
               <h2>{usersStrings.usage.title}</h2>
-              <p className="panel-description">
-                {usersStrings.usage.description}
-              </p>
+              <p className="panel-description">{usersStrings.usage.description}</p>
             </div>
-            <div
-              className="admin-inline-actions"
-              style={{ flexWrap: "wrap", justifyContent: "flex-end" }}
-            >
+            <div className="admin-inline-actions" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
               <Button
                 type="button"
                 variant="outline"
-                onClick={() =>
-                  navigateToPath(
-                    buildAdminUsersPath(
-                      usersQuery,
-                      usersTagFilterId,
-                      usersPage,
-                      backSort,
-                      backOrder,
-                    ),
-                  )
-                }
+                onClick={() => navigateToPath(buildAdminUsersPath(usersQuery, usersTagFilterId, usersPage, backSort, backOrder))}
               >
                 {usersStrings.usage.back}
               </Button>
@@ -8407,29 +7002,17 @@ function AdminDashboard(): JSX.Element {
                   disabled={usersBlocking}
                   onChange={(event) => setUsersQueryInput(event.target.value)}
                   onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      event.preventDefault();
-                      applyUserSearch();
+                    if (event.key === 'Enter') {
+                      event.preventDefault()
+                      applyUserSearch()
                     }
                   }}
                 />
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={applyUserSearch}
-                  disabled={usersBlocking}
-                >
+                <Button type="button" variant="outline" onClick={applyUserSearch} disabled={usersBlocking}>
                   {usersStrings.search}
                 </Button>
-                {(usersQueryInput.length > 0 ||
-                  usersQuery.length > 0 ||
-                  usersTagFilterId != null) && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    onClick={resetUserSearch}
-                    disabled={usersBlocking}
-                  >
+                {(usersQueryInput.length > 0 || usersQuery.length > 0 || usersTagFilterId != null) && (
+                  <Button type="button" variant="ghost" onClick={resetUserSearch} disabled={usersBlocking}>
                     {usersStrings.clear}
                   </Button>
                 )}
@@ -8438,14 +7021,10 @@ function AdminDashboard(): JSX.Element {
           </div>
 
           <AdminTableShell
-            className="jobs-table-wrapper"
+            className="jobs-table-wrapper admin-users-usage-table-wrapper"
             tableClassName="jobs-table admin-users-table admin-users-usage-table"
             loadState={usersLoadState}
-            loadingLabel={
-              usersRefreshing
-                ? loadingStateStrings.refreshing
-                : usersStrings.empty.loading
-            }
+            loadingLabel={usersRefreshing ? loadingStateStrings.refreshing : usersStrings.empty.loading}
             errorLabel={usersError ?? loadingStateStrings.error}
             minHeight={360}
           >
@@ -8453,9 +7032,7 @@ function AdminDashboard(): JSX.Element {
               <tbody>
                 <tr>
                   <td colSpan={10}>
-                    <div className="empty-state alert">
-                      {usersStrings.empty.none}
-                    </div>
+                    <div className="empty-state alert">{usersStrings.empty.none}</div>
                   </td>
                 </tr>
               </tbody>
@@ -8533,117 +7110,60 @@ function AdminDashboard(): JSX.Element {
                           type="button"
                           className="link-button admin-users-identity-button"
                           aria-label={usersStrings.actions.view}
-                          onClick={() =>
-                            navigateUser(item.userId, {
-                              preserveUsersContext: true,
-                            })
-                          }
+                          onClick={() => navigateUser(item.userId, { preserveUsersContext: true })}
                         >
-                          <strong>
-                            {item.displayName || item.username || item.userId}
-                          </strong>
+                          <strong>{item.displayName || item.username || item.userId}</strong>
                         </button>
                         <div className="panel-description admin-users-identity-meta">
                           <code>{item.userId}</code>
-                          {item.username ? ` · @${item.username}` : ""}
+                          {item.username ? ` · @${item.username}` : ''}
                         </div>
                       </td>
                       <td>
-                        <StatusBadge tone={item.active ? "success" : "neutral"}>
-                          {item.active
-                            ? usersStrings.status.active
-                            : usersStrings.status.inactive}
+                        <StatusBadge tone={item.active ? 'success' : 'neutral'}>
+                          {item.active ? usersStrings.status.active : usersStrings.status.inactive}
                         </StatusBadge>
                       </td>
                       <td className="admin-users-compact-cell">
-                        <AdminTableValueStack
-                          {...formatQuotaStackValue(
-                            item.hourlyAnyUsed,
-                            item.hourlyAnyLimit,
-                          )}
-                        />
+                        <AdminTableValueStack {...formatQuotaStackValue(item.hourlyAnyUsed, item.hourlyAnyLimit)} />
                       </td>
                       <td className="admin-users-compact-cell">
-                        <AdminTableValueStack
-                          {...formatQuotaStackValue(
-                            item.quotaHourlyUsed,
-                            item.quotaHourlyLimit,
-                          )}
-                        />
+                        <AdminTableValueStack {...formatQuotaStackValue(item.quotaHourlyUsed, item.quotaHourlyLimit)} />
                       </td>
                       <td className="admin-users-compact-cell">
-                        <AdminTableValueStack
-                          {...formatQuotaStackValue(
-                            item.quotaDailyUsed,
-                            item.quotaDailyLimit,
-                          )}
-                        />
+                        <AdminTableValueStack {...formatQuotaStackValue(item.quotaDailyUsed, item.quotaDailyLimit)} />
                       </td>
                       <td className="admin-users-compact-cell">
-                        <AdminTableValueStack
-                          {...formatQuotaStackValue(
-                            item.quotaMonthlyUsed,
-                            item.quotaMonthlyLimit,
-                          )}
-                        />
+                        <AdminTableValueStack {...formatQuotaStackValue(item.quotaMonthlyUsed, item.quotaMonthlyLimit)} />
                       </td>
                       <td className="admin-users-compact-cell">
                         {(() => {
                           const metric = formatMonthlyBrokenStackValue(
                             item.monthlyBrokenCount,
                             item.monthlyBrokenLimit,
-                          );
-                          const label =
-                            item.displayName || item.username || item.userId;
+                          )
+                          const label = item.displayName || item.username || item.userId
                           return (
                             <div className="admin-table-value-stack">
                               <MonthlyBrokenCountTrigger
                                 count={item.monthlyBrokenCount}
-                                onOpen={() =>
-                                  openMonthlyBrokenDrawer(
-                                    "user",
-                                    item.userId,
-                                    label,
-                                  )
-                                }
-                                ariaLabel={usersStrings.brokenKeys.openDetails.replace(
-                                  "{label}",
-                                  label,
-                                )}
+                                onOpen={() => openMonthlyBrokenDrawer('user', item.userId, label)}
+                                ariaLabel={usersStrings.brokenKeys.openDetails.replace('{label}', label)}
                                 className={metric.primaryClassName}
                               />
-                              <span className="admin-table-value-secondary">
-                                {metric.secondary}
-                              </span>
+                              <span className="admin-table-value-secondary">{metric.secondary}</span>
                             </div>
-                          );
+                          )
                         })()}
                       </td>
                       <td className="admin-users-compact-cell">
-                        <AdminTableValueStack
-                          {...formatSuccessRateStackValue(
-                            item.dailySuccess,
-                            item.dailyFailure,
-                            language,
-                          )}
-                        />
+                        <AdminTableValueStack {...formatSuccessRateStackValue(item.dailySuccess, item.dailyFailure, language)} />
                       </td>
                       <td className="admin-users-compact-cell">
-                        <AdminTableValueStack
-                          {...formatSuccessRateStackValue(
-                            item.monthlySuccess,
-                            item.monthlyFailure,
-                            language,
-                          )}
-                        />
+                        <AdminTableValueStack {...formatSuccessRateStackValue(item.monthlySuccess, item.monthlyFailure, language)} />
                       </td>
                       <td className="admin-users-compact-cell">
-                        <AdminTableValueStack
-                          {...formatStackedTimestamp(
-                            item.lastActivity,
-                            language,
-                          )}
-                        />
+                        <AdminTableValueStack {...formatStackedTimestamp(item.lastActivity, language)} />
                       </td>
                     </tr>
                   ))}
@@ -8655,11 +7175,7 @@ function AdminDashboard(): JSX.Element {
           <AdminLoadingRegion
             className="admin-mobile-list admin-responsive-down"
             loadState={usersLoadState}
-            loadingLabel={
-              usersRefreshing
-                ? loadingStateStrings.refreshing
-                : usersStrings.empty.loading
-            }
+            loadingLabel={usersRefreshing ? loadingStateStrings.refreshing : usersStrings.empty.loading}
             errorLabel={usersError ?? loadingStateStrings.error}
             minHeight={260}
           >
@@ -8674,60 +7190,32 @@ function AdminDashboard(): JSX.Element {
                       type="button"
                       className="link-button admin-users-mobile-link"
                       aria-label={usersStrings.actions.view}
-                      onClick={() =>
-                        navigateUser(item.userId, {
-                          preserveUsersContext: true,
-                        })
-                      }
+                      onClick={() => navigateUser(item.userId, { preserveUsersContext: true })}
                     >
-                      <strong>
-                        {item.displayName || item.username || item.userId}
-                      </strong>
+                      <strong>{item.displayName || item.username || item.userId}</strong>
                     </button>
                   </div>
                   <div className="admin-mobile-kv">
                     <span>{usersStrings.usage.table.status}</span>
-                    <StatusBadge tone={item.active ? "success" : "neutral"}>
-                      {item.active
-                        ? usersStrings.status.active
-                        : usersStrings.status.inactive}
+                    <StatusBadge tone={item.active ? 'success' : 'neutral'}>
+                      {item.active ? usersStrings.status.active : usersStrings.status.inactive}
                     </StatusBadge>
                   </div>
                   <div className="admin-mobile-kv">
                     <span>{usersStrings.usage.table.hourlyAny}</span>
-                    <strong>
-                      {formatQuotaUsagePair(
-                        item.hourlyAnyUsed,
-                        item.hourlyAnyLimit,
-                      )}
-                    </strong>
+                    <strong>{formatQuotaUsagePair(item.hourlyAnyUsed, item.hourlyAnyLimit)}</strong>
                   </div>
                   <div className="admin-mobile-kv">
                     <span>{usersStrings.usage.table.hourly}</span>
-                    <strong>
-                      {formatQuotaUsagePair(
-                        item.quotaHourlyUsed,
-                        item.quotaHourlyLimit,
-                      )}
-                    </strong>
+                    <strong>{formatQuotaUsagePair(item.quotaHourlyUsed, item.quotaHourlyLimit)}</strong>
                   </div>
                   <div className="admin-mobile-kv">
                     <span>{usersStrings.usage.table.daily}</span>
-                    <strong>
-                      {formatQuotaUsagePair(
-                        item.quotaDailyUsed,
-                        item.quotaDailyLimit,
-                      )}
-                    </strong>
+                    <strong>{formatQuotaUsagePair(item.quotaDailyUsed, item.quotaDailyLimit)}</strong>
                   </div>
                   <div className="admin-mobile-kv">
                     <span>{usersStrings.usage.table.monthly}</span>
-                    <strong>
-                      {formatQuotaUsagePair(
-                        item.quotaMonthlyUsed,
-                        item.quotaMonthlyLimit,
-                      )}
-                    </strong>
+                    <strong>{formatQuotaUsagePair(item.quotaMonthlyUsed, item.quotaMonthlyLimit)}</strong>
                   </div>
                   <div className="admin-mobile-kv">
                     <span>{usersStrings.usage.table.monthlyBroken}</span>
@@ -8737,47 +7225,25 @@ function AdminDashboard(): JSX.Element {
                         className="link-button"
                         onClick={() =>
                           openMonthlyBrokenDrawer(
-                            "user",
+                            'user',
                             item.userId,
                             item.displayName || item.username || item.userId,
                           )
                         }
                       >
-                        <strong>
-                          {formatQuotaUsagePair(
-                            item.monthlyBrokenCount,
-                            item.monthlyBrokenLimit,
-                          )}
-                        </strong>
+                        <strong>{formatQuotaUsagePair(item.monthlyBrokenCount, item.monthlyBrokenLimit)}</strong>
                       </button>
                     ) : (
-                      <strong>
-                        {formatQuotaUsagePair(
-                          item.monthlyBrokenCount,
-                          item.monthlyBrokenLimit,
-                        )}
-                      </strong>
+                      <strong>{formatQuotaUsagePair(item.monthlyBrokenCount, item.monthlyBrokenLimit)}</strong>
                     )}
                   </div>
                   <div className="admin-mobile-kv">
                     <span>{usersStrings.usage.table.dailySuccessRate}</span>
-                    <strong>
-                      {formatCompactSuccessRateValue(
-                        item.dailySuccess,
-                        item.dailyFailure,
-                        language,
-                      )}
-                    </strong>
+                    <strong>{formatCompactSuccessRateValue(item.dailySuccess, item.dailyFailure, language)}</strong>
                   </div>
                   <div className="admin-mobile-kv">
                     <span>{usersStrings.usage.table.monthlySuccessRate}</span>
-                    <strong>
-                      {formatCompactSuccessRateValue(
-                        item.monthlySuccess,
-                        item.monthlyFailure,
-                        language,
-                      )}
-                    </strong>
+                    <strong>{formatCompactSuccessRateValue(item.monthlySuccess, item.monthlyFailure, language)}</strong>
                   </div>
                   <div className="admin-mobile-kv">
                     <span>{usersStrings.usage.table.lastUsed}</span>
@@ -8795,8 +7261,8 @@ function AdminDashboard(): JSX.Element {
               pageSummary={
                 <span className="panel-description">
                   {usersStrings.pagination
-                    .replace("{page}", String(usersPage))
-                    .replace("{total}", String(usersTotalPages))}
+                    .replace('{page}', String(usersPage))
+                    .replace('{total}', String(usersTotalPages))}
                 </span>
               }
               previousLabel={tokenStrings.pagination.prev}
@@ -8810,43 +7276,13 @@ function AdminDashboard(): JSX.Element {
           )}
         </section>
       </AdminShell>
-    );
+    )
   }
 
-  if (route.name === "token-usage") {
-    const primaryMetric: MetricKey = tokenLeaderboardFocus;
-
-    const renderPeriodCell = (
-      item: TokenUsageLeaderboardItem,
-      period: "day" | "month" | "all",
-      primary: MetricKey,
-    ) => {
-      const { values } = pickPrimaryForPeriod(item, period, primary);
-      const secondaryKeys: MetricKey[] = ["usage", "errors", "other"].filter(
-        (k) => k !== primary,
-      ) as MetricKey[];
-      const label = (key: MetricKey) =>
-        key === "usage"
-          ? tokenLeaderboardStrings.focus.usage
-          : key === "errors"
-            ? tokenLeaderboardStrings.table.errors
-            : tokenLeaderboardStrings.table.other;
-
-      return (
-        <td>
-          <div className="token-leaderboard-usage">
-            {formatNumber(values[primary])}
-          </div>
-          <div className="token-leaderboard-sub">
-            {secondaryKeys.map((key) => (
-              <span key={key}>
-                {label(key)}: {formatNumber(values[key])}
-              </span>
-            ))}
-          </div>
-        </td>
-      );
-    };
+  if (route.name === 'unbound-token-usage') {
+    const usageDailyRateLabel = language === 'zh' ? unboundTokenUsageStrings.table.dailySuccessRate : 'Daily'
+    const usageMonthlyRateLabel =
+      language === 'zh' ? unboundTokenUsageStrings.table.monthlySuccessRate : 'Monthly'
 
     return (
       <AdminShell
@@ -8855,412 +7291,397 @@ function AdminDashboard(): JSX.Element {
         skipToContentLabel={adminStrings.accessibility.skipToContent}
         onSelectItem={navigateModule}
       >
-        <TokenUsageHeader
-          title={tokenLeaderboardStrings.title}
-          subtitle={tokenLeaderboardStrings.description}
-          visualPreset="accent"
-          backLabel={tokenLeaderboardStrings.back}
-          refreshLabel={headerStrings.refreshNow}
-          refreshingLabel={headerStrings.refreshing}
-          userConsoleLabel={headerStrings.returnToConsole}
-          userConsoleHref={userConsoleHref}
-          isRefreshing={tokenLeaderboardRefreshing}
-          period={tokenLeaderboardPeriod}
-          focus={tokenLeaderboardFocus}
-          periodOptions={[
-            { value: "day", label: tokenLeaderboardStrings.period.day },
-            { value: "month", label: tokenLeaderboardStrings.period.month },
-            { value: "all", label: tokenLeaderboardStrings.period.all },
-          ]}
-          focusOptions={[
-            { value: "usage", label: tokenLeaderboardStrings.focus.usage },
-            { value: "errors", label: tokenLeaderboardStrings.focus.errors },
-            { value: "other", label: tokenLeaderboardStrings.focus.other },
-          ]}
-          controlsDisabled={tokenLeaderboardBlocking}
-          onBack={() => navigateModule("tokens")}
-          onRefresh={() => setTokenLeaderboardNonce((x) => x + 1)}
-          onPeriodChange={setTokenLeaderboardPeriod}
-          onFocusChange={setTokenLeaderboardFocus}
-        />
-        <section className="surface panel token-leaderboard-panel">
-          <AdminLoadingRegion
-            className="table-wrapper jobs-table-wrapper token-leaderboard-wrapper admin-responsive-up"
-            loadState={tokenLeaderboardLoadState}
-            loadingLabel={
-              tokenLeaderboardRefreshing
-                ? loadingStateStrings.refreshing
-                : tokenLeaderboardStrings.empty.loading
-            }
-            minHeight={340}
-          >
-            {tokenLeaderboardView.length === 0 ? (
-              <div className="empty-state alert">
-                {tokenLeaderboardStrings.empty.none}
+        <section className="surface panel">
+          <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
+            <div style={{ flex: '1 1 340px', minWidth: 260 }}>
+              <h2>{unboundTokenUsageStrings.title}</h2>
+              <p className="panel-description">{unboundTokenUsageStrings.description}</p>
+            </div>
+            <div className="admin-inline-actions" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+              <Button type="button" variant="outline" onClick={() => navigateModule('tokens')}>
+                {unboundTokenUsageStrings.back}
+              </Button>
+              <div className="users-search-controls">
+                <Input
+                  type="text"
+                  name="unbound-token-usage-search"
+                  className="users-search-input"
+                  placeholder={unboundTokenUsageStrings.searchPlaceholder}
+                  value={unboundTokenUsageQueryInput}
+                  disabled={unboundTokenUsageBlocking}
+                  onChange={(event) => setUnboundTokenUsageQueryInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault()
+                      applyUnboundTokenUsageSearch()
+                    }
+                  }}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={applyUnboundTokenUsageSearch}
+                  disabled={unboundTokenUsageBlocking}
+                >
+                  {usersStrings.search}
+                </Button>
+                {(unboundTokenUsageQueryInput.length > 0 || unboundTokenUsageQuery.length > 0) && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={resetUnboundTokenUsageSearch}
+                    disabled={unboundTokenUsageBlocking}
+                  >
+                    {usersStrings.clear}
+                  </Button>
+                )}
               </div>
+            </div>
+          </div>
+
+          <AdminTableShell
+            className="jobs-table-wrapper admin-users-usage-table-wrapper"
+            tableClassName="jobs-table admin-users-table admin-users-usage-table"
+            loadState={unboundTokenUsageLoadState}
+            loadingLabel={
+              unboundTokenUsageRefreshing
+                ? loadingStateStrings.refreshing
+                : unboundTokenUsageStrings.empty.loading
+            }
+            errorLabel={unboundTokenUsageError ?? loadingStateStrings.error}
+            minHeight={360}
+          >
+            {unboundTokenUsage.length === 0 ? (
+              <tbody>
+                <tr>
+                  <td colSpan={10}>
+                    <div className="empty-state alert">{unboundTokenUsageStrings.empty.none}</div>
+                  </td>
+                </tr>
+              </tbody>
             ) : (
-              <Table className="jobs-table token-leaderboard-table">
+              <>
                 <thead>
                   <tr>
-                    <th>{tokenLeaderboardStrings.table.token}</th>
-                    <th>{tokenLeaderboardStrings.table.group}</th>
-                    <th>{tokenLeaderboardStrings.table.hourly}</th>
-                    <th>{tokenLeaderboardStrings.table.hourlyAny}</th>
-                    <th>{tokenLeaderboardStrings.table.daily}</th>
-                    <th>{tokenLeaderboardStrings.table.monthlyBroken}</th>
-                    <th>{tokenLeaderboardStrings.table.today}</th>
-                    <th>{tokenLeaderboardStrings.table.month}</th>
-                    <th>{tokenLeaderboardStrings.table.all}</th>
-                    <th>{tokenLeaderboardStrings.table.lastUsed}</th>
+                    <th>{unboundTokenUsageStrings.table.identity}</th>
+                    <th>{unboundTokenUsageStrings.table.status}</th>
+                    <AdminUsersSortableHeader
+                      label={unboundTokenUsageStrings.table.hourlyAny}
+                      field="hourlyAnyUsed"
+                      activeField={effectiveUnboundTokenUsageSort}
+                      activeOrder={effectiveUnboundTokenUsageSortOrder}
+                      onToggle={toggleUnboundTokenUsageSort}
+                    />
+                    <AdminUsersSortableHeader
+                      label={unboundTokenUsageStrings.table.hourly}
+                      field="quotaHourlyUsed"
+                      activeField={effectiveUnboundTokenUsageSort}
+                      activeOrder={effectiveUnboundTokenUsageSortOrder}
+                      onToggle={toggleUnboundTokenUsageSort}
+                    />
+                    <AdminUsersSortableHeader
+                      label={unboundTokenUsageStrings.table.daily}
+                      field="quotaDailyUsed"
+                      activeField={effectiveUnboundTokenUsageSort}
+                      activeOrder={effectiveUnboundTokenUsageSortOrder}
+                      onToggle={toggleUnboundTokenUsageSort}
+                    />
+                    <AdminUsersSortableHeader
+                      label={unboundTokenUsageStrings.table.monthly}
+                      field="quotaMonthlyUsed"
+                      activeField={effectiveUnboundTokenUsageSort}
+                      activeOrder={effectiveUnboundTokenUsageSortOrder}
+                      onToggle={toggleUnboundTokenUsageSort}
+                    />
+                    <th>{unboundTokenUsageStrings.table.monthlyBroken}</th>
+                    <AdminUsersSortableHeader
+                      label={unboundTokenUsageStrings.table.dailySuccessRate}
+                      displayLabel={usageDailyRateLabel}
+                      field="dailySuccessRate"
+                      activeField={effectiveUnboundTokenUsageSort}
+                      activeOrder={effectiveUnboundTokenUsageSortOrder}
+                      onToggle={toggleUnboundTokenUsageSort}
+                    />
+                    <AdminUsersSortableHeader
+                      label={unboundTokenUsageStrings.table.monthlySuccessRate}
+                      displayLabel={usageMonthlyRateLabel}
+                      field="monthlySuccessRate"
+                      activeField={effectiveUnboundTokenUsageSort}
+                      activeOrder={effectiveUnboundTokenUsageSortOrder}
+                      onToggle={toggleUnboundTokenUsageSort}
+                    />
+                    <AdminUsersSortableHeader
+                      label={unboundTokenUsageStrings.table.lastUsed}
+                      field="lastUsedAt"
+                      activeField={effectiveUnboundTokenUsageSort}
+                      activeOrder={effectiveUnboundTokenUsageSortOrder}
+                      onToggle={toggleUnboundTokenUsageSort}
+                    />
                   </tr>
                 </thead>
                 <tbody>
-                  {tokenLeaderboardView.map((item) => (
-                    <tr key={item.id}>
-                      <td>
-                        <div className="token-id-cell">
-                          <button
-                            type="button"
-                            className="link-button token-id-link"
-                            onClick={() => navigateToken(item.id)}
-                          >
-                            <code className="token-id-code">{item.id}</code>
-                          </button>
-                          <span
-                            className="token-status-slot"
-                            aria-hidden={item.enabled ? true : undefined}
-                            title={
-                              item.enabled
-                                ? undefined
-                                : tokenStrings.statusBadges.disabled
-                            }
-                          >
-                            {!item.enabled && (
-                              <Icon
-                                className="token-status-icon"
-                                icon="mdi:pause-circle-outline"
-                                width={14}
-                                height={14}
-                                aria-label={tokenStrings.statusBadges.disabled}
-                              />
-                            )}
-                          </span>
-                        </div>
-                        <TokenOwnerValue
-                          owner={item.owner}
-                          emptyLabel={tokenStrings.owner.unbound}
-                          onOpenUser={(userId) =>
-                            navigateUser(userId, { preserveUsersContext: true })
-                          }
-                          compact
-                        />
-                      </td>
-                      <td>
-                        {item.group && item.group.trim().length > 0
-                          ? item.group
-                          : "—"}
-                      </td>
-                      <td>
-                        <div className="token-leaderboard-usage">
-                          {formatNumber(item.quota_hourly_used)}
-                        </div>
-                        <div className="token-leaderboard-sub">
-                          / {formatNumber(item.quota_hourly_limit)}
+                  {unboundTokenUsage.map((item) => (
+                    <tr key={item.tokenId}>
+                      <td className="admin-users-identity-cell">
+                        <button
+                          type="button"
+                          className="link-button admin-users-identity-button"
+                          aria-label={keyStrings.actions.details}
+                          onClick={() => navigateToken(item.tokenId, { preserveUnboundUsageContext: true })}
+                        >
+                          <strong>{item.tokenId}</strong>
+                        </button>
+                        <div className="panel-description admin-users-identity-meta">
+                          {formatUnboundTokenIdentityMeta(item.note, item.group, tokenStrings.groups.label)}
                         </div>
                       </td>
                       <td>
-                        <div className="token-leaderboard-usage">
-                          {formatNumber(item.hourly_any_used)}
-                        </div>
-                        <div className="token-leaderboard-sub">
-                          / {formatNumber(item.hourly_any_limit)}
-                        </div>
+                        <StatusBadge tone={item.enabled ? 'success' : 'neutral'}>
+                          {item.enabled ? usersStrings.status.enabled : usersStrings.status.disabled}
+                        </StatusBadge>
                       </td>
-                      <td>
-                        <div className="token-leaderboard-usage">
-                          {formatNumber(item.quota_daily_used)}
-                        </div>
-                        <div className="token-leaderboard-sub">
-                          / {formatNumber(item.quota_daily_limit)}
-                        </div>
+                      <td className="admin-users-compact-cell">
+                        <AdminTableValueStack {...formatQuotaStackValue(item.hourlyAnyUsed, item.hourlyAnyLimit)} />
                       </td>
-                      <td>
-                        {item.monthly_broken_count == null ||
-                        item.monthly_broken_limit == null ? (
-                          <div className="token-leaderboard-usage">—</div>
+                      <td className="admin-users-compact-cell">
+                        <AdminTableValueStack {...formatQuotaStackValue(item.quotaHourlyUsed, item.quotaHourlyLimit)} />
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <AdminTableValueStack {...formatQuotaStackValue(item.quotaDailyUsed, item.quotaDailyLimit)} />
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <AdminTableValueStack {...formatQuotaStackValue(item.quotaMonthlyUsed, item.quotaMonthlyLimit)} />
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        {item.monthlyBrokenCount == null || item.monthlyBrokenLimit == null ? (
+                          <AdminTableValueStack primary="—" />
                         ) : (
-                          <>
-                            <div className="token-leaderboard-usage">
-                              <MonthlyBrokenCountTrigger
-                                count={item.monthly_broken_count}
-                                onOpen={() =>
-                                  openMonthlyBrokenDrawer(
-                                    "token",
-                                    item.id,
-                                    item.id,
-                                  )
-                                }
-                                ariaLabel={usersStrings.brokenKeys.openDetails.replace(
-                                  "{label}",
-                                  item.id,
-                                )}
-                                className={monthlyBrokenPrimaryClassName(
-                                  item.monthly_broken_count,
-                                  item.monthly_broken_limit,
-                                )}
-                              />
-                            </div>
-                            <div className="token-leaderboard-sub">
-                              / {formatNumber(item.monthly_broken_limit)}
-                            </div>
-                          </>
+                          (() => {
+                            const metric = formatMonthlyBrokenStackValue(
+                              item.monthlyBrokenCount,
+                              item.monthlyBrokenLimit,
+                            )
+                            return (
+                              <div className="admin-table-value-stack">
+                                <MonthlyBrokenCountTrigger
+                                  count={item.monthlyBrokenCount}
+                                  onOpen={() => openMonthlyBrokenDrawer('token', item.tokenId, item.tokenId)}
+                                  ariaLabel={usersStrings.brokenKeys.openDetails.replace('{label}', item.tokenId)}
+                                  className={metric.primaryClassName}
+                                />
+                                <span className="admin-table-value-secondary">{metric.secondary}</span>
+                              </div>
+                            )
+                          })()
                         )}
                       </td>
-                      {renderPeriodCell(item, "day", primaryMetric)}
-                      {renderPeriodCell(item, "month", primaryMetric)}
-                      {renderPeriodCell(item, "all", primaryMetric)}
-                      <td>
-                        <div className="token-last-used">
-                          <span className="token-last-date">
-                            {formatDateOnly(item.last_used_at)}
-                          </span>
-                          <span className="token-last-time">
-                            {formatClockTime(item.last_used_at)}
-                          </span>
-                        </div>
+                      <td className="admin-users-compact-cell">
+                        <AdminTableValueStack {...formatSuccessRateStackValue(item.dailySuccess, item.dailyFailure, language)} />
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <AdminTableValueStack {...formatSuccessRateStackValue(item.monthlySuccess, item.monthlyFailure, language)} />
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <AdminTableValueStack {...formatStackedTimestamp(item.lastUsedAt, language)} />
                       </td>
                     </tr>
                   ))}
                 </tbody>
-              </Table>
+              </>
             )}
-          </AdminLoadingRegion>
+          </AdminTableShell>
+
           <AdminLoadingRegion
             className="admin-mobile-list admin-responsive-down"
-            loadState={tokenLeaderboardLoadState}
+            loadState={unboundTokenUsageLoadState}
             loadingLabel={
-              tokenLeaderboardRefreshing
+              unboundTokenUsageRefreshing
                 ? loadingStateStrings.refreshing
-                : tokenLeaderboardStrings.empty.loading
+                : unboundTokenUsageStrings.empty.loading
             }
+            errorLabel={unboundTokenUsageError ?? loadingStateStrings.error}
             minHeight={260}
           >
-            {tokenLeaderboardView.length === 0 ? (
-              <div className="empty-state alert">
-                {tokenLeaderboardStrings.empty.none}
-              </div>
+            {unboundTokenUsage.length === 0 ? (
+              <div className="empty-state alert">{unboundTokenUsageStrings.empty.none}</div>
             ) : (
-              tokenLeaderboardView.map((item) => (
-                <article key={item.id} className="admin-mobile-card">
-                  <div className="admin-mobile-kv">
-                    <span>{tokenLeaderboardStrings.table.token}</span>
-                    <strong>
-                      <code>{item.id}</code>
-                    </strong>
+              unboundTokenUsage.map((item) => (
+                <article key={item.tokenId} className="admin-mobile-card">
+                  <div className="admin-mobile-identity-block">
+                    <div className="admin-mobile-identity-row">
+                      <span className="admin-mobile-identity-label">{unboundTokenUsageStrings.table.identity}</span>
+                      <button
+                        type="button"
+                        className="link-button admin-users-mobile-link"
+                        aria-label={keyStrings.actions.details}
+                        onClick={() => navigateToken(item.tokenId, { preserveUnboundUsageContext: true })}
+                      >
+                        <strong>{item.tokenId}</strong>
+                      </button>
+                    </div>
+                    <div className="panel-description admin-mobile-identity-meta">
+                      {formatUnboundTokenIdentityMeta(item.note, item.group, tokenStrings.groups.label)}
+                    </div>
                   </div>
                   <div className="admin-mobile-kv">
-                    <span>{tokenStrings.table.owner}</span>
-                    <strong>
-                      {item.owner
-                        ? tokenOwnerPrimary(item.owner)
-                        : tokenStrings.owner.unbound}
-                    </strong>
+                    <span>{unboundTokenUsageStrings.table.status}</span>
+                    <StatusBadge tone={item.enabled ? 'success' : 'neutral'}>
+                      {item.enabled ? usersStrings.status.enabled : usersStrings.status.disabled}
+                    </StatusBadge>
                   </div>
                   <div className="admin-mobile-kv">
-                    <span>{tokenLeaderboardStrings.table.group}</span>
-                    <strong>
-                      {item.group && item.group.trim().length > 0
-                        ? item.group
-                        : "—"}
-                    </strong>
+                    <span>{unboundTokenUsageStrings.table.hourlyAny}</span>
+                    <strong>{formatQuotaUsagePair(item.hourlyAnyUsed, item.hourlyAnyLimit)}</strong>
                   </div>
                   <div className="admin-mobile-kv">
-                    <span>{tokenLeaderboardStrings.table.hourly}</span>
-                    <strong>{`${formatNumber(item.quota_hourly_used)} / ${formatNumber(item.quota_hourly_limit)}`}</strong>
+                    <span>{unboundTokenUsageStrings.table.hourly}</span>
+                    <strong>{formatQuotaUsagePair(item.quotaHourlyUsed, item.quotaHourlyLimit)}</strong>
                   </div>
                   <div className="admin-mobile-kv">
-                    <span>{tokenLeaderboardStrings.table.hourlyAny}</span>
-                    <strong>{`${formatNumber(item.hourly_any_used)} / ${formatNumber(item.hourly_any_limit)}`}</strong>
+                    <span>{unboundTokenUsageStrings.table.daily}</span>
+                    <strong>{formatQuotaUsagePair(item.quotaDailyUsed, item.quotaDailyLimit)}</strong>
                   </div>
                   <div className="admin-mobile-kv">
-                    <span>{tokenLeaderboardStrings.table.daily}</span>
-                    <strong>{`${formatNumber(item.quota_daily_used)} / ${formatNumber(item.quota_daily_limit)}`}</strong>
+                    <span>{unboundTokenUsageStrings.table.monthly}</span>
+                    <strong>{formatQuotaUsagePair(item.quotaMonthlyUsed, item.quotaMonthlyLimit)}</strong>
                   </div>
                   <div className="admin-mobile-kv">
-                    <span>{tokenLeaderboardStrings.table.monthlyBroken}</span>
-                    {item.monthly_broken_count == null ||
-                    item.monthly_broken_limit == null ? (
+                    <span>{unboundTokenUsageStrings.table.monthlyBroken}</span>
+                    {item.monthlyBrokenCount == null || item.monthlyBrokenLimit == null ? (
                       <strong>—</strong>
-                    ) : item.monthly_broken_count > 0 ? (
+                    ) : item.monthlyBrokenCount > 0 ? (
                       <button
                         type="button"
                         className="link-button"
-                        onClick={() =>
-                          openMonthlyBrokenDrawer("token", item.id, item.id)
-                        }
+                        onClick={() => openMonthlyBrokenDrawer('token', item.tokenId, item.tokenId)}
                       >
-                        <strong>
-                          {formatQuotaUsagePair(
-                            item.monthly_broken_count,
-                            item.monthly_broken_limit,
-                          )}
-                        </strong>
+                        <strong>{formatQuotaUsagePair(item.monthlyBrokenCount, item.monthlyBrokenLimit)}</strong>
                       </button>
                     ) : (
-                      <strong>
-                        {formatQuotaUsagePair(
-                          item.monthly_broken_count,
-                          item.monthly_broken_limit,
-                        )}
-                      </strong>
+                      <strong>{formatQuotaUsagePair(item.monthlyBrokenCount, item.monthlyBrokenLimit)}</strong>
                     )}
                   </div>
                   <div className="admin-mobile-kv">
-                    <span>{tokenLeaderboardStrings.table.today}</span>
-                    <strong>
-                      {formatNumber(
-                        leaderboardPrimaryValue(item, "day", primaryMetric),
-                      )}
-                    </strong>
+                    <span>{unboundTokenUsageStrings.table.dailySuccessRate}</span>
+                    <strong>{formatCompactSuccessRateValue(item.dailySuccess, item.dailyFailure, language)}</strong>
                   </div>
                   <div className="admin-mobile-kv">
-                    <span>{tokenLeaderboardStrings.table.month}</span>
-                    <strong>
-                      {formatNumber(
-                        leaderboardPrimaryValue(item, "month", primaryMetric),
-                      )}
-                    </strong>
+                    <span>{unboundTokenUsageStrings.table.monthlySuccessRate}</span>
+                    <strong>{formatCompactSuccessRateValue(item.monthlySuccess, item.monthlyFailure, language)}</strong>
                   </div>
                   <div className="admin-mobile-kv">
-                    <span>{tokenLeaderboardStrings.table.all}</span>
-                    <strong>
-                      {formatNumber(
-                        leaderboardPrimaryValue(item, "all", primaryMetric),
-                      )}
-                    </strong>
-                  </div>
-                  <div className="admin-mobile-kv">
-                    <span>{tokenLeaderboardStrings.table.lastUsed}</span>
-                    <strong>{`${formatDateOnly(item.last_used_at)} ${formatClockTime(item.last_used_at)}`}</strong>
-                  </div>
-                  <div className="admin-mobile-actions">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => navigateToken(item.id)}
-                    >
-                      {keyStrings.actions.details}
-                    </Button>
+                    <span>{unboundTokenUsageStrings.table.lastUsed}</span>
+                    <strong>{formatTimestamp(item.lastUsedAt)}</strong>
                   </div>
                 </article>
               ))
             )}
           </AdminLoadingRegion>
-          {tokenLeaderboardError && tokenLeaderboardView.length === 0 && (
-            <div className="surface error-banner" style={{ marginTop: 12 }}>
-              {tokenLeaderboardError}
-            </div>
+
+          {unboundTokenUsageTotal > USERS_PER_PAGE && (
+            <AdminTablePagination
+              page={unboundTokenUsagePage}
+              totalPages={unboundTokenUsageTotalPages}
+              pageSummary={
+                <span className="panel-description">
+                  {usersStrings.pagination
+                    .replace('{page}', String(unboundTokenUsagePage))
+                    .replace('{total}', String(unboundTokenUsageTotalPages))}
+                </span>
+              }
+              previousLabel={tokenStrings.pagination.prev}
+              nextLabel={tokenStrings.pagination.next}
+              previousDisabled={unboundTokenUsagePage <= 1}
+              nextDisabled={unboundTokenUsagePage >= unboundTokenUsageTotalPages}
+              disabled={unboundTokenUsageBlocking}
+              onPrevious={goPrevUnboundTokenUsagePage}
+              onNext={goNextUnboundTokenUsagePage}
+            />
           )}
         </section>
       </AdminShell>
-    );
+    )
   }
-  const showDashboard = activeModule === "dashboard";
-  const showTokens = activeModule === "tokens";
-  const showKeys = activeModule === "keys";
-  const showRequests = activeModule === "requests";
-  const showJobs = activeModule === "jobs";
-  const showUsers = activeModule === "users";
-  const showAlerts = activeModule === "alerts";
-  const showProxySettings = activeModule === "proxy-settings";
+  const showDashboard = activeModule === 'dashboard'
+  const showTokens = activeModule === 'tokens'
+  const showKeys = activeModule === 'keys'
+  const showRequests = activeModule === 'requests'
+  const showJobs = activeModule === 'jobs'
+  const showUsers = activeModule === 'users'
+  const showAlerts = activeModule === 'alerts'
+  const showProxySettings = activeModule === 'proxy-settings'
   const trendBuckets = (() => {
-    const windowSize = 8;
+    const windowSize = 8
     const sorted = [...dashboardLogs]
-      .filter(
-        (log) =>
-          typeof log.created_at === "number" && Number.isFinite(log.created_at),
-      )
+      .filter((log) => typeof log.created_at === 'number' && Number.isFinite(log.created_at))
       .sort((a, b) => a.created_at - b.created_at)
-      .slice(-64);
+      .slice(-64)
     if (sorted.length === 0) {
-      return {
-        request: new Array(windowSize).fill(0),
-        error: new Array(windowSize).fill(0),
-      };
+      return { request: new Array(windowSize).fill(0), error: new Array(windowSize).fill(0) }
     }
-    const minTime = sorted[0].created_at;
-    const maxTime = sorted[sorted.length - 1].created_at;
-    const span = Math.max(1, maxTime - minTime + 1);
-    const request = new Array<number>(windowSize).fill(0);
-    const error = new Array<number>(windowSize).fill(0);
+    const minTime = sorted[0].created_at
+    const maxTime = sorted[sorted.length - 1].created_at
+    const span = Math.max(1, maxTime - minTime + 1)
+    const request = new Array<number>(windowSize).fill(0)
+    const error = new Array<number>(windowSize).fill(0)
     for (const item of sorted) {
-      const ratio = (item.created_at - minTime) / span;
-      const index = Math.min(
-        windowSize - 1,
-        Math.max(0, Math.floor(ratio * windowSize)),
-      );
-      request[index] += 1;
-      if (
-        item.result_status === "error" ||
-        item.result_status === "quota_exhausted"
-      ) {
-        error[index] += 1;
+      const ratio = (item.created_at - minTime) / span
+      const index = Math.min(windowSize - 1, Math.max(0, Math.floor(ratio * windowSize)))
+      request[index] += 1
+      if (item.result_status === 'error' || item.result_status === 'quota_exhausted') {
+        error[index] += 1
       }
     }
-    return { request, error };
-  })();
+    return { request, error }
+  })()
   return (
     <>
       {showKeys &&
         keysBatchVisible &&
-        typeof document !== "undefined" &&
+        typeof document !== 'undefined' &&
         createPortal(
           <div
             ref={keysBatchOverlayRef}
-            className={`card bg-base-100 shadow-xl border border-base-300 keys-batch-overlay${keysBatchClosing ? " is-closing" : ""}`}
+            className={`card bg-base-100 shadow-xl border border-base-300 keys-batch-overlay${keysBatchClosing ? ' is-closing' : ''}`}
             onMouseEnter={() => {
-              clearKeysBatchAutoCollapseTimer();
+              clearKeysBatchAutoCollapseTimer()
               if (keysBatchClosing) {
-                clearKeysBatchCloseTimer();
-                setKeysBatchClosing(false);
-                keysBatchOpenReasonRef.current = "hover";
-                setKeysBatchExpanded(true);
+                clearKeysBatchCloseTimer()
+                setKeysBatchClosing(false)
+                keysBatchOpenReasonRef.current = 'hover'
+                setKeysBatchExpanded(true)
               }
             }}
-            onMouseLeave={() => scheduleKeysBatchAutoCollapse("hover")}
+            onMouseLeave={() => scheduleKeysBatchAutoCollapse('hover')}
             onPointerDown={(event) => {
-              clearKeysBatchAutoCollapseTimer();
+              clearKeysBatchAutoCollapseTimer()
               if (keysBatchClosing) {
-                clearKeysBatchCloseTimer();
-                setKeysBatchClosing(false);
-                setKeysBatchExpanded(true);
+                clearKeysBatchCloseTimer()
+                setKeysBatchClosing(false)
+                setKeysBatchExpanded(true)
               }
-              keysBatchOpenReasonRef.current = "focus";
+              keysBatchOpenReasonRef.current = 'focus'
 
               // The overlay visually "replaces" the collapsed input. If the user clicks the card padding
               // (common when the overlay opens on hover), ensure the textarea receives focus so blur-based
               // auto-collapse works as expected.
-              if (document.activeElement === keysBatchTextareaRef.current)
-                return;
-              if (event.target instanceof Element) {
-                if (event.target.closest("textarea")) return;
-                if (event.target.closest("button")) return;
-                if (event.target.closest("input")) return;
-                if (event.target.closest("select")) return;
-                if (event.target.closest("a")) return;
-              }
+	              if (document.activeElement === keysBatchTextareaRef.current) return
+	              if (event.target instanceof Element) {
+	                if (event.target.closest('textarea')) return
+	                if (event.target.closest('button')) return
+	                if (event.target.closest('input')) return
+	                if (event.target.closest('select')) return
+	                if (event.target.closest('a')) return
+	              }
 
-              window.requestAnimationFrame(() =>
-                keysBatchTextareaRef.current?.focus(),
-              );
+              window.requestAnimationFrame(() => keysBatchTextareaRef.current?.focus())
             }}
             style={{
-              position: "fixed",
+              position: 'fixed',
               top: 0,
               left: 16,
               zIndex: 1000,
-              width: "min(720px, calc(100vw - 32px))",
+              width: 'min(720px, calc(100vw - 32px))',
             }}
           >
             <div className="card-body" style={{ padding: 16 }}>
@@ -9274,61 +7695,48 @@ function AdminDashboard(): JSX.Element {
                 onChange={(e) => setNewKeysText(e.target.value)}
                 onFocus={() => clearKeysBatchAutoCollapseTimer()}
                 onBlur={(event) => {
-                  if (event.currentTarget.value.trim().length !== 0) return;
-                  const overlay = keysBatchOverlayRef.current;
-                  const next = event.relatedTarget;
-                  if (overlay && next instanceof Node && overlay.contains(next))
-                    return;
-                  scheduleKeysBatchAutoCollapse("blur");
+                  if (event.currentTarget.value.trim().length !== 0) return
+                  const overlay = keysBatchOverlayRef.current
+                  const next = event.relatedTarget
+                  if (overlay && next instanceof Node && overlay.contains(next)) return
+                  scheduleKeysBatchAutoCollapse('blur')
                 }}
                 style={{
                   fontFamily:
                     'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
                   lineHeight: 1.4,
                   borderRadius: 14,
-                  whiteSpace: "pre",
-                  overflowY: "hidden",
+                  whiteSpace: 'pre',
+                  overflowY: 'hidden',
                 }}
               />
-              <div
-                ref={keysBatchFooterRef}
-                className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"
-              >
-                <div className="text-xs opacity-70 flex-1 min-w-0">
-                  <div>{keyStrings.batch.hint}</div>
-                  <div>
-                    {keyStrings.batch.count.replace(
-                      "{count}",
-                      formatNumber(keysBatchParsed.length),
-                    )}
-                  </div>
-                </div>
-                <div className="flex gap-2 items-center justify-end flex-wrap sm:flex-nowrap sm:flex-shrink-0">
-                  <Input
-                    type="text"
-                    name="new-keys-group"
-                    placeholder={keyStrings.batch.groupPlaceholder}
-                    aria-label={keyStrings.batch.groupPlaceholder}
-                    value={newKeysGroup}
-                    onChange={(e) => setNewKeysGroup(e.target.value)}
-                    list="api-key-group-datalist"
-                    style={{
-                      flex: "1 1 220px",
-                      minWidth: 160,
-                      maxWidth: "100%",
-                    }}
-                  />
-                  <Button
-                    type="button"
-                    onClick={() => void handleAddKey()}
-                    disabled={submitting || keysBatchParsed.length === 0}
-                  >
-                    {submitting ? keyStrings.adding : keyStrings.addButton}
-                  </Button>
-                </div>
-              </div>
-            </div>
-          </div>,
+	              <div ref={keysBatchFooterRef} className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+	                <div className="text-xs opacity-70 flex-1 min-w-0">
+	                  <div>{keyStrings.batch.hint}</div>
+	                  <div>{keyStrings.batch.count.replace('{count}', formatNumber(keysBatchParsed.length))}</div>
+	                </div>
+	                <div className="flex gap-2 items-center justify-end flex-wrap sm:flex-nowrap sm:flex-shrink-0">
+<Input
+  type="text"
+  name="new-keys-group"
+  placeholder={keyStrings.batch.groupPlaceholder}
+  aria-label={keyStrings.batch.groupPlaceholder}
+  value={newKeysGroup}
+  onChange={(e) => setNewKeysGroup(e.target.value)}
+  list="api-key-group-datalist"
+  style={{ flex: '1 1 220px', minWidth: 160, maxWidth: '100%' }}
+/>
+<Button
+  type="button"
+  onClick={() => void handleAddKey()}
+  disabled={submitting || keysBatchParsed.length === 0}
+>
+  {submitting ? keyStrings.adding : keyStrings.addButton}
+</Button>
+	                </div>
+	              </div>
+	            </div>
+	          </div>,
           document.body,
         )}
       <AdminShell
@@ -9337,1682 +7745,1561 @@ function AdminDashboard(): JSX.Element {
         skipToContentLabel={adminStrings.accessibility.skipToContent}
         onSelectItem={navigateModule}
       >
-        <AdminPanelHeader
-          title={headerStrings.title}
-          subtitle={headerStrings.subtitle}
-          displayName={displayName}
-          isAdmin={isAdmin}
-          updatedPrefix={headerStrings.updatedPrefix}
-          updatedTime={
-            lastUpdated ? timeOnlyFormatter.format(lastUpdated) : null
-          }
-          isRefreshing={loading}
-          refreshDisabled={activeModuleBlocking}
-          refreshLabel={headerStrings.refreshNow}
-          refreshingLabel={headerStrings.refreshing}
-          userConsoleLabel={headerStrings.returnToConsole}
-          userConsoleHref={userConsoleHref}
-          onRefresh={handleManualRefresh}
+      <AdminPanelHeader
+        title={headerStrings.title}
+        subtitle={headerStrings.subtitle}
+        displayName={displayName}
+        isAdmin={isAdmin}
+        updatedPrefix={headerStrings.updatedPrefix}
+        updatedTime={lastUpdated ? timeOnlyFormatter.format(lastUpdated) : null}
+        isRefreshing={loading}
+        refreshDisabled={activeModuleBlocking}
+        refreshLabel={headerStrings.refreshNow}
+        refreshingLabel={headerStrings.refreshing}
+        userConsoleLabel={headerStrings.returnToConsole}
+        userConsoleHref={userConsoleHref}
+        onRefresh={handleManualRefresh}
+      />
+
+      {showDashboard && (
+        <DashboardOverview
+          strings={adminStrings.dashboard}
+          overviewReady={dashboardOverviewLoaded}
+          statusLoading={dashboardStatusLoading}
+          todayMetrics={todayMetrics}
+          monthMetrics={monthMetrics}
+          statusMetrics={statusMetrics}
+          trend={trendBuckets}
+          tokenCoverage={dashboardTokenCoverage}
+          tokens={dashboardTokens}
+          keys={dashboardKeys}
+          logs={dashboardLogs}
+          jobs={dashboardJobs}
+          onOpenModule={navigateModule}
+          onOpenToken={navigateToken}
+          onOpenKey={navigateKey}
         />
+      )}
 
-        {showDashboard && (
-          <DashboardOverview
-            strings={adminStrings.dashboard}
-            overviewReady={dashboardOverviewLoaded}
-            statusLoading={dashboardStatusLoading}
-            todayMetrics={todayMetrics}
-            monthMetrics={monthMetrics}
-            statusMetrics={statusMetrics}
-            trend={trendBuckets}
-            tokenCoverage={dashboardTokenCoverage}
-            tokens={dashboardTokens}
-            keys={dashboardKeys}
-            logs={dashboardLogs}
-            jobs={dashboardJobs}
-            onOpenModule={navigateModule}
-            onOpenToken={navigateToken}
-            onOpenKey={navigateKey}
-          />
-        )}
-
-        {showTokens && (
-          <section className="surface panel">
+      {showTokens && (
+      <section className="surface panel">
+        <div className="panel-header" style={{ flexWrap: 'wrap', gap: 12, alignItems: 'flex-start' }}>
+          <div style={{ flex: '1 1 320px', minWidth: 240 }}>
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+              <h2 style={{ margin: 0 }}>{tokenStrings.title}</h2>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 rounded-full p-0 shadow-none"
+                    aria-label={tokenStrings.actions.viewLeaderboard}
+                    onClick={navigateUnboundTokenUsage}
+                  >
+                    <Icon icon="mdi:chart-timeline-variant" width={20} height={20} />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top">{tokenStrings.actions.viewLeaderboard}</TooltipContent>
+              </Tooltip>
+            </div>
+            <p className="panel-description">{tokenStrings.description}</p>
+          </div>
+          {isAdmin && (
             <div
-              className="panel-header"
-              style={{ flexWrap: "wrap", gap: 12, alignItems: "flex-start" }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                flexWrap: 'wrap',
+                justifyContent: 'flex-end',
+                flex: '0 1 auto',
+                minWidth: 0,
+                maxWidth: '100%',
+                marginLeft: 'auto',
+              }}
             >
-              <div style={{ flex: "1 1 320px", minWidth: 240 }}>
-                <div
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 8,
-                  }}
+<Input
+  type="text"
+  name="new-token-note"
+  placeholder={tokenStrings.notePlaceholder}
+  value={newTokenNote}
+  onChange={(e) => setNewTokenNote(e.target.value)}
+  style={{ minWidth: 0, flex: '1 1 240px' }}
+  aria-label={tokenStrings.notePlaceholder}
+/>
+<Button
+  type="button"
+  onClick={(event) => void handleAddToken(event.currentTarget)}
+  disabled={submitting}
+>
+  {submitting ? tokenStrings.creating : tokenStrings.newToken}
+</Button>
+<Button
+  type="button"
+  variant="outline"
+  onClick={openBatchDialog}
+  disabled={submitting}
+>
+  {tokenStrings.batchCreate}
+</Button>
+            </div>
+          )}
+        </div>
+        {hasTokenGroups && (
+          <div className="token-groups-container">
+            <div className="token-groups-label">
+              <span>{tokenStrings.groups.label}</span>
+            </div>
+            <div className="token-groups-row">
+              <div
+                ref={tokenGroupsListRef}
+                className={`token-groups-list${tokenGroupsExpanded ? ' token-groups-list-expanded' : ''}`}
+              >
+                <button
+                  type="button"
+                  className={`token-group-chip${
+                    !selectedTokenUngrouped && selectedTokenGroupName == null ? ' token-group-chip-active' : ''
+                  }`}
+                  onClick={handleSelectTokenGroupAll}
+                  disabled={tokensBlocking}
                 >
-                  <h2 style={{ margin: 0 }}>{tokenStrings.title}</h2>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 rounded-full p-0 shadow-none"
-                        aria-label={tokenStrings.actions.viewLeaderboard}
-                        onClick={navigateTokenLeaderboard}
-                      >
-                        <Icon
-                          icon="mdi:chart-timeline-variant"
-                          width={20}
-                          height={20}
-                        />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent side="top">
-                      {tokenStrings.actions.viewLeaderboard}
-                    </TooltipContent>
-                  </Tooltip>
-                </div>
-                <p className="panel-description">{tokenStrings.description}</p>
+                  <span className="token-group-name">{tokenStrings.groups.all}</span>
+                </button>
+                {ungroupedTokenGroup && (
+                  <button
+                    type="button"
+                    className={`token-group-chip${selectedTokenUngrouped ? ' token-group-chip-active' : ''}`}
+                    onClick={handleSelectTokenGroupUngrouped}
+                    disabled={tokensBlocking}
+                  >
+                    <span className="token-group-name">{tokenStrings.groups.ungrouped}</span>
+                    {tokenGroupsExpanded && (
+                      <span className="token-group-count">
+                        {ungroupedTokenGroup.tokenCount}
+                      </span>
+                    )}
+                  </button>
+                )}
+                {namedTokenGroups.map((group) => (
+                  <button
+                    key={group.name}
+                    type="button"
+                    className={`token-group-chip${
+                      !selectedTokenUngrouped && selectedTokenGroupName === group.name ? ' token-group-chip-active' : ''
+                    }`}
+                    onClick={() => handleSelectTokenGroupNamed(group.name)}
+                    disabled={tokensBlocking}
+                  >
+                    <span className="token-group-name">{group.name}</span>
+                    {tokenGroupsExpanded && (
+                      <span className="token-group-count">
+                        {group.tokenCount}
+                      </span>
+                    )}
+                  </button>
+                ))}
               </div>
-              {isAdmin && (
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 8,
-                    flexWrap: "wrap",
-                    justifyContent: "flex-end",
-                    flex: "0 1 auto",
-                    minWidth: 0,
-                    maxWidth: "100%",
-                    marginLeft: "auto",
-                  }}
+              {(tokenGroupsCollapsedOverflowing || tokenGroupsExpanded) && (
+                <button
+                  type="button"
+                  className={`token-group-chip token-group-toggle${tokenGroupsExpanded ? ' token-group-toggle-active' : ''}`}
+                  onClick={toggleTokenGroupsExpanded}
+                  aria-label={tokenGroupsExpanded ? tokenStrings.groups.moreHide : tokenStrings.groups.moreShow}
+                  disabled={tokensBlocking}
                 >
-                  <Input
-                    type="text"
-                    name="new-token-note"
-                    placeholder={tokenStrings.notePlaceholder}
-                    value={newTokenNote}
-                    onChange={(e) => setNewTokenNote(e.target.value)}
-                    style={{ minWidth: 0, flex: "1 1 240px" }}
-                    aria-label={tokenStrings.notePlaceholder}
-                  />
-                  <Button
-                    type="button"
-                    onClick={(event) =>
-                      void handleAddToken(event.currentTarget)
-                    }
-                    disabled={submitting}
-                  >
-                    {submitting ? tokenStrings.creating : tokenStrings.newToken}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={openBatchDialog}
-                    disabled={submitting}
-                  >
-                    {tokenStrings.batchCreate}
-                  </Button>
-                </div>
+                  <Icon icon={tokenGroupsExpanded ? 'mdi:chevron-up' : 'mdi:chevron-down'} width={18} height={18} />
+                </button>
               )}
             </div>
-            {hasTokenGroups && (
-              <div className="token-groups-container">
-                <div className="token-groups-label">
-                  <span>{tokenStrings.groups.label}</span>
-                </div>
-                <div className="token-groups-row">
-                  <div
-                    ref={tokenGroupsListRef}
-                    className={`token-groups-list${tokenGroupsExpanded ? " token-groups-list-expanded" : ""}`}
-                  >
-                    <button
-                      type="button"
-                      className={`token-group-chip${
-                        !selectedTokenUngrouped &&
-                        selectedTokenGroupName == null
-                          ? " token-group-chip-active"
-                          : ""
-                      }`}
-                      onClick={handleSelectTokenGroupAll}
-                      disabled={tokensBlocking}
-                    >
-                      <span className="token-group-name">
-                        {tokenStrings.groups.all}
-                      </span>
-                    </button>
-                    {ungroupedTokenGroup && (
-                      <button
-                        type="button"
-                        className={`token-group-chip${selectedTokenUngrouped ? " token-group-chip-active" : ""}`}
-                        onClick={handleSelectTokenGroupUngrouped}
-                        disabled={tokensBlocking}
-                      >
-                        <span className="token-group-name">
-                          {tokenStrings.groups.ungrouped}
-                        </span>
-                        {tokenGroupsExpanded && (
-                          <span className="token-group-count">
-                            {ungroupedTokenGroup.tokenCount}
-                          </span>
-                        )}
-                      </button>
-                    )}
-                    {namedTokenGroups.map((group) => (
-                      <button
-                        key={group.name}
-                        type="button"
-                        className={`token-group-chip${
-                          !selectedTokenUngrouped &&
-                          selectedTokenGroupName === group.name
-                            ? " token-group-chip-active"
-                            : ""
-                        }`}
-                        onClick={() => handleSelectTokenGroupNamed(group.name)}
-                        disabled={tokensBlocking}
-                      >
-                        <span className="token-group-name">{group.name}</span>
-                        {tokenGroupsExpanded && (
-                          <span className="token-group-count">
-                            {group.tokenCount}
-                          </span>
-                        )}
-                      </button>
-                    ))}
-                  </div>
-                  {(tokenGroupsCollapsedOverflowing || tokenGroupsExpanded) && (
-                    <button
-                      type="button"
-                      className={`token-group-chip token-group-toggle${tokenGroupsExpanded ? " token-group-toggle-active" : ""}`}
-                      onClick={toggleTokenGroupsExpanded}
-                      aria-label={
-                        tokenGroupsExpanded
-                          ? tokenStrings.groups.moreHide
-                          : tokenStrings.groups.moreShow
-                      }
-                      disabled={tokensBlocking}
-                    >
-                      <Icon
-                        icon={
-                          tokenGroupsExpanded
-                            ? "mdi:chevron-up"
-                            : "mdi:chevron-down"
-                        }
-                        width={18}
-                        height={18}
-                      />
-                    </button>
-                  )}
-                </div>
-              </div>
-            )}
-            <AdminTableShell
-              className="jobs-table-wrapper admin-responsive-up"
-              tableClassName="jobs-table tokens-table"
-              loadState={tokensLoadState}
-              loadingLabel={
-                tokensRefreshing
-                  ? loadingStateStrings.refreshing
-                  : tokenStrings.empty.loading
-              }
-              minHeight={320}
-            >
-              {tokenList.length === 0 ? (
-                <tbody>
-                  <tr>
-                    <td colSpan={isAdmin ? 7 : 6}>
-                      <div className="empty-state alert">
-                        {tokenStrings.empty.none}
-                      </div>
-                    </td>
-                  </tr>
-                </tbody>
-              ) : (
-                <>
-                  <thead>
-                    <tr>
-                      <th>{tokenStrings.table.id}</th>
-                      <th>{tokenStrings.table.owner}</th>
-                      <th>{tokenStrings.table.note}</th>
-                      <th>{tokenStrings.table.usage}</th>
-                      <th>{tokenStrings.table.quota}</th>
-                      <th>{tokenStrings.table.lastUsed}</th>
-                      {isAdmin && <th>{tokenStrings.table.actions}</th>}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {tokenList.map((t) => {
-                      const stateKey = copyStateKey("tokens", t.id);
-                      const state = copyState.get(stateKey);
-                      const shareStateKey = copyStateKey(
-                        "tokens",
-                        `${t.id}:share`,
-                      );
-                      const shareState = copyState.get(shareStateKey);
-                      const quotaStateKey = t.quota_state ?? "normal";
-                      const quotaLabel =
-                        quotaLabels[quotaStateKey] ?? quotaLabels.normal;
-                      const quotaTitle = `${t.quota_hourly_used}/${t.quota_hourly_limit} · ${t.quota_daily_used}/${t.quota_daily_limit} · ${t.quota_monthly_used}/${t.quota_monthly_limit}`;
-                      return (
-                        <tr key={t.id}>
-                          <td>
-                            <div className="token-id-cell">
-                              <button
-                                type="button"
-                                title={tokenStrings.table.id}
-                                className="link-button token-id-link"
-                                onClick={() => navigateToken(t.id)}
-                              >
-                                <code className="token-id-code">{t.id}</code>
-                              </button>
-                              <span
-                                className="token-status-slot"
-                                aria-hidden={t.enabled ? true : undefined}
-                                title={
-                                  t.enabled
-                                    ? undefined
-                                    : tokenStrings.statusBadges.disabled
-                                }
-                              >
-                                {!t.enabled && (
-                                  <Icon
-                                    className="token-status-icon"
-                                    icon="mdi:pause-circle-outline"
-                                    width={14}
-                                    height={14}
-                                    aria-label={
-                                      tokenStrings.statusBadges.disabled
-                                    }
-                                  />
-                                )}
-                              </span>
-                            </div>
-                          </td>
-                          <td>
-                            <TokenOwnerValue
-                              owner={t.owner}
-                              emptyLabel={tokenStrings.owner.unbound}
-                              onOpenUser={navigateUser}
-                            />
-                          </td>
-                          <td>{t.note || "—"}</td>
-                          <td>{formatNumber(t.total_requests)}</td>
-                          <td>
-                            <StatusBadge
-                              tone={quotaTone(quotaStateKey)}
-                              className={`token-quota-pill token-quota-pill-${quotaStateKey}`}
-                            >
-                              {quotaLabel}
-                            </StatusBadge>
-                          </td>
-                          <td>{formatTimestamp(t.last_used_at)}</td>
-                          {isAdmin && (
-                            <td className="jobs-message-cell">
-                              <div className="table-actions">
-                                <Button
-                                  type="button"
-                                  variant={
-                                    state === "copied" ? "success" : "ghost"
-                                  }
-                                  size="icon"
-                                  className="token-action-button shadow-none"
-                                  title={tokenStrings.actions.copy}
-                                  aria-label={tokenStrings.actions.copy}
-                                  onPointerEnter={() =>
-                                    scheduleSecretWarm(`token:${t.id}`, () =>
-                                      warmTokenSecret(t.id),
-                                    )
-                                  }
-                                  onPointerLeave={() =>
-                                    cancelSecretWarm(`token:${t.id}`)
-                                  }
-                                  onBlur={() =>
-                                    cancelSecretWarm(`token:${t.id}`)
-                                  }
-                                  onPointerDown={() => warmTokenSecret(t.id)}
-                                  onKeyDown={(event) => {
-                                    if (!isCopyIntentKey(event.key)) return;
-                                    warmTokenSecret(t.id);
-                                  }}
-                                  onClick={(event) =>
-                                    void handleCopyToken(
-                                      t.id,
-                                      stateKey,
-                                      event.currentTarget,
-                                    )
-                                  }
-                                  disabled={state === "loading"}
-                                >
-                                  <Icon
-                                    icon={
-                                      state === "copied"
-                                        ? "mdi:check"
-                                        : "mdi:content-copy"
-                                    }
-                                    width={16}
-                                    height={16}
-                                  />
-                                </Button>
-                                <Button
-                                  type="button"
-                                  variant={
-                                    shareState === "copied"
-                                      ? "success"
-                                      : "ghost"
-                                  }
-                                  size="icon"
-                                  className="token-action-button shadow-none"
-                                  title={tokenStrings.actions.share}
-                                  aria-label={tokenStrings.actions.share}
-                                  onPointerEnter={() =>
-                                    scheduleSecretWarm(`token:${t.id}`, () =>
-                                      warmTokenSecret(t.id),
-                                    )
-                                  }
-                                  onPointerLeave={() =>
-                                    cancelSecretWarm(`token:${t.id}`)
-                                  }
-                                  onBlur={() =>
-                                    cancelSecretWarm(`token:${t.id}`)
-                                  }
-                                  onPointerDown={() => warmTokenSecret(t.id)}
-                                  onKeyDown={(event) => {
-                                    if (!isCopyIntentKey(event.key)) return;
-                                    warmTokenSecret(t.id);
-                                  }}
-                                  onClick={(event) =>
-                                    void handleShareToken(
-                                      t.id,
-                                      shareStateKey,
-                                      event.currentTarget,
-                                    )
-                                  }
-                                  disabled={shareState === "loading"}
-                                >
-                                  <Icon
-                                    icon={
-                                      shareState === "copied"
-                                        ? "mdi:check"
-                                        : "mdi:share-variant"
-                                    }
-                                    width={16}
-                                    height={16}
-                                  />
-                                </Button>
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="icon"
-                                  className="token-action-button shadow-none"
-                                  title={keyStrings.actions.details}
-                                  aria-label={keyStrings.actions.details}
-                                  onClick={() => navigateToken(t.id)}
-                                >
-                                  <Icon
-                                    icon="mdi:eye-outline"
-                                    width={16}
-                                    height={16}
-                                  />
-                                </Button>
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="icon"
-                                  className="token-action-button shadow-none"
-                                  title={
-                                    t.enabled
-                                      ? tokenStrings.actions.disable
-                                      : tokenStrings.actions.enable
-                                  }
-                                  aria-label={
-                                    t.enabled
-                                      ? tokenStrings.actions.disable
-                                      : tokenStrings.actions.enable
-                                  }
-                                  onClick={() =>
-                                    void toggleToken(t.id, t.enabled)
-                                  }
-                                  disabled={togglingId === t.id}
-                                >
-                                  <Icon
-                                    icon={
-                                      t.enabled
-                                        ? "mdi:pause-circle-outline"
-                                        : "mdi:play-circle-outline"
-                                    }
-                                    width={16}
-                                    height={16}
-                                  />
-                                </Button>
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="icon"
-                                  className="token-action-button shadow-none"
-                                  title={tokenStrings.actions.edit}
-                                  aria-label={tokenStrings.actions.edit}
-                                  onClick={() =>
-                                    openTokenNoteEdit(t.id, t.note)
-                                  }
-                                >
-                                  <Icon
-                                    icon="mdi:pencil-outline"
-                                    width={16}
-                                    height={16}
-                                  />
-                                </Button>
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="icon"
-                                  className="token-action-button shadow-none"
-                                  title={tokenStrings.actions.delete}
-                                  aria-label={tokenStrings.actions.delete}
-                                  onClick={() => openTokenDeleteConfirm(t.id)}
-                                  disabled={deletingId === t.id}
-                                >
-                                  <Icon
-                                    icon={
-                                      deletingId === t.id
-                                        ? "mdi:progress-helper"
-                                        : "mdi:trash-outline"
-                                    }
-                                    width={16}
-                                    height={16}
-                                    color="#ef4444"
-                                  />
-                                </Button>
-                              </div>
-                            </td>
-                          )}
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </>
-              )}
-            </AdminTableShell>
-            <AdminLoadingRegion
-              className="admin-mobile-list admin-responsive-down"
-              loadState={tokensLoadState}
-              loadingLabel={
-                tokensRefreshing
-                  ? loadingStateStrings.refreshing
-                  : tokenStrings.empty.loading
-              }
-              minHeight={260}
-            >
-              {tokenList.length === 0 ? (
-                <div className="empty-state alert">
-                  {tokenStrings.empty.none}
-                </div>
-              ) : (
-                tokenList.map((t) => {
-                  const stateKey = copyStateKey("tokens", t.id);
-                  const state = copyState.get(stateKey);
-                  const shareStateKey = copyStateKey("tokens", `${t.id}:share`);
-                  const shareState = copyState.get(shareStateKey);
-                  const quotaStateKey = t.quota_state ?? "normal";
-                  const quotaLabel =
-                    quotaLabels[quotaStateKey] ?? quotaLabels.normal;
+          </div>
+        )}
+        <AdminTableShell
+          className="jobs-table-wrapper admin-responsive-up"
+          tableClassName="jobs-table tokens-table"
+          loadState={tokensLoadState}
+          loadingLabel={tokensRefreshing ? loadingStateStrings.refreshing : tokenStrings.empty.loading}
+          minHeight={320}
+        >
+          {tokenList.length === 0 ? (
+            <tbody>
+              <tr>
+                <td colSpan={isAdmin ? 7 : 6}>
+                  <div className="empty-state alert">{tokenStrings.empty.none}</div>
+                </td>
+              </tr>
+            </tbody>
+          ) : (
+            <>
+              <thead>
+                <tr>
+                  <th>{tokenStrings.table.id}</th>
+                  <th>{tokenStrings.table.owner}</th>
+                  <th>{tokenStrings.table.note}</th>
+                  <th>{tokenStrings.table.usage}</th>
+                  <th>{tokenStrings.table.quota}</th>
+                  <th>{tokenStrings.table.lastUsed}</th>
+                  {isAdmin && <th>{tokenStrings.table.actions}</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {tokenList.map((t) => {
+                  const stateKey = copyStateKey('tokens', t.id)
+                  const state = copyState.get(stateKey)
+                  const shareStateKey = copyStateKey('tokens', `${t.id}:share`)
+                  const shareState = copyState.get(shareStateKey)
+                  const quotaStateKey = t.quota_state ?? 'normal'
+                  const quotaLabel = quotaLabels[quotaStateKey] ?? quotaLabels.normal
+                  const quotaTitle = `${t.quota_hourly_used}/${t.quota_hourly_limit} · ${t.quota_daily_used}/${t.quota_daily_limit} · ${t.quota_monthly_used}/${t.quota_monthly_limit}`
                   return (
-                    <article key={t.id} className="admin-mobile-card">
-                      <div className="admin-mobile-kv">
-                        <span>{tokenStrings.table.id}</span>
-                        <strong>
-                          <code>{t.id}</code>
-                        </strong>
-                      </div>
-                      <div className="admin-mobile-kv">
-                        <span>{tokenStrings.table.owner}</span>
-                        <TokenOwnerValue
-                          owner={t.owner}
-                          emptyLabel={tokenStrings.owner.unbound}
-                          onOpenUser={navigateUser}
-                          compact
-                        />
-                      </div>
-                      <div className="admin-mobile-kv">
-                        <span>{tokenStrings.table.note}</span>
-                        <strong>{t.note || "—"}</strong>
-                      </div>
-                      <div className="admin-mobile-kv">
-                        <span>{tokenStrings.table.usage}</span>
-                        <strong>{formatNumber(t.total_requests)}</strong>
-                      </div>
-                      <div className="admin-mobile-kv">
-                        <span>{tokenStrings.table.quota}</span>
+                    <tr key={t.id}>
+                      <td>
+                        <div className="token-id-cell">
+                          <button
+                            type="button"
+                            title={tokenStrings.table.id}
+                            className="link-button token-id-link"
+                            onClick={() => navigateToken(t.id)}
+                          >
+                            <code className="token-id-code">{t.id}</code>
+                          </button>
+                          <span
+                            className="token-status-slot"
+                            aria-hidden={t.enabled ? true : undefined}
+                            title={t.enabled ? undefined : tokenStrings.statusBadges.disabled}
+                          >
+                            {!t.enabled && (
+                              <Icon
+                                className="token-status-icon"
+                                icon="mdi:pause-circle-outline"
+                                width={14}
+                                height={14}
+                                aria-label={tokenStrings.statusBadges.disabled}
+                              />
+                            )}
+                          </span>
+                        </div>
+                      </td>
+                      <td>
+                        <TokenOwnerValue owner={t.owner} emptyLabel={tokenStrings.owner.unbound} onOpenUser={navigateUser} />
+                      </td>
+                      <td>{t.note || '—'}</td>
+                      <td>{formatNumber(t.total_requests)}</td>
+                      <td>
                         <StatusBadge
                           tone={quotaTone(quotaStateKey)}
                           className={`token-quota-pill token-quota-pill-${quotaStateKey}`}
                         >
                           {quotaLabel}
                         </StatusBadge>
-                      </div>
-                      <div className="admin-mobile-kv">
-                        <span>{tokenStrings.table.lastUsed}</span>
-                        <strong>{formatTimestamp(t.last_used_at)}</strong>
-                      </div>
+                      </td>
+                      <td>{formatTimestamp(t.last_used_at)}</td>
                       {isAdmin && (
-                        <div className="admin-mobile-actions">
-                          <Button
-                            type="button"
-                            variant={state === "copied" ? "success" : "outline"}
-                            size="sm"
-                            onPointerEnter={() =>
-                              scheduleSecretWarm(`token:${t.id}`, () =>
-                                warmTokenSecret(t.id),
-                              )
-                            }
-                            onPointerLeave={() =>
-                              cancelSecretWarm(`token:${t.id}`)
-                            }
-                            onBlur={() => cancelSecretWarm(`token:${t.id}`)}
-                            onPointerDown={() => warmTokenSecret(t.id)}
-                            onKeyDown={(event) => {
-                              if (!isCopyIntentKey(event.key)) return;
-                              warmTokenSecret(t.id);
-                            }}
-                            onClick={(event) =>
-                              void handleCopyToken(
-                                t.id,
-                                stateKey,
-                                event.currentTarget,
-                              )
-                            }
-                            disabled={state === "loading"}
-                          >
-                            {tokenStrings.actions.copy}
-                          </Button>
-                          <Button
-                            type="button"
-                            variant={
-                              shareState === "copied" ? "success" : "outline"
-                            }
-                            size="sm"
-                            onPointerEnter={() =>
-                              scheduleSecretWarm(`token:${t.id}`, () =>
-                                warmTokenSecret(t.id),
-                              )
-                            }
-                            onPointerLeave={() =>
-                              cancelSecretWarm(`token:${t.id}`)
-                            }
-                            onBlur={() => cancelSecretWarm(`token:${t.id}`)}
-                            onPointerDown={() => warmTokenSecret(t.id)}
-                            onKeyDown={(event) => {
-                              if (!isCopyIntentKey(event.key)) return;
-                              warmTokenSecret(t.id);
-                            }}
-                            onClick={(event) =>
-                              void handleShareToken(
-                                t.id,
-                                shareStateKey,
-                                event.currentTarget,
-                              )
-                            }
-                            disabled={shareState === "loading"}
-                          >
-                            {tokenStrings.actions.share}
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={() => navigateToken(t.id)}
-                          >
-                            {keyStrings.actions.details}
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={() => void toggleToken(t.id, t.enabled)}
-                            disabled={togglingId === t.id}
-                          >
-                            {t.enabled
-                              ? tokenStrings.actions.disable
-                              : tokenStrings.actions.enable}
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={() => openTokenNoteEdit(t.id, t.note)}
-                          >
-                            {tokenStrings.actions.edit}
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="warning"
-                            size="sm"
-                            onClick={() => openTokenDeleteConfirm(t.id)}
-                            disabled={deletingId === t.id}
-                          >
-                            {tokenStrings.actions.delete}
-                          </Button>
-                        </div>
+                        <td className="jobs-message-cell">
+                          <div className="table-actions">
+<Button
+  type="button"
+  variant={state === 'copied' ? 'success' : 'ghost'}
+  size="icon"
+  className="token-action-button shadow-none"
+  title={tokenStrings.actions.copy}
+  aria-label={tokenStrings.actions.copy}
+  onPointerEnter={() => scheduleSecretWarm(`token:${t.id}`, () => warmTokenSecret(t.id))}
+  onPointerLeave={() => cancelSecretWarm(`token:${t.id}`)}
+  onBlur={() => cancelSecretWarm(`token:${t.id}`)}
+  onPointerDown={() => warmTokenSecret(t.id)}
+  onKeyDown={(event) => { if (!isCopyIntentKey(event.key)) return; warmTokenSecret(t.id) }}
+  onClick={(event) => void handleCopyToken(t.id, stateKey, event.currentTarget)}
+  disabled={state === 'loading'}
+>
+  <Icon icon={state === 'copied' ? 'mdi:check' : 'mdi:content-copy'} width={16} height={16} />
+</Button>
+<Button
+  type="button"
+  variant={shareState === 'copied' ? 'success' : 'ghost'}
+  size="icon"
+  className="token-action-button shadow-none"
+  title={tokenStrings.actions.share}
+  aria-label={tokenStrings.actions.share}
+  onPointerEnter={() => scheduleSecretWarm(`token:${t.id}`, () => warmTokenSecret(t.id))}
+  onPointerLeave={() => cancelSecretWarm(`token:${t.id}`)}
+  onBlur={() => cancelSecretWarm(`token:${t.id}`)}
+  onPointerDown={() => warmTokenSecret(t.id)}
+  onKeyDown={(event) => { if (!isCopyIntentKey(event.key)) return; warmTokenSecret(t.id) }}
+  onClick={(event) => void handleShareToken(t.id, shareStateKey, event.currentTarget)}
+  disabled={shareState === 'loading'}
+>
+  <Icon icon={shareState === 'copied' ? 'mdi:check' : 'mdi:share-variant'} width={16} height={16} />
+</Button>
+<Button
+  type="button"
+  variant="ghost"
+  size="icon"
+  className="token-action-button shadow-none"
+  title={keyStrings.actions.details}
+  aria-label={keyStrings.actions.details}
+  onClick={() => navigateToken(t.id)}
+>
+  <Icon icon="mdi:eye-outline" width={16} height={16} />
+</Button>
+<Button
+  type="button"
+  variant="ghost"
+  size="icon"
+  className="token-action-button shadow-none"
+  title={t.enabled ? tokenStrings.actions.disable : tokenStrings.actions.enable}
+  aria-label={t.enabled ? tokenStrings.actions.disable : tokenStrings.actions.enable}
+  onClick={() => void toggleToken(t.id, t.enabled)}
+  disabled={togglingId === t.id}
+>
+  <Icon icon={t.enabled ? 'mdi:pause-circle-outline' : 'mdi:play-circle-outline'} width={16} height={16} />
+</Button>
+<Button
+  type="button"
+  variant="ghost"
+  size="icon"
+  className="token-action-button shadow-none"
+  title={tokenStrings.actions.edit}
+  aria-label={tokenStrings.actions.edit}
+  onClick={() => openTokenNoteEdit(t.id, t.note)}
+>
+  <Icon icon="mdi:pencil-outline" width={16} height={16} />
+</Button>
+<Button
+  type="button"
+  variant="ghost"
+  size="icon"
+  className="token-action-button shadow-none"
+  title={tokenStrings.actions.delete}
+  aria-label={tokenStrings.actions.delete}
+  onClick={() => openTokenDeleteConfirm(t.id)}
+  disabled={deletingId === t.id}
+>
+  <Icon
+    icon={deletingId === t.id ? 'mdi:progress-helper' : 'mdi:trash-outline'}
+    width={16}
+    height={16}
+    color="#ef4444"
+  />
+</Button>
+                          </div>
+                        </td>
                       )}
-                    </article>
-                  );
-                })
-              )}
-            </AdminLoadingRegion>
-            {tokensTotal > tokensPerPage && (
-              <AdminTablePagination
-                page={tokensPage}
-                totalPages={totalPages}
-                pageSummary={
-                  <span className="panel-description">
-                    {tokenStrings.pagination.page
-                      .replace("{page}", String(tokensPage))
-                      .replace("{total}", String(totalPages))}
-                  </span>
-                }
-                previousLabel={tokenStrings.pagination.prev}
-                nextLabel={tokenStrings.pagination.next}
-                previousDisabled={tokensPage <= 1}
-                nextDisabled={tokensPage >= totalPages}
-                disabled={tokensBlocking}
-                onPrevious={goPrevPage}
-                onNext={goNextPage}
-              />
-            )}
-          </section>
-        )}
-        {error && <div className="surface error-banner">{error}</div>}
-
-        {showKeys && (
-          <section
-            className="surface panel"
-            style={
-              keysBatchVisible
-                ? { position: "relative", zIndex: 40 }
-                : undefined
-            }
-          >
-            <div
-              className="panel-header"
-              style={{ flexWrap: "wrap", gap: 12, alignItems: "flex-start" }}
-            >
-              <div style={{ flex: "1 1 320px", minWidth: 240 }}>
-                <h2>{keyStrings.title}</h2>
-                <p className="panel-description">{keyStrings.description}</p>
-              </div>
-              {isAdmin && (
-                <div
-                  ref={keysBatchAnchorRef}
-                  onMouseEnter={() => {
-                    clearKeysBatchAutoCollapseTimer();
-                    clearKeysBatchCloseTimer();
-                    setKeysBatchClosing(false);
-                    if (keysBatchSuppressNextHoverRef.current) {
-                      keysBatchSuppressNextHoverRef.current = false;
-                      return;
-                    }
-                    keysBatchOpenReasonRef.current = "hover";
-                    setKeysBatchExpanded(true);
-                  }}
-                  onMouseLeave={() => {
-                    keysBatchSuppressNextHoverRef.current = false;
-                    scheduleKeysBatchAutoCollapse("hover");
-                  }}
-                  onFocusCapture={() => {
-                    clearKeysBatchAutoCollapseTimer();
-                    clearKeysBatchCloseTimer();
-                    setKeysBatchClosing(false);
-                    keysBatchOpenReasonRef.current = "focus";
-                    setKeysBatchExpanded(true);
-                  }}
-                  style={{
-                    ...keysQuickAddCardStyle,
-                    position: "relative",
-                    marginLeft: "auto",
-                  }}
-                >
-                  <div
-                    className={`keys-batch-collapsed${keysBatchVisible ? " is-hidden" : ""}`}
-                    aria-hidden={keysBatchVisible}
-                    style={keysQuickAddActionsStyle}
-                  >
-                    <Input
-                      ref={keysBatchCollapsedInputRef}
-                      type="text"
-                      name="collapsed-key-input"
-                      placeholder={keyStrings.placeholder}
-                      aria-label={keyStrings.placeholder}
-                      value={keysBatchFirstLine}
-                      onChange={(e) => setNewKeysText(e.target.value)}
-                      disabled={keysBatchVisible}
-                      style={{
-                        flex: "1 1 260px",
-                        minWidth: 260,
-                        maxWidth: "100%",
-                      }}
-                    />
-                    <Button
-                      type="button"
-                      size="sm"
-                      onClick={() => void handleAddKey()}
-                      disabled={
-                        keysBatchVisible ||
-                        submitting ||
-                        keysBatchParsed.length === 0
-                      }
-                      style={{ flexShrink: 0, whiteSpace: "nowrap" }}
-                    >
-                      {submitting ? keyStrings.adding : keyStrings.addButton}
-                    </Button>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </>
+          )}
+        </AdminTableShell>
+        <AdminLoadingRegion
+          className="admin-mobile-list admin-responsive-down"
+          loadState={tokensLoadState}
+          loadingLabel={tokensRefreshing ? loadingStateStrings.refreshing : tokenStrings.empty.loading}
+          minHeight={260}
+        >
+          {tokenList.length === 0 ? (
+            <div className="empty-state alert">{tokenStrings.empty.none}</div>
+          ) : (
+            tokenList.map((t) => {
+              const stateKey = copyStateKey('tokens', t.id)
+              const state = copyState.get(stateKey)
+              const shareStateKey = copyStateKey('tokens', `${t.id}:share`)
+              const shareState = copyState.get(shareStateKey)
+              const quotaStateKey = t.quota_state ?? 'normal'
+              const quotaLabel = quotaLabels[quotaStateKey] ?? quotaLabels.normal
+              return (
+                <article key={t.id} className="admin-mobile-card">
+                  <div className="admin-mobile-kv">
+                    <span>{tokenStrings.table.id}</span>
+                    <strong>
+                      <code>{t.id}</code>
+                    </strong>
                   </div>
-                  <datalist id="api-key-group-datalist">
-                    {namedKeyGroups.map((group) => (
-                      <option key={group.name} value={group.name} />
-                    ))}
-                  </datalist>
-                </div>
-              )}
-            </div>
-            <div style={keysUtilityRowStyle}>
-              <div style={keysFilterClusterStyle}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div className="admin-mobile-kv">
+                    <span>{tokenStrings.table.owner}</span>
+                    <TokenOwnerValue owner={t.owner} emptyLabel={tokenStrings.owner.unbound} onOpenUser={navigateUser} compact />
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{tokenStrings.table.note}</span>
+                    <strong>{t.note || '—'}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{tokenStrings.table.usage}</span>
+                    <strong>{formatNumber(t.total_requests)}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{tokenStrings.table.quota}</span>
+                    <StatusBadge tone={quotaTone(quotaStateKey)} className={`token-quota-pill token-quota-pill-${quotaStateKey}`}>
+                      {quotaLabel}
+                    </StatusBadge>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{tokenStrings.table.lastUsed}</span>
+                    <strong>{formatTimestamp(t.last_used_at)}</strong>
+                  </div>
+                  {isAdmin && (
+                    <div className="admin-mobile-actions">
+<Button
+  type="button"
+  variant={state === 'copied' ? 'success' : 'outline'}
+  size="sm"
+  onPointerEnter={() => scheduleSecretWarm(`token:${t.id}`, () => warmTokenSecret(t.id))}
+  onPointerLeave={() => cancelSecretWarm(`token:${t.id}`)}
+  onBlur={() => cancelSecretWarm(`token:${t.id}`)}
+  onPointerDown={() => warmTokenSecret(t.id)}
+  onKeyDown={(event) => { if (!isCopyIntentKey(event.key)) return; warmTokenSecret(t.id) }}
+  onClick={(event) => void handleCopyToken(t.id, stateKey, event.currentTarget)}
+  disabled={state === 'loading'}
+>
+  {tokenStrings.actions.copy}
+</Button>
+<Button
+  type="button"
+  variant={shareState === 'copied' ? 'success' : 'outline'}
+  size="sm"
+  onPointerEnter={() => scheduleSecretWarm(`token:${t.id}`, () => warmTokenSecret(t.id))}
+  onPointerLeave={() => cancelSecretWarm(`token:${t.id}`)}
+  onBlur={() => cancelSecretWarm(`token:${t.id}`)}
+  onPointerDown={() => warmTokenSecret(t.id)}
+  onKeyDown={(event) => { if (!isCopyIntentKey(event.key)) return; warmTokenSecret(t.id) }}
+  onClick={(event) => void handleShareToken(t.id, shareStateKey, event.currentTarget)}
+  disabled={shareState === 'loading'}
+>
+  {tokenStrings.actions.share}
+</Button>
+<Button type="button" variant="outline" size="sm" onClick={() => navigateToken(t.id)}>
+  {keyStrings.actions.details}
+</Button>
+<Button
+  type="button"
+  variant="outline"
+  size="sm"
+  onClick={() => void toggleToken(t.id, t.enabled)}
+  disabled={togglingId === t.id}
+>
+  {t.enabled ? tokenStrings.actions.disable : tokenStrings.actions.enable}
+</Button>
+<Button type="button" variant="outline" size="sm" onClick={() => openTokenNoteEdit(t.id, t.note)}>
+  {tokenStrings.actions.edit}
+</Button>
+<Button
+  type="button"
+  variant="warning"
+  size="sm"
+  onClick={() => openTokenDeleteConfirm(t.id)}
+  disabled={deletingId === t.id}
+>
+  {tokenStrings.actions.delete}
+</Button>
+                    </div>
+                  )}
+                </article>
+              )
+            })
+          )}
+        </AdminLoadingRegion>
+        {tokensTotal > tokensPerPage && (
+          <AdminTablePagination
+            page={tokensPage}
+            totalPages={totalPages}
+            pageSummary={
+              <span className="panel-description">
+                {tokenStrings.pagination.page
+                  .replace('{page}', String(tokensPage))
+                  .replace('{total}', String(totalPages))}
+              </span>
+            }
+            previousLabel={tokenStrings.pagination.prev}
+            nextLabel={tokenStrings.pagination.next}
+            previousDisabled={tokensPage <= 1}
+            nextDisabled={tokensPage >= totalPages}
+            disabled={tokensBlocking}
+            onPrevious={goPrevPage}
+            onNext={goNextPage}
+          />
+        )}
+      </section>
+      )}
+      {error && <div className="surface error-banner">{error}</div>}
+
+      {showKeys && (
+      <section className="surface panel" style={keysBatchVisible ? { position: 'relative', zIndex: 40 } : undefined}>
+	        <div className="panel-header" style={{ flexWrap: 'wrap', gap: 12, alignItems: 'flex-start' }}>
+	          <div style={{ flex: '1 1 320px', minWidth: 240 }}>
+	            <h2>{keyStrings.title}</h2>
+	            <p className="panel-description">{keyStrings.description}</p>
+	          </div>
+            {isAdmin && (
+              <div
+                ref={keysBatchAnchorRef}
+                onMouseEnter={() => {
+                  clearKeysBatchAutoCollapseTimer()
+                  clearKeysBatchCloseTimer()
+                  setKeysBatchClosing(false)
+                  if (keysBatchSuppressNextHoverRef.current) {
+                    keysBatchSuppressNextHoverRef.current = false
+                    return
+                  }
+                  keysBatchOpenReasonRef.current = 'hover'
+                  setKeysBatchExpanded(true)
+                }}
+                onMouseLeave={() => {
+                  keysBatchSuppressNextHoverRef.current = false
+                  scheduleKeysBatchAutoCollapse('hover')
+                }}
+                onFocusCapture={() => {
+                  clearKeysBatchAutoCollapseTimer()
+                  clearKeysBatchCloseTimer()
+                  setKeysBatchClosing(false)
+                  keysBatchOpenReasonRef.current = 'focus'
+                  setKeysBatchExpanded(true)
+                }}
+                style={{ ...keysQuickAddCardStyle, position: 'relative', marginLeft: 'auto' }}
+              >
+                <div
+                  className={`keys-batch-collapsed${keysBatchVisible ? ' is-hidden' : ''}`}
+                  aria-hidden={keysBatchVisible}
+                  style={keysQuickAddActionsStyle}
+                >
                   <Input
+                    ref={keysBatchCollapsedInputRef}
                     type="text"
-                    value={keyRegistrationIpInput}
-                    onChange={(event) =>
-                      setKeyRegistrationIpInput(event.target.value)
-                    }
-                    placeholder={keyStrings.filters.registrationIpPlaceholder}
-                    aria-label={keyStrings.filters.registrationIp}
-                    style={{ width: 188 }}
+                    name="collapsed-key-input"
+                    placeholder={keyStrings.placeholder}
+                    aria-label={keyStrings.placeholder}
+                    value={keysBatchFirstLine}
+                    onChange={(e) => setNewKeysText(e.target.value)}
+                    disabled={keysBatchVisible}
+                    style={{ flex: '1 1 260px', minWidth: 260, maxWidth: '100%' }}
                   />
-                  {selectedKeyRegistrationIp ? (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      onClick={handleClearKeyRegistrationIpFilter}
-                    >
-                      {keyStrings.filters.clearRegistrationIp}
-                    </Button>
-                  ) : null}
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => void handleAddKey()}
+                    disabled={keysBatchVisible || submitting || keysBatchParsed.length === 0}
+                    style={{ flexShrink: 0, whiteSpace: 'nowrap' }}
+                  >
+                    {submitting ? keyStrings.adding : keyStrings.addButton}
+                  </Button>
                 </div>
-                {hasKeyGroups && (
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        aria-label={keyGroupFilterSummary}
-                      >
-                        <Icon
-                          icon="mdi:filter-variant"
-                          width={16}
-                          height={16}
-                          aria-hidden="true"
-                        />
-                        <span style={{ whiteSpace: "nowrap" }}>
-                          {keyGroupFilterSummary}
-                        </span>
-                        {selectedKeyGroups.length > 0 ? (
-                          <Badge
-                            variant="neutral"
-                            className="ml-1 px-1.5 py-0 text-[10px]"
-                          >
-                            {selectedKeyGroups.length}
-                          </Badge>
-                        ) : null}
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="start" className="w-64">
-                      <DropdownMenuLabel>
-                        {keyStrings.groups.label}
-                      </DropdownMenuLabel>
-                      <DropdownMenuItem
-                        className="cursor-pointer"
-                        disabled={selectedKeyGroups.length === 0}
-                        onSelect={(event) => {
-                          event.preventDefault();
-                          handleClearKeyGroupFilters();
-                        }}
-                      >
-                        {keyStrings.filters.clearGroups}
-                      </DropdownMenuItem>
-                      <DropdownMenuSeparator />
-                      {keyGroupFilterOptions.map((option) => (
-                        <DropdownMenuCheckboxItem
-                          key={option.value || "__ungrouped__"}
-                          className="cursor-pointer"
-                          checked={selectedKeyGroups.includes(option.value)}
-                          onSelect={(event) => event.preventDefault()}
-                          onCheckedChange={() =>
-                            handleToggleKeyGroupFilter(option.value)
-                          }
-                        >
-                          <span>{option.label}</span>
-                          <span className="ml-auto text-xs opacity-60">
-                            {formatNumber(option.count)}
-                          </span>
-                        </DropdownMenuCheckboxItem>
-                      ))}
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                )}
+                <datalist id="api-key-group-datalist">
+                  {namedKeyGroups.map((group) => (
+                    <option key={group.name} value={group.name} />
+                  ))}
+                </datalist>
+              </div>
+            )}
+	        </div>
+          <div style={keysUtilityRowStyle}>
+            <div style={keysFilterClusterStyle}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Input
+                  type="text"
+                  value={keyRegistrationIpInput}
+                  onChange={(event) => setKeyRegistrationIpInput(event.target.value)}
+                  placeholder={keyStrings.filters.registrationIpPlaceholder}
+                  aria-label={keyStrings.filters.registrationIp}
+                  style={{ width: 188 }}
+                />
+                {selectedKeyRegistrationIp ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleClearKeyRegistrationIpFilter}
+                  >
+                    {keyStrings.filters.clearRegistrationIp}
+                  </Button>
+                ) : null}
+              </div>
+              {hasKeyGroups && (
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      aria-label={keyStatusFilterSummary}
-                    >
-                      <Icon
-                        icon="mdi:filter-outline"
-                        width={16}
-                        height={16}
-                        aria-hidden="true"
-                      />
-                      <span style={{ whiteSpace: "nowrap" }}>
-                        {keyStatusFilterSummary}
-                      </span>
-                      {selectedKeyStatuses.length > 0 ? (
-                        <Badge
-                          variant="neutral"
-                          className="ml-1 px-1.5 py-0 text-[10px]"
-                        >
-                          {selectedKeyStatuses.length}
+                    <Button type="button" variant="outline" size="sm" aria-label={keyGroupFilterSummary}>
+                      <Icon icon="mdi:filter-variant" width={16} height={16} aria-hidden="true" />
+                      <span style={{ whiteSpace: 'nowrap' }}>{keyGroupFilterSummary}</span>
+                      {selectedKeyGroups.length > 0 ? (
+                        <Badge variant="neutral" className="ml-1 px-1.5 py-0 text-[10px]">
+                          {selectedKeyGroups.length}
                         </Badge>
                       ) : null}
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="start" className="w-64">
-                    <DropdownMenuLabel>
-                      {keyStrings.filters.status}
-                    </DropdownMenuLabel>
+                    <DropdownMenuLabel>{keyStrings.groups.label}</DropdownMenuLabel>
                     <DropdownMenuItem
                       className="cursor-pointer"
-                      disabled={selectedKeyStatuses.length === 0}
+                      disabled={selectedKeyGroups.length === 0}
                       onSelect={(event) => {
-                        event.preventDefault();
-                        handleClearKeyStatusFilters();
+                        event.preventDefault()
+                        handleClearKeyGroupFilters()
                       }}
                     >
-                      {keyStrings.filters.clearStatuses}
+                      {keyStrings.filters.clearGroups}
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
-                    {keyStatusFilterOptions.map((option) => (
+                    {keyGroupFilterOptions.map((option) => (
                       <DropdownMenuCheckboxItem
-                        key={option.value}
+                        key={option.value || '__ungrouped__'}
                         className="cursor-pointer"
-                        checked={selectedKeyStatuses.includes(option.value)}
+                        checked={selectedKeyGroups.includes(option.value)}
                         onSelect={(event) => event.preventDefault()}
-                        onCheckedChange={() =>
-                          handleToggleKeyStatusFilter(option.value)
-                        }
+                        onCheckedChange={() => handleToggleKeyGroupFilter(option.value)}
                       >
                         <span>{option.label}</span>
-                        <span className="ml-auto text-xs opacity-60">
-                          {formatNumber(option.count)}
-                        </span>
+                        <span className="ml-auto text-xs opacity-60">{formatNumber(option.count)}</span>
                       </DropdownMenuCheckboxItem>
                     ))}
                   </DropdownMenuContent>
                 </DropdownMenu>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      aria-label={keyRegionFilterSummary}
-                    >
-                      <Icon
-                        icon="mdi:map-marker-radius-outline"
-                        width={16}
-                        height={16}
-                        aria-hidden="true"
-                      />
-                      <span style={{ whiteSpace: "nowrap" }}>
-                        {keyRegionFilterSummary}
-                      </span>
-                      {selectedKeyRegions.length > 0 ? (
-                        <Badge
-                          variant="neutral"
-                          className="ml-1 px-1.5 py-0 text-[10px]"
-                        >
-                          {selectedKeyRegions.length}
-                        </Badge>
-                      ) : null}
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="start" className="w-72">
-                    <DropdownMenuLabel>
-                      {keyStrings.filters.region}
-                    </DropdownMenuLabel>
-                    <DropdownMenuItem
+              )}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button type="button" variant="outline" size="sm" aria-label={keyStatusFilterSummary}>
+                    <Icon icon="mdi:filter-outline" width={16} height={16} aria-hidden="true" />
+                    <span style={{ whiteSpace: 'nowrap' }}>{keyStatusFilterSummary}</span>
+                    {selectedKeyStatuses.length > 0 ? (
+                      <Badge variant="neutral" className="ml-1 px-1.5 py-0 text-[10px]">
+                        {selectedKeyStatuses.length}
+                      </Badge>
+                    ) : null}
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="w-64">
+                  <DropdownMenuLabel>{keyStrings.filters.status}</DropdownMenuLabel>
+                  <DropdownMenuItem
+                    className="cursor-pointer"
+                    disabled={selectedKeyStatuses.length === 0}
+                    onSelect={(event) => {
+                      event.preventDefault()
+                      handleClearKeyStatusFilters()
+                    }}
+                  >
+                    {keyStrings.filters.clearStatuses}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  {keyStatusFilterOptions.map((option) => (
+                    <DropdownMenuCheckboxItem
+                      key={option.value}
                       className="cursor-pointer"
-                      disabled={selectedKeyRegions.length === 0}
-                      onSelect={(event) => {
-                        event.preventDefault();
-                        handleClearKeyRegionFilters();
-                      }}
+                      checked={selectedKeyStatuses.includes(option.value)}
+                      onSelect={(event) => event.preventDefault()}
+                      onCheckedChange={() => handleToggleKeyStatusFilter(option.value)}
                     >
-                      {keyStrings.filters.clearRegions}
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    {keyRegionFilterOptions.map((option) => (
-                      <DropdownMenuCheckboxItem
-                        key={option.value}
-                        className="cursor-pointer"
-                        checked={selectedKeyRegions.includes(option.value)}
-                        onSelect={(event) => event.preventDefault()}
-                        onCheckedChange={() =>
-                          handleToggleKeyRegionFilter(option.value)
-                        }
-                      >
-                        <span>{option.label}</span>
-                        <span className="ml-auto text-xs opacity-60">
-                          {formatNumber(option.count)}
-                        </span>
-                      </DropdownMenuCheckboxItem>
-                    ))}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
+                      <span>{option.label}</span>
+                      <span className="ml-auto text-xs opacity-60">{formatNumber(option.count)}</span>
+                    </DropdownMenuCheckboxItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button type="button" variant="outline" size="sm" aria-label={keyRegionFilterSummary}>
+                    <Icon icon="mdi:map-marker-radius-outline" width={16} height={16} aria-hidden="true" />
+                    <span style={{ whiteSpace: 'nowrap' }}>{keyRegionFilterSummary}</span>
+                    {selectedKeyRegions.length > 0 ? (
+                      <Badge variant="neutral" className="ml-1 px-1.5 py-0 text-[10px]">
+                        {selectedKeyRegions.length}
+                      </Badge>
+                    ) : null}
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="w-72">
+                  <DropdownMenuLabel>{keyStrings.filters.region}</DropdownMenuLabel>
+                  <DropdownMenuItem
+                    className="cursor-pointer"
+                    disabled={selectedKeyRegions.length === 0}
+                    onSelect={(event) => {
+                      event.preventDefault()
+                      handleClearKeyRegionFilters()
+                    }}
+                  >
+                    {keyStrings.filters.clearRegions}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  {keyRegionFilterOptions.map((option) => (
+                    <DropdownMenuCheckboxItem
+                      key={option.value}
+                      className="cursor-pointer"
+                      checked={selectedKeyRegions.includes(option.value)}
+                      onSelect={(event) => event.preventDefault()}
+                      onCheckedChange={() => handleToggleKeyRegionFilter(option.value)}
+                    >
+                      <span>{option.label}</span>
+                      <span className="ml-auto text-xs opacity-60">{formatNumber(option.count)}</span>
+                    </DropdownMenuCheckboxItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
-            <AdminTableShell
-              className="jobs-table-wrapper admin-responsive-up"
-              loadState={keysLoadState}
-              loadingLabel={
-                keysRefreshing
-                  ? loadingStateStrings.refreshing
-                  : keyStrings.empty.loading
-              }
-              errorLabel={keysError ?? loadingStateStrings.error}
-              minHeight={320}
-            >
-              {visibleKeys.length === 0 ? (
-                <tbody>
-                  <tr>
-                    <td colSpan={isAdmin ? 7 : 6}>
-                      <div className="empty-state alert">
-                        {keysHasFilters
-                          ? keyStrings.empty.filtered
-                          : keyStrings.empty.none}
+          </div>
+        <AdminTableShell
+          className="jobs-table-wrapper admin-responsive-up"
+          loadState={keysLoadState}
+          loadingLabel={keysRefreshing ? loadingStateStrings.refreshing : keyStrings.empty.loading}
+          errorLabel={keysError ?? loadingStateStrings.error}
+          minHeight={320}
+        >
+          {visibleKeys.length === 0 ? (
+            <tbody>
+              <tr>
+                <td colSpan={isAdmin ? 7 : 6}>
+                  <div className="empty-state alert">
+                    {keysHasFilters ? keyStrings.empty.filtered : keyStrings.empty.none}
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          ) : (
+            <>
+              <thead>
+                <tr>
+                  <th>
+                    <div style={adminTableHeaderStackStyle}>
+                      <span style={adminTableFieldStyle}>{keyStrings.table.keyId}</span>
+                      <span style={adminTableSecondaryFieldStyle}>{keyStrings.groups.label}</span>
+                    </div>
+                  </th>
+                  <th>
+                    <div style={adminTableHeaderStackStyle}>
+                      <span style={adminTableFieldStyle}>{keyStrings.table.registration}</span>
+                      <span style={adminTableSecondaryFieldStyle}>{keyStrings.table.registrationRegion}</span>
+                    </div>
+                  </th>
+                  <th>
+                    <div style={adminTableHeaderStackStyle}>
+                      <span style={adminTableFieldStyle}>{keyStrings.table.status}</span>
+                      <span style={adminTableSecondaryFieldStyle} aria-hidden="true">&nbsp;</span>
+                    </div>
+                  </th>
+                  <th>
+                    <div style={adminTableHeaderStackStyle}>
+                      <span style={adminTableFieldStyle}>{keyStrings.table.success}</span>
+                      <span style={adminTableSecondaryFieldStyle}>{keyStrings.table.errors}</span>
+                    </div>
+                  </th>
+                  <th>
+                    <div style={adminTableHeaderStackStyle}>
+                      <span style={adminTableFieldStyle}>{keyStrings.table.quotaLeft}</span>
+                      <span style={adminTableSecondaryFieldStyle} aria-hidden="true">&nbsp;</span>
+                    </div>
+                  </th>
+                  <th>
+                    <div style={adminTableHeaderStackStyle}>
+                      <span style={adminTableFieldStyle}>{keyStrings.table.lastUsed}</span>
+                      <span style={adminTableSecondaryFieldStyle}>{keyStrings.table.statusChanged}</span>
+                    </div>
+                  </th>
+                  {isAdmin && (
+                    <th>
+                      <div style={adminTableHeaderStackStyle}>
+                        <span style={adminTableFieldStyle}>{keyStrings.table.actions}</span>
+                        <span style={adminTableSecondaryFieldStyle} aria-hidden="true">&nbsp;</span>
                       </div>
-                    </td>
-                  </tr>
-                </tbody>
-              ) : (
-                <>
-                  <thead>
-                    <tr>
-                      <th>
-                        <div style={adminTableHeaderStackStyle}>
-                          <span style={adminTableFieldStyle}>
-                            {keyStrings.table.keyId}
-                          </span>
-                          <span style={adminTableSecondaryFieldStyle}>
-                            {keyStrings.groups.label}
-                          </span>
-                        </div>
-                      </th>
-                      <th>
-                        <div style={adminTableHeaderStackStyle}>
-                          <span style={adminTableFieldStyle}>
-                            {keyStrings.table.registration}
-                          </span>
-                          <span style={adminTableSecondaryFieldStyle}>
-                            {keyStrings.table.registrationRegion}
-                          </span>
-                        </div>
-                      </th>
-                      <th>
-                        <div style={adminTableHeaderStackStyle}>
-                          <span style={adminTableFieldStyle}>
-                            {keyStrings.table.status}
-                          </span>
-                          <span
-                            style={adminTableSecondaryFieldStyle}
-                            aria-hidden="true"
-                          >
-                            &nbsp;
-                          </span>
-                        </div>
-                      </th>
-                      <th>
-                        <div style={adminTableHeaderStackStyle}>
-                          <span style={adminTableFieldStyle}>
-                            {keyStrings.table.success}
-                          </span>
-                          <span style={adminTableSecondaryFieldStyle}>
-                            {keyStrings.table.errors}
-                          </span>
-                        </div>
-                      </th>
-                      <th>
-                        <div style={adminTableHeaderStackStyle}>
-                          <span style={adminTableFieldStyle}>
-                            {keyStrings.table.quotaLeft}
-                          </span>
-                          <span
-                            style={adminTableSecondaryFieldStyle}
-                            aria-hidden="true"
-                          >
-                            &nbsp;
-                          </span>
-                        </div>
-                      </th>
-                      <th>
-                        <div style={adminTableHeaderStackStyle}>
-                          <span style={adminTableFieldStyle}>
-                            {keyStrings.table.lastUsed}
-                          </span>
-                          <span style={adminTableSecondaryFieldStyle}>
-                            {keyStrings.table.statusChanged}
-                          </span>
-                        </div>
-                      </th>
-                      {isAdmin && (
-                        <th>
-                          <div style={adminTableHeaderStackStyle}>
-                            <span style={adminTableFieldStyle}>
-                              {keyStrings.table.actions}
-                            </span>
-                            <span
-                              style={adminTableSecondaryFieldStyle}
-                              aria-hidden="true"
+                    </th>
+                  )}
+                </tr>
+              </thead>
+              <tbody>
+                {visibleKeys.map((item) => {
+                  const stateKey = copyStateKey('keys', item.id)
+                  const state = copyState.get(stateKey)
+                  const keyGroupName = formatKeyGroupName(item.group, keyStrings.groups.ungrouped)
+                  return (
+                    <tr key={item.id}>
+                      <td>
+                        <div style={adminTableStackStyle}>
+                          <div style={adminTableInlineFieldStyle}>
+                            <button
+                              type="button"
+                              className="link-button"
+                              onClick={() => navigateKey(item.id, { preserveKeysContext: true })}
+                              title={keyStrings.actions.details}
+                              aria-label={keyStrings.actions.details}
+                              style={{ whiteSpace: 'nowrap' }}
                             >
-                              &nbsp;
-                            </span>
+                              <code>{item.id}</code>
+                            </button>
+                            {isAdmin && (
+<Button
+  type="button"
+  variant={state === 'copied' ? 'success' : 'ghost'}
+  size="icon"
+  className="h-8 w-8 rounded-full p-0 shadow-none"
+  style={{ position: 'absolute', right: 0, top: '50%', transform: 'translateY(-50%)' }}
+  title={keyStrings.actions.copy}
+  aria-label={keyStrings.actions.copy}
+  onPointerEnter={() => scheduleSecretWarm(`key:${item.id}`, () => warmApiKeySecret(item.id))}
+  onPointerLeave={() => cancelSecretWarm(`key:${item.id}`)}
+  onBlur={() => cancelSecretWarm(`key:${item.id}`)}
+  onPointerDown={() => warmApiKeySecret(item.id)}
+  onKeyDown={(event) => { if (!isCopyIntentKey(event.key)) return; warmApiKeySecret(item.id) }}
+  onClick={(event) => void handleCopySecret(item.id, stateKey, event.currentTarget)}
+  disabled={state === 'loading'}
+>
+  <Icon icon={state === 'copied' ? 'mdi:check' : 'mdi:content-copy'} width={18} height={18} />
+</Button>
+                            )}
                           </div>
-                        </th>
+                          <span style={adminTableSecondaryFieldStyle}>{keyGroupName}</span>
+                        </div>
+                      </td>
+                      <td>
+                        <div style={adminTableStackStyle}>
+                          <span style={adminTableFieldStyle}>{formatRegistrationValue(item.registration_ip)}</span>
+                          <span style={adminTableSecondaryFieldStyle}>
+                            {formatRegistrationValue(item.registration_region)}
+                          </span>
+                        </div>
+                      </td>
+                      <td>
+                        <div style={adminTableStackStyle}>
+                          <span style={adminTableFieldStyle}>
+                            <StatusBadge tone={statusTone(keyBadgeStatus(item))}>
+                              {statusLabel(keyBadgeStatus(item), adminStrings)}
+                            </StatusBadge>
+                          </span>
+                        </div>
+                      </td>
+                      <td>
+                        <div style={adminTableStackStyle}>
+                          <span style={adminTableFieldStyle}>{formatNumber(item.success_count)}</span>
+                          <span style={adminTableSecondaryFieldStyle}>{formatNumber(item.error_count)}</span>
+                        </div>
+                      </td>
+                      <td>
+                        <span style={adminTableFieldStyle}>
+                          {item.quota_remaining != null && item.quota_limit != null
+                            ? `${formatNumber(item.quota_remaining)} / ${formatNumber(item.quota_limit)}`
+                            : '—'}
+                        </span>
+                      </td>
+                      <td>
+                        <div style={adminTableStackStyle}>
+                          <span style={adminTableFieldStyle}>{formatTimestampNoYear(item.last_used_at)}</span>
+                          <span style={adminTableSecondaryFieldStyle}>{formatTimestamp(item.status_changed_at)}</span>
+                        </div>
+                      </td>
+                      {isAdmin && (
+                        <td>
+                          <div className="table-actions" style={{ flexWrap: 'nowrap' }}>
+                            {item.quarantine ? (
+  <Button
+    type="button"
+    variant="ghost"
+    size="icon"
+    className="h-8 w-8 rounded-full p-0 shadow-none"
+    title={keyStrings.actions.clearQuarantine}
+    aria-label={keyStrings.actions.clearQuarantine}
+    onClick={() => void handleClearQuarantine(item.id)}
+    disabled={clearingQuarantineId === item.id}
+  >
+    <Icon
+      icon={clearingQuarantineId === item.id ? 'mdi:progress-helper' : 'mdi:shield-check-outline'}
+      width={18}
+      height={18}
+    />
+  </Button>
+) : item.status === 'disabled' ? (
+  <Button
+    type="button"
+    variant="ghost"
+    size="icon"
+    className="h-8 w-8 rounded-full p-0 shadow-none"
+    title={keyStrings.actions.enable}
+    aria-label={keyStrings.actions.enable}
+    onClick={() => void handleToggleDisable(item.id, false)}
+    disabled={togglingId === item.id}
+  >
+    <Icon icon={togglingId === item.id ? 'mdi:progress-helper' : 'mdi:play-circle-outline'} width={18} height={18} />
+  </Button>
+) : (
+  <Button
+    type="button"
+    variant="ghost"
+    size="icon"
+    className="h-8 w-8 rounded-full p-0 shadow-none"
+    title={keyStrings.actions.disable}
+    aria-label={keyStrings.actions.disable}
+    onClick={() => openDisableConfirm(item.id)}
+    disabled={togglingId === item.id}
+  >
+    <Icon icon={togglingId === item.id ? 'mdi:progress-helper' : 'mdi:pause-circle-outline'} width={18} height={18} />
+  </Button>
+)}
+<Button
+  type="button"
+  variant="ghost"
+  size="icon"
+  className="h-8 w-8 rounded-full p-0 shadow-none"
+  title={keyStrings.actions.delete}
+  aria-label={keyStrings.actions.delete}
+  onClick={() => openDeleteConfirm(item.id)}
+  disabled={deletingId === item.id || clearingQuarantineId === item.id}
+>
+  <Icon
+    icon={deletingId === item.id ? 'mdi:progress-helper' : 'mdi:trash-outline'}
+    width={18}
+    height={18}
+    color="#ef4444"
+  />
+</Button>
+<Button
+  type="button"
+  variant="ghost"
+  size="icon"
+  className="h-8 w-8 rounded-full p-0 shadow-none"
+  title={keyStrings.actions.details}
+  aria-label={keyStrings.actions.details}
+  onClick={() => navigateKey(item.id, { preserveKeysContext: true })}
+  >
+    <Icon icon="mdi:eye-outline" width={18} height={18} />
+</Button>
+                          </div>
+                        </td>
                       )}
                     </tr>
-                  </thead>
-                  <tbody>
-                    {visibleKeys.map((item) => {
-                      const stateKey = copyStateKey("keys", item.id);
-                      const state = copyState.get(stateKey);
-                      const keyGroupName = formatKeyGroupName(
-                        item.group,
-                        keyStrings.groups.ungrouped,
-                      );
-                      return (
-                        <tr key={item.id}>
-                          <td>
-                            <div style={adminTableStackStyle}>
-                              <div style={adminTableInlineFieldStyle}>
-                                <button
-                                  type="button"
-                                  className="link-button"
-                                  onClick={() =>
-                                    navigateKey(item.id, {
-                                      preserveKeysContext: true,
-                                    })
-                                  }
-                                  title={keyStrings.actions.details}
-                                  aria-label={keyStrings.actions.details}
-                                  style={{ whiteSpace: "nowrap" }}
-                                >
-                                  <code>{item.id}</code>
-                                </button>
-                                {isAdmin && (
-                                  <Button
-                                    type="button"
-                                    variant={
-                                      state === "copied" ? "success" : "ghost"
-                                    }
-                                    size="icon"
-                                    className="h-8 w-8 rounded-full p-0 shadow-none"
-                                    style={{
-                                      position: "absolute",
-                                      right: 0,
-                                      top: "50%",
-                                      transform: "translateY(-50%)",
-                                    }}
-                                    title={keyStrings.actions.copy}
-                                    aria-label={keyStrings.actions.copy}
-                                    onPointerEnter={() =>
-                                      scheduleSecretWarm(`key:${item.id}`, () =>
-                                        warmApiKeySecret(item.id),
-                                      )
-                                    }
-                                    onPointerLeave={() =>
-                                      cancelSecretWarm(`key:${item.id}`)
-                                    }
-                                    onBlur={() =>
-                                      cancelSecretWarm(`key:${item.id}`)
-                                    }
-                                    onPointerDown={() =>
-                                      warmApiKeySecret(item.id)
-                                    }
-                                    onKeyDown={(event) => {
-                                      if (!isCopyIntentKey(event.key)) return;
-                                      warmApiKeySecret(item.id);
-                                    }}
-                                    onClick={(event) =>
-                                      void handleCopySecret(
-                                        item.id,
-                                        stateKey,
-                                        event.currentTarget,
-                                      )
-                                    }
-                                    disabled={state === "loading"}
-                                  >
-                                    <Icon
-                                      icon={
-                                        state === "copied"
-                                          ? "mdi:check"
-                                          : "mdi:content-copy"
-                                      }
-                                      width={18}
-                                      height={18}
-                                    />
-                                  </Button>
-                                )}
-                              </div>
-                              <span style={adminTableSecondaryFieldStyle}>
-                                {keyGroupName}
-                              </span>
-                            </div>
-                          </td>
-                          <td>
-                            <div style={adminTableStackStyle}>
-                              <span style={adminTableFieldStyle}>
-                                {formatRegistrationValue(item.registration_ip)}
-                              </span>
-                              <span style={adminTableSecondaryFieldStyle}>
-                                {formatRegistrationValue(
-                                  item.registration_region,
-                                )}
-                              </span>
-                            </div>
-                          </td>
-                          <td>
-                            <div style={adminTableStackStyle}>
-                              <span style={adminTableFieldStyle}>
-                                <StatusBadge
-                                  tone={statusTone(keyBadgeStatus(item))}
-                                >
-                                  {statusLabel(
-                                    keyBadgeStatus(item),
-                                    adminStrings,
-                                  )}
-                                </StatusBadge>
-                              </span>
-                            </div>
-                          </td>
-                          <td>
-                            <div style={adminTableStackStyle}>
-                              <span style={adminTableFieldStyle}>
-                                {formatNumber(item.success_count)}
-                              </span>
-                              <span style={adminTableSecondaryFieldStyle}>
-                                {formatNumber(item.error_count)}
-                              </span>
-                            </div>
-                          </td>
-                          <td>
-                            <span style={adminTableFieldStyle}>
-                              {item.quota_remaining != null &&
-                              item.quota_limit != null
-                                ? `${formatNumber(item.quota_remaining)} / ${formatNumber(item.quota_limit)}`
-                                : "—"}
-                            </span>
-                          </td>
-                          <td>
-                            <div style={adminTableStackStyle}>
-                              <span style={adminTableFieldStyle}>
-                                {formatTimestampNoYear(item.last_used_at)}
-                              </span>
-                              <span style={adminTableSecondaryFieldStyle}>
-                                {formatTimestamp(item.status_changed_at)}
-                              </span>
-                            </div>
-                          </td>
-                          {isAdmin && (
-                            <td>
-                              <div
-                                className="table-actions"
-                                style={{ flexWrap: "nowrap" }}
-                              >
-                                {item.quarantine ? (
-                                  <Button
-                                    type="button"
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-8 w-8 rounded-full p-0 shadow-none"
-                                    title={keyStrings.actions.clearQuarantine}
-                                    aria-label={
-                                      keyStrings.actions.clearQuarantine
-                                    }
-                                    onClick={() =>
-                                      void handleClearQuarantine(item.id)
-                                    }
-                                    disabled={clearingQuarantineId === item.id}
-                                  >
-                                    <Icon
-                                      icon={
-                                        clearingQuarantineId === item.id
-                                          ? "mdi:progress-helper"
-                                          : "mdi:shield-check-outline"
-                                      }
-                                      width={18}
-                                      height={18}
-                                    />
-                                  </Button>
-                                ) : item.status === "disabled" ? (
-                                  <Button
-                                    type="button"
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-8 w-8 rounded-full p-0 shadow-none"
-                                    title={keyStrings.actions.enable}
-                                    aria-label={keyStrings.actions.enable}
-                                    onClick={() =>
-                                      void handleToggleDisable(item.id, false)
-                                    }
-                                    disabled={togglingId === item.id}
-                                  >
-                                    <Icon
-                                      icon={
-                                        togglingId === item.id
-                                          ? "mdi:progress-helper"
-                                          : "mdi:play-circle-outline"
-                                      }
-                                      width={18}
-                                      height={18}
-                                    />
-                                  </Button>
-                                ) : (
-                                  <Button
-                                    type="button"
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-8 w-8 rounded-full p-0 shadow-none"
-                                    title={keyStrings.actions.disable}
-                                    aria-label={keyStrings.actions.disable}
-                                    onClick={() => openDisableConfirm(item.id)}
-                                    disabled={togglingId === item.id}
-                                  >
-                                    <Icon
-                                      icon={
-                                        togglingId === item.id
-                                          ? "mdi:progress-helper"
-                                          : "mdi:pause-circle-outline"
-                                      }
-                                      width={18}
-                                      height={18}
-                                    />
-                                  </Button>
-                                )}
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-8 w-8 rounded-full p-0 shadow-none"
-                                  title={keyStrings.actions.delete}
-                                  aria-label={keyStrings.actions.delete}
-                                  onClick={() => openDeleteConfirm(item.id)}
-                                  disabled={
-                                    deletingId === item.id ||
-                                    clearingQuarantineId === item.id
-                                  }
-                                >
-                                  <Icon
-                                    icon={
-                                      deletingId === item.id
-                                        ? "mdi:progress-helper"
-                                        : "mdi:trash-outline"
-                                    }
-                                    width={18}
-                                    height={18}
-                                    color="#ef4444"
-                                  />
-                                </Button>
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-8 w-8 rounded-full p-0 shadow-none"
-                                  title={keyStrings.actions.details}
-                                  aria-label={keyStrings.actions.details}
-                                  onClick={() =>
-                                    navigateKey(item.id, {
-                                      preserveKeysContext: true,
-                                    })
-                                  }
-                                >
-                                  <Icon
-                                    icon="mdi:eye-outline"
-                                    width={18}
-                                    height={18}
-                                  />
-                                </Button>
-                              </div>
-                            </td>
-                          )}
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </>
-              )}
-            </AdminTableShell>
-            <AdminLoadingRegion
-              className="admin-mobile-list admin-responsive-down"
-              loadState={keysLoadState}
-              loadingLabel={
-                keysRefreshing
-                  ? loadingStateStrings.refreshing
-                  : keyStrings.empty.loading
-              }
-              errorLabel={keysError ?? loadingStateStrings.error}
-              minHeight={240}
-            >
-              {visibleKeys.length === 0 ? (
-                <div className="empty-state alert">
-                  {keysHasFilters
-                    ? keyStrings.empty.filtered
-                    : keyStrings.empty.none}
-                </div>
-              ) : (
-                visibleKeys.map((item) => {
-                  const total = item.total_requests || 0;
-                  const stateKey = copyStateKey("keys", item.id);
-                  const state = copyState.get(stateKey);
-                  return (
-                    <article key={item.id} className="admin-mobile-card">
-                      <div className="admin-mobile-kv">
-                        <span>{keyStrings.table.keyId}</span>
-                        <strong>
-                          <code>{item.id}</code>
-                        </strong>
-                      </div>
-                      <div className="admin-mobile-kv">
-                        <span>{keyStrings.table.registrationIp}</span>
-                        <strong>
-                          {formatRegistrationValue(item.registration_ip)}
-                        </strong>
-                      </div>
-                      <div className="admin-mobile-kv">
-                        <span>{keyStrings.table.registrationRegion}</span>
-                        <strong>
-                          {formatRegistrationValue(item.registration_region)}
-                        </strong>
-                      </div>
-                      <div className="admin-mobile-kv">
-                        <span>{keyStrings.table.status}</span>
-                        <div>
-                          <StatusBadge tone={statusTone(keyBadgeStatus(item))}>
-                            {statusLabel(keyBadgeStatus(item), adminStrings)}
-                          </StatusBadge>
-                          {item.quarantine && (
-                            <div
-                              className="panel-description"
-                              style={{ marginTop: 4 }}
-                            >
-                              {keyStrings.quarantine.badge}:{" "}
-                              {item.quarantine.reasonSummary ||
-                                keyStrings.quarantine.noReason}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                      <div className="admin-mobile-kv">
-                        <span>{keyStrings.table.total}</span>
-                        <strong>{formatNumber(total)}</strong>
-                      </div>
-                      <div className="admin-mobile-kv">
-                        <span>{keyStrings.table.success}</span>
-                        <strong>{formatNumber(item.success_count)}</strong>
-                      </div>
-                      <div className="admin-mobile-kv">
-                        <span>{keyStrings.table.errors}</span>
-                        <strong>{formatNumber(item.error_count)}</strong>
-                      </div>
-                      <div className="admin-mobile-kv">
-                        <span>{keyStrings.table.quotaLeft}</span>
-                        <strong>
-                          {item.quota_remaining != null &&
-                          item.quota_limit != null
-                            ? `${formatNumber(item.quota_remaining)} / ${formatNumber(item.quota_limit)}`
-                            : "—"}
-                        </strong>
-                      </div>
-                      <div className="admin-mobile-kv">
-                        <span>{keyStrings.table.lastUsed}</span>
-                        <strong>
-                          {formatTimestampNoYear(item.last_used_at)}
-                        </strong>
-                      </div>
-                      <div className="admin-mobile-kv">
-                        <span>{keyStrings.table.statusChanged}</span>
-                        <strong>
-                          {formatTimestamp(item.status_changed_at)}
-                        </strong>
-                      </div>
-                      {isAdmin && (
-                        <div className="admin-mobile-actions">
-                          <Button
-                            type="button"
-                            variant={state === "copied" ? "success" : "outline"}
-                            size="sm"
-                            onPointerEnter={() =>
-                              scheduleSecretWarm(`key:${item.id}`, () =>
-                                warmApiKeySecret(item.id),
-                              )
-                            }
-                            onPointerLeave={() =>
-                              cancelSecretWarm(`key:${item.id}`)
-                            }
-                            onBlur={() => cancelSecretWarm(`key:${item.id}`)}
-                            onPointerDown={() => warmApiKeySecret(item.id)}
-                            onKeyDown={(event) => {
-                              if (!isCopyIntentKey(event.key)) return;
-                              warmApiKeySecret(item.id);
-                            }}
-                            onClick={(event) =>
-                              void handleCopySecret(
-                                item.id,
-                                stateKey,
-                                event.currentTarget,
-                              )
-                            }
-                            disabled={state === "loading"}
-                          >
-                            {keyStrings.actions.copy}
-                          </Button>
-                          {item.quarantine ? (
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              onClick={() =>
-                                void handleClearQuarantine(item.id)
-                              }
-                              disabled={clearingQuarantineId === item.id}
-                            >
-                              {keyStrings.actions.clearQuarantine}
-                            </Button>
-                          ) : item.status === "disabled" ? (
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              onClick={() =>
-                                void handleToggleDisable(item.id, false)
-                              }
-                              disabled={
-                                togglingId === item.id ||
-                                clearingQuarantineId === item.id
-                              }
-                            >
-                              {keyStrings.actions.enable}
-                            </Button>
-                          ) : (
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              onClick={() => openDisableConfirm(item.id)}
-                              disabled={
-                                togglingId === item.id ||
-                                clearingQuarantineId === item.id
-                              }
-                            >
-                              {keyStrings.actions.disable}
-                            </Button>
-                          )}
-                          <Button
-                            type="button"
-                            variant="warning"
-                            size="sm"
-                            onClick={() => openDeleteConfirm(item.id)}
-                            disabled={deletingId === item.id}
-                          >
-                            {keyStrings.actions.delete}
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={() =>
-                              navigateKey(item.id, {
-                                preserveKeysContext: true,
-                              })
-                            }
-                          >
-                            {keyStrings.actions.details}
-                          </Button>
+                  )
+                })}
+              </tbody>
+            </>
+          )}
+        </AdminTableShell>
+        <AdminLoadingRegion
+          className="admin-mobile-list admin-responsive-down"
+          loadState={keysLoadState}
+          loadingLabel={keysRefreshing ? loadingStateStrings.refreshing : keyStrings.empty.loading}
+          errorLabel={keysError ?? loadingStateStrings.error}
+          minHeight={240}
+        >
+          {visibleKeys.length === 0 ? (
+            <div className="empty-state alert">
+              {keysHasFilters ? keyStrings.empty.filtered : keyStrings.empty.none}
+            </div>
+          ) : (
+            visibleKeys.map((item) => {
+              const total = item.total_requests || 0
+              const stateKey = copyStateKey('keys', item.id)
+              const state = copyState.get(stateKey)
+              return (
+                <article key={item.id} className="admin-mobile-card">
+                  <div className="admin-mobile-kv">
+                    <span>{keyStrings.table.keyId}</span>
+                    <strong>
+                      <code>{item.id}</code>
+                    </strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{keyStrings.table.registrationIp}</span>
+                    <strong>{formatRegistrationValue(item.registration_ip)}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{keyStrings.table.registrationRegion}</span>
+                    <strong>{formatRegistrationValue(item.registration_region)}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{keyStrings.table.status}</span>
+                    <div>
+                      <StatusBadge tone={statusTone(keyBadgeStatus(item))}>
+                        {statusLabel(keyBadgeStatus(item), adminStrings)}
+                      </StatusBadge>
+                      {item.quarantine && (
+                        <div className="panel-description" style={{ marginTop: 4 }}>
+                          {keyStrings.quarantine.badge}: {item.quarantine.reasonSummary || keyStrings.quarantine.noReason}
                         </div>
                       )}
-                    </article>
-                  );
-                })
-              )}
-            </AdminLoadingRegion>
-            {keysTotal > keysPerPage && (
-              <AdminTablePagination
-                page={keysPage}
-                totalPages={keysTotalPages}
-                pageSummary={
-                  <span className="panel-description">
-                    {keyStrings.pagination.page
-                      .replace("{page}", String(keysPage))
-                      .replace("{total}", String(keysTotalPages))}
-                  </span>
-                }
-                perPage={keysPerPage}
-                perPageLabel={keyStrings.pagination.perPage}
-                perPageAriaLabel={keyStrings.pagination.perPage}
-                previousLabel={tokenStrings.pagination.prev}
-                nextLabel={tokenStrings.pagination.next}
-                previousDisabled={keysPage <= 1}
-                nextDisabled={keysPage >= keysTotalPages}
-                disabled={keysBlocking}
-                onPrevious={goPrevKeysPage}
-                onNext={goNextKeysPage}
-                onPerPageChange={changeKeysPerPage}
-              />
-            )}
-          </section>
-        )}
-
-        {showRequests && (
-          <AdminRecentRequestsPanel
-            variant="admin"
-            language={language}
-            strings={adminStrings}
-            title={logStrings.title}
-            description={logStrings.description}
-            emptyLabel={logStrings.empty.none}
-            loadState={requestsLoadState}
-            loadingLabel={
-              requestsRefreshing
-                ? loadingStateStrings.refreshing
-                : logStrings.empty.loading
+                    </div>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{keyStrings.table.total}</span>
+                    <strong>{formatNumber(total)}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{keyStrings.table.success}</span>
+                    <strong>{formatNumber(item.success_count)}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{keyStrings.table.errors}</span>
+                    <strong>{formatNumber(item.error_count)}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{keyStrings.table.quotaLeft}</span>
+                    <strong>
+                      {item.quota_remaining != null && item.quota_limit != null
+                        ? `${formatNumber(item.quota_remaining)} / ${formatNumber(item.quota_limit)}`
+                        : '—'}
+                    </strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{keyStrings.table.lastUsed}</span>
+                    <strong>{formatTimestampNoYear(item.last_used_at)}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{keyStrings.table.statusChanged}</span>
+                    <strong>{formatTimestamp(item.status_changed_at)}</strong>
+                  </div>
+                  {isAdmin && (
+                    <div className="admin-mobile-actions">
+<Button
+  type="button"
+  variant={state === 'copied' ? 'success' : 'outline'}
+  size="sm"
+  onPointerEnter={() => scheduleSecretWarm(`key:${item.id}`, () => warmApiKeySecret(item.id))}
+  onPointerLeave={() => cancelSecretWarm(`key:${item.id}`)}
+  onBlur={() => cancelSecretWarm(`key:${item.id}`)}
+  onPointerDown={() => warmApiKeySecret(item.id)}
+  onKeyDown={(event) => { if (!isCopyIntentKey(event.key)) return; warmApiKeySecret(item.id) }}
+  onClick={(event) => void handleCopySecret(item.id, stateKey, event.currentTarget)}
+  disabled={state === 'loading'}
+>
+  {keyStrings.actions.copy}
+</Button>
+{item.quarantine ? (
+  <Button
+    type="button"
+    variant="outline"
+    size="sm"
+    onClick={() => void handleClearQuarantine(item.id)}
+    disabled={clearingQuarantineId === item.id}
+  >
+    {keyStrings.actions.clearQuarantine}
+  </Button>
+) : item.status === 'disabled' ? (
+  <Button
+    type="button"
+    variant="outline"
+    size="sm"
+    onClick={() => void handleToggleDisable(item.id, false)}
+    disabled={togglingId === item.id || clearingQuarantineId === item.id}
+  >
+    {keyStrings.actions.enable}
+  </Button>
+) : (
+  <Button
+    type="button"
+    variant="outline"
+    size="sm"
+    onClick={() => openDisableConfirm(item.id)}
+    disabled={togglingId === item.id || clearingQuarantineId === item.id}
+  >
+    {keyStrings.actions.disable}
+  </Button>
+)}
+<Button
+  type="button"
+  variant="warning"
+  size="sm"
+  onClick={() => openDeleteConfirm(item.id)}
+  disabled={deletingId === item.id}
+>
+  {keyStrings.actions.delete}
+</Button>
+<Button type="button" variant="outline" size="sm" onClick={() => navigateKey(item.id, { preserveKeysContext: true })}>
+  {keyStrings.actions.details}
+</Button>
+                    </div>
+                  )}
+                </article>
+              )
+            })
+          )}
+        </AdminLoadingRegion>
+        {keysTotal > keysPerPage && (
+          <AdminTablePagination
+            page={keysPage}
+            totalPages={keysTotalPages}
+            pageSummary={
+              <span className="panel-description">
+                {keyStrings.pagination.page
+                  .replace('{page}', String(keysPage))
+                  .replace('{total}', String(keysTotalPages))}
+              </span>
             }
-            errorLabel={requestsError ?? loadingStateStrings.error}
-            logs={logs}
-            requestKindOptions={requestLogRequestKindOptions}
-            requestKindQuickBilling={requestLogQuickBilling}
-            requestKindQuickProtocol={requestLogQuickProtocol}
-            selectedRequestKinds={requestLogSelectedKinds}
-            onRequestKindQuickFiltersChange={handleRequestLogQuickFilters}
-            onToggleRequestKind={handleToggleRequestLogKind}
-            onClearRequestKinds={handleClearRequestLogKinds}
-            outcomeFilter={requestLogOutcomeFilter}
-            resultOptions={requestLogFacets.results}
-            keyEffectOptions={requestLogFacets.keyEffects}
-            onOutcomeFilterChange={handleRequestLogOutcomeFilter}
-            keyOptions={requestLogFacets.keys}
-            selectedKeyId={requestLogKeyFilter}
-            onKeyFilterChange={handleRequestLogKeyFilter}
-            showKeyColumn
-            showTokenColumn
-            page={safeLogsPage}
-            perPage={logsPerPage}
-            total={logsTotal}
-            paginationDisabled={requestsBlocking}
-            onPreviousPage={goPrevLogsPage}
-            onNextPage={goNextLogsPage}
-            onPerPageChange={changeLogsPerPage}
-            formatTime={formatTimestampNoYear}
-            formatTimeDetail={(ts) =>
-              ts
-                ? `${formatTimestampWithMs(ts)} · ${formatRelativeTime(ts)}`
-                : "—"
-            }
-            onOpenKey={openRequestKeyDrawer}
-            onOpenToken={openRequestTokenDrawer}
+            perPage={keysPerPage}
+            perPageLabel={keyStrings.pagination.perPage}
+            perPageAriaLabel={keyStrings.pagination.perPage}
+            previousLabel={tokenStrings.pagination.prev}
+            nextLabel={tokenStrings.pagination.next}
+            previousDisabled={keysPage <= 1}
+            nextDisabled={keysPage >= keysTotalPages}
+            disabled={keysBlocking}
+            onPrevious={goPrevKeysPage}
+            onNext={goNextKeysPage}
+            onPerPageChange={changeKeysPerPage}
           />
         )}
+      </section>
+      )}
 
-        {showJobs && (
+      {showRequests && (
+        <AdminRecentRequestsPanel
+          variant="admin"
+          language={language}
+          strings={adminStrings}
+          title={logStrings.title}
+          description={logStrings.description}
+          emptyLabel={logStrings.empty.none}
+          loadState={requestsLoadState}
+          loadingLabel={requestsRefreshing ? loadingStateStrings.refreshing : logStrings.empty.loading}
+          errorLabel={requestsError ?? loadingStateStrings.error}
+          logs={logs}
+          requestKindOptions={requestLogRequestKindOptions}
+          requestKindQuickBilling={requestLogQuickBilling}
+          requestKindQuickProtocol={requestLogQuickProtocol}
+          selectedRequestKinds={requestLogSelectedKinds}
+          onRequestKindQuickFiltersChange={handleRequestLogQuickFilters}
+          onToggleRequestKind={handleToggleRequestLogKind}
+          onClearRequestKinds={handleClearRequestLogKinds}
+          outcomeFilter={requestLogOutcomeFilter}
+          resultOptions={requestLogFacets.results}
+          keyEffectOptions={requestLogFacets.keyEffects}
+          onOutcomeFilterChange={handleRequestLogOutcomeFilter}
+          keyOptions={requestLogFacets.keys}
+          selectedKeyId={requestLogKeyFilter}
+          onKeyFilterChange={handleRequestLogKeyFilter}
+          showKeyColumn
+          showTokenColumn
+          page={safeLogsPage}
+          perPage={logsPerPage}
+          total={logsTotal}
+          paginationDisabled={requestsBlocking}
+          onPreviousPage={goPrevLogsPage}
+          onNextPage={goNextLogsPage}
+          onPerPageChange={changeLogsPerPage}
+          formatTime={formatTimestampNoYear}
+          formatTimeDetail={(ts) => (ts ? `${formatTimestampWithMs(ts)} · ${formatRelativeTime(ts)}` : '—')}
+          onOpenKey={openRequestKeyDrawer}
+          onOpenToken={openRequestTokenDrawer}
+          loadLogBodies={loadRequestLogBodies}
+        />
+      )}
+
+      {showJobs && (
+      <section className="surface panel">
+        <div className="panel-header">
+          <div>
+            <h2>{jobsStrings.title}</h2>
+            <p className="panel-description">{jobsStrings.description}</p>
+          </div>
+          <div className="panel-actions">
+            <SegmentedTabs<'all' | 'quota' | 'usage' | 'logs' | 'geo'>
+              value={jobFilter}
+              onChange={setJobFilter}
+              options={[
+                { value: 'all', label: jobsStrings.filters.all },
+                { value: 'quota', label: jobsStrings.filters.quota },
+                { value: 'usage', label: jobsStrings.filters.usage },
+                { value: 'logs', label: jobsStrings.filters.logs },
+                { value: 'geo', label: jobsStrings.filters.geo },
+              ]}
+              ariaLabel={jobsStrings.title}
+              disabled={jobsBlocking}
+            />
+          </div>
+        </div>
+        <AdminTableShell
+          className="jobs-table-wrapper admin-responsive-up"
+          tableClassName="jobs-table jobs-module-table"
+          loadState={jobsLoadState}
+          loadingLabel={jobsRefreshing ? loadingStateStrings.refreshing : jobsStrings.empty.loading}
+          errorLabel={jobsError ?? loadingStateStrings.error}
+          minHeight={320}
+        >
+          {jobs.length === 0 ? (
+            <tbody>
+              <tr>
+                <td colSpan={7}>
+                  <div className="empty-state alert">{jobsStrings.empty.none}</div>
+                </td>
+              </tr>
+            </tbody>
+          ) : (
+            <>
+              <thead>
+                <tr>
+                  <th>{jobsStrings.table.id}</th>
+                  <th>{jobsStrings.table.type}</th>
+                  <th>{jobsStrings.table.key}</th>
+                  <th>{jobsStrings.table.status}</th>
+                  <th>{jobsStrings.table.attempt}</th>
+                  <th>{jobsStrings.table.started}</th>
+                  <th>{jobsStrings.table.message}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {jobs.map((j) => {
+                  const jt = j.job_type
+                  const jobTypeLabelText = jobTypeLabel(jt, jobsStrings)
+                  const jobStatusText = jobStatusLabel(String(j.status ?? ''))
+                  const keyId = j.key_id
+                  const keyGroup = j.key_group
+                  const started: number | null = j.started_at ?? null
+                  const finished: number | null = j.finished_at ?? null
+                  const startedTimeLabel = formatTimestamp(started)
+                  const startedDetail =
+                    started != null
+                      ? `${formatTimestampWithMs(started)} · ${formatRelativeTime(started)}`
+                      : jobsStrings.empty.none
+                  const isExpanded = expandedJobs.has(j.id)
+                  const jobMessage: string | null = j.message ?? null
+                  const messageLabel = isExpanded
+                    ? jobsStrings.toggles?.hide ?? jobsStrings.table.message
+                    : jobsStrings.toggles?.show ?? jobsStrings.table.message
+                  const duration =
+                    started != null && finished != null
+                      ? (() => {
+                          const seconds = Math.max(0, finished - started)
+                          if (seconds < 60) return `${seconds}s`
+                          const minutes = Math.round(seconds / 60)
+                          return `${minutes}m`
+                        })()
+                      : null
+                  const startedSummary =
+                    started != null ? `${formatTimestampWithMs(started)} · ${formatRelativeTime(started)}` : null
+                  const finishedSummary =
+                    finished != null ? `${formatTimestampWithMs(finished)} · ${formatRelativeTime(finished)}` : null
+                  const rows: JSX.Element[] = []
+
+                  rows.push(
+                    <tr key={j.id}>
+                      <td>{j.id}</td>
+                      <td>{jobTypeLabelText}</td>
+                      <td>
+                        <JobKeyLink
+                          keyId={keyId}
+                          keyGroup={keyGroup}
+                          ungroupedLabel={keyStrings.groups.ungrouped}
+                          detailLabel={keyStrings.actions.details}
+                          onOpenKey={navigateKey}
+                        />
+                      </td>
+                      <td>
+                        <StatusBadge tone={statusTone(j.status)} title={String(j.status ?? '')}>
+                          {jobStatusText}
+                        </StatusBadge>
+                      </td>
+                      <td>{j.attempt}</td>
+                      <td>{started ? startedTimeLabel : '—'}</td>
+                      <td className="jobs-message-cell">
+                        {jobMessage ? (
+                          <button
+                            type="button"
+                            className={`jobs-message-button${isExpanded ? ' jobs-message-button-active' : ''}`}
+                            onClick={() => toggleJobExpansion(j.id)}
+                            aria-expanded={isExpanded}
+                            aria-controls={`job-details-${j.id}`}
+                            aria-label={messageLabel}
+                            title={jobMessage}
+                          >
+                            <span className="jobs-message-text">{jobMessage}</span>
+                            <Icon
+                              icon={isExpanded ? 'mdi:chevron-up' : 'mdi:chevron-down'}
+                              width={16}
+                              height={16}
+                              className="jobs-message-icon"
+                              aria-hidden="true"
+                            />
+                          </button>
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+                    </tr>,
+                  )
+
+                  if (isExpanded) {
+                    rows.push(
+                      <tr key={`${j.id}-details`} className="log-details-row">
+                        <td colSpan={7} id={`job-details-${j.id}`}>
+                          <div className="log-details-panel">
+                            <div className="log-details-summary">
+                              <div>
+                                <div className="log-details-label">{jobsStrings.table.id}</div>
+                                <div className="log-details-value">{j.id}</div>
+                              </div>
+                              <div>
+                                <div className="log-details-label">{jobsStrings.table.type}</div>
+                                <div className="log-details-value">
+                                  {jt ? (
+                                    <Tooltip>
+                                      <TooltipTrigger asChild>
+                                        <span className="job-type-pill">
+                                          <button
+                                            type="button"
+                                            className="job-type-trigger"
+                                            aria-label={jt}
+                                          >
+                                            <span className="job-type-main">{jobTypeLabelText}</span>
+                                          </button>
+                                        </span>
+                                      </TooltipTrigger>
+                                      <TooltipContent className="job-type-tooltip max-w-[min(20rem,calc(100vw-2rem))]" side="top">
+                                        <code>{jt}</code>
+                                      </TooltipContent>
+                                    </Tooltip>
+                                  ) : (
+                                    '—'
+                                  )}
+                                </div>
+                              </div>
+                              <div>
+                                <div className="log-details-label">{jobsStrings.table.key}</div>
+                                <div className="log-details-value">
+                                  <JobKeyLink
+                                    keyId={keyId}
+                                    keyGroup={keyGroup}
+                                    ungroupedLabel={keyStrings.groups.ungrouped}
+                                    detailLabel={keyStrings.actions.details}
+                                    onOpenKey={navigateKey}
+                                  />
+                                </div>
+                              </div>
+                              <div>
+                                <div className="log-details-label">{jobsStrings.table.status}</div>
+                                <div className="log-details-value">{jobStatusText}</div>
+                              </div>
+                              <div>
+                                <div className="log-details-label">{jobsStrings.table.attempt}</div>
+                                <div className="log-details-value">{j.attempt}</div>
+                              </div>
+                              <div>
+                                <div className="log-details-label">{jobsStrings.table.started}</div>
+                                <div className="log-details-value">
+                                  {startedSummary ?? jobsStrings.empty.none}
+                                </div>
+                              </div>
+                              {finishedSummary && (
+                                <div>
+                                  <div className="log-details-label">Finished</div>
+                                  <div className="log-details-value">
+                                    {finishedSummary}
+                                  </div>
+                                </div>
+                              )}
+                              {duration && (
+                                <div>
+                                  <div className="log-details-label">DURATION</div>
+                                  <div className="log-details-value">{duration}</div>
+                                </div>
+                              )}
+                            </div>
+                            {jobMessage && (
+                              <div className="log-details-body">
+                                <section className="log-details-section">
+                                  <header>{jobsStrings.table.message}</header>
+                                  <pre>{jobMessage}</pre>
+                                </section>
+                              </div>
+                            )}
+                          </div>
+                        </td>
+                      </tr>,
+                    )
+                  }
+
+                  return rows
+                })}
+              </tbody>
+            </>
+          )}
+        </AdminTableShell>
+        <AdminLoadingRegion
+          className="admin-mobile-list admin-responsive-down"
+          loadState={jobsLoadState}
+          loadingLabel={jobsRefreshing ? loadingStateStrings.refreshing : jobsStrings.empty.loading}
+          errorLabel={jobsError ?? loadingStateStrings.error}
+          minHeight={240}
+        >
+          {jobs.length === 0 ? (
+            <div className="empty-state alert">{jobsStrings.empty.none}</div>
+          ) : (
+            jobs.map((j) => {
+              const jt = j.job_type
+              const started: number | null = j.started_at ?? null
+              return (
+                <article key={j.id} className="admin-mobile-card">
+                  <div className="admin-mobile-kv">
+                    <span>{jobsStrings.table.id}</span>
+                    <strong>{j.id}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{jobsStrings.table.type}</span>
+                    <strong>{jobTypeLabel(jt, jobsStrings)}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{jobsStrings.table.key}</span>
+                    <strong>
+                      <JobKeyLink
+                        keyId={j.key_id}
+                        keyGroup={j.key_group}
+                        ungroupedLabel={keyStrings.groups.ungrouped}
+                        detailLabel={keyStrings.actions.details}
+                        onOpenKey={navigateKey}
+                        showBubble={false}
+                      />
+                    </strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{jobsStrings.table.status}</span>
+                    <StatusBadge tone={statusTone(j.status)} title={String(j.status ?? '')}>
+                      {jobStatusLabel(String(j.status ?? ''))}
+                    </StatusBadge>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{jobsStrings.table.attempt}</span>
+                    <strong>{j.attempt}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{jobsStrings.table.started}</span>
+                    <strong>{started ? formatTimestamp(started) : '—'}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{jobsStrings.table.message}</span>
+                    <strong>{j.message ?? '—'}</strong>
+                  </div>
+                </article>
+              )
+            })
+          )}
+        </AdminLoadingRegion>
+        {jobsTotal > jobsPerPage && (
+          <AdminTablePagination
+            page={jobsPage}
+            totalPages={Math.max(1, Math.ceil(jobsTotal / jobsPerPage))}
+            pageSummary={
+              <span className="panel-description">
+                {jobsStrings.description} ({jobsPage} / {Math.max(1, Math.ceil(jobsTotal / jobsPerPage))})
+              </span>
+            }
+            previousLabel={tokenStrings.pagination.prev}
+            nextLabel={tokenStrings.pagination.next}
+            previousDisabled={jobsPage <= 1}
+            nextDisabled={jobsPage >= Math.ceil(jobsTotal / jobsPerPage)}
+            disabled={jobsBlocking}
+            onPrevious={() => setJobsPage((page) => Math.max(1, page - 1))}
+            onNext={() => setJobsPage((page) => page + 1)}
+          />
+        )}
+      </section>
+      )}
+
+      {showUsers && (
+        <>
+          {renderUserTagSummaryPanel()}
+
           <section className="surface panel">
-            <div className="panel-header">
-              <div>
-                <h2>{jobsStrings.title}</h2>
-                <p className="panel-description">{jobsStrings.description}</p>
+            <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
+              <div style={{ flex: '1 1 340px', minWidth: 260 }}>
+                <h2>{usersStrings.title}</h2>
+                <p className="panel-description">{usersStrings.description}</p>
               </div>
-              <div className="panel-actions">
-                <SegmentedTabs<"all" | "quota" | "usage" | "logs" | "geo">
-                  value={jobFilter}
-                  onChange={setJobFilter}
-                  options={[
-                    { value: "all", label: jobsStrings.filters.all },
-                    { value: "quota", label: jobsStrings.filters.quota },
-                    { value: "usage", label: jobsStrings.filters.usage },
-                    { value: "logs", label: jobsStrings.filters.logs },
-                    { value: "geo", label: jobsStrings.filters.geo },
-                  ]}
-                  ariaLabel={jobsStrings.title}
-                  disabled={jobsBlocking}
-                />
+              <div style={{ display: 'flex', flex: '1 1 520px', flexWrap: 'wrap', gap: 12, justifyContent: 'flex-end' }}>
+                <div
+                  className="rounded-xl border border-border/60 bg-background/55 px-4 py-3 shadow-sm backdrop-blur"
+                  style={{
+                    display: 'flex',
+                    minWidth: 260,
+                    maxWidth: 380,
+                    flex: '1 1 300px',
+                    alignItems: 'flex-start',
+                    justifyContent: 'space-between',
+                    gap: 12,
+                  }}
+                >
+                  <div style={{ minWidth: 0, flex: '1 1 auto' }}>
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        flexWrap: 'wrap',
+                      }}
+                    >
+                      <div className="text-sm font-semibold">{usersStrings.registration.title}</div>
+                      <Badge
+                        variant={
+                          registrationSettingsError
+                            ? 'destructive'
+                            : allowRegistration === null
+                              ? 'secondary'
+                              : allowRegistration
+                                ? 'success'
+                                : 'warning'
+                        }
+                      >
+                        {allowRegistration === null
+                          ? usersStrings.status.unknown
+                          : allowRegistration
+                            ? usersStrings.status.enabled
+                            : usersStrings.status.disabled}
+                      </Badge>
+                    </div>
+                    {registrationInlineStatus && (
+                      <p
+                        className="text-xs font-medium"
+                        role="status"
+                        aria-live="polite"
+                        style={{ margin: '6px 0 0', color: registrationSettingsError ? 'hsl(var(--destructive))' : undefined }}
+                      >
+                        {registrationInlineStatus}
+                      </p>
+                    )}
+                  </div>
+                  <Switch
+                    disabled={registrationSettingsLoading || registrationSettingsSaving || allowRegistration === null}
+                    checked={allowRegistration ?? false}
+                    aria-label={usersStrings.registration.title}
+                    onCheckedChange={() => void toggleAllowRegistration()}
+                    style={{ flex: '0 0 auto' }}
+                  />
+                </div>
+                <div className="users-search-controls">
+                  <Input
+                    type="text"
+                    name="users-search"
+                    className="users-search-input"
+                    placeholder={usersStrings.searchPlaceholder}
+                    value={usersQueryInput}
+                    disabled={usersBlocking}
+                    onChange={(event) => setUsersQueryInput(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault()
+                        applyUserSearch()
+                      }
+                    }}
+                  />
+                  <Button type="button" variant="outline" onClick={applyUserSearch} disabled={usersBlocking}>
+                    {usersStrings.search}
+                  </Button>
+                  {(usersQueryInput.length > 0 || usersQuery.length > 0 || usersTagFilterId != null) && (
+                    <Button type="button" variant="ghost" onClick={resetUserSearch} disabled={usersBlocking}>
+                      {usersStrings.clear}
+                    </Button>
+                  )}
+                </div>
               </div>
             </div>
+            {registrationSettingsError && (
+              <div className="surface error-banner" style={{ marginBottom: 12 }}>
+                {registrationSettingsError}
+              </div>
+            )}
+
             <AdminTableShell
-              className="jobs-table-wrapper admin-responsive-up"
-              tableClassName="jobs-table jobs-module-table"
-              loadState={jobsLoadState}
-              loadingLabel={
-                jobsRefreshing
-                  ? loadingStateStrings.refreshing
-                  : jobsStrings.empty.loading
-              }
-              errorLabel={jobsError ?? loadingStateStrings.error}
-              minHeight={320}
+              className="jobs-table-wrapper"
+              tableClassName="jobs-table admin-users-table admin-users-list-table"
+              loadState={usersLoadState}
+              loadingLabel={usersRefreshing ? loadingStateStrings.refreshing : usersStrings.empty.loading}
+              errorLabel={usersError ?? loadingStateStrings.error}
+              minHeight={360}
             >
-              {jobs.length === 0 ? (
+              {users.length === 0 ? (
                 <tbody>
                   <tr>
                     <td colSpan={7}>
-                      <div className="empty-state alert">
-                        {jobsStrings.empty.none}
-                      </div>
+                      <div className="empty-state alert">{usersStrings.empty.none}</div>
                     </td>
                   </tr>
                 </tbody>
@@ -11020,898 +9307,298 @@ function AdminDashboard(): JSX.Element {
                 <>
                   <thead>
                     <tr>
-                      <th>{jobsStrings.table.id}</th>
-                      <th>{jobsStrings.table.type}</th>
-                      <th>{jobsStrings.table.key}</th>
-                      <th>{jobsStrings.table.status}</th>
-                      <th>{jobsStrings.table.attempt}</th>
-                      <th>{jobsStrings.table.started}</th>
-                      <th>{jobsStrings.table.message}</th>
+                      <th>{usersStrings.table.user}</th>
+                      <th>{usersStrings.table.status}</th>
+                      <th>{usersStrings.table.tags}</th>
+                      <AdminUsersSortableHeader
+                        label={usersStrings.table.daily}
+                        field="quotaDailyUsed"
+                        activeField={effectiveUsersSort}
+                        activeOrder={effectiveUsersSortOrder}
+                        onToggle={toggleUsersSort}
+                      />
+                      <AdminUsersSortableHeader
+                        label={usersStrings.table.monthly}
+                        field="quotaMonthlyUsed"
+                        activeField={effectiveUsersSort}
+                        activeOrder={effectiveUsersSortOrder}
+                        onToggle={toggleUsersSort}
+                      />
+                      <AdminUsersSortableHeader
+                        label={usersStrings.table.lastActivity}
+                        field="lastActivity"
+                        activeField={effectiveUsersSort}
+                        activeOrder={effectiveUsersSortOrder}
+                        onToggle={toggleUsersSort}
+                      />
+                      <AdminUsersSortableHeader
+                        label={usersStrings.table.lastLogin}
+                        field="lastLoginAt"
+                        activeField={effectiveUsersSort}
+                        activeOrder={effectiveUsersSortOrder}
+                        onToggle={toggleUsersSort}
+                      />
                     </tr>
                   </thead>
                   <tbody>
-                    {jobs.map((j) => {
-                      const jt = j.job_type;
-                      const jobTypeLabelText = jobTypeLabel(jt, jobsStrings);
-                      const jobStatusText = jobStatusLabel(
-                        String(j.status ?? ""),
-                      );
-                      const keyId = j.key_id;
-                      const keyGroup = j.key_group;
-                      const started: number | null = j.started_at ?? null;
-                      const finished: number | null = j.finished_at ?? null;
-                      const startedTimeLabel = formatTimestamp(started);
-                      const startedDetail =
-                        started != null
-                          ? `${formatTimestampWithMs(started)} · ${formatRelativeTime(started)}`
-                          : jobsStrings.empty.none;
-                      const isExpanded = expandedJobs.has(j.id);
-                      const jobMessage: string | null = j.message ?? null;
-                      const messageLabel = isExpanded
-                        ? (jobsStrings.toggles?.hide ??
-                          jobsStrings.table.message)
-                        : (jobsStrings.toggles?.show ??
-                          jobsStrings.table.message);
-                      const duration =
-                        started != null && finished != null
-                          ? (() => {
-                              const seconds = Math.max(0, finished - started);
-                              if (seconds < 60) return `${seconds}s`;
-                              const minutes = Math.round(seconds / 60);
-                              return `${minutes}m`;
-                            })()
-                          : null;
-                      const startedSummary =
-                        started != null
-                          ? `${formatTimestampWithMs(started)} · ${formatRelativeTime(started)}`
-                          : null;
-                      const finishedSummary =
-                        finished != null
-                          ? `${formatTimestampWithMs(finished)} · ${formatRelativeTime(finished)}`
-                          : null;
-                      const rows: JSX.Element[] = [];
-
-                      rows.push(
-                        <tr key={j.id}>
-                          <td>{j.id}</td>
-                          <td>{jobTypeLabelText}</td>
-                          <td>
-                            <JobKeyLink
-                              keyId={keyId}
-                              keyGroup={keyGroup}
-                              ungroupedLabel={keyStrings.groups.ungrouped}
-                              detailLabel={keyStrings.actions.details}
-                              onOpenKey={navigateKey}
-                            />
-                          </td>
-                          <td>
-                            <StatusBadge
-                              tone={statusTone(j.status)}
-                              title={String(j.status ?? "")}
-                            >
-                              {jobStatusText}
-                            </StatusBadge>
-                          </td>
-                          <td>{j.attempt}</td>
-                          <td>{started ? startedTimeLabel : "—"}</td>
-                          <td className="jobs-message-cell">
-                            {jobMessage ? (
-                              <button
-                                type="button"
-                                className={`jobs-message-button${isExpanded ? " jobs-message-button-active" : ""}`}
-                                onClick={() => toggleJobExpansion(j.id)}
-                                aria-expanded={isExpanded}
-                                aria-controls={`job-details-${j.id}`}
-                                aria-label={messageLabel}
-                                title={jobMessage}
-                              >
-                                <span className="jobs-message-text">
-                                  {jobMessage}
-                                </span>
-                                <Icon
-                                  icon={
-                                    isExpanded
-                                      ? "mdi:chevron-up"
-                                      : "mdi:chevron-down"
-                                  }
-                                  width={16}
-                                  height={16}
-                                  className="jobs-message-icon"
-                                  aria-hidden="true"
-                                />
-                              </button>
-                            ) : (
-                              "—"
-                            )}
-                          </td>
-                        </tr>,
-                      );
-
-                      if (isExpanded) {
-                        rows.push(
-                          <tr
-                            key={`${j.id}-details`}
-                            className="log-details-row"
+                    {users.map((item) => (
+                      <tr key={item.userId}>
+                        <td className="admin-users-identity-cell">
+                          <button
+                            type="button"
+                            className="link-button admin-users-identity-button"
+                            aria-label={usersStrings.actions.view}
+                            onClick={() => navigateUser(item.userId, { preserveUsersContext: true })}
                           >
-                            <td colSpan={7} id={`job-details-${j.id}`}>
-                              <div className="log-details-panel">
-                                <div className="log-details-summary">
-                                  <div>
-                                    <div className="log-details-label">
-                                      {jobsStrings.table.id}
-                                    </div>
-                                    <div className="log-details-value">
-                                      {j.id}
-                                    </div>
-                                  </div>
-                                  <div>
-                                    <div className="log-details-label">
-                                      {jobsStrings.table.type}
-                                    </div>
-                                    <div className="log-details-value">
-                                      {jt ? (
-                                        <Tooltip>
-                                          <TooltipTrigger asChild>
-                                            <span className="job-type-pill">
-                                              <button
-                                                type="button"
-                                                className="job-type-trigger"
-                                                aria-label={jt}
-                                              >
-                                                <span className="job-type-main">
-                                                  {jobTypeLabelText}
-                                                </span>
-                                              </button>
-                                            </span>
-                                          </TooltipTrigger>
-                                          <TooltipContent
-                                            className="job-type-tooltip max-w-[min(20rem,calc(100vw-2rem))]"
-                                            side="top"
-                                          >
-                                            <code>{jt}</code>
-                                          </TooltipContent>
-                                        </Tooltip>
-                                      ) : (
-                                        "—"
-                                      )}
-                                    </div>
-                                  </div>
-                                  <div>
-                                    <div className="log-details-label">
-                                      {jobsStrings.table.key}
-                                    </div>
-                                    <div className="log-details-value">
-                                      <JobKeyLink
-                                        keyId={keyId}
-                                        keyGroup={keyGroup}
-                                        ungroupedLabel={
-                                          keyStrings.groups.ungrouped
-                                        }
-                                        detailLabel={keyStrings.actions.details}
-                                        onOpenKey={navigateKey}
-                                      />
-                                    </div>
-                                  </div>
-                                  <div>
-                                    <div className="log-details-label">
-                                      {jobsStrings.table.status}
-                                    </div>
-                                    <div className="log-details-value">
-                                      {jobStatusText}
-                                    </div>
-                                  </div>
-                                  <div>
-                                    <div className="log-details-label">
-                                      {jobsStrings.table.attempt}
-                                    </div>
-                                    <div className="log-details-value">
-                                      {j.attempt}
-                                    </div>
-                                  </div>
-                                  <div>
-                                    <div className="log-details-label">
-                                      {jobsStrings.table.started}
-                                    </div>
-                                    <div className="log-details-value">
-                                      {startedSummary ?? jobsStrings.empty.none}
-                                    </div>
-                                  </div>
-                                  {finishedSummary && (
-                                    <div>
-                                      <div className="log-details-label">
-                                        Finished
-                                      </div>
-                                      <div className="log-details-value">
-                                        {finishedSummary}
-                                      </div>
-                                    </div>
-                                  )}
-                                  {duration && (
-                                    <div>
-                                      <div className="log-details-label">
-                                        DURATION
-                                      </div>
-                                      <div className="log-details-value">
-                                        {duration}
-                                      </div>
-                                    </div>
-                                  )}
-                                </div>
-                                {jobMessage && (
-                                  <div className="log-details-body">
-                                    <section className="log-details-section">
-                                      <header>
-                                        {jobsStrings.table.message}
-                                      </header>
-                                      <pre>{jobMessage}</pre>
-                                    </section>
-                                  </div>
-                                )}
-                              </div>
-                            </td>
-                          </tr>,
-                        );
-                      }
-
-                      return rows;
-                    })}
+                            <strong>{item.displayName || item.username || item.userId}</strong>
+                          </button>
+                          <div className="panel-description admin-users-identity-meta">
+                            <code>{item.userId}</code>
+                            {item.username ? ` · @${item.username}` : ''}
+                          </div>
+                        </td>
+                        <td>
+                          <StatusBadge tone={item.active ? 'success' : 'neutral'}>
+                            {item.active ? usersStrings.status.active : usersStrings.status.inactive}
+                          </StatusBadge>
+                        </td>
+                        <td className="admin-users-tags-cell">
+                          <UserTagBadgeList
+                            tags={item.tags}
+                            usersStrings={usersStrings}
+                            emptyLabel={usersStrings.userTags.empty}
+                          />
+                        </td>
+                        <td className="admin-users-compact-cell">
+                          <AdminTableValueStack {...formatQuotaStackValue(item.quotaDailyUsed, item.quotaDailyLimit)} />
+                        </td>
+                        <td className="admin-users-compact-cell">
+                          <AdminTableValueStack {...formatQuotaStackValue(item.quotaMonthlyUsed, item.quotaMonthlyLimit)} />
+                        </td>
+                        <td className="admin-users-compact-cell">
+                          <AdminTableValueStack {...formatStackedTimestamp(item.lastActivity, language)} />
+                        </td>
+                        <td className="admin-users-compact-cell">
+                          <AdminTableValueStack {...formatStackedTimestamp(item.lastLoginAt, language)} />
+                        </td>
+                      </tr>
+                    ))}
                   </tbody>
                 </>
               )}
             </AdminTableShell>
             <AdminLoadingRegion
               className="admin-mobile-list admin-responsive-down"
-              loadState={jobsLoadState}
-              loadingLabel={
-                jobsRefreshing
-                  ? loadingStateStrings.refreshing
-                  : jobsStrings.empty.loading
-              }
-              errorLabel={jobsError ?? loadingStateStrings.error}
-              minHeight={240}
+              loadState={usersLoadState}
+              loadingLabel={usersRefreshing ? loadingStateStrings.refreshing : usersStrings.empty.loading}
+              errorLabel={usersError ?? loadingStateStrings.error}
+              minHeight={260}
             >
-              {jobs.length === 0 ? (
-                <div className="empty-state alert">
-                  {jobsStrings.empty.none}
-                </div>
+              {users.length === 0 ? (
+                <div className="empty-state alert">{usersStrings.empty.none}</div>
               ) : (
-                jobs.map((j) => {
-                  const jt = j.job_type;
-                  const started: number | null = j.started_at ?? null;
-                  return (
-                    <article key={j.id} className="admin-mobile-card">
-                      <div className="admin-mobile-kv">
-                        <span>{jobsStrings.table.id}</span>
-                        <strong>{j.id}</strong>
-                      </div>
-                      <div className="admin-mobile-kv">
-                        <span>{jobsStrings.table.type}</span>
-                        <strong>{jobTypeLabel(jt, jobsStrings)}</strong>
-                      </div>
-                      <div className="admin-mobile-kv">
-                        <span>{jobsStrings.table.key}</span>
-                        <strong>
-                          <JobKeyLink
-                            keyId={j.key_id}
-                            keyGroup={j.key_group}
-                            ungroupedLabel={keyStrings.groups.ungrouped}
-                            detailLabel={keyStrings.actions.details}
-                            onOpenKey={navigateKey}
-                            showBubble={false}
-                          />
-                        </strong>
-                      </div>
-                      <div className="admin-mobile-kv">
-                        <span>{jobsStrings.table.status}</span>
-                        <StatusBadge
-                          tone={statusTone(j.status)}
-                          title={String(j.status ?? "")}
-                        >
-                          {jobStatusLabel(String(j.status ?? ""))}
-                        </StatusBadge>
-                      </div>
-                      <div className="admin-mobile-kv">
-                        <span>{jobsStrings.table.attempt}</span>
-                        <strong>{j.attempt}</strong>
-                      </div>
-                      <div className="admin-mobile-kv">
-                        <span>{jobsStrings.table.started}</span>
-                        <strong>
-                          {started ? formatTimestamp(started) : "—"}
-                        </strong>
-                      </div>
-                      <div className="admin-mobile-kv">
-                        <span>{jobsStrings.table.message}</span>
-                        <strong>{j.message ?? "—"}</strong>
-                      </div>
-                    </article>
-                  );
-                })
+                users.map((item) => (
+                  <article key={item.userId} className="admin-mobile-card">
+                    <div className="admin-mobile-kv">
+                      <span>{usersStrings.table.user}</span>
+                      <button
+                        type="button"
+                        className="link-button admin-users-mobile-link"
+                        aria-label={usersStrings.actions.view}
+                        onClick={() => navigateUser(item.userId, { preserveUsersContext: true })}
+                      >
+                        <strong>{item.displayName || item.username || item.userId}</strong>
+                      </button>
+                    </div>
+                    <div className="admin-mobile-kv">
+                      <span>{usersStrings.table.status}</span>
+                      <StatusBadge tone={item.active ? 'success' : 'neutral'}>
+                        {item.active ? usersStrings.status.active : usersStrings.status.inactive}
+                      </StatusBadge>
+                    </div>
+                    <div className="admin-mobile-kv">
+                      <span>{usersStrings.table.tags}</span>
+                      <UserTagBadgeList
+                        tags={item.tags}
+                        usersStrings={usersStrings}
+                        emptyLabel={usersStrings.userTags.empty}
+                      />
+                    </div>
+                    <div className="admin-mobile-kv">
+                      <span>{usersStrings.table.daily}</span>
+                      <strong>{formatQuotaUsagePair(item.quotaDailyUsed, item.quotaDailyLimit)}</strong>
+                    </div>
+                    <div className="admin-mobile-kv">
+                      <span>{usersStrings.table.monthly}</span>
+                      <strong>{formatQuotaUsagePair(item.quotaMonthlyUsed, item.quotaMonthlyLimit)}</strong>
+                    </div>
+                    <div className="admin-mobile-kv">
+                      <span>{usersStrings.table.lastActivity}</span>
+                      <strong>{formatTimestamp(item.lastActivity)}</strong>
+                    </div>
+                    <div className="admin-mobile-kv">
+                      <span>{usersStrings.table.lastLogin}</span>
+                      <strong>{formatTimestamp(item.lastLoginAt)}</strong>
+                    </div>
+                  </article>
+                ))
               )}
             </AdminLoadingRegion>
-            {jobsTotal > jobsPerPage && (
+
+            {usersTotal > USERS_PER_PAGE && (
               <AdminTablePagination
-                page={jobsPage}
-                totalPages={Math.max(1, Math.ceil(jobsTotal / jobsPerPage))}
+                page={usersPage}
+                totalPages={usersTotalPages}
                 pageSummary={
                   <span className="panel-description">
-                    {jobsStrings.description} ({jobsPage} /{" "}
-                    {Math.max(1, Math.ceil(jobsTotal / jobsPerPage))})
+                    {usersStrings.pagination
+                      .replace('{page}', String(usersPage))
+                      .replace('{total}', String(usersTotalPages))}
                   </span>
                 }
                 previousLabel={tokenStrings.pagination.prev}
                 nextLabel={tokenStrings.pagination.next}
-                previousDisabled={jobsPage <= 1}
-                nextDisabled={jobsPage >= Math.ceil(jobsTotal / jobsPerPage)}
-                disabled={jobsBlocking}
-                onPrevious={() => setJobsPage((page) => Math.max(1, page - 1))}
-                onNext={() => setJobsPage((page) => page + 1)}
+                previousDisabled={usersPage <= 1}
+                nextDisabled={usersPage >= usersTotalPages}
+                disabled={usersBlocking}
+                onPrevious={goPrevUsersPage}
+                onNext={goNextUsersPage}
               />
             )}
           </section>
-        )}
+        </>
+      )}
+      {showAlerts && (
 
-        {showUsers && (
-          <>
-            {renderUserTagSummaryPanel()}
+        <ModulePlaceholder
+          title={adminStrings.modules.alerts.title}
+          description={adminStrings.modules.alerts.description}
+          comingSoonLabel={adminStrings.modules.comingSoon}
+          sections={[
+            adminStrings.modules.alerts.sections.rules,
+            adminStrings.modules.alerts.sections.thresholds,
+            adminStrings.modules.alerts.sections.channels,
+          ]}
+        />
+      )}
 
+      {showProxySettings && (
+        <ForwardProxySettingsModule
+          strings={proxySettingsStrings}
+          settings={forwardProxySettings}
+          stats={forwardProxyStats}
+          settingsLoadState={forwardProxySettingsLoadState}
+          statsLoadState={forwardProxyStatsLoadState}
+          settingsError={forwardProxySettingsError}
+          statsError={forwardProxyStatsError}
+          saveError={forwardProxySaveError}
+          revalidateError={forwardProxyRevalidateError}
+          saving={forwardProxySaving}
+          revalidating={forwardProxyRevalidating}
+          savedAt={forwardProxySavedAt}
+          revalidateProgress={forwardProxyRevalidateProgress}
+          onPersistDraft={saveForwardProxySettings}
+          onValidateCandidates={validateForwardProxyCandidates}
+          onRefresh={handleManualRefresh}
+          onRevalidate={() => void revalidateForwardProxy()}
+        />
+      )}
+
+      <Drawer
+        open={monthlyBrokenDrawer != null}
+        onOpenChange={(open) => {
+          if (!open) closeMonthlyBrokenDrawer()
+        }}
+        shouldScaleBackground={false}
+      >
+        <DrawerContent className="request-entity-drawer-content-fit">
+          <div className="request-entity-drawer-body-fit">
             <section className="surface panel">
-              <div
-                className="panel-header"
-                style={{ gap: 12, flexWrap: "wrap" }}
-              >
-                <div style={{ flex: "1 1 340px", minWidth: 260 }}>
-                  <h2>{usersStrings.title}</h2>
+              <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
+                <div>
+                  <h2>{usersStrings.brokenKeys.drawerTitle}</h2>
                   <p className="panel-description">
-                    {usersStrings.description}
+                    {usersStrings.brokenKeys.drawerDescription.replace('{label}', monthlyBrokenDrawer?.label ?? '—')}
                   </p>
                 </div>
-                <div
-                  style={{
-                    display: "flex",
-                    flex: "1 1 520px",
-                    flexWrap: "wrap",
-                    gap: 12,
-                    justifyContent: "flex-end",
-                  }}
-                >
-                  <div
-                    className="rounded-xl border border-border/60 bg-background/55 px-4 py-3 shadow-sm backdrop-blur"
-                    style={{
-                      display: "flex",
-                      minWidth: 260,
-                      maxWidth: 380,
-                      flex: "1 1 300px",
-                      alignItems: "flex-start",
-                      justifyContent: "space-between",
-                      gap: 12,
-                    }}
-                  >
-                    <div style={{ minWidth: 0, flex: "1 1 auto" }}>
-                      <div
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 8,
-                          flexWrap: "wrap",
-                        }}
-                      >
-                        <div className="text-sm font-semibold">
-                          {usersStrings.registration.title}
-                        </div>
-                        <Badge
-                          variant={
-                            registrationSettingsError
-                              ? "destructive"
-                              : allowRegistration === null
-                                ? "secondary"
-                                : allowRegistration
-                                  ? "success"
-                                  : "warning"
-                          }
-                        >
-                          {allowRegistration === null
-                            ? usersStrings.status.unknown
-                            : allowRegistration
-                              ? usersStrings.status.enabled
-                              : usersStrings.status.disabled}
-                        </Badge>
-                      </div>
-                      {registrationInlineStatus && (
-                        <p
-                          className="text-xs font-medium"
-                          role="status"
-                          aria-live="polite"
-                          style={{
-                            margin: "6px 0 0",
-                            color: registrationSettingsError
-                              ? "hsl(var(--destructive))"
-                              : undefined,
-                          }}
-                        >
-                          {registrationInlineStatus}
-                        </p>
-                      )}
-                    </div>
-                    <Switch
-                      disabled={
-                        registrationSettingsLoading ||
-                        registrationSettingsSaving ||
-                        allowRegistration === null
-                      }
-                      checked={allowRegistration ?? false}
-                      aria-label={usersStrings.registration.title}
-                      onCheckedChange={() => void toggleAllowRegistration()}
-                      style={{ flex: "0 0 auto" }}
-                    />
-                  </div>
-                  <div className="users-search-controls">
-                    <Input
-                      type="text"
-                      name="users-search"
-                      className="users-search-input"
-                      placeholder={usersStrings.searchPlaceholder}
-                      value={usersQueryInput}
-                      disabled={usersBlocking}
-                      onChange={(event) =>
-                        setUsersQueryInput(event.target.value)
-                      }
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") {
-                          event.preventDefault();
-                          applyUserSearch();
-                        }
-                      }}
-                    />
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={applyUserSearch}
-                      disabled={usersBlocking}
-                    >
-                      {usersStrings.search}
-                    </Button>
-                    {(usersQueryInput.length > 0 ||
-                      usersQuery.length > 0 ||
-                      usersTagFilterId != null) && (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        onClick={resetUserSearch}
-                        disabled={usersBlocking}
-                      >
-                        {usersStrings.clear}
-                      </Button>
-                    )}
-                  </div>
-                </div>
               </div>
-              {registrationSettingsError && (
-                <div
-                  className="surface error-banner"
-                  style={{ marginBottom: 12 }}
-                >
-                  {registrationSettingsError}
-                </div>
-              )}
-
-              <AdminTableShell
-                className="jobs-table-wrapper"
-                tableClassName="jobs-table admin-users-table admin-users-list-table"
-                loadState={usersLoadState}
-                loadingLabel={
-                  usersRefreshing
-                    ? loadingStateStrings.refreshing
-                    : usersStrings.empty.loading
-                }
-                errorLabel={usersError ?? loadingStateStrings.error}
-                minHeight={360}
+              <AdminLoadingRegion
+                className="table-wrapper jobs-table-wrapper admin-responsive-up"
+                loadState={monthlyBrokenDrawerLoadState}
+                loadingLabel={usersStrings.brokenKeys.loading}
+                errorLabel={monthlyBrokenDrawerError ?? loadingStateStrings.error}
+                minHeight={240}
               >
-                {users.length === 0 ? (
-                  <tbody>
-                    <tr>
-                      <td colSpan={7}>
-                        <div className="empty-state alert">
-                          {usersStrings.empty.none}
-                        </div>
-                      </td>
-                    </tr>
-                  </tbody>
+                {monthlyBrokenDrawerItems.length === 0 ? (
+                  <div className="empty-state alert">{usersStrings.brokenKeys.empty}</div>
                 ) : (
-                  <>
+                  <Table className="jobs-table admin-users-table">
                     <thead>
                       <tr>
-                        <th>{usersStrings.table.user}</th>
-                        <th>{usersStrings.table.status}</th>
-                        <th>{usersStrings.table.tags}</th>
-                        <AdminUsersSortableHeader
-                          label={usersStrings.table.daily}
-                          field="quotaDailyUsed"
-                          activeField={effectiveUsersSort}
-                          activeOrder={effectiveUsersSortOrder}
-                          onToggle={toggleUsersSort}
-                        />
-                        <AdminUsersSortableHeader
-                          label={usersStrings.table.monthly}
-                          field="quotaMonthlyUsed"
-                          activeField={effectiveUsersSort}
-                          activeOrder={effectiveUsersSortOrder}
-                          onToggle={toggleUsersSort}
-                        />
-                        <AdminUsersSortableHeader
-                          label={usersStrings.table.lastActivity}
-                          field="lastActivity"
-                          activeField={effectiveUsersSort}
-                          activeOrder={effectiveUsersSortOrder}
-                          onToggle={toggleUsersSort}
-                        />
-                        <AdminUsersSortableHeader
-                          label={usersStrings.table.lastLogin}
-                          field="lastLoginAt"
-                          activeField={effectiveUsersSort}
-                          activeOrder={effectiveUsersSortOrder}
-                          onToggle={toggleUsersSort}
-                        />
+                        <th>{usersStrings.brokenKeys.table.key}</th>
+                        <th>{usersStrings.brokenKeys.table.status}</th>
+                        <th>{usersStrings.brokenKeys.table.reason}</th>
+                        <th>{usersStrings.brokenKeys.table.latestBreakAt}</th>
+                        <th>{usersStrings.brokenKeys.table.breaker}</th>
+                        <th>{usersStrings.brokenKeys.table.relatedUsers}</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {users.map((item) => (
-                        <tr key={item.userId}>
-                          <td className="admin-users-identity-cell">
-                            <button
-                              type="button"
-                              className="link-button admin-users-identity-button"
-                              aria-label={usersStrings.actions.view}
-                              onClick={() =>
-                                navigateUser(item.userId, {
-                                  preserveUsersContext: true,
-                                })
-                              }
-                            >
-                              <strong>
-                                {item.displayName ||
-                                  item.username ||
-                                  item.userId}
-                              </strong>
-                            </button>
-                            <div className="panel-description admin-users-identity-meta">
-                              <code>{item.userId}</code>
-                              {item.username ? ` · @${item.username}` : ""}
-                            </div>
-                          </td>
-                          <td>
-                            <StatusBadge
-                              tone={item.active ? "success" : "neutral"}
-                            >
-                              {item.active
-                                ? usersStrings.status.active
-                                : usersStrings.status.inactive}
-                            </StatusBadge>
-                          </td>
-                          <td className="admin-users-tags-cell">
-                            <UserTagBadgeList
-                              tags={item.tags}
-                              usersStrings={usersStrings}
-                              emptyLabel={usersStrings.userTags.empty}
-                            />
-                          </td>
-                          <td className="admin-users-compact-cell">
-                            <AdminTableValueStack
-                              {...formatQuotaStackValue(
-                                item.quotaDailyUsed,
-                                item.quotaDailyLimit,
-                              )}
-                            />
-                          </td>
-                          <td className="admin-users-compact-cell">
-                            <AdminTableValueStack
-                              {...formatQuotaStackValue(
-                                item.quotaMonthlyUsed,
-                                item.quotaMonthlyLimit,
-                              )}
-                            />
-                          </td>
-                          <td className="admin-users-compact-cell">
-                            <AdminTableValueStack
-                              {...formatStackedTimestamp(
-                                item.lastActivity,
-                                language,
-                              )}
-                            />
-                          </td>
-                          <td className="admin-users-compact-cell">
-                            <AdminTableValueStack
-                              {...formatStackedTimestamp(
-                                item.lastLoginAt,
-                                language,
-                              )}
-                            />
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </>
-                )}
-              </AdminTableShell>
-              <AdminLoadingRegion
-                className="admin-mobile-list admin-responsive-down"
-                loadState={usersLoadState}
-                loadingLabel={
-                  usersRefreshing
-                    ? loadingStateStrings.refreshing
-                    : usersStrings.empty.loading
-                }
-                errorLabel={usersError ?? loadingStateStrings.error}
-                minHeight={260}
-              >
-                {users.length === 0 ? (
-                  <div className="empty-state alert">
-                    {usersStrings.empty.none}
-                  </div>
-                ) : (
-                  users.map((item) => (
-                    <article key={item.userId} className="admin-mobile-card">
-                      <div className="admin-mobile-kv">
-                        <span>{usersStrings.table.user}</span>
-                        <button
-                          type="button"
-                          className="link-button admin-users-mobile-link"
-                          aria-label={usersStrings.actions.view}
-                          onClick={() =>
-                            navigateUser(item.userId, {
-                              preserveUsersContext: true,
-                            })
-                          }
-                        >
-                          <strong>
-                            {item.displayName || item.username || item.userId}
-                          </strong>
-                        </button>
-                      </div>
-                      <div className="admin-mobile-kv">
-                        <span>{usersStrings.table.status}</span>
-                        <StatusBadge tone={item.active ? "success" : "neutral"}>
-                          {item.active
-                            ? usersStrings.status.active
-                            : usersStrings.status.inactive}
-                        </StatusBadge>
-                      </div>
-                      <div className="admin-mobile-kv">
-                        <span>{usersStrings.table.tags}</span>
-                        <UserTagBadgeList
-                          tags={item.tags}
-                          usersStrings={usersStrings}
-                          emptyLabel={usersStrings.userTags.empty}
-                        />
-                      </div>
-                      <div className="admin-mobile-kv">
-                        <span>{usersStrings.table.daily}</span>
-                        <strong>
-                          {formatQuotaUsagePair(
-                            item.quotaDailyUsed,
-                            item.quotaDailyLimit,
-                          )}
-                        </strong>
-                      </div>
-                      <div className="admin-mobile-kv">
-                        <span>{usersStrings.table.monthly}</span>
-                        <strong>
-                          {formatQuotaUsagePair(
-                            item.quotaMonthlyUsed,
-                            item.quotaMonthlyLimit,
-                          )}
-                        </strong>
-                      </div>
-                      <div className="admin-mobile-kv">
-                        <span>{usersStrings.table.lastActivity}</span>
-                        <strong>{formatTimestamp(item.lastActivity)}</strong>
-                      </div>
-                      <div className="admin-mobile-kv">
-                        <span>{usersStrings.table.lastLogin}</span>
-                        <strong>{formatTimestamp(item.lastLoginAt)}</strong>
-                      </div>
-                    </article>
-                  ))
-                )}
-              </AdminLoadingRegion>
-
-              {usersTotal > USERS_PER_PAGE && (
-                <AdminTablePagination
-                  page={usersPage}
-                  totalPages={usersTotalPages}
-                  pageSummary={
-                    <span className="panel-description">
-                      {usersStrings.pagination
-                        .replace("{page}", String(usersPage))
-                        .replace("{total}", String(usersTotalPages))}
-                    </span>
-                  }
-                  previousLabel={tokenStrings.pagination.prev}
-                  nextLabel={tokenStrings.pagination.next}
-                  previousDisabled={usersPage <= 1}
-                  nextDisabled={usersPage >= usersTotalPages}
-                  disabled={usersBlocking}
-                  onPrevious={goPrevUsersPage}
-                  onNext={goNextUsersPage}
-                />
-              )}
-            </section>
-          </>
-        )}
-        {showAlerts && (
-          <ModulePlaceholder
-            title={adminStrings.modules.alerts.title}
-            description={adminStrings.modules.alerts.description}
-            comingSoonLabel={adminStrings.modules.comingSoon}
-            sections={[
-              adminStrings.modules.alerts.sections.rules,
-              adminStrings.modules.alerts.sections.thresholds,
-              adminStrings.modules.alerts.sections.channels,
-            ]}
-          />
-        )}
-
-        {showProxySettings && (
-          <ForwardProxySettingsModule
-            strings={proxySettingsStrings}
-            settings={forwardProxySettings}
-            stats={forwardProxyStats}
-            settingsLoadState={forwardProxySettingsLoadState}
-            statsLoadState={forwardProxyStatsLoadState}
-            settingsError={forwardProxySettingsError}
-            statsError={forwardProxyStatsError}
-            saveError={forwardProxySaveError}
-            revalidateError={forwardProxyRevalidateError}
-            saving={forwardProxySaving}
-            revalidating={forwardProxyRevalidating}
-            savedAt={forwardProxySavedAt}
-            revalidateProgress={forwardProxyRevalidateProgress}
-            onPersistDraft={saveForwardProxySettings}
-            onValidateCandidates={validateForwardProxyCandidates}
-            onRefresh={handleManualRefresh}
-            onRevalidate={() => void revalidateForwardProxy()}
-          />
-        )}
-
-        <Drawer
-          open={monthlyBrokenDrawer != null}
-          onOpenChange={(open) => {
-            if (!open) closeMonthlyBrokenDrawer();
-          }}
-          shouldScaleBackground={false}
-        >
-          <DrawerContent className="request-entity-drawer-content-fit">
-            <div className="request-entity-drawer-body-fit">
-              <section className="surface panel">
-                <div
-                  className="panel-header"
-                  style={{ gap: 12, flexWrap: "wrap" }}
-                >
-                  <div>
-                    <h2>{usersStrings.brokenKeys.drawerTitle}</h2>
-                    <p className="panel-description">
-                      {usersStrings.brokenKeys.drawerDescription.replace(
-                        "{label}",
-                        monthlyBrokenDrawer?.label ?? "—",
-                      )}
-                    </p>
-                  </div>
-                </div>
-                <AdminLoadingRegion
-                  className="table-wrapper jobs-table-wrapper admin-responsive-up"
-                  loadState={monthlyBrokenDrawerLoadState}
-                  loadingLabel={usersStrings.brokenKeys.loading}
-                  errorLabel={
-                    monthlyBrokenDrawerError ?? loadingStateStrings.error
-                  }
-                  minHeight={240}
-                >
-                  {monthlyBrokenDrawerItems.length === 0 ? (
-                    <div className="empty-state alert">
-                      {usersStrings.brokenKeys.empty}
-                    </div>
-                  ) : (
-                    <Table className="jobs-table admin-users-table">
-                      <thead>
-                        <tr>
-                          <th>{usersStrings.brokenKeys.table.key}</th>
-                          <th>{usersStrings.brokenKeys.table.status}</th>
-                          <th>{usersStrings.brokenKeys.table.reason}</th>
-                          <th>{usersStrings.brokenKeys.table.latestBreakAt}</th>
-                          <th>{usersStrings.brokenKeys.table.breaker}</th>
-                          <th>{usersStrings.brokenKeys.table.relatedUsers}</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {monthlyBrokenDrawerItems.map((item) => {
-                          const stateKey = copyStateKey(
-                            "brokenKeys",
-                            item.keyId,
-                          );
-                          const state = copyState.get(stateKey);
-                          return (
-                            <tr key={`${item.keyId}:${item.latestBreakAt}`}>
+                      {monthlyBrokenDrawerItems.map((item) => {
+                        const stateKey = copyStateKey('brokenKeys', item.keyId)
+                        const state = copyState.get(stateKey)
+                        return (
+                          <tr key={`${item.keyId}:${item.latestBreakAt}`}>
                             <td>
                               <MonthlyBrokenKeyValue
                                 keyId={item.keyId}
                                 ungroupedLabel={keyStrings.groups.ungrouped}
                                 detailLabel={keyStrings.actions.details}
-                                copyLabel={
-                                  usersStrings.brokenKeys.actions.copyKeyId
-                                }
-                                copiedLabel={
-                                  usersStrings.brokenKeys.actions.copied
-                                }
+                                copyLabel={usersStrings.brokenKeys.actions.copyKeyId}
+                                copiedLabel={usersStrings.brokenKeys.actions.copied}
                                 copyState={state}
                                 onOpenKey={navigateKey}
                                 onCopy={(anchorEl) =>
-                                  handleCopyMonthlyBrokenKeyId(
-                                    item.keyId,
-                                    stateKey,
-                                    anchorEl,
-                                  )
+                                  handleCopyMonthlyBrokenKeyId(item.keyId, stateKey, anchorEl)
                                 }
                               />
                             </td>
                             <td>
-                              <StatusBadge
-                                tone={
-                                  item.currentStatus === "quarantined"
-                                    ? "warning"
-                                    : "error"
-                                }
-                              >
-                                {adminStrings.statuses[item.currentStatus] ??
-                                  item.currentStatus}
+                              <StatusBadge tone={item.currentStatus === 'quarantined' ? 'warning' : 'error'}>
+                                {adminStrings.statuses[item.currentStatus] ?? item.currentStatus}
                               </StatusBadge>
                             </td>
-                            <td>
-                              {item.reasonSummary ||
-                                item.reasonCode ||
-                                usersStrings.brokenKeys.noReason}
-                            </td>
+                            <td>{item.reasonSummary || item.reasonCode || usersStrings.brokenKeys.noReason}</td>
                             <td>{formatTimestamp(item.latestBreakAt)}</td>
-                            <td>
-                              {formatMonthlyBrokenBreaker(
-                                item,
-                                usersStrings.brokenKeys,
-                              )}
-                            </td>
+                            <td>{formatMonthlyBrokenBreaker(item, usersStrings.brokenKeys)}</td>
                             <td>
                               {formatMonthlyBrokenRelatedUsers(
                                 item.relatedUsers,
                                 usersStrings.brokenKeys.noRelatedUsers,
                               )}
                             </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </Table>
-                  )}
-                </AdminLoadingRegion>
-                <AdminLoadingRegion
-                  className="admin-mobile-list admin-responsive-down"
-                  loadState={monthlyBrokenDrawerLoadState}
-                  loadingLabel={usersStrings.brokenKeys.loading}
-                  errorLabel={
-                    monthlyBrokenDrawerError ?? loadingStateStrings.error
-                  }
-                  minHeight={240}
-                >
-                  {monthlyBrokenDrawerItems.length === 0 ? (
-                    <div className="empty-state alert">
-                      {usersStrings.brokenKeys.empty}
-                    </div>
-                  ) : (
-                    monthlyBrokenDrawerItems.map((item) => {
-                      const stateKey = copyStateKey("brokenKeys", item.keyId);
-                      const state = copyState.get(stateKey);
-                      return (
-                        <article
-                          key={`${item.keyId}:${item.latestBreakAt}`}
-                          className="admin-mobile-card"
-                        >
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </Table>
+                )}
+              </AdminLoadingRegion>
+              <AdminLoadingRegion
+                className="admin-mobile-list admin-responsive-down"
+                loadState={monthlyBrokenDrawerLoadState}
+                loadingLabel={usersStrings.brokenKeys.loading}
+                errorLabel={monthlyBrokenDrawerError ?? loadingStateStrings.error}
+                minHeight={240}
+              >
+                {monthlyBrokenDrawerItems.length === 0 ? (
+                  <div className="empty-state alert">{usersStrings.brokenKeys.empty}</div>
+                ) : (
+                  monthlyBrokenDrawerItems.map((item) => {
+                    const stateKey = copyStateKey('brokenKeys', item.keyId)
+                    const state = copyState.get(stateKey)
+                    return (
+                      <article key={`${item.keyId}:${item.latestBreakAt}`} className="admin-mobile-card">
                         <div className="admin-mobile-kv">
                           <span>{usersStrings.brokenKeys.table.key}</span>
                           <strong>
@@ -11919,58 +9606,34 @@ function AdminDashboard(): JSX.Element {
                               keyId={item.keyId}
                               ungroupedLabel={keyStrings.groups.ungrouped}
                               detailLabel={keyStrings.actions.details}
-                              copyLabel={
-                                usersStrings.brokenKeys.actions.copyKeyId
-                              }
-                              copiedLabel={
-                                usersStrings.brokenKeys.actions.copied
-                              }
+                              copyLabel={usersStrings.brokenKeys.actions.copyKeyId}
+                              copiedLabel={usersStrings.brokenKeys.actions.copied}
                               copyState={state}
                               onOpenKey={navigateKey}
                               onCopy={(anchorEl) =>
-                                handleCopyMonthlyBrokenKeyId(
-                                  item.keyId,
-                                  stateKey,
-                                  anchorEl,
-                                )
+                                handleCopyMonthlyBrokenKeyId(item.keyId, stateKey, anchorEl)
                               }
                             />
                           </strong>
                         </div>
                         <div className="admin-mobile-kv">
                           <span>{usersStrings.brokenKeys.table.status}</span>
-                          <strong>
-                            {adminStrings.statuses[item.currentStatus] ??
-                              item.currentStatus}
-                          </strong>
+                          <strong>{adminStrings.statuses[item.currentStatus] ?? item.currentStatus}</strong>
                         </div>
                         <div className="admin-mobile-kv">
                           <span>{usersStrings.brokenKeys.table.reason}</span>
-                          <strong>
-                            {item.reasonSummary ||
-                              item.reasonCode ||
-                              usersStrings.brokenKeys.noReason}
-                          </strong>
+                          <strong>{item.reasonSummary || item.reasonCode || usersStrings.brokenKeys.noReason}</strong>
                         </div>
                         <div className="admin-mobile-kv">
-                          <span>
-                            {usersStrings.brokenKeys.table.latestBreakAt}
-                          </span>
+                          <span>{usersStrings.brokenKeys.table.latestBreakAt}</span>
                           <strong>{formatTimestamp(item.latestBreakAt)}</strong>
                         </div>
                         <div className="admin-mobile-kv">
                           <span>{usersStrings.brokenKeys.table.breaker}</span>
-                          <strong>
-                            {formatMonthlyBrokenBreaker(
-                              item,
-                              usersStrings.brokenKeys,
-                            )}
-                          </strong>
+                          <strong>{formatMonthlyBrokenBreaker(item, usersStrings.brokenKeys)}</strong>
                         </div>
                         <div className="admin-mobile-kv">
-                          <span>
-                            {usersStrings.brokenKeys.table.relatedUsers}
-                          </span>
+                          <span>{usersStrings.brokenKeys.table.relatedUsers}</span>
                           <strong>
                             {formatMonthlyBrokenRelatedUsers(
                               item.relatedUsers,
@@ -11978,599 +9641,431 @@ function AdminDashboard(): JSX.Element {
                             )}
                           </strong>
                         </div>
-                        </article>
-                      );
-                    })
-                  )}
-                </AdminLoadingRegion>
-              </section>
-            </div>
-          </DrawerContent>
-        </Drawer>
+                      </article>
+                    )
+                  })
+                )}
+              </AdminLoadingRegion>
+            </section>
+          </div>
+        </DrawerContent>
+      </Drawer>
 
-        <Drawer
-          open={requestEntityDrawer != null}
-          onOpenChange={(open) => {
-            if (!open) closeRequestEntityDrawer();
-          }}
-          shouldScaleBackground={false}
-        >
-          <DrawerContent className="request-entity-drawer-content">
-            <div className="request-entity-drawer-body">
-              {requestEntityDrawer?.kind === "key" ? (
-                <KeyDetails
-                  key={`drawer-key-${requestEntityDrawer.id}`}
-                  id={requestEntityDrawer.id}
-                  onBack={closeRequestEntityDrawer}
-                  onOpenUser={navigateUser}
-                  onOpenToken={navigateToken}
-                />
-              ) : requestEntityDrawer?.kind === "token" ? (
-                <TokenDetail
-                  key={`drawer-token-${requestEntityDrawer.id}`}
-                  id={requestEntityDrawer.id}
-                  onBack={closeRequestEntityDrawer}
-                  onOpenKey={navigateKey}
-                  onOpenUser={navigateUser}
-                  onSecretRotated={handleTokenSecretRotated}
-                />
-              ) : null}
-            </div>
-          </DrawerContent>
-        </Drawer>
-
-        <div className="app-footer">
-          <span>{footerStrings.title}</span>
-          <span className="footer-meta">
-            {/* GitHub repository link with Iconify icon */}
-            <a
-              href="https://github.com/IvanLi-CN/tavily-hikari"
-              className="footer-link"
-              target="_blank"
-              rel="noreferrer"
-              aria-label={footerStrings.githubAria}
-            >
-              <Icon
-                icon="mdi:github"
-                width={18}
-                height={18}
-                className="footer-link-icon"
+      <Drawer
+        open={requestEntityDrawer != null}
+        onOpenChange={(open) => {
+          if (!open) closeRequestEntityDrawer()
+        }}
+        shouldScaleBackground={false}
+      >
+        <DrawerContent className="request-entity-drawer-content">
+          <div className="request-entity-drawer-body">
+            {requestEntityDrawer?.kind === 'key' ? (
+              <KeyDetails
+                key={`drawer-key-${requestEntityDrawer.id}`}
+                id={requestEntityDrawer.id}
+                onBack={closeRequestEntityDrawer}
+                onOpenUser={navigateUser}
+                onOpenToken={navigateToken}
               />
-              <span>{footerStrings.githubLabel}</span>
-            </a>
-          </span>
-          <span className="footer-meta">
-            {version
-              ? (() => {
-                  const raw = version.backend || "";
-                  const clean = raw.replace(/-.+$/, "");
-                  const tag = clean.startsWith("v") ? clean : `v${clean}`;
-                  const href = `https://github.com/IvanLi-CN/tavily-hikari/releases/tag/${tag}`;
-                  return (
-                    <>
-                      {footerStrings.tagPrefix}
-                      <a
-                        href={href}
-                        className="footer-link"
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        {`v${raw}`}
-                      </a>
-                    </>
-                  );
-                })()
-              : footerStrings.loadingVersion}
-          </span>
-        </div>
-      </AdminShell>
-      {/* Batch Create Tokens modal */}
-      <Dialog
-        open={batchDialogOpen}
-        onOpenChange={(open) => {
-          if (!open) closeBatchDialog();
-        }}
-      >
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>{tokenStrings.batchDialog.title}</DialogTitle>
-          </DialogHeader>
-          {batchShareText == null ? (
-            <>
-              <div className="flex flex-col gap-3 py-2 sm:flex-row">
-                <Input
-                  type="text"
-                  name="batch-token-group"
-                  placeholder={tokenStrings.batchDialog.groupPlaceholder}
-                  value={batchGroup}
-                  onChange={(e) => setBatchGroup(e.target.value)}
-                  style={{ flex: 1 }}
-                />
-                <Input
-                  type="number"
-                  name="batch-token-count"
-                  min={1}
-                  max={1000}
-                  value={batchCount}
-                  onChange={(e) => setBatchCount(Number(e.target.value) || 1)}
-                  className="w-full sm:w-[120px]"
-                />
-              </div>
-              <DialogFooter className="modal-action">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={closeBatchDialog}
-                >
-                  {tokenStrings.batchDialog.cancel}
-                </Button>
-                <Button
-                  type="button"
-                  onClick={() => void submitBatchCreate()}
-                  disabled={batchCreating}
-                >
-                  {batchCreating
-                    ? tokenStrings.batchDialog.creating
-                    : tokenStrings.batchDialog.confirm}
-                </Button>
-              </DialogFooter>
-            </>
+            ) : requestEntityDrawer?.kind === 'token' ? (
+              <TokenDetail
+                key={`drawer-token-${requestEntityDrawer.id}`}
+                id={requestEntityDrawer.id}
+                onBack={closeRequestEntityDrawer}
+                onOpenKey={navigateKey}
+                onOpenUser={navigateUser}
+                onSecretRotated={handleTokenSecretRotated}
+              />
+            ) : null}
+          </div>
+        </DrawerContent>
+      </Drawer>
+
+      <div className="app-footer">
+        <span>{footerStrings.title}</span>
+        <span className="footer-meta">
+          {/* GitHub repository link with Iconify icon */}
+          <a
+            href="https://github.com/IvanLi-CN/tavily-hikari"
+            className="footer-link"
+            target="_blank"
+            rel="noreferrer"
+            aria-label={footerStrings.githubAria}
+          >
+            <Icon icon="mdi:github" width={18} height={18} className="footer-link-icon" />
+            <span>{footerStrings.githubLabel}</span>
+          </a>
+        </span>
+        <span className="footer-meta">
+          {version ? (
+            (() => {
+              const raw = version.backend || ''
+              const clean = raw.replace(/-.+$/, '')
+              const tag = clean.startsWith('v') ? clean : `v${clean}`
+              const href = `https://github.com/IvanLi-CN/tavily-hikari/releases/tag/${tag}`
+              return (
+                <>
+                  {footerStrings.tagPrefix}
+                  <a href={href} className="footer-link" target="_blank" rel="noreferrer">
+                    {`v${raw}`}
+                  </a>
+                </>
+              )
+            })()
           ) : (
-            <>
-              <div className="batch-dialog-body">
-                <p className="py-2">
-                  {tokenStrings.batchDialog.createdN.replace(
-                    "{n}",
-                    String(
-                      (batchShareText ?? "")
-                        .split("\n")
-                        .filter((line) => line.length > 0).length,
-                    ),
-                  )}
-                </p>
-                <Textarea
-                  readOnly
-                  wrap="off"
-                  rows={6}
-                  className="min-h-[144px] resize-none"
-                  style={{
-                    width: "100%",
-                    fontFamily:
-                      'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-                    whiteSpace: "pre",
-                    overflowX: "auto",
-                    overflowY: "auto",
-                  }}
-                  value={batchShareText ?? ""}
-                  onClick={(event) =>
-                    selectAllReadonlyText(event.currentTarget)
-                  }
-                  onFocus={(event) =>
-                    selectAllReadonlyText(event.currentTarget)
-                  }
-                />
-              </div>
-              <DialogFooter className="modal-action">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={async () => {
-                    if (!batchShareText) return;
-                    const copyResult = await copyToClipboard(batchShareText, {
-                      preferExecCommand: true,
-                    });
-                    if (!copyResult.ok) {
-                      setError(errorStrings.copyToken);
-                    }
-                  }}
-                >
-                  {tokenStrings.batchDialog.copyAll}
-                </Button>
-                <Button type="button" onClick={closeBatchDialog}>
-                  {tokenStrings.batchDialog.done}
-                </Button>
-              </DialogFooter>
-            </>
+            footerStrings.loadingVersion
           )}
-        </DialogContent>
-      </Dialog>
+        </span>
+      </div>
+    </AdminShell>
+    {/* Batch Create Tokens modal */}
+    <Dialog open={batchDialogOpen} onOpenChange={(open) => { if (!open) closeBatchDialog() }}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>{tokenStrings.batchDialog.title}</DialogTitle>
+        </DialogHeader>
+        {batchShareText == null ? (
+          <>
+            <div className="flex flex-col gap-3 py-2 sm:flex-row">
+              <Input
+                type="text"
+                name="batch-token-group"
+                placeholder={tokenStrings.batchDialog.groupPlaceholder}
+                value={batchGroup}
+                onChange={(e) => setBatchGroup(e.target.value)}
+                style={{ flex: 1 }}
+              />
+              <Input
+                type="number"
+                name="batch-token-count"
+                min={1}
+                max={1000}
+                value={batchCount}
+                onChange={(e) => setBatchCount(Number(e.target.value) || 1)}
+                className="w-full sm:w-[120px]"
+              />
+            </div>
+            <DialogFooter className="modal-action">
+              <Button type="button" variant="outline" onClick={closeBatchDialog}>
+                {tokenStrings.batchDialog.cancel}
+              </Button>
+              <Button type="button" onClick={() => void submitBatchCreate()} disabled={batchCreating}>
+                {batchCreating ? tokenStrings.batchDialog.creating : tokenStrings.batchDialog.confirm}
+              </Button>
+            </DialogFooter>
+          </>
+        ) : (
+          <>
+            <div className="batch-dialog-body">
+              <p className="py-2">
+                {tokenStrings.batchDialog.createdN.replace(
+                  '{n}',
+                  String((batchShareText ?? '').split('\n').filter((line) => line.length > 0).length),
+                )}
+              </p>
+              <Textarea
+                readOnly
+                wrap="off"
+                rows={6}
+                className="min-h-[144px] resize-none"
+                style={{
+                  width: '100%',
+                  fontFamily:
+                    'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+                  whiteSpace: 'pre',
+                  overflowX: 'auto',
+                  overflowY: 'auto',
+                }}
+                value={batchShareText ?? ''}
+                onClick={(event) => selectAllReadonlyText(event.currentTarget)}
+                onFocus={(event) => selectAllReadonlyText(event.currentTarget)}
+              />
+            </div>
+            <DialogFooter className="modal-action">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={async () => {
+                  if (!batchShareText) return
+                  const copyResult = await copyToClipboard(batchShareText, { preferExecCommand: true })
+                  if (!copyResult.ok) {
+                    setError(errorStrings.copyToken)
+                  }
+                }}
+              >
+                {tokenStrings.batchDialog.copyAll}
+              </Button>
+              <Button type="button" onClick={closeBatchDialog}>
+                {tokenStrings.batchDialog.done}
+              </Button>
+            </DialogFooter>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
 
-      {/* API Keys Validation modal */}
-      <ApiKeysValidationDialog
-        open={keysValidationVisibleState != null}
-        state={keysValidationVisibleState}
-        counts={keysValidationCounts}
-        validKeys={keysValidationValidKeys}
-        exhaustedKeys={keysValidationExhaustedKeys}
-        onClose={closeKeysValidationDialog}
-        onRetryFailed={() => void handleRetryFailedValidation()}
-        onRetryOne={(apiKey) => void handleRetryOneValidation(apiKey)}
-        onImportValid={() => void handleImportValidatedKeys()}
-      />
+{/* API Keys Validation modal */}
+<ApiKeysValidationDialog
+  open={keysValidationVisibleState != null}
+  state={keysValidationVisibleState}
+  counts={keysValidationCounts}
+  validKeys={keysValidationValidKeys}
+  exhaustedKeys={keysValidationExhaustedKeys}
+  onClose={closeKeysValidationDialog}
+  onRetryFailed={() => void handleRetryFailedValidation()}
+  onRetryOne={(apiKey) => void handleRetryOneValidation(apiKey)}
+  onImportValid={() => void handleImportValidatedKeys()}
+/>
 
-      {/* Batch Add API Keys Report modal */}
-      <Dialog
-        open={keysBatchReport != null}
-        onOpenChange={(open) => {
-          if (!open) closeKeysBatchReportDialog();
-        }}
-      >
-        <DialogContent className="max-w-4xl sm:max-h-[min(calc(100dvh-6rem),calc(100vh-6rem))]">
-          <DialogHeader>
-            <DialogTitle>{keyStrings.batch.report.title}</DialogTitle>
-          </DialogHeader>
-          <div style={{ overflowY: "auto", minHeight: 0, paddingTop: 12 }}>
-            {keysBatchReport?.kind === "error" ? (
-              <>
-                <div className="alert alert-error">
-                  {keysBatchReport.message}
-                </div>
-                <div
-                  className="py-2"
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-                    gap: 8,
-                  }}
-                >
-                  <div>
-                    <span className="opacity-70">
-                      {keyStrings.batch.report.summary.inputLines}
-                    </span>{" "}
-                    {formatNumber(keysBatchReport.input_lines)}
-                  </div>
-                  <div>
-                    <span className="opacity-70">
-                      {keyStrings.batch.report.summary.validLines}
-                    </span>{" "}
-                    {formatNumber(keysBatchReport.valid_lines)}
-                  </div>
-                </div>
-              </>
-            ) : keysBatchReport?.kind === "success" ? (
-              <div className="grid gap-4 lg:grid-cols-2">
-                <div>
-                  <div
-                    className="py-2"
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-                      gap: 8,
-                    }}
-                  >
-                    <div>
-                      <span className="opacity-70">
-                        {keyStrings.batch.report.summary.inputLines}
-                      </span>{" "}
-                      {formatNumber(
-                        keysBatchReport.response.summary.input_lines,
-                      )}
-                    </div>
-                    <div>
-                      <span className="opacity-70">
-                        {keyStrings.batch.report.summary.validLines}
-                      </span>{" "}
-                      {formatNumber(
-                        keysBatchReport.response.summary.valid_lines,
-                      )}
-                    </div>
-                    <div>
-                      <span className="opacity-70">
-                        {keyStrings.batch.report.summary.uniqueInInput}
-                      </span>{" "}
-                      {formatNumber(
-                        keysBatchReport.response.summary.unique_in_input,
-                      )}
-                    </div>
-                    <div>
-                      <span className="opacity-70">
-                        {keyStrings.batch.report.summary.duplicateInInput}
-                      </span>{" "}
-                      {formatNumber(
-                        keysBatchReport.response.summary.duplicate_in_input,
-                      )}
-                    </div>
-                    <div>
-                      <span className="opacity-70">
-                        {keyStrings.batch.report.summary.created}
-                      </span>{" "}
-                      {formatNumber(keysBatchReport.response.summary.created)}
-                    </div>
-                    <div>
-                      <span className="opacity-70">
-                        {keyStrings.batch.report.summary.undeleted}
-                      </span>{" "}
-                      {formatNumber(keysBatchReport.response.summary.undeleted)}
-                    </div>
-                    <div>
-                      <span className="opacity-70">
-                        {keyStrings.batch.report.summary.existed}
-                      </span>{" "}
-                      {formatNumber(keysBatchReport.response.summary.existed)}
-                    </div>
-                    <div>
-                      <span className="opacity-70">
-                        {keyStrings.batch.report.summary.failed}
-                      </span>{" "}
-                      {formatNumber(keysBatchReport.response.summary.failed)}
-                    </div>
-                  </div>
-                </div>
-
-                <div>
-                  <h4 className="font-bold">
-                    {keyStrings.batch.report.failures.title}
-                  </h4>
-                  {keysBatchFailures.length === 0 ? (
-                    <div className="py-2">
-                      {keyStrings.batch.report.failures.none}
-                    </div>
-                  ) : (
-                    <div
-                      className="overflow-x-auto"
-                      style={{
-                        marginTop: 8,
-                        maxHeight:
-                          "min(calc(100dvh - 18rem), calc(100vh - 18rem))",
-                        overflowY: "auto",
-                      }}
-                    >
-                      <Table className="table-zebra">
-                        <thead>
-                          <tr>
-                            <th>
-                              {keyStrings.batch.report.failures.table.apiKey}
-                            </th>
-                            <th>
-                              {keyStrings.batch.report.failures.table.error}
-                            </th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {keysBatchFailures.map((item, index) => (
-                            <tr key={`${item.api_key}-${index}`}>
-                              <td style={{ wordBreak: "break-all" }}>
-                                <code>{item.api_key}</code>
-                              </td>
-                              <td style={{ wordBreak: "break-word" }}>
-                                {item.error || "—"}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </Table>
-                    </div>
-                  )}
-                </div>
+{/* Batch Add API Keys Report modal */}
+<Dialog open={keysBatchReport != null} onOpenChange={(open) => { if (!open) closeKeysBatchReportDialog() }}>
+  <DialogContent className="max-w-4xl sm:max-h-[min(calc(100dvh-6rem),calc(100vh-6rem))]">
+    <DialogHeader>
+      <DialogTitle>{keyStrings.batch.report.title}</DialogTitle>
+    </DialogHeader>
+    <div style={{ overflowY: 'auto', minHeight: 0, paddingTop: 12 }}>
+      {keysBatchReport?.kind === 'error' ? (
+        <>
+          <div className="alert alert-error">
+            {keysBatchReport.message}
+          </div>
+          <div className="py-2" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 }}>
+            <div>
+              <span className="opacity-70">{keyStrings.batch.report.summary.inputLines}</span> {formatNumber(keysBatchReport.input_lines)}
+            </div>
+            <div>
+              <span className="opacity-70">{keyStrings.batch.report.summary.validLines}</span> {formatNumber(keysBatchReport.valid_lines)}
+            </div>
+          </div>
+        </>
+      ) : keysBatchReport?.kind === 'success' ? (
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div>
+            <div className="py-2" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 }}>
+              <div>
+                <span className="opacity-70">{keyStrings.batch.report.summary.inputLines}</span>{' '}
+                {formatNumber(keysBatchReport.response.summary.input_lines)}
               </div>
+              <div>
+                <span className="opacity-70">{keyStrings.batch.report.summary.validLines}</span>{' '}
+                {formatNumber(keysBatchReport.response.summary.valid_lines)}
+              </div>
+              <div>
+                <span className="opacity-70">{keyStrings.batch.report.summary.uniqueInInput}</span>{' '}
+                {formatNumber(keysBatchReport.response.summary.unique_in_input)}
+              </div>
+              <div>
+                <span className="opacity-70">{keyStrings.batch.report.summary.duplicateInInput}</span>{' '}
+                {formatNumber(keysBatchReport.response.summary.duplicate_in_input)}
+              </div>
+              <div>
+                <span className="opacity-70">{keyStrings.batch.report.summary.created}</span>{' '}
+                {formatNumber(keysBatchReport.response.summary.created)}
+              </div>
+              <div>
+                <span className="opacity-70">{keyStrings.batch.report.summary.undeleted}</span>{' '}
+                {formatNumber(keysBatchReport.response.summary.undeleted)}
+              </div>
+              <div>
+                <span className="opacity-70">{keyStrings.batch.report.summary.existed}</span>{' '}
+                {formatNumber(keysBatchReport.response.summary.existed)}
+              </div>
+              <div>
+                <span className="opacity-70">{keyStrings.batch.report.summary.failed}</span>{' '}
+                {formatNumber(keysBatchReport.response.summary.failed)}
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <h4 className="font-bold">{keyStrings.batch.report.failures.title}</h4>
+            {keysBatchFailures.length === 0 ? (
+              <div className="py-2">{keyStrings.batch.report.failures.none}</div>
             ) : (
-              <div className="py-2">{keyStrings.batch.hint}</div>
+              <div
+                className="overflow-x-auto"
+                style={{
+                  marginTop: 8,
+                  maxHeight: 'min(calc(100dvh - 18rem), calc(100vh - 18rem))',
+                  overflowY: 'auto',
+                }}
+              >
+                <Table className="table-zebra">
+                  <thead>
+                    <tr>
+                      <th>{keyStrings.batch.report.failures.table.apiKey}</th>
+                      <th>{keyStrings.batch.report.failures.table.error}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {keysBatchFailures.map((item, index) => (
+                      <tr key={`${item.api_key}-${index}`}>
+                        <td style={{ wordBreak: 'break-all' }}>
+                          <code>{item.api_key}</code>
+                        </td>
+                        <td style={{ wordBreak: 'break-word' }}>{item.error || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </Table>
+              </div>
             )}
           </div>
-          <DialogFooter className="modal-action" style={{ marginTop: 12 }}>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={closeKeysBatchReportDialog}
-            >
-              {keyStrings.batch.report.close}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        </div>
+      ) : (
+        <div className="py-2">{keyStrings.batch.hint}</div>
+      )}
+    </div>
+    <DialogFooter className="modal-action" style={{ marginTop: 12 }}>
+      <Button type="button" variant="outline" onClick={closeKeysBatchReportDialog}>
+        {keyStrings.batch.report.close}
+      </Button>
+    </DialogFooter>
+  </DialogContent>
+</Dialog>
 
-      {/* Disable Confirmation modal */}
-      <Dialog
-        open={pendingDisableId != null}
-        onOpenChange={(open) => {
-          if (!open) cancelDisable();
-        }}
-      >
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>{keyStrings.dialogs.disable.title}</DialogTitle>
-            <DialogDescription>
-              {keyStrings.dialogs.disable.description}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter className="modal-action">
-            <Button type="button" variant="outline" onClick={cancelDisable}>
-              {keyStrings.dialogs.disable.cancel}
-            </Button>
-            <Button
-              type="button"
-              onClick={() => void confirmDisable()}
-              disabled={!!togglingId}
-            >
-              {keyStrings.dialogs.disable.confirm}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+{/* Disable Confirmation modal */}
+<Dialog open={pendingDisableId != null} onOpenChange={(open) => { if (!open) cancelDisable() }}>
+  <DialogContent className="max-w-md">
+    <DialogHeader>
+      <DialogTitle>{keyStrings.dialogs.disable.title}</DialogTitle>
+      <DialogDescription>{keyStrings.dialogs.disable.description}</DialogDescription>
+    </DialogHeader>
+    <DialogFooter className="modal-action">
+      <Button type="button" variant="outline" onClick={cancelDisable}>
+        {keyStrings.dialogs.disable.cancel}
+      </Button>
+      <Button type="button" onClick={() => void confirmDisable()} disabled={!!togglingId}>
+        {keyStrings.dialogs.disable.confirm}
+      </Button>
+    </DialogFooter>
+  </DialogContent>
+</Dialog>
 
-      {/* Delete Confirmation modal */}
-      <Dialog
-        open={pendingDeleteId != null}
-        onOpenChange={(open) => {
-          if (!open) cancelDelete();
-        }}
-      >
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>{keyStrings.dialogs.delete.title}</DialogTitle>
-            <DialogDescription>
-              {keyStrings.dialogs.delete.description}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter className="modal-action">
-            <Button type="button" variant="outline" onClick={cancelDelete}>
-              {keyStrings.dialogs.delete.cancel}
-            </Button>
-            <Button
-              type="button"
-              variant="destructive"
-              onClick={() => void confirmDelete()}
-              disabled={!!deletingId}
-            >
-              {keyStrings.dialogs.delete.confirm}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+{/* Delete Confirmation modal */}
+<Dialog open={pendingDeleteId != null} onOpenChange={(open) => { if (!open) cancelDelete() }}>
+  <DialogContent className="max-w-md">
+    <DialogHeader>
+      <DialogTitle>{keyStrings.dialogs.delete.title}</DialogTitle>
+      <DialogDescription>{keyStrings.dialogs.delete.description}</DialogDescription>
+    </DialogHeader>
+    <DialogFooter className="modal-action">
+      <Button type="button" variant="outline" onClick={cancelDelete}>
+        {keyStrings.dialogs.delete.cancel}
+      </Button>
+      <Button type="button" variant="destructive" onClick={() => void confirmDelete()} disabled={!!deletingId}>
+        {keyStrings.dialogs.delete.confirm}
+      </Button>
+    </DialogFooter>
+  </DialogContent>
+</Dialog>
 
-      {/* Token Delete Confirmation */}
-      <Dialog
-        open={pendingTokenDeleteId != null}
-        onOpenChange={(open) => {
-          if (!open) cancelTokenDelete();
-        }}
-      >
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>{tokenStrings.dialogs.delete.title}</DialogTitle>
-            <DialogDescription>
-              {tokenStrings.dialogs.delete.description}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter className="modal-action">
-            <Button type="button" variant="outline" onClick={cancelTokenDelete}>
-              {tokenStrings.dialogs.delete.cancel}
-            </Button>
-            <Button
-              type="button"
-              variant="destructive"
-              onClick={() => void confirmTokenDelete()}
-              disabled={!!deletingId}
-            >
-              {tokenStrings.dialogs.delete.confirm}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+{/* Token Delete Confirmation */}
+<Dialog open={pendingTokenDeleteId != null} onOpenChange={(open) => { if (!open) cancelTokenDelete() }}>
+  <DialogContent className="max-w-md">
+    <DialogHeader>
+      <DialogTitle>{tokenStrings.dialogs.delete.title}</DialogTitle>
+      <DialogDescription>{tokenStrings.dialogs.delete.description}</DialogDescription>
+    </DialogHeader>
+    <DialogFooter className="modal-action">
+      <Button type="button" variant="outline" onClick={cancelTokenDelete}>
+        {tokenStrings.dialogs.delete.cancel}
+      </Button>
+      <Button type="button" variant="destructive" onClick={() => void confirmTokenDelete()} disabled={!!deletingId}>
+        {tokenStrings.dialogs.delete.confirm}
+      </Button>
+    </DialogFooter>
+  </DialogContent>
+</Dialog>
 
-      {/* Token Edit Note modal */}
-      <Dialog
-        open={editingTokenId != null}
-        onOpenChange={(open) => {
-          if (!open) cancelTokenNote();
-        }}
-      >
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle>{tokenStrings.dialogs.note.title}</DialogTitle>
-          </DialogHeader>
-          <Input
-            type="text"
-            name="editing-token-note"
-            placeholder={tokenStrings.dialogs.note.placeholder}
-            value={editingTokenNote}
-            onChange={(e) => setEditingTokenNote(e.target.value)}
-          />
-          <DialogFooter className="modal-action">
-            <Button type="button" variant="outline" onClick={cancelTokenNote}>
-              {tokenStrings.dialogs.note.cancel}
-            </Button>
-            <Button
-              type="button"
-              onClick={() => void saveTokenNote()}
-              disabled={savingTokenNote}
-            >
-              {savingTokenNote
-                ? tokenStrings.dialogs.note.saving
-                : tokenStrings.dialogs.note.confirm}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-      <Dialog
-        open={manualCopyDialog != null}
-        onOpenChange={(open) => {
-          if (!open) setManualCopyDialog(null);
-        }}
-      >
-        <DialogContent
-          className="max-w-lg"
-          onEscapeKeyDown={(event) => event.preventDefault()}
-          onInteractOutside={(event) => event.preventDefault()}
-        >
-          <DialogHeader>
-            <DialogTitle>
-              {manualCopyDialog?.title ?? manualCopyText.createToken.title}
-            </DialogTitle>
-            <DialogDescription>
-              {manualCopyDialog?.description ??
-                manualCopyText.createToken.description}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="grid gap-2">
-            <label
-              className="manual-copy-bubble-label"
-              htmlFor="admin-manual-copy-dialog-field"
-            >
-              {manualCopyDialog?.fieldLabel ?? manualCopyText.fields.token}
-            </label>
-            <Input
-              id="admin-manual-copy-dialog-field"
-              ref={manualCopyDialogFieldRef}
-              className="manual-copy-bubble-field"
-              readOnly
-              value={manualCopyDialog?.value ?? ""}
-              onFocus={(event) => selectAllReadonlyText(event.currentTarget)}
-              onClick={(event) => selectAllReadonlyText(event.currentTarget)}
-            />
-          </div>
-          <DialogFooter className="modal-action">
-            <Button type="button" onClick={() => setManualCopyDialog(null)}>
-              {manualCopyText.close}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+{/* Token Edit Note modal */}
+<Dialog open={editingTokenId != null} onOpenChange={(open) => { if (!open) cancelTokenNote() }}>
+  <DialogContent className="max-w-lg">
+    <DialogHeader>
+      <DialogTitle>{tokenStrings.dialogs.note.title}</DialogTitle>
+    </DialogHeader>
+    <Input
+      type="text"
+      name="editing-token-note"
+      placeholder={tokenStrings.dialogs.note.placeholder}
+      value={editingTokenNote}
+      onChange={(e) => setEditingTokenNote(e.target.value)}
+    />
+    <DialogFooter className="modal-action">
+      <Button type="button" variant="outline" onClick={cancelTokenNote}>
+        {tokenStrings.dialogs.note.cancel}
+      </Button>
+      <Button type="button" onClick={() => void saveTokenNote()} disabled={savingTokenNote}>
+        {savingTokenNote ? tokenStrings.dialogs.note.saving : tokenStrings.dialogs.note.confirm}
+      </Button>
+    </DialogFooter>
+  </DialogContent>
+</Dialog>
+<Dialog open={manualCopyDialog != null} onOpenChange={(open) => { if (!open) setManualCopyDialog(null) }}>
+  <DialogContent
+    className="max-w-lg"
+    onEscapeKeyDown={(event) => event.preventDefault()}
+    onInteractOutside={(event) => event.preventDefault()}
+  >
+    <DialogHeader>
+      <DialogTitle>{manualCopyDialog?.title ?? manualCopyText.createToken.title}</DialogTitle>
+      <DialogDescription>{manualCopyDialog?.description ?? manualCopyText.createToken.description}</DialogDescription>
+    </DialogHeader>
+    <div className="grid gap-2">
+      <label className="manual-copy-bubble-label" htmlFor="admin-manual-copy-dialog-field">
+        {manualCopyDialog?.fieldLabel ?? manualCopyText.fields.token}
+      </label>
+      <Input
+        id="admin-manual-copy-dialog-field"
+        ref={manualCopyDialogFieldRef}
+        className="manual-copy-bubble-field"
+        readOnly
+        value={manualCopyDialog?.value ?? ''}
+        onFocus={(event) => selectAllReadonlyText(event.currentTarget)}
+        onClick={(event) => selectAllReadonlyText(event.currentTarget)}
+      />
+    </div>
+    <DialogFooter className="modal-action">
+      <Button type="button" onClick={() => setManualCopyDialog(null)}>
+        {manualCopyText.close}
+      </Button>
+    </DialogFooter>
+  </DialogContent>
+</Dialog>
       <ManualCopyBubble
         open={manualCopyBubble != null}
         anchorEl={manualCopyBubble?.anchorEl ?? null}
         title={manualCopyBubble?.title ?? manualCopyText.title}
-        description={
-          manualCopyBubble?.description ?? manualCopyText.description
-        }
+        description={manualCopyBubble?.description ?? manualCopyText.description}
         fieldLabel={manualCopyBubble?.fieldLabel ?? manualCopyText.fields.token}
-        value={manualCopyBubble?.value ?? ""}
+        value={manualCopyBubble?.value ?? ''}
         multiline={manualCopyBubble?.multiline ?? false}
         closeLabel={manualCopyText.close}
         onClose={() => setManualCopyBubble(null)}
       />
     </>
-  );
+  )
 }
 
 interface LogRowProps {
-  log: RequestLog;
-  expanded: boolean;
-  onToggle: (id: number) => void;
-  strings: AdminTranslations;
-  language: "en" | "zh";
-  onOpenKey?: (id: string) => void;
-  onOpenToken?: (id: string) => void;
+  log: RequestLog
+  expanded: boolean
+  onToggle: (id: number) => void
+  strings: AdminTranslations
+  language: 'en' | 'zh'
+  onOpenKey?: (id: string) => void
+  onOpenToken?: (id: string) => void
 }
 
-function LogRow({
-  log,
-  expanded,
-  onToggle,
-  strings,
-  language,
-  onOpenKey,
-  onOpenToken,
-}: LogRowProps): JSX.Element {
-  const requestButtonLabel = expanded
-    ? strings.logs.toggles.hide
-    : strings.logs.toggles.show;
-  const tokenId = log.auth_token_id ?? null;
-  const timeLabel = formatClockTime(log.created_at);
+function LogRow({ log, expanded, onToggle, strings, language, onOpenKey, onOpenToken }: LogRowProps): JSX.Element {
+  const requestButtonLabel = expanded ? strings.logs.toggles.hide : strings.logs.toggles.show
+  const tokenId = log.auth_token_id ?? null
+  const timeLabel = formatClockTime(log.created_at)
   const timeDetail =
     log.created_at != null
       ? `${formatTimestampWithMs(log.created_at)} · ${formatRelativeTime(log.created_at)}`
-      : strings.logs.errors.none;
+      : strings.logs.errors.none
 
   return (
     <>
@@ -12586,10 +10081,7 @@ function LogRow({
                 <span className="log-time-main">{timeLabel}</span>
               </button>
             </TooltipTrigger>
-            <TooltipContent
-              className="log-time-tooltip max-w-[min(20rem,calc(100vw-2rem))]"
-              side="right"
-            >
+            <TooltipContent className="log-time-tooltip max-w-[min(20rem,calc(100vw-2rem))]" side="right">
               {timeDetail}
             </TooltipContent>
           </Tooltip>
@@ -12601,8 +10093,8 @@ function LogRow({
             title={strings.keys.actions.details}
             aria-label={strings.keys.actions.details}
             onClick={() => {
-              if (!log.key_id) return;
-              onOpenKey?.(log.key_id);
+              if (!log.key_id) return
+              onOpenKey?.(log.key_id)
             }}
           >
             <code>{log.key_id}</code>
@@ -12620,7 +10112,7 @@ function LogRow({
               <code>{tokenId}</code>
             </button>
           ) : (
-            "—"
+            '—'
           )}
         </td>
         <td>
@@ -12634,10 +10126,7 @@ function LogRow({
                 {formatRequestStatusPair(log.http_status, log.mcp_status)}
               </button>
             </TooltipTrigger>
-            <TooltipContent
-              className="max-w-[min(18rem,calc(100vw-2rem))]"
-              side="top"
-            >
+            <TooltipContent className="max-w-[min(18rem,calc(100vw-2rem))]" side="top">
               {formatRequestStatusTooltip(log, strings)}
             </TooltipContent>
           </Tooltip>
@@ -12645,7 +10134,7 @@ function LogRow({
         <td>
           <button
             type="button"
-            className={`log-result-button${expanded ? " log-result-button-active" : ""}`}
+            className={`log-result-button${expanded ? ' log-result-button-active' : ''}`}
             onClick={() => onToggle(log.id)}
             aria-expanded={expanded}
             aria-controls={`log-details-${log.id}`}
@@ -12655,12 +10144,7 @@ function LogRow({
             <StatusBadge tone={requestLogTone(log)}>
               {requestLogLabel(log, language)}
             </StatusBadge>
-            <Icon
-              icon={expanded ? "mdi:chevron-up" : "mdi:chevron-down"}
-              width={18}
-              height={18}
-              className="log-result-icon"
-            />
+            <Icon icon={expanded ? 'mdi:chevron-up' : 'mdi:chevron-down'} width={18} height={18} className="log-result-icon" />
           </button>
         </td>
         <td>
@@ -12681,7 +10165,7 @@ function LogRow({
         </tr>
       )}
     </>
-  );
+  )
 }
 
 function LogDetails({
@@ -12689,59 +10173,41 @@ function LogDetails({
   strings,
   language,
 }: {
-  log: RequestLog;
-  strings: AdminTranslations;
-  language: "en" | "zh";
+  log: RequestLog
+  strings: AdminTranslations
+  language: 'en' | 'zh'
 }): JSX.Element {
-  const query = log.query ? `?${log.query}` : "";
-  const requestLine = `${log.method} ${log.path}${query}`;
-  const forwarded = (log.forwarded_headers ?? []).filter(
-    (value) => value.trim().length > 0,
-  );
-  const dropped = (log.dropped_headers ?? []).filter(
-    (value) => value.trim().length > 0,
-  );
-  const httpLabel = `${strings.logs.table.httpStatus}: ${log.http_status ?? strings.logs.errors.none}`;
-  const mcpLabel = `${strings.logs.table.mcpStatus}: ${log.mcp_status ?? strings.logs.errors.none}`;
-  const requestBody = log.request_body ?? strings.logDetails.noBody;
-  const responseBody = log.response_body ?? strings.logDetails.noBody;
-  const keyEffect = formatKeyEffectSummary(log, strings, language);
-  const guidance = operationalClassGuidance(
-    log.operationalClass,
-    log.failure_kind,
-    language,
-  );
+  const query = log.query ? `?${log.query}` : ''
+  const requestLine = `${log.method} ${log.path}${query}`
+  const forwarded = (log.forwarded_headers ?? []).filter((value) => value.trim().length > 0)
+  const dropped = (log.dropped_headers ?? []).filter((value) => value.trim().length > 0)
+  const httpLabel = `${strings.logs.table.httpStatus}: ${log.http_status ?? strings.logs.errors.none}`
+  const mcpLabel = `${strings.logs.table.mcpStatus}: ${log.mcp_status ?? strings.logs.errors.none}`
+  const requestBody = log.request_body ?? strings.logDetails.noBody
+  const responseBody = log.response_body ?? strings.logDetails.noBody
+  const keyEffect = formatKeyEffectSummary(log, strings, language)
+  const guidance = operationalClassGuidance(log.operationalClass, log.failure_kind, language)
 
   return (
     <div className="log-details-panel">
       <div className="log-details-summary">
         <div>
-          <span className="log-details-label">
-            {strings.logDetails.request}
-          </span>
+          <span className="log-details-label">{strings.logDetails.request}</span>
           <span className="log-details-value">{requestLine}</span>
         </div>
         <div>
-          <span className="log-details-label">
-            {strings.logDetails.response}
-          </span>
+          <span className="log-details-label">{strings.logDetails.response}</span>
           <span className="log-details-value">
             {httpLabel}
             {` · ${mcpLabel}`}
           </span>
         </div>
         <div>
-          <span className="log-details-label">
-            {strings.logDetails.outcome}
-          </span>
-          <span className="log-details-value">
-            {requestLogLabel(log, language)}
-          </span>
+          <span className="log-details-label">{strings.logDetails.outcome}</span>
+          <span className="log-details-value">{requestLogLabel(log, language)}</span>
         </div>
         <div>
-          <span className="log-details-label">
-            {strings.logDetails.keyEffect}
-          </span>
+          <span className="log-details-label">{strings.logDetails.keyEffect}</span>
           <span className="log-details-value">{keyEffect}</span>
         </div>
       </div>
@@ -12786,7 +10252,7 @@ function LogDetails({
         </div>
       )}
     </div>
-  );
+  )
 }
 
 export function KeyDetails({
@@ -12795,138 +10261,113 @@ export function KeyDetails({
   onOpenUser,
   onOpenToken,
 }: {
-  id: string;
-  onBack: () => void;
-  onOpenUser: (userId: string) => void;
-  onOpenToken?: (tokenId: string) => void;
+  id: string
+  onBack: () => void
+  onOpenUser: (userId: string) => void
+  onOpenToken?: (tokenId: string) => void
 }): JSX.Element {
-  const { language } = useLanguage();
-  const translations = useTranslate();
-  const adminStrings = translations.admin;
-  const keyStrings = adminStrings.keys;
-  const keyDetailsStrings = adminStrings.keyDetails;
-  const logsTableStrings = adminStrings.logs.table;
-  const loadingStateStrings = adminStrings.loadingStates;
-  const tokenStrings = adminStrings.tokens;
-  const [detail, setDetail] = useState<ApiKeyStats | null>(null);
-  const [period, setPeriod] = useState<"day" | "week" | "month">("month");
-  const [startDate, setStartDate] = useState<string>(() =>
-    new Date().toISOString().slice(0, 10),
-  );
-  const [summary, setSummary] = useState<KeySummary | null>(null);
-  const [logs, setLogs] = useState<RequestLog[]>([]);
-  const [logsPage, setLogsPage] = useState(1);
-  const [logsPerPage, setLogsPerPage] = useState(20);
-  const [logsTotal, setLogsTotal] = useState(0);
-  const [logsNonce, setLogsNonce] = useState(0);
-  const [keyLogRequestKindOptions, setKeyLogRequestKindOptions] = useState<
-    TokenLogRequestKindOption[]
-  >([]);
-  const [keyLogSelectedKinds, setKeyLogSelectedKinds] = useState<string[]>([]);
-  const [keyLogQuickBilling, setKeyLogQuickBilling] =
-    useState<TokenLogRequestKindQuickBilling>("all");
-  const [keyLogQuickProtocol, setKeyLogQuickProtocol] =
-    useState<TokenLogRequestKindQuickProtocol>("all");
-  const [keyLogFacets, setKeyLogFacets] = useState<RequestLogFacets>(
-    emptyRequestLogFacets,
-  );
-  const [keyLogOutcomeFilter, setKeyLogOutcomeFilter] =
-    useState<RecentRequestsOutcomeFilter | null>(null);
-  const [stickyUsers, setStickyUsers] = useState<StickyUserRow[]>([]);
-  const [stickyUsersPage, setStickyUsersPage] = useState(1);
-  const [stickyUsersTotal, setStickyUsersTotal] = useState(0);
-  const [stickyNodes, setStickyNodes] = useState<StickyNode[]>([]);
-  const [detailLoadState, setDetailLoadState] =
-    useState<QueryLoadState>("initial_loading");
-  const [logsLoadState, setLogsLoadState] =
-    useState<QueryLoadState>("initial_loading");
-  const [stickyUsersLoadState, setStickyUsersLoadState] =
-    useState<QueryLoadState>("initial_loading");
-  const [stickyNodesLoadState, setStickyNodesLoadState] =
-    useState<QueryLoadState>("initial_loading");
-  const [error, setError] = useState<string | null>(null);
-  const [logsError, setLogsError] = useState<string | null>(null);
-  const [stickyUsersError, setStickyUsersError] = useState<string | null>(null);
-  const [stickyNodesError, setStickyNodesError] = useState<string | null>(null);
-  const [syncState, setSyncState] = useState<"idle" | "syncing" | "success">(
-    "idle",
-  );
-  const [quarantineState, setQuarantineState] = useState<"idle" | "clearing">(
-    "idle",
-  );
-  const [quarantineDetailExpanded, setQuarantineDetailExpanded] =
-    useState(false);
-  const syncInFlightRef = useRef(false);
-  const syncFeedbackTimerRef = useRef<number | null>(null);
-  const loadAbortRef = useRef<AbortController | null>(null);
-  const logsAbortRef = useRef<AbortController | null>(null);
-  const queryKeyRef = useRef<string | null>(null);
-  const logsQueryKeyRef = useRef<string | null>(null);
-  const stickyUsersAbortRef = useRef<AbortController | null>(null);
-  const stickyUsersQueryKeyRef = useRef<string | null>(null);
-  const stickyNodesAbortRef = useRef<AbortController | null>(null);
-  const stickyNodesQueryKeyRef = useRef<string | null>(null);
-  const queryKey = `${id}:${period}:${startDate}`;
-  const logsQueryKey = `${id}:${period}:${startDate}:${logsPage}:${logsPerPage}:${keyLogSelectedKinds.join(",")}:${keyLogQuickBilling}:${keyLogQuickProtocol}:${keyLogOutcomeFilter?.kind ?? ""}:${keyLogOutcomeFilter?.value ?? ""}:${logsNonce}`;
-  const stickyUsersQueryKey = `${id}:${stickyUsersPage}`;
-  const stickyUsersPerPage = 20;
-  const quarantineDetailId = `key-quarantine-detail-${id}`;
+  const { language } = useLanguage()
+  const translations = useTranslate()
+  const adminStrings = translations.admin
+  const keyStrings = adminStrings.keys
+  const keyDetailsStrings = adminStrings.keyDetails
+  const logsTableStrings = adminStrings.logs.table
+  const loadingStateStrings = adminStrings.loadingStates
+  const tokenStrings = adminStrings.tokens
+  const [detail, setDetail] = useState<ApiKeyStats | null>(null)
+  const [period, setPeriod] = useState<'day' | 'week' | 'month'>('month')
+  const [startDate, setStartDate] = useState<string>(() => new Date().toISOString().slice(0, 10))
+  const [summary, setSummary] = useState<KeySummary | null>(null)
+  const [logs, setLogs] = useState<RequestLog[]>([])
+  const [logsPage, setLogsPage] = useState(1)
+  const [logsPerPage, setLogsPerPage] = useState(20)
+  const [logsTotal, setLogsTotal] = useState(0)
+  const [logsNonce, setLogsNonce] = useState(0)
+  const [keyLogRequestKindOptions, setKeyLogRequestKindOptions] = useState<TokenLogRequestKindOption[]>([])
+  const [keyLogSelectedKinds, setKeyLogSelectedKinds] = useState<string[]>([])
+  const [keyLogQuickBilling, setKeyLogQuickBilling] = useState<TokenLogRequestKindQuickBilling>('all')
+  const [keyLogQuickProtocol, setKeyLogQuickProtocol] = useState<TokenLogRequestKindQuickProtocol>('all')
+  const [keyLogFacets, setKeyLogFacets] = useState<RequestLogFacets>(emptyRequestLogFacets)
+  const [keyLogOutcomeFilter, setKeyLogOutcomeFilter] = useState<RecentRequestsOutcomeFilter | null>(null)
+  const [stickyUsers, setStickyUsers] = useState<StickyUserRow[]>([])
+  const [stickyUsersPage, setStickyUsersPage] = useState(1)
+  const [stickyUsersTotal, setStickyUsersTotal] = useState(0)
+  const [stickyNodes, setStickyNodes] = useState<StickyNode[]>([])
+  const [detailLoadState, setDetailLoadState] = useState<QueryLoadState>('initial_loading')
+  const [logsLoadState, setLogsLoadState] = useState<QueryLoadState>('initial_loading')
+  const [stickyUsersLoadState, setStickyUsersLoadState] = useState<QueryLoadState>('initial_loading')
+  const [stickyNodesLoadState, setStickyNodesLoadState] = useState<QueryLoadState>('initial_loading')
+  const [error, setError] = useState<string | null>(null)
+  const [logsError, setLogsError] = useState<string | null>(null)
+  const [stickyUsersError, setStickyUsersError] = useState<string | null>(null)
+  const [stickyNodesError, setStickyNodesError] = useState<string | null>(null)
+  const [syncState, setSyncState] = useState<'idle' | 'syncing' | 'success'>('idle')
+  const [quarantineState, setQuarantineState] = useState<'idle' | 'clearing'>('idle')
+  const [quarantineDetailExpanded, setQuarantineDetailExpanded] = useState(false)
+  const syncInFlightRef = useRef(false)
+  const syncFeedbackTimerRef = useRef<number | null>(null)
+  const loadAbortRef = useRef<AbortController | null>(null)
+  const logsAbortRef = useRef<AbortController | null>(null)
+  const queryKeyRef = useRef<string | null>(null)
+  const logsQueryKeyRef = useRef<string | null>(null)
+  const stickyUsersAbortRef = useRef<AbortController | null>(null)
+  const stickyUsersQueryKeyRef = useRef<string | null>(null)
+  const stickyNodesAbortRef = useRef<AbortController | null>(null)
+  const stickyNodesQueryKeyRef = useRef<string | null>(null)
+  const queryKey = `${id}:${period}:${startDate}`
+  const logsQueryKey = `${id}:${period}:${startDate}:${logsPage}:${logsPerPage}:${keyLogSelectedKinds.join(',')}:${keyLogQuickBilling}:${keyLogQuickProtocol}:${keyLogOutcomeFilter?.kind ?? ''}:${keyLogOutcomeFilter?.value ?? ''}:${logsNonce}`
+  const stickyUsersQueryKey = `${id}:${stickyUsersPage}`
+  const stickyUsersPerPage = 20
+  const quarantineDetailId = `key-quarantine-detail-${id}`
 
   const computeSince = useCallback((): number => {
-    const base = new Date(startDate + "T00:00:00Z");
-    if (Number.isNaN(base.getTime())) return Math.floor(Date.now() / 1000);
-    const d = new Date(base);
-    if (period === "day") return Math.floor(d.getTime() / 1000);
-    if (period === "week") {
-      const day = d.getUTCDay(); // 0..6 (Sun..Sat)
-      const diff = (day + 6) % 7; // days since Monday
-      d.setUTCDate(d.getUTCDate() - diff);
-      return Math.floor(d.getTime() / 1000);
+    const base = new Date(startDate + 'T00:00:00Z')
+    if (Number.isNaN(base.getTime())) return Math.floor(Date.now() / 1000)
+    const d = new Date(base)
+    if (period === 'day') return Math.floor(d.getTime() / 1000)
+    if (period === 'week') {
+      const day = d.getUTCDay() // 0..6 (Sun..Sat)
+      const diff = (day + 6) % 7 // days since Monday
+      d.setUTCDate(d.getUTCDate() - diff)
+      return Math.floor(d.getTime() / 1000)
     }
     // month
-    d.setUTCDate(1);
-    return Math.floor(d.getTime() / 1000);
-  }, [period, startDate]);
+    d.setUTCDate(1)
+    return Math.floor(d.getTime() / 1000)
+  }, [period, startDate])
 
-  const load = useCallback(
-    async (reason: "initial" | "switch" | "refresh" = "refresh") => {
-      loadAbortRef.current?.abort();
-      const controller = new AbortController();
-      loadAbortRef.current = controller;
-      try {
-        const panelLoadState =
-          reason === "refresh"
-            ? getRefreshingLoadState(queryKeyRef.current != null)
-            : getBlockingLoadState(queryKeyRef.current != null);
-        setDetailLoadState(panelLoadState);
-        setError(null);
-        if (reason !== "refresh") {
-          setDetail(null);
-          setSummary(null);
-        }
-        const since = computeSince();
-        const [s, d] = await Promise.all([
-          fetchKeyMetrics(id, period, since, controller.signal),
-          fetchApiKeyDetail(id, controller.signal).catch(() => null),
-        ]);
-        if (controller.signal.aborted) return;
-        setSummary(s);
-        setDetail(d);
-        setDetailLoadState("ready");
-        queryKeyRef.current = queryKey;
-      } catch (err) {
-        if ((err as Error).name === "AbortError") return;
-        console.error(err);
-        setError(
-          err instanceof Error
-            ? err.message
-            : adminStrings.errors.loadKeyDetails,
-        );
-        setDetailLoadState("error");
+  const load = useCallback(async (reason: 'initial' | 'switch' | 'refresh' = 'refresh') => {
+    loadAbortRef.current?.abort()
+    const controller = new AbortController()
+    loadAbortRef.current = controller
+    try {
+      const panelLoadState =
+        reason === 'refresh'
+          ? getRefreshingLoadState(queryKeyRef.current != null)
+          : getBlockingLoadState(queryKeyRef.current != null)
+      setDetailLoadState(panelLoadState)
+      setError(null)
+      if (reason !== 'refresh') {
+        setDetail(null)
+        setSummary(null)
       }
-    },
-    [adminStrings.errors.loadKeyDetails, computeSince, id, period, queryKey],
-  );
+      const since = computeSince()
+      const [s, d] = await Promise.all([
+        fetchKeyMetrics(id, period, since, controller.signal),
+        fetchApiKeyDetail(id, controller.signal).catch(() => null),
+      ])
+      if (controller.signal.aborted) return
+      setSummary(s)
+      setDetail(d)
+      setDetailLoadState('ready')
+      queryKeyRef.current = queryKey
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') return
+      console.error(err)
+      setError(err instanceof Error ? err.message : adminStrings.errors.loadKeyDetails)
+      setDetailLoadState('error')
+    }
+  }, [adminStrings.errors.loadKeyDetails, computeSince, id, period, queryKey])
 
   const keyLogQuickFilters = useMemo(
     () => ({
@@ -12934,24 +10375,15 @@ export function KeyDetails({
       protocol: keyLogQuickProtocol,
     }),
     [keyLogQuickBilling, keyLogQuickProtocol],
-  );
+  )
   const keyLogSelectedKindsNormalized = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          keyLogSelectedKinds.map((value) => value.trim()).filter(Boolean),
-        ),
-      ),
+    () => Array.from(new Set(keyLogSelectedKinds.map((value) => value.trim()).filter(Boolean))),
     [keyLogSelectedKinds],
-  );
+  )
   const keyLogQuickSelection = useMemo(
-    () =>
-      buildRequestKindQuickFilterSelection(
-        keyLogRequestKindOptions,
-        keyLogQuickFilters,
-      ),
+    () => buildRequestKindQuickFilterSelection(keyLogRequestKindOptions, keyLogQuickFilters),
     [keyLogQuickFilters, keyLogRequestKindOptions],
-  );
+  )
   const keyLogEffectiveKinds = useMemo(
     () =>
       resolveEffectiveRequestKindSelection(
@@ -12960,50 +10392,45 @@ export function KeyDetails({
         keyLogQuickSelection,
       ),
     [keyLogQuickFilters, keyLogQuickSelection, keyLogSelectedKindsNormalized],
-  );
+  )
   const keyLogEffectiveKindsKey = useMemo(
-    () => keyLogEffectiveKinds.join("\u0001"),
+    () => keyLogEffectiveKinds.join('\u0001'),
     [keyLogEffectiveKinds],
-  );
+  )
   const keyLogHasEmptyMatch = useMemo(
-    () =>
-      hasActiveRequestKindQuickFilters(keyLogQuickFilters) &&
-      keyLogQuickSelection.length === 0,
+    () => hasActiveRequestKindQuickFilters(keyLogQuickFilters) && keyLogQuickSelection.length === 0,
     [keyLogQuickFilters, keyLogQuickSelection.length],
-  );
+  )
   const keyLogResultFilter =
-    keyLogOutcomeFilter?.kind === "result"
-      ? (keyLogOutcomeFilter.value as "success" | "error" | "quota_exhausted")
-      : undefined;
+    keyLogOutcomeFilter?.kind === 'result'
+      ? (keyLogOutcomeFilter.value as 'success' | 'error' | 'quota_exhausted')
+      : undefined
   const keyLogKeyEffectFilter =
-    keyLogOutcomeFilter?.kind === "keyEffect"
-      ? keyLogOutcomeFilter.value
-      : undefined;
+    keyLogOutcomeFilter?.kind === 'keyEffect' ? keyLogOutcomeFilter.value : undefined
 
   useEffect(() => {
-    logsAbortRef.current?.abort();
-    const controller = new AbortController();
-    logsAbortRef.current = controller;
+    logsAbortRef.current?.abort()
+    const controller = new AbortController()
+    logsAbortRef.current = controller
     const panelLoadState =
-      logsQueryKeyRef.current == null ||
-      logsQueryKeyRef.current !== logsQueryKey
+      logsQueryKeyRef.current == null || logsQueryKeyRef.current !== logsQueryKey
         ? getBlockingLoadState(logsQueryKeyRef.current != null)
-        : getRefreshingLoadState(logsQueryKeyRef.current != null);
-    setLogsLoadState(panelLoadState);
-    setLogsError(null);
-    setLogs([]);
-    setLogsTotal(0);
-    setKeyLogFacets(emptyRequestLogFacets);
-    const since = computeSince();
+        : getRefreshingLoadState(logsQueryKeyRef.current != null)
+    setLogsLoadState(panelLoadState)
+    setLogsError(null)
+    setLogs([])
+    setLogsTotal(0)
+    setKeyLogFacets(emptyRequestLogFacets)
+    const since = computeSince()
 
     if (keyLogHasEmptyMatch) {
-      setLogs([]);
-      setLogsTotal(0);
-      setLogsLoadState("ready");
-      logsQueryKeyRef.current = logsQueryKey;
+      setLogs([])
+      setLogsTotal(0)
+      setLogsLoadState('ready')
+      logsQueryKeyRef.current = logsQueryKey
       return () => {
-        logsAbortRef.current?.abort();
-      };
+        logsAbortRef.current?.abort()
+      }
     }
 
     fetchKeyLogsPage(
@@ -13019,29 +10446,25 @@ export function KeyDetails({
       controller.signal,
     )
       .then((result) => {
-        if (controller.signal.aborted) return;
-        setLogs(result.items);
-        setLogsTotal(result.total);
-        setLogsPerPage(result.perPage);
-        setKeyLogRequestKindOptions(result.requestKindOptions);
-        setKeyLogFacets(result.facets);
-        setLogsLoadState("ready");
-        logsQueryKeyRef.current = logsQueryKey;
+        if (controller.signal.aborted) return
+        setLogs(result.items)
+        setLogsTotal(result.total)
+        setLogsPerPage(result.perPage)
+        setKeyLogRequestKindOptions(result.requestKindOptions)
+        setKeyLogFacets(result.facets)
+        setLogsLoadState('ready')
+        logsQueryKeyRef.current = logsQueryKey
       })
       .catch((err) => {
-        if ((err as Error).name === "AbortError") return;
-        console.error(err);
-        setLogsError(
-          err instanceof Error
-            ? err.message
-            : adminStrings.errors.loadKeyDetails,
-        );
-        setLogsLoadState("error");
-      });
+        if ((err as Error).name === 'AbortError') return
+        console.error(err)
+        setLogsError(err instanceof Error ? err.message : adminStrings.errors.loadKeyDetails)
+        setLogsLoadState('error')
+      })
 
     return () => {
-      logsAbortRef.current?.abort();
-    };
+      logsAbortRef.current?.abort()
+    }
   }, [
     adminStrings.errors.loadKeyDetails,
     computeSince,
@@ -13053,335 +10476,231 @@ export function KeyDetails({
     logsPage,
     logsPerPage,
     logsQueryKey,
-  ]);
+  ])
 
-  const loadStickyUsers = useCallback(
-    async (reason: "initial" | "switch" | "refresh" = "refresh") => {
-      stickyUsersAbortRef.current?.abort();
-      const controller = new AbortController();
-      stickyUsersAbortRef.current = controller;
-      try {
-        const panelLoadState =
-          reason === "refresh"
-            ? getRefreshingLoadState(stickyUsersQueryKeyRef.current != null)
-            : getBlockingLoadState(stickyUsersQueryKeyRef.current != null);
-        setStickyUsersLoadState(panelLoadState);
-        setStickyUsersError(null);
-        if (reason !== "refresh") {
-          setStickyUsers([]);
-          setStickyUsersTotal(0);
-        }
-        const result = await fetchKeyStickyUsers(
-          id,
-          stickyUsersPage,
-          stickyUsersPerPage,
-          controller.signal,
-        );
-        if (controller.signal.aborted) return;
-        setStickyUsers(result.items);
-        setStickyUsersTotal(result.total);
-        setStickyUsersLoadState("ready");
-        stickyUsersQueryKeyRef.current = stickyUsersQueryKey;
-      } catch (err) {
-        if ((err as Error).name === "AbortError") return;
-        console.error(err);
-        setStickyUsersError(
-          err instanceof Error
-            ? err.message
-            : adminStrings.errors.loadKeyDetails,
-        );
-        setStickyUsersLoadState("error");
+  const loadStickyUsers = useCallback(async (reason: 'initial' | 'switch' | 'refresh' = 'refresh') => {
+    stickyUsersAbortRef.current?.abort()
+    const controller = new AbortController()
+    stickyUsersAbortRef.current = controller
+    try {
+      const panelLoadState =
+        reason === 'refresh'
+          ? getRefreshingLoadState(stickyUsersQueryKeyRef.current != null)
+          : getBlockingLoadState(stickyUsersQueryKeyRef.current != null)
+      setStickyUsersLoadState(panelLoadState)
+      setStickyUsersError(null)
+      if (reason !== 'refresh') {
+        setStickyUsers([])
+        setStickyUsersTotal(0)
       }
-    },
-    [
-      adminStrings.errors.loadKeyDetails,
-      id,
-      stickyUsersPage,
-      stickyUsersPerPage,
-      stickyUsersQueryKey,
-    ],
-  );
+      const result = await fetchKeyStickyUsers(id, stickyUsersPage, stickyUsersPerPage, controller.signal)
+      if (controller.signal.aborted) return
+      setStickyUsers(result.items)
+      setStickyUsersTotal(result.total)
+      setStickyUsersLoadState('ready')
+      stickyUsersQueryKeyRef.current = stickyUsersQueryKey
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') return
+      console.error(err)
+      setStickyUsersError(err instanceof Error ? err.message : adminStrings.errors.loadKeyDetails)
+      setStickyUsersLoadState('error')
+    }
+  }, [adminStrings.errors.loadKeyDetails, id, stickyUsersPage, stickyUsersPerPage, stickyUsersQueryKey])
 
-  const loadStickyNodes = useCallback(
-    async (reason: "initial" | "switch" | "refresh" = "refresh") => {
-      stickyNodesAbortRef.current?.abort();
-      const controller = new AbortController();
-      stickyNodesAbortRef.current = controller;
-      try {
-        const panelLoadState =
-          reason === "refresh"
-            ? getRefreshingLoadState(stickyNodesQueryKeyRef.current != null)
-            : getBlockingLoadState(stickyNodesQueryKeyRef.current != null);
-        setStickyNodesLoadState(panelLoadState);
-        setStickyNodesError(null);
-        if (reason !== "refresh") {
-          setStickyNodes([]);
-        }
-        const result = await fetchKeyStickyNodes(id, controller.signal);
-        if (controller.signal.aborted) return;
-        setStickyNodes(result.nodes);
-        setStickyNodesLoadState("ready");
-        stickyNodesQueryKeyRef.current = id;
-      } catch (err) {
-        if ((err as Error).name === "AbortError") return;
-        console.error(err);
-        setStickyNodesError(
-          err instanceof Error
-            ? err.message
-            : adminStrings.errors.loadKeyDetails,
-        );
-        setStickyNodesLoadState("error");
+  const loadStickyNodes = useCallback(async (reason: 'initial' | 'switch' | 'refresh' = 'refresh') => {
+    stickyNodesAbortRef.current?.abort()
+    const controller = new AbortController()
+    stickyNodesAbortRef.current = controller
+    try {
+      const panelLoadState =
+        reason === 'refresh'
+          ? getRefreshingLoadState(stickyNodesQueryKeyRef.current != null)
+          : getBlockingLoadState(stickyNodesQueryKeyRef.current != null)
+      setStickyNodesLoadState(panelLoadState)
+      setStickyNodesError(null)
+      if (reason !== 'refresh') {
+        setStickyNodes([])
       }
-    },
-    [adminStrings.errors.loadKeyDetails, id],
-  );
+      const result = await fetchKeyStickyNodes(id, controller.signal)
+      if (controller.signal.aborted) return
+      setStickyNodes(result.nodes)
+      setStickyNodesLoadState('ready')
+      stickyNodesQueryKeyRef.current = id
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') return
+      console.error(err)
+      setStickyNodesError(err instanceof Error ? err.message : adminStrings.errors.loadKeyDetails)
+      setStickyNodesLoadState('error')
+    }
+  }, [adminStrings.errors.loadKeyDetails, id])
 
   useEffect(() => {
-    const reason =
-      queryKeyRef.current == null
-        ? "initial"
-        : queryKeyRef.current === queryKey
-          ? "refresh"
-          : "switch";
-    void load(reason);
+    const reason = queryKeyRef.current == null ? 'initial' : queryKeyRef.current === queryKey ? 'refresh' : 'switch'
+    void load(reason)
     return () => {
-      loadAbortRef.current?.abort();
-    };
-  }, [load, queryKey]);
+      loadAbortRef.current?.abort()
+    }
+  }, [load, queryKey])
 
   useEffect(() => {
     const reason =
       stickyUsersQueryKeyRef.current == null
-        ? "initial"
+        ? 'initial'
         : stickyUsersQueryKeyRef.current === stickyUsersQueryKey
-          ? "refresh"
-          : "switch";
-    void loadStickyUsers(reason);
+          ? 'refresh'
+          : 'switch'
+    void loadStickyUsers(reason)
     return () => {
-      stickyUsersAbortRef.current?.abort();
-    };
-  }, [loadStickyUsers, stickyUsersQueryKey]);
+      stickyUsersAbortRef.current?.abort()
+    }
+  }, [loadStickyUsers, stickyUsersQueryKey])
 
   useEffect(() => {
     const reason =
       stickyNodesQueryKeyRef.current == null
-        ? "initial"
+        ? 'initial'
         : stickyNodesQueryKeyRef.current === id
-          ? "refresh"
-          : "switch";
-    void loadStickyNodes(reason);
+          ? 'refresh'
+          : 'switch'
+    void loadStickyNodes(reason)
     return () => {
-      stickyNodesAbortRef.current?.abort();
-    };
-  }, [id, loadStickyNodes]);
+      stickyNodesAbortRef.current?.abort()
+    }
+  }, [id, loadStickyNodes])
 
-  useEffect(
-    () => () => {
-      if (syncFeedbackTimerRef.current != null) {
-        window.clearTimeout(syncFeedbackTimerRef.current);
-      }
-    },
-    [],
-  );
+  useEffect(() => () => {
+    if (syncFeedbackTimerRef.current != null) {
+      window.clearTimeout(syncFeedbackTimerRef.current)
+    }
+  }, [])
 
   useEffect(() => {
-    setQuarantineDetailExpanded(false);
-    setStickyUsersPage(1);
-    setLogsPage(1);
-    setLogsPerPage(20);
-    setKeyLogRequestKindOptions([]);
-    setKeyLogSelectedKinds([]);
-    setKeyLogQuickBilling("all");
-    setKeyLogQuickProtocol("all");
-    setKeyLogFacets(emptyRequestLogFacets);
-    setKeyLogOutcomeFilter(null);
-  }, [id]);
+    setQuarantineDetailExpanded(false)
+    setStickyUsersPage(1)
+    setLogsPage(1)
+    setLogsPerPage(20)
+    setKeyLogRequestKindOptions([])
+    setKeyLogSelectedKinds([])
+    setKeyLogQuickBilling('all')
+    setKeyLogQuickProtocol('all')
+    setKeyLogFacets(emptyRequestLogFacets)
+    setKeyLogOutcomeFilter(null)
+  }, [id])
 
   const syncUsage = useCallback(async () => {
-    if (syncInFlightRef.current) return;
-    syncInFlightRef.current = true;
+    if (syncInFlightRef.current) return
+    syncInFlightRef.current = true
     try {
-      setSyncState("syncing");
-      setError(null);
-      await syncApiKeyUsage(id);
-      await Promise.all([
-        load("refresh"),
-        loadStickyUsers("refresh"),
-        loadStickyNodes("refresh"),
-      ]);
-      setLogsNonce((value) => value + 1);
-      setSyncState("success");
+      setSyncState('syncing')
+      setError(null)
+      await syncApiKeyUsage(id)
+      await Promise.all([load('refresh'), loadStickyUsers('refresh'), loadStickyNodes('refresh')])
+      setLogsNonce((value) => value + 1)
+      setSyncState('success')
       if (syncFeedbackTimerRef.current != null) {
-        window.clearTimeout(syncFeedbackTimerRef.current);
+        window.clearTimeout(syncFeedbackTimerRef.current)
       }
       syncFeedbackTimerRef.current = window.setTimeout(() => {
-        setSyncState("idle");
-        syncFeedbackTimerRef.current = null;
-      }, 2500);
+        setSyncState('idle')
+        syncFeedbackTimerRef.current = null
+      }, 2500)
     } catch (err) {
-      console.error(err);
-      setError(
-        err instanceof Error ? err.message : adminStrings.errors.syncUsage,
-      );
-      setSyncState("idle");
+      console.error(err)
+      setError(err instanceof Error ? err.message : adminStrings.errors.syncUsage)
+      setSyncState('idle')
     } finally {
-      syncInFlightRef.current = false;
+      syncInFlightRef.current = false
     }
-  }, [
-    adminStrings.errors.syncUsage,
-    id,
-    load,
-    loadStickyNodes,
-    loadStickyUsers,
-  ]);
+  }, [adminStrings.errors.syncUsage, id, load, loadStickyNodes, loadStickyUsers])
 
   const clearQuarantine = useCallback(async () => {
-    if (quarantineState === "clearing") return;
+    if (quarantineState === 'clearing') return
     try {
-      setQuarantineState("clearing");
-      setError(null);
-      await clearApiKeyQuarantine(id);
-      await Promise.all([
-        load("refresh"),
-        loadStickyUsers("refresh"),
-        loadStickyNodes("refresh"),
-      ]);
-      setLogsNonce((value) => value + 1);
+      setQuarantineState('clearing')
+      setError(null)
+      await clearApiKeyQuarantine(id)
+      await Promise.all([load('refresh'), loadStickyUsers('refresh'), loadStickyNodes('refresh')])
+      setLogsNonce((value) => value + 1)
     } catch (err) {
-      console.error(err);
-      setError(
-        err instanceof Error
-          ? err.message
-          : adminStrings.errors.clearQuarantine,
-      );
+      console.error(err)
+      setError(err instanceof Error ? err.message : adminStrings.errors.clearQuarantine)
     } finally {
-      setQuarantineState("idle");
+      setQuarantineState('idle')
     }
-  }, [
-    adminStrings.errors.clearQuarantine,
-    id,
-    load,
-    loadStickyNodes,
-    loadStickyUsers,
-    quarantineState,
-  ]);
+  }, [adminStrings.errors.clearQuarantine, id, load, loadStickyNodes, loadStickyUsers, quarantineState])
 
   const handleKeyLogQuickFilters = useCallback(
-    (
-      billing: TokenLogRequestKindQuickBilling,
-      protocol: TokenLogRequestKindQuickProtocol,
-    ) => {
-      const nextFilters = { billing, protocol };
-      setKeyLogQuickBilling(billing);
-      setKeyLogQuickProtocol(protocol);
-      setKeyLogSelectedKinds(
-        buildRequestKindQuickFilterSelection(
-          keyLogRequestKindOptions,
-          nextFilters,
-        ),
-      );
-      setLogsPage(1);
+    (billing: TokenLogRequestKindQuickBilling, protocol: TokenLogRequestKindQuickProtocol) => {
+      const nextFilters = { billing, protocol }
+      setKeyLogQuickBilling(billing)
+      setKeyLogQuickProtocol(protocol)
+      setKeyLogSelectedKinds(buildRequestKindQuickFilterSelection(keyLogRequestKindOptions, nextFilters))
+      setLogsPage(1)
     },
     [keyLogRequestKindOptions],
-  );
+  )
 
   const handleToggleKeyLogKind = useCallback(
     (key: string) => {
-      const nextSelected = toggleRequestKindSelection(
-        keyLogEffectiveKinds,
-        key,
-      );
+      const nextSelected = toggleRequestKindSelection(keyLogEffectiveKinds, key)
       const nextQuickFilters = resolveManualRequestKindQuickFilters(
         nextSelected,
         keyLogQuickFilters,
         keyLogQuickSelection,
         keyLogRequestKindOptions,
-      );
-      setKeyLogSelectedKinds(nextSelected);
-      setKeyLogQuickBilling(nextQuickFilters.billing);
-      setKeyLogQuickProtocol(nextQuickFilters.protocol);
-      setLogsPage(1);
+      )
+      setKeyLogSelectedKinds(nextSelected)
+      setKeyLogQuickBilling(nextQuickFilters.billing)
+      setKeyLogQuickProtocol(nextQuickFilters.protocol)
+      setLogsPage(1)
     },
-    [
-      keyLogEffectiveKinds,
-      keyLogQuickFilters,
-      keyLogQuickSelection,
-      keyLogRequestKindOptions,
-    ],
-  );
+    [keyLogEffectiveKinds, keyLogQuickFilters, keyLogQuickSelection, keyLogRequestKindOptions],
+  )
 
   const handleClearKeyLogKinds = useCallback(() => {
-    setKeyLogSelectedKinds([]);
-    setKeyLogQuickBilling(defaultTokenLogRequestKindQuickFilters.billing);
-    setKeyLogQuickProtocol(defaultTokenLogRequestKindQuickFilters.protocol);
-    setLogsPage(1);
-  }, []);
+    setKeyLogSelectedKinds([])
+    setKeyLogQuickBilling(defaultTokenLogRequestKindQuickFilters.billing)
+    setKeyLogQuickProtocol(defaultTokenLogRequestKindQuickFilters.protocol)
+    setLogsPage(1)
+  }, [])
 
-  const handleKeyLogOutcomeFilter = useCallback(
-    (value: RecentRequestsOutcomeFilter | null) => {
-      setKeyLogOutcomeFilter(value);
-      setLogsPage(1);
-    },
-    [],
-  );
+  const handleKeyLogOutcomeFilter = useCallback((value: RecentRequestsOutcomeFilter | null) => {
+    setKeyLogOutcomeFilter(value)
+    setLogsPage(1)
+  }, [])
 
-  const keyLogsTotalPages = Math.max(
-    1,
-    Math.ceil(logsTotal / logsPerPage) || 1,
-  );
-  const goPrevKeyLogsPage = () =>
-    setLogsPage((value) => Math.max(1, value - 1));
-  const goNextKeyLogsPage = () =>
-    setLogsPage((value) => Math.min(keyLogsTotalPages, value + 1));
+  const loadKeyLogBodies = useCallback(
+    (log: RequestLog, signal: AbortSignal) => fetchKeyLogDetails(id, log.id, signal),
+    [id],
+  )
+
+  const keyLogsTotalPages = Math.max(1, Math.ceil(logsTotal / logsPerPage) || 1)
+  const goPrevKeyLogsPage = () => setLogsPage((value) => Math.max(1, value - 1))
+  const goNextKeyLogsPage = () => setLogsPage((value) => Math.min(keyLogsTotalPages, value + 1))
   const changeKeyLogsPerPage = (value: number) => {
-    setLogsPerPage(value);
-    setLogsPage(1);
-  };
+    setLogsPerPage(value)
+    setLogsPage(1)
+  }
 
   const metricCards = useMemo(() => {
-    if (!summary) return [];
-    const total = summary.total_requests;
+    if (!summary) return []
+    const total = summary.total_requests
     const lastActivitySubtitle = summary.last_activity
       ? `${keyDetailsStrings.metrics.lastActivityPrefix} ${formatTimestamp(summary.last_activity)}`
-      : keyDetailsStrings.metrics.noActivity;
+      : keyDetailsStrings.metrics.noActivity
     return [
-      {
-        id: "total",
-        label: keyDetailsStrings.metrics.total,
-        value: formatNumber(summary.total_requests),
-        subtitle: lastActivitySubtitle,
-      },
-      {
-        id: "success",
-        label: keyDetailsStrings.metrics.success,
-        value: formatNumber(summary.success_count),
-        subtitle: formatPercent(summary.success_count, total),
-      },
-      {
-        id: "errors",
-        label: keyDetailsStrings.metrics.errors,
-        value: formatNumber(summary.error_count),
-        subtitle: formatPercent(summary.error_count, total),
-      },
-      {
-        id: "quota",
-        label: keyDetailsStrings.metrics.quota,
-        value: formatNumber(summary.quota_exhausted_count),
-        subtitle: formatPercent(summary.quota_exhausted_count, total),
-      },
-    ];
-  }, [summary, keyDetailsStrings]);
-  const detailBlocking = isBlockingLoadState(detailLoadState);
-  const detailRefreshing = isRefreshingLoadState(detailLoadState);
-  const detailLoadingLabel = detailRefreshing
-    ? loadingStateStrings.refreshing
-    : loadingStateStrings.switching;
-  const stickyUsersTotalPages = Math.max(
-    1,
-    Math.ceil(stickyUsersTotal / stickyUsersPerPage),
-  );
-  const quarantineRawDetail = detail?.quarantine?.reasonDetail?.trim() ?? "";
-  const hasQuarantineRawDetail = quarantineRawDetail.length > 0;
+      { id: 'total', label: keyDetailsStrings.metrics.total, value: formatNumber(summary.total_requests), subtitle: lastActivitySubtitle },
+      { id: 'success', label: keyDetailsStrings.metrics.success, value: formatNumber(summary.success_count), subtitle: formatPercent(summary.success_count, total) },
+      { id: 'errors', label: keyDetailsStrings.metrics.errors, value: formatNumber(summary.error_count), subtitle: formatPercent(summary.error_count, total) },
+      { id: 'quota', label: keyDetailsStrings.metrics.quota, value: formatNumber(summary.quota_exhausted_count), subtitle: formatPercent(summary.quota_exhausted_count, total) },
+    ]
+  }, [summary, keyDetailsStrings])
+  const detailBlocking = isBlockingLoadState(detailLoadState)
+  const detailRefreshing = isRefreshingLoadState(detailLoadState)
+  const detailLoadingLabel = detailRefreshing ? loadingStateStrings.refreshing : loadingStateStrings.switching
+  const stickyUsersTotalPages = Math.max(1, Math.ceil(stickyUsersTotal / stickyUsersPerPage))
+  const quarantineRawDetail = detail?.quarantine?.reasonDetail?.trim() ?? ''
+  const hasQuarantineRawDetail = quarantineRawDetail.length > 0
 
   return (
     <div className="admin-detail-stack">
@@ -13389,7 +10708,8 @@ export function KeyDetails({
         <div className="title-group">
           <h1>{keyDetailsStrings.title}</h1>
           <p>
-            {keyDetailsStrings.descriptionPrefix} <code>{id}</code>
+            {keyDetailsStrings.descriptionPrefix}{' '}
+            <code>{id}</code>
           </p>
         </div>
         <div className="controls">
@@ -13401,26 +10721,20 @@ export function KeyDetails({
           />
           <Button
             type="button"
-            variant={syncState === "success" ? "success" : "default"}
+            variant={syncState === 'success' ? 'success' : 'default'}
             onClick={() => void syncUsage()}
-            disabled={syncState === "syncing"}
-            aria-busy={syncState === "syncing"}
+            disabled={syncState === 'syncing'}
+            aria-busy={syncState === 'syncing'}
           >
             <Icon
-              icon={
-                syncState === "syncing"
-                  ? "mdi:loading"
-                  : syncState === "success"
-                    ? "mdi:check-bold"
-                    : "mdi:refresh"
-              }
+              icon={syncState === 'syncing' ? 'mdi:loading' : syncState === 'success' ? 'mdi:check-bold' : 'mdi:refresh'}
               width={18}
               height={18}
-              className={syncState === "syncing" ? "icon-spin" : undefined}
+              className={syncState === 'syncing' ? 'icon-spin' : undefined}
             />
-            {syncState === "syncing"
+            {syncState === 'syncing'
               ? keyDetailsStrings.syncing
-              : syncState === "success"
+              : syncState === 'success'
                 ? keyDetailsStrings.syncSuccess
                 : keyDetailsStrings.syncAction}
           </Button>
@@ -13431,37 +10745,20 @@ export function KeyDetails({
         </div>
       </section>
 
-      {error && (
-        <div
-          className="surface error-banner"
-          style={{ marginTop: 8, marginBottom: 0 }}
-        >
-          {error}
-        </div>
-      )}
+      {error && <div className="surface error-banner" style={{ marginTop: 8, marginBottom: 0 }}>{error}</div>}
 
       {detail && (
         <section className="surface panel">
           <div className="panel-header">
             <div>
               <h2>{keyDetailsStrings.metadata.title}</h2>
-              <p className="panel-description">
-                {keyDetailsStrings.metadata.description}
-              </p>
+              <p className="panel-description">{keyDetailsStrings.metadata.description}</p>
             </div>
           </div>
-          <div
-            style={{
-              display: "grid",
-              gap: 12,
-              gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-            }}
-          >
+          <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
             <div className="admin-mobile-kv">
               <span>{keyDetailsStrings.metadata.group}</span>
-              <strong>
-                {formatKeyGroupName(detail.group, keyStrings.groups.ungrouped)}
-              </strong>
+              <strong>{formatKeyGroupName(detail.group, keyStrings.groups.ungrouped)}</strong>
             </div>
             <div className="admin-mobile-kv">
               <span>{keyDetailsStrings.metadata.registrationIp}</span>
@@ -13469,9 +10766,7 @@ export function KeyDetails({
             </div>
             <div className="admin-mobile-kv">
               <span>{keyDetailsStrings.metadata.registrationRegion}</span>
-              <strong>
-                {formatRegistrationValue(detail.registration_region)}
-              </strong>
+              <strong>{formatRegistrationValue(detail.registration_region)}</strong>
             </div>
           </div>
         </section>
@@ -13482,30 +10777,22 @@ export function KeyDetails({
           <div className="panel-header">
             <div>
               <h2>{keyDetailsStrings.quarantine.title}</h2>
-              <p className="panel-description">
-                {keyDetailsStrings.quarantine.description}
-              </p>
+              <p className="panel-description">{keyDetailsStrings.quarantine.description}</p>
             </div>
             <Button
               type="button"
               variant="warning"
               onClick={() => void clearQuarantine()}
-              disabled={quarantineState === "clearing"}
-              aria-busy={quarantineState === "clearing"}
+              disabled={quarantineState === 'clearing'}
+              aria-busy={quarantineState === 'clearing'}
             >
               <Icon
-                icon={
-                  quarantineState === "clearing"
-                    ? "mdi:loading"
-                    : "mdi:shield-check-outline"
-                }
+                icon={quarantineState === 'clearing' ? 'mdi:loading' : 'mdi:shield-check-outline'}
                 width={18}
                 height={18}
-                className={
-                  quarantineState === "clearing" ? "icon-spin" : undefined
-                }
+                className={quarantineState === 'clearing' ? 'icon-spin' : undefined}
               />
-              {quarantineState === "clearing"
+              {quarantineState === 'clearing'
                 ? keyDetailsStrings.quarantine.clearing
                 : keyDetailsStrings.quarantine.clearAction}
             </Button>
@@ -13516,10 +10803,7 @@ export function KeyDetails({
           </div>
           <div className="admin-mobile-kv">
             <span>{keyDetailsStrings.quarantine.reason}</span>
-            <strong>
-              {detail.quarantine.reasonSummary ||
-                keyStrings.quarantine.noReason}
-            </strong>
+            <strong>{detail.quarantine.reasonSummary || keyStrings.quarantine.noReason}</strong>
           </div>
           <div className="admin-mobile-kv">
             <span>{keyDetailsStrings.quarantine.createdAt}</span>
@@ -13528,9 +10812,7 @@ export function KeyDetails({
           {hasQuarantineRawDetail && (
             <div className="quarantine-detail-block">
               <div className="quarantine-detail-header">
-                <div className="panel-description">
-                  {keyDetailsStrings.quarantine.detail}
-                </div>
+                <div className="panel-description">{keyDetailsStrings.quarantine.detail}</div>
                 <Button
                   type="button"
                   variant="ghost"
@@ -13538,16 +10820,10 @@ export function KeyDetails({
                   className="quarantine-detail-toggle"
                   aria-expanded={quarantineDetailExpanded}
                   aria-controls={quarantineDetailId}
-                  onClick={() =>
-                    setQuarantineDetailExpanded((current) => !current)
-                  }
+                  onClick={() => setQuarantineDetailExpanded((current) => !current)}
                 >
                   <Icon
-                    icon={
-                      quarantineDetailExpanded
-                        ? "mdi:chevron-up"
-                        : "mdi:chevron-down"
-                    }
+                    icon={quarantineDetailExpanded ? 'mdi:chevron-up' : 'mdi:chevron-down'}
                     width={18}
                     height={18}
                     aria-hidden="true"
@@ -13584,52 +10860,24 @@ export function KeyDetails({
         >
           <section className="metrics-grid">
             {!detail ? (
-              <div
-                className="empty-state alert"
-                style={{ gridColumn: "1 / -1" }}
-              >
-                {keyDetailsStrings.loading}
-              </div>
+              <div className="empty-state alert" style={{ gridColumn: '1 / -1' }}>{keyDetailsStrings.loading}</div>
             ) : (
               (() => {
-                const limit = detail?.quota_limit ?? null;
-                const remaining = detail?.quota_remaining ?? null;
-                const used =
-                  limit != null && remaining != null
-                    ? Math.max(limit - remaining, 0)
-                    : null;
-                const percent =
-                  limit && remaining != null && limit > 0
-                    ? formatPercent(remaining, limit)
-                    : "—";
+                const limit = detail?.quota_limit ?? null
+                const remaining = detail?.quota_remaining ?? null
+                const used = (limit != null && remaining != null) ? Math.max(limit - remaining, 0) : null
+                const percent = (limit && remaining != null && limit > 0) ? formatPercent(remaining, limit) : '—'
                 return [
-                  {
-                    id: "used",
-                    label: "Used",
-                    value: used != null ? formatNumber(used) : "—",
-                    subtitle: limit != null ? `of ${formatNumber(limit)}` : "—",
-                  },
-                  {
-                    id: "remaining",
-                    label: "Remaining",
-                    value: remaining != null ? formatNumber(remaining) : "—",
-                    subtitle: percent,
-                  },
-                  {
-                    id: "synced",
-                    label: "Synced",
-                    value: detail?.quota_synced_at
-                      ? formatTimestamp(detail.quota_synced_at)
-                      : "—",
-                    subtitle: "",
-                  },
+                  { id: 'used', label: 'Used', value: used != null ? formatNumber(used) : '—', subtitle: limit != null ? `of ${formatNumber(limit)}` : '—' },
+                  { id: 'remaining', label: 'Remaining', value: remaining != null ? formatNumber(remaining) : '—', subtitle: percent },
+                  { id: 'synced', label: 'Synced', value: detail?.quota_synced_at ? formatTimestamp(detail.quota_synced_at) : '—', subtitle: '' },
                 ].map((m) => (
                   <div key={m.id} className="metric-card">
                     <h3>{m.label}</h3>
                     <div className="metric-value">{m.value}</div>
                     <div className="metric-subtitle">{m.subtitle}</div>
                   </div>
-                ));
+                ))
               })()
             )}
           </section>
@@ -13640,42 +10888,17 @@ export function KeyDetails({
         <div className="panel-header">
           <div>
             <h2>{keyDetailsStrings.usageTitle}</h2>
-            <p className="panel-description">
-              {keyDetailsStrings.usageDescription}
-            </p>
+            <p className="panel-description">{keyDetailsStrings.usageDescription}</p>
           </div>
-          <div
-            style={{
-              display: "flex",
-              gap: 8,
-              alignItems: "center",
-              flexWrap: "wrap",
-            }}
-          >
-            <Select
-              value={period}
-              onValueChange={(value) =>
-                setPeriod(value as "day" | "week" | "month")
-              }
-              disabled={detailBlocking}
-            >
-              <SelectTrigger
-                className="w-[132px]"
-                aria-label={keyDetailsStrings.usageTitle}
-                disabled={detailBlocking}
-              >
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <Select value={period} onValueChange={(value) => setPeriod(value as 'day' | 'week' | 'month')} disabled={detailBlocking}>
+              <SelectTrigger className="w-[132px]" aria-label={keyDetailsStrings.usageTitle} disabled={detailBlocking}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent align="end">
-                <SelectItem value="day">
-                  {keyDetailsStrings.periodOptions.day}
-                </SelectItem>
-                <SelectItem value="week">
-                  {keyDetailsStrings.periodOptions.week}
-                </SelectItem>
-                <SelectItem value="month">
-                  {keyDetailsStrings.periodOptions.month}
-                </SelectItem>
+                <SelectItem value="day">{keyDetailsStrings.periodOptions.day}</SelectItem>
+                <SelectItem value="week">{keyDetailsStrings.periodOptions.week}</SelectItem>
+                <SelectItem value="month">{keyDetailsStrings.periodOptions.month}</SelectItem>
               </SelectContent>
             </Select>
             <Input
@@ -13686,11 +10909,7 @@ export function KeyDetails({
               className="w-[176px]"
               disabled={detailBlocking}
             />
-            <Button
-              type="button"
-              onClick={() => void load("refresh")}
-              disabled={detailBlocking}
-            >
+            <Button type="button" onClick={() => void load('refresh')} disabled={detailBlocking}>
               {keyDetailsStrings.apply}
             </Button>
           </div>
@@ -13702,12 +10921,7 @@ export function KeyDetails({
         >
           <section className="metrics-grid">
             {!summary ? (
-              <div
-                className="empty-state alert"
-                style={{ gridColumn: "1 / -1" }}
-              >
-                {keyDetailsStrings.loading}
-              </div>
+              <div className="empty-state alert" style={{ gridColumn: '1 / -1' }}>{keyDetailsStrings.loading}</div>
             ) : (
               metricCards.map((m) => (
                 <div key={m.id} className="metric-card">
@@ -13728,65 +10942,52 @@ export function KeyDetails({
         stickyUsersPage={stickyUsersPage}
         stickyUsersTotal={stickyUsersTotal}
         stickyUsersPerPage={stickyUsersPerPage}
-        onStickyUsersPrevious={() =>
-          setStickyUsersPage((current) => Math.max(1, current - 1))
-        }
-        onStickyUsersNext={() =>
-          setStickyUsersPage((current) =>
-            Math.min(stickyUsersTotalPages, current + 1),
-          )
-        }
+        onStickyUsersPrevious={() => setStickyUsersPage((current) => Math.max(1, current - 1))}
+        onStickyUsersNext={() => setStickyUsersPage((current) => Math.min(stickyUsersTotalPages, current + 1))}
         stickyNodes={stickyNodes}
         stickyNodesLoadState={stickyNodesLoadState}
         stickyNodesError={stickyNodesError}
         onOpenUser={onOpenUser}
       />
       <AdminRecentRequestsPanel
-        variant="admin"
-        language={language}
-        strings={adminStrings}
-        title={keyDetailsStrings.logsTitle}
-        description={keyDetailsStrings.logsDescription}
-        emptyLabel={keyDetailsStrings.logsEmpty}
-        loadState={logsLoadState}
-        loadingLabel={
-          logsLoadState === "refreshing"
-            ? loadingStateStrings.refreshing
-            : detailLoadingLabel
-        }
-        errorLabel={logsError ?? loadingStateStrings.error}
-        logs={logs}
-        requestKindOptions={keyLogRequestKindOptions}
-        requestKindQuickBilling={keyLogQuickBilling}
-        requestKindQuickProtocol={keyLogQuickProtocol}
-        selectedRequestKinds={keyLogSelectedKinds}
-        onRequestKindQuickFiltersChange={handleKeyLogQuickFilters}
-        onToggleRequestKind={handleToggleKeyLogKind}
-        onClearRequestKinds={handleClearKeyLogKinds}
-        outcomeFilter={keyLogOutcomeFilter}
-        resultOptions={keyLogFacets.results}
-        keyEffectOptions={keyLogFacets.keyEffects}
-        onOutcomeFilterChange={handleKeyLogOutcomeFilter}
-        keyOptions={[]}
-        showKeyColumn={false}
-        showTokenColumn
-        onOpenToken={onOpenToken}
-        page={logsPage}
-        perPage={logsPerPage}
-        total={logsTotal}
-        paginationDisabled={
-          logsLoadState !== "ready" && logsLoadState !== "error"
-        }
-        onPreviousPage={goPrevKeyLogsPage}
-        onNextPage={goNextKeyLogsPage}
-        onPerPageChange={changeKeyLogsPerPage}
-        formatTime={formatTimestamp}
-        formatTimeDetail={(ts) =>
-          ts ? `${formatTimestampWithMs(ts)} · ${formatRelativeTime(ts)}` : "—"
-        }
-      />
+          variant="admin"
+          language={language}
+          strings={adminStrings}
+          title={keyDetailsStrings.logsTitle}
+          description={keyDetailsStrings.logsDescription}
+          emptyLabel={keyDetailsStrings.logsEmpty}
+          loadState={logsLoadState}
+          loadingLabel={logsLoadState === 'refreshing' ? loadingStateStrings.refreshing : detailLoadingLabel}
+          errorLabel={logsError ?? loadingStateStrings.error}
+          logs={logs}
+          requestKindOptions={keyLogRequestKindOptions}
+          requestKindQuickBilling={keyLogQuickBilling}
+          requestKindQuickProtocol={keyLogQuickProtocol}
+          selectedRequestKinds={keyLogSelectedKinds}
+          onRequestKindQuickFiltersChange={handleKeyLogQuickFilters}
+          onToggleRequestKind={handleToggleKeyLogKind}
+          onClearRequestKinds={handleClearKeyLogKinds}
+          outcomeFilter={keyLogOutcomeFilter}
+          resultOptions={keyLogFacets.results}
+          keyEffectOptions={keyLogFacets.keyEffects}
+          onOutcomeFilterChange={handleKeyLogOutcomeFilter}
+          keyOptions={[]}
+          showKeyColumn={false}
+          showTokenColumn
+          onOpenToken={onOpenToken}
+          page={logsPage}
+          perPage={logsPerPage}
+          total={logsTotal}
+          paginationDisabled={logsLoadState !== 'ready' && logsLoadState !== 'error'}
+          onPreviousPage={goPrevKeyLogsPage}
+          onNextPage={goNextKeyLogsPage}
+          onPerPageChange={changeKeyLogsPerPage}
+          formatTime={formatTimestamp}
+          formatTimeDetail={(ts) => (ts ? `${formatTimestampWithMs(ts)} · ${formatRelativeTime(ts)}` : '—')}
+          loadLogBodies={loadKeyLogBodies}
+        />
     </div>
-  );
+  )
 }
 
-export default AdminDashboard;
+export default AdminDashboard

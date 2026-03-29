@@ -27,12 +27,12 @@ describe('ConnectivityChecksPanel Storybook gallery', () => {
     expect(connectivityStories).not.toHaveProperty('QuotaBlocked')
   })
 
-  it('keeps the quota-blocked gallery aligned with runtime MCP ping behavior', () => {
+  it('keeps the quota-blocked gallery aligned with runtime MCP lifecycle behavior', () => {
     const quotaBlocked = connectivityStories.__testables.scenarios.find((scenario) => scenario.title === 'Quota Blocked')
 
     expect(quotaBlocked?.probeBubble?.items[0]).toEqual({
-      id: 'mcp-ping',
-      label: 'MCP service connectivity',
+      id: 'mcp-initialize',
+      label: 'MCP session initialize',
       status: 'success',
     })
   })
@@ -52,6 +52,17 @@ describe('ConnectivityChecksPanel Storybook gallery', () => {
       id: 'mcp-tool-call:tavily_search_with_extended_probe_fixture_name',
       label: 'Call tavily_search_with_extended_probe_fixture_name tool',
       status: 'success',
+    })
+  })
+
+  it('documents the research plan-limit failure detail in the partial MCP gallery state', () => {
+    const failureScenario = connectivityStories.__testables.scenarios.find((scenario) => scenario.title === 'MCP Tool Failure')
+
+    expect(failureScenario?.probeBubble?.items).toContainEqual({
+      id: 'mcp-tool-call:tavily_research',
+      label: 'Call tavily_research tool',
+      status: 'failed',
+      detail: "This request exceeds your plan's set usage limit.",
     })
   })
 })

@@ -35,6 +35,7 @@ pub struct ProxyRequest {
     pub headers: HeaderMap,
     pub body: Bytes,
     pub auth_token_id: Option<String>,
+    pub pinned_api_key_id: Option<String>,
 }
 
 /// 透传响应。
@@ -392,6 +393,29 @@ pub(crate) struct KeyStateSnapshot {
     pub quarantined: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TokenPrimaryApiKeyAffinity {
+    pub token_id: String,
+    pub user_id: Option<String>,
+    pub api_key_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpSessionBinding {
+    pub proxy_session_id: String,
+    pub upstream_session_id: String,
+    pub upstream_key_id: String,
+    pub auth_token_id: Option<String>,
+    pub user_id: Option<String>,
+    pub protocol_version: Option<String>,
+    pub last_event_id: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub expires_at: i64,
+    pub revoked_at: Option<i64>,
+    pub revoke_reason: Option<String>,
+}
+
 /// 单条请求日志记录的关键信息。
 #[derive(Debug, Clone)]
 pub struct RequestLogRecord {
@@ -408,9 +432,6 @@ pub struct RequestLogRecord {
     pub request_kind_key: String,
     pub request_kind_label: String,
     pub request_kind_detail: Option<String>,
-    pub legacy_request_kind_key: Option<String>,
-    pub legacy_request_kind_label: Option<String>,
-    pub legacy_request_kind_detail: Option<String>,
     pub result_status: String,
     pub failure_kind: Option<String>,
     pub key_effect_code: String,
@@ -420,6 +441,12 @@ pub struct RequestLogRecord {
     pub created_at: i64,
     pub forwarded_headers: Vec<String>,
     pub dropped_headers: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RequestLogBodiesRecord {
+    pub request_body: Option<Vec<u8>>,
+    pub response_body: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -623,6 +650,15 @@ pub struct UserLogMetricsSummary {
     pub last_activity: Option<i64>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct TokenLogMetricsSummary {
+    pub daily_success: i64,
+    pub daily_failure: i64,
+    pub monthly_success: i64,
+    pub monthly_failure: i64,
+    pub last_activity: Option<i64>,
+}
+
 #[derive(Debug, Clone)]
 pub struct AdminUserIdentity {
     pub user_id: String,
@@ -808,9 +844,6 @@ pub struct TokenLogRecord {
     pub request_kind_key: String,
     pub request_kind_label: String,
     pub request_kind_detail: Option<String>,
-    pub legacy_request_kind_key: Option<String>,
-    pub legacy_request_kind_label: Option<String>,
-    pub legacy_request_kind_detail: Option<String>,
     pub counts_business_quota: bool,
     pub result_status: String,
     pub error_message: Option<String>,
@@ -865,6 +898,8 @@ pub enum ProxyError {
     },
     #[error("no API keys available in the store")]
     NoAvailableKeys,
+    #[error("pinned MCP session key is unavailable")]
+    PinnedMcpSessionUnavailable,
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
     #[error("http error: {0}")]

@@ -167,8 +167,10 @@ pub async fn serve(
             get(get_token_hourly_breakdown),
         )
         .route("/api/tokens/leaderboard", get(get_token_leaderboard))
+        .route("/api/tokens/unbound-usage", get(list_unbound_token_usage))
         .route("/api/tokens/:id/logs", get(get_token_logs))
         .route("/api/tokens/:id/logs/page", get(get_token_logs_page))
+        .route("/api/tokens/:id/logs/:log_id/details", get(get_token_log_details))
         .route("/api/tokens/:id/broken-keys", get(get_token_monthly_broken_keys))
         .route("/api/tokens/:id/events", get(sse_token))
         // Access token management (admin only)

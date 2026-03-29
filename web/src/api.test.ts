@@ -3,11 +3,15 @@ import { afterEach, describe, expect, it, mock } from 'bun:test'
 import {
   bindAdminUserTag,
   fetchAdminRegistrationSettings,
+  fetchAdminUnboundTokenUsage,
   fetchAdminUsers,
   fetchAdminUserTags,
   fetchApiKeys,
   fetchJobs,
+  fetchKeyLogDetails,
   fetchRequestLogs,
+  fetchRequestLogDetails,
+  fetchTokenLogDetails,
   updateForwardProxySettingsWithProgress,
   updateAdminRegistrationSettings,
   updateAdminUserQuota,
@@ -242,6 +246,31 @@ describe('admin user tag api helpers', () => {
     expect(input).toBe('/api/users?page=1&per_page=20&q=L2&tagId=linuxdo_l2&sort=monthlySuccessRate&order=asc')
   })
 
+  it('sends exact search and sort params when listing unbound token usage', async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            items: [],
+            total: 0,
+            page: 2,
+            perPage: 20,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    )
+    globalThis.fetch = fetchMock as typeof fetch
+
+    const result = await fetchAdminUnboundTokenUsage(2, 20, 'ops', 'quotaMonthlyUsed', 'asc')
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [input] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(input).toBe('/api/tokens/unbound-usage?page=2&per_page=20&q=ops&sort=quotaMonthlyUsed&order=asc')
+    expect(result.page).toBe(2)
+    expect(result.perPage).toBe(20)
+  })
+
   it('sends repeated key group and status filters when listing paginated api keys', async () => {
     const fetchMock = mock(() =>
       Promise.resolve(
@@ -431,6 +460,62 @@ describe('admin user tag api helpers', () => {
     await fetchRequestLogs(1, 20, 'error', undefined, 'neutral')
 
     const [input] = fetchMock.mock.calls[0] as [string]
-    expect(input).toBe('/api/logs?page=1&per_page=20&result=error&operational_class=neutral')
+    expect(input).toBe(
+      '/api/logs?page=1&per_page=20&result=error&operational_class=neutral&include_bodies=true',
+    )
+  })
+
+  it('fetches global log bodies from the dedicated detail endpoint', async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ request_body: '{"query":"health"}', response_body: '{"ok":true}' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    )
+    globalThis.fetch = fetchMock as typeof fetch
+
+    const detail = await fetchRequestLogDetails(481)
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/logs/481/details')
+    expect(detail).toEqual({ request_body: '{"query":"health"}', response_body: '{"ok":true}' })
+  })
+
+  it('fetches key-scoped log bodies from the dedicated detail endpoint', async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ request_body: null, response_body: null }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    )
+    globalThis.fetch = fetchMock as typeof fetch
+
+    const detail = await fetchKeyLogDetails('CBoX', 9512)
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/keys/CBoX/logs/9512/details')
+    expect(detail).toEqual({ request_body: null, response_body: null })
+  })
+
+  it('fetches token-scoped log bodies from the dedicated detail endpoint', async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ request_body: '{"tool":"search"}', response_body: null }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    )
+    globalThis.fetch = fetchMock as typeof fetch
+
+    const detail = await fetchTokenLogDetails('ZjvC', 73)
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/tokens/ZjvC/logs/73/details')
+    expect(detail).toEqual({ request_body: '{"tool":"search"}', response_body: null })
   })
 })

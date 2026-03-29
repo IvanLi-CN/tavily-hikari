@@ -150,6 +150,26 @@ pub struct ForwardProxyProgressNodeState {
     pub message: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct RequestKindCanonicalBackfillTableReport {
+    pub table: &'static str,
+    pub meta_key: &'static str,
+    pub dry_run: bool,
+    pub batch_size: i64,
+    pub cursor_before: i64,
+    pub cursor_after: i64,
+    pub rows_scanned: i64,
+    pub rows_updated: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RequestKindCanonicalBackfillReport {
+    pub dry_run: bool,
+    pub batch_size: i64,
+    pub request_logs: RequestKindCanonicalBackfillTableReport,
+    pub auth_token_logs: RequestKindCanonicalBackfillTableReport,
+}
+
 impl ForwardProxyProgressEvent {
     pub fn phase(operation: &'static str, phase_key: &'static str, label: &'static str) -> Self {
         Self::Phase {
@@ -280,6 +300,9 @@ const OUTCOME_QUOTA_EXHAUSTED: &str = "quota_exhausted";
 const OUTCOME_UNKNOWN: &str = "unknown";
 pub const REQUEST_LOG_VISIBILITY_VISIBLE: &str = "visible";
 pub const REQUEST_LOG_VISIBILITY_SUPPRESSED_RETRY_SHADOW: &str = "suppressed_retry_shadow";
+pub const REQUEST_KIND_CANONICAL_BACKFILL_BATCH_SIZE: i64 = 500;
+const REQUEST_KIND_CANONICAL_MIGRATION_WAIT_POLL_MS: u64 = 200;
+const REQUEST_KIND_CANONICAL_MIGRATION_STALE_SECS: i64 = 300;
 const FAILURE_KIND_UPSTREAM_GATEWAY_5XX: &str = "upstream_gateway_5xx";
 const FAILURE_KIND_UPSTREAM_RATE_LIMITED_429: &str = "upstream_rate_limited_429";
 const FAILURE_KIND_UPSTREAM_ACCOUNT_DEACTIVATED_401: &str = "upstream_account_deactivated_401";
@@ -358,6 +381,9 @@ const ALLOWED_HEADERS: &[&str] = &[
     "authorization",
     "cache-control",
     "content-type",
+    "last-event-id",
+    "mcp-protocol-version",
+    "mcp-session-id",
     "pragma",
     "user-agent",
     "sec-ch-ua",
@@ -381,12 +407,11 @@ pub const TOKEN_MONTHLY_LIMIT: i64 = 5000;
 // This is enforced separately from the business quota above, and counts every
 // successful token-authenticated request regardless of MCP method.
 pub const TOKEN_HOURLY_REQUEST_LIMIT: i64 = 500;
-// Soft affinity window for mapping access tokens to API keys (in seconds).
-// Within this window, a token will try to reuse the same API key if it is still active.
-const TOKEN_AFFINITY_TTL_SECS: i64 = 15 * 60;
 // Keep a request_id -> key affinity for Tavily research result polling.
 // This avoids switching keys between POST /research and GET /research/{request_id}.
 const RESEARCH_REQUEST_AFFINITY_TTL_SECS: i64 = 24 * 60 * 60;
+const MCP_SESSION_IDLE_TTL_SECS: i64 = 24 * 60 * 60;
+const MCP_PROXY_USER_AGENT: &str = "tavily-hikari-mcp-proxy/1.0";
 // Hard cap on the number of token→key affinity entries kept in memory to prevent
 // unbounded growth under churny traffic (many distinct tokens).
 const TOKEN_AFFINITY_MAX_ENTRIES: usize = 10_000;
@@ -443,8 +468,18 @@ const META_KEY_FORCE_USER_RELOGIN_V1: &str = "force_user_relogin_v1";
 const META_KEY_ALLOW_REGISTRATION_V1: &str = "allow_registration_v1";
 const META_KEY_LINUXDO_SYSTEM_TAG_DEFAULTS_V1: &str = "linuxdo_system_tag_defaults_v1";
 const META_KEY_LINUXDO_SYSTEM_TAG_DEFAULTS_TUPLE_V1: &str = "linuxdo_system_tag_defaults_tuple_v1";
-const META_KEY_AUTH_TOKEN_LOG_REQUEST_KIND_BACKFILL_V1: &str =
-    "auth_token_log_request_kind_backfill_v1";
+const META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE: &str =
+    "request_kind_canonical_migration_v1_state";
+const META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_DONE: &str =
+    "request_kind_canonical_migration_v1_done";
+const META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_REQUEST_LOGS_UPPER_BOUND: &str =
+    "request_kind_canonical_migration_v1_request_logs_upper_bound";
+const META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_AUTH_TOKEN_LOGS_UPPER_BOUND: &str =
+    "request_kind_canonical_migration_v1_auth_token_logs_upper_bound";
+const META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_REQUEST_LOGS_CURSOR_V1: &str =
+    "request_kind_canonical_backfill_request_logs_v1";
+const META_KEY_REQUEST_KIND_CANONICAL_BACKFILL_AUTH_TOKEN_LOGS_CURSOR_V1: &str =
+    "request_kind_canonical_backfill_auth_token_logs_v1";
 const META_KEY_API_KEY_CREATED_AT_BACKFILL_V1: &str = "api_key_created_at_backfill_v1";
 // Cutover marker for switching business quota counters from "requests" to "credits".
 // We cannot retroactively convert legacy request counts into credits, so we reset the
@@ -453,6 +488,16 @@ const META_KEY_BUSINESS_QUOTA_CREDITS_CUTOVER_V1: &str = "business_quota_credits
 const META_KEY_BUSINESS_QUOTA_MONTHLY_REBASE_V1: &str = "business_quota_monthly_rebase_v1";
 const API_KEY_UPSERT_TRANSIENT_RETRY_BACKOFF_MS: [u64; 2] = [20, 50];
 const TOKEN_USAGE_ROLLUP_TRANSIENT_RETRY_BACKOFF_MS: [u64; 3] = [20, 50, 100];
+
+pub async fn run_request_kind_canonical_backfill(
+    database_path: &str,
+    batch_size: i64,
+    dry_run: bool,
+) -> Result<RequestKindCanonicalBackfillReport, ProxyError> {
+    let pool = store::open_sqlite_pool(database_path, true, false).await?;
+    store::run_request_kind_canonical_backfill_with_pool(&pool, batch_size, dry_run, None, None)
+        .await
+}
 
 fn token_limit_from_env(var: &str, default: i64) -> i64 {
     match std::env::var(var) {
@@ -594,11 +639,6 @@ impl TokenAffinityState {
         );
     }
 
-    /// 显式删除 token 的亲和关系。
-    fn drop_mapping(&mut self, token_id: &str) {
-        self.mappings.remove(token_id);
-    }
-
     /// 清理过期条目，并在必要时进一步驱逐部分条目以控制总体大小。
     fn prune(&mut self, now_ts: i64) {
         // 先移除所有已经过期的亲和关系。
@@ -672,17 +712,6 @@ mod affinity_tests {
 
         let cand = state.get_candidate("token-a", now + 20);
         assert_eq!(cand.as_deref(), Some("key-2"));
-    }
-
-    #[test]
-    fn drop_mapping_removes_affinity() {
-        let mut state = TokenAffinityState::new(60);
-        let now = 1_000;
-        state.record_mapping("token-a", "key-1", now);
-        state.drop_mapping("token-a");
-
-        let cand = state.get_candidate("token-a", now + 10);
-        assert!(cand.is_none());
     }
 
     #[test]

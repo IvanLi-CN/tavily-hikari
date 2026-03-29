@@ -1,10 +1,22 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
 import DashboardOverview from './DashboardOverview'
+import { createDashboardTodayMetrics } from './dashboardTodayMetrics'
+
+const storyNumberFormatter = new Intl.NumberFormat('en-US', {
+  maximumFractionDigits: 0,
+})
+
+const storyPercentageFormatter = new Intl.NumberFormat('en-US', {
+  style: 'percent',
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 1,
+})
 
 const meta = {
   title: 'Admin/Components/DashboardOverview',
   component: DashboardOverview,
+  tags: ['autodocs'],
   decorators: [
     (Story) => (
       <div style={{ padding: 24, background: '#eef3fb' }}>
@@ -12,6 +24,14 @@ const meta = {
       </div>
     ),
   ],
+  parameters: {
+    docs: {
+      description: {
+        component:
+          'Dashboard overview shell with today/month/status summary cards. Success and error deltas use rate shifts instead of raw count changes.',
+      },
+    },
+  },
 } satisfies Meta<typeof DashboardOverview>
 
 export default meta
@@ -32,6 +52,7 @@ const strings = {
   currentStatusDescription: 'Live quota, active keys, and pool health right now.',
   deltaFromYesterday: 'vs yesterday',
   deltaNoBaseline: 'No yesterday baseline',
+  percentagePointUnit: 'pp',
   asOfNow: 'Up to now',
   todayShare: 'Today share',
   monthToDate: 'Month to date',
@@ -57,36 +78,36 @@ const strings = {
   tokenCoverageError: 'Token scope failed to load.',
 }
 
-const todayMetrics = [
-  {
-    id: 'today-total',
-    label: 'Total Requests',
-    value: '4,812',
-    subtitle: 'Up to now',
-    comparison: { label: 'vs yesterday', value: '+426 (+9.7%)', direction: 'up' as const },
+const todayMetrics = createDashboardTodayMetrics({
+  today: {
+    total_requests: 4_812,
+    success_count: 4_192,
+    error_count: 451,
+    quota_exhausted_count: 169,
+    new_keys: 0,
+    new_quarantines: 0,
   },
-  {
-    id: 'today-success',
-    label: 'Successful',
-    value: '4,192',
-    subtitle: 'Today share · 87.1%',
-    comparison: { label: 'vs yesterday', value: '+318 (+8.2%)', direction: 'up' as const },
+  yesterday: {
+    total_requests: 4_386,
+    success_count: 3_694,
+    error_count: 527,
+    quota_exhausted_count: 19,
+    new_keys: 0,
+    new_quarantines: 0,
   },
-  {
-    id: 'today-errors',
-    label: 'Errors',
-    value: '451',
-    subtitle: 'Today share · 9.4%',
-    comparison: { label: 'vs yesterday', value: '-42 (-8.5%)', direction: 'down' as const },
+  labels: {
+    total: 'Total Requests',
+    success: 'Successful',
+    errors: 'Errors',
+    quota: 'Quota Exhausted',
   },
-  {
-    id: 'today-quota',
-    label: 'Quota Exhausted',
-    value: '169',
-    subtitle: 'Today share · 3.5%',
-    comparison: { label: 'vs yesterday', value: '+150 · No yesterday baseline', direction: 'up' as const },
+  strings,
+  formatters: {
+    formatNumber: (value) => storyNumberFormatter.format(value),
+    formatPercent: (numerator, denominator) =>
+      denominator === 0 ? '—' : storyPercentageFormatter.format(numerator / denominator),
   },
-]
+})
 
 const monthMetrics = [
   { id: 'month-total', label: 'Total Requests', value: '105,041', subtitle: 'Month to date' },
@@ -241,5 +262,50 @@ export const LargeNumbers: Story = {
       { id: 'proxy-available', label: 'Available Proxy Nodes', value: '128', subtitle: 'Current snapshot · 84.8%' },
       { id: 'proxy-total', label: 'Proxy Nodes Total', value: '151', subtitle: 'Current snapshot' },
     ],
+  },
+}
+
+export const ZeroBaseline: Story = {
+  args: {
+    ...Default.args,
+    todayMetrics: createDashboardTodayMetrics({
+      today: {
+        total_requests: 24,
+        success_count: 18,
+        error_count: 6,
+        quota_exhausted_count: 0,
+        new_keys: 0,
+        new_quarantines: 0,
+      },
+      yesterday: {
+        total_requests: 0,
+        success_count: 0,
+        error_count: 0,
+        quota_exhausted_count: 0,
+        new_keys: 0,
+        new_quarantines: 0,
+      },
+      labels: {
+        total: 'Total Requests',
+        success: 'Successful',
+        errors: 'Errors',
+        quota: 'Quota Exhausted',
+      },
+      strings,
+      formatters: {
+        formatNumber: (value) => storyNumberFormatter.format(value),
+        formatPercent: (numerator, denominator) =>
+          denominator === 0 ? '—' : storyPercentageFormatter.format(numerator / denominator),
+      },
+    }),
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 50))
+    const text = canvasElement.ownerDocument.body.textContent ?? ''
+    for (const expected of ['No yesterday baseline', '75%', '25%']) {
+      if (!text.includes(expected)) {
+        throw new Error(`Expected dashboard overview zero-baseline story to contain: ${expected}`)
+      }
+    }
   },
 }

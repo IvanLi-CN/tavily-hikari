@@ -36,8 +36,10 @@
 ## 交互与展示约束
 
 - 摘要区使用三块式层级布局：桌面端突出 `今日` 主块，`本月` 与 `站点当前状态` 作为次级块；窄屏按 `今日 -> 本月 -> 站点当前状态` 顺序纵向堆叠。
-- `今日` 指标卡必须同时显示：当前值、较昨日同一时刻绝对差值、较昨日同一时刻百分比变化。
-- 当昨日值为 `0` 且今日值非 `0` 时，不显示非法百分比，改为“昨日无基线”类兜底文案。
+- `今日` 指标卡必须同时显示当前值；其中 `总请求数` 与 `额度耗尽` 的“较昨日同刻”继续按次数差值展示，`成功` 与 `错误` 改为分别比较成功率/错误率的百分点差。
+- `成功` 的“较昨日同刻”按 `success_count / total_requests` 计算；`错误` 按 `error_count / total_requests` 计算；两者都保留当前次数主值与 `今日占比` 副标题。
+- 当 `yesterday.total_requests = 0` 且 `today.total_requests > 0` 时，`成功` / `错误` 不伪造百分点差，改为“昨日无基线”兜底文案并使用中性态。
+- 当 `today.total_requests = 0` 且 `yesterday.total_requests = 0` 时，`成功` / `错误` 的“较昨日同刻”显示 `0.0` 个百分点（或对应语言单位）并保持 `flat`。
 - `本月` 指标卡只显示月累计值与本月占比，不显示昨日比较。
 - `站点当前状态` 必须明确标注为当前快照，避免与期间窗口混淆。
 - 任意断点下都不得引入横向滚动。
@@ -45,7 +47,8 @@
 ## 验收标准
 
 - `/admin/dashboard` 顶部摘要区不再是 7 张等权卡片，而是 `今日`、`本月`、`站点当前状态` 三块结构。
-- `今日` 的四项指标都能正确显示较昨日同一时刻的增减值与方向。
+- `今日` 的 `成功` 与 `错误` 指标能正确显示相对昨日同一时刻的成功率/错误率百分点差，而不是原始次数差。
+- `今日` 的 `总请求数` 与 `额度耗尽` 继续显示较昨日同一时刻的次数差与方向。
 - `本月` 的四项指标能正确显示月累计值，并保持与今日块相同的指标口径。
 - `站点当前状态` 保留 `剩余可用`、`活跃密钥`、`隔离中`、`已耗尽` 四项实时快照。
 - `GET /api/summary/windows` 在空窗口时返回 `0`，昨日对比窗口不会混入昨日稍后时段的数据，本月窗口累计到当前时刻。
@@ -54,5 +57,14 @@
 ## 成果展示
 
 - 当前实现将摘要区重构为“左侧今日主块 + 右侧本月/站点当前状态侧栏”，并在今日块内补入较昨日变化清单，避免桌面端出现大面积空白。
+- 后续口径修正将 `成功` / `错误` 的昨日对比改为成功率/错误率的百分点比较，以避免高流量日把单纯次数变化误读为质量波动。
 
 ![管理仪表盘摘要区成果截图](./assets/dashboard-summary-result.png)
+
+## Visual Evidence
+
+- source_type: `storybook_docs`; docs_entry_or_title: `Admin/Components/DashboardOverview`; scenario: `rate delta overview`; evidence_note: 验证默认 docs 场景里 `成功` / `错误` 已显示为 `pp` 比较，而 `总请求数` / `额度耗尽` 仍保留次数差。
+  ![管理仪表盘：成功率/错误率按百分点比较](./assets/dashboard-overview-rate-delta-docs.png)
+
+- source_type: `storybook_canvas`; story_id_or_title: `Admin/Components/DashboardOverview/ZeroBaseline`; state: `zero baseline`; evidence_note: 验证昨日窗口无请求时，`成功` / `错误` 使用 `昨日无基线` 兜底而不是伪造百分点差。
+  ![管理仪表盘：昨日无基线兜底场景](./assets/dashboard-overview-rate-delta-zero-baseline.png)

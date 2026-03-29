@@ -1771,6 +1771,7 @@ async fn list_logs(
     let request_kinds = parse_request_kind_filters(raw_query.as_deref());
     let result_status = normalize_result_status_filter(params.result.as_deref());
     let key_effect_code = normalize_key_effect_filter(params.key_effect.as_deref());
+    let include_bodies = params.include_bodies.unwrap_or(false);
     if result_status.is_some() && key_effect_code.is_some() {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -1792,7 +1793,11 @@ async fn list_logs(
         )
         .await
         .map(|logs| {
-            let view_items = logs.items.into_iter().map(RequestLogView::from).collect();
+            let view_items = logs
+                .items
+                .into_iter()
+                .map(|record| RequestLogView::from_request_record(record, include_bodies))
+                .collect();
             Json(PaginatedLogsView {
                 items: view_items,
                 total: logs.total,
@@ -1876,6 +1881,27 @@ impl AdminUsersSortDirection {
             Self::Desc => ordering.reverse(),
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct ListUnboundTokenUsageQuery {
+    page: Option<i64>,
+    per_page: Option<i64>,
+    q: Option<String>,
+    sort: Option<AdminUnboundTokenUsageSortField>,
+    order: Option<AdminUsersSortDirection>,
+}
+
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum AdminUnboundTokenUsageSortField {
+    HourlyAnyUsed,
+    QuotaHourlyUsed,
+    QuotaDailyUsed,
+    QuotaMonthlyUsed,
+    DailySuccessRate,
+    MonthlySuccessRate,
+    LastUsedAt,
 }
 
 #[derive(Debug, Serialize)]
@@ -2111,6 +2137,53 @@ struct AdminUserSummaryRow {
     monthly_broken_limit: i64,
 }
 
+#[derive(Debug, Clone)]
+struct AdminUnboundTokenUsageRow {
+    token: AuthToken,
+    hourly_any_used: i64,
+    hourly_any_limit: i64,
+    daily_success: i64,
+    daily_failure: i64,
+    monthly_success: i64,
+    monthly_failure: i64,
+    monthly_broken_count: Option<i64>,
+    monthly_broken_limit: Option<i64>,
+    last_used_at: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminUnboundTokenUsageView {
+    token_id: String,
+    enabled: bool,
+    note: Option<String>,
+    group: Option<String>,
+    hourly_any_used: i64,
+    hourly_any_limit: i64,
+    quota_hourly_used: i64,
+    quota_hourly_limit: i64,
+    quota_daily_used: i64,
+    quota_daily_limit: i64,
+    quota_monthly_used: i64,
+    quota_monthly_limit: i64,
+    daily_success: i64,
+    daily_failure: i64,
+    monthly_success: i64,
+    monthly_failure: i64,
+    monthly_broken_count: Option<i64>,
+    monthly_broken_limit: Option<i64>,
+    last_used_at: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ListUnboundTokenUsageResponse {
+    items: Vec<AdminUnboundTokenUsageView>,
+    total: i64,
+    page: i64,
+    per_page: i64,
+}
+
 fn build_admin_quota_view(quota: &tavily_hikari::AdminQuotaLimitSet) -> AdminQuotaView {
     AdminQuotaView {
         hourly_any_limit: quota.hourly_any_limit,
@@ -2280,6 +2353,28 @@ fn empty_user_dashboard_summary() -> tavily_hikari::UserDashboardSummary {
     }
 }
 
+fn token_quota_values(token: &AuthToken) -> (i64, i64, i64, i64, i64, i64) {
+    if let Some(quota) = token.quota.as_ref() {
+        (
+            quota.hourly_used,
+            quota.hourly_limit,
+            quota.daily_used,
+            quota.daily_limit,
+            quota.monthly_used,
+            quota.monthly_limit,
+        )
+    } else {
+        (
+            0,
+            effective_token_hourly_limit(),
+            0,
+            effective_token_daily_limit(),
+            0,
+            effective_token_monthly_limit(),
+        )
+    }
+}
+
 fn compare_optional_timestamp(
     left: Option<i64>,
     right: Option<i64>,
@@ -2287,8 +2382,14 @@ fn compare_optional_timestamp(
 ) -> std::cmp::Ordering {
     match (left, right) {
         (Some(left), Some(right)) => direction.apply(left.cmp(&right)),
-        (Some(_), None) => std::cmp::Ordering::Less,
-        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (Some(_), None) => match direction {
+            AdminUsersSortDirection::Asc => std::cmp::Ordering::Greater,
+            AdminUsersSortDirection::Desc => std::cmp::Ordering::Less,
+        },
+        (None, Some(_)) => match direction {
+            AdminUsersSortDirection::Asc => std::cmp::Ordering::Less,
+            AdminUsersSortDirection::Desc => std::cmp::Ordering::Greater,
+        },
         (None, None) => std::cmp::Ordering::Equal,
     }
 }
@@ -2412,6 +2513,147 @@ fn compare_admin_user_rows(
     }
 
     left.user.user_id.cmp(&right.user.user_id)
+}
+
+fn token_usage_matches_query(token: &AuthToken, query: &str) -> bool {
+    let normalized_query = query.trim().to_ascii_lowercase();
+    if normalized_query.is_empty() {
+        return true;
+    }
+
+    token.id.to_ascii_lowercase().contains(&normalized_query)
+        || token
+            .note
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| value.to_ascii_lowercase().contains(&normalized_query))
+        || token
+            .group_name
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| value.to_ascii_lowercase().contains(&normalized_query))
+}
+
+fn compare_admin_unbound_token_usage_rows(
+    left: &AdminUnboundTokenUsageRow,
+    right: &AdminUnboundTokenUsageRow,
+    sort: Option<AdminUnboundTokenUsageSortField>,
+    order: Option<AdminUsersSortDirection>,
+) -> std::cmp::Ordering {
+    let (sort_field, direction) = match sort {
+        Some(field) => (field, order.unwrap_or(AdminUsersSortDirection::Desc)),
+        None => (
+            AdminUnboundTokenUsageSortField::LastUsedAt,
+            AdminUsersSortDirection::Desc,
+        ),
+    };
+    let (
+        left_quota_hourly_used,
+        left_quota_hourly_limit,
+        left_quota_daily_used,
+        left_quota_daily_limit,
+        left_quota_monthly_used,
+        left_quota_monthly_limit,
+    ) = token_quota_values(&left.token);
+    let (
+        right_quota_hourly_used,
+        right_quota_hourly_limit,
+        right_quota_daily_used,
+        right_quota_daily_limit,
+        right_quota_monthly_used,
+        right_quota_monthly_limit,
+    ) = token_quota_values(&right.token);
+
+    let ordering = match sort_field {
+        AdminUnboundTokenUsageSortField::HourlyAnyUsed => compare_quota_usage(
+            left.hourly_any_used,
+            left.hourly_any_limit,
+            right.hourly_any_used,
+            right.hourly_any_limit,
+            direction,
+        ),
+        AdminUnboundTokenUsageSortField::QuotaHourlyUsed => compare_quota_usage(
+            left_quota_hourly_used,
+            left_quota_hourly_limit,
+            right_quota_hourly_used,
+            right_quota_hourly_limit,
+            direction,
+        ),
+        AdminUnboundTokenUsageSortField::QuotaDailyUsed => compare_quota_usage(
+            left_quota_daily_used,
+            left_quota_daily_limit,
+            right_quota_daily_used,
+            right_quota_daily_limit,
+            direction,
+        ),
+        AdminUnboundTokenUsageSortField::QuotaMonthlyUsed => compare_quota_usage(
+            left_quota_monthly_used,
+            left_quota_monthly_limit,
+            right_quota_monthly_used,
+            right_quota_monthly_limit,
+            direction,
+        ),
+        AdminUnboundTokenUsageSortField::DailySuccessRate => compare_success_rate(
+            left.daily_success,
+            left.daily_failure,
+            right.daily_success,
+            right.daily_failure,
+            direction,
+        ),
+        AdminUnboundTokenUsageSortField::MonthlySuccessRate => compare_success_rate(
+            left.monthly_success,
+            left.monthly_failure,
+            right.monthly_success,
+            right.monthly_failure,
+            direction,
+        ),
+        AdminUnboundTokenUsageSortField::LastUsedAt => compare_optional_timestamp(
+            left.last_used_at,
+            right.last_used_at,
+            direction,
+        ),
+    };
+
+    if ordering != std::cmp::Ordering::Equal {
+        return ordering;
+    }
+
+    left.token.id.cmp(&right.token.id)
+}
+
+fn build_admin_unbound_token_usage_view(
+    row: AdminUnboundTokenUsageRow,
+) -> AdminUnboundTokenUsageView {
+    let (
+        quota_hourly_used,
+        quota_hourly_limit,
+        quota_daily_used,
+        quota_daily_limit,
+        quota_monthly_used,
+        quota_monthly_limit,
+    ) = token_quota_values(&row.token);
+
+    AdminUnboundTokenUsageView {
+        token_id: row.token.id,
+        enabled: row.token.enabled,
+        note: row.token.note,
+        group: row.token.group_name,
+        hourly_any_used: row.hourly_any_used,
+        hourly_any_limit: row.hourly_any_limit,
+        quota_hourly_used,
+        quota_hourly_limit,
+        quota_daily_used,
+        quota_daily_limit,
+        quota_monthly_used,
+        quota_monthly_limit,
+        daily_success: row.daily_success,
+        daily_failure: row.daily_failure,
+        monthly_success: row.monthly_success,
+        monthly_failure: row.monthly_failure,
+        monthly_broken_count: row.monthly_broken_count,
+        monthly_broken_limit: row.monthly_broken_limit,
+        last_used_at: row.last_used_at,
+    }
 }
 
 async fn list_user_tags(
@@ -2760,6 +3002,134 @@ async fn list_users(
         ));
     }
     Ok(Json(ListUsersResponse {
+        items,
+        total,
+        page,
+        per_page,
+    }))
+}
+
+async fn list_unbound_token_usage(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(q): Query<ListUnboundTokenUsageQuery>,
+) -> Result<Json<ListUnboundTokenUsageResponse>, StatusCode> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let page = q.page.unwrap_or(1).max(1);
+    let per_page = q.per_page.unwrap_or(20).clamp(1, 100);
+    let normalized_query = q.q.as_deref().map(str::trim).filter(|value| !value.is_empty());
+
+    let tokens = state.proxy.list_access_tokens().await.map_err(|err| {
+        eprintln!("list unbound token usage tokens error: {err}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let token_ids: Vec<String> = tokens.iter().map(|token| token.id.clone()).collect();
+    let owners = state
+        .proxy
+        .get_admin_token_owners(&token_ids)
+        .await
+        .map_err(|err| {
+            eprintln!("list unbound token usage owners error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let filtered_tokens: Vec<AuthToken> = tokens
+        .into_iter()
+        .filter(|token| !owners.contains_key(&token.id))
+        .filter(|token| {
+            normalized_query
+                .map(|query| token_usage_matches_query(token, query))
+                .unwrap_or(true)
+        })
+        .collect();
+    let filtered_ids: Vec<String> = filtered_tokens
+        .iter()
+        .map(|token| token.id.clone())
+        .collect();
+
+    let hourly_any_map = state
+        .proxy
+        .token_hourly_any_snapshot(&filtered_ids)
+        .await
+        .map_err(|err| {
+            eprintln!("list unbound token usage hourly-any error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let log_metrics = state
+        .proxy
+        .token_log_metrics_for_tokens(&filtered_ids)
+        .await
+        .map_err(|err| {
+            eprintln!("list unbound token usage log metrics error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let monthly_broken_counts = state
+        .proxy
+        .fetch_monthly_broken_counts_for_tokens(&filtered_ids)
+        .await
+        .map_err(|err| {
+            eprintln!("list unbound token usage monthly broken counts error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let monthly_broken_subjects = state
+        .proxy
+        .list_monthly_broken_subjects_for_tokens(&filtered_ids)
+        .await
+        .map_err(|err| {
+            eprintln!("list unbound token usage monthly broken subjects error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let mut rows: Vec<AdminUnboundTokenUsageRow> = filtered_tokens
+        .into_iter()
+        .map(|token| {
+            let hourly_any = hourly_any_map.get(&token.id).cloned().unwrap_or_else(|| {
+                TokenHourlyRequestVerdict {
+                    allowed: true,
+                    hourly_used: 0,
+                    hourly_limit: effective_token_hourly_request_limit(),
+                }
+            });
+            let metrics = log_metrics.get(&token.id).cloned().unwrap_or_default();
+            let has_monthly_broken_record = monthly_broken_subjects.contains(&token.id);
+            AdminUnboundTokenUsageRow {
+                last_used_at: metrics.last_activity.or(token.last_used_at),
+                monthly_broken_count: has_monthly_broken_record.then(|| {
+                    monthly_broken_counts
+                        .get(&token.id)
+                        .copied()
+                        .unwrap_or_default()
+                }),
+                monthly_broken_limit: has_monthly_broken_record
+                    .then_some(UNBOUND_TOKEN_MONTHLY_BROKEN_LIMIT_DEFAULT),
+                token,
+                hourly_any_used: hourly_any.hourly_used,
+                hourly_any_limit: hourly_any.hourly_limit,
+                daily_success: metrics.daily_success,
+                daily_failure: metrics.daily_failure,
+                monthly_success: metrics.monthly_success,
+                monthly_failure: metrics.monthly_failure,
+            }
+        })
+        .collect();
+
+    rows.sort_by(|left, right| {
+        compare_admin_unbound_token_usage_rows(left, right, q.sort, q.order)
+    });
+
+    let total = rows.len() as i64;
+    let offset = ((page - 1) * per_page) as usize;
+    let items = rows
+        .into_iter()
+        .skip(offset)
+        .take(per_page as usize)
+        .map(build_admin_unbound_token_usage_view)
+        .collect();
+
+    Ok(Json(ListUnboundTokenUsageResponse {
         items,
         total,
         page,

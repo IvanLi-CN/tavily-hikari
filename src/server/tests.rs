@@ -430,6 +430,165 @@ mod tests {
         (addr, hits)
     }
 
+    async fn spawn_mock_mcp_upstream_for_session_headers(
+        allowed_api_keys: Vec<String>,
+    ) -> (
+        SocketAddr,
+        Arc<Mutex<Vec<SessionHeaderCall>>>,
+    ) {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let app = Router::new().route(
+            "/mcp",
+            any({
+                let calls = calls.clone();
+                move |headers: HeaderMap,
+                      Query(params): Query<HashMap<String, String>>,
+                      Json(body): Json<Value>| {
+                    let allowed_api_keys = allowed_api_keys.clone();
+                    let calls = calls.clone();
+                    async move {
+                        let received = params.get("tavilyApiKey").cloned();
+                        assert!(
+                            received.as_ref().is_some_and(|key| allowed_api_keys.iter().any(|allowed| allowed == key)),
+                            "missing or incorrect tavilyApiKey: {received:?}, allowed={allowed_api_keys:?}"
+                        );
+
+                        let method = body
+                            .get("method")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        let session_id = headers
+                            .get("mcp-session-id")
+                            .and_then(|value| value.to_str().ok())
+                            .map(str::to_string);
+                        let protocol_version = headers
+                            .get("mcp-protocol-version")
+                            .and_then(|value| value.to_str().ok())
+                            .map(str::to_string);
+                        let last_event_id = headers
+                            .get("last-event-id")
+                            .and_then(|value| value.to_str().ok())
+                            .map(str::to_string);
+                        let leaked_forwarded = headers.contains_key("x-forwarded-for")
+                            || headers.contains_key("x-real-ip");
+                        let user_agent = headers
+                            .get("user-agent")
+                            .and_then(|value| value.to_str().ok())
+                            .map(str::to_string);
+
+                        calls.lock().expect("session header calls lock poisoned").push(SessionHeaderCall {
+                            method: method.clone(),
+                            session_id: session_id.clone(),
+                            protocol_version: protocol_version.clone(),
+                            last_event_id: last_event_id.clone(),
+                            leaked_forwarded,
+                            user_agent,
+                            tavily_api_key: received.clone(),
+                        });
+
+                        match method.as_str() {
+                            "initialize" => Response::builder()
+                                .status(StatusCode::OK)
+                                .header(CONTENT_TYPE, "application/json")
+                                .header("mcp-session-id", "session-123")
+                                .body(Body::from(
+                                    serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": body.get("id").cloned().unwrap_or_else(|| serde_json::json!(1)),
+                                        "result": {
+                                            "protocolVersion": "2025-03-26",
+                                            "serverInfo": { "name": "mock-mcp", "version": "1.0.0" },
+                                            "capabilities": {}
+                                        }
+                                    })
+                                    .to_string(),
+                                ))
+                                .expect("build initialize response"),
+                            "notifications/initialized" => {
+                                assert_eq!(
+                                    session_id.as_deref(),
+                                    Some("session-123"),
+                                    "notifications/initialized should preserve mcp-session-id"
+                                );
+                                assert_eq!(
+                                    protocol_version.as_deref(),
+                                    Some("2025-03-26"),
+                                    "notifications/initialized should preserve mcp-protocol-version"
+                                );
+                                assert!(
+                                    !leaked_forwarded,
+                                    "proxy must continue dropping x-forwarded-for/x-real-ip"
+                                );
+                                Response::builder()
+                                    .status(StatusCode::ACCEPTED)
+                                    .body(Body::empty())
+                                    .expect("build notifications/initialized response")
+                            }
+                            "tools/list" => {
+                                assert_eq!(
+                                    session_id.as_deref(),
+                                    Some("session-123"),
+                                    "tools/list should preserve mcp-session-id"
+                                );
+                                assert_eq!(
+                                    protocol_version.as_deref(),
+                                    Some("2025-03-26"),
+                                    "tools/list should preserve mcp-protocol-version"
+                                );
+                                assert!(
+                                    !leaked_forwarded,
+                                    "proxy must continue dropping x-forwarded-for/x-real-ip"
+                                );
+                                Response::builder()
+                                    .status(StatusCode::OK)
+                                    .header(CONTENT_TYPE, "application/json")
+                                    .body(Body::from(
+                                        serde_json::json!({
+                                            "jsonrpc": "2.0",
+                                            "id": body.get("id").cloned().unwrap_or_else(|| serde_json::json!(1)),
+                                            "result": {
+                                                "tools": [
+                                                    { "name": "tavily_search", "description": "mock" }
+                                                ]
+                                            }
+                                        })
+                                        .to_string(),
+                                    ))
+                                    .expect("build tools/list response")
+                            }
+                            other => (
+                                StatusCode::BAD_REQUEST,
+                                Body::from(format!("unexpected MCP method: {other}")),
+                            )
+                                .into_response(),
+                        }
+                    }
+                }
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+        (addr, calls)
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct SessionHeaderCall {
+        method: String,
+        session_id: Option<String>,
+        protocol_version: Option<String>,
+        last_event_id: Option<String>,
+        leaked_forwarded: bool,
+        user_agent: Option<String>,
+        tavily_api_key: Option<String>,
+    }
+
     async fn spawn_mock_mcp_upstream_for_tavily_search_empty_body(
         expected_api_key: String,
     ) -> (SocketAddr, Arc<AtomicUsize>) {
@@ -3359,8 +3518,12 @@ mod tests {
             .route("/api/summary", get(fetch_summary))
             .route("/api/summary/windows", get(fetch_summary_windows))
             .route("/api/logs", get(list_logs))
+            .route("/api/logs/:log_id/details", get(get_log_details))
             .route("/api/keys", get(list_keys))
             .route("/api/keys/:id", get(get_api_key_detail))
+            .route("/api/keys/:id/logs", get(get_key_logs))
+            .route("/api/keys/:id/logs/page", get(get_key_logs_page))
+            .route("/api/keys/:id/logs/:log_id/details", get(get_key_log_details))
             .route("/api/keys/batch", post(create_api_keys_batch))
             .with_state(state);
 
@@ -3492,9 +3655,11 @@ mod tests {
 
         let app = Router::new()
             .route("/api/tokens", get(list_tokens))
+            .route("/api/tokens/unbound-usage", get(list_unbound_token_usage))
             .route("/api/tokens/:id", get(get_token_detail))
             .route("/api/tokens/:id/logs", get(get_token_logs))
             .route("/api/tokens/:id/logs/page", get(get_token_logs_page))
+            .route("/api/tokens/:id/logs/:log_id/details", get(get_token_log_details))
             .route("/api/tokens/:id/events", get(sse_token))
             .with_state(state);
 
@@ -3826,6 +3991,25 @@ mod tests {
                     .is_some_and(|(name, _)| name == cookie_name)
             })
             .map(str::to_string)
+    }
+
+    async fn login_builtin_admin_cookie(admin_addr: SocketAddr, password: &str) -> (Client, String) {
+        let client = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build client");
+
+        let login_resp = client
+            .post(format!("http://{}/api/admin/login", admin_addr))
+            .json(&serde_json::json!({ "password": password }))
+            .send()
+            .await
+            .expect("admin login");
+        assert_eq!(login_resp.status(), reqwest::StatusCode::OK);
+        let admin_cookie = find_cookie_pair(login_resp.headers(), BUILTIN_ADMIN_COOKIE_NAME)
+            .expect("admin session cookie");
+
+        (client, admin_cookie)
     }
 
     #[tokio::test]
@@ -6701,9 +6885,6 @@ colo=LAX
             request_kind_key: "mcp:search".to_string(),
             request_kind_label: "MCP | search".to_string(),
             request_kind_detail: None,
-            legacy_request_kind_key: None,
-            legacy_request_kind_label: None,
-            legacy_request_kind_detail: None,
             counts_business_quota: true,
             result_status: "error".to_string(),
             error_message: Some("Search failed".to_string()),
@@ -6749,9 +6930,6 @@ colo=LAX
             request_kind_key: "api:search".to_string(),
             request_kind_label: "API | search".to_string(),
             request_kind_detail: None,
-            legacy_request_kind_key: None,
-            legacy_request_kind_label: None,
-            legacy_request_kind_detail: None,
             counts_business_quota: true,
             result_status: "error".to_string(),
             error_message: Some("account deactivated".to_string()),
@@ -8034,6 +8212,220 @@ colo=LAX
     }
 
     #[tokio::test]
+    async fn admin_and_key_log_details_return_scoped_bodies_while_list_pages_keep_null_payloads() {
+        let db_path = temp_db_path("admin-key-log-details");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-admin-key-log-details".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let key_id = proxy
+            .list_api_key_metrics()
+            .await
+            .expect("list api key metrics")
+            .into_iter()
+            .next()
+            .expect("seeded key exists")
+            .id;
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let request_log_id: i64 = sqlx::query_scalar(
+            r#"
+            INSERT INTO request_logs (
+                api_key_id,
+                auth_token_id,
+                method,
+                path,
+                query,
+                status_code,
+                tavily_status_code,
+                error_message,
+                result_status,
+                request_kind_key,
+                request_kind_label,
+                request_kind_detail,
+                business_credits,
+                failure_kind,
+                key_effect_code,
+                key_effect_summary,
+                request_body,
+                response_body,
+                forwarded_headers,
+                dropped_headers,
+                visibility,
+                created_at
+            ) VALUES (?, 'tok-admin-key-detail', 'POST', '/api/tavily/search', NULL, 200, 200, NULL, 'success', 'api:search', 'API | search', NULL, 2, NULL, 'none', NULL, ?, ?, '["x-request-id"]', '["authorization"]', 'visible', ?)
+            RETURNING id
+            "#,
+        )
+        .bind(&key_id)
+        .bind(br#"{"query":"incident review"}"#.to_vec())
+        .bind(br#"{"answer":"stable"}"#.to_vec())
+        .bind(1_000_i64)
+        .fetch_one(&pool)
+        .await
+        .expect("insert request log");
+
+        let admin_password = "admin-key-log-details-password";
+        let admin_addr = spawn_builtin_keys_admin_server(proxy, admin_password).await;
+        let (client, admin_cookie) = login_builtin_admin_cookie(admin_addr, admin_password).await;
+
+        let logs_resp = client
+            .get(format!("http://{}/api/logs?page=1&per_page=20", admin_addr))
+            .header(reqwest::header::COOKIE, admin_cookie.clone())
+            .send()
+            .await
+            .expect("fetch admin logs page");
+        assert_eq!(logs_resp.status(), reqwest::StatusCode::OK);
+        let logs_body: serde_json::Value = logs_resp.json().await.expect("admin logs json");
+        let inserted_admin_log = logs_body
+            .get("items")
+            .and_then(|value| value.as_array())
+            .and_then(|items| {
+                items.iter().find(|item| {
+                    item.get("id")
+                        .and_then(|value| value.as_i64())
+                        .is_some_and(|value| value == request_log_id)
+                })
+            })
+            .expect("inserted admin log");
+        assert!(inserted_admin_log.get("request_body").is_some_and(|value| value.is_null()));
+        assert!(inserted_admin_log.get("response_body").is_some_and(|value| value.is_null()));
+
+        let logs_with_bodies_resp = client
+            .get(format!(
+                "http://{}/api/logs?page=1&per_page=20&include_bodies=true",
+                admin_addr
+            ))
+            .header(reqwest::header::COOKIE, admin_cookie.clone())
+            .send()
+            .await
+            .expect("fetch admin logs page with bodies");
+        assert_eq!(logs_with_bodies_resp.status(), reqwest::StatusCode::OK);
+        let logs_with_bodies: serde_json::Value = logs_with_bodies_resp
+            .json()
+            .await
+            .expect("admin logs with bodies json");
+        let inserted_admin_log_with_bodies = logs_with_bodies
+            .get("items")
+            .and_then(|value| value.as_array())
+            .and_then(|items| {
+                items.iter().find(|item| {
+                    item.get("id")
+                        .and_then(|value| value.as_i64())
+                        .is_some_and(|value| value == request_log_id)
+                })
+            })
+            .expect("inserted admin log with bodies");
+        assert_eq!(
+            inserted_admin_log_with_bodies
+                .get("request_body")
+                .and_then(|value| value.as_str()),
+            Some(r#"{"query":"incident review"}"#)
+        );
+        assert_eq!(
+            inserted_admin_log_with_bodies
+                .get("response_body")
+                .and_then(|value| value.as_str()),
+            Some(r#"{"answer":"stable"}"#)
+        );
+
+        let log_detail_resp = client
+            .get(format!(
+                "http://{}/api/logs/{}/details",
+                admin_addr, request_log_id
+            ))
+            .header(reqwest::header::COOKIE, admin_cookie.clone())
+            .send()
+            .await
+            .expect("fetch admin log detail");
+        assert_eq!(log_detail_resp.status(), reqwest::StatusCode::OK);
+        let log_detail_body: serde_json::Value =
+            log_detail_resp.json().await.expect("admin log detail json");
+        assert_eq!(
+            log_detail_body
+                .get("request_body")
+                .and_then(|value| value.as_str()),
+            Some(r#"{"query":"incident review"}"#)
+        );
+        assert_eq!(
+            log_detail_body
+                .get("response_body")
+                .and_then(|value| value.as_str()),
+            Some(r#"{"answer":"stable"}"#)
+        );
+
+        let key_logs_resp = client
+            .get(format!(
+                "http://{}/api/keys/{}/logs/page?page=1&per_page=20",
+                admin_addr, key_id
+            ))
+            .header(reqwest::header::COOKIE, admin_cookie.clone())
+            .send()
+            .await
+            .expect("fetch key logs page");
+        assert_eq!(key_logs_resp.status(), reqwest::StatusCode::OK);
+        let key_logs_body: serde_json::Value = key_logs_resp.json().await.expect("key logs json");
+        let inserted_key_log = key_logs_body
+            .get("items")
+            .and_then(|value| value.as_array())
+            .and_then(|items| {
+                items.iter().find(|item| {
+                    item.get("id")
+                        .and_then(|value| value.as_i64())
+                        .is_some_and(|value| value == request_log_id)
+                })
+            })
+            .expect("inserted key log");
+        assert!(inserted_key_log.get("request_body").is_some_and(|value| value.is_null()));
+        assert!(inserted_key_log.get("response_body").is_some_and(|value| value.is_null()));
+
+        let key_log_detail_resp = client
+            .get(format!(
+                "http://{}/api/keys/{}/logs/{}/details",
+                admin_addr, key_id, request_log_id
+            ))
+            .header(reqwest::header::COOKIE, admin_cookie.clone())
+            .send()
+            .await
+            .expect("fetch key log detail");
+        assert_eq!(key_log_detail_resp.status(), reqwest::StatusCode::OK);
+        let key_log_detail_body: serde_json::Value = key_log_detail_resp
+            .json()
+            .await
+            .expect("key log detail json");
+        assert_eq!(
+            key_log_detail_body
+                .get("request_body")
+                .and_then(|value| value.as_str()),
+            Some(r#"{"query":"incident review"}"#)
+        );
+        assert_eq!(
+            key_log_detail_body
+                .get("response_body")
+                .and_then(|value| value.as_str()),
+            Some(r#"{"answer":"stable"}"#)
+        );
+
+        let wrong_scope_resp = client
+            .get(format!(
+                "http://{}/api/keys/wrong-scope/logs/{}/details",
+                admin_addr, request_log_id
+            ))
+            .header(reqwest::header::COOKIE, admin_cookie)
+            .send()
+            .await
+            .expect("fetch wrong-scope key log detail");
+        assert_eq!(wrong_scope_resp.status(), reqwest::StatusCode::NOT_FOUND);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn admin_logs_endpoint_uses_canonical_request_kind_for_filters_and_view_metadata() {
         let db_path = temp_db_path("admin-logs-canonical-request-kind");
         let db_str = db_path.to_string_lossy().to_string();
@@ -8072,16 +8464,14 @@ colo=LAX
                 key_effect_summary,
                 request_kind_key,
                 request_kind_label,
-                legacy_request_kind_key,
-                legacy_request_kind_label,
                 request_body,
                 response_body,
                 forwarded_headers,
                 dropped_headers,
                 created_at
             ) VALUES
-                (?, 'token-backfilled-billable', 'POST', '/mcp', NULL, 200, 200, NULL, 'success', NULL, 'none', NULL, 'mcp:search', 'MCP | search', 'mcp:raw:/mcp', 'MCP | /mcp', X'6E6F742D6A736F6E', X'5B5D', '[]', '[]', ?),
-                (?, 'token-backfilled-neutral', 'POST', '/mcp', NULL, 200, 200, NULL, 'success', NULL, 'none', NULL, 'mcp:notifications/initialized', 'MCP | notifications/initialized', 'mcp:raw:/mcp', 'MCP | /mcp', X'6E6F742D6A736F6E', X'5B5D', '[]', '[]', ?)
+                (?, 'token-backfilled-billable', 'POST', '/mcp', NULL, 200, 200, NULL, 'success', NULL, 'none', NULL, 'mcp:search', 'MCP | search', X'6E6F742D6A736F6E', X'5B5D', '[]', '[]', ?),
+                (?, 'token-backfilled-neutral', 'POST', '/mcp', NULL, 200, 200, NULL, 'success', NULL, 'none', NULL, 'mcp:notifications/initialized', 'MCP | notifications/initialized', X'6E6F742D6A736F6E', X'5B5D', '[]', '[]', ?)
             "#,
         )
         .bind(&key_id)
@@ -8544,16 +8934,18 @@ colo=LAX
             "none"
         );
         assert!(
-            sqlite_column_exists(&upgraded_pool, "request_logs", "legacy_request_kind_key").await,
-            "request_logs should add legacy_request_kind_key during api_key rebuild"
+            !sqlite_column_exists(&upgraded_pool, "request_logs", "legacy_request_kind_key").await,
+            "request_logs should drop legacy_request_kind_key during api_key rebuild"
         );
         assert!(
-            sqlite_column_exists(&upgraded_pool, "request_logs", "legacy_request_kind_label").await,
-            "request_logs should add legacy_request_kind_label during api_key rebuild"
+            !sqlite_column_exists(&upgraded_pool, "request_logs", "legacy_request_kind_label")
+                .await,
+            "request_logs should drop legacy_request_kind_label during api_key rebuild"
         );
         assert!(
-            sqlite_column_exists(&upgraded_pool, "request_logs", "legacy_request_kind_detail").await,
-            "request_logs should add legacy_request_kind_detail during api_key rebuild"
+            !sqlite_column_exists(&upgraded_pool, "request_logs", "legacy_request_kind_detail")
+                .await,
+            "request_logs should drop legacy_request_kind_detail during api_key rebuild"
         );
 
         assert_eq!(
@@ -9037,16 +9429,18 @@ colo=LAX
         .expect("read api_key_id notnull");
         assert_eq!(api_key_not_null, 0, "api_key_id should be nullable after migration");
         assert!(
-            sqlite_column_exists(&upgraded_pool, "request_logs", "legacy_request_kind_key").await,
-            "request_logs should self-heal legacy_request_kind_key after rebuild"
+            !sqlite_column_exists(&upgraded_pool, "request_logs", "legacy_request_kind_key").await,
+            "request_logs should not re-add legacy_request_kind_key after rebuild"
         );
         assert!(
-            sqlite_column_exists(&upgraded_pool, "request_logs", "legacy_request_kind_label").await,
-            "request_logs should self-heal legacy_request_kind_label after rebuild"
+            !sqlite_column_exists(&upgraded_pool, "request_logs", "legacy_request_kind_label")
+                .await,
+            "request_logs should not re-add legacy_request_kind_label after rebuild"
         );
         assert!(
-            sqlite_column_exists(&upgraded_pool, "request_logs", "legacy_request_kind_detail").await,
-            "request_logs should self-heal legacy_request_kind_detail after rebuild"
+            !sqlite_column_exists(&upgraded_pool, "request_logs", "legacy_request_kind_detail")
+                .await,
+            "request_logs should not re-add legacy_request_kind_detail after rebuild"
         );
 
         assert_eq!(
@@ -10382,6 +10776,303 @@ colo=LAX
     }
 
     #[tokio::test]
+    async fn admin_unbound_token_usage_lists_only_unbound_tokens_with_search_sort_and_pagination() {
+        let db_path = temp_db_path("admin-unbound-token-usage");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        let alice = proxy
+            .upsert_oauth_account(&OAuthAccountProfile {
+                provider: "linuxdo".to_string(),
+                provider_user_id: "admin-unbound-token-usage-alice".to_string(),
+                username: Some("alice".to_string()),
+                name: Some("Alice".to_string()),
+                avatar_template: None,
+                active: true,
+                trust_level: Some(2),
+                raw_payload_json: None,
+            })
+            .await
+            .expect("upsert alice");
+
+        let bound = proxy
+            .ensure_user_token_binding(&alice.user_id, Some("bound-owner"))
+            .await
+            .expect("bind alice token");
+        let unbound_primary = proxy
+            .create_access_token(Some("manual-unbound-alpha"))
+            .await
+            .expect("create primary unbound token");
+        let grouped_unbound = proxy
+            .create_access_tokens_batch("ops", 1, Some("grouped-unbound"))
+            .await
+            .expect("create grouped unbound token")
+            .into_iter()
+            .next()
+            .expect("grouped token exists");
+        let never_used_unbound = proxy
+            .create_access_token(Some("never-used-unbound"))
+            .await
+            .expect("create never-used unbound token");
+
+        for _ in 0..2 {
+            let _ = proxy
+                .check_token_hourly_requests(&unbound_primary.id)
+                .await
+                .expect("seed primary hourly-any");
+        }
+        for _ in 0..3 {
+            let _ = proxy
+                .check_token_quota(&unbound_primary.id)
+                .await
+                .expect("seed primary quota");
+        }
+        for _ in 0..2 {
+            proxy
+                .record_token_attempt(
+                    &unbound_primary.id,
+                    &Method::POST,
+                    "/mcp",
+                    None,
+                    Some(200),
+                    Some(0),
+                    true,
+                    "success",
+                    None,
+                )
+                .await
+                .expect("record primary success");
+        }
+        proxy
+            .record_token_attempt(
+                &unbound_primary.id,
+                &Method::POST,
+                "/mcp",
+                None,
+                Some(500),
+                Some(-32001),
+                true,
+                "error",
+                Some("upstream error"),
+            )
+            .await
+            .expect("record primary error");
+
+        let _ = proxy
+            .check_token_hourly_requests(&grouped_unbound.id)
+            .await
+            .expect("seed grouped hourly-any");
+        let _ = proxy
+            .check_token_quota(&grouped_unbound.id)
+            .await
+            .expect("seed grouped quota");
+        proxy
+            .record_token_attempt(
+                &grouped_unbound.id,
+                &Method::POST,
+                "/mcp",
+                None,
+                Some(200),
+                Some(0),
+                true,
+                "success",
+                None,
+            )
+            .await
+            .expect("record grouped success");
+
+        let _ = proxy
+            .check_token_hourly_requests(&bound.id)
+            .await
+            .expect("seed bound hourly-any");
+        let _ = proxy
+            .check_token_quota(&bound.id)
+            .await
+            .expect("seed bound quota");
+        proxy
+            .record_token_attempt(
+                &bound.id,
+                &Method::POST,
+                "/mcp",
+                None,
+                Some(200),
+                Some(0),
+                true,
+                "success",
+                None,
+            )
+            .await
+            .expect("record bound success");
+
+        let addr = spawn_admin_tokens_server(proxy, true).await;
+        let client = Client::new();
+
+        let list_resp = client
+            .get(format!("http://{}/api/tokens/unbound-usage?page=1&per_page=20", addr))
+            .send()
+            .await
+            .expect("list unbound token usage request");
+        assert_eq!(list_resp.status(), reqwest::StatusCode::OK);
+        let list_body: serde_json::Value =
+            list_resp.json().await.expect("list unbound token usage json");
+        let items = list_body
+            .get("items")
+            .and_then(|value| value.as_array())
+            .expect("items array");
+        let ids: Vec<&str> = items
+            .iter()
+            .filter_map(|item| item.get("tokenId").and_then(|value| value.as_str()))
+            .collect();
+        assert_eq!(list_body.get("total").and_then(|value| value.as_i64()), Some(3));
+        assert!(ids.contains(&unbound_primary.id.as_str()));
+        assert!(ids.contains(&grouped_unbound.id.as_str()));
+        assert!(ids.contains(&never_used_unbound.id.as_str()));
+        assert!(!ids.contains(&bound.id.as_str()));
+
+        let search_resp = client
+            .get(format!(
+                "http://{}/api/tokens/unbound-usage?page=1&per_page=20&q={}",
+                addr,
+                urlencoding::encode("ops")
+            ))
+            .send()
+            .await
+            .expect("search unbound token usage request");
+        assert_eq!(search_resp.status(), reqwest::StatusCode::OK);
+        let search_body: serde_json::Value =
+            search_resp.json().await.expect("search unbound token usage json");
+        let search_items = search_body
+            .get("items")
+            .and_then(|value| value.as_array())
+            .expect("search items array");
+        assert_eq!(search_items.len(), 1);
+        assert_eq!(
+            search_items[0]
+                .get("tokenId")
+                .and_then(|value| value.as_str()),
+            Some(grouped_unbound.id.as_str())
+        );
+        assert_eq!(
+            search_items[0]
+                .get("group")
+                .and_then(|value| value.as_str()),
+            Some("ops")
+        );
+
+        let sorted_resp = client
+            .get(format!(
+                "http://{}/api/tokens/unbound-usage?page=1&per_page=20&sort=dailySuccessRate&order=desc",
+                addr
+            ))
+            .send()
+            .await
+            .expect("sort unbound token usage request");
+        assert_eq!(sorted_resp.status(), reqwest::StatusCode::OK);
+        let sorted_body: serde_json::Value =
+            sorted_resp.json().await.expect("sort unbound token usage json");
+        let sorted_items = sorted_body
+            .get("items")
+            .and_then(|value| value.as_array())
+            .expect("sorted items array");
+        assert_eq!(
+            sorted_items[0]
+                .get("tokenId")
+                .and_then(|value| value.as_str()),
+            Some(grouped_unbound.id.as_str())
+        );
+        assert_eq!(
+            sorted_items[0]
+                .get("dailySuccess")
+                .and_then(|value| value.as_i64()),
+            Some(1)
+        );
+        assert_eq!(
+            sorted_items[0]
+                .get("dailyFailure")
+                .and_then(|value| value.as_i64()),
+            Some(0)
+        );
+
+        let last_used_asc_resp = client
+            .get(format!(
+                "http://{}/api/tokens/unbound-usage?page=1&per_page=20&sort=lastUsedAt&order=asc",
+                addr
+            ))
+            .send()
+            .await
+            .expect("last-used asc unbound token usage request");
+        assert_eq!(last_used_asc_resp.status(), reqwest::StatusCode::OK);
+        let last_used_asc_body: serde_json::Value = last_used_asc_resp
+            .json()
+            .await
+            .expect("last-used asc unbound token usage json");
+        let last_used_asc_items = last_used_asc_body
+            .get("items")
+            .and_then(|value| value.as_array())
+            .expect("last-used asc items array");
+        assert_eq!(
+            last_used_asc_items[0]
+                .get("tokenId")
+                .and_then(|value| value.as_str()),
+            Some(never_used_unbound.id.as_str())
+        );
+        assert!(
+            last_used_asc_items[0]
+                .get("lastUsedAt")
+                .is_some_and(|value| value.is_null())
+        );
+
+        let paged_resp = client
+            .get(format!(
+                "http://{}/api/tokens/unbound-usage?page=2&per_page=1&sort=quotaMonthlyUsed&order=desc",
+                addr
+            ))
+            .send()
+            .await
+            .expect("paged unbound token usage request");
+        assert_eq!(paged_resp.status(), reqwest::StatusCode::OK);
+        let paged_body: serde_json::Value =
+            paged_resp.json().await.expect("paged unbound token usage json");
+        let paged_items = paged_body
+            .get("items")
+            .and_then(|value| value.as_array())
+            .expect("paged items array");
+        assert_eq!(paged_body.get("total").and_then(|value| value.as_i64()), Some(3));
+        assert_eq!(paged_body.get("page").and_then(|value| value.as_i64()), Some(2));
+        assert_eq!(paged_items.len(), 1);
+        assert_eq!(
+            paged_items[0]
+                .get("tokenId")
+                .and_then(|value| value.as_str()),
+            Some(grouped_unbound.id.as_str())
+        );
+
+        let empty_resp = client
+            .get(format!(
+                "http://{}/api/tokens/unbound-usage?page=1&per_page=20&q={}",
+                addr,
+                urlencoding::encode("missing-token")
+            ))
+            .send()
+            .await
+            .expect("empty unbound token usage request");
+        assert_eq!(empty_resp.status(), reqwest::StatusCode::OK);
+        let empty_body: serde_json::Value =
+            empty_resp.json().await.expect("empty unbound token usage json");
+        assert_eq!(empty_body.get("total").and_then(|value| value.as_i64()), Some(0));
+        assert!(
+            empty_body
+                .get("items")
+                .and_then(|value| value.as_array())
+                .is_some_and(|items| items.is_empty())
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn admin_token_log_views_include_business_credits() {
         let db_path = temp_db_path("admin-token-log-business-credits");
         let db_str = db_path.to_string_lossy().to_string();
@@ -10569,11 +11260,9 @@ colo=LAX
                 .and_then(|value| value.as_str()),
             Some("/mcp/sse")
         );
-        assert_eq!(
-            legacy_log
-                .get("legacyRequestKindKey")
-                .and_then(|value| value.as_str()),
-            Some("mcp:raw:/mcp")
+        assert!(
+            legacy_log.get("legacyRequestKindKey").is_none(),
+            "token log payload should not expose legacy request-kind snapshots"
         );
         let neutral_log = logs
             .iter()
@@ -10721,11 +11410,9 @@ colo=LAX
                 .and_then(|value| value.as_str()),
             Some("MCP | unsupported path")
         );
-        assert_eq!(
-            paged_legacy_log
-                .get("legacyRequestKindKey")
-                .and_then(|value| value.as_str()),
-            Some("mcp:raw:/mcp")
+        assert!(
+            paged_legacy_log.get("legacyRequestKindKey").is_none(),
+            "paged token log payload should not expose legacy request-kind snapshots"
         );
 
         let neutral_page_resp = client
@@ -10883,6 +11570,248 @@ colo=LAX
             Some("neutral")
         );
         drop(events_resp);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn token_log_details_return_linked_bodies_and_page_results_keep_null_payloads() {
+        let db_path = temp_db_path("token-log-details-linked");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-token-log-details-linked".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let token = proxy
+            .create_access_token(Some("token-log-details-linked"))
+            .await
+            .expect("create token");
+        let key_id = proxy
+            .list_api_key_metrics()
+            .await
+            .expect("list api key metrics")
+            .into_iter()
+            .next()
+            .expect("seeded key exists")
+            .id;
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let created_at = Utc::now().timestamp();
+        let request_log_id: i64 = sqlx::query_scalar(
+            r#"
+            INSERT INTO request_logs (
+                api_key_id,
+                auth_token_id,
+                method,
+                path,
+                query,
+                status_code,
+                tavily_status_code,
+                error_message,
+                result_status,
+                request_kind_key,
+                request_kind_label,
+                request_kind_detail,
+                business_credits,
+                failure_kind,
+                key_effect_code,
+                key_effect_summary,
+                request_body,
+                response_body,
+                forwarded_headers,
+                dropped_headers,
+                visibility,
+                created_at
+            ) VALUES (?, ?, 'POST', '/mcp', NULL, 200, 200, NULL, 'success', 'mcp:search', 'MCP | search', NULL, 2, NULL, 'none', NULL, ?, ?, '["x-request-id"]', '[]', 'visible', ?)
+            RETURNING id
+            "#,
+        )
+        .bind(&key_id)
+        .bind(&token.id)
+        .bind(br#"{"tool":"search"}"#.to_vec())
+        .bind(br#"{"result":"ok"}"#.to_vec())
+        .bind(created_at)
+        .fetch_one(&pool)
+        .await
+        .expect("insert request log");
+
+        let token_log_id: i64 = sqlx::query_scalar(
+            r#"
+            INSERT INTO auth_token_logs (
+                token_id,
+                method,
+                path,
+                query,
+                http_status,
+                mcp_status,
+                request_kind_key,
+                request_kind_label,
+                request_kind_detail,
+                result_status,
+                error_message,
+                failure_kind,
+                key_effect_code,
+                key_effect_summary,
+                counts_business_quota,
+                business_credits,
+                billing_state,
+                api_key_id,
+                request_log_id,
+                created_at
+            ) VALUES (?, 'POST', '/mcp', NULL, 200, 200, 'mcp:search', 'MCP | search', NULL, 'success', NULL, NULL, 'none', NULL, 1, 2, 'charged', ?, ?, ?)
+            RETURNING id
+            "#,
+        )
+        .bind(&token.id)
+        .bind(&key_id)
+        .bind(request_log_id)
+        .bind(created_at + 1)
+        .fetch_one(&pool)
+        .await
+        .expect("insert token log");
+
+        let addr = spawn_admin_tokens_server(proxy, true).await;
+        let client = Client::new();
+
+        let page_resp = client
+            .get(format!(
+                "http://{}/api/tokens/{}/logs/page?page=1&per_page=20&since=0",
+                addr, token.id
+            ))
+            .send()
+            .await
+            .expect("token logs page");
+        assert_eq!(page_resp.status(), reqwest::StatusCode::OK);
+        let page_body: serde_json::Value = page_resp.json().await.expect("token logs page json");
+        let page_item = page_body
+            .get("items")
+            .and_then(|value| value.as_array())
+            .and_then(|items| {
+                items.iter().find(|item| {
+                    item.get("id")
+                        .and_then(|value| value.as_i64())
+                        .is_some_and(|value| value == token_log_id)
+                })
+            })
+            .expect("inserted token page item");
+        assert!(page_item.get("request_body").is_some_and(|value| value.is_null()));
+        assert!(page_item.get("response_body").is_some_and(|value| value.is_null()));
+
+        let detail_resp = client
+            .get(format!(
+                "http://{}/api/tokens/{}/logs/{}/details",
+                addr, token.id, token_log_id
+            ))
+            .send()
+            .await
+            .expect("token log detail");
+        assert_eq!(detail_resp.status(), reqwest::StatusCode::OK);
+        let detail_body: serde_json::Value = detail_resp.json().await.expect("token detail json");
+        assert_eq!(
+            detail_body
+                .get("request_body")
+                .and_then(|value| value.as_str()),
+            Some(r#"{"tool":"search"}"#)
+        );
+        assert_eq!(
+            detail_body
+                .get("response_body")
+                .and_then(|value| value.as_str()),
+            Some(r#"{"result":"ok"}"#)
+        );
+
+        let wrong_scope_resp = client
+            .get(format!(
+                "http://{}/api/tokens/wrong-token/logs/{}/details",
+                addr, token_log_id
+            ))
+            .send()
+            .await
+            .expect("wrong token detail request");
+        assert_eq!(wrong_scope_resp.status(), reqwest::StatusCode::NOT_FOUND);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn token_log_details_return_null_bodies_when_no_request_log_is_linked() {
+        let db_path = temp_db_path("token-log-details-unlinked");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-token-log-details-unlinked".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let token = proxy
+            .create_access_token(Some("token-log-details-unlinked"))
+            .await
+            .expect("create token");
+        let key_id = proxy
+            .list_api_key_metrics()
+            .await
+            .expect("list api key metrics")
+            .into_iter()
+            .next()
+            .expect("seeded key exists")
+            .id;
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let token_log_id: i64 = sqlx::query_scalar(
+            r#"
+            INSERT INTO auth_token_logs (
+                token_id,
+                method,
+                path,
+                query,
+                http_status,
+                mcp_status,
+                request_kind_key,
+                request_kind_label,
+                request_kind_detail,
+                result_status,
+                error_message,
+                failure_kind,
+                key_effect_code,
+                key_effect_summary,
+                counts_business_quota,
+                business_credits,
+                billing_state,
+                api_key_id,
+                request_log_id,
+                created_at
+            ) VALUES (?, 'POST', '/mcp', NULL, 200, 202, 'mcp:notifications/initialized', 'MCP | notifications/initialized', NULL, 'success', NULL, NULL, 'none', NULL, 0, NULL, 'none', ?, NULL, ?)
+            RETURNING id
+            "#,
+        )
+        .bind(&token.id)
+        .bind(&key_id)
+        .bind(3_000_i64)
+        .fetch_one(&pool)
+        .await
+        .expect("insert token log without request link");
+
+        let addr = spawn_admin_tokens_server(proxy, true).await;
+        let client = Client::new();
+
+        let detail_resp = client
+            .get(format!(
+                "http://{}/api/tokens/{}/logs/{}/details",
+                addr, token.id, token_log_id
+            ))
+            .send()
+            .await
+            .expect("token log detail");
+        assert_eq!(detail_resp.status(), reqwest::StatusCode::OK);
+        let detail_body: serde_json::Value = detail_resp.json().await.expect("token detail json");
+        assert!(detail_body.get("request_body").is_some_and(|value| value.is_null()));
+        assert!(detail_body.get("response_body").is_some_and(|value| value.is_null()));
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -14033,6 +14962,61 @@ colo=LAX
     }
 
     #[tokio::test]
+    async fn mcp_subpath_dev_open_admin_fallback_requires_explicit_token() {
+        let db_path = temp_db_path("mcp-subpath-dev-open-admin-explicit-token");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let upstream_addr =
+            spawn_counted_fake_forward_proxy(StatusCode::OK, Duration::from_millis(0), hits.clone())
+                .await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-mcp-subpath-dev-open-admin".to_string()],
+            &upstream,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+        let proxy_addr = spawn_proxy_server_with_dev(proxy, "https://api.tavily.com".to_string(), true)
+            .await;
+        let client = Client::new();
+
+        let resp = client
+            .post(format!("http://{}/mcp/search", proxy_addr))
+            .json(&serde_json::json!({ "query": "missing explicit token" }))
+            .send()
+            .await
+            .expect("subpath request");
+
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            resp.json::<serde_json::Value>()
+                .await
+                .expect("explicit token json")
+                .get("error")
+                .and_then(|value| value.as_str()),
+            Some("explicit_token_required")
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 0, "401 rejects must not hit upstream");
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let request_log_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM request_logs")
+            .fetch_one(&pool)
+            .await
+            .expect("request log count");
+        let token_log_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM auth_token_logs")
+            .fetch_one(&pool)
+            .await
+            .expect("token log count");
+        assert_eq!(request_log_count, 0);
+        assert_eq!(token_log_count, 0);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn mcp_root_sse_get_stays_405_while_subpath_sse_get_is_local_404() {
         let db_path = temp_db_path("mcp-root-sse-and-subpath");
         let db_str = db_path.to_string_lossy().to_string();
@@ -15804,6 +16788,61 @@ colo=LAX
     }
 
     #[tokio::test]
+    async fn mcp_dev_open_admin_fallback_requires_explicit_token() {
+        let db_path = temp_db_path("mcp-dev-open-admin-fallback-requires-token");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let expected_api_key = "tvly-mcp-dev-open-admin-fallback-key";
+        let (upstream_addr, calls) =
+            spawn_mock_mcp_upstream_for_session_headers(vec![expected_api_key.to_string()]).await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy =
+            TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
+
+        let proxy_addr = spawn_proxy_server_with_dev(proxy, upstream, true).await;
+        let client = Client::new();
+        let url = format!("http://{}/mcp", proxy_addr);
+
+        let resp = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "init-dev-open-admin",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {}
+                }
+            }))
+            .send()
+            .await
+            .expect("initialize request");
+
+        assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+        let body: Value = resp.json().await.expect("parse rejection body");
+        assert_eq!(
+            body.get("error").and_then(|value| value.as_str()),
+            Some("explicit_token_required")
+        );
+
+        let recorded = calls
+            .lock()
+            .expect("session header calls lock poisoned")
+            .clone();
+        assert!(
+            recorded.is_empty(),
+            "dev-open-admin MCP fallback should be rejected before hitting upstream"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn mcp_dev_open_admin_explicit_token_charges_bound_account() {
         let db_path = temp_db_path("mcp-dev-open-admin-explicit-token");
         let db_str = db_path.to_string_lossy().to_string();
@@ -16707,6 +17746,683 @@ colo=LAX
         );
         assert_eq!(summary.success_count, 0);
         assert_eq!(summary.quota_exhausted_count, 0);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_session_headers_are_forwarded_after_initialize() {
+        let db_path = temp_db_path("mcp-session-header-forwarding");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let expected_api_key = "tvly-mcp-session-header-key";
+        let (upstream_addr, calls) =
+            spawn_mock_mcp_upstream_for_session_headers(vec![expected_api_key.to_string()]).await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy =
+            TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
+
+        let access_token = proxy
+            .create_access_token(Some("mcp-session-header-forwarding"))
+            .await
+            .expect("create access token");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), upstream.clone()).await;
+        let url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, access_token.token
+        );
+        let client = Client::new();
+
+        let initialize = client
+            .post(&url)
+            .header("accept", "application/json, text/event-stream")
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .header("x-forwarded-for", "1.2.3.4")
+            .header("x-real-ip", "1.2.3.4")
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "init-1",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {}
+                }
+            }))
+            .send()
+            .await
+            .expect("initialize request");
+
+        assert!(
+            initialize.status().is_success(),
+            "initialize should succeed, got {}",
+            initialize.status()
+        );
+        let session_id = initialize
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("initialize response should expose mcp-session-id")
+            .to_string();
+        assert_ne!(session_id, "session-123");
+        assert!(
+            !session_id.is_empty(),
+            "initialize should return an opaque proxy session id"
+        );
+
+        let tools_list = client
+            .post(&url)
+            .header("accept", "application/json, text/event-stream")
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .header("mcp-session-id", session_id.as_str())
+            .header("last-event-id", "resume-42")
+            .header("x-forwarded-for", "1.2.3.4")
+            .header("x-real-ip", "1.2.3.4")
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "tools-1",
+                "method": "tools/list"
+            }))
+            .send()
+            .await
+            .expect("tools/list request");
+
+        assert!(
+            tools_list.status().is_success(),
+            "tools/list should succeed after initialize, got {}",
+            tools_list.status()
+        );
+        let tools_list_body: Value = tools_list.json().await.expect("parse tools/list response");
+        assert_eq!(
+            tools_list_body
+                .get("result")
+                .and_then(|value| value.get("tools"))
+                .and_then(|value| value.as_array())
+                .map(|tools| tools.len()),
+            Some(1)
+        );
+
+        let recorded = calls
+            .lock()
+            .expect("session header calls lock poisoned")
+            .clone();
+        assert_eq!(recorded.len(), 2, "expected initialize + tools/list");
+        assert_eq!(recorded[0].method, "initialize");
+        assert_eq!(recorded[0].protocol_version.as_deref(), Some("2025-03-26"));
+        assert!(!recorded[0].leaked_forwarded, "initialize should not leak forwarded headers");
+        assert_eq!(
+            recorded[0].user_agent.as_deref(),
+            Some("tavily-hikari-mcp-proxy/1.0")
+        );
+        assert_eq!(recorded[1].method, "tools/list");
+        assert_eq!(recorded[1].session_id.as_deref(), Some("session-123"));
+        assert_eq!(recorded[1].protocol_version.as_deref(), Some("2025-03-26"));
+        assert_eq!(recorded[1].last_event_id.as_deref(), Some("resume-42"));
+        assert!(!recorded[1].leaked_forwarded, "tools/list should not leak forwarded headers");
+        assert_eq!(
+            recorded[1].user_agent.as_deref(),
+            Some("tavily-hikari-mcp-proxy/1.0")
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_session_cannot_be_reused_by_another_token() {
+        let db_path = temp_db_path("mcp-session-cross-token");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let expected_api_key = "tvly-mcp-cross-token-key";
+        let (upstream_addr, calls) =
+            spawn_mock_mcp_upstream_for_session_headers(vec![expected_api_key.to_string()]).await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy =
+            TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
+
+        let owner_token = proxy
+            .create_access_token(Some("mcp-cross-token-owner"))
+            .await
+            .expect("create owner token");
+        let other_token = proxy
+            .create_access_token(Some("mcp-cross-token-other"))
+            .await
+            .expect("create other token");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), upstream.clone()).await;
+        let client = Client::new();
+
+        let owner_url = format!("http://{}/mcp?tavilyApiKey={}", proxy_addr, owner_token.token);
+        let initialize = client
+            .post(&owner_url)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "init-owner",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {}
+                }
+            }))
+            .send()
+            .await
+            .expect("initialize request");
+        assert!(initialize.status().is_success());
+        let proxy_session_id = initialize
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("proxy session id")
+            .to_string();
+
+        let other_url = format!("http://{}/mcp?tavilyApiKey={}", proxy_addr, other_token.token);
+        let rejected = client
+            .post(&other_url)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .header("mcp-session-id", &proxy_session_id)
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "tools-cross",
+                "method": "tools/list"
+            }))
+            .send()
+            .await
+            .expect("cross token request");
+
+        assert_eq!(rejected.status(), reqwest::StatusCode::FORBIDDEN);
+        let body: Value = rejected.json().await.expect("parse rejection body");
+        assert_eq!(
+            body.get("error").and_then(|value| value.as_str()),
+            Some("session_forbidden")
+        );
+
+        let recorded = calls
+            .lock()
+            .expect("session header calls lock poisoned")
+            .clone();
+        assert_eq!(recorded.len(), 1, "cross-token reuse should be rejected locally");
+        assert_eq!(recorded[0].method, "initialize");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_pinned_key_unavailable_revokes_session_and_requires_reconnect() {
+        let db_path = temp_db_path("mcp-pinned-key-unavailable");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let expected_api_key = "tvly-mcp-pinned-key-unavailable";
+        let (upstream_addr, calls) =
+            spawn_mock_mcp_upstream_for_session_headers(vec![expected_api_key.to_string()]).await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy =
+            TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
+        let access_token = proxy
+            .create_access_token(Some("mcp-pinned-key-unavailable"))
+            .await
+            .expect("create access token");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), upstream.clone()).await;
+        let client = Client::new();
+        let url = format!("http://{}/mcp?tavilyApiKey={}", proxy_addr, access_token.token);
+
+        let initialize = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "init-pinned",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {}
+                }
+            }))
+            .send()
+            .await
+            .expect("initialize request");
+        assert!(initialize.status().is_success());
+        let proxy_session_id = initialize
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("proxy session id")
+            .to_string();
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let key_id: String = sqlx::query_scalar(
+            r#"SELECT api_key_id
+               FROM token_primary_api_key_affinity
+               WHERE token_id = ?
+               LIMIT 1"#,
+        )
+        .bind(&access_token.id)
+        .fetch_one(&pool)
+        .await
+        .expect("bound key id");
+
+        proxy
+            .disable_key_by_id(&key_id)
+            .await
+            .expect("disable bound key");
+
+        let follow_up = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .header("mcp-session-id", &proxy_session_id)
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "tools-pinned",
+                "method": "tools/list"
+            }))
+            .send()
+            .await
+            .expect("follow-up request");
+
+        assert_eq!(follow_up.status(), reqwest::StatusCode::CONFLICT);
+        let body: Value = follow_up.json().await.expect("parse reconnect body");
+        assert_eq!(
+            body.get("error").and_then(|value| value.as_str()),
+            Some("session_unavailable")
+        );
+
+        let revoke_reason: Option<String> = sqlx::query_scalar(
+            r#"SELECT revoke_reason
+               FROM mcp_sessions
+               WHERE proxy_session_id = ?
+               LIMIT 1"#,
+        )
+        .bind(&proxy_session_id)
+        .fetch_one(&pool)
+        .await
+        .expect("revoke reason row");
+        assert_eq!(revoke_reason.as_deref(), Some("pinned_key_unavailable"));
+
+        let recorded = calls
+            .lock()
+            .expect("session header calls lock poisoned")
+            .clone();
+        assert_eq!(
+            recorded.len(),
+            1,
+            "follow-up with disabled pinned key should be rejected locally"
+        );
+        assert_eq!(recorded[0].method, "initialize");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_pinned_exhausted_key_keeps_existing_session_alive() {
+        let db_path = temp_db_path("mcp-pinned-key-exhausted");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let expected_api_key = "tvly-mcp-pinned-key-exhausted";
+        let (upstream_addr, calls) =
+            spawn_mock_mcp_upstream_for_session_headers(vec![expected_api_key.to_string()]).await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy =
+            TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
+        let access_token = proxy
+            .create_access_token(Some("mcp-pinned-key-exhausted"))
+            .await
+            .expect("create access token");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), upstream.clone()).await;
+        let client = Client::new();
+        let url = format!("http://{}/mcp?tavilyApiKey={}", proxy_addr, access_token.token);
+
+        let initialize = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "init-pinned-exhausted",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {}
+                }
+            }))
+            .send()
+            .await
+            .expect("initialize request");
+        assert!(initialize.status().is_success());
+        let proxy_session_id = initialize
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("proxy session id")
+            .to_string();
+
+        proxy
+            .mark_key_quota_exhausted_by_secret(expected_api_key)
+            .await
+            .expect("mark pinned key exhausted");
+
+        let follow_up = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .header("mcp-session-id", &proxy_session_id)
+            .header("last-event-id", "resume-42")
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "tools-pinned-exhausted",
+                "method": "tools/list"
+            }))
+            .send()
+            .await
+            .expect("follow-up request");
+
+        assert_eq!(follow_up.status(), reqwest::StatusCode::OK);
+        let body: Value = follow_up.json().await.expect("parse follow-up body");
+        assert_eq!(
+            body.get("result")
+                .and_then(|value| value.get("tools"))
+                .and_then(|value| value.as_array())
+                .map(|tools| tools.len()),
+            Some(1)
+        );
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let revoke_reason: Option<String> = sqlx::query_scalar(
+            r#"SELECT revoke_reason
+               FROM mcp_sessions
+               WHERE proxy_session_id = ?
+               LIMIT 1"#,
+        )
+        .bind(&proxy_session_id)
+        .fetch_one(&pool)
+        .await
+        .expect("revoke reason row");
+        assert_eq!(revoke_reason, None);
+
+        let recorded = calls
+            .lock()
+            .expect("session header calls lock poisoned")
+            .clone();
+        assert_eq!(recorded.len(), 2, "exhausted pinned key should keep the session usable");
+        assert_eq!(recorded[0].method, "initialize");
+        assert_eq!(recorded[1].method, "tools/list");
+        assert_eq!(recorded[1].session_id.as_deref(), Some("session-123"));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_rebind_invalidates_previous_sessions() {
+        let db_path = temp_db_path("mcp-session-rebind-invalidates");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let first_api_key = "tvly-mcp-rebind-a".to_string();
+        let second_api_key = "tvly-mcp-rebind-b".to_string();
+        let (upstream_addr, calls) = spawn_mock_mcp_upstream_for_session_headers(vec![
+            first_api_key.clone(),
+            second_api_key.clone(),
+        ])
+        .await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy = TavilyProxy::with_endpoint(
+            vec![first_api_key.clone(), second_api_key.clone()],
+            &upstream,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+        let access_token = proxy
+            .create_access_token(Some("mcp-session-rebind"))
+            .await
+            .expect("create access token");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), upstream.clone()).await;
+        let client = Client::new();
+        let url = format!("http://{}/mcp?tavilyApiKey={}", proxy_addr, access_token.token);
+
+        let first_initialize = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "init-1",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {}
+                }
+            }))
+            .send()
+            .await
+            .expect("first initialize");
+        assert!(first_initialize.status().is_success());
+        let old_proxy_session_id = first_initialize
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("old proxy session id")
+            .to_string();
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let old_key_id: String = sqlx::query_scalar(
+            r#"SELECT api_key_id
+               FROM token_primary_api_key_affinity
+               WHERE token_id = ?
+               LIMIT 1"#,
+        )
+        .bind(&access_token.id)
+        .fetch_one(&pool)
+        .await
+        .expect("old key id");
+
+        proxy
+            .disable_key_by_id(&old_key_id)
+            .await
+            .expect("disable old primary key");
+
+        let second_initialize = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "init-2",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {}
+                }
+            }))
+            .send()
+            .await
+            .expect("second initialize");
+        assert!(second_initialize.status().is_success());
+        let new_proxy_session_id = second_initialize
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("new proxy session id")
+            .to_string();
+        assert_ne!(old_proxy_session_id, new_proxy_session_id);
+
+        let new_key_id: String = sqlx::query_scalar(
+            r#"SELECT api_key_id
+               FROM token_primary_api_key_affinity
+               WHERE token_id = ?
+               LIMIT 1"#,
+        )
+        .bind(&access_token.id)
+        .fetch_one(&pool)
+        .await
+        .expect("new key id");
+        assert_ne!(old_key_id, new_key_id, "token primary key should be rebound");
+
+        let stale_follow_up = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .header("mcp-session-id", &old_proxy_session_id)
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "tools-stale",
+                "method": "tools/list"
+            }))
+            .send()
+            .await
+            .expect("stale follow-up");
+
+        assert_eq!(stale_follow_up.status(), reqwest::StatusCode::CONFLICT);
+        let stale_body: Value = stale_follow_up.json().await.expect("parse stale body");
+        assert_eq!(
+            stale_body.get("error").and_then(|value| value.as_str()),
+            Some("session_unavailable")
+        );
+
+        let recorded = calls
+            .lock()
+            .expect("session header calls lock poisoned")
+            .clone();
+        assert_eq!(recorded.len(), 2, "stale session should be rejected locally after rebind");
+        assert_eq!(recorded[0].method, "initialize");
+        assert_eq!(recorded[1].method, "initialize");
+        assert_ne!(recorded[0].tavily_api_key, recorded[1].tavily_api_key);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_initialized_notification_is_forwarded_after_initialize() {
+        let db_path = temp_db_path("mcp-initialized-notification-forwarding");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let expected_api_key = "tvly-mcp-initialized-key";
+        let (upstream_addr, calls) =
+            spawn_mock_mcp_upstream_for_session_headers(vec![expected_api_key.to_string()]).await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy =
+            TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
+
+        let access_token = proxy
+            .create_access_token(Some("mcp-initialized-notification"))
+            .await
+            .expect("create access token");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), upstream.clone()).await;
+        let url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, access_token.token
+        );
+        let client = Client::new();
+
+        let initialize = client
+            .post(&url)
+            .header("accept", "application/json, text/event-stream")
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "init-2",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {},
+                    "clientInfo": { "name": "browser-probe", "version": "0.1.0" }
+                }
+            }))
+            .send()
+            .await
+            .expect("initialize request");
+
+        assert!(initialize.status().is_success());
+        let session_id = initialize
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("initialize response should expose mcp-session-id")
+            .to_string();
+
+        let initialized = client
+            .post(&url)
+            .header("accept", "application/json, text/event-stream")
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .header("mcp-session-id", session_id.as_str())
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized"
+            }))
+            .send()
+            .await
+            .expect("notifications/initialized request");
+
+        assert_eq!(
+            initialized.status(),
+            StatusCode::ACCEPTED,
+            "notifications/initialized should allow 202 empty body"
+        );
+        let initialized_body = initialized
+            .text()
+            .await
+            .expect("read notifications/initialized response body");
+        assert!(
+            initialized_body.trim().is_empty(),
+            "notifications/initialized should keep an empty 202 body"
+        );
+
+        let tools_list = client
+            .post(&url)
+            .header("accept", "application/json, text/event-stream")
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .header("mcp-session-id", session_id.as_str())
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "tools-2",
+                "method": "tools/list"
+            }))
+            .send()
+            .await
+            .expect("tools/list request");
+
+        assert!(tools_list.status().is_success());
+
+        let recorded = calls
+            .lock()
+            .expect("session header calls lock poisoned")
+            .clone();
+        assert_eq!(recorded.len(), 3, "expected initialize + initialized + tools/list");
+        assert_eq!(recorded[0].method, "initialize");
+        assert_eq!(recorded[1].method, "notifications/initialized");
+        assert_eq!(recorded[1].session_id.as_deref(), Some("session-123"));
+        assert_eq!(recorded[1].protocol_version.as_deref(), Some("2025-03-26"));
+        assert_eq!(recorded[1].last_event_id, None);
+        assert_eq!(recorded[2].method, "tools/list");
+        assert_eq!(recorded[2].session_id.as_deref(), Some("session-123"));
+        assert_eq!(recorded[2].protocol_version.as_deref(), Some("2025-03-26"));
+        assert_eq!(recorded[2].last_event_id, None);
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -18027,6 +19743,7 @@ colo=LAX
                 headers: HeaderMap::new(),
                 body: bytes::Bytes::new(),
                 auth_token_id: None,
+                pinned_api_key_id: None,
             })
             .await;
 

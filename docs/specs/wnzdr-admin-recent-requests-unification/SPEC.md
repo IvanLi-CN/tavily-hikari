@@ -4,7 +4,7 @@
 
 - Status: 已实现（待审查）
 - Created: 2026-03-20
-- Last: 2026-03-22
+- Last: 2026-03-28
 
 ## 背景 / 问题陈述
 
@@ -28,6 +28,7 @@
   - token 详情隐藏 `Token`
   - key 详情隐藏 `Key`
 - 三处桌面表格摘要单元格全部强制不换行，完整信息统一收敛到 tooltip / 展开详情。
+- 共享列表默认只返回摘要行；请求体 / 响应体在展开详情时按作用域懒加载，避免列表接口携带大 payload。
 
 ### Non-goals
 
@@ -54,20 +55,25 @@
 - `src/server/dto.rs`
   - 新增 `/api/keys/:id/logs/page`。
   - 扩展 `/api/tokens/:id/logs/page` 的过滤参数和 facets 负载。
+  - 新增日志详情 bodies 接口，按全局 / key / token 作用域分别返回 request/response body。
+- `src/server/serve.rs`
+  - 挂载共享列表详情接口路由：`/api/logs/:log_id/details`、`/api/keys/:id/logs/:log_id/details`、`/api/tokens/:id/logs/:log_id/details`。
 - `web/src/api.ts`
-  - 新增统一 request list 分页响应类型、facet 类型与请求函数。
+  - 新增统一 request list 分页响应类型、facet 类型、详情 bodies 类型与请求函数。
 - `web/src/AdminDashboard.tsx`
-  - 全局请求页与 key 详情接入共享组件。
+  - 全局请求页与 key 详情接入共享组件，并按展开态懒加载 bodies。
 - `web/src/pages/TokenDetail.tsx`
-  - 从现有 token 请求记录抽出共享组件并接回 token 详情。
+  - 从现有 token 请求记录抽出共享组件并接回 token 详情，保持 token 作用域详情拉取。
 - `web/src/components/**`
   - 新增共享 admin recent requests 组件与筛选菜单子组件。
+  - 共享组件支持详情 bodies 懒加载、每行缓存、失败重试，并去除冗余“请求类型详情 / 建议处理”展示。
 - `web/src/index.css`
   - 统一 no-wrap 表格样式与新增筛选触发器样式。
+- `web/src/components/AdminRecentRequestsPanel.stories.tsx`
 - `web/src/admin/AdminPages.stories.tsx`
 - `web/src/pages/KeyDetailRoute.stories.tsx`
 - `web/src/pages/TokenDetail.stories.tsx`
-  - 补齐三处故事和 dense layout / facet / fallback 样例。
+  - 补齐三处故事和 dense layout / facet / fallback 样例，并新增共享面板 lazy detail 状态画廊。
 
 ### Out of scope
 
@@ -103,6 +109,7 @@
   - `key_effect`
   - `auth_token_id`
   - `key_id`
+  - `include_bodies`
 - `result` 与 `key_effect` 同时出现时返回 `400`
 - 响应新增：
   - `requestKindOptions`
@@ -110,11 +117,14 @@
   - `facets.keyEffects`
   - `facets.tokens`
   - `facets.keys`
+- 共享列表响应中的 `request_body` / `response_body` 固定返回 `null`；真实 bodies 只从详情接口获取。
+- `dashboard overview` 仍属非目标范围，保留 `include_bodies=true` 的旧调用路径以继续返回内联 request/response body。
 
 ### `GET /api/keys/:id/logs/page`
 
 - 返回与共享组件一致的分页与 facets 结构。
 - 不返回 `facets.keys`。
+- 共享列表响应中的 `request_body` / `response_body` 固定返回 `null`。
 
 ### `GET /api/tokens/:id/logs/page`
 
@@ -125,6 +135,26 @@
   - `key_id`
   - `facets.keys`
 - 不返回 `facets.tokens`。
+- 共享列表响应中的 `request_body` / `response_body` 固定返回 `null`。
+
+### `GET /api/logs/:log_id/details`
+
+- 返回指定全局 request log 的：
+  - `request_body`
+  - `response_body`
+
+### `GET /api/keys/:id/logs/:log_id/details`
+
+- 仅当该日志属于当前 key 时返回：
+  - `request_body`
+  - `response_body`
+
+### `GET /api/tokens/:id/logs/:log_id/details`
+
+- 仅当该 token log 属于当前 token 时返回：
+  - `request_body`
+  - `response_body`
+- 若 token log 未关联 `request_logs`，允许返回 `null / null`，不把缺失关联视为接口错误。
 
 ## 验收标准（Acceptance Criteria）
 
@@ -152,15 +182,31 @@
   When 摘要列表渲染
   Then 单元格不换行，超长文本统一截断，完整信息只在 tooltip 或展开详情中查看。
 
+- Given 管理员在共享近期请求列表中展开任意一行
+  When 页面首次请求详情
+  Then request/response body 通过当前上下文对应的详情接口懒加载，而不是由列表接口内联返回。
+
+- Given 管理员重复展开同一行
+  When 该行详情已经成功加载过
+  Then 前端复用已缓存的 bodies，不重复请求详情接口。
+
+- Given 某行详情接口返回失败
+  When 展开详情区域渲染
+  Then 页面只显示加载失败反馈与重试动作，不再额外显示“请求类型详情”或“建议处理”区块。
+
 ## 测试与证据
 
 - `cargo test`
 - `cargo clippy -- -D warnings`
-- `cd web && bun test`
+- `cargo test admin_and_key_log_details_return_scoped_bodies_while_list_pages_keep_null_payloads -- --nocapture`
+- `cargo test token_log_details_return_linked_bodies_and_page_results_keep_null_payloads -- --nocapture`
+- `cargo test token_log_details_return_null_bodies_when_no_request_log_is_linked -- --nocapture`
+- `cd web && bun test web/src/api.test.ts`
 - `cd web && bun run build`
-- Storybook / 浏览器验证三处页面的列显隐、facet、nowrap 与展开详情。
+- `cd web && bun run build-storybook`
+- Storybook / 浏览器验证三处页面的列显隐、facet、nowrap、lazy detail 与错误重试。
 
-## Visual Evidence (PR)
+## Visual Evidence
 
 - source_type: `storybook_canvas`
   story_id_or_title: `admin-pages--requests`
@@ -195,6 +241,17 @@
   image:
   ![Token detail shared list](./assets/token-detail-shared-list.png)
 
+- source_type: `storybook_canvas`
+  story_id_or_title: `admin-components-adminrecentrequestspanel--lazy-details-gallery`
+  target_program: `mock-only`
+  capture_scope: `browser-viewport`
+  sensitive_exclusion: `N/A`
+  submission_gate: `approved`
+  state: `lazy detail loading and retry states`
+  evidence_note: 验证共享 recent requests 面板在展开详情时按作用域懒加载 request/response body，并在失败场景只展示重试反馈，不再展示冗余建议文案。
+  image:
+  ![Recent requests lazy detail gallery](./assets/recent-requests-lazy-detail-gallery.png)
+
 ## 里程碑
 
 - [x] M1: 新 spec、README 索引与接口合同冻结
@@ -207,3 +264,4 @@
 
 - 2026-03-20: 初始化 spec，冻结“管理员近期请求列表全量统一”的数据对齐、共享组件、facet 过滤与 no-wrap 桌面表格边界。
 - 2026-03-22: 共享近期请求列表、日志 facets、Storybook 证据与截图裁剪已落地；规格同步到“已实现（待审查）”，等待 PR 收敛。
+- 2026-03-28: 跟进共享列表详情收敛；列表接口改为摘要负载，新增全局 / key / token 作用域详情 bodies 接口，前端展开区改为懒加载 + 缓存 + 重试，并清理冗余“请求类型详情 / 建议处理”展示。
