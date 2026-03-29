@@ -100,6 +100,9 @@
 - Given 管理员手动让 key 进入不可用状态
   When fan-out 写账本
   Then 当时仍关联该 key 的全部用户与 token 都会记录该 key。
+- Given 管理员手动让 key 进入不可用状态
+  When 查看用户或 token 的月蹬坏抽屉
+  Then `最后蹬坏者` 归因到当时仍绑定该 key 的主体，不展示维护人的身份。
 - Given 某主体本月坏 key 记录存在但对应 key 已恢复可用
   When 查询 `/api/users`、`/api/tokens/unbound-usage` 或抽屉详情
   Then 该 key 不计入数量，也不出现在返回列表中。

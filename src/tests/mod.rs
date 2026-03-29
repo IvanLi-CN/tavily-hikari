@@ -11876,6 +11876,107 @@ async fn manual_key_maintenance_actions_append_audit_records() {
 }
 
 #[tokio::test]
+async fn manual_key_breakage_fanout_attributes_bound_subjects_as_breakers() {
+    let db_path = temp_db_path("manual-breakage-fanout-subject-breakers");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-manual-breakage-fanout-subject-breakers".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "linuxdo".to_string(),
+            provider_user_id: "manual-breakage-subject-user".to_string(),
+            username: Some("alice".to_string()),
+            name: Some("Alice Wang".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: Some(2),
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+    let token = proxy
+        .ensure_user_token_binding(&user.user_id, Some("linuxdo:manual_breakage_subject"))
+        .await
+        .expect("bind token");
+    let (key_id, api_key): (String, String) =
+        sqlx::query_as("SELECT id, api_key FROM api_keys LIMIT 1")
+            .fetch_one(&proxy.key_store.pool)
+            .await
+            .expect("fetch key");
+    let now = Utc::now().timestamp();
+    let month_start = start_of_month(Utc::now()).timestamp();
+
+    let mut tx = proxy
+        .key_store
+        .pool
+        .begin()
+        .await
+        .expect("begin binding tx");
+    proxy
+        .key_store
+        .refresh_user_api_key_binding(&mut tx, &user.user_id, &key_id, now)
+        .await
+        .expect("refresh user key binding");
+    proxy
+        .key_store
+        .refresh_token_api_key_binding(&mut tx, &token.id, &key_id, now)
+        .await
+        .expect("refresh token key binding");
+    tx.commit().await.expect("commit binding tx");
+
+    proxy
+        .mark_key_quota_exhausted_by_secret_with_actor(
+            &api_key,
+            MaintenanceActor {
+                auth_token_id: None,
+                actor_user_id: Some("admin-user".to_string()),
+                actor_display_name: Some("Ops Admin".to_string()),
+            },
+        )
+        .await
+        .expect("mark key exhausted");
+
+    let user_page = proxy
+        .key_store
+        .fetch_monthly_broken_keys_page(BROKEN_KEY_SUBJECT_USER, &user.user_id, 1, 20, month_start)
+        .await
+        .expect("fetch user monthly broken keys");
+    let user_item = user_page.items.first().expect("user monthly broken item");
+    assert_eq!(
+        user_item.breaker_user_id.as_deref(),
+        Some(user.user_id.as_str())
+    );
+    assert_eq!(
+        user_item.breaker_user_display_name.as_deref(),
+        Some("Alice Wang")
+    );
+    assert_eq!(user_item.breaker_token_id.as_deref(), None);
+    assert_eq!(user_item.source, BROKEN_KEY_SOURCE_MANUAL);
+
+    let token_page = proxy
+        .key_store
+        .fetch_monthly_broken_keys_page(BROKEN_KEY_SUBJECT_TOKEN, &token.id, 1, 20, month_start)
+        .await
+        .expect("fetch token monthly broken keys");
+    let token_item = token_page.items.first().expect("token monthly broken item");
+    assert_eq!(
+        token_item.breaker_token_id.as_deref(),
+        Some(token.id.as_str())
+    );
+    assert_eq!(token_item.breaker_user_id.as_deref(), None);
+    assert_eq!(token_item.breaker_user_display_name.as_deref(), None);
+    assert_eq!(token_item.source, BROKEN_KEY_SOURCE_MANUAL);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn restored_keys_do_not_count_as_active_monthly_token_breakage_subjects() {
     let db_path = temp_db_path("monthly-broken-token-restored");
     let db_str = db_path.to_string_lossy().to_string();

@@ -7827,8 +7827,14 @@ impl KeyStore {
         _actor: &MaintenanceActor,
         break_at: i64,
     ) -> Result<(), ProxyError> {
-        let user_ids = sqlx::query_scalar::<_, String>(
-            "SELECT user_id FROM user_api_key_bindings WHERE api_key_id = ? ORDER BY user_id ASC",
+        let user_rows = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+            r#"
+            SELECT u.id, u.display_name, u.username
+            FROM user_api_key_bindings b
+            JOIN users u ON u.id = b.user_id
+            WHERE b.api_key_id = ?
+            ORDER BY u.username ASC, u.id ASC
+            "#,
         )
         .bind(key_id)
         .fetch_all(&self.pool)
@@ -7839,12 +7845,13 @@ impl KeyStore {
         .bind(key_id)
         .fetch_all(&self.pool)
         .await?;
-        if user_ids.is_empty() && token_ids.is_empty() {
+        if user_rows.is_empty() && token_ids.is_empty() {
             return Ok(());
         }
 
         let mut tx = self.pool.begin().await?;
-        for user_id in &user_ids {
+        // Manual maintenance is billed to whichever subjects were still bound to the key.
+        for (user_id, display_name, username) in &user_rows {
             self.upsert_subject_key_breakage_tx(
                 &mut tx,
                 BROKEN_KEY_SUBJECT_USER,
@@ -7856,8 +7863,8 @@ impl KeyStore {
                 reason_summary,
                 BROKEN_KEY_SOURCE_MANUAL,
                 None,
-                None,
-                None,
+                Some(user_id.as_str()),
+                display_name.as_deref().or(username.as_deref()),
                 None,
             )
             .await?;
@@ -7873,7 +7880,7 @@ impl KeyStore {
                 reason_code,
                 reason_summary,
                 BROKEN_KEY_SOURCE_MANUAL,
-                None,
+                Some(token_id.as_str()),
                 None,
                 None,
                 None,

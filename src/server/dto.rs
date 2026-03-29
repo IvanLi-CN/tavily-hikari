@@ -662,7 +662,6 @@ async fn get_key_logs(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
-#[cfg(test)]
 async fn get_key_log_details(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1079,7 +1078,6 @@ async fn get_token_logs_page(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
-#[cfg(test)]
 async fn get_log_details(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
