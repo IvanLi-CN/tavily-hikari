@@ -6,6 +6,8 @@ import {
   isSameAdminRoute,
   keyDetailPath,
   parseAdminPath,
+  tokenDetailPath,
+  unboundTokenUsagePath,
   userDetailPath,
   userTagCreatePath,
   userTagEditPath,
@@ -20,6 +22,10 @@ describe('admin user tag routes', () => {
 
   it('parses the dedicated user usage page before user detail fallback', () => {
     expect(parseAdminPath('/admin/users/usage')).toEqual({ name: 'user-usage' })
+  })
+
+  it('parses the unbound token usage page before token detail fallback', () => {
+    expect(parseAdminPath('/admin/tokens/leaderboard')).toEqual({ name: 'unbound-token-usage' })
   })
 
   it('parses the user tag create page', () => {
@@ -38,6 +44,14 @@ describe('admin user tag routes', () => {
   it('builds stable user tag management paths', () => {
     expect(userTagsPath()).toBe('/admin/users/tags')
     expect(userUsagePath()).toBe('/admin/users/usage')
+    expect(unboundTokenUsagePath()).toBe('/admin/tokens/leaderboard')
+    expect(unboundTokenUsagePath('ops', 2, 'quotaMonthlyUsed', 'asc')).toBe(
+      '/admin/tokens/leaderboard?q=ops&page=2&sort=quotaMonthlyUsed&order=asc',
+    )
+    expect(tokenDetailPath('tok 42')).toBe('/admin/tokens/tok%2042')
+    expect(tokenDetailPath('tok 42', 'ops', 2, 'quotaMonthlyUsed', 'asc', 'unbound-usage')).toBe(
+      '/admin/tokens/tok%2042?q=ops&page=2&sort=quotaMonthlyUsed&order=asc&view=unbound-usage',
+    )
     expect(userTagCreatePath()).toBe('/admin/users/tags/new')
     expect(userTagEditPath('linuxdo l2')).toBe('/admin/users/tags/linuxdo%20l2')
   })

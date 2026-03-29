@@ -8417,6 +8417,87 @@ impl KeyStore {
             .collect())
     }
 
+    pub(crate) async fn fetch_token_log_metrics_bulk(
+        &self,
+        token_ids: &[String],
+    ) -> Result<HashMap<String, TokenLogMetricsSummary>, ProxyError> {
+        if token_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let now = Utc::now();
+        let month_start = start_of_month(now).timestamp();
+        let day_start = start_of_day(now).timestamp();
+
+        let mut builder = QueryBuilder::new(
+            r#"
+            SELECT
+              l.token_id,
+              COALESCE(SUM(CASE WHEN l.result_status = "#,
+        );
+        builder.push_bind(OUTCOME_SUCCESS);
+        builder.push(" AND l.created_at >= ");
+        builder.push_bind(day_start);
+        builder.push(" THEN 1 ELSE 0 END), 0) AS daily_success, ");
+        builder.push("COALESCE(SUM(CASE WHEN l.result_status = ");
+        builder.push_bind(OUTCOME_ERROR);
+        builder.push(" AND l.created_at >= ");
+        builder.push_bind(day_start);
+        builder.push(" THEN 1 ELSE 0 END), 0) AS daily_failure, ");
+        builder.push("COALESCE(SUM(CASE WHEN l.result_status = ");
+        builder.push_bind(OUTCOME_SUCCESS);
+        builder.push(" AND l.created_at >= ");
+        builder.push_bind(month_start);
+        builder.push(" THEN 1 ELSE 0 END), 0) AS monthly_success, ");
+        builder.push("COALESCE(SUM(CASE WHEN l.result_status = ");
+        builder.push_bind(OUTCOME_ERROR);
+        builder.push(" AND l.created_at >= ");
+        builder.push_bind(month_start);
+        builder.push(" THEN 1 ELSE 0 END), 0) AS monthly_failure, ");
+        builder.push(
+            r#"MAX(l.created_at) AS last_activity
+            FROM auth_token_logs l
+            WHERE l.token_id IN ("#,
+        );
+        {
+            let mut separated = builder.separated(", ");
+            for token_id in token_ids {
+                separated.push_bind(token_id);
+            }
+        }
+        builder.push(") GROUP BY l.token_id");
+
+        let rows = builder
+            .build_query_as::<(String, i64, i64, i64, i64, Option<i64>)>()
+            .fetch_all(&self.pool)
+            .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(
+                    token_id,
+                    daily_success,
+                    daily_failure,
+                    monthly_success,
+                    monthly_failure,
+                    last_activity,
+                )| {
+                    (
+                        token_id,
+                        TokenLogMetricsSummary {
+                            daily_success,
+                            daily_failure,
+                            monthly_success,
+                            monthly_failure,
+                            last_activity,
+                        },
+                    )
+                },
+            )
+            .collect())
+    }
+
     pub(crate) async fn insert_oauth_login_state(
         &self,
         provider: &str,

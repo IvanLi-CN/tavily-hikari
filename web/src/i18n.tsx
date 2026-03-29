@@ -753,32 +753,21 @@ interface AdminTranslationsShape {
       moreHide: string
     }
   }
-  tokenLeaderboard: {
+  unboundTokenUsage: {
     title: string
     description: string
+    searchPlaceholder: string
     error: string
-    period: {
-      day: string
-      month: string
-      all: string
-    }
-    focus: {
-      usage: string
-      errors: string
-      other: string
-    }
     table: {
-      token: string
-      group: string
-      hourly: string
+      identity: string
+      status: string
       hourlyAny: string
+      hourly: string
       daily: string
-      today: string
-      month: string
-      all: string
+      monthly: string
+      dailySuccessRate: string
+      monthlySuccessRate: string
       lastUsed: string
-      errors: string
-      other: string
     }
     empty: {
       loading: string
@@ -1941,7 +1930,7 @@ export const translations: Record<Language, TranslationShape> = {
           enable: 'Enable token',
           edit: 'Edit note',
           delete: 'Delete token',
-          viewLeaderboard: 'View usage leaderboard',
+          viewLeaderboard: 'View unbound token usage',
         },
         statusBadges: {
           disabled: 'Disabled token',
@@ -1985,38 +1974,27 @@ export const translations: Record<Language, TranslationShape> = {
           moreHide: 'Collapse groups',
         },
       },
-      tokenLeaderboard: {
-        title: 'Token Usage Leaderboard',
-        description: 'Top 50 tokens sorted by the selected window and metric.',
-        error: 'Unable to load token leaderboard',
-        period: {
-          day: 'Today',
-          month: 'This Month',
-          all: 'All Time',
-        },
-        focus: {
-          usage: 'Usage',
-          errors: 'Errors',
-          other: 'Other',
-        },
+      unboundTokenUsage: {
+        title: 'Unbound Token Usage',
+        description: 'Only tokens without linked users are listed here, using the same usage fields as the admin user usage page.',
+        searchPlaceholder: 'Search by token ID, note, or group',
+        error: 'Unable to load unbound token usage',
         table: {
-          token: 'Token',
-          group: 'Group',
-          hourly: '1h (business)',
+          identity: 'Identity',
+          status: 'Status',
           hourlyAny: '1h (any)',
+          hourly: '1h',
           daily: '24h',
-          today: 'Today',
-          month: 'This month',
-          all: 'All time',
-          lastUsed: 'Last used',
-          errors: 'Errors',
-          other: 'Other',
+          monthly: 'Month',
+          dailySuccessRate: 'Daily Success',
+          monthlySuccessRate: 'Monthly Success',
+          lastUsed: 'Last Used',
         },
         empty: {
-          loading: 'Loading leaderboard…',
-          none: 'No token activity recorded yet.',
+          loading: 'Loading unbound token usage…',
+          none: 'No unbound token activity recorded yet.',
         },
-        back: 'Back to dashboard',
+        back: 'Back to tokens',
       },
       metrics: {
         labels: {
@@ -3157,7 +3135,7 @@ export const translations: Record<Language, TranslationShape> = {
           enable: '启用令牌',
           edit: '修改备注',
           delete: '删除令牌',
-          viewLeaderboard: '查看使用排行',
+          viewLeaderboard: '查看未关联令牌用量',
         },
         statusBadges: {
           disabled: '已禁用的令牌',
@@ -3201,38 +3179,27 @@ export const translations: Record<Language, TranslationShape> = {
           moreHide: '收起分组',
         },
       },
-      tokenLeaderboard: {
-        title: '令牌用量排行榜',
-        description: '按所选时间窗口与指标排序的前 50 个令牌。',
-        error: '无法加载令牌排行榜',
-        period: {
-          day: '今日',
-          month: '本月',
-          all: '全部',
-        },
-        focus: {
-          usage: '用量',
-          errors: '错误',
-          other: '其他',
-        },
+      unboundTokenUsage: {
+        title: '未关联 Token 用量',
+        description: '这里只显示没有关联用户的 token，字段和管理员用户用量列表保持一致。',
+        searchPlaceholder: '按令牌 ID、备注或分组搜索',
+        error: '无法加载未关联 Token 用量',
         table: {
-          token: '令牌',
-          group: '分组',
-          hourly: '1 小时（业务）',
-          hourlyAny: '1 小时（任意）',
-          daily: '24 小时',
-          today: '今日',
-          month: '本月',
-          all: '全部',
-          lastUsed: '最近使用',
-          errors: '错误',
-          other: '其他',
+          identity: '身份',
+          status: '状态',
+          hourlyAny: '1h（任意）',
+          hourly: '1h（业务）',
+          daily: '24h',
+          monthly: '月度',
+          dailySuccessRate: '日成功率',
+          monthlySuccessRate: '月成功率',
+          lastUsed: '上次使用',
         },
         empty: {
-          loading: '正在加载排行榜…',
-          none: '目前还没有令牌活动记录。',
+          loading: '正在加载未关联 Token 用量…',
+          none: '目前还没有未关联 token 的活动记录。',
         },
-        back: '返回总览',
+        back: '返回令牌列表',
       },
       metrics: {
         labels: {

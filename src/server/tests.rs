@@ -3655,6 +3655,7 @@ mod tests {
 
         let app = Router::new()
             .route("/api/tokens", get(list_tokens))
+            .route("/api/tokens/unbound-usage", get(list_unbound_token_usage))
             .route("/api/tokens/:id", get(get_token_detail))
             .route("/api/tokens/:id/logs", get(get_token_logs))
             .route("/api/tokens/:id/logs/page", get(get_token_logs_page))
@@ -10769,6 +10770,303 @@ colo=LAX
                 .get("owner")
                 .is_some_and(|value| value.is_null()),
             "unbound token detail owner should be null"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn admin_unbound_token_usage_lists_only_unbound_tokens_with_search_sort_and_pagination() {
+        let db_path = temp_db_path("admin-unbound-token-usage");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        let alice = proxy
+            .upsert_oauth_account(&OAuthAccountProfile {
+                provider: "linuxdo".to_string(),
+                provider_user_id: "admin-unbound-token-usage-alice".to_string(),
+                username: Some("alice".to_string()),
+                name: Some("Alice".to_string()),
+                avatar_template: None,
+                active: true,
+                trust_level: Some(2),
+                raw_payload_json: None,
+            })
+            .await
+            .expect("upsert alice");
+
+        let bound = proxy
+            .ensure_user_token_binding(&alice.user_id, Some("bound-owner"))
+            .await
+            .expect("bind alice token");
+        let unbound_primary = proxy
+            .create_access_token(Some("manual-unbound-alpha"))
+            .await
+            .expect("create primary unbound token");
+        let grouped_unbound = proxy
+            .create_access_tokens_batch("ops", 1, Some("grouped-unbound"))
+            .await
+            .expect("create grouped unbound token")
+            .into_iter()
+            .next()
+            .expect("grouped token exists");
+        let never_used_unbound = proxy
+            .create_access_token(Some("never-used-unbound"))
+            .await
+            .expect("create never-used unbound token");
+
+        for _ in 0..2 {
+            let _ = proxy
+                .check_token_hourly_requests(&unbound_primary.id)
+                .await
+                .expect("seed primary hourly-any");
+        }
+        for _ in 0..3 {
+            let _ = proxy
+                .check_token_quota(&unbound_primary.id)
+                .await
+                .expect("seed primary quota");
+        }
+        for _ in 0..2 {
+            proxy
+                .record_token_attempt(
+                    &unbound_primary.id,
+                    &Method::POST,
+                    "/mcp",
+                    None,
+                    Some(200),
+                    Some(0),
+                    true,
+                    "success",
+                    None,
+                )
+                .await
+                .expect("record primary success");
+        }
+        proxy
+            .record_token_attempt(
+                &unbound_primary.id,
+                &Method::POST,
+                "/mcp",
+                None,
+                Some(500),
+                Some(-32001),
+                true,
+                "error",
+                Some("upstream error"),
+            )
+            .await
+            .expect("record primary error");
+
+        let _ = proxy
+            .check_token_hourly_requests(&grouped_unbound.id)
+            .await
+            .expect("seed grouped hourly-any");
+        let _ = proxy
+            .check_token_quota(&grouped_unbound.id)
+            .await
+            .expect("seed grouped quota");
+        proxy
+            .record_token_attempt(
+                &grouped_unbound.id,
+                &Method::POST,
+                "/mcp",
+                None,
+                Some(200),
+                Some(0),
+                true,
+                "success",
+                None,
+            )
+            .await
+            .expect("record grouped success");
+
+        let _ = proxy
+            .check_token_hourly_requests(&bound.id)
+            .await
+            .expect("seed bound hourly-any");
+        let _ = proxy
+            .check_token_quota(&bound.id)
+            .await
+            .expect("seed bound quota");
+        proxy
+            .record_token_attempt(
+                &bound.id,
+                &Method::POST,
+                "/mcp",
+                None,
+                Some(200),
+                Some(0),
+                true,
+                "success",
+                None,
+            )
+            .await
+            .expect("record bound success");
+
+        let addr = spawn_admin_tokens_server(proxy, true).await;
+        let client = Client::new();
+
+        let list_resp = client
+            .get(format!("http://{}/api/tokens/unbound-usage?page=1&per_page=20", addr))
+            .send()
+            .await
+            .expect("list unbound token usage request");
+        assert_eq!(list_resp.status(), reqwest::StatusCode::OK);
+        let list_body: serde_json::Value =
+            list_resp.json().await.expect("list unbound token usage json");
+        let items = list_body
+            .get("items")
+            .and_then(|value| value.as_array())
+            .expect("items array");
+        let ids: Vec<&str> = items
+            .iter()
+            .filter_map(|item| item.get("tokenId").and_then(|value| value.as_str()))
+            .collect();
+        assert_eq!(list_body.get("total").and_then(|value| value.as_i64()), Some(3));
+        assert!(ids.contains(&unbound_primary.id.as_str()));
+        assert!(ids.contains(&grouped_unbound.id.as_str()));
+        assert!(ids.contains(&never_used_unbound.id.as_str()));
+        assert!(!ids.contains(&bound.id.as_str()));
+
+        let search_resp = client
+            .get(format!(
+                "http://{}/api/tokens/unbound-usage?page=1&per_page=20&q={}",
+                addr,
+                urlencoding::encode("ops")
+            ))
+            .send()
+            .await
+            .expect("search unbound token usage request");
+        assert_eq!(search_resp.status(), reqwest::StatusCode::OK);
+        let search_body: serde_json::Value =
+            search_resp.json().await.expect("search unbound token usage json");
+        let search_items = search_body
+            .get("items")
+            .and_then(|value| value.as_array())
+            .expect("search items array");
+        assert_eq!(search_items.len(), 1);
+        assert_eq!(
+            search_items[0]
+                .get("tokenId")
+                .and_then(|value| value.as_str()),
+            Some(grouped_unbound.id.as_str())
+        );
+        assert_eq!(
+            search_items[0]
+                .get("group")
+                .and_then(|value| value.as_str()),
+            Some("ops")
+        );
+
+        let sorted_resp = client
+            .get(format!(
+                "http://{}/api/tokens/unbound-usage?page=1&per_page=20&sort=dailySuccessRate&order=desc",
+                addr
+            ))
+            .send()
+            .await
+            .expect("sort unbound token usage request");
+        assert_eq!(sorted_resp.status(), reqwest::StatusCode::OK);
+        let sorted_body: serde_json::Value =
+            sorted_resp.json().await.expect("sort unbound token usage json");
+        let sorted_items = sorted_body
+            .get("items")
+            .and_then(|value| value.as_array())
+            .expect("sorted items array");
+        assert_eq!(
+            sorted_items[0]
+                .get("tokenId")
+                .and_then(|value| value.as_str()),
+            Some(grouped_unbound.id.as_str())
+        );
+        assert_eq!(
+            sorted_items[0]
+                .get("dailySuccess")
+                .and_then(|value| value.as_i64()),
+            Some(1)
+        );
+        assert_eq!(
+            sorted_items[0]
+                .get("dailyFailure")
+                .and_then(|value| value.as_i64()),
+            Some(0)
+        );
+
+        let last_used_asc_resp = client
+            .get(format!(
+                "http://{}/api/tokens/unbound-usage?page=1&per_page=20&sort=lastUsedAt&order=asc",
+                addr
+            ))
+            .send()
+            .await
+            .expect("last-used asc unbound token usage request");
+        assert_eq!(last_used_asc_resp.status(), reqwest::StatusCode::OK);
+        let last_used_asc_body: serde_json::Value = last_used_asc_resp
+            .json()
+            .await
+            .expect("last-used asc unbound token usage json");
+        let last_used_asc_items = last_used_asc_body
+            .get("items")
+            .and_then(|value| value.as_array())
+            .expect("last-used asc items array");
+        assert_eq!(
+            last_used_asc_items[0]
+                .get("tokenId")
+                .and_then(|value| value.as_str()),
+            Some(never_used_unbound.id.as_str())
+        );
+        assert!(
+            last_used_asc_items[0]
+                .get("lastUsedAt")
+                .is_some_and(|value| value.is_null())
+        );
+
+        let paged_resp = client
+            .get(format!(
+                "http://{}/api/tokens/unbound-usage?page=2&per_page=1&sort=quotaMonthlyUsed&order=desc",
+                addr
+            ))
+            .send()
+            .await
+            .expect("paged unbound token usage request");
+        assert_eq!(paged_resp.status(), reqwest::StatusCode::OK);
+        let paged_body: serde_json::Value =
+            paged_resp.json().await.expect("paged unbound token usage json");
+        let paged_items = paged_body
+            .get("items")
+            .and_then(|value| value.as_array())
+            .expect("paged items array");
+        assert_eq!(paged_body.get("total").and_then(|value| value.as_i64()), Some(3));
+        assert_eq!(paged_body.get("page").and_then(|value| value.as_i64()), Some(2));
+        assert_eq!(paged_items.len(), 1);
+        assert_eq!(
+            paged_items[0]
+                .get("tokenId")
+                .and_then(|value| value.as_str()),
+            Some(grouped_unbound.id.as_str())
+        );
+
+        let empty_resp = client
+            .get(format!(
+                "http://{}/api/tokens/unbound-usage?page=1&per_page=20&q={}",
+                addr,
+                urlencoding::encode("missing-token")
+            ))
+            .send()
+            .await
+            .expect("empty unbound token usage request");
+        assert_eq!(empty_resp.status(), reqwest::StatusCode::OK);
+        let empty_body: serde_json::Value =
+            empty_resp.json().await.expect("empty unbound token usage json");
+        assert_eq!(empty_body.get("total").and_then(|value| value.as_i64()), Some(0));
+        assert!(
+            empty_body
+                .get("items")
+                .and_then(|value| value.as_array())
+                .is_some_and(|items| items.is_empty())
         );
 
         let _ = std::fs::remove_file(db_path);

@@ -38,6 +38,7 @@ export default function AdminTablePagination({
   onNext,
   onPerPageChange,
 }: AdminTablePaginationProps): JSX.Element {
+  const hasPerPageControl = typeof perPage === 'number' && typeof onPerPageChange === 'function'
   const resolvedPerPageOptions =
     typeof perPage === 'number' && !perPageOptions.includes(perPage)
       ? [...perPageOptions, perPage].sort((left, right) => left - right)
@@ -45,42 +46,48 @@ export default function AdminTablePagination({
 
   return (
     <div className="table-pagination">
-      <span>{perPageLabel}</span>
-      {typeof perPage === 'number' && onPerPageChange ? (
-        <Select value={String(perPage)} onValueChange={(value) => onPerPageChange(Number(value))} disabled={disabled}>
-          <SelectTrigger aria-label={perPageAriaLabel} className="table-pagination-select w-[96px]" disabled={disabled}>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent align="start">
-            {resolvedPerPageOptions.map((option) => (
-              <SelectItem key={option} value={String(option)}>
-                {option}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      ) : null}
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        className="table-pagination-button"
-        onClick={() => void onPrevious()}
-        disabled={disabled || previousDisabled}
-      >
-        {previousLabel}
-      </Button>
-      <span>{pageSummary ?? `Page ${page} / ${totalPages}`}</span>
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        className="table-pagination-button"
-        onClick={() => void onNext()}
-        disabled={disabled || nextDisabled}
-      >
-        {nextLabel}
-      </Button>
+      <div className={`table-pagination-meta${hasPerPageControl ? '' : ' table-pagination-meta-summary-only'}`}>
+        {hasPerPageControl ? (
+          <div className="table-pagination-per-page">
+            <span>{perPageLabel}</span>
+            <Select value={String(perPage)} onValueChange={(value) => void onPerPageChange(Number(value))} disabled={disabled}>
+              <SelectTrigger aria-label={perPageAriaLabel} className="table-pagination-select w-[96px]" disabled={disabled}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="start">
+                {resolvedPerPageOptions.map((option) => (
+                  <SelectItem key={option} value={String(option)}>
+                    {option}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        ) : null}
+        <span className="table-pagination-summary">{pageSummary ?? `Page ${page} / ${totalPages}`}</span>
+      </div>
+      <div className="table-pagination-nav">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="table-pagination-button"
+          onClick={() => void onPrevious()}
+          disabled={disabled || previousDisabled}
+        >
+          {previousLabel}
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="table-pagination-button"
+          onClick={() => void onNext()}
+          disabled={disabled || nextDisabled}
+        >
+          {nextLabel}
+        </Button>
+      </div>
     </div>
   )
 }

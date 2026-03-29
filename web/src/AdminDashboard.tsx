@@ -45,7 +45,6 @@ import { Table } from './components/ui/table'
 import { Textarea } from './components/ui/textarea'
 import { AnchoredInfoDisclosure } from './components/ui/anchored-info-disclosure'
 import { Tooltip, TooltipContent, TooltipTrigger } from './components/ui/tooltip'
-import TokenUsageHeader from './components/TokenUsageHeader'
 import TokenDetail from './pages/TokenDetail'
 import { ArrowDown, ArrowUp, ArrowUpDown, ChartColumnIncreasing } from 'lucide-react'
 import AdminShell, { type AdminNavItem, type AdminNavTarget } from './admin/AdminShell'
@@ -87,7 +86,7 @@ import {
   parseAdminPath,
   buildAdminUsersPath,
   tokenDetailPath,
-  tokenLeaderboardPath,
+  unboundTokenUsagePath,
   userDetailPath,
   userTagCreatePath,
   userTagEditPath,
@@ -143,10 +142,6 @@ import {
   setTokenEnabled,
   updateTokenNote,
   createTokensBatch,
-  fetchTokenUsageLeaderboard,
-  type TokenUsageLeaderboardItem,
-  type TokenLeaderboardPeriod,
-  type TokenLeaderboardFocus,
   type Paginated,
   fetchKeyMetrics,
   fetchKeyLogsPage,
@@ -162,6 +157,7 @@ import {
   type AdminUsersSortField,
   type TokenGroup,
   fetchAdminUsers,
+  fetchAdminUnboundTokenUsage,
   fetchAdminUserDetail,
   fetchAdminRegistrationSettings,
   updateAdminUserQuota,
@@ -173,6 +169,8 @@ import {
   bindAdminUserTag,
   unbindAdminUserTag,
   type AdminUserSummary,
+  type AdminUnboundTokenUsageSortField,
+  type AdminUnboundTokenUsageSummary,
   type AdminUserDetail,
   type AdminUserTag,
   type AdminUserTagBinding,
@@ -245,6 +243,17 @@ const ADMIN_USERS_OVERVIEW_SORT_FIELDS = new Set<AdminUsersSortField>([
   'lastActivity',
   'lastLoginAt',
 ])
+const ADMIN_UNBOUND_TOKEN_USAGE_DEFAULT_SORT_FIELD: AdminUnboundTokenUsageSortField = 'lastUsedAt'
+const ADMIN_UNBOUND_TOKEN_USAGE_DEFAULT_SORT_ORDER: SortDirection = 'desc'
+const ADMIN_UNBOUND_TOKEN_USAGE_SORT_FIELDS: readonly AdminUnboundTokenUsageSortField[] = [
+  'hourlyAnyUsed',
+  'quotaHourlyUsed',
+  'quotaDailyUsed',
+  'quotaMonthlyUsed',
+  'dailySuccessRate',
+  'monthlySuccessRate',
+  'lastUsedAt',
+]
 
 type UserQuotaSnapshot = Record<QuotaSliderField, QuotaSliderSeed>
 
@@ -372,13 +381,30 @@ function formatStackedTimestamp(
     return { primary: '—' }
   }
   return {
-    primary: language === 'zh' ? formatDateOnly(value) : dateOnlyFormatter.format(new Date(value * 1000)),
+    primary: formatDateOnly(value, language),
     secondary: formatClockTime(value),
   }
 }
 
+function formatUnboundTokenIdentityMeta(
+  note: string | null,
+  group: string | null,
+  groupLabel: string,
+): string {
+  const parts: string[] = []
+  const normalizedNote = note?.trim() ?? ''
+  const normalizedGroup = group?.trim() ?? ''
+  if (normalizedNote) parts.push(normalizedNote)
+  if (normalizedGroup) parts.push(`${groupLabel} ${normalizedGroup}`)
+  return parts.join(' · ') || '—'
+}
+
 function isAdminUsersSortField(value: string | null): value is AdminUsersSortField {
   return value != null && ADMIN_USERS_SORT_FIELDS.includes(value as AdminUsersSortField)
+}
+
+function isAdminUnboundTokenUsageSortField(value: string | null): value is AdminUnboundTokenUsageSortField {
+  return value != null && ADMIN_UNBOUND_TOKEN_USAGE_SORT_FIELDS.includes(value as AdminUnboundTokenUsageSortField)
 }
 
 function formatKeyGroupName(group: string | null | undefined, ungroupedLabel: string): string {
@@ -512,6 +538,33 @@ function getAdminUsersCollectionFromLocation(): AdminUsersCollectionView {
   return new URLSearchParams(window.location.search).get('view') === 'usage' ? 'usage' : 'users'
 }
 
+function getAdminUnboundTokenUsageQueryFromLocation(): string {
+  return new URLSearchParams(window.location.search).get('q')?.trim() ?? ''
+}
+
+function getAdminUnboundTokenUsagePageFromLocation(): number {
+  const rawPage = new URLSearchParams(window.location.search).get('page')?.trim() ?? ''
+  const parsedPage = Number.parseInt(rawPage, 10)
+  return Number.isFinite(parsedPage) && parsedPage > 1 ? parsedPage : 1
+}
+
+function getAdminUnboundTokenUsageSortFromLocation(): AdminUnboundTokenUsageSortField | null {
+  const rawSort = new URLSearchParams(window.location.search).get('sort')?.trim() ?? ''
+  return isAdminUnboundTokenUsageSortField(rawSort) ? rawSort : null
+}
+
+function getAdminUnboundTokenUsageSortDirectionFromLocation(): SortDirection | null {
+  if (getAdminUnboundTokenUsageSortFromLocation() == null) return null
+  const rawOrder = new URLSearchParams(window.location.search).get('order')?.trim()
+  return rawOrder === 'asc' ? 'asc' : 'desc'
+}
+
+function getAdminTokensCollectionFromLocation(): 'tokens' | 'unbound-usage' {
+  return new URLSearchParams(window.location.search).get('view') === 'unbound-usage'
+    ? 'unbound-usage'
+    : 'tokens'
+}
+
 function isAdminUsersOverviewSortField(value: AdminUsersSortField | null): boolean {
   return value != null && ADMIN_USERS_OVERVIEW_SORT_FIELDS.has(value)
 }
@@ -639,59 +692,6 @@ function UserTagBadgeList({
   )
 }
 
-function leaderboardPrimaryValue(
-  item: TokenUsageLeaderboardItem,
-  period: 'day' | 'month' | 'all',
-  focus: 'usage' | 'errors' | 'other',
-): number {
-  const metrics =
-    period === 'day'
-      ? { usage: item.today_total ?? 0, errors: item.today_errors ?? 0, other: item.today_other ?? 0 }
-      : period === 'month'
-        ? { usage: item.month_total ?? 0, errors: item.month_errors ?? 0, other: item.month_other ?? 0 }
-        : { usage: item.all_total ?? 0, errors: item.all_errors ?? 0, other: item.all_other ?? 0 }
-  return metrics[focus] ?? 0
-}
-
-function sortLeaderboard(
-  items: TokenUsageLeaderboardItem[],
-  period: 'day' | 'month' | 'all',
-  focus: 'usage' | 'errors' | 'other',
-): TokenUsageLeaderboardItem[] {
-  return [...items].sort(
-    (a, b) => leaderboardPrimaryValue(b, period, focus) - leaderboardPrimaryValue(a, period, focus) || b.total_requests - a.total_requests,
-  )
-}
-
-type MetricKey = 'usage' | 'errors' | 'other'
-
-function pickPrimaryForPeriod(
-  item: TokenUsageLeaderboardItem,
-  period: 'day' | 'month' | 'all',
-  focus: MetricKey,
-): { primaryKey: MetricKey; values: Record<MetricKey, number> } {
-  const values: Record<MetricKey, number> =
-    period === 'day'
-      ? {
-          usage: item.today_total ?? 0,
-          errors: item.today_errors ?? 0,
-          other: item.today_other ?? 0,
-        }
-      : period === 'month'
-        ? {
-            usage: item.month_total ?? 0,
-            errors: item.month_errors ?? 0,
-            other: item.month_other ?? 0,
-          }
-        : {
-            usage: item.all_total ?? 0,
-            errors: item.all_errors ?? 0,
-            other: item.all_other ?? 0,
-          }
-
-  return { primaryKey: focus, values }
-}
-
 const numberFormatter = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 0,
 })
@@ -717,7 +717,7 @@ const dateTimeNoYearFormatter = new Intl.DateTimeFormat(undefined, {
   hour12: false,
 })
 
-const dateOnlyFormatter = new Intl.DateTimeFormat(undefined, {
+const englishDateOnlyFormatter = new Intl.DateTimeFormat('en-US', {
   year: 'numeric',
   month: 'short',
   day: '2-digit',
@@ -809,13 +809,16 @@ function formatTimestampNoYear(value: number | null): string {
   return dateTimeNoYearFormatter.format(new Date(value * 1000))
 }
 
-function formatDateOnly(value: number | null): string {
+function formatDateOnly(value: number | null, language: 'en' | 'zh'): string {
   if (!value) return '—'
-  const d = new Date(value * 1000)
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${y}-${m}-${day}`
+  const date = new Date(value * 1000)
+  if (language === 'zh') {
+    const year = date.getFullYear()
+    const month = String(date.getMonth() + 1).padStart(2, '0')
+    const day = String(date.getDate()).padStart(2, '0')
+    return `${year}-${month}-${day}`
+  }
+  return englishDateOnlyFormatter.format(date)
 }
 
 function tokenOwnerPrimary(owner: AuthToken['owner']): string {
@@ -877,7 +880,7 @@ function AdminTableValueStack({
   )
 }
 
-function AdminUsersSortableHeader({
+function AdminUsersSortableHeader<Field extends string>({
   label,
   displayLabel,
   tooltipLabel,
@@ -889,10 +892,10 @@ function AdminUsersSortableHeader({
   label: string
   displayLabel?: string
   tooltipLabel?: string
-  field: AdminUsersSortField
-  activeField: AdminUsersSortField | null
+  field: Field
+  activeField: Field | null
   activeOrder: SortDirection | null
-  onToggle: (field: AdminUsersSortField) => void
+  onToggle: (field: Field) => void
 }): JSX.Element {
   const isActive = activeField === field
   const ariaSort = !isActive ? 'none' : activeOrder === 'asc' ? 'ascending' : 'descending'
@@ -1164,7 +1167,7 @@ function AdminDashboard(): JSX.Element {
   const loadingStateStrings = adminStrings.loadingStates
   const userConsoleHref = ADMIN_USER_CONSOLE_HREF
   const tokenStrings = adminStrings.tokens
-  const tokenLeaderboardStrings = adminStrings.tokenLeaderboard
+  const unboundTokenUsageStrings = adminStrings.unboundTokenUsage
   const quotaLabels = tokenStrings.quotaStates ?? {
     normal: 'Normal',
     hour: '1 hour limit',
@@ -1204,12 +1207,19 @@ function AdminDashboard(): JSX.Element {
   const [selectedTokenUngrouped, setSelectedTokenUngrouped] = useState(false)
   const [tokenGroupsExpanded, setTokenGroupsExpanded] = useState(false)
   const [tokenGroupsCollapsedOverflowing, setTokenGroupsCollapsedOverflowing] = useState(false)
-  const [tokenLeaderboard, setTokenLeaderboard] = useState<TokenUsageLeaderboardItem[]>([])
-  const [tokenLeaderboardLoadState, setTokenLeaderboardLoadState] = useState<QueryLoadState>('initial_loading')
-  const [tokenLeaderboardError, setTokenLeaderboardError] = useState<string | null>(null)
-  const [tokenLeaderboardPeriod, setTokenLeaderboardPeriod] = useState<TokenLeaderboardPeriod>('day')
-  const [tokenLeaderboardFocus, setTokenLeaderboardFocus] = useState<TokenLeaderboardFocus>('usage')
-  const [tokenLeaderboardNonce, setTokenLeaderboardNonce] = useState(0)
+  const [unboundTokenUsage, setUnboundTokenUsage] = useState<AdminUnboundTokenUsageSummary[]>([])
+  const [unboundTokenUsageTotal, setUnboundTokenUsageTotal] = useState(0)
+  const [unboundTokenUsagePage, setUnboundTokenUsagePage] = useState(() => getAdminUnboundTokenUsagePageFromLocation())
+  const [unboundTokenUsageQueryInput, setUnboundTokenUsageQueryInput] =
+    useState(() => getAdminUnboundTokenUsageQueryFromLocation())
+  const [unboundTokenUsageQuery, setUnboundTokenUsageQuery] =
+    useState(() => getAdminUnboundTokenUsageQueryFromLocation())
+  const [unboundTokenUsageSort, setUnboundTokenUsageSort] =
+    useState<AdminUnboundTokenUsageSortField | null>(() => getAdminUnboundTokenUsageSortFromLocation())
+  const [unboundTokenUsageSortOrder, setUnboundTokenUsageSortOrder] =
+    useState<SortDirection | null>(() => getAdminUnboundTokenUsageSortDirectionFromLocation())
+  const [unboundTokenUsageLoadState, setUnboundTokenUsageLoadState] = useState<QueryLoadState>('initial_loading')
+  const [unboundTokenUsageError, setUnboundTokenUsageError] = useState<string | null>(null)
   const [logs, setLogs] = useState<RequestLog[]>([])
   const [dashboardLogs, setDashboardLogs] = useState<RequestLog[]>([])
   const [logsTotal, setLogsTotal] = useState(0)
@@ -1293,12 +1303,12 @@ function AdminDashboard(): JSX.Element {
   const baseDataLoadedRef = useRef(false)
   const dashboardOverviewVersionRef = useRef(0)
   const dashboardSignalsVersionRef = useRef(0)
-  const tokenLeaderboardQueryKeyRef = useRef<string | null>(null)
-  const tokenLeaderboardNonceRef = useRef(0)
+  const unboundTokenUsageQueryKeyRef = useRef<string | null>(null)
   const requestsLoadedRef = useRef(false)
   const jobsLoadedRef = useRef(false)
   const keysLoadedRef = useRef(false)
   const usersLoadedRef = useRef(false)
+  const unboundTokenUsageLoadedRef = useRef(false)
   const keysQueryKeyRef = useRef<string | null>(null)
   const usersQueryKeyRef = useRef<string | null>(null)
   const baseDataAbortRef = useRef<AbortController | null>(null)
@@ -1306,6 +1316,7 @@ function AdminDashboard(): JSX.Element {
   const jobsAbortRef = useRef<AbortController | null>(null)
   const keysAbortRef = useRef<AbortController | null>(null)
   const usersAbortRef = useRef<AbortController | null>(null)
+  const unboundTokenUsageAbortRef = useRef<AbortController | null>(null)
   const forwardProxySettingsAbortRef = useRef<AbortController | null>(null)
   const forwardProxyStatsAbortRef = useRef<AbortController | null>(null)
   const forwardProxySettingsLoadedRef = useRef(false)
@@ -2169,7 +2180,7 @@ function AdminDashboard(): JSX.Element {
     routeRef.current = route
   }, [route])
 
-  const loadTokenLeaderboard = useCallback(
+  const loadUnboundTokenUsage = useCallback(
     async ({
       signal,
       reason = 'refresh',
@@ -2177,36 +2188,56 @@ function AdminDashboard(): JSX.Element {
       signal?: AbortSignal
       reason?: 'initial' | 'switch' | 'refresh'
     } = {}) => {
+      const request = beginManagedRequest(unboundTokenUsageAbortRef, signal)
       try {
-        setTokenLeaderboardLoadState(
+        setUnboundTokenUsageLoadState(
           reason === 'refresh'
-            ? getRefreshingLoadState(tokenLeaderboardQueryKeyRef.current != null)
-            : getBlockingLoadState(tokenLeaderboardQueryKeyRef.current != null),
+            ? getRefreshingLoadState(unboundTokenUsageQueryKeyRef.current != null)
+            : getBlockingLoadState(unboundTokenUsageQueryKeyRef.current != null),
         )
-        setTokenLeaderboardError(null)
+        setUnboundTokenUsageError(null)
         if (reason !== 'refresh') {
-          setTokenLeaderboard([])
+          setUnboundTokenUsage([])
+          setUnboundTokenUsageTotal(0)
         }
-        const items = await fetchTokenUsageLeaderboard(
-          tokenLeaderboardPeriod,
-          tokenLeaderboardFocus,
-          signal,
+        const paged = await fetchAdminUnboundTokenUsage(
+          unboundTokenUsagePage,
+          USERS_PER_PAGE,
+          unboundTokenUsageQuery,
+          unboundTokenUsageSort,
+          unboundTokenUsageSortOrder,
+          request.signal,
         )
-        if (signal?.aborted) return
-        const sorted = sortLeaderboard(items, tokenLeaderboardPeriod, tokenLeaderboardFocus).slice(0, 50)
-        setTokenLeaderboard(sorted)
-        setTokenLeaderboardLoadState('ready')
-        tokenLeaderboardQueryKeyRef.current = `${tokenLeaderboardPeriod}:${tokenLeaderboardFocus}`
-        tokenLeaderboardNonceRef.current = tokenLeaderboardNonce
+        if (request.signal.aborted) return
+        setUnboundTokenUsage(paged.items)
+        setUnboundTokenUsageTotal(paged.total)
+        setUnboundTokenUsageLoadState('ready')
+        unboundTokenUsageLoadedRef.current = true
+        unboundTokenUsageQueryKeyRef.current = [
+          unboundTokenUsagePage,
+          unboundTokenUsageQuery,
+          unboundTokenUsageSort ?? '',
+          unboundTokenUsageSortOrder ?? '',
+        ].join(':')
       } catch (err) {
-        if (signal?.aborted) return
+        if (request.signal.aborted) return
         console.error(err)
-        setTokenLeaderboard([])
-        setTokenLeaderboardError(err instanceof Error ? err.message : tokenLeaderboardStrings.error)
-        setTokenLeaderboardLoadState('error')
+        setUnboundTokenUsage([])
+        setUnboundTokenUsageTotal(0)
+        setUnboundTokenUsageError(err instanceof Error ? err.message : unboundTokenUsageStrings.error)
+        setUnboundTokenUsageLoadState('error')
+      } finally {
+        request.cleanup()
       }
-  },
-    [tokenLeaderboardFocus, tokenLeaderboardNonce, tokenLeaderboardPeriod, tokenLeaderboardStrings.error],
+    },
+    [
+      beginManagedRequest,
+      unboundTokenUsagePage,
+      unboundTokenUsageQuery,
+      unboundTokenUsageSort,
+      unboundTokenUsageSortOrder,
+      unboundTokenUsageStrings.error,
+    ],
   )
 
   const loadForwardProxySettingsData = useCallback(
@@ -2629,16 +2660,35 @@ function AdminDashboard(): JSX.Element {
   }, [route, loadDashboardOverview])
 
   useEffect(() => {
+    if (route.name !== 'unbound-token-usage') {
+      return
+    }
     const controller = new AbortController()
-    const queryKey = `${tokenLeaderboardPeriod}:${tokenLeaderboardFocus}`
-    const isRefreshOnly =
-      tokenLeaderboardQueryKeyRef.current === queryKey && tokenLeaderboardNonceRef.current !== tokenLeaderboardNonce
-    void loadTokenLeaderboard({
+    const nextQueryKey = [
+      unboundTokenUsagePage,
+      unboundTokenUsageQuery,
+      unboundTokenUsageSort ?? '',
+      unboundTokenUsageSortOrder ?? '',
+    ].join(':')
+    const reason =
+      unboundTokenUsageLoadedRef.current && unboundTokenUsageQueryKeyRef.current === nextQueryKey
+        ? 'refresh'
+        : unboundTokenUsageLoadedRef.current
+          ? 'switch'
+          : 'initial'
+    void loadUnboundTokenUsage({
       signal: controller.signal,
-      reason: isRefreshOnly ? 'refresh' : tokenLeaderboardQueryKeyRef.current ? 'switch' : 'initial',
+      reason,
     })
     return () => controller.abort()
-  }, [loadTokenLeaderboard, tokenLeaderboardFocus, tokenLeaderboardNonce, tokenLeaderboardPeriod])
+  }, [
+    loadUnboundTokenUsage,
+    route,
+    unboundTokenUsagePage,
+    unboundTokenUsageQuery,
+    unboundTokenUsageSort,
+    unboundTokenUsageSortOrder,
+  ])
 
   useEffect(() => {
     if (!(route.name === 'module' && route.module === 'proxy-settings')) {
@@ -3116,6 +3166,19 @@ function AdminDashboard(): JSX.Element {
   }, [isUserUsageRoute, isUsersCollectionRoute, isUsersModuleRoute, route])
 
   useEffect(() => {
+    if (route.name !== 'unbound-token-usage') return
+    const locationQuery = getAdminUnboundTokenUsageQueryFromLocation()
+    const locationPage = getAdminUnboundTokenUsagePageFromLocation()
+    const locationSort = getAdminUnboundTokenUsageSortFromLocation()
+    const locationSortOrder = getAdminUnboundTokenUsageSortDirectionFromLocation()
+    setUnboundTokenUsagePage((previous) => (previous === locationPage ? previous : locationPage))
+    setUnboundTokenUsageQueryInput((previous) => (previous === locationQuery ? previous : locationQuery))
+    setUnboundTokenUsageQuery((previous) => (previous === locationQuery ? previous : locationQuery))
+    setUnboundTokenUsageSort((previous) => (previous === locationSort ? previous : locationSort))
+    setUnboundTokenUsageSortOrder((previous) => (previous === locationSortOrder ? previous : locationSortOrder))
+  }, [route])
+
+  useEffect(() => {
     if (!(route.name === 'module' && route.module === 'keys')) return
     const locationPage = getAdminKeysPageFromLocation()
     const locationPerPage = getAdminKeysPerPageFromLocation()
@@ -3216,6 +3279,9 @@ function AdminDashboard(): JSX.Element {
         if (route.name === 'module' && route.module === 'dashboard') {
           tasks.push(loadDashboardOverview(controller.signal))
         }
+        if (route.name === 'unbound-token-usage') {
+          tasks.push(loadUnboundTokenUsage({ signal: controller.signal, reason: 'refresh' }))
+        }
         void Promise.all(tasks).finally(() => controller.abort())
       }
 
@@ -3231,7 +3297,7 @@ function AdminDashboard(): JSX.Element {
         pollingTimerRef.current = null
       }
     }
-  }, [sseConnected, loadData, loadDashboardOverview, route])
+  }, [sseConnected, loadData, loadDashboardOverview, loadUnboundTokenUsage, route])
 
   useEffect(() => {
     if (!(route.name === 'module' && route.module === 'dashboard') || !sseConnected) {
@@ -3421,11 +3487,45 @@ function AdminDashboard(): JSX.Element {
   )
 
   const navigateToken = useCallback(
-    (id: string) => {
+    (id: string, options?: { preserveUnboundUsageContext?: boolean }) => {
+      if (options?.preserveUnboundUsageContext) {
+        navigateToPath(
+          tokenDetailPath(
+            id,
+            unboundTokenUsageQuery,
+            unboundTokenUsagePage,
+            unboundTokenUsageSort,
+            unboundTokenUsageSortOrder,
+            'unbound-usage',
+          ),
+        )
+        return
+      }
       navigateToPath(tokenDetailPath(id))
     },
-    [navigateToPath],
+    [
+      navigateToPath,
+      unboundTokenUsagePage,
+      unboundTokenUsageQuery,
+      unboundTokenUsageSort,
+      unboundTokenUsageSortOrder,
+    ],
   )
+
+  const navigateBackFromTokenDetail = useCallback(() => {
+    if (getAdminTokensCollectionFromLocation() === 'unbound-usage') {
+      navigateToPath(
+        unboundTokenUsagePath(
+          getAdminUnboundTokenUsageQueryFromLocation(),
+          getAdminUnboundTokenUsagePageFromLocation(),
+          getAdminUnboundTokenUsageSortFromLocation(),
+          getAdminUnboundTokenUsageSortDirectionFromLocation(),
+        ),
+      )
+      return
+    }
+    navigateModule('tokens')
+  }, [navigateModule, navigateToPath])
 
   const openRequestKeyDrawer = useCallback((id: string) => {
     setRequestEntityDrawer({ kind: 'key', id })
@@ -3496,6 +3596,35 @@ function AdminDashboard(): JSX.Element {
       navigateToPath(buildUsersCollectionPath(normalized, normalizedTagId, normalizedPage, normalizedSort, normalizedOrder))
     },
     [buildUsersCollectionPath, navigateToPath, usersSort, usersSortOrder],
+  )
+
+  const navigateUnboundTokenUsageSearch = useCallback(
+    (
+      query: string,
+      options?: {
+        page?: number | null
+        sort?: AdminUnboundTokenUsageSortField | null
+        order?: SortDirection | null
+      },
+    ) => {
+      const normalized = query.trim()
+      const normalizedPage = options?.page != null ? Math.max(1, options.page) : 1
+      const hasExplicitSort = options != null && Object.prototype.hasOwnProperty.call(options, 'sort')
+      const hasExplicitOrder = options != null && Object.prototype.hasOwnProperty.call(options, 'order')
+      const normalizedSort = hasExplicitSort ? options?.sort ?? null : unboundTokenUsageSort
+      const normalizedOrder = normalizedSort
+        ? hasExplicitOrder
+          ? options?.order ?? ADMIN_UNBOUND_TOKEN_USAGE_DEFAULT_SORT_ORDER
+          : unboundTokenUsageSortOrder ?? ADMIN_UNBOUND_TOKEN_USAGE_DEFAULT_SORT_ORDER
+        : null
+      setUnboundTokenUsagePage(normalizedPage)
+      setUnboundTokenUsageQueryInput(normalized)
+      setUnboundTokenUsageQuery(normalized)
+      setUnboundTokenUsageSort(normalizedSort)
+      setUnboundTokenUsageSortOrder(normalizedOrder)
+      navigateToPath(unboundTokenUsagePath(normalized, normalizedPage, normalizedSort, normalizedOrder))
+    },
+    [navigateToPath, unboundTokenUsageSort, unboundTokenUsageSortOrder],
   )
 
   const navigateKeysList = useCallback(
@@ -3616,15 +3745,17 @@ function AdminDashboard(): JSX.Element {
     [navigateToPath, tagCatalog],
   )
 
-  const navigateTokenLeaderboard = useCallback(() => {
-    navigateToPath(tokenLeaderboardPath())
+  const navigateUnboundTokenUsage = useCallback(() => {
+    navigateToPath(unboundTokenUsagePath())
   }, [navigateToPath])
 
   const handleManualRefresh = () => {
     const controller = new AbortController()
     setLoading(true)
-    setTokenLeaderboardNonce((value) => value + 1)
     const tasks: Array<Promise<unknown>> = [loadData({ signal: controller.signal, reason: 'refresh', showGlobalLoading: true })]
+    if (route.name === 'unbound-token-usage') {
+      tasks.push(loadUnboundTokenUsage({ signal: controller.signal, reason: 'refresh' }))
+    }
     if (route.name === 'module' && route.module === 'requests') {
       const request = beginManagedRequest(requestsAbortRef, controller.signal)
       setRequestsLoadState(getRefreshingLoadState(requestsLoadedRef.current))
@@ -4263,8 +4394,12 @@ function AdminDashboard(): JSX.Element {
   const usersRefreshing = isRefreshingLoadState(usersLoadState)
   const effectiveUsersSort = usersSort ?? ADMIN_USERS_DEFAULT_SORT_FIELD
   const effectiveUsersSortOrder = usersSortOrder ?? ADMIN_USERS_DEFAULT_SORT_ORDER
-  const tokenLeaderboardBlocking = isBlockingLoadState(tokenLeaderboardLoadState)
-  const tokenLeaderboardRefreshing = isRefreshingLoadState(tokenLeaderboardLoadState)
+  const unboundTokenUsageBlocking = isBlockingLoadState(unboundTokenUsageLoadState)
+  const unboundTokenUsageRefreshing = isRefreshingLoadState(unboundTokenUsageLoadState)
+  const effectiveUnboundTokenUsageSort =
+    unboundTokenUsageSort ?? ADMIN_UNBOUND_TOKEN_USAGE_DEFAULT_SORT_FIELD
+  const effectiveUnboundTokenUsageSortOrder =
+    unboundTokenUsageSortOrder ?? ADMIN_UNBOUND_TOKEN_USAGE_DEFAULT_SORT_ORDER
   const forwardProxySettingsBlocking = isBlockingLoadState(forwardProxySettingsLoadState)
   const forwardProxyStatsBlocking = isBlockingLoadState(forwardProxyStatsLoadState)
   const activeModuleBlocking =
@@ -4274,7 +4409,7 @@ function AdminDashboard(): JSX.Element {
     || (isUsersCollectionRoute || route.name === 'user') && usersBlocking
     || (route.name === 'module' && route.module === 'proxy-settings'
       && (forwardProxySettingsBlocking || forwardProxyStatsBlocking))
-    || (route.name === 'token-usage' && tokenLeaderboardBlocking)
+    || (route.name === 'unbound-token-usage' && unboundTokenUsageBlocking)
 
   const displayName = profile?.displayName ?? null
 
@@ -4716,6 +4851,10 @@ function AdminDashboard(): JSX.Element {
 
   const hasLogsPagination = logsTotal > logsPerPage
   const usersTotalPages = useMemo(() => Math.max(1, Math.ceil(usersTotal / USERS_PER_PAGE)), [usersTotal])
+  const unboundTokenUsageTotalPages = useMemo(
+    () => Math.max(1, Math.ceil(unboundTokenUsageTotal / USERS_PER_PAGE)),
+    [unboundTokenUsageTotal],
+  )
 
   const goPrevLogsPage = () => {
     setLogsPage((p) => Math.max(1, p - 1))
@@ -4770,6 +4909,63 @@ function AdminDashboard(): JSX.Element {
       navigateUsersSearch(usersQuery, { tagId: usersTagFilterId, page: 1, sort: nextSort, order: nextOrder })
     },
     [effectiveUsersSort, effectiveUsersSortOrder, navigateUsersSearch, usersQuery, usersTagFilterId],
+  )
+
+  const goPrevUnboundTokenUsagePage = () => {
+    navigateUnboundTokenUsageSearch(unboundTokenUsageQuery, {
+      page: unboundTokenUsagePage - 1,
+      sort: unboundTokenUsageSort,
+      order: unboundTokenUsageSortOrder,
+    })
+  }
+
+  const goNextUnboundTokenUsagePage = () => {
+    navigateUnboundTokenUsageSearch(unboundTokenUsageQuery, {
+      page: unboundTokenUsagePage + 1,
+      sort: unboundTokenUsageSort,
+      order: unboundTokenUsageSortOrder,
+    })
+  }
+
+  const applyUnboundTokenUsageSearch = () => {
+    navigateUnboundTokenUsageSearch(unboundTokenUsageQueryInput, {
+      page: 1,
+      sort: unboundTokenUsageSort,
+      order: unboundTokenUsageSortOrder,
+    })
+  }
+
+  const resetUnboundTokenUsageSearch = () => {
+    navigateUnboundTokenUsageSearch('', {
+      page: 1,
+      sort: unboundTokenUsageSort,
+      order: unboundTokenUsageSortOrder,
+    })
+  }
+
+  const toggleUnboundTokenUsageSort = useCallback(
+    (field: AdminUnboundTokenUsageSortField) => {
+      const isActive = effectiveUnboundTokenUsageSort === field
+      let nextSort: AdminUnboundTokenUsageSortField | null = field
+      let nextOrder: SortDirection | null = ADMIN_UNBOUND_TOKEN_USAGE_DEFAULT_SORT_ORDER
+      if (isActive && effectiveUnboundTokenUsageSortOrder === 'desc') {
+        nextOrder = 'asc'
+      } else if (isActive && effectiveUnboundTokenUsageSortOrder === 'asc') {
+        nextSort = null
+        nextOrder = null
+      }
+      navigateUnboundTokenUsageSearch(unboundTokenUsageQuery, {
+        page: 1,
+        sort: nextSort,
+        order: nextOrder,
+      })
+    },
+    [
+      effectiveUnboundTokenUsageSort,
+      effectiveUnboundTokenUsageSortOrder,
+      navigateUnboundTokenUsageSearch,
+      unboundTokenUsageQuery,
+    ],
   )
 
   const goPrevKeysPage = () => {
@@ -5429,10 +5625,6 @@ function AdminDashboard(): JSX.Element {
     setPendingDisableId(null)
   }
 
-  const tokenLeaderboardView = useMemo(() => {
-    if (!tokenLeaderboard || tokenLeaderboard.length === 0) return []
-    return sortLeaderboard(tokenLeaderboard, tokenLeaderboardPeriod, tokenLeaderboardFocus).slice(0, 50)
-  }, [tokenLeaderboard, tokenLeaderboardPeriod, tokenLeaderboardFocus])
   const navItems: AdminNavItem[] = [
     { target: 'dashboard', label: adminStrings.nav.dashboard, icon: <Icon icon="mdi:view-dashboard-outline" width={18} height={18} /> },
     { target: 'user-usage', label: adminStrings.nav.usage, icon: <ChartColumnIncreasing size={18} strokeWidth={2.2} /> },
@@ -5924,7 +6116,7 @@ function AdminDashboard(): JSX.Element {
         <TokenDetail
           key={route.id}
           id={route.id}
-          onBack={() => navigateModule('tokens')}
+          onBack={navigateBackFromTokenDetail}
           onOpenKey={navigateKey}
           onOpenUser={navigateUser}
           onSecretRotated={handleTokenSecretRotated}
@@ -6501,7 +6693,7 @@ function AdminDashboard(): JSX.Element {
           </div>
 
           <AdminTableShell
-            className="jobs-table-wrapper"
+            className="jobs-table-wrapper admin-users-usage-table-wrapper"
             tableClassName="jobs-table admin-users-table admin-users-usage-table"
             loadState={usersLoadState}
             loadingLabel={usersRefreshing ? loadingStateStrings.refreshing : usersStrings.empty.loading}
@@ -6712,36 +6904,10 @@ function AdminDashboard(): JSX.Element {
     )
   }
 
-  if (route.name === 'token-usage') {
-    const primaryMetric: MetricKey = tokenLeaderboardFocus
-
-    const renderPeriodCell = (
-      item: TokenUsageLeaderboardItem,
-      period: 'day' | 'month' | 'all',
-      primary: MetricKey,
-    ) => {
-      const { values } = pickPrimaryForPeriod(item, period, primary)
-      const secondaryKeys: MetricKey[] = ['usage', 'errors', 'other'].filter((k) => k !== primary) as MetricKey[]
-      const label = (key: MetricKey) =>
-        key === 'usage'
-          ? tokenLeaderboardStrings.focus.usage
-          : key === 'errors'
-            ? tokenLeaderboardStrings.table.errors
-            : tokenLeaderboardStrings.table.other
-
-      return (
-        <td>
-          <div className="token-leaderboard-usage">{formatNumber(values[primary])}</div>
-          <div className="token-leaderboard-sub">
-            {secondaryKeys.map((key) => (
-              <span key={key}>
-                {label(key)}: {formatNumber(values[key])}
-              </span>
-            ))}
-          </div>
-        </td>
-      )
-    }
+  if (route.name === 'unbound-token-usage') {
+    const usageDailyRateLabel = language === 'zh' ? unboundTokenUsageStrings.table.dailySuccessRate : 'Daily'
+    const usageMonthlyRateLabel =
+      language === 'zh' ? unboundTokenUsageStrings.table.monthlySuccessRate : 'Monthly'
 
     return (
       <AdminShell
@@ -6750,177 +6916,272 @@ function AdminDashboard(): JSX.Element {
         skipToContentLabel={adminStrings.accessibility.skipToContent}
         onSelectItem={navigateModule}
       >
-        <TokenUsageHeader
-          title={tokenLeaderboardStrings.title}
-          subtitle={tokenLeaderboardStrings.description}
-          visualPreset="accent"
-          backLabel={tokenLeaderboardStrings.back}
-          refreshLabel={headerStrings.refreshNow}
-          refreshingLabel={headerStrings.refreshing}
-          userConsoleLabel={headerStrings.returnToConsole}
-          userConsoleHref={userConsoleHref}
-          isRefreshing={tokenLeaderboardRefreshing}
-          period={tokenLeaderboardPeriod}
-          focus={tokenLeaderboardFocus}
-          periodOptions={[
-            { value: 'day', label: tokenLeaderboardStrings.period.day },
-            { value: 'month', label: tokenLeaderboardStrings.period.month },
-            { value: 'all', label: tokenLeaderboardStrings.period.all },
-          ]}
-          focusOptions={[
-            { value: 'usage', label: tokenLeaderboardStrings.focus.usage },
-            { value: 'errors', label: tokenLeaderboardStrings.focus.errors },
-            { value: 'other', label: tokenLeaderboardStrings.focus.other },
-          ]}
-          controlsDisabled={tokenLeaderboardBlocking}
-          onBack={() => navigateModule('tokens')}
-          onRefresh={() => setTokenLeaderboardNonce((x) => x + 1)}
-          onPeriodChange={setTokenLeaderboardPeriod}
-          onFocusChange={setTokenLeaderboardFocus}
-        />
-        <section className="surface panel token-leaderboard-panel">
-          <AdminLoadingRegion
-            className="table-wrapper jobs-table-wrapper token-leaderboard-wrapper admin-responsive-up"
-            loadState={tokenLeaderboardLoadState}
-            loadingLabel={tokenLeaderboardRefreshing ? loadingStateStrings.refreshing : tokenLeaderboardStrings.empty.loading}
-            minHeight={340}
-          >
-          {tokenLeaderboardView.length === 0 ? (
-            <div className="empty-state alert">
-              {tokenLeaderboardStrings.empty.none}
+        <section className="surface panel">
+          <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
+            <div style={{ flex: '1 1 340px', minWidth: 260 }}>
+              <h2>{unboundTokenUsageStrings.title}</h2>
+              <p className="panel-description">{unboundTokenUsageStrings.description}</p>
             </div>
-          ) : (
-            <Table className="jobs-table token-leaderboard-table">
-              <thead>
+            <div className="admin-inline-actions" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+              <Button type="button" variant="outline" onClick={() => navigateModule('tokens')}>
+                {unboundTokenUsageStrings.back}
+              </Button>
+              <div className="users-search-controls">
+                <Input
+                  type="text"
+                  name="unbound-token-usage-search"
+                  className="users-search-input"
+                  placeholder={unboundTokenUsageStrings.searchPlaceholder}
+                  value={unboundTokenUsageQueryInput}
+                  disabled={unboundTokenUsageBlocking}
+                  onChange={(event) => setUnboundTokenUsageQueryInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault()
+                      applyUnboundTokenUsageSearch()
+                    }
+                  }}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={applyUnboundTokenUsageSearch}
+                  disabled={unboundTokenUsageBlocking}
+                >
+                  {usersStrings.search}
+                </Button>
+                {(unboundTokenUsageQueryInput.length > 0 || unboundTokenUsageQuery.length > 0) && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={resetUnboundTokenUsageSearch}
+                    disabled={unboundTokenUsageBlocking}
+                  >
+                    {usersStrings.clear}
+                  </Button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <AdminTableShell
+            className="jobs-table-wrapper admin-users-usage-table-wrapper"
+            tableClassName="jobs-table admin-users-table admin-users-usage-table"
+            loadState={unboundTokenUsageLoadState}
+            loadingLabel={
+              unboundTokenUsageRefreshing
+                ? loadingStateStrings.refreshing
+                : unboundTokenUsageStrings.empty.loading
+            }
+            errorLabel={unboundTokenUsageError ?? loadingStateStrings.error}
+            minHeight={360}
+          >
+            {unboundTokenUsage.length === 0 ? (
+              <tbody>
                 <tr>
-                  <th>{tokenLeaderboardStrings.table.token}</th>
-                  <th>{tokenLeaderboardStrings.table.group}</th>
-                  <th>{tokenLeaderboardStrings.table.hourly}</th>
-                  <th>{tokenLeaderboardStrings.table.hourlyAny}</th>
-                  <th>{tokenLeaderboardStrings.table.daily}</th>
-                    <th>{tokenLeaderboardStrings.table.today}</th>
-                    <th>{tokenLeaderboardStrings.table.month}</th>
-                    <th>{tokenLeaderboardStrings.table.all}</th>
-                    <th>{tokenLeaderboardStrings.table.lastUsed}</th>
+                  <td colSpan={9}>
+                    <div className="empty-state alert">{unboundTokenUsageStrings.empty.none}</div>
+                  </td>
+                </tr>
+              </tbody>
+            ) : (
+              <>
+                <thead>
+                  <tr>
+                    <th>{unboundTokenUsageStrings.table.identity}</th>
+                    <th>{unboundTokenUsageStrings.table.status}</th>
+                    <AdminUsersSortableHeader
+                      label={unboundTokenUsageStrings.table.hourlyAny}
+                      field="hourlyAnyUsed"
+                      activeField={effectiveUnboundTokenUsageSort}
+                      activeOrder={effectiveUnboundTokenUsageSortOrder}
+                      onToggle={toggleUnboundTokenUsageSort}
+                    />
+                    <AdminUsersSortableHeader
+                      label={unboundTokenUsageStrings.table.hourly}
+                      field="quotaHourlyUsed"
+                      activeField={effectiveUnboundTokenUsageSort}
+                      activeOrder={effectiveUnboundTokenUsageSortOrder}
+                      onToggle={toggleUnboundTokenUsageSort}
+                    />
+                    <AdminUsersSortableHeader
+                      label={unboundTokenUsageStrings.table.daily}
+                      field="quotaDailyUsed"
+                      activeField={effectiveUnboundTokenUsageSort}
+                      activeOrder={effectiveUnboundTokenUsageSortOrder}
+                      onToggle={toggleUnboundTokenUsageSort}
+                    />
+                    <AdminUsersSortableHeader
+                      label={unboundTokenUsageStrings.table.monthly}
+                      field="quotaMonthlyUsed"
+                      activeField={effectiveUnboundTokenUsageSort}
+                      activeOrder={effectiveUnboundTokenUsageSortOrder}
+                      onToggle={toggleUnboundTokenUsageSort}
+                    />
+                    <AdminUsersSortableHeader
+                      label={unboundTokenUsageStrings.table.dailySuccessRate}
+                      displayLabel={usageDailyRateLabel}
+                      field="dailySuccessRate"
+                      activeField={effectiveUnboundTokenUsageSort}
+                      activeOrder={effectiveUnboundTokenUsageSortOrder}
+                      onToggle={toggleUnboundTokenUsageSort}
+                    />
+                    <AdminUsersSortableHeader
+                      label={unboundTokenUsageStrings.table.monthlySuccessRate}
+                      displayLabel={usageMonthlyRateLabel}
+                      field="monthlySuccessRate"
+                      activeField={effectiveUnboundTokenUsageSort}
+                      activeOrder={effectiveUnboundTokenUsageSortOrder}
+                      onToggle={toggleUnboundTokenUsageSort}
+                    />
+                    <AdminUsersSortableHeader
+                      label={unboundTokenUsageStrings.table.lastUsed}
+                      field="lastUsedAt"
+                      activeField={effectiveUnboundTokenUsageSort}
+                      activeOrder={effectiveUnboundTokenUsageSortOrder}
+                      onToggle={toggleUnboundTokenUsageSort}
+                    />
                   </tr>
                 </thead>
                 <tbody>
-                  {tokenLeaderboardView.map((item) => (
-                    <tr key={item.id}>
-                      <td>
-                        <div className="token-id-cell">
-                          <button type="button" className="link-button token-id-link" onClick={() => navigateToken(item.id)}>
-                            <code className="token-id-code">{item.id}</code>
-                          </button>
-                          <span
-                            className="token-status-slot"
-                            aria-hidden={item.enabled ? true : undefined}
-                            title={item.enabled ? undefined : tokenStrings.statusBadges.disabled}
-                          >
-                            {!item.enabled && (
-                              <Icon
-                                className="token-status-icon"
-                                icon="mdi:pause-circle-outline"
-                                width={14}
-                                height={14}
-                                aria-label={tokenStrings.statusBadges.disabled}
-                              />
-                            )}
-                          </span>
+                  {unboundTokenUsage.map((item) => (
+                    <tr key={item.tokenId}>
+                      <td className="admin-users-identity-cell">
+                        <button
+                          type="button"
+                          className="link-button admin-users-identity-button"
+                          aria-label={keyStrings.actions.details}
+                          onClick={() => navigateToken(item.tokenId, { preserveUnboundUsageContext: true })}
+                        >
+                          <strong>{item.tokenId}</strong>
+                        </button>
+                        <div className="panel-description admin-users-identity-meta">
+                          {formatUnboundTokenIdentityMeta(item.note, item.group, tokenStrings.groups.label)}
                         </div>
                       </td>
-                      <td>{item.group && item.group.trim().length > 0 ? item.group : '—'}</td>
-                  <td>
-                    <div className="token-leaderboard-usage">{formatNumber(item.quota_hourly_used)}</div>
-                    <div className="token-leaderboard-sub">/ {formatNumber(item.quota_hourly_limit)}</div>
-                  </td>
-                  <td>
-                    <div className="token-leaderboard-usage">{formatNumber(item.hourly_any_used)}</div>
-                    <div className="token-leaderboard-sub">/ {formatNumber(item.hourly_any_limit)}</div>
-                  </td>
-                  <td>
-                    <div className="token-leaderboard-usage">{formatNumber(item.quota_daily_used)}</div>
-                    <div className="token-leaderboard-sub">/ {formatNumber(item.quota_daily_limit)}</div>
-                  </td>
-                      {renderPeriodCell(item, 'day', primaryMetric)}
-                      {renderPeriodCell(item, 'month', primaryMetric)}
-                      {renderPeriodCell(item, 'all', primaryMetric)}
                       <td>
-                        <div className="token-last-used">
-                          <span className="token-last-date">{formatDateOnly(item.last_used_at)}</span>
-                          <span className="token-last-time">{formatClockTime(item.last_used_at)}</span>
-                        </div>
+                        <StatusBadge tone={item.enabled ? 'success' : 'neutral'}>
+                          {item.enabled ? usersStrings.status.enabled : usersStrings.status.disabled}
+                        </StatusBadge>
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <AdminTableValueStack {...formatQuotaStackValue(item.hourlyAnyUsed, item.hourlyAnyLimit)} />
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <AdminTableValueStack {...formatQuotaStackValue(item.quotaHourlyUsed, item.quotaHourlyLimit)} />
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <AdminTableValueStack {...formatQuotaStackValue(item.quotaDailyUsed, item.quotaDailyLimit)} />
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <AdminTableValueStack {...formatQuotaStackValue(item.quotaMonthlyUsed, item.quotaMonthlyLimit)} />
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <AdminTableValueStack {...formatSuccessRateStackValue(item.dailySuccess, item.dailyFailure, language)} />
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <AdminTableValueStack {...formatSuccessRateStackValue(item.monthlySuccess, item.monthlyFailure, language)} />
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <AdminTableValueStack {...formatStackedTimestamp(item.lastUsedAt, language)} />
                       </td>
                     </tr>
                   ))}
                 </tbody>
-              </Table>
+              </>
             )}
-          </AdminLoadingRegion>
+          </AdminTableShell>
+
           <AdminLoadingRegion
             className="admin-mobile-list admin-responsive-down"
-            loadState={tokenLeaderboardLoadState}
-            loadingLabel={tokenLeaderboardRefreshing ? loadingStateStrings.refreshing : tokenLeaderboardStrings.empty.loading}
+            loadState={unboundTokenUsageLoadState}
+            loadingLabel={
+              unboundTokenUsageRefreshing
+                ? loadingStateStrings.refreshing
+                : unboundTokenUsageStrings.empty.loading
+            }
+            errorLabel={unboundTokenUsageError ?? loadingStateStrings.error}
             minHeight={260}
           >
-            {tokenLeaderboardView.length === 0 ? (
-              <div className="empty-state alert">
-                {tokenLeaderboardStrings.empty.none}
-              </div>
+            {unboundTokenUsage.length === 0 ? (
+              <div className="empty-state alert">{unboundTokenUsageStrings.empty.none}</div>
             ) : (
-              tokenLeaderboardView.map((item) => (
-                <article key={item.id} className="admin-mobile-card">
-                  <div className="admin-mobile-kv">
-                    <span>{tokenLeaderboardStrings.table.token}</span>
-                    <strong>
-                      <code>{item.id}</code>
-                    </strong>
+              unboundTokenUsage.map((item) => (
+                <article key={item.tokenId} className="admin-mobile-card">
+                  <div className="admin-mobile-identity-block">
+                    <div className="admin-mobile-identity-row">
+                      <span className="admin-mobile-identity-label">{unboundTokenUsageStrings.table.identity}</span>
+                      <button
+                        type="button"
+                        className="link-button admin-users-mobile-link"
+                        aria-label={keyStrings.actions.details}
+                        onClick={() => navigateToken(item.tokenId, { preserveUnboundUsageContext: true })}
+                      >
+                        <strong>{item.tokenId}</strong>
+                      </button>
+                    </div>
+                    <div className="panel-description admin-mobile-identity-meta">
+                      {formatUnboundTokenIdentityMeta(item.note, item.group, tokenStrings.groups.label)}
+                    </div>
                   </div>
                   <div className="admin-mobile-kv">
-                    <span>{tokenLeaderboardStrings.table.group}</span>
-                    <strong>{item.group && item.group.trim().length > 0 ? item.group : '—'}</strong>
+                    <span>{unboundTokenUsageStrings.table.status}</span>
+                    <StatusBadge tone={item.enabled ? 'success' : 'neutral'}>
+                      {item.enabled ? usersStrings.status.enabled : usersStrings.status.disabled}
+                    </StatusBadge>
                   </div>
                   <div className="admin-mobile-kv">
-                    <span>{tokenLeaderboardStrings.table.hourly}</span>
-                    <strong>{`${formatNumber(item.quota_hourly_used)} / ${formatNumber(item.quota_hourly_limit)}`}</strong>
+                    <span>{unboundTokenUsageStrings.table.hourlyAny}</span>
+                    <strong>{formatQuotaUsagePair(item.hourlyAnyUsed, item.hourlyAnyLimit)}</strong>
                   </div>
                   <div className="admin-mobile-kv">
-                    <span>{tokenLeaderboardStrings.table.hourlyAny}</span>
-                    <strong>{`${formatNumber(item.hourly_any_used)} / ${formatNumber(item.hourly_any_limit)}`}</strong>
+                    <span>{unboundTokenUsageStrings.table.hourly}</span>
+                    <strong>{formatQuotaUsagePair(item.quotaHourlyUsed, item.quotaHourlyLimit)}</strong>
                   </div>
                   <div className="admin-mobile-kv">
-                    <span>{tokenLeaderboardStrings.table.daily}</span>
-                    <strong>{`${formatNumber(item.quota_daily_used)} / ${formatNumber(item.quota_daily_limit)}`}</strong>
+                    <span>{unboundTokenUsageStrings.table.daily}</span>
+                    <strong>{formatQuotaUsagePair(item.quotaDailyUsed, item.quotaDailyLimit)}</strong>
                   </div>
                   <div className="admin-mobile-kv">
-                    <span>{tokenLeaderboardStrings.table.today}</span>
-                    <strong>{formatNumber(leaderboardPrimaryValue(item, 'day', primaryMetric))}</strong>
+                    <span>{unboundTokenUsageStrings.table.monthly}</span>
+                    <strong>{formatQuotaUsagePair(item.quotaMonthlyUsed, item.quotaMonthlyLimit)}</strong>
                   </div>
                   <div className="admin-mobile-kv">
-                    <span>{tokenLeaderboardStrings.table.month}</span>
-                    <strong>{formatNumber(leaderboardPrimaryValue(item, 'month', primaryMetric))}</strong>
+                    <span>{unboundTokenUsageStrings.table.dailySuccessRate}</span>
+                    <strong>{formatCompactSuccessRateValue(item.dailySuccess, item.dailyFailure, language)}</strong>
                   </div>
                   <div className="admin-mobile-kv">
-                    <span>{tokenLeaderboardStrings.table.all}</span>
-                    <strong>{formatNumber(leaderboardPrimaryValue(item, 'all', primaryMetric))}</strong>
+                    <span>{unboundTokenUsageStrings.table.monthlySuccessRate}</span>
+                    <strong>{formatCompactSuccessRateValue(item.monthlySuccess, item.monthlyFailure, language)}</strong>
                   </div>
                   <div className="admin-mobile-kv">
-                    <span>{tokenLeaderboardStrings.table.lastUsed}</span>
-                    <strong>{`${formatDateOnly(item.last_used_at)} ${formatClockTime(item.last_used_at)}`}</strong>
-                  </div>
-                  <div className="admin-mobile-actions">
-<Button type="button" variant="outline" size="sm" onClick={() => navigateToken(item.id)}>
-  {keyStrings.actions.details}
-</Button>
+                    <span>{unboundTokenUsageStrings.table.lastUsed}</span>
+                    <strong>{formatTimestamp(item.lastUsedAt)}</strong>
                   </div>
                 </article>
               ))
             )}
           </AdminLoadingRegion>
-          {tokenLeaderboardError && tokenLeaderboardView.length === 0 && (
-            <div className="surface error-banner" style={{ marginTop: 12 }}>
-              {tokenLeaderboardError}
-            </div>
+
+          {unboundTokenUsageTotal > USERS_PER_PAGE && (
+            <AdminTablePagination
+              page={unboundTokenUsagePage}
+              totalPages={unboundTokenUsageTotalPages}
+              pageSummary={
+                <span className="panel-description">
+                  {usersStrings.pagination
+                    .replace('{page}', String(unboundTokenUsagePage))
+                    .replace('{total}', String(unboundTokenUsageTotalPages))}
+                </span>
+              }
+              previousLabel={tokenStrings.pagination.prev}
+              nextLabel={tokenStrings.pagination.next}
+              previousDisabled={unboundTokenUsagePage <= 1}
+              nextDisabled={unboundTokenUsagePage >= unboundTokenUsageTotalPages}
+              disabled={unboundTokenUsageBlocking}
+              onPrevious={goPrevUnboundTokenUsagePage}
+              onNext={goNextUnboundTokenUsagePage}
+            />
           )}
         </section>
       </AdminShell>
@@ -7119,7 +7380,7 @@ function AdminDashboard(): JSX.Element {
                     size="icon"
                     className="h-8 w-8 rounded-full p-0 shadow-none"
                     aria-label={tokenStrings.actions.viewLeaderboard}
-                    onClick={navigateTokenLeaderboard}
+                    onClick={navigateUnboundTokenUsage}
                   >
                     <Icon icon="mdi:chart-timeline-variant" width={20} height={20} />
                   </Button>

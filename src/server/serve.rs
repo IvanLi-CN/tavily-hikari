@@ -141,6 +141,7 @@ pub async fn serve(
         .route("/api/user-tags/:tag_id", patch(update_user_tag))
         .route("/api/user-tags/:tag_id", delete(delete_user_tag))
         .route("/api/users", get(list_users))
+        .route("/api/tokens/unbound-usage", get(list_unbound_token_usage))
         .route("/api/users/:id", get(get_user_detail))
         .route("/api/users/:id/quota", patch(update_user_quota))
         .route("/api/users/:id/tags", post(bind_user_tag))
