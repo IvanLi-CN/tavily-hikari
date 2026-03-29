@@ -262,11 +262,11 @@ describe('admin user tag api helpers', () => {
     )
     globalThis.fetch = fetchMock as typeof fetch
 
-    const result = await fetchAdminUnboundTokenUsage(2, 20, 'ops', 'quotaMonthlyUsed', 'asc')
+    const result = await fetchAdminUnboundTokenUsage(2, 20, 'ops', 'monthlyBrokenCount', 'asc')
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
     const [input] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(input).toBe('/api/tokens/unbound-usage?page=2&per_page=20&q=ops&sort=quotaMonthlyUsed&order=asc')
+    expect(input).toBe('/api/tokens/unbound-usage?page=2&per_page=20&q=ops&sort=monthlyBrokenCount&order=asc')
     expect(result.page).toBe(2)
     expect(result.perPage).toBe(20)
   })

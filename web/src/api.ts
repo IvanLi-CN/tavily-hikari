@@ -813,6 +813,7 @@ export type AdminUnboundTokenUsageSortField =
   | 'quotaHourlyUsed'
   | 'quotaDailyUsed'
   | 'quotaMonthlyUsed'
+  | 'monthlyBrokenCount'
   | 'dailySuccessRate'
   | 'monthlySuccessRate'
   | 'lastUsedAt'

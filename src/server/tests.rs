@@ -10906,6 +10906,47 @@ colo=LAX
             .await
             .expect("record bound success");
 
+        let (breakage_key_a_id, _) = proxy
+            .add_or_undelete_key_with_status("tvly-unbound-breakage-sort-key-a")
+            .await
+            .expect("create breakage key a");
+        let (breakage_key_b_id, _) = proxy
+            .add_or_undelete_key_with_status("tvly-unbound-breakage-sort-key-b")
+            .await
+            .expect("create breakage key b");
+        let now = Utc::now().timestamp();
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        sqlx::query(
+            r#"INSERT INTO token_api_key_bindings (token_id, api_key_id, created_at, updated_at, last_success_at)
+               VALUES (?, ?, ?, ?, ?), (?, ?, ?, ?, ?), (?, ?, ?, ?, ?)"#,
+        )
+        .bind(&unbound_primary.id)
+        .bind(&breakage_key_a_id)
+        .bind(now)
+        .bind(now)
+        .bind(now)
+        .bind(&grouped_unbound.id)
+        .bind(&breakage_key_a_id)
+        .bind(now)
+        .bind(now)
+        .bind(now)
+        .bind(&grouped_unbound.id)
+        .bind(&breakage_key_b_id)
+        .bind(now)
+        .bind(now)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .expect("seed token api key bindings");
+        proxy
+            .mark_key_quota_exhausted_by_secret("tvly-unbound-breakage-sort-key-a")
+            .await
+            .expect("mark breakage key a exhausted");
+        proxy
+            .mark_key_quota_exhausted_by_secret("tvly-unbound-breakage-sort-key-b")
+            .await
+            .expect("mark breakage key b exhausted");
+
         let addr = spawn_admin_tokens_server(proxy, true).await;
         let client = Client::new();
 
@@ -10993,6 +11034,53 @@ colo=LAX
                 .get("dailyFailure")
                 .and_then(|value| value.as_i64()),
             Some(0)
+        );
+
+        let broken_sorted_resp = client
+            .get(format!(
+                "http://{}/api/tokens/unbound-usage?page=1&per_page=20&sort=monthlyBrokenCount&order=desc",
+                addr
+            ))
+            .send()
+            .await
+            .expect("monthly broken sort unbound token usage request");
+        assert_eq!(broken_sorted_resp.status(), reqwest::StatusCode::OK);
+        let broken_sorted_body: serde_json::Value = broken_sorted_resp
+            .json()
+            .await
+            .expect("monthly broken sort unbound token usage json");
+        let broken_sorted_items = broken_sorted_body
+            .get("items")
+            .and_then(|value| value.as_array())
+            .expect("monthly broken sorted items array");
+        assert_eq!(
+            broken_sorted_items[0]
+                .get("tokenId")
+                .and_then(|value| value.as_str()),
+            Some(grouped_unbound.id.as_str())
+        );
+        assert_eq!(
+            broken_sorted_items[0]
+                .get("monthlyBrokenCount")
+                .and_then(|value| value.as_i64()),
+            Some(2)
+        );
+        assert_eq!(
+            broken_sorted_items[1]
+                .get("tokenId")
+                .and_then(|value| value.as_str()),
+            Some(unbound_primary.id.as_str())
+        );
+        assert_eq!(
+            broken_sorted_items[1]
+                .get("monthlyBrokenCount")
+                .and_then(|value| value.as_i64()),
+            Some(1)
+        );
+        assert!(
+            broken_sorted_items[2]
+                .get("monthlyBrokenCount")
+                .is_some_and(|value| value.is_null())
         );
 
         let last_used_asc_resp = client

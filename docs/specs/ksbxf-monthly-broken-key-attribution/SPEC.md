@@ -17,7 +17,7 @@
 ### Goals
 
 - 在 `/admin/users/usage` 新增可排序的 `月蹬坏` 列，第一行显示本月唯一坏 key 数，第二行显示该用户限额；数量可点击打开抽屉查看明细。
-- 在 `/admin/tokens/leaderboard` 的未关联 Token 用量列表新增 `月蹬坏` 列，按 token 计数；仅对有相关记录的 token 显示数量/配额，无记录显示 `—`。
+- 在 `/admin/tokens/leaderboard` 的未关联 Token 用量列表新增可排序的 `月蹬坏` 列，按 token 计数；仅对有相关记录的 token 显示数量/配额，无记录显示 `—`。
 - 新增 `token_api_key_bindings` 与 `subject_key_breakages` 两个持久化真相层，统一承接自动维护与管理员手动维护归因。
 - 用户默认月蹬坏限额为 `5`，可按用户单独配置；无主 token 固定限额为 `2` 且不提供配置入口。
 - 抽屉明细统一展示 `keyId`、当前状态、不可用原因、最后蹬坏时间、最后蹬坏者、关联用户。
@@ -43,11 +43,12 @@
 - `src/server/handlers/admin_resources.rs`
   - 扩展 `/api/users`、`/api/users/:id`、`PATCH /api/users/:id/broken-key-limit`、`GET /api/users/:id/broken-keys`。
   - 新增 `/api/users` 的 `monthlyBrokenCount` 排序。
+  - 新增 `/api/tokens/unbound-usage` 的 `monthlyBrokenCount` 排序。
 - `src/server/dto.rs` / `src/server/serve.rs`
   - 扩展 `/api/tokens/unbound-usage` 与 `GET /api/tokens/:id/broken-keys`。
 - `web/src/AdminDashboard.tsx`
   - 用户用量页新增 `月蹬坏` 列与抽屉。
-  - 未关联 Token 用量页新增 `月蹬坏` 列与抽屉。
+  - 未关联 Token 用量页新增可排序的 `月蹬坏` 列与抽屉。
   - 用户详情页新增独立的“月蹬坏限额”编辑区。
 - `web/src/api.ts` / `web/src/i18n.tsx`
   - 扩展前端契约与文案。
@@ -106,6 +107,9 @@
   When 排序字段为 `monthlyBrokenCount`
   Then 排序按“数量、限额、userId ASC”作用于过滤后的全量命中集。
 - Given 管理员查看 `/admin/tokens/leaderboard`
+  When 排序字段为 `monthlyBrokenCount`
+  Then 排序按“有记录优先、数量、限额、tokenId ASC”作用于过滤后的全量命中集。
+- Given 管理员查看 `/admin/tokens/leaderboard`
   When token 没有任何月蹬坏记录
   Then `monthlyBrokenCount` 与 `monthlyBrokenLimit` 为 `null`，界面显示 `—`。
 - Given 管理员在用户详情修改月蹬坏限额
@@ -142,13 +146,13 @@
   ![用户用量页月蹬坏列](./assets/users-usage-monthly-broken.png)
 
 - source_type: storybook_canvas
-  story_id_or_title: admin-pages--unbound-token-usage
+  story_id_or_title: admin-pages--unbound-token-usage-monthly-broken-sort-proof
   state: unbound token usage monthly broken column
   target_program: mock-only
   capture_scope: browser-viewport
   sensitive_exclusion: N/A
   submission_gate: pending-owner-approval
-  evidence_note: 验证 `/admin/tokens/leaderboard` 的未关联 token 用量页里，`月蹬坏` 列与无记录占位已接入最终列表。
+  evidence_note: 验证 `/admin/tokens/leaderboard` 的未关联 token 用量页里，`月蹬坏` 列可排序，且默认证据源固定在按月蹬坏降序的状态。
   image:
   ![未关联 Token 用量页月蹬坏列](./assets/unbound-token-usage-monthly-broken.png)
 

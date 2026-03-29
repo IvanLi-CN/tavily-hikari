@@ -257,6 +257,7 @@ const ADMIN_UNBOUND_TOKEN_USAGE_SORT_FIELDS: readonly AdminUnboundTokenUsageSort
   'quotaHourlyUsed',
   'quotaDailyUsed',
   'quotaMonthlyUsed',
+  'monthlyBrokenCount',
   'dailySuccessRate',
   'monthlySuccessRate',
   'lastUsedAt',
@@ -7393,7 +7394,13 @@ function AdminDashboard(): JSX.Element {
                       activeOrder={effectiveUnboundTokenUsageSortOrder}
                       onToggle={toggleUnboundTokenUsageSort}
                     />
-                    <th>{unboundTokenUsageStrings.table.monthlyBroken}</th>
+                    <AdminUsersSortableHeader
+                      label={unboundTokenUsageStrings.table.monthlyBroken}
+                      field="monthlyBrokenCount"
+                      activeField={effectiveUnboundTokenUsageSort}
+                      activeOrder={effectiveUnboundTokenUsageSortOrder}
+                      onToggle={toggleUnboundTokenUsageSort}
+                    />
                     <AdminUsersSortableHeader
                       label={unboundTokenUsageStrings.table.dailySuccessRate}
                       displayLabel={usageDailyRateLabel}

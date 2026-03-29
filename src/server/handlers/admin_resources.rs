@@ -1899,6 +1899,7 @@ enum AdminUnboundTokenUsageSortField {
     QuotaHourlyUsed,
     QuotaDailyUsed,
     QuotaMonthlyUsed,
+    MonthlyBrokenCount,
     DailySuccessRate,
     MonthlySuccessRate,
     LastUsedAt,
@@ -2408,6 +2409,23 @@ fn compare_quota_usage(
     direction.apply(left_limit.cmp(&right_limit))
 }
 
+fn compare_optional_quota_usage(
+    left_used: Option<i64>,
+    left_limit: Option<i64>,
+    right_used: Option<i64>,
+    right_limit: Option<i64>,
+    direction: AdminUsersSortDirection,
+) -> std::cmp::Ordering {
+    match (left_used, left_limit, right_used, right_limit) {
+        (Some(left_used), Some(left_limit), Some(right_used), Some(right_limit)) => {
+            compare_quota_usage(left_used, left_limit, right_used, right_limit, direction)
+        }
+        (Some(_), Some(_), _, _) => std::cmp::Ordering::Less,
+        (_, _, Some(_), Some(_)) => std::cmp::Ordering::Greater,
+        _ => std::cmp::Ordering::Equal,
+    }
+}
+
 fn compare_success_rate(
     left_success: i64,
     left_failure: i64,
@@ -2591,6 +2609,13 @@ fn compare_admin_unbound_token_usage_rows(
             left_quota_monthly_limit,
             right_quota_monthly_used,
             right_quota_monthly_limit,
+            direction,
+        ),
+        AdminUnboundTokenUsageSortField::MonthlyBrokenCount => compare_optional_quota_usage(
+            left.monthly_broken_count,
+            left.monthly_broken_limit,
+            right.monthly_broken_count,
+            right.monthly_broken_limit,
             direction,
         ),
         AdminUnboundTokenUsageSortField::DailySuccessRate => compare_success_rate(

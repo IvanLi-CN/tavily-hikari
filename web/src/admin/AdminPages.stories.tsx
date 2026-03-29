@@ -1810,6 +1810,21 @@ function compareQuotaUsage(
   return applySortDirection(compareScalar(leftLimit, rightLimit), direction)
 }
 
+function compareOptionalQuotaUsage(
+  leftUsed: number | null,
+  leftLimit: number | null,
+  rightUsed: number | null,
+  rightLimit: number | null,
+  direction: SortDirection,
+): number {
+  if (leftUsed != null && leftLimit != null && rightUsed != null && rightLimit != null) {
+    return compareQuotaUsage(leftUsed, leftLimit, rightUsed, rightLimit, direction)
+  }
+  if (leftUsed != null && leftLimit != null) return -1
+  if (rightUsed != null && rightLimit != null) return 1
+  return 0
+}
+
 function compareSuccessRate(
   leftSuccess: number,
   leftFailure: number,
@@ -1879,7 +1894,7 @@ function compareAdminUserSummaryRows(
           direction,
         )
       case 'monthlyBrokenCount':
-        return compareQuotaUsage(
+        return compareOptionalQuotaUsage(
           left.monthlyBrokenCount,
           left.monthlyBrokenLimit,
           right.monthlyBrokenCount,
@@ -1956,6 +1971,14 @@ function compareAdminUnboundTokenUsageRows(
           left.quotaMonthlyLimit,
           right.quotaMonthlyUsed,
           right.quotaMonthlyLimit,
+          direction,
+        )
+      case 'monthlyBrokenCount':
+        return compareOptionalQuotaUsage(
+          left.monthlyBrokenCount,
+          left.monthlyBrokenLimit,
+          right.monthlyBrokenCount,
+          right.monthlyBrokenLimit,
           direction,
         )
       case 'dailySuccessRate':
@@ -4099,10 +4122,14 @@ function UnboundTokenUsagePageCanvas({
   items = MOCK_UNBOUND_TOKEN_USAGE,
   errorMessage = null,
   initialDrawerTokenId,
+  initialSortField = null,
+  initialSortOrder = null,
 }: {
   items?: AdminUnboundTokenUsageSummary[]
   errorMessage?: string | null
   initialDrawerTokenId?: string
+  initialSortField?: AdminUnboundTokenUsageSortField | null
+  initialSortOrder?: SortDirection | null
 } = {}): JSX.Element {
   const admin = useTranslate().admin
   const { language } = useLanguage()
@@ -4113,8 +4140,8 @@ function UnboundTokenUsagePageCanvas({
   const monthlyRateLabel = language === 'zh' ? strings.table.monthlySuccessRate : 'Monthly'
   const [query, setQuery] = useState('')
   const [page, setPage] = useState(1)
-  const [sortField, setSortField] = useState<AdminUnboundTokenUsageSortField | null>(null)
-  const [sortOrder, setSortOrder] = useState<SortDirection | null>(null)
+  const [sortField, setSortField] = useState<AdminUnboundTokenUsageSortField | null>(initialSortField)
+  const [sortOrder, setSortOrder] = useState<SortDirection | null>(initialSortOrder)
   const [selectedTokenId, setSelectedTokenId] = useState<string | null>(null)
   const [monthlyBrokenDrawer, setMonthlyBrokenDrawer] = useState<{
     label: string
@@ -4236,7 +4263,13 @@ function UnboundTokenUsagePageCanvas({
                     activeOrder={effectiveSortOrder}
                     onToggle={toggleSort}
                   />
-                  <th>{strings.table.monthlyBroken}</th>
+                  <StoryAdminUsersSortableHeader
+                    label={strings.table.monthlyBroken}
+                    field="monthlyBrokenCount"
+                    activeField={effectiveSortField}
+                    activeOrder={effectiveSortOrder}
+                    onToggle={toggleSort}
+                  />
                   <StoryAdminUsersSortableHeader
                     label={strings.table.dailySuccessRate}
                     displayLabel={dailyRateLabel}
@@ -5259,6 +5292,26 @@ export const UnboundTokenUsage: Story = {
     const firstIdentity = canvasElement.querySelector<HTMLElement>('[data-token-identity]')
     if (firstIdentity?.textContent?.trim() !== 'tmp4') {
       throw new Error('Expected daily success sort to move tmp4 to the first row.')
+    }
+  },
+}
+
+export const UnboundTokenUsageMonthlyBrokenSortProof: Story = {
+  render: () => (
+    <UnboundTokenUsagePageCanvas initialSortField="monthlyBrokenCount" initialSortOrder="desc" />
+  ),
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 80))
+    const firstIdentity = canvasElement.querySelector<HTMLElement>('[data-token-identity]')
+    if (firstIdentity?.textContent?.trim() !== 'qa13') {
+      throw new Error('Expected monthly broken sort to move qa13 to the first row.')
+    }
+    const sortHeader = canvasElement.querySelector<HTMLElement>('th[aria-sort="descending"] [data-sort-field="monthlyBrokenCount"]')
+    if (!sortHeader) {
+      throw new Error('Expected monthly broken sort header to remain active in descending order.')
     }
   },
 }
