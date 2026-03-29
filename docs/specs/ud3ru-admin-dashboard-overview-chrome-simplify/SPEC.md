@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 已实现（待审查）
+- Status: 已完成（merge-ready）
 - Created: 2026-03-30
 - Last: 2026-03-30
 
@@ -131,7 +131,7 @@
 
 - [x] M1: 冻结“去壳 + 去渐变 + 胶囊对比度收口”的范围
 - [x] M2: 完成 DashboardOverview / CSS / Storybook 实现
-- [x] M3: 完成构建与视觉证据收口，待 PR 审查
+- [x] M3: 完成构建、视觉证据与 PR merge-ready 收口
 
 ## 方案概述（Approach, high-level）
 
@@ -149,6 +149,7 @@
 
 - 2026-03-30: 创建 spec，冻结本次 dashboard overview chrome simplification 的范围、验收口径与视觉证据目标。
 - 2026-03-30: 完成 `DashboardOverview` 去壳、dashboard-local 渐变收口、delta 胶囊对比度提升，并补齐 `ZhDarkEvidence` Storybook 证据与浏览器断点复核。
+- 2026-03-30: 创建 PR #197，并将该项状态收口为 merge-ready。
 
 ## 参考（References）
 
