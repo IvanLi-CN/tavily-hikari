@@ -19,7 +19,7 @@ const meta = {
   tags: ['autodocs'],
   decorators: [
     (Story) => (
-      <div style={{ padding: 24, background: '#eef3fb' }}>
+      <div style={{ padding: 24, background: 'hsl(var(--background))' }}>
         <Story />
       </div>
     ),
@@ -125,6 +125,115 @@ const statusMetrics = [
   { id: 'exhausted', label: 'Exhausted', value: '0', subtitle: '0 exhausted' },
   { id: 'proxy-available', label: 'Available Proxy Nodes', value: '12', subtitle: 'Current snapshot · 85.7%' },
   { id: 'proxy-total', label: 'Proxy Nodes Total', value: '14', subtitle: 'Current snapshot' },
+]
+
+const zhStrings = {
+  title: '管理总览',
+  description: '把全站运行、风险信号和可执行动作收在同一个面板里。',
+  loading: '正在加载仪表盘数据…',
+  summaryUnavailable: '暂时无法加载期间摘要。',
+  statusUnavailable: '暂时无法加载站点当前状态。',
+  todayTitle: '今日',
+  todayDescription: '截至当前的核心请求指标，并与昨日同一时刻直接对比。',
+  monthTitle: '本月',
+  monthDescription: '按月累计的请求表现，方便快速判断整体趋势。',
+  currentStatusTitle: '站点当前状态',
+  currentStatusDescription: '当前额度、活跃密钥和代理池健康度快照。',
+  deltaFromYesterday: '较昨日同刻',
+  deltaNoBaseline: '昨日无基线',
+  percentagePointUnit: '个百分点',
+  asOfNow: '截至当前',
+  todayShare: '今日占比',
+  monthToDate: '本月累计',
+  monthShare: '本月占比',
+  trendsTitle: '流量趋势',
+  trendsDescription: '根据近期请求观察流量和错误变化。',
+  requestTrend: '请求量',
+  errorTrend: '错误量',
+  riskTitle: '风险观察',
+  riskDescription: '优先查看需要运维动作的项目。',
+  riskEmpty: '当前没有需要处理的风险信号。',
+  actionsTitle: '快捷入口',
+  actionsDescription: '最近事件可直接跳转处理。',
+  recentRequests: '近期请求',
+  recentJobs: '近期任务',
+  openModule: '打开',
+  openToken: '打开令牌',
+  openKey: '打开密钥',
+  disabledTokenRisk: '令牌 {id} 已停用',
+  exhaustedKeyRisk: '密钥 {id} 已耗尽',
+  failedJobRisk: '任务 #{id} 状态：{status}',
+  tokenCoverageTruncated: '令牌范围数据被截断。',
+  tokenCoverageError: '令牌范围数据加载失败。',
+}
+
+const zhDarkEvidenceTodayMetrics = [
+  {
+    id: 'today-total',
+    label: '总请求数',
+    value: '10,683',
+    subtitle: '截至当前',
+    comparison: {
+      label: '较昨日同刻',
+      value: '+226 (2.2%)',
+      direction: 'up' as const,
+      tone: 'positive' as const,
+    },
+  },
+  {
+    id: 'today-success',
+    label: '成功',
+    value: '8,762',
+    subtitle: '今日占比 · 82%',
+    comparison: {
+      label: '较昨日同刻',
+      value: '-2.0 个百分点',
+      direction: 'down' as const,
+      tone: 'negative' as const,
+    },
+  },
+  {
+    id: 'today-errors',
+    label: '错误',
+    value: '681',
+    subtitle: '今日占比 · 6.4%',
+    comparison: {
+      label: '较昨日同刻',
+      value: '昨日无基线',
+      direction: 'flat' as const,
+      tone: 'neutral' as const,
+    },
+  },
+  {
+    id: 'today-quota',
+    label: '额度耗尽',
+    value: '42',
+    subtitle: '今日占比 · 0.4%',
+    comparison: {
+      label: '较昨日同刻',
+      value: '+38 (950%)',
+      direction: 'up' as const,
+      tone: 'negative' as const,
+    },
+  },
+]
+
+const zhDarkEvidenceMonthMetrics = [
+  { id: 'month-total', label: '总请求数', value: '237,587', subtitle: '本月累计' },
+  { id: 'month-success', label: '成功', value: '204,203', subtitle: '本月占比 · 85.9%' },
+  { id: 'month-errors', label: '错误', value: '4,399', subtitle: '本月占比 · 1.9%' },
+  { id: 'month-quota', label: '额度耗尽', value: '73', subtitle: '本月占比 · 0%' },
+  { id: 'month-new-keys', label: '新增密钥', value: '256', subtitle: '本月新增' },
+  { id: 'month-new-quarantines', label: '新增隔离密钥', value: '66', subtitle: '本月新增' },
+]
+
+const zhDarkEvidenceStatusMetrics = [
+  { id: 'remaining', label: '剩余可用', value: '150,801', subtitle: '当前快照 · 79.4%' },
+  { id: 'keys', label: '活跃密钥', value: '173', subtitle: '当前快照' },
+  { id: 'quarantined', label: '隔离中', value: '66', subtitle: '隔离中' },
+  { id: 'exhausted', label: '已耗尽', value: '17', subtitle: '17 个耗尽' },
+  { id: 'proxy-available', label: '可用代理节点', value: '74', subtitle: '当前快照 · 98.7%' },
+  { id: 'proxy-total', label: '代理节点总数', value: '75', subtitle: '当前快照' },
 ]
 
 export const Default: Story = {
@@ -305,6 +414,52 @@ export const ZeroBaseline: Story = {
     for (const expected of ['No yesterday baseline', '75%', '25%']) {
       if (!text.includes(expected)) {
         throw new Error(`Expected dashboard overview zero-baseline story to contain: ${expected}`)
+      }
+    }
+  },
+}
+
+export const ZhDarkEvidence: Story = {
+  globals: {
+    language: 'zh',
+    themeMode: 'dark',
+  },
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+    docs: {
+      description: {
+        story:
+          '用于验收“去掉外层卡片壳 + 去渐变 + 高对比度胶囊”的稳定中文暗色画布。',
+      },
+    },
+  },
+  args: {
+    ...Default.args,
+    strings: zhStrings,
+    todayMetrics: zhDarkEvidenceTodayMetrics,
+    monthMetrics: zhDarkEvidenceMonthMetrics,
+    statusMetrics: zhDarkEvidenceStatusMetrics,
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 50))
+
+    const summaryPanel = canvasElement.querySelector<HTMLElement>('.dashboard-summary-panel')
+    if (summaryPanel == null) {
+      throw new Error('Expected dashboard summary panel to render')
+    }
+    if (summaryPanel.classList.contains('surface') || summaryPanel.classList.contains('panel')) {
+      throw new Error('Expected dashboard summary panel to render without the legacy outer shell')
+    }
+    for (const selector of ['.metric-delta-positive', '.metric-delta-negative', '.metric-delta-neutral']) {
+      if (canvasElement.querySelector(selector) == null) {
+        throw new Error(`Expected dashboard evidence story to render ${selector}`)
+      }
+    }
+
+    const text = canvasElement.ownerDocument.body.textContent ?? ''
+    for (const expected of ['今日', '本月', '站点当前状态', '较昨日同刻', '昨日无基线']) {
+      if (!text.includes(expected)) {
+        throw new Error(`Expected dashboard overview evidence story to contain: ${expected}`)
       }
     }
   },

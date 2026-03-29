@@ -224,11 +224,15 @@ export default function DashboardOverview({
         </div>
       </section>
 
-      <section className="surface panel dashboard-summary-panel">
+      <section className="dashboard-summary-panel">
         {!overviewReady ? (
-          <div className="empty-state alert">{strings.loading}</div>
+          <div className="surface panel dashboard-summary-fallback">
+            <div className="empty-state alert">{strings.loading}</div>
+          </div>
         ) : !hasTodaySummary && !hasMonthSummary && !hasStatusSummary ? (
-          <div className="empty-state alert">{overviewReady ? strings.summaryUnavailable : strings.loading}</div>
+          <div className="surface panel dashboard-summary-fallback">
+            <div className="empty-state alert">{overviewReady ? strings.summaryUnavailable : strings.loading}</div>
+          </div>
         ) : (
           <div className="dashboard-summary-layout">
             <div className="dashboard-summary-top-row">
