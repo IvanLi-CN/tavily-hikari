@@ -2481,6 +2481,7 @@ button:disabled {
 .dashboard-summary-panel {
   display: grid;
   gap: 14px;
+  padding-inline: 10px;
 }
 
 .dashboard-summary-fallback {
@@ -2732,6 +2733,10 @@ button:disabled {
 }
 
 @media (min-width: 768px) {
+  .dashboard-summary-panel {
+    padding-inline: 12px;
+  }
+
   .dashboard-summary-metrics-primary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -2755,6 +2760,10 @@ button:disabled {
 }
 
 @media (min-width: 1200px) {
+  .dashboard-summary-panel {
+    padding-inline: 0;
+  }
+
   .dashboard-summary-top-row {
     grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.95fr);
   }

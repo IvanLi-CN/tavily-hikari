@@ -150,6 +150,7 @@
 - 2026-03-30: 创建 spec，冻结本次 dashboard overview chrome simplification 的范围、验收口径与视觉证据目标。
 - 2026-03-30: 完成 `DashboardOverview` 去壳、dashboard-local 渐变收口、delta 胶囊对比度提升，并补齐 `ZhDarkEvidence` Storybook 证据与浏览器断点复核。
 - 2026-03-30: 创建 PR #197，并将该项状态收口为 merge-ready。
+- 2026-03-30: review-loop follow-up 补回 summary 区在 admin shell 窄屏断点下的共享 gutter，并清理 specs index 的重复 `yc6pp` 行。
 
 ## 参考（References）
 
