@@ -7816,6 +7816,55 @@ function AdminDashboard(): JSX.Element {
       </AdminSidebarUtilityStack>
     </AdminShellSidebarUtility>
   )
+  const moduleDesktopIntro = (() => {
+    switch (activeModule) {
+      case 'dashboard':
+        return {
+          title: headerStrings.title,
+          description: headerStrings.subtitle,
+        }
+      case 'tokens':
+        return {
+          title: tokenStrings.title,
+          description: tokenStrings.description,
+        }
+      case 'keys':
+        return {
+          title: keyStrings.title,
+          description: keyStrings.description,
+        }
+      case 'requests':
+        return {
+          title: logStrings.title,
+          description: logStrings.description,
+        }
+      case 'jobs':
+        return {
+          title: jobsStrings.title,
+          description: jobsStrings.description,
+        }
+      case 'users':
+        return {
+          title: usersStrings.title,
+          description: usersStrings.description,
+        }
+      case 'alerts':
+        return {
+          title: adminStrings.modules.alerts.title,
+          description: adminStrings.modules.alerts.description,
+        }
+      case 'proxy-settings':
+        return {
+          title: proxySettingsStrings.title,
+          description: proxySettingsStrings.description,
+        }
+      default:
+        return {
+          title: headerStrings.title,
+          description: headerStrings.subtitle,
+        }
+    }
+  })()
 
   return (
     <>
@@ -7950,8 +7999,8 @@ function AdminDashboard(): JSX.Element {
 
       <div className="admin-desktop-only">
         <AdminCompactIntro
-          title={headerStrings.title}
-          description={headerStrings.subtitle}
+          title={moduleDesktopIntro.title}
+          description={moduleDesktopIntro.description}
         />
       </div>
 

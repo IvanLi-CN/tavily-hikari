@@ -2570,6 +2570,55 @@ function AdminPageFrame({
   showDefaultShellChrome = true,
 }: AdminPageFrameProps): JSX.Element {
   const admin = useTranslate().admin
+  const intro = (() => {
+    switch (activeModule) {
+      case 'dashboard':
+        return {
+          title: admin.header.title,
+          description: admin.header.subtitle,
+        }
+      case 'tokens':
+        return {
+          title: admin.tokens.title,
+          description: admin.tokens.description,
+        }
+      case 'keys':
+        return {
+          title: admin.keys.title,
+          description: admin.keys.description,
+        }
+      case 'requests':
+        return {
+          title: admin.logs.title,
+          description: admin.logs.description,
+        }
+      case 'jobs':
+        return {
+          title: admin.jobs.title,
+          description: admin.jobs.description,
+        }
+      case 'users':
+        return {
+          title: admin.users.title,
+          description: admin.users.description,
+        }
+      case 'alerts':
+        return {
+          title: admin.modules.alerts.title,
+          description: admin.modules.alerts.description,
+        }
+      case 'proxy-settings':
+        return {
+          title: admin.proxySettings.title,
+          description: admin.proxySettings.description,
+        }
+      default:
+        return {
+          title: admin.header.title,
+          description: admin.header.subtitle,
+        }
+    }
+  })()
 
   return (
     <AdminShell
@@ -2633,8 +2682,8 @@ function AdminPageFrame({
           </div>
           <div className="admin-desktop-only">
             <AdminCompactIntro
-              title={admin.header.title}
-              description={admin.header.subtitle}
+              title={intro.title}
+              description={intro.description}
             />
           </div>
         </>

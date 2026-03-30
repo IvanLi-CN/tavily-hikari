@@ -170,6 +170,7 @@
 - 2026-03-30: 完成 `AdminShell` 桌面 utility host、通用 compact intro、模块页 / Token 榜单 / key detail / token detail 的桌面收纳改造。
 - 2026-03-30: 同步 shell/page/detail Storybook stories，完成 `bun run build`、`bun run build-storybook`、`bun test`，并补齐 1440px / 1100px 视觉证据。
 - 2026-03-30: 根据验收反馈补回 `user-usage` 页的桌面 compact intro 与侧栏 utility，对齐后台统一页头结构，并追加 `UsersUsage` Storybook 证据与 stacked coverage。
+- 2026-03-30: 修正通用模块页 desktop intro 的标题来源，改为按当前模块读取 `logs/jobs/users/tokens/keys/proxySettings/...` 文案，避免请求日志等页面误显示为全局“总览”。
 
 ## 参考（References）
 
