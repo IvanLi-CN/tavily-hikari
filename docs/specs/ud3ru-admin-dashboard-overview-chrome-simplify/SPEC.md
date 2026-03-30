@@ -114,12 +114,16 @@
 ## 计划资产（Plan assets）
 
 - Directory: `docs/specs/ud3ru-admin-dashboard-overview-chrome-simplify/assets/`
-- In-plan references: 待补 Storybook 与浏览器验收图
+- In-plan references: `assets/dashboard-overview-zh-dark-evidence.png`
 
-## Visual Evidence (PR)
+## Visual Evidence
 
 - Storybook 证据画布：`Admin/Components/DashboardOverview/ZhDarkEvidence`
-  - 主人验收用 mock 证据已通过聊天回图展示，不随本次 PR 提交截图文件。
+- 证据目标源：`storybook_canvas`
+- 证据绑定：证据图已在聊天回图完成验收，并由本次 spec 同步提交绑定到当前快车道收口版本。
+- 证据资产：`docs/specs/ud3ru-admin-dashboard-overview-chrome-simplify/assets/dashboard-overview-zh-dark-evidence.png`
+
+![Admin Dashboard 总览 ZhDarkEvidence](./assets/dashboard-overview-zh-dark-evidence.png)
 
 - 浏览器复核：
   - `dashboard-summary-panel` 已不再携带 `surface` / `panel` 类名。
@@ -151,6 +155,7 @@
 - 2026-03-30: 完成 `DashboardOverview` 去壳、dashboard-local 渐变收口、delta 胶囊对比度提升，并补齐 `ZhDarkEvidence` Storybook 证据与浏览器断点复核。
 - 2026-03-30: 创建 PR #197，并将该项状态收口为 merge-ready。
 - 2026-03-30: review-loop follow-up 补回 summary 区在 admin shell 窄屏断点下的共享 gutter，并清理 specs index 的重复 `yc6pp` 行。
+- 2026-03-30: 按快车道收口要求将最终 Storybook 证据图落盘到 spec `assets/`，移除该 spec 的 PR-only 证据块表述，并补上 `.codex-artifacts/` 忽略规则。
 
 ## 参考（References）
 
