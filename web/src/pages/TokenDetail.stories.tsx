@@ -1,14 +1,17 @@
-import { useLayoutEffect, useState } from "react";
-import type { Meta, StoryObj } from "@storybook/react-vite";
-import { addons } from "storybook/preview-api";
-import { SELECT_STORY } from "storybook/internal/core-events";
+import { useLayoutEffect, useState } from 'react'
+import type { Meta, StoryObj } from '@storybook/react-vite'
+import { addons } from 'storybook/preview-api'
+import { SELECT_STORY } from 'storybook/internal/core-events'
+import { ChartColumnIncreasing } from 'lucide-react'
 
-import type { RequestLog } from "../api";
-import TokenDetail from "./TokenDetail";
+import type { RequestLog } from '../api'
+import AdminShell, { type AdminNavItem } from '../admin/AdminShell'
+import { Icon } from '../lib/icons'
+import TokenDetail from './TokenDetail'
 
-const tokenId = "a1b2";
-type StoryMode = "default" | "initial_loading" | "switch_loading" | "refreshing";
-type StoryDataset = "default" | "dense";
+const tokenId = 'a1b2'
+type StoryMode = 'default' | 'initial_loading' | 'switch_loading' | 'refreshing'
+type StoryDataset = 'default' | 'dense'
 
 interface StoryTokenDetail {
   id: string;
@@ -781,37 +784,72 @@ export function TokenDetailStoryCanvas({
   }, [dataset, mode, ready]);
 
   if (!ready) {
-    return <div style={{ minHeight: "100vh" }} />;
+    return <div style={{ minHeight: '100vh' }} />
   }
 
+  const navItems: AdminNavItem[] = [
+    { target: 'dashboard', label: 'Dashboard', icon: <Icon icon="mdi:view-dashboard-outline" width={18} height={18} /> },
+    { target: 'user-usage', label: 'Usage', icon: <ChartColumnIncreasing size={18} strokeWidth={2.2} /> },
+    { target: 'tokens', label: 'Tokens', icon: <Icon icon="mdi:key-chain-variant" width={18} height={18} /> },
+    { target: 'keys', label: 'API Keys', icon: <Icon icon="mdi:key-outline" width={18} height={18} /> },
+    { target: 'requests', label: 'Requests', icon: <Icon icon="mdi:file-document-outline" width={18} height={18} /> },
+    { target: 'jobs', label: 'Jobs', icon: <Icon icon="mdi:calendar-clock-outline" width={18} height={18} /> },
+    { target: 'users', label: 'Users', icon: <Icon icon="mdi:account-group-outline" width={18} height={18} /> },
+    { target: 'alerts', label: 'Alerts', icon: <Icon icon="mdi:bell-ring-outline" width={18} height={18} /> },
+    { target: 'proxy-settings', label: 'Proxy Settings', icon: <Icon icon="mdi:tune-variant" width={18} height={18} /> },
+  ]
+
   return (
-    <TokenDetail
-      id={detail.id}
-      onBack={() => undefined}
-      onOpenUser={(userId) => {
-        if (!userId) return;
-        openStoryInManager("admin-pages--user-detail");
-      }}
-    />
-  );
+    <AdminShell
+      activeItem="tokens"
+      navItems={navItems}
+      skipToContentLabel="Skip to main content"
+      onSelectItem={() => undefined}
+    >
+      <TokenDetail
+        id={detail.id}
+        onBack={() => undefined}
+        onOpenUser={(userId) => {
+          if (!userId) return
+          openStoryInManager('admin-pages--user-detail')
+        }}
+      />
+    </AdminShell>
+  )
 }
 
 const meta = {
-  title: "Admin/Pages/TokenDetail",
+  title: 'Admin/Pages/TokenDetail',
   parameters: {
-    layout: "fullscreen",
+    layout: 'fullscreen',
   },
   render: (args) => <TokenDetailStoryCanvas {...args} />,
-} satisfies Meta<typeof TokenDetailStoryCanvas>;
+} satisfies Meta<typeof TokenDetailStoryCanvas>
 
-export default meta;
+export default meta
 
-type Story = StoryObj<typeof meta>;
+type Story = StoryObj<typeof meta>
 
 export const Default: Story = {
   args: { detail: tokenDetailMock, mode: "default" },
   parameters: {
     viewport: { defaultViewport: "1440-device-desktop" },
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 200))
+    const root = canvasElement.ownerDocument
+    const utility = root.querySelector<HTMLElement>('.admin-sidebar-utility')
+    const intro = root.querySelector<HTMLElement>('.admin-compact-intro')
+    if (!utility || !intro) {
+      throw new Error('Expected token detail story to render sidebar utility and compact intro.')
+    }
+  },
+};
+
+export const DefaultStacked: Story = {
+  args: { detail: tokenDetailMock, mode: "default" },
+  parameters: {
+    viewport: { defaultViewport: "1100-breakpoint-admin-stack-max" },
   },
 };
 

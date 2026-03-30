@@ -352,6 +352,12 @@ export const CBoXReview: Story = {
   play: async ({ canvasElement }) => {
     await new Promise((resolve) => window.setTimeout(resolve, 200))
     const text = canvasElement.ownerDocument.body.textContent ?? ''
+    const root = canvasElement.ownerDocument
+    const utility = root.querySelector<HTMLElement>('.admin-sidebar-utility')
+    const intro = root.querySelector<HTMLElement>('.admin-compact-intro')
+    if (!utility || !intro) {
+      throw new Error('Expected key detail route story to render sidebar utility and compact intro.')
+    }
     for (const expected of [
       'Sticky 用户',
       'Sticky 节点',
@@ -364,5 +370,12 @@ export const CBoXReview: Story = {
         throw new Error(`Expected route story to contain: ${expected}`)
       }
     }
+  },
+}
+
+export const CBoXReviewStacked: Story = {
+  ...CBoXReview,
+  parameters: {
+    viewport: { defaultViewport: '1100-breakpoint-admin-stack-max' },
   },
 }

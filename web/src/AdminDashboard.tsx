@@ -13,6 +13,9 @@ import { createPortal } from 'react-dom'
 import ThemeToggle from './components/ThemeToggle'
 import AdminReturnToConsoleLink from './components/AdminReturnToConsoleLink'
 import AdminPanelHeader from './components/AdminPanelHeader'
+import AdminCompactIntro from './components/AdminCompactIntro'
+import LanguageSwitcher from './components/LanguageSwitcher'
+import { AdminSidebarUtilityCard, AdminSidebarUtilityStack } from './components/AdminSidebarUtility'
 import { Button } from './components/ui/button'
 import {
   Dialog,
@@ -47,7 +50,7 @@ import { AnchoredInfoDisclosure } from './components/ui/anchored-info-disclosure
 import { Tooltip, TooltipContent, TooltipTrigger } from './components/ui/tooltip'
 import TokenDetail from './pages/TokenDetail'
 import { ArrowDown, ArrowUp, ArrowUpDown, ChartColumnIncreasing } from 'lucide-react'
-import AdminShell, { type AdminNavItem, type AdminNavTarget } from './admin/AdminShell'
+import AdminShell, { AdminShellSidebarUtility, type AdminNavItem, type AdminNavTarget } from './admin/AdminShell'
 import DashboardOverview from './admin/DashboardOverview'
 import { createDashboardTodayMetrics } from './admin/dashboardTodayMetrics'
 import { fetchAllMonthlyBrokenKeyItems } from './admin/fetchAllMonthlyBrokenKeyItems'
@@ -7292,16 +7295,51 @@ function AdminDashboard(): JSX.Element {
         skipToContentLabel={adminStrings.accessibility.skipToContent}
         onSelectItem={navigateModule}
       >
+        <AdminShellSidebarUtility>
+          <AdminSidebarUtilityStack>
+            <AdminSidebarUtilityCard>
+              <div className="admin-sidebar-utility-toolbar">
+                <ThemeToggle />
+              </div>
+              <div className="admin-sidebar-utility-actions">
+                <AdminReturnToConsoleLink
+                  label={headerStrings.returnToConsole}
+                  href={userConsoleHref}
+                  className="admin-sidebar-utility-action"
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="token-usage-back-button admin-sidebar-utility-action"
+                  onClick={() => navigateModule('tokens')}
+                >
+                  <Icon icon="mdi:arrow-left" width={16} height={16} aria-hidden="true" />
+                  <span>{unboundTokenUsageStrings.back}</span>
+                </Button>
+              </div>
+            </AdminSidebarUtilityCard>
+          </AdminSidebarUtilityStack>
+        </AdminShellSidebarUtility>
+
+        <div className="admin-desktop-only">
+          <AdminCompactIntro
+            title={unboundTokenUsageStrings.title}
+            description={unboundTokenUsageStrings.description}
+          />
+        </div>
+
         <section className="surface panel">
           <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
-            <div style={{ flex: '1 1 340px', minWidth: 260 }}>
+            <div className="admin-stacked-only" style={{ flex: '1 1 340px', minWidth: 260 }}>
               <h2>{unboundTokenUsageStrings.title}</h2>
               <p className="panel-description">{unboundTokenUsageStrings.description}</p>
             </div>
             <div className="admin-inline-actions" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-              <Button type="button" variant="outline" onClick={() => navigateModule('tokens')}>
-                {unboundTokenUsageStrings.back}
-              </Button>
+              <div className="admin-stacked-only">
+                <Button type="button" variant="outline" onClick={() => navigateModule('tokens')}>
+                  {unboundTokenUsageStrings.back}
+                </Button>
+              </div>
               <div className="users-search-controls">
                 <Input
                   type="text"
@@ -7641,6 +7679,63 @@ function AdminDashboard(): JSX.Element {
     }
     return { request, error }
   })()
+  const headerUpdatedTime = lastUpdated ? timeOnlyFormatter.format(lastUpdated) : null
+
+  const moduleDesktopUtility = (
+    <AdminShellSidebarUtility>
+      <AdminSidebarUtilityStack>
+        <AdminSidebarUtilityCard>
+          <div className="admin-sidebar-utility-toolbar">
+            <ThemeToggle />
+            <LanguageSwitcher />
+          </div>
+          <div className="admin-sidebar-utility-meta">
+            {displayName && (
+              <div className={`user-badge${isAdmin ? ' user-badge-admin' : ''}`}>
+                {isAdmin && <Icon icon="mdi:crown-outline" className="user-badge-icon" aria-hidden="true" />}
+                <span>{displayName}</span>
+              </div>
+            )}
+            {headerUpdatedTime && (
+              <span className="admin-panel-header-time" aria-live="polite">
+                <Icon icon="mdi:clock-time-four-outline" width={14} height={14} className="admin-panel-header-time-icon" aria-hidden="true" />
+                <span className="admin-panel-header-time-label">{headerStrings.updatedPrefix}</span>
+                <span className="admin-panel-header-time-value">{headerUpdatedTime}</span>
+              </span>
+            )}
+          </div>
+        </AdminSidebarUtilityCard>
+
+        <AdminSidebarUtilityCard>
+          <div className="admin-sidebar-utility-actions">
+            <AdminReturnToConsoleLink
+              label={headerStrings.returnToConsole}
+              href={userConsoleHref}
+              className="admin-sidebar-utility-action"
+            />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="admin-panel-refresh-button admin-sidebar-utility-action"
+              onClick={handleManualRefresh}
+              disabled={loading || activeModuleBlocking}
+            >
+              <Icon
+                icon={loading ? 'mdi:loading' : 'mdi:refresh'}
+                width={16}
+                height={16}
+                className={loading ? 'icon-spin' : undefined}
+                aria-hidden="true"
+              />
+              <span>{loading ? headerStrings.refreshing : headerStrings.refreshNow}</span>
+            </Button>
+          </div>
+        </AdminSidebarUtilityCard>
+      </AdminSidebarUtilityStack>
+    </AdminShellSidebarUtility>
+  )
+
   return (
     <>
       {showKeys &&
@@ -7752,21 +7847,32 @@ function AdminDashboard(): JSX.Element {
         skipToContentLabel={adminStrings.accessibility.skipToContent}
         onSelectItem={navigateModule}
       >
-      <AdminPanelHeader
-        title={headerStrings.title}
-        subtitle={headerStrings.subtitle}
-        displayName={displayName}
-        isAdmin={isAdmin}
-        updatedPrefix={headerStrings.updatedPrefix}
-        updatedTime={lastUpdated ? timeOnlyFormatter.format(lastUpdated) : null}
-        isRefreshing={loading}
-        refreshDisabled={activeModuleBlocking}
-        refreshLabel={headerStrings.refreshNow}
-        refreshingLabel={headerStrings.refreshing}
-        userConsoleLabel={headerStrings.returnToConsole}
-        userConsoleHref={userConsoleHref}
-        onRefresh={handleManualRefresh}
-      />
+      {moduleDesktopUtility}
+
+      <div className="admin-stacked-only">
+        <AdminPanelHeader
+          title={headerStrings.title}
+          subtitle={headerStrings.subtitle}
+          displayName={displayName}
+          isAdmin={isAdmin}
+          updatedPrefix={headerStrings.updatedPrefix}
+          updatedTime={headerUpdatedTime}
+          isRefreshing={loading}
+          refreshDisabled={activeModuleBlocking}
+          refreshLabel={headerStrings.refreshNow}
+          refreshingLabel={headerStrings.refreshing}
+          userConsoleLabel={headerStrings.returnToConsole}
+          userConsoleHref={userConsoleHref}
+          onRefresh={handleManualRefresh}
+        />
+      </div>
+
+      <div className="admin-desktop-only">
+        <AdminCompactIntro
+          title={headerStrings.title}
+          description={headerStrings.subtitle}
+        />
+      </div>
 
       {showDashboard && (
         <DashboardOverview
@@ -10708,49 +10814,111 @@ export function KeyDetails({
   const stickyUsersTotalPages = Math.max(1, Math.ceil(stickyUsersTotal / stickyUsersPerPage))
   const quarantineRawDetail = detail?.quarantine?.reasonDetail?.trim() ?? ''
   const hasQuarantineRawDetail = quarantineRawDetail.length > 0
+  const keyDetailSidebarUtility = (
+    <AdminShellSidebarUtility>
+      <AdminSidebarUtilityStack>
+        <AdminSidebarUtilityCard>
+          <div className="admin-sidebar-utility-toolbar">
+            <ThemeToggle />
+          </div>
+          <div className="admin-sidebar-utility-actions">
+            <AdminReturnToConsoleLink
+              label={adminStrings.header.returnToConsole}
+              href={ADMIN_USER_CONSOLE_HREF}
+              className="admin-sidebar-utility-action"
+            />
+            <Button type="button" variant="ghost" className="token-usage-back-button admin-sidebar-utility-action" onClick={onBack}>
+              <Icon icon="mdi:arrow-left" width={18} height={18} />
+              {keyDetailsStrings.back}
+            </Button>
+          </div>
+        </AdminSidebarUtilityCard>
+
+        <AdminSidebarUtilityCard>
+          <div className="admin-sidebar-utility-actions">
+            <Button
+              type="button"
+              variant={syncState === 'success' ? 'success' : 'default'}
+              className="admin-sidebar-utility-action"
+              onClick={() => void syncUsage()}
+              disabled={syncState === 'syncing'}
+              aria-busy={syncState === 'syncing'}
+            >
+              <Icon
+                icon={syncState === 'syncing' ? 'mdi:loading' : syncState === 'success' ? 'mdi:check-bold' : 'mdi:refresh'}
+                width={18}
+                height={18}
+                className={syncState === 'syncing' ? 'icon-spin' : undefined}
+              />
+              {syncState === 'syncing'
+                ? keyDetailsStrings.syncing
+                : syncState === 'success'
+                  ? keyDetailsStrings.syncSuccess
+                  : keyDetailsStrings.syncAction}
+            </Button>
+          </div>
+        </AdminSidebarUtilityCard>
+      </AdminSidebarUtilityStack>
+    </AdminShellSidebarUtility>
+  )
 
   return (
     <div className="admin-detail-stack">
-      <section className="surface app-header">
-        <div className="title-group">
-          <h1>{keyDetailsStrings.title}</h1>
-          <p>
-            {keyDetailsStrings.descriptionPrefix}{' '}
-            <code>{id}</code>
-          </p>
-        </div>
-        <div className="controls">
-          <ThemeToggle />
-          <AdminReturnToConsoleLink
-            label={adminStrings.header.returnToConsole}
-            href={ADMIN_USER_CONSOLE_HREF}
-            className="admin-return-link--detail"
-          />
-          <Button
-            type="button"
-            variant={syncState === 'success' ? 'success' : 'default'}
-            onClick={() => void syncUsage()}
-            disabled={syncState === 'syncing'}
-            aria-busy={syncState === 'syncing'}
-          >
-            <Icon
-              icon={syncState === 'syncing' ? 'mdi:loading' : syncState === 'success' ? 'mdi:check-bold' : 'mdi:refresh'}
-              width={18}
-              height={18}
-              className={syncState === 'syncing' ? 'icon-spin' : undefined}
+      {keyDetailSidebarUtility}
+
+      <div className="admin-stacked-only">
+        <section className="surface app-header">
+          <div className="title-group">
+            <h1>{keyDetailsStrings.title}</h1>
+            <p>
+              {keyDetailsStrings.descriptionPrefix}{' '}
+              <code>{id}</code>
+            </p>
+          </div>
+          <div className="controls">
+            <ThemeToggle />
+            <AdminReturnToConsoleLink
+              label={adminStrings.header.returnToConsole}
+              href={ADMIN_USER_CONSOLE_HREF}
+              className="admin-return-link--detail"
             />
-            {syncState === 'syncing'
-              ? keyDetailsStrings.syncing
-              : syncState === 'success'
-                ? keyDetailsStrings.syncSuccess
-                : keyDetailsStrings.syncAction}
-          </Button>
-          <Button type="button" variant="ghost" onClick={onBack}>
-            <Icon icon="mdi:arrow-left" width={18} height={18} />
-            {keyDetailsStrings.back}
-          </Button>
-        </div>
-      </section>
+            <Button
+              type="button"
+              variant={syncState === 'success' ? 'success' : 'default'}
+              onClick={() => void syncUsage()}
+              disabled={syncState === 'syncing'}
+              aria-busy={syncState === 'syncing'}
+            >
+              <Icon
+                icon={syncState === 'syncing' ? 'mdi:loading' : syncState === 'success' ? 'mdi:check-bold' : 'mdi:refresh'}
+                width={18}
+                height={18}
+                className={syncState === 'syncing' ? 'icon-spin' : undefined}
+              />
+              {syncState === 'syncing'
+                ? keyDetailsStrings.syncing
+                : syncState === 'success'
+                  ? keyDetailsStrings.syncSuccess
+                  : keyDetailsStrings.syncAction}
+            </Button>
+            <Button type="button" variant="ghost" onClick={onBack}>
+              <Icon icon="mdi:arrow-left" width={18} height={18} />
+              {keyDetailsStrings.back}
+            </Button>
+          </div>
+        </section>
+      </div>
+
+      <div className="admin-desktop-only">
+        <AdminCompactIntro
+          title={keyDetailsStrings.title}
+          description={(
+            <>
+              {keyDetailsStrings.descriptionPrefix} <code>{id}</code>
+            </>
+          )}
+        />
+      </div>
 
       {error && <div className="surface error-banner" style={{ marginTop: 8, marginBottom: 0 }}>{error}</div>}
 

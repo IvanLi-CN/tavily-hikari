@@ -15,7 +15,9 @@ import {
 import { type QueryLoadState, getBlockingLoadState, getRefreshingLoadState, isBlockingLoadState, isRefreshingLoadState } from '../admin/queryLoadState'
 import AdminLoadingRegion from '../components/AdminLoadingRegion'
 import AdminRecentRequestsPanel, { type RecentRequestsOutcomeFilter } from '../components/AdminRecentRequestsPanel'
+import AdminCompactIntro from '../components/AdminCompactIntro'
 import AdminReturnToConsoleLink from '../components/AdminReturnToConsoleLink'
+import { AdminSidebarUtilityCard, AdminSidebarUtilityStack } from '../components/AdminSidebarUtility'
 import ThemeToggle from '../components/ThemeToggle'
 import { StatusBadge } from '../components/StatusBadge'
 import { Button } from '../components/ui/button'
@@ -33,6 +35,7 @@ import { useLanguage, useTranslate } from '../i18n'
 import { ADMIN_USER_CONSOLE_HREF } from '../lib/adminUserConsoleEntry'
 import { copyText, selectAllReadonlyText } from '../lib/clipboard'
 import { useResponsiveModes } from '../lib/responsive'
+import { AdminShellSidebarUtility } from '../admin/AdminShell'
 import {
   buildRequestKindQuickFilterSelection,
   defaultTokenLogRequestKindQuickFilters,
@@ -1246,6 +1249,53 @@ export default function TokenDetail({
       })
     }
   }, [rotatedToken])
+  const tokenDetailSidebarUtility = (
+    <AdminShellSidebarUtility>
+      <AdminSidebarUtilityStack>
+        <AdminSidebarUtilityCard>
+          <div className="admin-sidebar-utility-toolbar">
+            <ThemeToggle />
+          </div>
+          <div className="admin-sidebar-utility-meta">
+            <span className={`sse-chip ${sseConnected ? 'sse-chip-ok' : 'sse-chip-warn'}`} title="Live updates via SSE">
+              <span className="sse-dot" aria-hidden="true" /> {sseConnected ? 'Live' : 'Offline'}
+            </span>
+          </div>
+          <div className="admin-sidebar-utility-actions">
+            <AdminReturnToConsoleLink
+              label={translations.admin.header.returnToConsole}
+              href={ADMIN_USER_CONSOLE_HREF}
+              className="admin-sidebar-utility-action"
+            />
+            <Button
+              type="button"
+              variant="outline"
+              className="admin-sidebar-utility-action"
+              onClick={() => (onBack ? onBack() : window.history.back())}
+            >
+              <Icon icon="mdi:arrow-left" width={18} height={18} />
+              Back
+            </Button>
+          </div>
+        </AdminSidebarUtilityCard>
+
+        <AdminSidebarUtilityCard>
+          <div className="admin-sidebar-utility-actions">
+            <Button
+              type="button"
+              variant="warning"
+              className="admin-sidebar-utility-action"
+              onClick={() => setIsRotateDialogOpen(true)}
+              aria-label="Regenerate secret"
+            >
+              <Icon icon="mdi:key-change" width={18} height={18} />
+              Regenerate Secret
+            </Button>
+          </div>
+        </AdminSidebarUtilityCard>
+      </AdminSidebarUtilityStack>
+    </AdminShellSidebarUtility>
+  )
 
   return (
     <div
@@ -1254,36 +1304,47 @@ export default function TokenDetail({
         isCompactLayout ? ' is-compact-layout' : ''
       }`}
     >
-      <section className="surface app-header">
-        <div className="title-group">
-          <h1>Access Token Detail</h1>
-          <div className="subtitle">Token <code>{id}</code></div>
-        </div>
-        <div className="controls token-detail-controls">
-          <ThemeToggle />
-          <AdminReturnToConsoleLink
-            label={translations.admin.header.returnToConsole}
-            href={ADMIN_USER_CONSOLE_HREF}
-            className="admin-return-link--detail"
-          />
-          <span className={`sse-chip ${sseConnected ? 'sse-chip-ok' : 'sse-chip-warn'}`} title="Live updates via SSE">
-            <span className="sse-dot" aria-hidden="true" /> {sseConnected ? 'Live' : 'Offline'}
-          </span>
-          <Button type="button" variant="outline" onClick={() => (onBack ? onBack() : window.history.back())}>
-            <Icon icon="mdi:arrow-left" width={18} height={18} />
-            Back
-          </Button>
-          <Button
-            type="button"
-            variant="warning"
-            onClick={() => setIsRotateDialogOpen(true)}
-            aria-label="Regenerate secret"
-          >
-            <Icon icon="mdi:key-change" width={18} height={18} />
-            Regenerate Secret
-          </Button>
-        </div>
-      </section>
+      {tokenDetailSidebarUtility}
+
+      <div className="admin-stacked-only">
+        <section className="surface app-header">
+          <div className="title-group">
+            <h1>Access Token Detail</h1>
+            <div className="subtitle">Token <code>{id}</code></div>
+          </div>
+          <div className="controls token-detail-controls">
+            <ThemeToggle />
+            <AdminReturnToConsoleLink
+              label={translations.admin.header.returnToConsole}
+              href={ADMIN_USER_CONSOLE_HREF}
+              className="admin-return-link--detail"
+            />
+            <span className={`sse-chip ${sseConnected ? 'sse-chip-ok' : 'sse-chip-warn'}`} title="Live updates via SSE">
+              <span className="sse-dot" aria-hidden="true" /> {sseConnected ? 'Live' : 'Offline'}
+            </span>
+            <Button type="button" variant="outline" onClick={() => (onBack ? onBack() : window.history.back())}>
+              <Icon icon="mdi:arrow-left" width={18} height={18} />
+              Back
+            </Button>
+            <Button
+              type="button"
+              variant="warning"
+              onClick={() => setIsRotateDialogOpen(true)}
+              aria-label="Regenerate secret"
+            >
+              <Icon icon="mdi:key-change" width={18} height={18} />
+              Regenerate Secret
+            </Button>
+          </div>
+        </section>
+      </div>
+
+      <div className="admin-desktop-only">
+        <AdminCompactIntro
+          title="Access Token Detail"
+          description={<>Token <code>{id}</code></>}
+        />
+      </div>
 
       {error && <div className="surface error-banner" role="alert">{error}</div>}
 
