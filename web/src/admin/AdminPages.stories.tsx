@@ -17,6 +17,7 @@ import type {
   ApiKeyStats,
   AuthToken,
   JobLogView,
+  MonthlyBrokenKeyDetail,
   RequestLog,
   SortDirection,
 } from '../api'
@@ -907,6 +908,8 @@ const MOCK_USERS: AdminUserSummary[] = [
     dailyFailure: 203,
     monthlySuccess: 129_442,
     monthlyFailure: 3_180,
+    monthlyBrokenCount: 3,
+    monthlyBrokenLimit: 5,
     lastActivity: now - 25,
   },
   {
@@ -930,6 +933,8 @@ const MOCK_USERS: AdminUserSummary[] = [
     dailyFailure: 209,
     monthlySuccess: 201_402,
     monthlyFailure: 8_614,
+    monthlyBrokenCount: 5,
+    monthlyBrokenLimit: 6,
     lastActivity: now - 38,
   },
   {
@@ -953,6 +958,8 @@ const MOCK_USERS: AdminUserSummary[] = [
     dailyFailure: 0,
     monthlySuccess: 122,
     monthlyFailure: 7,
+    monthlyBrokenCount: 0,
+    monthlyBrokenLimit: 5,
     lastActivity: null,
   },
 ]
@@ -1012,6 +1019,8 @@ const MOCK_UNBOUND_TOKEN_USAGE: AdminUnboundTokenUsageSummary[] = [
     dailyFailure: 6,
     monthlySuccess: 2_744,
     monthlyFailure: 168,
+    monthlyBrokenCount: 2,
+    monthlyBrokenLimit: 2,
     lastUsedAt: now - 180,
   },
   {
@@ -1031,6 +1040,8 @@ const MOCK_UNBOUND_TOKEN_USAGE: AdminUnboundTokenUsageSummary[] = [
     dailyFailure: 92,
     monthlySuccess: 5_874,
     monthlyFailure: 2_010,
+    monthlyBrokenCount: 1,
+    monthlyBrokenLimit: 2,
     lastUsedAt: now - 3_600,
   },
   {
@@ -1050,6 +1061,8 @@ const MOCK_UNBOUND_TOKEN_USAGE: AdminUnboundTokenUsageSummary[] = [
     dailyFailure: 1,
     monthlySuccess: 296,
     monthlyFailure: 5,
+    monthlyBrokenCount: null,
+    monthlyBrokenLimit: null,
     lastUsedAt: now - 86_400,
   },
 ]
@@ -1131,6 +1144,221 @@ const MOCK_USER_DETAIL: AdminUserDetail = {
     },
   ],
 }
+
+const MOCK_MONTHLY_BROKEN_ITEMS: Record<string, MonthlyBrokenKeyDetail[]> = {
+  'user:usr_alice': [
+    {
+      keyId: 'key_prod_a',
+      currentStatus: 'quarantined',
+      reasonCode: 'manual_quarantine',
+      reasonSummary: '确认该 Key 被上游封禁',
+      latestBreakAt: now - 3_600,
+      source: 'manual',
+      breakerTokenId: '9vsN',
+      breakerUserId: 'usr_alice',
+      breakerUserDisplayName: 'Alice Wang',
+      manualActorDisplayName: null,
+      relatedUsers: [{ userId: 'usr_alice', displayName: 'Alice Wang', username: 'alice' }],
+    },
+    {
+      keyId: 'key_prod_c',
+      currentStatus: 'exhausted',
+      reasonCode: 'quota_exhausted',
+      reasonSummary: '本月额度已耗尽',
+      latestBreakAt: now - 7_200,
+      source: 'auto',
+      breakerTokenId: '9vsN',
+      breakerUserId: 'usr_alice',
+      breakerUserDisplayName: 'Alice Wang',
+      manualActorDisplayName: null,
+      relatedUsers: [{ userId: 'usr_alice', displayName: 'Alice Wang', username: 'alice' }],
+    },
+    {
+      keyId: 'key_batch_f',
+      currentStatus: 'quarantined',
+      reasonCode: 'manual_quarantine',
+      reasonSummary: '发现同账户已被风控',
+      latestBreakAt: now - 14_400,
+      source: 'manual',
+      breakerTokenId: null,
+      breakerUserId: 'usr_alice',
+      breakerUserDisplayName: 'Alice Wang',
+      manualActorDisplayName: null,
+      relatedUsers: [
+        { userId: 'usr_alice', displayName: 'Alice Wang', username: 'alice' },
+        { userId: 'usr_bob', displayName: 'Bob Chen', username: 'bob' },
+      ],
+    },
+  ],
+  'user:usr_bob': [
+    {
+      keyId: 'key_prod_b',
+      currentStatus: 'quarantined',
+      reasonCode: 'manual_quarantine',
+      reasonSummary: '确认该 Key 被上游封禁',
+      latestBreakAt: now - 2_000,
+      source: 'manual',
+      breakerTokenId: 'Vn7D',
+      breakerUserId: 'usr_bob',
+      breakerUserDisplayName: 'Bob Chen',
+      manualActorDisplayName: null,
+      relatedUsers: [{ userId: 'usr_bob', displayName: 'Bob Chen', username: 'bob' }],
+    },
+    {
+      keyId: 'key_prod_d',
+      currentStatus: 'exhausted',
+      reasonCode: 'quota_exhausted',
+      reasonSummary: '本月额度已耗尽',
+      latestBreakAt: now - 4_600,
+      source: 'auto',
+      breakerTokenId: 'Vn7D',
+      breakerUserId: 'usr_bob',
+      breakerUserDisplayName: 'Bob Chen',
+      manualActorDisplayName: null,
+      relatedUsers: [{ userId: 'usr_bob', displayName: 'Bob Chen', username: 'bob' }],
+    },
+    {
+      keyId: 'key_ops_j',
+      currentStatus: 'quarantined',
+      reasonCode: 'manual_quarantine',
+      reasonSummary: '发现同账户多个 Key 同时失效',
+      latestBreakAt: now - 9_200,
+      source: 'manual',
+      breakerTokenId: 'Vn7D',
+      breakerUserId: 'usr_bob',
+      breakerUserDisplayName: 'Bob Chen',
+      manualActorDisplayName: null,
+      relatedUsers: [
+        { userId: 'usr_bob', displayName: 'Bob Chen', username: 'bob' },
+        { userId: 'usr_alice', displayName: 'Alice Wang', username: 'alice' },
+      ],
+    },
+    {
+      keyId: 'key_ops_k',
+      currentStatus: 'exhausted',
+      reasonCode: 'quota_exhausted',
+      reasonSummary: '本月额度已耗尽',
+      latestBreakAt: now - 16_200,
+      source: 'auto',
+      breakerTokenId: 'Vn7D',
+      breakerUserId: 'usr_bob',
+      breakerUserDisplayName: 'Bob Chen',
+      manualActorDisplayName: null,
+      relatedUsers: [{ userId: 'usr_bob', displayName: 'Bob Chen', username: 'bob' }],
+    },
+    {
+      keyId: 'key_ops_l',
+      currentStatus: 'quarantined',
+      reasonCode: 'manual_quarantine',
+      reasonSummary: '确认该 Key 被上游封禁',
+      latestBreakAt: now - 28_800,
+      source: 'manual',
+      breakerTokenId: null,
+      breakerUserId: 'usr_bob',
+      breakerUserDisplayName: 'Bob Chen',
+      manualActorDisplayName: null,
+      relatedUsers: [{ userId: 'usr_bob', displayName: 'Bob Chen', username: 'bob' }],
+    },
+  ],
+  'token:qa13': [
+    {
+      keyId: 'key_sandbox_a',
+      currentStatus: 'quarantined',
+      reasonCode: 'manual_quarantine',
+      reasonSummary: '确认该 Key 被上游封禁',
+      latestBreakAt: now - 4_800,
+      source: 'manual',
+      breakerTokenId: 'qa13',
+      breakerUserId: null,
+      breakerUserDisplayName: null,
+      manualActorDisplayName: null,
+      relatedUsers: [],
+    },
+    {
+      keyId: 'key_sandbox_c',
+      currentStatus: 'exhausted',
+      reasonCode: 'quota_exhausted',
+      reasonSummary: '本月额度已耗尽',
+      latestBreakAt: now - 9_600,
+      source: 'auto',
+      breakerTokenId: 'qa13',
+      breakerUserId: null,
+      breakerUserDisplayName: null,
+      manualActorDisplayName: null,
+      relatedUsers: [],
+    },
+  ],
+  'token:ops7': [
+    {
+      keyId: 'key_ops_z',
+      currentStatus: 'quarantined',
+      reasonCode: 'manual_quarantine',
+      reasonSummary: '确认该 Key 被上游封禁',
+      latestBreakAt: now - 6_200,
+      source: 'manual',
+      breakerTokenId: 'ops7',
+      breakerUserId: null,
+      breakerUserDisplayName: null,
+      manualActorDisplayName: null,
+      relatedUsers: [],
+    },
+  ],
+}
+
+const MONTHLY_BROKEN_DRAWER_SINGLE_ITEM: MonthlyBrokenKeyDetail[] = MOCK_MONTHLY_BROKEN_ITEMS['user:usr_alice'].slice(
+  0,
+  1,
+)
+
+const MONTHLY_BROKEN_DRAWER_LONG_CONTENT_ITEMS: MonthlyBrokenKeyDetail[] = [
+  {
+    ...MOCK_MONTHLY_BROKEN_ITEMS['user:usr_alice'][0],
+    keyId: 'key_enterprise_cn_001',
+    latestBreakAt: now - 1_500,
+    reasonSummary:
+      '系统确认同一上游账号下多个区域节点在短时间内连续进入风控，本主体当前仍关联该 Key，因此继续计入本月蹬坏统计。',
+    relatedUsers: [
+      { userId: 'usr_alice', displayName: 'Alice Wang', username: 'alice' },
+      { userId: 'usr_bob', displayName: 'Bob Chen', username: 'bob' },
+      { userId: 'usr_evelyn', displayName: 'Evelyn Zhang', username: 'evelyn.ops' },
+    ],
+  },
+  {
+    ...MOCK_MONTHLY_BROKEN_ITEMS['user:usr_alice'][1],
+    keyId: 'key_enterprise_cn_002',
+    latestBreakAt: now - 4_200,
+    breakerTokenId: 'A2Q9',
+    reasonSummary:
+      '该 Key 对应的上游配额在本月批量任务中被耗尽，系统保留最后一次触发记录，便于管理员回溯是谁把额度踩空。',
+    relatedUsers: [
+      { userId: 'usr_alice', displayName: 'Alice Wang', username: 'alice' },
+      { userId: 'usr_nina', displayName: 'Nina Zhou', username: 'nina' },
+    ],
+  },
+]
+
+const MONTHLY_BROKEN_DRAWER_OVERFLOW_ITEMS: MonthlyBrokenKeyDetail[] = Array.from({ length: 16 }, (_, index) => ({
+  keyId: `key_overflow_${String(index + 1).padStart(2, '0')}`,
+  currentStatus: index % 3 === 0 ? 'quarantined' : 'exhausted',
+  reasonCode: index % 3 === 0 ? 'manual_quarantine' : 'quota_exhausted',
+  reasonSummary:
+    index % 3 === 0
+      ? `第 ${index + 1} 把 Key 被系统判定为仍处于上游封禁态，用于验证多条记录时抽屉高度会上限收口，并且需要依赖抽屉内部滚动浏览后续条目。`
+      : `第 ${index + 1} 把 Key 在批量请求中耗尽本月额度，用于验证超长列表时表格区域改为内部滚动，而不是继续把抽屉整体无限拉高。`,
+  latestBreakAt: now - 1_200 * (index + 1),
+  source: index % 3 === 0 ? 'manual' : 'auto',
+  breakerTokenId: index % 2 === 0 ? 'qa13' : 'ops7',
+  breakerUserId: null,
+  breakerUserDisplayName: null,
+  manualActorDisplayName: null,
+  relatedUsers:
+    index % 2 === 0
+      ? []
+      : [
+          { userId: 'usr_alice', displayName: 'Alice Wang', username: 'alice' },
+          { userId: 'usr_bob', displayName: 'Bob Chen', username: 'bob' },
+        ],
+}))
 
 const numberFormatter = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 })
 const percentFormatter = new Intl.NumberFormat('en-US', { style: 'percent', minimumFractionDigits: 1, maximumFractionDigits: 1 })
@@ -1243,6 +1471,291 @@ function formatStackedTimestamp(value: number | null, language: 'en' | 'zh'): { 
   }
 }
 
+function monthlyBrokenPrimaryClassName(count: number, limit: number): string | null {
+  if (limit <= 0) {
+    return count > 0 ? 'admin-table-value-primary-danger' : null
+  }
+  if (count >= limit) return 'admin-table-value-primary-danger'
+  if (count > 0) return 'admin-table-value-primary-warning'
+  return null
+}
+
+function formatMonthlyBrokenStackValue(
+  count: number,
+  limit: number,
+): { primary: string; secondary: string; primaryClassName?: string } {
+  return {
+    primary: formatNumber(Math.max(0, count)),
+    secondary: formatQuotaLimitValue(limit),
+    primaryClassName: monthlyBrokenPrimaryClassName(count, limit) ?? undefined,
+  }
+}
+
+function MonthlyBrokenCountTrigger({
+  count,
+  onOpen,
+  ariaLabel,
+  className,
+}: {
+  count: number
+  onOpen?: (() => void) | null
+  ariaLabel: string
+  className?: string | null
+}): JSX.Element {
+  const primary = formatNumber(Math.max(0, count))
+  if (count <= 0 || !onOpen) {
+    return <span className={`admin-table-value-primary${className ? ` ${className}` : ''}`}>{primary}</span>
+  }
+  return (
+    <button
+      type="button"
+      className={`link-button admin-table-value-link${className ? ` ${className}` : ''}`}
+      onClick={onOpen}
+      aria-label={ariaLabel}
+    >
+      {primary}
+    </button>
+  )
+}
+
+function formatMonthlyBrokenRelatedUsers(
+  users: MonthlyBrokenKeyDetail['relatedUsers'],
+  emptyLabel: string,
+): string {
+  if (users.length === 0) return emptyLabel
+  return users.map((user) => user.displayName || user.username || user.userId).join(', ')
+}
+
+function formatMonthlyBrokenBreaker(
+  item: MonthlyBrokenKeyDetail,
+  strings: Pick<AdminTranslations['users']['brokenKeys'], 'breakerSystem' | 'breakerUnknown'>,
+): string {
+  if (item.breakerUserDisplayName) return item.breakerUserDisplayName
+  if (item.breakerUserId) return item.breakerUserId
+  if (item.breakerTokenId) return item.breakerTokenId
+  if (item.source === 'manual') return strings.breakerSystem
+  return strings.breakerUnknown
+}
+
+function StoryMonthlyBrokenKeyValue({
+  keyId,
+  ungroupedLabel,
+  detailLabel,
+  copyLabel,
+  copiedLabel,
+  copied,
+  onCopy,
+}: {
+  keyId: string
+  ungroupedLabel: string
+  detailLabel: string
+  copyLabel: string
+  copiedLabel: string
+  copied: boolean
+  onCopy: () => void | Promise<void>
+}): JSX.Element {
+  return (
+    <div className="monthly-broken-key-value">
+      <JobKeyLink
+        keyId={keyId}
+        keyGroup={null}
+        ungroupedLabel={ungroupedLabel}
+        detailLabel={detailLabel}
+        showBubble={false}
+        onOpenKey={() => openAdminStory('admin-pages-keydetailroute--c-bo-x-review')}
+      />
+      <Button
+        type="button"
+        variant={copied ? 'success' : 'ghost'}
+        size="icon"
+        className="monthly-broken-key-copy-button shadow-none"
+        title={copied ? copiedLabel : copyLabel}
+        aria-label={copied ? copiedLabel : copyLabel}
+        onClick={() => void onCopy()}
+      >
+        <Icon
+          icon={copied ? 'mdi:check' : 'mdi:content-copy'}
+          width={16}
+          height={16}
+          aria-hidden="true"
+        />
+      </Button>
+    </div>
+  )
+}
+
+function StoryMonthlyBrokenDrawer({
+  open,
+  label,
+  items,
+  onOpenChange,
+}: {
+  open: boolean
+  label: string
+  items: MonthlyBrokenKeyDetail[]
+  onOpenChange: (open: boolean) => void
+}): JSX.Element {
+  const admin = useTranslate().admin
+  const users = admin.users
+  const keyStrings = admin.keys
+  const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!copiedKeyId) return
+    const timer = window.setTimeout(() => setCopiedKeyId(null), 2_000)
+    return () => window.clearTimeout(timer)
+  }, [copiedKeyId])
+
+  const handleCopy = async (keyId: string) => {
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(keyId)
+      }
+    } catch {
+      // Storybook proof only needs deterministic copied-state feedback.
+    }
+    setCopiedKeyId(keyId)
+  }
+
+  return (
+    <Drawer open={open} onOpenChange={onOpenChange} shouldScaleBackground={false}>
+      <DrawerContent className="request-entity-drawer-content-fit">
+        <div className="request-entity-drawer-body-fit">
+          <section className="surface panel">
+            <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
+              <div>
+                <h2>{users.brokenKeys.drawerTitle}</h2>
+                <p className="panel-description">
+                  {users.brokenKeys.drawerDescription.replace('{label}', label)}
+                </p>
+              </div>
+            </div>
+            {items.length === 0 ? (
+              <div className="empty-state alert">{users.brokenKeys.empty}</div>
+            ) : (
+              <>
+                <div className="table-wrapper jobs-table-wrapper admin-responsive-up">
+                  <table className="jobs-table admin-users-table">
+                    <thead>
+                      <tr>
+                        <th>{users.brokenKeys.table.key}</th>
+                        <th>{users.brokenKeys.table.status}</th>
+                        <th>{users.brokenKeys.table.reason}</th>
+                        <th>{users.brokenKeys.table.latestBreakAt}</th>
+                        <th>{users.brokenKeys.table.breaker}</th>
+                        <th>{users.brokenKeys.table.relatedUsers}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {items.map((item) => (
+                        <tr key={`${item.keyId}:${item.latestBreakAt}`}>
+                          <td>
+                            <StoryMonthlyBrokenKeyValue
+                              keyId={item.keyId}
+                              ungroupedLabel={keyStrings.groups.ungrouped}
+                              detailLabel={keyStrings.actions.details}
+                              copyLabel={users.brokenKeys.actions.copyKeyId}
+                              copiedLabel={users.brokenKeys.actions.copied}
+                              copied={copiedKeyId === item.keyId}
+                              onCopy={() => handleCopy(item.keyId)}
+                            />
+                          </td>
+                          <td>
+                            <StatusBadge tone={item.currentStatus === 'quarantined' ? 'warning' : 'error'}>
+                              {admin.statuses[item.currentStatus] ?? item.currentStatus}
+                            </StatusBadge>
+                          </td>
+                          <td>{item.reasonSummary || item.reasonCode || users.brokenKeys.noReason}</td>
+                          <td>{formatTimestamp(item.latestBreakAt)}</td>
+                          <td>{formatMonthlyBrokenBreaker(item, users.brokenKeys)}</td>
+                          <td>
+                            {formatMonthlyBrokenRelatedUsers(
+                              item.relatedUsers,
+                              users.brokenKeys.noRelatedUsers,
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="admin-mobile-list admin-responsive-down">
+                  {items.map((item) => (
+                    <article key={`${item.keyId}:${item.latestBreakAt}`} className="admin-mobile-card">
+                      <div className="admin-mobile-kv">
+                        <span>{users.brokenKeys.table.key}</span>
+                        <strong>
+                          <StoryMonthlyBrokenKeyValue
+                            keyId={item.keyId}
+                            ungroupedLabel={keyStrings.groups.ungrouped}
+                            detailLabel={keyStrings.actions.details}
+                            copyLabel={users.brokenKeys.actions.copyKeyId}
+                            copiedLabel={users.brokenKeys.actions.copied}
+                            copied={copiedKeyId === item.keyId}
+                            onCopy={() => handleCopy(item.keyId)}
+                          />
+                        </strong>
+                      </div>
+                      <div className="admin-mobile-kv">
+                        <span>{users.brokenKeys.table.status}</span>
+                        <strong>{admin.statuses[item.currentStatus] ?? item.currentStatus}</strong>
+                      </div>
+                      <div className="admin-mobile-kv">
+                        <span>{users.brokenKeys.table.reason}</span>
+                        <strong>{item.reasonSummary || item.reasonCode || users.brokenKeys.noReason}</strong>
+                      </div>
+                      <div className="admin-mobile-kv">
+                        <span>{users.brokenKeys.table.latestBreakAt}</span>
+                        <strong>{formatTimestamp(item.latestBreakAt)}</strong>
+                      </div>
+                      <div className="admin-mobile-kv">
+                        <span>{users.brokenKeys.table.breaker}</span>
+                        <strong>{formatMonthlyBrokenBreaker(item, users.brokenKeys)}</strong>
+                      </div>
+                      <div className="admin-mobile-kv">
+                        <span>{users.brokenKeys.table.relatedUsers}</span>
+                        <strong>
+                          {formatMonthlyBrokenRelatedUsers(
+                            item.relatedUsers,
+                            users.brokenKeys.noRelatedUsers,
+                          )}
+                        </strong>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              </>
+            )}
+          </section>
+        </div>
+      </DrawerContent>
+    </Drawer>
+  )
+}
+
+function MonthlyBrokenDrawerStoryCanvas({
+  label,
+  items,
+}: {
+  label: string
+  items: MonthlyBrokenKeyDetail[]
+}): JSX.Element {
+  return (
+    <AdminPageFrame activeModule="users">
+      <section className="surface panel">
+        <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
+          <div>
+            <h2>Monthly Broken Drawer Sandbox</h2>
+            <p className="panel-description">Focused Storybook surface for verifying adaptive drawer height.</p>
+          </div>
+        </div>
+        <div className="empty-state alert">Background reference only. Use the open drawer to inspect sizing.</div>
+      </section>
+      <StoryMonthlyBrokenDrawer open label={label} items={items} onOpenChange={() => undefined} />
+    </AdminPageFrame>
+  )
+}
+
 function formatUnboundTokenIdentityMeta(
   note: string | null,
   group: string | null,
@@ -1295,6 +1808,21 @@ function compareQuotaUsage(
   const usedOrder = applySortDirection(compareScalar(leftUsed, rightUsed), direction)
   if (usedOrder !== 0) return usedOrder
   return applySortDirection(compareScalar(leftLimit, rightLimit), direction)
+}
+
+function compareOptionalQuotaUsage(
+  leftUsed: number | null,
+  leftLimit: number | null,
+  rightUsed: number | null,
+  rightLimit: number | null,
+  direction: SortDirection,
+): number {
+  if (leftUsed != null && leftLimit != null && rightUsed != null && rightLimit != null) {
+    return compareQuotaUsage(leftUsed, leftLimit, rightUsed, rightLimit, direction)
+  }
+  if (leftUsed != null && leftLimit != null) return -1
+  if (rightUsed != null && rightLimit != null) return 1
+  return 0
 }
 
 function compareSuccessRate(
@@ -1363,6 +1891,14 @@ function compareAdminUserSummaryRows(
           left.quotaMonthlyLimit,
           right.quotaMonthlyUsed,
           right.quotaMonthlyLimit,
+          direction,
+        )
+      case 'monthlyBrokenCount':
+        return compareOptionalQuotaUsage(
+          left.monthlyBrokenCount,
+          left.monthlyBrokenLimit,
+          right.monthlyBrokenCount,
+          right.monthlyBrokenLimit,
           direction,
         )
       case 'dailySuccessRate':
@@ -1435,6 +1971,14 @@ function compareAdminUnboundTokenUsageRows(
           left.quotaMonthlyLimit,
           right.quotaMonthlyUsed,
           right.quotaMonthlyLimit,
+          direction,
+        )
+      case 'monthlyBrokenCount':
+        return compareOptionalQuotaUsage(
+          left.monthlyBrokenCount,
+          left.monthlyBrokenLimit,
+          right.monthlyBrokenCount,
+          right.monthlyBrokenLimit,
           direction,
         )
       case 'dailySuccessRate':
@@ -3302,7 +3846,11 @@ function UsersPageCanvas(): JSX.Element {
   )
 }
 
-function UsersUsagePageCanvas(): JSX.Element {
+function UsersUsagePageCanvas({
+  initialDrawerUserId,
+}: {
+  initialDrawerUserId?: string
+} = {}): JSX.Element {
   const admin = useTranslate().admin
   const { language } = useLanguage()
   const users = admin.users
@@ -3311,6 +3859,18 @@ function UsersUsagePageCanvas(): JSX.Element {
   const [query, setQuery] = useState('')
   const [sortField, setSortField] = useState<AdminUsersSortField | null>(null)
   const [sortOrder, setSortOrder] = useState<SortDirection | null>(null)
+  const [monthlyBrokenDrawer, setMonthlyBrokenDrawer] = useState<{
+    label: string
+    items: MonthlyBrokenKeyDetail[]
+  } | null>(() => {
+    if (!initialDrawerUserId) return null
+    const user = MOCK_USERS.find((item) => item.userId === initialDrawerUserId)
+    if (!user) return null
+    return {
+      label: user.displayName || user.username || user.userId,
+      items: MOCK_MONTHLY_BROKEN_ITEMS[`user:${user.userId}`] ?? [],
+    }
+  })
   const normalizedQuery = query.trim().toLowerCase()
   const effectiveSortField = sortField ?? ADMIN_USERS_DEFAULT_SORT_FIELD
   const effectiveSortOrder = sortOrder ?? ADMIN_USERS_DEFAULT_SORT_ORDER
@@ -3412,6 +3972,13 @@ function UsersUsagePageCanvas(): JSX.Element {
                     onToggle={toggleSort}
                   />
                   <StoryAdminUsersSortableHeader
+                    label={users.usage.table.monthlyBroken}
+                    field="monthlyBrokenCount"
+                    activeField={effectiveSortField}
+                    activeOrder={effectiveSortOrder}
+                    onToggle={toggleSort}
+                  />
+                  <StoryAdminUsersSortableHeader
                     label={users.usage.table.dailySuccessRate}
                     displayLabel={usageDailyRateLabel}
                     field="dailySuccessRate"
@@ -3442,9 +4009,14 @@ function UsersUsagePageCanvas(): JSX.Element {
                   const hourlyMetric = formatQuotaStackValue(item.quotaHourlyUsed, item.quotaHourlyLimit)
                   const dailyQuotaMetric = formatQuotaStackValue(item.quotaDailyUsed, item.quotaDailyLimit)
                   const monthlyQuotaMetric = formatQuotaStackValue(item.quotaMonthlyUsed, item.quotaMonthlyLimit)
+                  const monthlyBrokenMetric = formatMonthlyBrokenStackValue(
+                    item.monthlyBrokenCount,
+                    item.monthlyBrokenLimit,
+                  )
                   const dailySuccessMetric = formatSuccessRateStackValue(item.dailySuccess, item.dailyFailure, language)
                   const monthlySuccessMetric = formatSuccessRateStackValue(item.monthlySuccess, item.monthlyFailure, language)
                   const lastActivityMetric = formatStackedTimestamp(item.lastActivity, language)
+                  const userLabel = item.displayName || item.username || item.userId
                   return (
                     <tr key={item.userId}>
                       <td className="admin-users-identity-cell">
@@ -3492,6 +4064,21 @@ function UsersUsagePageCanvas(): JSX.Element {
                       </td>
                       <td className="admin-users-compact-cell">
                         <div className="admin-table-value-stack">
+                          <MonthlyBrokenCountTrigger
+                            count={item.monthlyBrokenCount}
+                            onOpen={() =>
+                              setMonthlyBrokenDrawer({
+                                label: userLabel,
+                                items: MOCK_MONTHLY_BROKEN_ITEMS[`user:${item.userId}`] ?? [],
+                              })}
+                            ariaLabel={users.brokenKeys.openDetails.replace('{label}', userLabel)}
+                            className={monthlyBrokenMetric.primaryClassName}
+                          />
+                          <span className="admin-table-value-secondary">{monthlyBrokenMetric.secondary}</span>
+                        </div>
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        <div className="admin-table-value-stack">
                           <span className="admin-table-value-primary">{dailySuccessMetric.primary}</span>
                           <span className="admin-table-value-secondary">{dailySuccessMetric.secondary}</span>
                         </div>
@@ -3517,6 +4104,15 @@ function UsersUsagePageCanvas(): JSX.Element {
             </table>
           )}
         </div>
+
+        <StoryMonthlyBrokenDrawer
+          open={monthlyBrokenDrawer != null}
+          label={monthlyBrokenDrawer?.label ?? '—'}
+          items={monthlyBrokenDrawer?.items ?? []}
+          onOpenChange={(open) => {
+            if (!open) setMonthlyBrokenDrawer(null)
+          }}
+        />
       </section>
     </AdminPageFrame>
   )
@@ -3525,9 +4121,15 @@ function UsersUsagePageCanvas(): JSX.Element {
 function UnboundTokenUsagePageCanvas({
   items = MOCK_UNBOUND_TOKEN_USAGE,
   errorMessage = null,
+  initialDrawerTokenId,
+  initialSortField = null,
+  initialSortOrder = null,
 }: {
   items?: AdminUnboundTokenUsageSummary[]
   errorMessage?: string | null
+  initialDrawerTokenId?: string
+  initialSortField?: AdminUnboundTokenUsageSortField | null
+  initialSortOrder?: SortDirection | null
 } = {}): JSX.Element {
   const admin = useTranslate().admin
   const { language } = useLanguage()
@@ -3538,9 +4140,19 @@ function UnboundTokenUsagePageCanvas({
   const monthlyRateLabel = language === 'zh' ? strings.table.monthlySuccessRate : 'Monthly'
   const [query, setQuery] = useState('')
   const [page, setPage] = useState(1)
-  const [sortField, setSortField] = useState<AdminUnboundTokenUsageSortField | null>(null)
-  const [sortOrder, setSortOrder] = useState<SortDirection | null>(null)
+  const [sortField, setSortField] = useState<AdminUnboundTokenUsageSortField | null>(initialSortField)
+  const [sortOrder, setSortOrder] = useState<SortDirection | null>(initialSortOrder)
   const [selectedTokenId, setSelectedTokenId] = useState<string | null>(null)
+  const [monthlyBrokenDrawer, setMonthlyBrokenDrawer] = useState<{
+    label: string
+    items: MonthlyBrokenKeyDetail[]
+  } | null>(() => {
+    if (!initialDrawerTokenId) return null
+    return {
+      label: initialDrawerTokenId,
+      items: MOCK_MONTHLY_BROKEN_ITEMS[`token:${initialDrawerTokenId}`] ?? [],
+    }
+  })
   const pageSize = 2
   const normalizedQuery = query.trim().toLowerCase()
   const effectiveSortField = sortField ?? ADMIN_UNBOUND_TOKEN_USAGE_DEFAULT_SORT_FIELD
@@ -3652,6 +4264,13 @@ function UnboundTokenUsagePageCanvas({
                     onToggle={toggleSort}
                   />
                   <StoryAdminUsersSortableHeader
+                    label={strings.table.monthlyBroken}
+                    field="monthlyBrokenCount"
+                    activeField={effectiveSortField}
+                    activeOrder={effectiveSortOrder}
+                    onToggle={toggleSort}
+                  />
+                  <StoryAdminUsersSortableHeader
                     label={strings.table.dailySuccessRate}
                     displayLabel={dailyRateLabel}
                     field="dailySuccessRate"
@@ -3682,6 +4301,10 @@ function UnboundTokenUsagePageCanvas({
                   const hourlyMetric = formatQuotaStackValue(item.quotaHourlyUsed, item.quotaHourlyLimit)
                   const dailyQuotaMetric = formatQuotaStackValue(item.quotaDailyUsed, item.quotaDailyLimit)
                   const monthlyQuotaMetric = formatQuotaStackValue(item.quotaMonthlyUsed, item.quotaMonthlyLimit)
+                  const monthlyBrokenMetric =
+                    item.monthlyBrokenCount == null || item.monthlyBrokenLimit == null
+                      ? null
+                      : formatMonthlyBrokenStackValue(item.monthlyBrokenCount, item.monthlyBrokenLimit)
                   const dailySuccessMetric = formatSuccessRateStackValue(item.dailySuccess, item.dailyFailure, language)
                   const monthlySuccessMetric = formatSuccessRateStackValue(item.monthlySuccess, item.monthlyFailure, language)
                   const lastUsedMetric = formatStackedTimestamp(item.lastUsedAt, language)
@@ -3728,6 +4351,27 @@ function UnboundTokenUsagePageCanvas({
                           <span className={`admin-table-value-primary${monthlyQuotaMetric.primaryClassName ? ` ${monthlyQuotaMetric.primaryClassName}` : ''}`}>{monthlyQuotaMetric.primary}</span>
                           <span className="admin-table-value-secondary">{monthlyQuotaMetric.secondary}</span>
                         </div>
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        {monthlyBrokenMetric == null ? (
+                          <div className="admin-table-value-stack">
+                            <span className="admin-table-value-primary">—</span>
+                          </div>
+                        ) : (
+                          <div className="admin-table-value-stack">
+                            <MonthlyBrokenCountTrigger
+                              count={item.monthlyBrokenCount ?? 0}
+                              onOpen={() =>
+                                setMonthlyBrokenDrawer({
+                                  label: item.tokenId,
+                                  items: MOCK_MONTHLY_BROKEN_ITEMS[`token:${item.tokenId}`] ?? [],
+                                })}
+                              ariaLabel={users.brokenKeys.openDetails.replace('{label}', item.tokenId)}
+                              className={monthlyBrokenMetric.primaryClassName}
+                            />
+                            <span className="admin-table-value-secondary">{monthlyBrokenMetric.secondary}</span>
+                          </div>
+                        )}
                       </td>
                       <td className="admin-users-compact-cell">
                         <div className="admin-table-value-stack">
@@ -3801,6 +4445,26 @@ function UnboundTokenUsagePageCanvas({
                   <strong>{formatQuotaUsagePair(item.quotaMonthlyUsed, item.quotaMonthlyLimit)}</strong>
                 </div>
                 <div className="admin-mobile-kv">
+                  <span>{strings.table.monthlyBroken}</span>
+                  {item.monthlyBrokenCount == null || item.monthlyBrokenLimit == null ? (
+                    <strong>—</strong>
+                  ) : item.monthlyBrokenCount > 0 ? (
+                    <button
+                      type="button"
+                      className="link-button"
+                      onClick={() =>
+                        setMonthlyBrokenDrawer({
+                          label: item.tokenId,
+                          items: MOCK_MONTHLY_BROKEN_ITEMS[`token:${item.tokenId}`] ?? [],
+                        })}
+                    >
+                      <strong>{formatQuotaUsagePair(item.monthlyBrokenCount, item.monthlyBrokenLimit)}</strong>
+                    </button>
+                  ) : (
+                    <strong>{formatQuotaUsagePair(item.monthlyBrokenCount, item.monthlyBrokenLimit)}</strong>
+                  )}
+                </div>
+                <div className="admin-mobile-kv">
                   <span>{strings.table.dailySuccessRate}</span>
                   <strong>{formatCompactSuccessRateValue(item.dailySuccess, item.dailyFailure, language)}</strong>
                 </div>
@@ -3841,6 +4505,15 @@ function UnboundTokenUsagePageCanvas({
             onNext={() => setPage((current) => Math.min(totalPages, current + 1))}
           />
         )}
+
+        <StoryMonthlyBrokenDrawer
+          open={monthlyBrokenDrawer != null}
+          label={monthlyBrokenDrawer?.label ?? '—'}
+          items={monthlyBrokenDrawer?.items ?? []}
+          onOpenChange={(open) => {
+            if (!open) setMonthlyBrokenDrawer(null)
+          }}
+        />
       </section>
     </AdminPageFrame>
   )
@@ -3998,6 +4671,10 @@ function UserDetailPageCanvas(): JSX.Element {
     dailyLimit: String(detail.quotaBase.dailyLimit),
     monthlyLimit: String(detail.quotaBase.monthlyLimit),
   })
+  const [brokenLimitDraft, setBrokenLimitDraft] = useState(String(detail.monthlyBrokenLimit))
+  const [brokenLimitSavedAt, setBrokenLimitSavedAt] = useState<number | null>(null)
+  const [brokenLimitError, setBrokenLimitError] = useState<string | null>(null)
+  const [monthlyBrokenDrawerOpen, setMonthlyBrokenDrawerOpen] = useState(false)
   const hasBlockAllTag = detail.tags.some((tag) => tag.effectKind === 'block_all')
 
   return (
@@ -4042,6 +4719,76 @@ function UserDetailPageCanvas(): JSX.Element {
             <span className="token-info-value">{formatNumber(detail.tokenCount)}</span>
           </div>
         </div>
+      </section>
+
+      <section className="surface panel">
+        <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
+          <div>
+            <h2>{users.brokenKeys.limitTitle}</h2>
+            <p className="panel-description">{users.brokenKeys.limitDescription}</p>
+          </div>
+          {detail.monthlyBrokenCount > 0 ? (
+            <Button type="button" variant="outline" onClick={() => setMonthlyBrokenDrawerOpen(true)}>
+              {users.brokenKeys.openAction}
+            </Button>
+          ) : null}
+        </div>
+        <div className="token-info-grid">
+          <div className="token-info-card">
+            <span className="token-info-label">{users.usage.table.monthlyBroken}</span>
+            <span className="token-info-value">{formatNumber(detail.monthlyBrokenCount)}</span>
+          </div>
+          <div className="token-info-card">
+            <span className="token-info-label">{users.brokenKeys.limitField}</span>
+            <span className="token-info-value">{formatNumber(detail.monthlyBrokenLimit)}</span>
+          </div>
+        </div>
+        <div
+          style={{
+            marginTop: 16,
+            display: 'flex',
+            gap: 12,
+            alignItems: 'flex-end',
+            flexWrap: 'wrap',
+          }}
+        >
+          <label style={{ display: 'grid', gap: 6, minWidth: 220 }}>
+            <span className="token-info-label">{users.brokenKeys.limitField}</span>
+            <Input
+              type="text"
+              inputMode="numeric"
+              value={brokenLimitDraft}
+              onChange={(event) => setBrokenLimitDraft(event.target.value)}
+              aria-label={users.brokenKeys.limitField}
+            />
+          </label>
+          <Button
+            type="button"
+            onClick={() => {
+              const parsed = Number.parseInt(brokenLimitDraft, 10)
+              if (!Number.isFinite(parsed) || parsed < 0) {
+                setBrokenLimitError(users.brokenKeys.invalid)
+                return
+              }
+              setBrokenLimitError(null)
+              setBrokenLimitSavedAt(Date.now())
+            }}
+          >
+            {users.brokenKeys.save}
+          </Button>
+        </div>
+        <div style={{ marginTop: 12 }}>
+          <span className="panel-description">
+            {brokenLimitSavedAt
+              ? users.brokenKeys.savedAt.replace('{time}', new Date(brokenLimitSavedAt).toLocaleTimeString())
+              : users.brokenKeys.hint}
+          </span>
+        </div>
+        {brokenLimitError ? (
+          <div className="alert alert-error" role="alert" style={{ marginTop: 12 }}>
+            {brokenLimitError}
+          </div>
+        ) : null}
       </section>
 
       <section className="surface panel">
@@ -4365,6 +5112,13 @@ function UserDetailPageCanvas(): JSX.Element {
           </table>
         </div>
       </section>
+
+      <StoryMonthlyBrokenDrawer
+        open={monthlyBrokenDrawerOpen}
+        label={detail.displayName || detail.username || detail.userId}
+        items={MOCK_MONTHLY_BROKEN_ITEMS[`user:${detail.userId}`] ?? []}
+        onOpenChange={setMonthlyBrokenDrawerOpen}
+      />
     </AdminPageFrame>
   )
 }
@@ -4518,6 +5272,13 @@ export const UsersUsage: Story = {
   },
 }
 
+export const UsersUsageBreakageDrawerProof: Story = {
+  render: () => <UsersUsagePageCanvas initialDrawerUserId="usr_alice" />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+}
+
 export const UnboundTokenUsage: Story = {
   render: () => <UnboundTokenUsagePageCanvas />,
   parameters: {
@@ -4532,6 +5293,33 @@ export const UnboundTokenUsage: Story = {
     if (firstIdentity?.textContent?.trim() !== 'tmp4') {
       throw new Error('Expected daily success sort to move tmp4 to the first row.')
     }
+  },
+}
+
+export const UnboundTokenUsageMonthlyBrokenSortProof: Story = {
+  render: () => (
+    <UnboundTokenUsagePageCanvas initialSortField="monthlyBrokenCount" initialSortOrder="desc" />
+  ),
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 80))
+    const firstIdentity = canvasElement.querySelector<HTMLElement>('[data-token-identity]')
+    if (firstIdentity?.textContent?.trim() !== 'qa13') {
+      throw new Error('Expected monthly broken sort to move qa13 to the first row.')
+    }
+    const sortHeader = canvasElement.querySelector<HTMLElement>('th[aria-sort="descending"] [data-sort-field="monthlyBrokenCount"]')
+    if (!sortHeader) {
+      throw new Error('Expected monthly broken sort header to remain active in descending order.')
+    }
+  },
+}
+
+export const UnboundTokenUsageBreakageDrawerProof: Story = {
+  render: () => <UnboundTokenUsagePageCanvas initialDrawerTokenId="qa13" />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
   },
 }
 
@@ -4577,6 +5365,41 @@ export const UsersUsageTooltipProof: Story = {
   render: () => <UsersUsageTooltipProofCanvas />,
   parameters: {
     viewport: { defaultViewport: '1440-device-desktop' },
+  },
+}
+
+export const MonthlyBrokenDrawerEmpty: Story = {
+  render: () => <MonthlyBrokenDrawerStoryCanvas label="Alice Wang" items={[]} />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+}
+
+export const MonthlyBrokenDrawerSingleRow: Story = {
+  render: () => <MonthlyBrokenDrawerStoryCanvas label="Alice Wang" items={MONTHLY_BROKEN_DRAWER_SINGLE_ITEM} />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+}
+
+export const MonthlyBrokenDrawerLongContent: Story = {
+  render: () => <MonthlyBrokenDrawerStoryCanvas label="Alice Wang" items={MONTHLY_BROKEN_DRAWER_LONG_CONTENT_ITEMS} />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+}
+
+export const MonthlyBrokenDrawerOverflow: Story = {
+  render: () => <MonthlyBrokenDrawerStoryCanvas label="Alice Wang" items={MONTHLY_BROKEN_DRAWER_OVERFLOW_ITEMS} />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+}
+
+export const MonthlyBrokenDrawerMobile: Story = {
+  render: () => <MonthlyBrokenDrawerStoryCanvas label="Alice Wang" items={MOCK_MONTHLY_BROKEN_ITEMS['user:usr_alice']} />,
+  parameters: {
+    viewport: { defaultViewport: '0390-device-iphone-14' },
   },
 }
 

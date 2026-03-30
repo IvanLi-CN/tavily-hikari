@@ -4811,6 +4811,112 @@ impl TavilyProxy {
             .await
     }
 
+    async fn backfill_current_month_broken_key_subjects(&self) -> Result<(), ProxyError> {
+        self.key_store
+            .backfill_current_month_auto_subject_breakages()
+            .await
+    }
+
+    pub async fn fetch_account_monthly_broken_limit(
+        &self,
+        user_id: &str,
+    ) -> Result<i64, ProxyError> {
+        self.key_store
+            .fetch_account_monthly_broken_limit(user_id)
+            .await
+    }
+
+    pub async fn fetch_account_monthly_broken_limits_bulk(
+        &self,
+        user_ids: &[String],
+    ) -> Result<HashMap<String, i64>, ProxyError> {
+        self.key_store
+            .fetch_account_monthly_broken_limits_bulk(user_ids)
+            .await
+    }
+
+    pub async fn update_account_monthly_broken_limit(
+        &self,
+        user_id: &str,
+        monthly_broken_limit: i64,
+    ) -> Result<bool, ProxyError> {
+        self.key_store
+            .update_account_monthly_broken_limit(user_id, monthly_broken_limit)
+            .await
+    }
+
+    pub async fn fetch_monthly_broken_counts_for_users(
+        &self,
+        user_ids: &[String],
+    ) -> Result<HashMap<String, i64>, ProxyError> {
+        self.backfill_current_month_broken_key_subjects().await?;
+        self.key_store
+            .fetch_monthly_broken_counts_for_users(user_ids, start_of_month(Utc::now()).timestamp())
+            .await
+    }
+
+    pub async fn fetch_monthly_broken_counts_for_tokens(
+        &self,
+        token_ids: &[String],
+    ) -> Result<HashMap<String, i64>, ProxyError> {
+        self.backfill_current_month_broken_key_subjects().await?;
+        self.key_store
+            .fetch_monthly_broken_counts_for_tokens(
+                token_ids,
+                start_of_month(Utc::now()).timestamp(),
+            )
+            .await
+    }
+
+    pub async fn list_monthly_broken_subjects_for_tokens(
+        &self,
+        token_ids: &[String],
+    ) -> Result<HashSet<String>, ProxyError> {
+        self.backfill_current_month_broken_key_subjects().await?;
+        self.key_store
+            .list_monthly_broken_subjects_for_tokens(
+                token_ids,
+                start_of_month(Utc::now()).timestamp(),
+            )
+            .await
+    }
+
+    pub async fn fetch_user_monthly_broken_keys(
+        &self,
+        user_id: &str,
+        page: i64,
+        per_page: i64,
+    ) -> Result<PaginatedMonthlyBrokenKeys, ProxyError> {
+        self.backfill_current_month_broken_key_subjects().await?;
+        self.key_store
+            .fetch_monthly_broken_keys_page(
+                BROKEN_KEY_SUBJECT_USER,
+                user_id,
+                page,
+                per_page,
+                start_of_month(Utc::now()).timestamp(),
+            )
+            .await
+    }
+
+    pub async fn fetch_token_monthly_broken_keys(
+        &self,
+        token_id: &str,
+        page: i64,
+        per_page: i64,
+    ) -> Result<PaginatedMonthlyBrokenKeys, ProxyError> {
+        self.backfill_current_month_broken_key_subjects().await?;
+        self.key_store
+            .fetch_monthly_broken_keys_page(
+                BROKEN_KEY_SUBJECT_TOKEN,
+                token_id,
+                page,
+                per_page,
+                start_of_month(Utc::now()).timestamp(),
+            )
+            .await
+    }
+
     /// Admin: list users with pagination and optional fuzzy query.
     pub async fn list_admin_users_paged(
         &self,
@@ -6981,28 +7087,39 @@ impl TavilyProxy {
         let before = self.key_store.fetch_key_state_snapshot(&key_id).await?;
         let changed = self.key_store.mark_quota_exhausted(api_key).await?;
         if changed {
+            let created_at = Utc::now().timestamp();
             let after = self.key_store.fetch_key_state_snapshot(&key_id).await?;
             self.key_store
                 .insert_api_key_maintenance_record(ApiKeyMaintenanceRecord {
                     id: nanoid!(12),
-                    key_id,
+                    key_id: key_id.clone(),
                     source: MAINTENANCE_SOURCE_ADMIN.to_string(),
                     operation_code: MAINTENANCE_OP_MANUAL_MARK_EXHAUSTED.to_string(),
                     operation_summary: "管理员手动标记 exhausted".to_string(),
                     reason_code: Some("manual_mark_exhausted".to_string()),
-                    reason_summary: Some("管理员确认该 Key 额度耗尽".to_string()),
+                    reason_summary: Some("确认该 Key 额度耗尽".to_string()),
                     reason_detail: None,
                     request_log_id: None,
                     auth_token_log_id: None,
-                    auth_token_id: actor.auth_token_id,
-                    actor_user_id: actor.actor_user_id,
-                    actor_display_name: actor.actor_display_name,
+                    auth_token_id: actor.auth_token_id.clone(),
+                    actor_user_id: actor.actor_user_id.clone(),
+                    actor_display_name: actor.actor_display_name.clone(),
                     status_before: before.status,
                     status_after: after.status,
                     quarantine_before: before.quarantined,
                     quarantine_after: after.quarantined,
-                    created_at: Utc::now().timestamp(),
+                    created_at,
                 })
+                .await?;
+            self.key_store
+                .record_manual_key_breakage_fanout(
+                    &key_id,
+                    STATUS_EXHAUSTED,
+                    Some("manual_mark_exhausted"),
+                    Some("确认该 Key 额度耗尽"),
+                    &actor,
+                    created_at,
+                )
                 .await?;
         }
         Ok(changed)

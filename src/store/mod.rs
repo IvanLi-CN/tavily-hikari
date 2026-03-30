@@ -1306,6 +1306,77 @@ impl KeyStore {
 
         sqlx::query(
             r#"
+            CREATE TABLE IF NOT EXISTS token_api_key_bindings (
+                token_id TEXT NOT NULL,
+                api_key_id TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                last_success_at INTEGER NOT NULL,
+                PRIMARY KEY (token_id, api_key_id),
+                FOREIGN KEY (token_id) REFERENCES auth_tokens(id),
+                FOREIGN KEY (api_key_id) REFERENCES api_keys(id)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_token_api_key_bindings_token_recent
+               ON token_api_key_bindings(token_id, last_success_at DESC, api_key_id)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_token_api_key_bindings_key_recent
+               ON token_api_key_bindings(api_key_id, last_success_at DESC, token_id)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS subject_key_breakages (
+                subject_kind TEXT NOT NULL,
+                subject_id TEXT NOT NULL,
+                key_id TEXT NOT NULL,
+                month_start INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                latest_break_at INTEGER NOT NULL,
+                key_status TEXT NOT NULL,
+                reason_code TEXT,
+                reason_summary TEXT,
+                source TEXT NOT NULL,
+                breaker_token_id TEXT,
+                breaker_user_id TEXT,
+                breaker_user_display_name TEXT,
+                manual_actor_display_name TEXT,
+                PRIMARY KEY (subject_kind, subject_id, key_id, month_start),
+                FOREIGN KEY (key_id) REFERENCES api_keys(id)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_subject_key_breakages_subject_month
+               ON subject_key_breakages(subject_kind, subject_id, month_start DESC, latest_break_at DESC, key_id)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_subject_key_breakages_key_month
+               ON subject_key_breakages(key_id, month_start DESC, latest_break_at DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
             CREATE TABLE IF NOT EXISTS user_primary_api_key_affinity (
                 user_id TEXT PRIMARY KEY,
                 api_key_id TEXT NOT NULL,
@@ -1685,6 +1756,7 @@ impl KeyStore {
                 hourly_limit INTEGER NOT NULL,
                 daily_limit INTEGER NOT NULL,
                 monthly_limit INTEGER NOT NULL,
+                monthly_broken_limit INTEGER NOT NULL DEFAULT 5,
                 inherits_defaults INTEGER NOT NULL DEFAULT 1,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
@@ -1701,6 +1773,17 @@ impl KeyStore {
         {
             sqlx::query(
                 "ALTER TABLE account_quota_limits ADD COLUMN inherits_defaults INTEGER NOT NULL DEFAULT 1",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
+
+        if !self
+            .table_column_exists("account_quota_limits", "monthly_broken_limit")
+            .await?
+        {
+            sqlx::query(
+                "ALTER TABLE account_quota_limits ADD COLUMN monthly_broken_limit INTEGER NOT NULL DEFAULT 5",
             )
             .execute(&self.pool)
             .await?;
@@ -2829,6 +2912,163 @@ impl KeyStore {
         .execute(&mut **tx)
         .await?;
 
+        Ok(())
+    }
+
+    pub(crate) async fn refresh_token_api_key_binding(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        token_id: &str,
+        api_key_id: &str,
+        success_at: i64,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            INSERT INTO token_api_key_bindings (
+                token_id,
+                api_key_id,
+                created_at,
+                updated_at,
+                last_success_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(token_id, api_key_id)
+            DO UPDATE SET
+                updated_at = CASE
+                    WHEN excluded.last_success_at >= token_api_key_bindings.last_success_at THEN excluded.updated_at
+                    ELSE token_api_key_bindings.updated_at
+                END,
+                last_success_at = MAX(token_api_key_bindings.last_success_at, excluded.last_success_at)
+            "#,
+        )
+        .bind(token_id)
+        .bind(api_key_id)
+        .bind(success_at)
+        .bind(success_at)
+        .bind(success_at)
+        .execute(&mut **tx)
+        .await?;
+
+        sqlx::query(
+            r#"
+            DELETE FROM token_api_key_bindings
+            WHERE token_id = ?
+              AND api_key_id IN (
+                  SELECT api_key_id
+                  FROM token_api_key_bindings
+                  WHERE token_id = ?
+                  ORDER BY last_success_at DESC, updated_at DESC, api_key_id DESC
+                  LIMIT -1 OFFSET ?
+              )
+            "#,
+        )
+        .bind(token_id)
+        .bind(token_id)
+        .bind(TOKEN_API_KEY_BINDING_RECENT_LIMIT)
+        .execute(&mut **tx)
+        .await?;
+
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn upsert_subject_key_breakage_tx(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        subject_kind: &str,
+        subject_id: &str,
+        key_id: &str,
+        break_at: i64,
+        key_status: &str,
+        reason_code: Option<&str>,
+        reason_summary: Option<&str>,
+        source: &str,
+        breaker_token_id: Option<&str>,
+        breaker_user_id: Option<&str>,
+        breaker_user_display_name: Option<&str>,
+        manual_actor_display_name: Option<&str>,
+    ) -> Result<(), ProxyError> {
+        let month_start = start_of_month(
+            Utc.timestamp_opt(break_at, 0)
+                .single()
+                .unwrap_or_else(Utc::now),
+        )
+        .timestamp();
+        sqlx::query(
+            r#"
+            INSERT INTO subject_key_breakages (
+                subject_kind,
+                subject_id,
+                key_id,
+                month_start,
+                created_at,
+                updated_at,
+                latest_break_at,
+                key_status,
+                reason_code,
+                reason_summary,
+                source,
+                breaker_token_id,
+                breaker_user_id,
+                breaker_user_display_name,
+                manual_actor_display_name
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(subject_kind, subject_id, key_id, month_start)
+            DO UPDATE SET
+                updated_at = excluded.updated_at,
+                latest_break_at = MAX(subject_key_breakages.latest_break_at, excluded.latest_break_at),
+                key_status = CASE
+                    WHEN excluded.latest_break_at >= subject_key_breakages.latest_break_at THEN excluded.key_status
+                    ELSE subject_key_breakages.key_status
+                END,
+                reason_code = CASE
+                    WHEN excluded.latest_break_at >= subject_key_breakages.latest_break_at THEN excluded.reason_code
+                    ELSE subject_key_breakages.reason_code
+                END,
+                reason_summary = CASE
+                    WHEN excluded.latest_break_at >= subject_key_breakages.latest_break_at THEN excluded.reason_summary
+                    ELSE subject_key_breakages.reason_summary
+                END,
+                source = CASE
+                    WHEN excluded.latest_break_at >= subject_key_breakages.latest_break_at THEN excluded.source
+                    ELSE subject_key_breakages.source
+                END,
+                breaker_token_id = CASE
+                    WHEN excluded.latest_break_at >= subject_key_breakages.latest_break_at THEN excluded.breaker_token_id
+                    ELSE subject_key_breakages.breaker_token_id
+                END,
+                breaker_user_id = CASE
+                    WHEN excluded.latest_break_at >= subject_key_breakages.latest_break_at THEN excluded.breaker_user_id
+                    ELSE subject_key_breakages.breaker_user_id
+                END,
+                breaker_user_display_name = CASE
+                    WHEN excluded.latest_break_at >= subject_key_breakages.latest_break_at THEN excluded.breaker_user_display_name
+                    ELSE subject_key_breakages.breaker_user_display_name
+                END,
+                manual_actor_display_name = CASE
+                    WHEN excluded.latest_break_at >= subject_key_breakages.latest_break_at THEN excluded.manual_actor_display_name
+                    ELSE subject_key_breakages.manual_actor_display_name
+                END
+            "#,
+        )
+        .bind(subject_kind)
+        .bind(subject_id)
+        .bind(key_id)
+        .bind(month_start)
+        .bind(break_at)
+        .bind(break_at)
+        .bind(break_at)
+        .bind(key_status)
+        .bind(reason_code)
+        .bind(reason_summary)
+        .bind(source)
+        .bind(breaker_token_id)
+        .bind(breaker_user_id)
+        .bind(breaker_user_display_name)
+        .bind(manual_actor_display_name)
+        .execute(&mut **tx)
+        .await?;
         Ok(())
     }
 
@@ -7507,6 +7747,529 @@ impl KeyStore {
         Ok(map)
     }
 
+    pub(crate) async fn fetch_account_monthly_broken_limit(
+        &self,
+        user_id: &str,
+    ) -> Result<i64, ProxyError> {
+        self.ensure_account_quota_limits(user_id).await?;
+        Ok(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COALESCE(monthly_broken_limit, ?) FROM account_quota_limits WHERE user_id = ? LIMIT 1",
+            )
+            .bind(USER_MONTHLY_BROKEN_LIMIT_DEFAULT)
+            .bind(user_id)
+            .fetch_one(&self.pool)
+            .await?,
+        )
+    }
+
+    pub(crate) async fn fetch_account_monthly_broken_limits_bulk(
+        &self,
+        user_ids: &[String],
+    ) -> Result<HashMap<String, i64>, ProxyError> {
+        if user_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        self.ensure_account_quota_limits_for_users(user_ids).await?;
+        let mut builder = QueryBuilder::new("SELECT user_id, COALESCE(monthly_broken_limit, ");
+        builder.push_bind(USER_MONTHLY_BROKEN_LIMIT_DEFAULT);
+        builder.push(") FROM account_quota_limits WHERE user_id IN (");
+        {
+            let mut separated = builder.separated(", ");
+            for user_id in user_ids {
+                separated.push_bind(user_id);
+            }
+        }
+        builder.push(")");
+
+        let rows = builder
+            .build_query_as::<(String, i64)>()
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().collect())
+    }
+
+    pub(crate) async fn update_account_monthly_broken_limit(
+        &self,
+        user_id: &str,
+        monthly_broken_limit: i64,
+    ) -> Result<bool, ProxyError> {
+        let exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users WHERE id = ?")
+            .bind(user_id)
+            .fetch_one(&self.pool)
+            .await?;
+        if exists == 0 {
+            return Ok(false);
+        }
+
+        self.ensure_account_quota_limits(user_id).await?;
+        let now = Utc::now().timestamp();
+        sqlx::query(
+            r#"UPDATE account_quota_limits
+               SET monthly_broken_limit = ?, updated_at = ?
+               WHERE user_id = ?"#,
+        )
+        .bind(monthly_broken_limit)
+        .bind(now)
+        .bind(user_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(true)
+    }
+
+    pub(crate) async fn record_manual_key_breakage_fanout(
+        &self,
+        key_id: &str,
+        key_status: &str,
+        reason_code: Option<&str>,
+        reason_summary: Option<&str>,
+        _actor: &MaintenanceActor,
+        break_at: i64,
+    ) -> Result<(), ProxyError> {
+        let user_rows = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+            r#"
+            SELECT u.id, u.display_name, u.username
+            FROM user_api_key_bindings b
+            JOIN users u ON u.id = b.user_id
+            WHERE b.api_key_id = ?
+            ORDER BY u.username ASC, u.id ASC
+            "#,
+        )
+        .bind(key_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let token_ids = sqlx::query_scalar::<_, String>(
+            "SELECT token_id FROM token_api_key_bindings WHERE api_key_id = ? ORDER BY token_id ASC",
+        )
+        .bind(key_id)
+        .fetch_all(&self.pool)
+        .await?;
+        if user_rows.is_empty() && token_ids.is_empty() {
+            return Ok(());
+        }
+
+        let mut tx = self.pool.begin().await?;
+        // Manual maintenance is billed to whichever subjects were still bound to the key.
+        for (user_id, display_name, username) in &user_rows {
+            self.upsert_subject_key_breakage_tx(
+                &mut tx,
+                BROKEN_KEY_SUBJECT_USER,
+                user_id,
+                key_id,
+                break_at,
+                key_status,
+                reason_code,
+                reason_summary,
+                BROKEN_KEY_SOURCE_MANUAL,
+                None,
+                Some(user_id.as_str()),
+                display_name.as_deref().or(username.as_deref()),
+                None,
+            )
+            .await?;
+        }
+        for token_id in &token_ids {
+            self.upsert_subject_key_breakage_tx(
+                &mut tx,
+                BROKEN_KEY_SUBJECT_TOKEN,
+                token_id,
+                key_id,
+                break_at,
+                key_status,
+                reason_code,
+                reason_summary,
+                BROKEN_KEY_SOURCE_MANUAL,
+                Some(token_id.as_str()),
+                None,
+                None,
+                None,
+            )
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn backfill_current_month_auto_subject_breakages(
+        &self,
+    ) -> Result<(), ProxyError> {
+        let month_start = start_of_month(Utc::now()).timestamp();
+        let rows =
+            sqlx::query_as::<_, (String, String, String, i64, Option<String>, Option<String>)>(
+                r#"
+            SELECT
+                key_id,
+                auth_token_id,
+                operation_code,
+                created_at,
+                reason_code,
+                reason_summary
+            FROM api_key_maintenance_records
+            WHERE source = ?
+              AND created_at >= ?
+              AND auth_token_id IS NOT NULL
+              AND operation_code IN (?, ?)
+            ORDER BY created_at ASC, key_id ASC
+            "#,
+            )
+            .bind(MAINTENANCE_SOURCE_SYSTEM)
+            .bind(month_start)
+            .bind(MAINTENANCE_OP_AUTO_QUARANTINE)
+            .bind(MAINTENANCE_OP_AUTO_MARK_EXHAUSTED)
+            .fetch_all(&self.pool)
+            .await?;
+        if rows.is_empty() {
+            return Ok(());
+        }
+
+        let mut token_ids: Vec<String> = rows
+            .iter()
+            .map(|(_, token_id, _, _, _, _)| token_id.clone())
+            .collect();
+        token_ids.sort_unstable();
+        token_ids.dedup();
+        let token_bindings = self.list_user_bindings_for_tokens(&token_ids).await?;
+
+        let mut user_ids: Vec<String> = token_bindings.values().cloned().collect();
+        user_ids.sort_unstable();
+        user_ids.dedup();
+        let user_map = self.get_admin_user_identities(&user_ids).await?;
+
+        let mut tx = self.pool.begin().await?;
+        for (key_id, token_id, operation_code, created_at, reason_code, reason_summary) in rows {
+            let key_status = if operation_code == MAINTENANCE_OP_AUTO_QUARANTINE {
+                KEY_EFFECT_QUARANTINED
+            } else {
+                STATUS_EXHAUSTED
+            };
+            let breaker_user_id = token_bindings.get(&token_id).cloned();
+            let breaker_identity = breaker_user_id
+                .as_ref()
+                .and_then(|user_id| user_map.get(user_id));
+            let breaker_display = breaker_identity.and_then(|identity| {
+                identity
+                    .display_name
+                    .clone()
+                    .or(identity.username.clone())
+                    .or(Some(identity.user_id.clone()))
+            });
+
+            self.upsert_subject_key_breakage_tx(
+                &mut tx,
+                BROKEN_KEY_SUBJECT_TOKEN,
+                &token_id,
+                &key_id,
+                created_at,
+                key_status,
+                reason_code.as_deref(),
+                reason_summary.as_deref(),
+                BROKEN_KEY_SOURCE_AUTO,
+                Some(&token_id),
+                breaker_user_id.as_deref(),
+                breaker_display.as_deref(),
+                None,
+            )
+            .await?;
+
+            if let Some(user_id) = breaker_user_id.as_deref() {
+                self.upsert_subject_key_breakage_tx(
+                    &mut tx,
+                    BROKEN_KEY_SUBJECT_USER,
+                    user_id,
+                    &key_id,
+                    created_at,
+                    key_status,
+                    reason_code.as_deref(),
+                    reason_summary.as_deref(),
+                    BROKEN_KEY_SOURCE_AUTO,
+                    Some(&token_id),
+                    Some(user_id),
+                    breaker_display.as_deref(),
+                    None,
+                )
+                .await?;
+            }
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn fetch_monthly_broken_counts_for_users(
+        &self,
+        user_ids: &[String],
+        month_start: i64,
+    ) -> Result<HashMap<String, i64>, ProxyError> {
+        if user_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut builder = QueryBuilder::new(
+            r#"SELECT skb.subject_id, COUNT(*) AS broken_count
+               FROM subject_key_breakages skb
+               JOIN api_keys ak ON ak.id = skb.key_id AND ak.deleted_at IS NULL
+               LEFT JOIN api_key_quarantines aq ON aq.key_id = ak.id AND aq.cleared_at IS NULL
+               WHERE skb.subject_kind = "#,
+        );
+        builder.push_bind(BROKEN_KEY_SUBJECT_USER);
+        builder.push(" AND skb.month_start = ");
+        builder.push_bind(month_start);
+        builder.push(" AND (aq.key_id IS NOT NULL OR ak.status = ");
+        builder.push_bind(STATUS_EXHAUSTED);
+        builder.push(") AND skb.subject_id IN (");
+        {
+            let mut separated = builder.separated(", ");
+            for user_id in user_ids {
+                separated.push_bind(user_id);
+            }
+        }
+        builder.push(") GROUP BY skb.subject_id");
+
+        let rows = builder
+            .build_query_as::<(String, i64)>()
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().collect())
+    }
+
+    pub(crate) async fn fetch_monthly_broken_counts_for_tokens(
+        &self,
+        token_ids: &[String],
+        month_start: i64,
+    ) -> Result<HashMap<String, i64>, ProxyError> {
+        if token_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut builder = QueryBuilder::new(
+            r#"SELECT skb.subject_id, COUNT(*) AS broken_count
+               FROM subject_key_breakages skb
+               JOIN api_keys ak ON ak.id = skb.key_id AND ak.deleted_at IS NULL
+               LEFT JOIN api_key_quarantines aq ON aq.key_id = ak.id AND aq.cleared_at IS NULL
+               WHERE skb.subject_kind = "#,
+        );
+        builder.push_bind(BROKEN_KEY_SUBJECT_TOKEN);
+        builder.push(" AND skb.month_start = ");
+        builder.push_bind(month_start);
+        builder.push(" AND (aq.key_id IS NOT NULL OR ak.status = ");
+        builder.push_bind(STATUS_EXHAUSTED);
+        builder.push(") AND skb.subject_id IN (");
+        {
+            let mut separated = builder.separated(", ");
+            for token_id in token_ids {
+                separated.push_bind(token_id);
+            }
+        }
+        builder.push(") GROUP BY skb.subject_id");
+
+        let rows = builder
+            .build_query_as::<(String, i64)>()
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().collect())
+    }
+
+    pub(crate) async fn list_monthly_broken_subjects_for_tokens(
+        &self,
+        token_ids: &[String],
+        month_start: i64,
+    ) -> Result<HashSet<String>, ProxyError> {
+        if token_ids.is_empty() {
+            return Ok(HashSet::new());
+        }
+
+        let mut builder = QueryBuilder::new(
+            r#"SELECT DISTINCT skb.subject_id
+               FROM subject_key_breakages skb
+               JOIN api_keys ak ON ak.id = skb.key_id AND ak.deleted_at IS NULL
+               LEFT JOIN api_key_quarantines aq ON aq.key_id = ak.id AND aq.cleared_at IS NULL
+               WHERE skb.subject_kind = "#,
+        );
+        builder.push_bind(BROKEN_KEY_SUBJECT_TOKEN);
+        builder.push(" AND skb.month_start = ");
+        builder.push_bind(month_start);
+        builder.push(" AND (aq.key_id IS NOT NULL OR ak.status = ");
+        builder.push_bind(STATUS_EXHAUSTED);
+        builder.push(") AND skb.subject_id IN (");
+        {
+            let mut separated = builder.separated(", ");
+            for token_id in token_ids {
+                separated.push_bind(token_id);
+            }
+        }
+        builder.push(")");
+
+        let rows = builder
+            .build_query_scalar::<String>()
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().collect())
+    }
+
+    async fn fetch_monthly_broken_related_users_for_keys(
+        &self,
+        key_ids: &[String],
+    ) -> Result<HashMap<String, Vec<MonthlyBrokenKeyRelatedUser>>, ProxyError> {
+        if key_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut builder = QueryBuilder::new(
+            r#"SELECT DISTINCT
+                    b.api_key_id,
+                    u.id,
+                    u.display_name,
+                    u.username
+               FROM user_api_key_bindings b
+               JOIN users u ON u.id = b.user_id
+               WHERE b.api_key_id IN ("#,
+        );
+        {
+            let mut separated = builder.separated(", ");
+            for key_id in key_ids {
+                separated.push_bind(key_id);
+            }
+        }
+        builder.push(") ORDER BY b.api_key_id ASC, u.username ASC, u.id ASC");
+
+        let rows = builder
+            .build_query_as::<(String, String, Option<String>, Option<String>)>()
+            .fetch_all(&self.pool)
+            .await?;
+        let mut map: HashMap<String, Vec<MonthlyBrokenKeyRelatedUser>> = HashMap::new();
+        for (key_id, user_id, display_name, username) in rows {
+            map.entry(key_id)
+                .or_default()
+                .push(MonthlyBrokenKeyRelatedUser {
+                    user_id,
+                    display_name,
+                    username,
+                });
+        }
+        Ok(map)
+    }
+
+    pub(crate) async fn fetch_monthly_broken_keys_page(
+        &self,
+        subject_kind: &str,
+        subject_id: &str,
+        page: i64,
+        per_page: i64,
+        month_start: i64,
+    ) -> Result<PaginatedMonthlyBrokenKeys, ProxyError> {
+        let page = page.max(1);
+        let per_page = per_page.clamp(1, 100);
+        let offset = (page - 1) * per_page;
+
+        let total = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COUNT(*)
+            FROM subject_key_breakages skb
+            JOIN api_keys ak ON ak.id = skb.key_id AND ak.deleted_at IS NULL
+            LEFT JOIN api_key_quarantines aq ON aq.key_id = ak.id AND aq.cleared_at IS NULL
+            WHERE skb.subject_kind = ?
+              AND skb.subject_id = ?
+              AND skb.month_start = ?
+              AND (aq.key_id IS NOT NULL OR ak.status = ?)
+            "#,
+        )
+        .bind(subject_kind)
+        .bind(subject_id)
+        .bind(month_start)
+        .bind(STATUS_EXHAUSTED)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let rows = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+                i64,
+                String,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+            ),
+        >(
+            r#"
+            SELECT
+                skb.key_id,
+                CASE WHEN aq.key_id IS NOT NULL THEN ? ELSE ak.status END AS current_status,
+                COALESCE(aq.reason_code, skb.reason_code) AS reason_code,
+                COALESCE(aq.reason_summary, skb.reason_summary) AS reason_summary,
+                skb.latest_break_at,
+                skb.source,
+                skb.breaker_token_id,
+                skb.breaker_user_id,
+                skb.breaker_user_display_name,
+                skb.manual_actor_display_name
+            FROM subject_key_breakages skb
+            JOIN api_keys ak ON ak.id = skb.key_id AND ak.deleted_at IS NULL
+            LEFT JOIN api_key_quarantines aq ON aq.key_id = ak.id AND aq.cleared_at IS NULL
+            WHERE skb.subject_kind = ?
+              AND skb.subject_id = ?
+              AND skb.month_start = ?
+              AND (aq.key_id IS NOT NULL OR ak.status = ?)
+            ORDER BY skb.latest_break_at DESC, skb.key_id ASC
+            LIMIT ? OFFSET ?
+            "#,
+        )
+        .bind(KEY_EFFECT_QUARANTINED)
+        .bind(subject_kind)
+        .bind(subject_id)
+        .bind(month_start)
+        .bind(STATUS_EXHAUSTED)
+        .bind(per_page)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let key_ids: Vec<String> = rows.iter().map(|row| row.0.clone()).collect();
+        let mut related_users = self
+            .fetch_monthly_broken_related_users_for_keys(&key_ids)
+            .await?;
+        let items = rows
+            .into_iter()
+            .map(
+                |(
+                    key_id,
+                    current_status,
+                    reason_code,
+                    reason_summary,
+                    latest_break_at,
+                    source,
+                    breaker_token_id,
+                    breaker_user_id,
+                    breaker_user_display_name,
+                    manual_actor_display_name,
+                )| MonthlyBrokenKeyDetail {
+                    key_id: key_id.clone(),
+                    current_status,
+                    reason_code,
+                    reason_summary,
+                    latest_break_at,
+                    source,
+                    breaker_token_id,
+                    breaker_user_id,
+                    breaker_user_display_name,
+                    manual_actor_display_name,
+                    related_users: related_users.remove(&key_id).unwrap_or_default(),
+                },
+            )
+            .collect();
+
+        Ok(PaginatedMonthlyBrokenKeys {
+            items,
+            total,
+            page,
+            per_page,
+        })
+    }
+
     pub(crate) async fn seed_linuxdo_system_tags(&self) -> Result<(), ProxyError> {
         let now = Utc::now().timestamp();
         let (hourly_any_delta, hourly_delta, daily_delta, monthly_delta) =
@@ -9670,6 +10433,13 @@ impl KeyStore {
             .bind(credits)
             .fetch_one(&mut *tx)
             .await?;
+
+            if let Some(api_key_id) = api_key_id.as_deref()
+                && result_status == OUTCOME_SUCCESS
+            {
+                self.refresh_token_api_key_binding(&mut tx, token_id, api_key_id, created_at)
+                    .await?;
+            }
         } else {
             tx.rollback().await.ok();
             return Err(ProxyError::QuotaDataMissing {

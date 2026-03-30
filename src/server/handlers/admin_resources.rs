@@ -1862,6 +1862,7 @@ enum AdminUsersSortField {
     QuotaMonthlyUsed,
     DailySuccessRate,
     MonthlySuccessRate,
+    MonthlyBrokenCount,
     LastActivity,
     LastLoginAt,
 }
@@ -1898,6 +1899,7 @@ enum AdminUnboundTokenUsageSortField {
     QuotaHourlyUsed,
     QuotaDailyUsed,
     QuotaMonthlyUsed,
+    MonthlyBrokenCount,
     DailySuccessRate,
     MonthlySuccessRate,
     LastUsedAt,
@@ -1982,6 +1984,8 @@ struct AdminUserSummaryView {
     daily_failure: i64,
     monthly_success: i64,
     monthly_failure: i64,
+    monthly_broken_count: i64,
+    monthly_broken_limit: i64,
     last_activity: Option<i64>,
     tags: Vec<AdminUserTagBindingView>,
 }
@@ -2043,6 +2047,8 @@ struct AdminUserDetailView {
     daily_failure: i64,
     monthly_success: i64,
     monthly_failure: i64,
+    monthly_broken_count: i64,
+    monthly_broken_limit: i64,
     last_activity: Option<i64>,
     tags: Vec<AdminUserTagBindingView>,
     quota_base: AdminQuotaView,
@@ -2058,6 +2064,51 @@ struct UpdateUserQuotaRequest {
     hourly_limit: i64,
     daily_limit: i64,
     monthly_limit: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateUserBrokenKeyLimitRequest {
+    monthly_broken_limit: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct BrokenKeysPageQuery {
+    page: Option<i64>,
+    per_page: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MonthlyBrokenKeyRelatedUserView {
+    user_id: String,
+    display_name: Option<String>,
+    username: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MonthlyBrokenKeyDetailView {
+    key_id: String,
+    current_status: String,
+    reason_code: Option<String>,
+    reason_summary: Option<String>,
+    latest_break_at: i64,
+    source: String,
+    breaker_token_id: Option<String>,
+    breaker_user_id: Option<String>,
+    breaker_user_display_name: Option<String>,
+    manual_actor_display_name: Option<String>,
+    related_users: Vec<MonthlyBrokenKeyRelatedUserView>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PaginatedMonthlyBrokenKeysView {
+    items: Vec<MonthlyBrokenKeyDetailView>,
+    total: i64,
+    page: i64,
+    per_page: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2083,6 +2134,8 @@ struct BindUserTagRequest {
 struct AdminUserSummaryRow {
     user: tavily_hikari::AdminUserIdentity,
     summary: tavily_hikari::UserDashboardSummary,
+    monthly_broken_count: i64,
+    monthly_broken_limit: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -2094,6 +2147,8 @@ struct AdminUnboundTokenUsageRow {
     daily_failure: i64,
     monthly_success: i64,
     monthly_failure: i64,
+    monthly_broken_count: Option<i64>,
+    monthly_broken_limit: Option<i64>,
     last_used_at: Option<i64>,
 }
 
@@ -2116,6 +2171,8 @@ struct AdminUnboundTokenUsageView {
     daily_failure: i64,
     monthly_success: i64,
     monthly_failure: i64,
+    monthly_broken_count: Option<i64>,
+    monthly_broken_limit: Option<i64>,
     last_used_at: Option<i64>,
 }
 
@@ -2213,6 +2270,8 @@ fn build_admin_user_summary_view(
     user: &tavily_hikari::AdminUserIdentity,
     summary: &tavily_hikari::UserDashboardSummary,
     api_key_count: i64,
+    monthly_broken_count: i64,
+    monthly_broken_limit: i64,
     tags: Vec<tavily_hikari::AdminUserTagBinding>,
 ) -> AdminUserSummaryView {
     AdminUserSummaryView {
@@ -2235,8 +2294,45 @@ fn build_admin_user_summary_view(
         daily_failure: summary.daily_failure,
         monthly_success: summary.monthly_success,
         monthly_failure: summary.monthly_failure,
+        monthly_broken_count,
+        monthly_broken_limit,
         last_activity: summary.last_activity,
         tags: tags.iter().map(build_admin_user_tag_binding_view).collect(),
+    }
+}
+
+fn build_monthly_broken_keys_view(
+    page: tavily_hikari::PaginatedMonthlyBrokenKeys,
+) -> PaginatedMonthlyBrokenKeysView {
+    PaginatedMonthlyBrokenKeysView {
+        total: page.total,
+        page: page.page,
+        per_page: page.per_page,
+        items: page
+            .items
+            .into_iter()
+            .map(|item| MonthlyBrokenKeyDetailView {
+                key_id: item.key_id,
+                current_status: item.current_status,
+                reason_code: item.reason_code,
+                reason_summary: item.reason_summary,
+                latest_break_at: item.latest_break_at,
+                source: item.source,
+                breaker_token_id: item.breaker_token_id,
+                breaker_user_id: item.breaker_user_id,
+                breaker_user_display_name: item.breaker_user_display_name,
+                manual_actor_display_name: None,
+                related_users: item
+                    .related_users
+                    .into_iter()
+                    .map(|user| MonthlyBrokenKeyRelatedUserView {
+                        user_id: user.user_id,
+                        display_name: user.display_name,
+                        username: user.username,
+                    })
+                    .collect(),
+            })
+            .collect(),
     }
 }
 
@@ -2311,6 +2407,23 @@ fn compare_quota_usage(
         return used_order;
     }
     direction.apply(left_limit.cmp(&right_limit))
+}
+
+fn compare_optional_quota_usage(
+    left_used: Option<i64>,
+    left_limit: Option<i64>,
+    right_used: Option<i64>,
+    right_limit: Option<i64>,
+    direction: AdminUsersSortDirection,
+) -> std::cmp::Ordering {
+    match (left_used, left_limit, right_used, right_limit) {
+        (Some(left_used), Some(left_limit), Some(right_used), Some(right_limit)) => {
+            compare_quota_usage(left_used, left_limit, right_used, right_limit, direction)
+        }
+        (Some(_), Some(_), _, _) => std::cmp::Ordering::Less,
+        (_, _, Some(_), Some(_)) => std::cmp::Ordering::Greater,
+        _ => std::cmp::Ordering::Equal,
+    }
 }
 
 fn compare_success_rate(
@@ -2393,6 +2506,15 @@ fn compare_admin_user_rows(
             right.summary.monthly_failure,
             direction,
         ),
+        AdminUsersSortField::MonthlyBrokenCount => {
+            let count_order =
+                direction.apply(left.monthly_broken_count.cmp(&right.monthly_broken_count));
+            if count_order != std::cmp::Ordering::Equal {
+                count_order
+            } else {
+                direction.apply(left.monthly_broken_limit.cmp(&right.monthly_broken_limit))
+            }
+        }
         AdminUsersSortField::LastActivity => compare_optional_timestamp(
             left.summary.last_activity,
             right.summary.last_activity,
@@ -2489,6 +2611,13 @@ fn compare_admin_unbound_token_usage_rows(
             right_quota_monthly_limit,
             direction,
         ),
+        AdminUnboundTokenUsageSortField::MonthlyBrokenCount => compare_optional_quota_usage(
+            left.monthly_broken_count,
+            left.monthly_broken_limit,
+            right.monthly_broken_count,
+            right.monthly_broken_limit,
+            direction,
+        ),
         AdminUnboundTokenUsageSortField::DailySuccessRate => compare_success_rate(
             left.daily_success,
             left.daily_failure,
@@ -2546,6 +2675,8 @@ fn build_admin_unbound_token_usage_view(
         daily_failure: row.daily_failure,
         monthly_success: row.monthly_success,
         monthly_failure: row.monthly_failure,
+        monthly_broken_count: row.monthly_broken_count,
+        monthly_broken_limit: row.monthly_broken_limit,
         last_used_at: row.last_used_at,
     }
 }
@@ -2747,6 +2878,22 @@ async fn list_users(
                 eprintln!("list admin users dashboard summaries error: {err}");
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
+        let monthly_broken_counts = state
+            .proxy
+            .fetch_monthly_broken_counts_for_users(&user_ids)
+            .await
+            .map_err(|err| {
+                eprintln!("list admin users monthly broken counts error: {err}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        let monthly_broken_limits = state
+            .proxy
+            .fetch_account_monthly_broken_limits_bulk(&user_ids)
+            .await
+            .map_err(|err| {
+                eprintln!("list admin users monthly broken limits error: {err}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
         let rows: Vec<AdminUserSummaryRow> = users
             .into_iter()
             .map(|user| AdminUserSummaryRow {
@@ -2754,6 +2901,14 @@ async fn list_users(
                     .get(&user.user_id)
                     .cloned()
                     .unwrap_or_else(empty_user_dashboard_summary),
+                monthly_broken_count: monthly_broken_counts
+                    .get(&user.user_id)
+                    .copied()
+                    .unwrap_or_default(),
+                monthly_broken_limit: monthly_broken_limits
+                    .get(&user.user_id)
+                    .copied()
+                    .unwrap_or(USER_MONTHLY_BROKEN_LIMIT_DEFAULT),
                 user,
             })
             .collect();
@@ -2776,6 +2931,22 @@ async fn list_users(
                 eprintln!("list admin users dashboard summaries error: {err}");
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
+        let monthly_broken_counts = state
+            .proxy
+            .fetch_monthly_broken_counts_for_users(&user_ids)
+            .await
+            .map_err(|err| {
+                eprintln!("list admin users monthly broken counts error: {err}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        let monthly_broken_limits = state
+            .proxy
+            .fetch_account_monthly_broken_limits_bulk(&user_ids)
+            .await
+            .map_err(|err| {
+                eprintln!("list admin users monthly broken limits error: {err}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
         let mut rows: Vec<AdminUserSummaryRow> = users
             .into_iter()
             .map(|user| AdminUserSummaryRow {
@@ -2783,6 +2954,14 @@ async fn list_users(
                     .get(&user.user_id)
                     .cloned()
                     .unwrap_or_else(empty_user_dashboard_summary),
+                monthly_broken_count: monthly_broken_counts
+                    .get(&user.user_id)
+                    .copied()
+                    .unwrap_or_default(),
+                monthly_broken_limit: monthly_broken_limits
+                    .get(&user.user_id)
+                    .copied()
+                    .unwrap_or(USER_MONTHLY_BROKEN_LIMIT_DEFAULT),
                 user,
             })
             .collect();
@@ -2842,6 +3021,8 @@ async fn list_users(
             &row.user,
             &row.summary,
             api_key_count,
+            row.monthly_broken_count,
+            row.monthly_broken_limit,
             tags,
         ));
     }
@@ -2910,6 +3091,22 @@ async fn list_unbound_token_usage(
             eprintln!("list unbound token usage log metrics error: {err}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
+    let monthly_broken_counts = state
+        .proxy
+        .fetch_monthly_broken_counts_for_tokens(&filtered_ids)
+        .await
+        .map_err(|err| {
+            eprintln!("list unbound token usage monthly broken counts error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let monthly_broken_subjects = state
+        .proxy
+        .list_monthly_broken_subjects_for_tokens(&filtered_ids)
+        .await
+        .map_err(|err| {
+            eprintln!("list unbound token usage monthly broken subjects error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     let mut rows: Vec<AdminUnboundTokenUsageRow> = filtered_tokens
         .into_iter()
@@ -2922,8 +3119,17 @@ async fn list_unbound_token_usage(
                 }
             });
             let metrics = log_metrics.get(&token.id).cloned().unwrap_or_default();
+            let has_monthly_broken_record = monthly_broken_subjects.contains(&token.id);
             AdminUnboundTokenUsageRow {
                 last_used_at: metrics.last_activity.or(token.last_used_at),
+                monthly_broken_count: has_monthly_broken_record.then(|| {
+                    monthly_broken_counts
+                        .get(&token.id)
+                        .copied()
+                        .unwrap_or_default()
+                }),
+                monthly_broken_limit: has_monthly_broken_record
+                    .then_some(UNBOUND_TOKEN_MONTHLY_BROKEN_LIMIT_DEFAULT),
                 token,
                 hourly_any_used: hourly_any.hourly_used,
                 hourly_any_limit: hourly_any.hourly_limit,
@@ -3007,6 +3213,25 @@ async fn get_user_detail(
         .get(&user.user_id)
         .copied()
         .unwrap_or_default();
+    let monthly_broken_count = state
+        .proxy
+        .fetch_monthly_broken_counts_for_users(std::slice::from_ref(&user.user_id))
+        .await
+        .map_err(|err| {
+            eprintln!("get admin user monthly broken counts error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .get(&user.user_id)
+        .copied()
+        .unwrap_or_default();
+    let monthly_broken_limit = state
+        .proxy
+        .fetch_account_monthly_broken_limit(&user.user_id)
+        .await
+        .map_err(|err| {
+            eprintln!("get admin user monthly broken limit error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
     let tokens = state
         .proxy
         .list_user_tokens(&user.user_id)
@@ -3085,6 +3310,8 @@ async fn get_user_detail(
         daily_failure: summary.daily_failure,
         monthly_success: summary.monthly_success,
         monthly_failure: summary.monthly_failure,
+        monthly_broken_count,
+        monthly_broken_limit,
         last_activity: summary.last_activity,
         tags: quota_details
             .tags
@@ -3136,6 +3363,65 @@ async fn update_user_quota(
         return Err((StatusCode::NOT_FOUND, "user not found".to_string()));
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn update_user_broken_key_limit(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(payload): Json<UpdateUserBrokenKeyLimitRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
+    }
+    if payload.monthly_broken_limit < 0 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "monthlyBrokenLimit must be a non-negative integer".to_string(),
+        ));
+    }
+    let updated = state
+        .proxy
+        .update_account_monthly_broken_limit(&id, payload.monthly_broken_limit)
+        .await
+        .map_err(|err| admin_proxy_error_response("update user broken key limit error", err))?;
+    if !updated {
+        return Err((StatusCode::NOT_FOUND, "user not found".to_string()));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn get_user_monthly_broken_keys(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(q): Query<BrokenKeysPageQuery>,
+) -> Result<Json<PaginatedMonthlyBrokenKeysView>, StatusCode> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let exists = state
+        .proxy
+        .get_admin_user_identity(&id)
+        .await
+        .map_err(|err| {
+            eprintln!("get admin user identity for broken keys error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    if exists.is_none() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    state
+        .proxy
+        .fetch_user_monthly_broken_keys(&id, q.page.unwrap_or(1), q.per_page.unwrap_or(20))
+        .await
+        .map(build_monthly_broken_keys_view)
+        .map(Json)
+        .map_err(|err| {
+            eprintln!("get user monthly broken keys error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
 }
 
 // ----- Access token management handlers -----
@@ -3551,6 +3837,8 @@ mod admin_resources_tests {
         AdminUserSummaryRow {
             user: mock_user(user_id, last_login_at),
             summary,
+            monthly_broken_count: 0,
+            monthly_broken_limit: USER_MONTHLY_BROKEN_LIMIT_DEFAULT,
         }
     }
 

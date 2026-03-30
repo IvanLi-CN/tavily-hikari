@@ -669,6 +669,36 @@ pub struct AdminUserIdentity {
     pub token_count: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MonthlyBrokenKeyRelatedUser {
+    pub user_id: String,
+    pub display_name: Option<String>,
+    pub username: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MonthlyBrokenKeyDetail {
+    pub key_id: String,
+    pub current_status: String,
+    pub reason_code: Option<String>,
+    pub reason_summary: Option<String>,
+    pub latest_break_at: i64,
+    pub source: String,
+    pub breaker_token_id: Option<String>,
+    pub breaker_user_id: Option<String>,
+    pub breaker_user_display_name: Option<String>,
+    pub manual_actor_display_name: Option<String>,
+    pub related_users: Vec<MonthlyBrokenKeyRelatedUser>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PaginatedMonthlyBrokenKeys {
+    pub items: Vec<MonthlyBrokenKeyDetail>,
+    pub total: i64,
+    pub page: i64,
+    pub per_page: i64,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StickyCreditsWindow {
     pub success_credits: i64,

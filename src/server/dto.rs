@@ -952,6 +952,7 @@ struct TokenLeaderboardItemView {
     enabled: bool,
     note: Option<String>,
     group: Option<String>,
+    owner: Option<TokenOwnerView>,
     total_requests: i64,
     last_used_at: Option<i64>,
     quota_state: String,
@@ -972,6 +973,8 @@ struct TokenLeaderboardItemView {
     all_total: i64,
     all_errors: i64,
     all_other: i64,
+    monthly_broken_count: Option<i64>,
+    monthly_broken_limit: Option<i64>,
 }
 
 async fn get_token_logs_page(
@@ -1248,6 +1251,29 @@ async fn get_token_leaderboard(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let token_ids: Vec<String> = tokens.iter().map(|t| t.id.clone()).collect();
+    let owners = state
+        .proxy
+        .get_admin_token_owners(&token_ids)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let monthly_broken_counts = state
+        .proxy
+        .fetch_monthly_broken_counts_for_tokens(&token_ids)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let monthly_broken_subjects = state
+        .proxy
+        .list_monthly_broken_subjects_for_tokens(&token_ids)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut owner_user_ids: Vec<String> = owners.values().map(|owner| owner.user_id.clone()).collect();
+    owner_user_ids.sort_unstable();
+    owner_user_ids.dedup();
+    let owner_monthly_broken_limits = state
+        .proxy
+        .fetch_account_monthly_broken_limits_bulk(&owner_user_ids)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let hourly_any_map = state
         .proxy
         .token_hourly_any_snapshot(&token_ids)
@@ -1257,6 +1283,7 @@ async fn get_token_leaderboard(
     let mut items: Vec<TokenLeaderboardItemView> = Vec::with_capacity(tokens.len());
 
     for token in tokens {
+        let owner = owners.get(&token.id);
         // summaries
         let today = state
             .proxy
@@ -1307,12 +1334,25 @@ async fn get_token_leaderboard(
             .get(&token.id)
             .map(|v| (v.hourly_used, v.hourly_limit))
             .unwrap_or((0, effective_token_hourly_request_limit()));
+        let has_monthly_broken_record = monthly_broken_subjects.contains(&token.id);
+        let monthly_broken_count = has_monthly_broken_record.then(|| {
+            monthly_broken_counts
+                .get(&token.id)
+                .copied()
+                .unwrap_or_default()
+        });
+        let monthly_broken_limit = has_monthly_broken_record.then(|| {
+            owner
+                .and_then(|identity| owner_monthly_broken_limits.get(&identity.user_id).copied())
+                .unwrap_or(UNBOUND_TOKEN_MONTHLY_BROKEN_LIMIT_DEFAULT)
+        });
 
         let item = TokenLeaderboardItemView {
             id: token.id.clone(),
             enabled: token.enabled,
             note: token.note.clone(),
             group: token.group_name.clone(),
+            owner: owner.map(TokenOwnerView::from),
             total_requests: all.total_requests,
             last_used_at: all.last_activity,
             quota_state,
@@ -1331,6 +1371,8 @@ async fn get_token_leaderboard(
             all_total: all.total_requests,
             all_errors: all.error_count,
             all_other: other_all,
+            monthly_broken_count,
+            monthly_broken_limit,
         };
         items.push(item);
     }
@@ -1359,4 +1401,31 @@ async fn get_token_leaderboard(
     items.truncate(50);
 
     Ok(Json(items))
+}
+
+async fn get_token_monthly_broken_keys(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Query(q): Query<BrokenKeysPageQuery>,
+) -> Result<Json<PaginatedMonthlyBrokenKeysView>, StatusCode> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let exists = state
+        .proxy
+        .get_access_token_secret(&id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if exists.is_none() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    state
+        .proxy
+        .fetch_token_monthly_broken_keys(&id, q.page.unwrap_or(1), q.per_page.unwrap_or(20))
+        .await
+        .map(build_monthly_broken_keys_view)
+        .map(Json)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }

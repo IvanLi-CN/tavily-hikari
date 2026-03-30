@@ -792,6 +792,8 @@ export interface AdminUserSummary {
   dailyFailure: number
   monthlySuccess: number
   monthlyFailure: number
+  monthlyBrokenCount: number
+  monthlyBrokenLimit: number
   lastActivity: number | null
 }
 
@@ -802,6 +804,7 @@ export type AdminUsersSortField =
   | 'quotaMonthlyUsed'
   | 'dailySuccessRate'
   | 'monthlySuccessRate'
+  | 'monthlyBrokenCount'
   | 'lastActivity'
   | 'lastLoginAt'
 
@@ -810,6 +813,7 @@ export type AdminUnboundTokenUsageSortField =
   | 'quotaHourlyUsed'
   | 'quotaDailyUsed'
   | 'quotaMonthlyUsed'
+  | 'monthlyBrokenCount'
   | 'dailySuccessRate'
   | 'monthlySuccessRate'
   | 'lastUsedAt'
@@ -851,6 +855,8 @@ export interface AdminUnboundTokenUsageSummary {
   dailyFailure: number
   monthlySuccess: number
   monthlyFailure: number
+  monthlyBrokenCount: number | null
+  monthlyBrokenLimit: number | null
   lastUsedAt: number | null
 }
 
@@ -866,6 +872,30 @@ export interface UpdateUserQuotaPayload {
   hourlyLimit: number
   dailyLimit: number
   monthlyLimit: number
+}
+
+export interface UpdateUserBrokenKeyLimitPayload {
+  monthlyBrokenLimit: number
+}
+
+export interface MonthlyBrokenKeyRelatedUser {
+  userId: string
+  displayName: string | null
+  username: string | null
+}
+
+export interface MonthlyBrokenKeyDetail {
+  keyId: string
+  currentStatus: string
+  reasonCode: string | null
+  reasonSummary: string | null
+  latestBreakAt: number
+  source: string
+  breakerTokenId: string | null
+  breakerUserId: string | null
+  breakerUserDisplayName: string | null
+  manualActorDisplayName: string | null
+  relatedUsers: MonthlyBrokenKeyRelatedUser[]
 }
 
 export interface UpsertAdminUserTagPayload {
@@ -1584,6 +1614,34 @@ export function fetchAdminUnboundTokenUsage(
   return requestJson(`/api/tokens/unbound-usage?${params.toString()}`, { signal })
 }
 
+export function fetchAdminUserBrokenKeys(
+  id: string,
+  page = 1,
+  perPage = 20,
+  signal?: AbortSignal,
+): Promise<Paginated<MonthlyBrokenKeyDetail>> {
+  const encoded = encodeURIComponent(id)
+  const params = new URLSearchParams({
+    page: String(page),
+    per_page: String(perPage),
+  })
+  return requestJson(`/api/users/${encoded}/broken-keys?${params.toString()}`, { signal })
+}
+
+export function fetchTokenBrokenKeys(
+  id: string,
+  page = 1,
+  perPage = 20,
+  signal?: AbortSignal,
+): Promise<Paginated<MonthlyBrokenKeyDetail>> {
+  const encoded = encodeURIComponent(id)
+  const params = new URLSearchParams({
+    page: String(page),
+    per_page: String(perPage),
+  })
+  return requestJson(`/api/tokens/${encoded}/broken-keys?${params.toString()}`, { signal })
+}
+
 export function fetchAdminUserDetail(id: string, signal?: AbortSignal): Promise<AdminUserDetail> {
   const encoded = encodeURIComponent(id)
   return requestJson(`/api/users/${encoded}`, { signal })
@@ -1592,6 +1650,18 @@ export function fetchAdminUserDetail(id: string, signal?: AbortSignal): Promise<
 export async function updateAdminUserQuota(id: string, payload: UpdateUserQuotaPayload): Promise<void> {
   const encoded = encodeURIComponent(id)
   await requestNoContent(`/api/users/${encoded}/quota`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function updateAdminUserBrokenKeyLimit(
+  id: string,
+  payload: UpdateUserBrokenKeyLimitPayload,
+): Promise<void> {
+  const encoded = encodeURIComponent(id)
+  await requestNoContent(`/api/users/${encoded}/broken-key-limit`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),

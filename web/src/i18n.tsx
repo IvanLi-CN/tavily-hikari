@@ -530,6 +530,7 @@ interface AdminTranslationsShape {
         hourly: string
         daily: string
         monthly: string
+        monthlyBroken: string
         dailySuccessRate: string
         monthlySuccessRate: string
         lastUsed: string
@@ -550,6 +551,39 @@ interface AdminTranslationsShape {
       identityDescription: string
       tokensTitle: string
       tokensDescription: string
+    }
+    brokenKeys: {
+      limitTitle: string
+      limitDescription: string
+      limitField: string
+      hint: string
+      save: string
+      saving: string
+      savedAt: string
+      invalid: string
+      saveFailed: string
+      openAction: string
+      openDetails: string
+      drawerTitle: string
+      drawerDescription: string
+      loading: string
+      empty: string
+      noReason: string
+      noRelatedUsers: string
+      breakerSystem: string
+      breakerUnknown: string
+      table: {
+        key: string
+        status: string
+        reason: string
+        latestBreakAt: string
+        breaker: string
+        relatedUsers: string
+      }
+      actions: {
+        copyKeyId: string
+        copied: string
+      }
     }
     quota: {
       title: string
@@ -765,6 +799,7 @@ interface AdminTranslationsShape {
       hourly: string
       daily: string
       monthly: string
+      monthlyBroken: string
       dailySuccessRate: string
       monthlySuccessRate: string
       lastUsed: string
@@ -1746,6 +1781,7 @@ export const translations: Record<Language, TranslationShape> = {
             hourly: '1h',
             daily: '24h',
             monthly: 'Month',
+            monthlyBroken: 'Monthly Breakage',
             dailySuccessRate: 'Daily Success',
             monthlySuccessRate: 'Monthly Success',
             lastUsed: 'Last Used',
@@ -1766,6 +1802,39 @@ export const translations: Record<Language, TranslationShape> = {
           identityDescription: 'Stable account identifiers and login status.',
           tokensTitle: 'Tokens',
           tokensDescription: 'All tokens under this account share the effective quota below.',
+        },
+        brokenKeys: {
+          limitTitle: 'Monthly Breakage Limit',
+          limitDescription: 'Only counts upstream keys broken this month and still unavailable right now.',
+          limitField: 'Monthly breakage limit',
+          hint: 'This limit only applies to monthly breakage statistics and does not affect business quota.',
+          save: 'Save monthly breakage limit',
+          saving: 'Saving…',
+          savedAt: 'Saved at {time}',
+          invalid: 'Monthly breakage limit must be a non-negative integer.',
+          saveFailed: 'Failed to save monthly breakage limit.',
+          openAction: 'Open monthly breakage details',
+          openDetails: 'Open monthly breakage details for {label}',
+          drawerTitle: 'Monthly Broken Keys',
+          drawerDescription: 'Keys currently counted under {label}.',
+          loading: 'Loading monthly broken keys…',
+          empty: 'No monthly broken keys are currently counted here.',
+          noReason: 'No reason recorded.',
+          noRelatedUsers: 'No related users',
+          breakerSystem: 'System',
+          breakerUnknown: 'Unknown',
+          table: {
+            key: 'Key',
+            status: 'Status',
+            reason: 'Reason',
+            latestBreakAt: 'Latest Break',
+            breaker: 'Last Breaker',
+            relatedUsers: 'Related Users',
+          },
+          actions: {
+            copyKeyId: 'Copy key ID',
+            copied: 'Copied',
+          },
         },
         quota: {
           title: 'Base Quota',
@@ -1986,6 +2055,7 @@ export const translations: Record<Language, TranslationShape> = {
           hourly: '1h',
           daily: '24h',
           monthly: 'Month',
+          monthlyBroken: 'Monthly Breakage',
           dailySuccessRate: 'Daily Success',
           monthlySuccessRate: 'Monthly Success',
           lastUsed: 'Last Used',
@@ -2951,6 +3021,7 @@ export const translations: Record<Language, TranslationShape> = {
             hourly: '1h（业务）',
             daily: '24h',
             monthly: '月度',
+            monthlyBroken: '月蹬坏',
             dailySuccessRate: '日成功率',
             monthlySuccessRate: '月成功率',
             lastUsed: '上次使用',
@@ -2971,6 +3042,39 @@ export const translations: Record<Language, TranslationShape> = {
           identityDescription: '查看该账户的稳定标识、登录状态与基础归属。',
           tokensTitle: '令牌列表',
           tokensDescription: '该账户下所有令牌共享同一份有效额度。',
+        },
+        brokenKeys: {
+          limitTitle: '月蹬坏限额',
+          limitDescription: '只统计本月蹬坏且当前仍不可用的上游 Key。',
+          limitField: '月蹬坏限额',
+          hint: '这个限额只作用于月蹬坏统计，不影响业务额度。',
+          save: '保存月蹬坏限额',
+          saving: '保存中…',
+          savedAt: '已于 {time} 保存',
+          invalid: '月蹬坏限额必须是非负整数。',
+          saveFailed: '保存月蹬坏限额失败。',
+          openAction: '查看月蹬坏明细',
+          openDetails: '查看 {label} 的月蹬坏明细',
+          drawerTitle: '月蹬坏明细',
+          drawerDescription: '当前计入 {label} 的上游 Key。',
+          loading: '正在加载月蹬坏明细…',
+          empty: '当前没有计入的月蹬坏上游 Key。',
+          noReason: '没有记录原因。',
+          noRelatedUsers: '没有关联用户',
+          breakerSystem: '系统',
+          breakerUnknown: '未知',
+          table: {
+            key: '上游 Key',
+            status: '当前状态',
+            reason: '不可用原因',
+            latestBreakAt: '最后蹬坏时间',
+            breaker: '最后蹬坏者',
+            relatedUsers: '关联用户',
+          },
+          actions: {
+            copyKeyId: '复制 Key ID',
+            copied: '已复制',
+          },
         },
         quota: {
           title: '基础额度',
@@ -3191,6 +3295,7 @@ export const translations: Record<Language, TranslationShape> = {
           hourly: '1h（业务）',
           daily: '24h',
           monthly: '月度',
+          monthlyBroken: '月蹬坏',
           dailySuccessRate: '日成功率',
           monthlySuccessRate: '月成功率',
           lastUsed: '上次使用',

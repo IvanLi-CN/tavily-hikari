@@ -50,6 +50,7 @@ import { ArrowDown, ArrowUp, ArrowUpDown, ChartColumnIncreasing } from 'lucide-r
 import AdminShell, { type AdminNavItem, type AdminNavTarget } from './admin/AdminShell'
 import DashboardOverview from './admin/DashboardOverview'
 import { createDashboardTodayMetrics } from './admin/dashboardTodayMetrics'
+import { fetchAllMonthlyBrokenKeyItems } from './admin/fetchAllMonthlyBrokenKeyItems'
 import ForwardProxySettingsModule, {
   type ForwardProxyDraft,
   type ForwardProxyValidationEntry,
@@ -157,10 +158,13 @@ import {
   type AdminUsersSortField,
   type TokenGroup,
   fetchAdminUsers,
+  fetchAdminUserBrokenKeys,
   fetchAdminUnboundTokenUsage,
   fetchAdminUserDetail,
   fetchAdminRegistrationSettings,
+  fetchTokenBrokenKeys,
   updateAdminUserQuota,
+  updateAdminUserBrokenKeyLimit,
   updateAdminRegistrationSettings,
   fetchAdminUserTags,
   createAdminUserTag,
@@ -175,6 +179,7 @@ import {
   type AdminUserTag,
   type AdminUserTagBinding,
   type SortDirection,
+  type MonthlyBrokenKeyDetail,
   type ForwardProxySettings,
   type ForwardProxyStatsResponse,
   type ForwardProxyDashboardSummaryResponse,
@@ -224,6 +229,7 @@ const DASHBOARD_EXHAUSTED_KEYS_PAGE_SIZE = 5
 const DASHBOARD_TOKENS_PAGE_SIZE = 100
 const DASHBOARD_TOKENS_MAX_PAGES = 10
 const USER_TAG_DISPLAY_LIMIT = 3
+const MONTHLY_BROKEN_DRAWER_PAGE_SIZE = 100
 const NEW_USER_TAG_CARD_ID = '__new__'
 const ADMIN_USERS_DEFAULT_SORT_FIELD: AdminUsersSortField = 'lastLoginAt'
 const ADMIN_USERS_DEFAULT_SORT_ORDER: SortDirection = 'desc'
@@ -234,6 +240,7 @@ const ADMIN_USERS_SORT_FIELDS: readonly AdminUsersSortField[] = [
   'quotaMonthlyUsed',
   'dailySuccessRate',
   'monthlySuccessRate',
+  'monthlyBrokenCount',
   'lastActivity',
   'lastLoginAt',
 ]
@@ -250,6 +257,7 @@ const ADMIN_UNBOUND_TOKEN_USAGE_SORT_FIELDS: readonly AdminUnboundTokenUsageSort
   'quotaHourlyUsed',
   'quotaDailyUsed',
   'quotaMonthlyUsed',
+  'monthlyBrokenCount',
   'dailySuccessRate',
   'monthlySuccessRate',
   'lastUsedAt',
@@ -384,6 +392,123 @@ function formatStackedTimestamp(
     primary: formatDateOnly(value, language),
     secondary: formatClockTime(value),
   }
+}
+
+function monthlyBrokenPrimaryClassName(count: number, limit: number): string | null {
+  if (limit <= 0) {
+    return count > 0 ? 'admin-table-value-primary-danger' : null
+  }
+  if (count >= limit) return 'admin-table-value-primary-danger'
+  if (count > 0) return 'admin-table-value-primary-warning'
+  return null
+}
+
+function formatMonthlyBrokenStackValue(count: number, limit: number): AdminTableStackedValue {
+  return {
+    primary: formatNumber(Math.max(0, count)),
+    secondary: formatQuotaLimitValue(limit),
+    primaryClassName: monthlyBrokenPrimaryClassName(count, limit),
+  }
+}
+
+function MonthlyBrokenCountTrigger({
+  count,
+  onOpen,
+  ariaLabel,
+  className,
+}: {
+  count: number
+  onOpen?: (() => void) | null
+  ariaLabel: string
+  className?: string | null
+}): JSX.Element {
+  const primary = formatNumber(Math.max(0, count))
+  if (count <= 0 || !onOpen) {
+    return <span className={`admin-table-value-primary${className ? ` ${className}` : ''}`}>{primary}</span>
+  }
+  return (
+    <button
+      type="button"
+      className={`link-button admin-table-value-link${className ? ` ${className}` : ''}`}
+      onClick={onOpen}
+      aria-label={ariaLabel}
+    >
+      {primary}
+    </button>
+  )
+}
+
+function formatMonthlyBrokenRelatedUsers(
+  users: MonthlyBrokenKeyDetail['relatedUsers'],
+  emptyLabel: string,
+): string {
+  if (users.length === 0) return emptyLabel
+  return users.map((user) => user.displayName || user.username || user.userId).join(', ')
+}
+
+function formatMonthlyBrokenBreaker(
+  item: MonthlyBrokenKeyDetail,
+  strings: {
+    breakerSystem: string
+    breakerUnknown: string
+  },
+): string {
+  if (item.breakerUserDisplayName) return item.breakerUserDisplayName
+  if (item.breakerUserId) return item.breakerUserId
+  if (item.breakerTokenId) return item.breakerTokenId
+  if (item.source === 'manual') return strings.breakerSystem
+  return strings.breakerUnknown
+}
+
+function MonthlyBrokenKeyValue({
+  keyId,
+  ungroupedLabel,
+  detailLabel,
+  copyLabel,
+  copiedLabel,
+  copyState,
+  onOpenKey,
+  onCopy,
+}: {
+  keyId: string
+  ungroupedLabel: string
+  detailLabel: string
+  copyLabel: string
+  copiedLabel: string
+  copyState: 'loading' | 'copied' | null | undefined
+  onOpenKey?: (id: string) => void
+  onCopy: (anchorEl: HTMLButtonElement) => void | Promise<void>
+}): JSX.Element {
+  const copyText = copyState === 'copied' ? copiedLabel : copyLabel
+  return (
+    <div className="monthly-broken-key-value">
+      <JobKeyLink
+        keyId={keyId}
+        keyGroup={null}
+        ungroupedLabel={ungroupedLabel}
+        detailLabel={detailLabel}
+        onOpenKey={onOpenKey}
+        showBubble={false}
+      />
+      <Button
+        type="button"
+        variant={copyState === 'copied' ? 'success' : 'ghost'}
+        size="icon"
+        className="monthly-broken-key-copy-button shadow-none"
+        title={copyText}
+        aria-label={copyText}
+        onClick={(event) => void onCopy(event.currentTarget)}
+        disabled={copyState === 'loading'}
+      >
+        <Icon
+          icon={copyState === 'copied' ? 'mdi:check' : 'mdi:content-copy'}
+          width={16}
+          height={16}
+          aria-hidden="true"
+        />
+      </Button>
+    </div>
+  )
 }
 
 function formatUnboundTokenIdentityMeta(
@@ -1235,6 +1360,15 @@ function AdminDashboard(): JSX.Element {
   const [requestsLoadState, setRequestsLoadState] = useState<QueryLoadState>('initial_loading')
   const [requestsError, setRequestsError] = useState<string | null>(null)
   const [requestEntityDrawer, setRequestEntityDrawer] = useState<{ kind: 'key' | 'token'; id: string } | null>(null)
+  const [monthlyBrokenDrawer, setMonthlyBrokenDrawer] = useState<{
+    subjectKind: 'user' | 'token'
+    id: string
+    label: string
+  } | null>(null)
+  const [monthlyBrokenDrawerItems, setMonthlyBrokenDrawerItems] = useState<MonthlyBrokenKeyDetail[]>([])
+  const [monthlyBrokenDrawerLoadState, setMonthlyBrokenDrawerLoadState] =
+    useState<QueryLoadState>('initial_loading')
+  const [monthlyBrokenDrawerError, setMonthlyBrokenDrawerError] = useState<string | null>(null)
   const [jobs, setJobs] = useState<JobLogView[]>([])
   const [dashboardJobs, setDashboardJobs] = useState<JobLogView[]>([])
   const [jobFilter, setJobFilter] = useState<'all' | 'quota' | 'usage' | 'logs' | 'geo'>('all')
@@ -1268,6 +1402,10 @@ function AdminDashboard(): JSX.Element {
   const [savingUserQuota, setSavingUserQuota] = useState(false)
   const [userQuotaError, setUserQuotaError] = useState<string | null>(null)
   const [userQuotaSavedAt, setUserQuotaSavedAt] = useState<number | null>(null)
+  const [userBrokenLimitDraft, setUserBrokenLimitDraft] = useState('')
+  const [savingUserBrokenLimit, setSavingUserBrokenLimit] = useState(false)
+  const [userBrokenLimitError, setUserBrokenLimitError] = useState<string | null>(null)
+  const [userBrokenLimitSavedAt, setUserBrokenLimitSavedAt] = useState<number | null>(null)
   const [tagCatalog, setTagCatalog] = useState<AdminUserTag[]>([])
   const [tagCatalogLoading, setTagCatalogLoading] = useState(false)
   const [tagCatalogLoadedOnce, setTagCatalogLoadedOnce] = useState(false)
@@ -1435,6 +1573,7 @@ function AdminDashboard(): JSX.Element {
             close: '关闭',
             fields: {
               apiKey: '完整 API Key',
+              keyId: '上游 Key ID',
               token: '完整 Token',
               shareLink: '分享链接',
             },
@@ -1449,6 +1588,7 @@ function AdminDashboard(): JSX.Element {
             close: 'Close',
             fields: {
               apiKey: 'Full API Key',
+              keyId: 'Upstream Key ID',
               token: 'Full Token',
               shareLink: 'Share Link',
             },
@@ -1636,7 +1776,7 @@ function AdminDashboard(): JSX.Element {
     }
   }, [beginKeysBatchClose, keysBatchExpanded])
 
-  const copyStateKey = useCallback((scope: 'keys' | 'logs' | 'tokens', identifier: string | number) => {
+  const copyStateKey = useCallback((scope: 'brokenKeys' | 'keys' | 'logs' | 'tokens', identifier: string | number) => {
     return `${scope}:${identifier}`
   }, [])
 
@@ -1961,6 +2101,37 @@ function AdminDashboard(): JSX.Element {
       commitSecretWarm,
       updateCopyState,
     ],
+  )
+
+  const handleCopyMonthlyBrokenKeyId = useCallback(
+    async (keyId: string, stateKey: string, anchorEl?: HTMLElement | null) => {
+      setManualCopyBubble(null)
+      updateCopyState(stateKey, 'loading')
+      try {
+        const copyResult = await copyToClipboard(keyId, { preferExecCommand: true })
+        if (!copyResult.ok) {
+          updateCopyState(stateKey, null)
+          if (anchorEl) {
+            openManualCopyBubble({
+              anchorEl,
+              title: manualCopyText.title,
+              description: manualCopyText.description,
+              fieldLabel: manualCopyText.fields.keyId,
+              value: keyId,
+            })
+          }
+          return
+        }
+        setManualCopyBubble(null)
+        updateCopyState(stateKey, 'copied')
+        window.setTimeout(() => updateCopyState(stateKey, null), 2000)
+      } catch (err) {
+        console.error(err)
+        setError(err instanceof Error ? err.message : errorStrings.copyKey)
+        updateCopyState(stateKey, null)
+      }
+    },
+    [copyToClipboard, errorStrings.copyKey, manualCopyText, openManualCopyBubble, setError, updateCopyState],
   )
 
   const loadData = useCallback(
@@ -3244,6 +3415,7 @@ function AdminDashboard(): JSX.Element {
           dailyLimit: String(detail.quotaBase.dailyLimit),
           monthlyLimit: String(detail.quotaBase.monthlyLimit),
         })
+        setUserBrokenLimitDraft(String(detail.monthlyBrokenLimit))
         setSelectedBindableTagId('')
         setUserTagError(null)
       })
@@ -3253,6 +3425,7 @@ function AdminDashboard(): JSX.Element {
         setSelectedUserDetail(null)
         setUserQuotaSnapshot(null)
         setUserQuotaDraft(null)
+        setUserBrokenLimitDraft('')
       })
       .finally(() => {
         if (!controller.signal.aborted) {
@@ -3261,6 +3434,43 @@ function AdminDashboard(): JSX.Element {
       })
     return () => controller.abort()
   }, [route])
+
+  useEffect(() => {
+    if (!monthlyBrokenDrawer) return
+    const controller = new AbortController()
+    setMonthlyBrokenDrawerLoadState('initial_loading')
+    setMonthlyBrokenDrawerError(null)
+    fetchAllMonthlyBrokenKeyItems(
+      (page, signal) =>
+        monthlyBrokenDrawer.subjectKind === 'user'
+          ? fetchAdminUserBrokenKeys(
+              monthlyBrokenDrawer.id,
+              page,
+              MONTHLY_BROKEN_DRAWER_PAGE_SIZE,
+              signal,
+            )
+          : fetchTokenBrokenKeys(
+              monthlyBrokenDrawer.id,
+              page,
+              MONTHLY_BROKEN_DRAWER_PAGE_SIZE,
+              signal,
+            ),
+      controller.signal,
+    )
+      .then((items) => {
+        if (controller.signal.aborted) return
+        setMonthlyBrokenDrawerItems(items)
+        setMonthlyBrokenDrawerLoadState('ready')
+      })
+      .catch((err) => {
+        if (controller.signal.aborted) return
+        console.error(err)
+        setMonthlyBrokenDrawerItems([])
+        setMonthlyBrokenDrawerError(err instanceof Error ? err.message : loadingStateStrings.error)
+        setMonthlyBrokenDrawerLoadState('error')
+      })
+    return () => controller.abort()
+  }, [loadingStateStrings.error, monthlyBrokenDrawer])
 
   // Automatic fallback polling when SSE is not connected
   useEffect(() => {
@@ -5078,8 +5288,20 @@ function AdminDashboard(): JSX.Element {
       dailyLimit: String(detail.quotaBase.dailyLimit),
       monthlyLimit: String(detail.quotaBase.monthlyLimit),
     })
+    setUserBrokenLimitDraft(String(detail.monthlyBrokenLimit))
     setSelectedBindableTagId('')
     return detail
+  }
+
+  const openMonthlyBrokenDrawer = (subjectKind: 'user' | 'token', id: string, label: string) => {
+    setMonthlyBrokenDrawer({ subjectKind, id, label })
+  }
+
+  const closeMonthlyBrokenDrawer = () => {
+    setMonthlyBrokenDrawer(null)
+    setMonthlyBrokenDrawerItems([])
+    setMonthlyBrokenDrawerError(null)
+    setMonthlyBrokenDrawerLoadState('initial_loading')
   }
 
   const refreshTagCatalog = async () => {
@@ -5097,6 +5319,14 @@ function AdminDashboard(): JSX.Element {
     })
     setUserQuotaSavedAt(null)
     setUserQuotaError(null)
+  }
+
+  const updateUserBrokenLimitDraft = (value: string) => {
+    const normalizedValue = normalizeQuotaDraftInput(value)
+    if (normalizedValue == null) return
+    setUserBrokenLimitDraft(normalizedValue)
+    setUserBrokenLimitError(null)
+    setUserBrokenLimitSavedAt(null)
   }
 
   const updateUserTagCatalogField = (field: keyof UserTagFormState, value: string) => {
@@ -5152,6 +5382,29 @@ function AdminDashboard(): JSX.Element {
       setUserQuotaError(err instanceof Error ? err.message : adminStrings.users.quota.saveFailed)
     } finally {
       setSavingUserQuota(false)
+    }
+  }
+
+  const saveUserBrokenLimit = async () => {
+    if (route.name !== 'user') return
+    const monthlyBrokenLimit = Number.parseInt(userBrokenLimitDraft, 10)
+    if (!Number.isFinite(monthlyBrokenLimit) || monthlyBrokenLimit < 0) {
+      setUserBrokenLimitError(adminStrings.users.brokenKeys.invalid)
+      return
+    }
+    setSavingUserBrokenLimit(true)
+    setUserBrokenLimitError(null)
+    try {
+      await updateAdminUserBrokenKeyLimit(route.id, { monthlyBrokenLimit })
+      await Promise.all([refreshUserDetail(route.id), refreshUsersList()])
+      setUserBrokenLimitSavedAt(Date.now())
+    } catch (err) {
+      console.error(err)
+      setUserBrokenLimitError(
+        err instanceof Error ? err.message : adminStrings.users.brokenKeys.saveFailed,
+      )
+    } finally {
+      setSavingUserBrokenLimit(false)
     }
   }
 
@@ -6433,6 +6686,82 @@ function AdminDashboard(): JSX.Element {
             </section>
 
             <section className="surface panel">
+              <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
+                <div>
+                  <h2>{usersStrings.brokenKeys.limitTitle}</h2>
+                  <p className="panel-description">{usersStrings.brokenKeys.limitDescription}</p>
+                </div>
+                {detail.monthlyBrokenCount > 0 ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() =>
+                      openMonthlyBrokenDrawer(
+                        'user',
+                        detail.userId,
+                        detail.displayName || detail.username || detail.userId,
+                      )
+                    }
+                  >
+                    {usersStrings.brokenKeys.openAction}
+                  </Button>
+                ) : null}
+              </div>
+              <div className="token-info-grid">
+                <div className="token-info-card">
+                  <span className="token-info-label">{usersStrings.usage.table.monthlyBroken}</span>
+                  <span className="token-info-value">{formatNumber(detail.monthlyBrokenCount)}</span>
+                </div>
+                <div className="token-info-card">
+                  <span className="token-info-label">{usersStrings.brokenKeys.limitField}</span>
+                  <span className="token-info-value">{formatNumber(detail.monthlyBrokenLimit)}</span>
+                </div>
+              </div>
+              <div
+                style={{
+                  marginTop: 16,
+                  display: 'flex',
+                  gap: 12,
+                  alignItems: 'flex-end',
+                  flexWrap: 'wrap',
+                }}
+              >
+                <label style={{ display: 'grid', gap: 6, minWidth: 220 }}>
+                  <span className="token-info-label">{usersStrings.brokenKeys.limitField}</span>
+                  <Input
+                    type="text"
+                    inputMode="numeric"
+                    value={userBrokenLimitDraft}
+                    onChange={(event) => updateUserBrokenLimitDraft(event.target.value)}
+                    aria-label={usersStrings.brokenKeys.limitField}
+                  />
+                </label>
+                <Button
+                  type="button"
+                  onClick={() => void saveUserBrokenLimit()}
+                  disabled={savingUserBrokenLimit}
+                >
+                  {savingUserBrokenLimit ? usersStrings.brokenKeys.saving : usersStrings.brokenKeys.save}
+                </Button>
+              </div>
+              <div style={{ marginTop: 12 }}>
+                <span className="panel-description">
+                  {userBrokenLimitSavedAt
+                    ? usersStrings.brokenKeys.savedAt.replace(
+                        '{time}',
+                        timeOnlyFormatter.format(new Date(userBrokenLimitSavedAt)),
+                      )
+                    : usersStrings.brokenKeys.hint}
+                </span>
+              </div>
+              {userBrokenLimitError ? (
+                <div className="alert alert-error" role="alert" style={{ marginTop: 12 }}>
+                  {userBrokenLimitError}
+                </div>
+              ) : null}
+            </section>
+
+            <section className="surface panel">
               <div className="panel-header">
                 <div>
                   <h2>{usersStrings.effectiveQuota.title}</h2>
@@ -6703,7 +7032,7 @@ function AdminDashboard(): JSX.Element {
             {users.length === 0 ? (
               <tbody>
                 <tr>
-                  <td colSpan={9}>
+                  <td colSpan={10}>
                     <div className="empty-state alert">{usersStrings.empty.none}</div>
                   </td>
                 </tr>
@@ -6738,6 +7067,13 @@ function AdminDashboard(): JSX.Element {
                     <AdminUsersSortableHeader
                       label={usersStrings.usage.table.monthly}
                       field="quotaMonthlyUsed"
+                      activeField={effectiveUsersSort}
+                      activeOrder={effectiveUsersSortOrder}
+                      onToggle={toggleUsersSort}
+                    />
+                    <AdminUsersSortableHeader
+                      label={usersStrings.usage.table.monthlyBroken}
+                      field="monthlyBrokenCount"
                       activeField={effectiveUsersSort}
                       activeOrder={effectiveUsersSortOrder}
                       onToggle={toggleUsersSort}
@@ -6802,6 +7138,26 @@ function AdminDashboard(): JSX.Element {
                         <AdminTableValueStack {...formatQuotaStackValue(item.quotaMonthlyUsed, item.quotaMonthlyLimit)} />
                       </td>
                       <td className="admin-users-compact-cell">
+                        {(() => {
+                          const metric = formatMonthlyBrokenStackValue(
+                            item.monthlyBrokenCount,
+                            item.monthlyBrokenLimit,
+                          )
+                          const label = item.displayName || item.username || item.userId
+                          return (
+                            <div className="admin-table-value-stack">
+                              <MonthlyBrokenCountTrigger
+                                count={item.monthlyBrokenCount}
+                                onOpen={() => openMonthlyBrokenDrawer('user', item.userId, label)}
+                                ariaLabel={usersStrings.brokenKeys.openDetails.replace('{label}', label)}
+                                className={metric.primaryClassName}
+                              />
+                              <span className="admin-table-value-secondary">{metric.secondary}</span>
+                            </div>
+                          )
+                        })()}
+                      </td>
+                      <td className="admin-users-compact-cell">
                         <AdminTableValueStack {...formatSuccessRateStackValue(item.dailySuccess, item.dailyFailure, language)} />
                       </td>
                       <td className="admin-users-compact-cell">
@@ -6861,6 +7217,26 @@ function AdminDashboard(): JSX.Element {
                   <div className="admin-mobile-kv">
                     <span>{usersStrings.usage.table.monthly}</span>
                     <strong>{formatQuotaUsagePair(item.quotaMonthlyUsed, item.quotaMonthlyLimit)}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{usersStrings.usage.table.monthlyBroken}</span>
+                    {item.monthlyBrokenCount > 0 ? (
+                      <button
+                        type="button"
+                        className="link-button"
+                        onClick={() =>
+                          openMonthlyBrokenDrawer(
+                            'user',
+                            item.userId,
+                            item.displayName || item.username || item.userId,
+                          )
+                        }
+                      >
+                        <strong>{formatQuotaUsagePair(item.monthlyBrokenCount, item.monthlyBrokenLimit)}</strong>
+                      </button>
+                    ) : (
+                      <strong>{formatQuotaUsagePair(item.monthlyBrokenCount, item.monthlyBrokenLimit)}</strong>
+                    )}
                   </div>
                   <div className="admin-mobile-kv">
                     <span>{usersStrings.usage.table.dailySuccessRate}</span>
@@ -6979,7 +7355,7 @@ function AdminDashboard(): JSX.Element {
             {unboundTokenUsage.length === 0 ? (
               <tbody>
                 <tr>
-                  <td colSpan={9}>
+                  <td colSpan={10}>
                     <div className="empty-state alert">{unboundTokenUsageStrings.empty.none}</div>
                   </td>
                 </tr>
@@ -7014,6 +7390,13 @@ function AdminDashboard(): JSX.Element {
                     <AdminUsersSortableHeader
                       label={unboundTokenUsageStrings.table.monthly}
                       field="quotaMonthlyUsed"
+                      activeField={effectiveUnboundTokenUsageSort}
+                      activeOrder={effectiveUnboundTokenUsageSortOrder}
+                      onToggle={toggleUnboundTokenUsageSort}
+                    />
+                    <AdminUsersSortableHeader
+                      label={unboundTokenUsageStrings.table.monthlyBroken}
+                      field="monthlyBrokenCount"
                       activeField={effectiveUnboundTokenUsageSort}
                       activeOrder={effectiveUnboundTokenUsageSortOrder}
                       onToggle={toggleUnboundTokenUsageSort}
@@ -7075,6 +7458,29 @@ function AdminDashboard(): JSX.Element {
                       </td>
                       <td className="admin-users-compact-cell">
                         <AdminTableValueStack {...formatQuotaStackValue(item.quotaMonthlyUsed, item.quotaMonthlyLimit)} />
+                      </td>
+                      <td className="admin-users-compact-cell">
+                        {item.monthlyBrokenCount == null || item.monthlyBrokenLimit == null ? (
+                          <AdminTableValueStack primary="—" />
+                        ) : (
+                          (() => {
+                            const metric = formatMonthlyBrokenStackValue(
+                              item.monthlyBrokenCount,
+                              item.monthlyBrokenLimit,
+                            )
+                            return (
+                              <div className="admin-table-value-stack">
+                                <MonthlyBrokenCountTrigger
+                                  count={item.monthlyBrokenCount}
+                                  onOpen={() => openMonthlyBrokenDrawer('token', item.tokenId, item.tokenId)}
+                                  ariaLabel={usersStrings.brokenKeys.openDetails.replace('{label}', item.tokenId)}
+                                  className={metric.primaryClassName}
+                                />
+                                <span className="admin-table-value-secondary">{metric.secondary}</span>
+                              </div>
+                            )
+                          })()
+                        )}
                       </td>
                       <td className="admin-users-compact-cell">
                         <AdminTableValueStack {...formatSuccessRateStackValue(item.dailySuccess, item.dailyFailure, language)} />
@@ -7145,6 +7551,22 @@ function AdminDashboard(): JSX.Element {
                   <div className="admin-mobile-kv">
                     <span>{unboundTokenUsageStrings.table.monthly}</span>
                     <strong>{formatQuotaUsagePair(item.quotaMonthlyUsed, item.quotaMonthlyLimit)}</strong>
+                  </div>
+                  <div className="admin-mobile-kv">
+                    <span>{unboundTokenUsageStrings.table.monthlyBroken}</span>
+                    {item.monthlyBrokenCount == null || item.monthlyBrokenLimit == null ? (
+                      <strong>—</strong>
+                    ) : item.monthlyBrokenCount > 0 ? (
+                      <button
+                        type="button"
+                        className="link-button"
+                        onClick={() => openMonthlyBrokenDrawer('token', item.tokenId, item.tokenId)}
+                      >
+                        <strong>{formatQuotaUsagePair(item.monthlyBrokenCount, item.monthlyBrokenLimit)}</strong>
+                      </button>
+                    ) : (
+                      <strong>{formatQuotaUsagePair(item.monthlyBrokenCount, item.monthlyBrokenLimit)}</strong>
+                    )}
                   </div>
                   <div className="admin-mobile-kv">
                     <span>{unboundTokenUsageStrings.table.dailySuccessRate}</span>
@@ -9088,6 +9510,153 @@ function AdminDashboard(): JSX.Element {
           onRevalidate={() => void revalidateForwardProxy()}
         />
       )}
+
+      <Drawer
+        open={monthlyBrokenDrawer != null}
+        onOpenChange={(open) => {
+          if (!open) closeMonthlyBrokenDrawer()
+        }}
+        shouldScaleBackground={false}
+      >
+        <DrawerContent className="request-entity-drawer-content-fit">
+          <div className="request-entity-drawer-body-fit">
+            <section className="surface panel">
+              <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
+                <div>
+                  <h2>{usersStrings.brokenKeys.drawerTitle}</h2>
+                  <p className="panel-description">
+                    {usersStrings.brokenKeys.drawerDescription.replace('{label}', monthlyBrokenDrawer?.label ?? '—')}
+                  </p>
+                </div>
+              </div>
+              <AdminLoadingRegion
+                className="table-wrapper jobs-table-wrapper admin-responsive-up"
+                loadState={monthlyBrokenDrawerLoadState}
+                loadingLabel={usersStrings.brokenKeys.loading}
+                errorLabel={monthlyBrokenDrawerError ?? loadingStateStrings.error}
+                minHeight={240}
+              >
+                {monthlyBrokenDrawerItems.length === 0 ? (
+                  <div className="empty-state alert">{usersStrings.brokenKeys.empty}</div>
+                ) : (
+                  <Table className="jobs-table admin-users-table">
+                    <thead>
+                      <tr>
+                        <th>{usersStrings.brokenKeys.table.key}</th>
+                        <th>{usersStrings.brokenKeys.table.status}</th>
+                        <th>{usersStrings.brokenKeys.table.reason}</th>
+                        <th>{usersStrings.brokenKeys.table.latestBreakAt}</th>
+                        <th>{usersStrings.brokenKeys.table.breaker}</th>
+                        <th>{usersStrings.brokenKeys.table.relatedUsers}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {monthlyBrokenDrawerItems.map((item) => {
+                        const stateKey = copyStateKey('brokenKeys', item.keyId)
+                        const state = copyState.get(stateKey)
+                        return (
+                          <tr key={`${item.keyId}:${item.latestBreakAt}`}>
+                            <td>
+                              <MonthlyBrokenKeyValue
+                                keyId={item.keyId}
+                                ungroupedLabel={keyStrings.groups.ungrouped}
+                                detailLabel={keyStrings.actions.details}
+                                copyLabel={usersStrings.brokenKeys.actions.copyKeyId}
+                                copiedLabel={usersStrings.brokenKeys.actions.copied}
+                                copyState={state}
+                                onOpenKey={navigateKey}
+                                onCopy={(anchorEl) =>
+                                  handleCopyMonthlyBrokenKeyId(item.keyId, stateKey, anchorEl)
+                                }
+                              />
+                            </td>
+                            <td>
+                              <StatusBadge tone={item.currentStatus === 'quarantined' ? 'warning' : 'error'}>
+                                {adminStrings.statuses[item.currentStatus] ?? item.currentStatus}
+                              </StatusBadge>
+                            </td>
+                            <td>{item.reasonSummary || item.reasonCode || usersStrings.brokenKeys.noReason}</td>
+                            <td>{formatTimestamp(item.latestBreakAt)}</td>
+                            <td>{formatMonthlyBrokenBreaker(item, usersStrings.brokenKeys)}</td>
+                            <td>
+                              {formatMonthlyBrokenRelatedUsers(
+                                item.relatedUsers,
+                                usersStrings.brokenKeys.noRelatedUsers,
+                              )}
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </Table>
+                )}
+              </AdminLoadingRegion>
+              <AdminLoadingRegion
+                className="admin-mobile-list admin-responsive-down"
+                loadState={monthlyBrokenDrawerLoadState}
+                loadingLabel={usersStrings.brokenKeys.loading}
+                errorLabel={monthlyBrokenDrawerError ?? loadingStateStrings.error}
+                minHeight={240}
+              >
+                {monthlyBrokenDrawerItems.length === 0 ? (
+                  <div className="empty-state alert">{usersStrings.brokenKeys.empty}</div>
+                ) : (
+                  monthlyBrokenDrawerItems.map((item) => {
+                    const stateKey = copyStateKey('brokenKeys', item.keyId)
+                    const state = copyState.get(stateKey)
+                    return (
+                      <article key={`${item.keyId}:${item.latestBreakAt}`} className="admin-mobile-card">
+                        <div className="admin-mobile-kv">
+                          <span>{usersStrings.brokenKeys.table.key}</span>
+                          <strong>
+                            <MonthlyBrokenKeyValue
+                              keyId={item.keyId}
+                              ungroupedLabel={keyStrings.groups.ungrouped}
+                              detailLabel={keyStrings.actions.details}
+                              copyLabel={usersStrings.brokenKeys.actions.copyKeyId}
+                              copiedLabel={usersStrings.brokenKeys.actions.copied}
+                              copyState={state}
+                              onOpenKey={navigateKey}
+                              onCopy={(anchorEl) =>
+                                handleCopyMonthlyBrokenKeyId(item.keyId, stateKey, anchorEl)
+                              }
+                            />
+                          </strong>
+                        </div>
+                        <div className="admin-mobile-kv">
+                          <span>{usersStrings.brokenKeys.table.status}</span>
+                          <strong>{adminStrings.statuses[item.currentStatus] ?? item.currentStatus}</strong>
+                        </div>
+                        <div className="admin-mobile-kv">
+                          <span>{usersStrings.brokenKeys.table.reason}</span>
+                          <strong>{item.reasonSummary || item.reasonCode || usersStrings.brokenKeys.noReason}</strong>
+                        </div>
+                        <div className="admin-mobile-kv">
+                          <span>{usersStrings.brokenKeys.table.latestBreakAt}</span>
+                          <strong>{formatTimestamp(item.latestBreakAt)}</strong>
+                        </div>
+                        <div className="admin-mobile-kv">
+                          <span>{usersStrings.brokenKeys.table.breaker}</span>
+                          <strong>{formatMonthlyBrokenBreaker(item, usersStrings.brokenKeys)}</strong>
+                        </div>
+                        <div className="admin-mobile-kv">
+                          <span>{usersStrings.brokenKeys.table.relatedUsers}</span>
+                          <strong>
+                            {formatMonthlyBrokenRelatedUsers(
+                              item.relatedUsers,
+                              usersStrings.brokenKeys.noRelatedUsers,
+                            )}
+                          </strong>
+                        </div>
+                      </article>
+                    )
+                  })
+                )}
+              </AdminLoadingRegion>
+            </section>
+          </div>
+        </DrawerContent>
+      </Drawer>
 
       <Drawer
         open={requestEntityDrawer != null}
