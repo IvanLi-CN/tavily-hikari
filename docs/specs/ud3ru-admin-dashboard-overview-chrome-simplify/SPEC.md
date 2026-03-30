@@ -120,7 +120,7 @@
 
 - Storybook 证据画布：`Admin/Components/DashboardOverview/ZhDarkEvidence`
 - 证据目标源：`storybook_canvas`
-- 证据绑定 SHA：`79a62149bd0102e1433ecd1af427dc45481a7fc6`
+- 证据绑定 SHA：`9d52eafa9e91b5551f5768bb0f15a79a0575279b`
 - 证据绑定说明：证据图已在聊天回图完成验收；本次与 `main` 的同步未改动 `DashboardOverview.tsx`、`DashboardOverview.stories.tsx` 或 dashboard-overview 相关样式选择器，因此沿用已审阅的 spec 证据资产并重新绑定到当前快车道收口版本。
 - 证据资产：`docs/specs/ud3ru-admin-dashboard-overview-chrome-simplify/assets/dashboard-overview-zh-dark-evidence.png`
 
