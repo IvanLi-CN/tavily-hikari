@@ -128,6 +128,7 @@
 - 证据资产：
   - `docs/specs/frpeh-admin-desktop-sidebar-utility-relayout/assets/dashboard-desktop-1440.png`
   - `docs/specs/frpeh-admin-desktop-sidebar-utility-relayout/assets/token-usage-desktop-1440.png`
+  - `docs/specs/frpeh-admin-desktop-sidebar-utility-relayout/assets/users-usage-desktop-1440.png`
   - `docs/specs/frpeh-admin-desktop-sidebar-utility-relayout/assets/key-detail-desktop-1440.png`
   - `docs/specs/frpeh-admin-desktop-sidebar-utility-relayout/assets/dashboard-stacked-1100.png`
 
@@ -138,6 +139,10 @@
 - 1440px Token 榜单：桌面态不再保留重型页头，侧栏 utility 承接 theme / language / identity / 更新时间 / 返回 / 刷新。
 
 ![1440px Token 榜单桌面态](./assets/token-usage-desktop-1440.png)
+
+- 1440px 用户用量：补回和其他后台页一致的 compact intro，侧栏 utility 同时承接返回用户管理动作。
+
+![1440px 用户用量桌面态](./assets/users-usage-desktop-1440.png)
 
 - 1440px Key detail：detail 动作收纳到侧栏 utility，内容区只保留标题与说明。
 
@@ -164,6 +169,7 @@
 - 2026-03-30: 创建 spec，冻结“桌面 utility + compact intro + stacked header 保持”的范围、边界与视觉验收口径。
 - 2026-03-30: 完成 `AdminShell` 桌面 utility host、通用 compact intro、模块页 / Token 榜单 / key detail / token detail 的桌面收纳改造。
 - 2026-03-30: 同步 shell/page/detail Storybook stories，完成 `bun run build`、`bun run build-storybook`、`bun test`，并补齐 1440px / 1100px 视觉证据。
+- 2026-03-30: 根据验收反馈补回 `user-usage` 页的桌面 compact intro 与侧栏 utility，对齐后台统一页头结构，并追加 `UsersUsage` Storybook 证据与 stacked coverage。
 
 ## 参考（References）
 

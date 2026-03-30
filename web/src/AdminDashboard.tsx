@@ -6974,6 +6974,76 @@ function AdminDashboard(): JSX.Element {
     const backOrder = backSort ? usersSortOrder : null
     const usageDailyRateLabel = language === 'zh' ? usersStrings.usage.table.dailySuccessRate : 'Daily'
     const usageMonthlyRateLabel = language === 'zh' ? usersStrings.usage.table.monthlySuccessRate : 'Monthly'
+    const userUsageUpdatedTime = lastUpdated ? timeOnlyFormatter.format(lastUpdated) : null
+    const userUsageDesktopUtility = (
+      <AdminShellSidebarUtility>
+        <AdminSidebarUtilityStack>
+          <AdminSidebarUtilityCard>
+            <div className="admin-sidebar-utility-toolbar">
+              <ThemeToggle />
+              <LanguageSwitcher />
+            </div>
+            <div className="admin-sidebar-utility-meta">
+              {displayName && (
+                <div className={`user-badge${isAdmin ? ' user-badge-admin' : ''}`}>
+                  {isAdmin && <Icon icon="mdi:crown-outline" className="user-badge-icon" aria-hidden="true" />}
+                  <span>{displayName}</span>
+                </div>
+              )}
+              {userUsageUpdatedTime && (
+                <span className="admin-panel-header-time" aria-live="polite">
+                  <Icon
+                    icon="mdi:clock-time-four-outline"
+                    width={14}
+                    height={14}
+                    className="admin-panel-header-time-icon"
+                    aria-hidden="true"
+                  />
+                  <span className="admin-panel-header-time-label">{headerStrings.updatedPrefix}</span>
+                  <span className="admin-panel-header-time-value">{userUsageUpdatedTime}</span>
+                </span>
+              )}
+            </div>
+          </AdminSidebarUtilityCard>
+
+          <AdminSidebarUtilityCard>
+            <div className="admin-sidebar-utility-actions">
+              <AdminReturnToConsoleLink
+                label={headerStrings.returnToConsole}
+                href={userConsoleHref}
+                className="admin-sidebar-utility-action"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="admin-panel-refresh-button admin-sidebar-utility-action"
+                onClick={handleManualRefresh}
+                disabled={loading || activeModuleBlocking}
+              >
+                <Icon
+                  icon={loading ? 'mdi:loading' : 'mdi:refresh'}
+                  width={16}
+                  height={16}
+                  className={loading ? 'icon-spin' : undefined}
+                  aria-hidden="true"
+                />
+                <span>{loading ? headerStrings.refreshing : headerStrings.refreshNow}</span>
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                className="admin-sidebar-utility-action"
+                onClick={() => navigateToPath(buildAdminUsersPath(usersQuery, usersTagFilterId, usersPage, backSort, backOrder))}
+              >
+                <Icon icon="mdi:arrow-left" width={16} height={16} aria-hidden="true" />
+                <span>{usersStrings.usage.back}</span>
+              </Button>
+            </div>
+          </AdminSidebarUtilityCard>
+        </AdminSidebarUtilityStack>
+      </AdminShellSidebarUtility>
+    )
 
     return (
       <AdminShell
@@ -6982,20 +7052,31 @@ function AdminDashboard(): JSX.Element {
         skipToContentLabel={adminStrings.accessibility.skipToContent}
         onSelectItem={navigateModule}
       >
+        {userUsageDesktopUtility}
+
+        <div className="admin-desktop-only">
+          <AdminCompactIntro
+            title={usersStrings.usage.title}
+            description={usersStrings.usage.description}
+          />
+        </div>
+
         <section className="surface panel">
           <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
-            <div style={{ flex: '1 1 340px', minWidth: 260 }}>
+            <div className="admin-stacked-only" style={{ flex: '1 1 340px', minWidth: 260 }}>
               <h2>{usersStrings.usage.title}</h2>
               <p className="panel-description">{usersStrings.usage.description}</p>
             </div>
             <div className="admin-inline-actions" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => navigateToPath(buildAdminUsersPath(usersQuery, usersTagFilterId, usersPage, backSort, backOrder))}
-              >
-                {usersStrings.usage.back}
-              </Button>
+              <div className="admin-stacked-only">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => navigateToPath(buildAdminUsersPath(usersQuery, usersTagFilterId, usersPage, backSort, backOrder))}
+                >
+                  {usersStrings.usage.back}
+                </Button>
+              </div>
               <div className="users-search-controls">
                 <Input
                   type="text"

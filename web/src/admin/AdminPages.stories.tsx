@@ -2561,9 +2561,14 @@ function buildNavItems(strings: AdminTranslations): AdminNavItem[] {
 interface AdminPageFrameProps {
   activeModule: AdminNavTarget
   children: ReactNode
+  showDefaultShellChrome?: boolean
 }
 
-function AdminPageFrame({ activeModule, children }: AdminPageFrameProps): JSX.Element {
+function AdminPageFrame({
+  activeModule,
+  children,
+  showDefaultShellChrome = true,
+}: AdminPageFrameProps): JSX.Element {
   const admin = useTranslate().admin
 
   return (
@@ -2573,63 +2578,67 @@ function AdminPageFrame({ activeModule, children }: AdminPageFrameProps): JSX.El
       skipToContentLabel={admin.accessibility.skipToContent}
       onSelectItem={() => {}}
     >
-      <AdminShellSidebarUtility>
-        <AdminSidebarUtilityStack>
-          <AdminSidebarUtilityCard>
-            <div className="admin-sidebar-utility-toolbar">
-              <ThemeToggle />
-              <LanguageSwitcher />
-            </div>
-            <div className="admin-sidebar-utility-meta">
-              <div className="user-badge user-badge-admin">
-                <Icon icon="mdi:crown-outline" className="user-badge-icon" aria-hidden="true" />
-                <span>Ops Admin</span>
-              </div>
-              <span className="admin-panel-header-time" aria-live="polite">
-                <Icon icon="mdi:clock-time-four-outline" width={14} height={14} className="admin-panel-header-time-icon" aria-hidden="true" />
-                <span className="admin-panel-header-time-label">{admin.header.updatedPrefix}</span>
-                <span className="admin-panel-header-time-value">11:42:10</span>
-              </span>
-            </div>
-          </AdminSidebarUtilityCard>
-          <AdminSidebarUtilityCard>
-            <div className="admin-sidebar-utility-actions">
-              <AdminReturnToConsoleLink
-                label={admin.header.returnToConsole}
-                href="/console"
-                className="admin-sidebar-utility-action"
-              />
-              <Button type="button" variant="outline" size="sm" className="admin-panel-refresh-button admin-sidebar-utility-action">
-                <Icon icon="mdi:refresh" width={16} height={16} aria-hidden="true" />
-                <span>{admin.header.refreshNow}</span>
-              </Button>
-            </div>
-          </AdminSidebarUtilityCard>
-        </AdminSidebarUtilityStack>
-      </AdminShellSidebarUtility>
+      {showDefaultShellChrome && (
+        <>
+          <AdminShellSidebarUtility>
+            <AdminSidebarUtilityStack>
+              <AdminSidebarUtilityCard>
+                <div className="admin-sidebar-utility-toolbar">
+                  <ThemeToggle />
+                  <LanguageSwitcher />
+                </div>
+                <div className="admin-sidebar-utility-meta">
+                  <div className="user-badge user-badge-admin">
+                    <Icon icon="mdi:crown-outline" className="user-badge-icon" aria-hidden="true" />
+                    <span>Ops Admin</span>
+                  </div>
+                  <span className="admin-panel-header-time" aria-live="polite">
+                    <Icon icon="mdi:clock-time-four-outline" width={14} height={14} className="admin-panel-header-time-icon" aria-hidden="true" />
+                    <span className="admin-panel-header-time-label">{admin.header.updatedPrefix}</span>
+                    <span className="admin-panel-header-time-value">11:42:10</span>
+                  </span>
+                </div>
+              </AdminSidebarUtilityCard>
+              <AdminSidebarUtilityCard>
+                <div className="admin-sidebar-utility-actions">
+                  <AdminReturnToConsoleLink
+                    label={admin.header.returnToConsole}
+                    href="/console"
+                    className="admin-sidebar-utility-action"
+                  />
+                  <Button type="button" variant="outline" size="sm" className="admin-panel-refresh-button admin-sidebar-utility-action">
+                    <Icon icon="mdi:refresh" width={16} height={16} aria-hidden="true" />
+                    <span>{admin.header.refreshNow}</span>
+                  </Button>
+                </div>
+              </AdminSidebarUtilityCard>
+            </AdminSidebarUtilityStack>
+          </AdminShellSidebarUtility>
 
-      <div className="admin-stacked-only">
-        <AdminPanelHeader
-          title={admin.header.title}
-          subtitle={admin.header.subtitle}
-          displayName="Ops Admin"
-          isAdmin
-          updatedPrefix={admin.header.updatedPrefix}
-          updatedTime="11:42:10"
-          isRefreshing={false}
-          refreshLabel={admin.header.refreshNow}
-          refreshingLabel={admin.header.refreshing}
-          userConsoleLabel={admin.header.returnToConsole}
-          userConsoleHref="/console"
-          onRefresh={() => {}}
-        />
-      </div>
-      <div className="admin-desktop-only">
-        <AdminCompactIntro
-          title={admin.header.title}
-          description={admin.header.subtitle}
-        />
-      </div>
+          <div className="admin-stacked-only">
+            <AdminPanelHeader
+              title={admin.header.title}
+              subtitle={admin.header.subtitle}
+              displayName="Ops Admin"
+              isAdmin
+              updatedPrefix={admin.header.updatedPrefix}
+              updatedTime="11:42:10"
+              isRefreshing={false}
+              refreshLabel={admin.header.refreshNow}
+              refreshingLabel={admin.header.refreshing}
+              userConsoleLabel={admin.header.returnToConsole}
+              userConsoleHref="/console"
+              onRefresh={() => {}}
+            />
+          </div>
+          <div className="admin-desktop-only">
+            <AdminCompactIntro
+              title={admin.header.title}
+              description={admin.header.subtitle}
+            />
+          </div>
+        </>
+      )}
       {children}
     </AdminShell>
   )
@@ -3951,17 +3960,70 @@ function UsersUsagePageCanvas({
   }
 
   return (
-    <AdminPageFrame activeModule="user-usage">
+    <AdminPageFrame activeModule="user-usage" showDefaultShellChrome={false}>
+      <AdminShellSidebarUtility>
+        <AdminSidebarUtilityStack>
+          <AdminSidebarUtilityCard>
+            <div className="admin-sidebar-utility-toolbar">
+              <ThemeToggle />
+              <LanguageSwitcher />
+            </div>
+            <div className="admin-sidebar-utility-meta">
+              <div className="user-badge user-badge-admin">
+                <Icon icon="mdi:crown-outline" className="user-badge-icon" aria-hidden="true" />
+                <span>Ops Admin</span>
+              </div>
+              <span className="admin-panel-header-time" aria-live="polite">
+                <Icon icon="mdi:clock-time-four-outline" width={14} height={14} className="admin-panel-header-time-icon" aria-hidden="true" />
+                <span className="admin-panel-header-time-label">{admin.header.updatedPrefix}</span>
+                <span className="admin-panel-header-time-value">11:42:10</span>
+              </span>
+            </div>
+          </AdminSidebarUtilityCard>
+          <AdminSidebarUtilityCard>
+            <div className="admin-sidebar-utility-actions">
+              <AdminReturnToConsoleLink
+                label={admin.header.returnToConsole}
+                href="/console"
+                className="admin-sidebar-utility-action"
+              />
+              <Button type="button" variant="outline" size="sm" className="admin-panel-refresh-button admin-sidebar-utility-action">
+                <Icon icon="mdi:refresh" width={16} height={16} aria-hidden="true" />
+                <span>{admin.header.refreshNow}</span>
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                className="admin-sidebar-utility-action"
+                onClick={() => openAdminStory('admin-pages--users')}
+              >
+                <Icon icon="mdi:arrow-left" width={16} height={16} aria-hidden="true" />
+                <span>{users.usage.back}</span>
+              </Button>
+            </div>
+          </AdminSidebarUtilityCard>
+        </AdminSidebarUtilityStack>
+      </AdminShellSidebarUtility>
+
+      <div className="admin-desktop-only">
+        <AdminCompactIntro
+          title={users.usage.title}
+          description={users.usage.description}
+        />
+      </div>
+
       <section className="surface panel">
         <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
-          <div>
+          <div className="admin-stacked-only" style={{ flex: '1 1 340px', minWidth: 260 }}>
             <h2>{users.usage.title}</h2>
             <p className="panel-description">{users.usage.description}</p>
           </div>
           <div className="admin-inline-actions" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-            <button type="button" className="btn btn-outline" onClick={() => openAdminStory('admin-pages--users')}>
-              {users.usage.back}
-            </button>
+            <div className="admin-stacked-only">
+              <button type="button" className="btn btn-outline" onClick={() => openAdminStory('admin-pages--users')}>
+                {users.usage.back}
+              </button>
+            </div>
             <div className="users-search-controls">
               <input
                 type="text"
@@ -5351,6 +5413,24 @@ export const UsersUsage: Story = {
   render: () => <UsersUsagePageCanvas />,
   parameters: {
     viewport: { defaultViewport: '1440-device-desktop' },
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 80))
+    const utility = canvasElement.querySelector<HTMLElement>('.admin-sidebar-utility')
+    const intro = canvasElement.querySelector<HTMLElement>('.admin-compact-intro')
+    if (!utility) {
+      throw new Error('Expected user usage page to render desktop sidebar utility.')
+    }
+    if (!intro || !intro.textContent?.includes('用量')) {
+      throw new Error('Expected user usage page to render a compact intro with the page title.')
+    }
+  },
+}
+
+export const UsersUsageStacked: Story = {
+  render: () => <UsersUsagePageCanvas />,
+  parameters: {
+    viewport: { defaultViewport: '1100-breakpoint-admin-stack-max' },
   },
 }
 
