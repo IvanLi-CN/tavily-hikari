@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 进行中（快车道）
+- Status: 已完成
 - Created: 2026-03-30
 - Last: 2026-03-30
 
@@ -156,7 +156,7 @@
 
 - [x] M1: 冻结“桌面 utility + compact intro + stacked header 保持”的范围
 - [x] M2: 完成 AdminShell / 页面 / detail 实现
-- [ ] M3: 完成 Storybook、构建、视觉证据与 merge-ready 收口
+- [x] M3: 完成 Storybook、构建、视觉证据与收口
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
@@ -171,6 +171,7 @@
 - 2026-03-30: 同步 shell/page/detail Storybook stories，完成 `bun run build`、`bun run build-storybook`、`bun test`，并补齐 1440px / 1100px 视觉证据。
 - 2026-03-30: 根据验收反馈补回 `user-usage` 页的桌面 compact intro 与侧栏 utility，对齐后台统一页头结构，并追加 `UsersUsage` Storybook 证据与 stacked coverage。
 - 2026-03-30: 修正通用模块页 desktop intro 的标题来源，改为按当前模块读取 `logs/jobs/users/tokens/keys/proxySettings/...` 文案，避免请求日志等页面误显示为全局“总览”。
+- 2026-03-30: 创建 PR #200，并在合并前完成 spec/Storybook/browser 门禁收口。
 
 ## 参考（References）
 
