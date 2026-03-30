@@ -81,6 +81,7 @@
 ### Edge cases / errors
 
 - 若 desktop utility host 尚未挂载，页面仍应正常渲染，随后在客户端挂载后显示 utility，不影响内容区。
+- 若 detail 页运行在非 `AdminShell` 容器中（例如请求日志实体 drawer），桌面态仍必须以内联 fallback 保留 utility 与关键 CTA，不得因为缺少 sidebar host 而直接丢失操作区。
 - stacked header 继续承担移动端按钮入口，不能因为桌面 utility 存在而丢失关键 CTA。
 
 ## 验收标准（Acceptance Criteria）
@@ -171,6 +172,7 @@
 - 2026-03-30: 同步 shell/page/detail Storybook stories，完成 `bun run build`、`bun run build-storybook`、`bun test`，并补齐 1440px / 1100px 视觉证据。
 - 2026-03-30: 根据验收反馈补回 `user-usage` 页的桌面 compact intro 与侧栏 utility，对齐后台统一页头结构，并追加 `UsersUsage` Storybook 证据与 stacked coverage。
 - 2026-03-30: 修正通用模块页 desktop intro 的标题来源，改为按当前模块读取 `logs/jobs/users/tokens/keys/proxySettings/...` 文案，避免请求日志等页面误显示为全局“总览”。
+- 2026-03-30: 根据 merge-proof review follow-up，为非 `AdminShell` 上下文的 detail 页补上 desktop utility fallback，并新增请求日志 token drawer 的 Storybook 回归断言，确保桌面态 `Back` / `Regenerate secret` 等 CTA 不会丢失。
 - 2026-03-30: 创建 PR #200，并在合并前完成 spec/Storybook/browser 门禁收口。
 
 ## 参考（References）
