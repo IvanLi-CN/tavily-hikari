@@ -5591,6 +5591,15 @@ impl KeyStore {
         )
         .execute(&self.pool)
         .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_api_key_maintenance_records_auto_exhausted_window
+               ON api_key_maintenance_records(created_at, key_id)
+               WHERE source = 'system'
+                 AND operation_code = 'auto_mark_exhausted'
+                 AND reason_code = 'quota_exhausted'"#,
+        )
+        .execute(&self.pool)
+        .await?;
 
         Ok(())
     }
@@ -13378,6 +13387,7 @@ impl KeyStore {
         month_start: i64,
     ) -> Result<SummaryWindows, ProxyError> {
         let mut tx = self.pool.begin().await?;
+        let upstream_exhausted_floor = yesterday_start.min(month_start);
         let window_row = sqlx::query(
             r#"
             SELECT
@@ -13419,6 +13429,34 @@ impl KeyStore {
         .bind(OUTCOME_QUOTA_EXHAUSTED)
         .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
         .bind(yesterday_start)
+        .bind(today_end)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        let lifecycle_row = sqlx::query(
+            r#"
+            SELECT
+                COUNT(DISTINCT CASE WHEN created_at >= ? AND created_at < ? THEN key_id END) AS today_upstream_exhausted_key_count,
+                COUNT(DISTINCT CASE WHEN created_at >= ? AND created_at < ? THEN key_id END) AS yesterday_upstream_exhausted_key_count,
+                COUNT(DISTINCT CASE WHEN created_at >= ? AND created_at < ? THEN key_id END) AS month_upstream_exhausted_key_count
+            FROM api_key_maintenance_records
+            WHERE source = ?
+              AND operation_code = ?
+              AND reason_code = ?
+              AND created_at >= ?
+              AND created_at < ?
+            "#,
+        )
+        .bind(today_start)
+        .bind(today_end)
+        .bind(yesterday_start)
+        .bind(yesterday_end)
+        .bind(month_start)
+        .bind(today_end)
+        .bind(MAINTENANCE_SOURCE_SYSTEM)
+        .bind(MAINTENANCE_OP_AUTO_MARK_EXHAUSTED)
+        .bind(OUTCOME_QUOTA_EXHAUSTED)
+        .bind(upstream_exhausted_floor)
         .bind(today_end)
         .fetch_one(&mut *tx)
         .await?;
@@ -13471,6 +13509,8 @@ impl KeyStore {
                 success_count: window_row.try_get("today_success_count")?,
                 error_count: window_row.try_get("today_error_count")?,
                 quota_exhausted_count: window_row.try_get("today_quota_exhausted_count")?,
+                upstream_exhausted_key_count: lifecycle_row
+                    .try_get("today_upstream_exhausted_key_count")?,
                 new_keys: 0,
                 new_quarantines: 0,
             },
@@ -13479,6 +13519,8 @@ impl KeyStore {
                 success_count: window_row.try_get("yesterday_success_count")?,
                 error_count: window_row.try_get("yesterday_error_count")?,
                 quota_exhausted_count: window_row.try_get("yesterday_quota_exhausted_count")?,
+                upstream_exhausted_key_count: lifecycle_row
+                    .try_get("yesterday_upstream_exhausted_key_count")?,
                 new_keys: 0,
                 new_quarantines: 0,
             },
@@ -13487,6 +13529,8 @@ impl KeyStore {
                 success_count: month_row.try_get("month_success_count")?,
                 error_count: month_row.try_get("month_error_count")?,
                 quota_exhausted_count: month_row.try_get("month_quota_exhausted_count")?,
+                upstream_exhausted_key_count: lifecycle_row
+                    .try_get("month_upstream_exhausted_key_count")?,
                 new_keys: month_lifecycle_row.try_get("month_new_keys")?,
                 new_quarantines: month_lifecycle_row.try_get("month_new_quarantines")?,
             },

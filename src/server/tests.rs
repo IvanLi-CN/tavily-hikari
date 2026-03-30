@@ -7757,6 +7757,23 @@ colo=LAX
 
         sqlx::query(
             r#"
+            INSERT INTO api_keys (
+                id,
+                api_key,
+                status,
+                created_at
+            ) VALUES (?, ?, 'active', ?)
+            "#,
+        )
+        .bind("summary-window-extra")
+        .bind("tvly-summary-window-extra")
+        .bind(today_start + 90)
+        .execute(&pool)
+        .await
+        .expect("insert extra key");
+
+        sqlx::query(
+            r#"
             INSERT INTO api_key_usage_buckets (
                 api_key_id,
                 bucket_start,
@@ -7864,6 +7881,60 @@ colo=LAX
         .await
         .expect("insert summary window quarantine");
 
+        let month_only_upstream_ts = if month_start < yesterday_start {
+            month_start + 90
+        } else {
+            today_window_anchor + 90
+        };
+
+        sqlx::query(
+            r#"
+            INSERT INTO api_key_maintenance_records (
+                id,
+                key_id,
+                source,
+                operation_code,
+                operation_summary,
+                reason_code,
+                reason_summary,
+                reason_detail,
+                request_log_id,
+                auth_token_log_id,
+                auth_token_id,
+                actor_user_id,
+                actor_display_name,
+                status_before,
+                status_after,
+                quarantine_before,
+                quarantine_after,
+                created_at
+            ) VALUES
+                (?, ?, 'system', 'auto_mark_exhausted', '自动标记为 exhausted', 'quota_exhausted', '上游额度耗尽', NULL, NULL, NULL, NULL, NULL, NULL, 'active', 'exhausted', 0, 0, ?),
+                (?, ?, 'system', 'auto_mark_exhausted', '自动标记为 exhausted', 'quota_exhausted', '上游额度耗尽', NULL, NULL, NULL, NULL, NULL, NULL, 'active', 'exhausted', 0, 0, ?),
+                (?, ?, 'system', 'auto_mark_exhausted', '自动标记为 exhausted', 'quota_exhausted', '上游额度耗尽', NULL, NULL, NULL, NULL, NULL, NULL, 'active', 'exhausted', 0, 0, ?),
+                (?, ?, 'admin', 'manual_mark_exhausted', '管理员手动标记 exhausted', 'manual_mark_exhausted', '确认该 Key 额度耗尽', NULL, NULL, NULL, NULL, NULL, NULL, 'active', 'exhausted', 0, 0, ?),
+                (?, ?, 'system', 'auto_mark_exhausted', '自动标记为 exhausted', 'quota_exhausted', '上游额度耗尽', NULL, NULL, NULL, NULL, NULL, NULL, 'active', 'exhausted', 0, 0, ?)
+            "#,
+        )
+        .bind("summary-window-maint-today-a")
+        .bind(&key_id)
+        .bind(today_window_anchor - 1)
+        .bind("summary-window-maint-today-b")
+        .bind(&key_id)
+        .bind(today_window_anchor)
+        .bind("summary-window-maint-yesterday")
+        .bind(&key_id)
+        .bind(yesterday_window_anchor)
+        .bind("summary-window-maint-manual")
+        .bind(&key_id)
+        .bind(today_window_anchor + 1)
+        .bind("summary-window-maint-month")
+        .bind("summary-window-extra")
+        .bind(month_only_upstream_ts)
+        .execute(&pool)
+        .await
+        .expect("insert summary window maintenance records");
+
         let admin_password = "summary-window-admin-password";
         let admin_addr = spawn_builtin_keys_admin_server(proxy, admin_password).await;
         let client = Client::builder()
@@ -7910,9 +7981,27 @@ colo=LAX
             body.pointer("/month/total_requests").and_then(|v| v.as_i64()),
             Some(month_expected)
         );
+        assert!(
+            body.pointer("/today/upstream_exhausted_key_count")
+                .and_then(|v| v.as_i64())
+                .is_some(),
+            "today upstream exhausted key count should exist"
+        );
+        assert!(
+            body.pointer("/yesterday/upstream_exhausted_key_count")
+                .and_then(|v| v.as_i64())
+                .is_some(),
+            "yesterday upstream exhausted key count should exist"
+        );
+        assert!(
+            body.pointer("/month/upstream_exhausted_key_count")
+                .and_then(|v| v.as_i64())
+                .is_some(),
+            "month upstream exhausted key count should exist"
+        );
         assert_eq!(
             body.pointer("/month/new_keys").and_then(|v| v.as_i64()),
-            Some(2)
+            Some(3)
         );
         assert_eq!(
             body.pointer("/month/new_quarantines")
@@ -8791,6 +8880,13 @@ colo=LAX
                 .pointer("/summaryWindows/month/new_keys")
                 .and_then(|value| value.as_i64()),
             Some(1)
+        );
+        assert!(
+            snapshot_json
+                .pointer("/summaryWindows/today/upstream_exhausted_key_count")
+                .and_then(|value| value.as_i64())
+                .is_some(),
+            "snapshot summary windows should expose upstream exhausted key counts"
         );
         assert_eq!(
             snapshot_json

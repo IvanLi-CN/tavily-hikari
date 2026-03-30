@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test'
 
 import {
   buildTodayRateComparison,
+  createDashboardMonthMetrics,
   createDashboardTodayMetrics,
   type DashboardTodayMetricLabels,
   type DashboardTodayMetricStrings,
@@ -11,7 +12,7 @@ const labels: DashboardTodayMetricLabels = {
   total: 'Total Requests',
   success: 'Successful',
   errors: 'Errors',
-  quota: 'Quota Exhausted',
+  upstreamExhausted: 'Upstream Keys Exhausted',
 }
 
 const strings: DashboardTodayMetricStrings = {
@@ -20,6 +21,7 @@ const strings: DashboardTodayMetricStrings = {
   percentagePointUnit: 'pp',
   asOfNow: 'Up to now',
   todayShare: 'Today share',
+  todayAdded: 'Added today',
 }
 
 const formatters = {
@@ -36,6 +38,7 @@ describe('dashboard today metrics helpers', () => {
         success_count: 50,
         error_count: 50,
         quota_exhausted_count: 0,
+        upstream_exhausted_key_count: 0,
         new_keys: 0,
         new_quarantines: 0,
       },
@@ -44,6 +47,7 @@ describe('dashboard today metrics helpers', () => {
         success_count: 40,
         error_count: 40,
         quota_exhausted_count: 0,
+        upstream_exhausted_key_count: 0,
         new_keys: 0,
         new_quarantines: 0,
       },
@@ -109,6 +113,80 @@ describe('dashboard today metrics helpers', () => {
       value: '0.0 pp',
       direction: 'flat',
       tone: 'neutral',
+    })
+  })
+
+  it('uses upstream exhausted key counts for the today lifecycle card', () => {
+    const metrics = createDashboardTodayMetrics({
+      today: {
+        total_requests: 120,
+        success_count: 100,
+        error_count: 20,
+        quota_exhausted_count: 15,
+        upstream_exhausted_key_count: 3,
+        new_keys: 0,
+        new_quarantines: 0,
+      },
+      yesterday: {
+        total_requests: 90,
+        success_count: 81,
+        error_count: 9,
+        quota_exhausted_count: 4,
+        upstream_exhausted_key_count: 1,
+        new_keys: 0,
+        new_quarantines: 0,
+      },
+      labels,
+      strings,
+      formatters,
+    })
+
+    expect(metrics.find((metric) => metric.id === 'today-upstream-exhausted')).toEqual({
+      id: 'today-upstream-exhausted',
+      label: 'Upstream Keys Exhausted',
+      value: '3',
+      subtitle: 'Added today',
+      comparison: {
+        label: 'vs same time yesterday',
+        value: '+2 (200%)',
+        direction: 'up',
+        tone: 'negative',
+      },
+    })
+  })
+
+  it('uses month-added subtitles for upstream exhausted key counts', () => {
+    const metrics = createDashboardMonthMetrics({
+      month: {
+        total_requests: 800,
+        success_count: 640,
+        error_count: 80,
+        quota_exhausted_count: 48,
+        upstream_exhausted_key_count: 6,
+        new_keys: 4,
+        new_quarantines: 2,
+      },
+      labels: {
+        total: 'Total Requests',
+        success: 'Successful',
+        errors: 'Errors',
+        upstreamExhausted: 'Upstream Keys Exhausted',
+        newKeys: 'New Keys',
+        newQuarantines: 'New Quarantines',
+      },
+      strings: {
+        monthToDate: 'Month to date',
+        monthShare: 'Month share',
+        monthAdded: 'Added this month',
+      },
+      formatters,
+    })
+
+    expect(metrics.find((metric) => metric.id === 'month-upstream-exhausted')).toEqual({
+      id: 'month-upstream-exhausted',
+      label: 'Upstream Keys Exhausted',
+      value: '6',
+      subtitle: 'Added this month',
     })
   })
 })

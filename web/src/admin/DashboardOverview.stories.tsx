@@ -1,7 +1,10 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
 import DashboardOverview from './DashboardOverview'
-import { createDashboardTodayMetrics } from './dashboardTodayMetrics'
+import {
+  createDashboardMonthMetrics,
+  createDashboardTodayMetrics,
+} from './dashboardTodayMetrics'
 
 const storyNumberFormatter = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 0,
@@ -28,7 +31,7 @@ const meta = {
     docs: {
       description: {
         component:
-          'Dashboard overview shell with today/month/status summary cards. Success and error deltas use rate shifts instead of raw count changes.',
+          'Dashboard overview shell with today/month/status summary cards. Success and error deltas use rate shifts, while upstream exhaustion cards count distinct auto-exhausted keys instead of request volume.',
       },
     },
   },
@@ -55,7 +58,9 @@ const strings = {
   percentagePointUnit: 'pp',
   asOfNow: 'Up to now',
   todayShare: 'Today share',
+  todayAdded: 'Added today',
   monthToDate: 'Month to date',
+  monthAdded: 'Added this month',
   monthShare: 'Month share',
   trendsTitle: 'Traffic Trends',
   trendsDescription: 'Recent request and error changes from latest logs.',
@@ -84,6 +89,7 @@ const todayMetrics = createDashboardTodayMetrics({
     success_count: 4_192,
     error_count: 451,
     quota_exhausted_count: 169,
+    upstream_exhausted_key_count: 7,
     new_keys: 0,
     new_quarantines: 0,
   },
@@ -92,6 +98,7 @@ const todayMetrics = createDashboardTodayMetrics({
     success_count: 3_694,
     error_count: 527,
     quota_exhausted_count: 19,
+    upstream_exhausted_key_count: 3,
     new_keys: 0,
     new_quarantines: 0,
   },
@@ -99,7 +106,7 @@ const todayMetrics = createDashboardTodayMetrics({
     total: 'Total Requests',
     success: 'Successful',
     errors: 'Errors',
-    quota: 'Quota Exhausted',
+    upstreamExhausted: 'Upstream Keys Exhausted',
   },
   strings,
   formatters: {
@@ -109,14 +116,35 @@ const todayMetrics = createDashboardTodayMetrics({
   },
 })
 
-const monthMetrics = [
-  { id: 'month-total', label: 'Total Requests', value: '105,041', subtitle: 'Month to date' },
-  { id: 'month-success', label: 'Successful', value: '86,279', subtitle: 'Month share · 82.1%' },
-  { id: 'month-errors', label: 'Errors', value: '2,368', subtitle: 'Month share · 2.3%' },
-  { id: 'month-quota', label: 'Quota Exhausted', value: '0', subtitle: 'Month share · 0%' },
-  { id: 'month-new-keys', label: 'New Keys', value: '3', subtitle: 'Added this month' },
-  { id: 'month-new-quarantines', label: 'New Quarantines', value: '0', subtitle: 'Added this month' },
-]
+const monthMetrics = createDashboardMonthMetrics({
+  month: {
+    total_requests: 105_041,
+    success_count: 86_279,
+    error_count: 2_368,
+    quota_exhausted_count: 401,
+    upstream_exhausted_key_count: 12,
+    new_keys: 3,
+    new_quarantines: 0,
+  },
+  labels: {
+    total: 'Total Requests',
+    success: 'Successful',
+    errors: 'Errors',
+    upstreamExhausted: 'Upstream Keys Exhausted',
+    newKeys: 'New Keys',
+    newQuarantines: 'New Quarantines',
+  },
+  strings: {
+    monthToDate: 'Month to date',
+    monthShare: 'Month share',
+    monthAdded: 'Added this month',
+  },
+  formatters: {
+    formatNumber: (value) => storyNumberFormatter.format(value),
+    formatPercent: (numerator, denominator) =>
+      denominator === 0 ? '—' : storyPercentageFormatter.format(numerator / denominator),
+  },
+})
 
 const statusMetrics = [
   { id: 'remaining', label: 'Remaining', value: '49,482', subtitle: 'Current snapshot · 88.4%' },
@@ -144,7 +172,9 @@ const zhStrings = {
   percentagePointUnit: '个百分点',
   asOfNow: '截至当前',
   todayShare: '今日占比',
+  todayAdded: '今日新增',
   monthToDate: '本月累计',
+  monthAdded: '本月新增',
   monthShare: '本月占比',
   trendsTitle: '流量趋势',
   trendsDescription: '根据近期请求观察流量和错误变化。',
@@ -205,10 +235,10 @@ const zhDarkEvidenceTodayMetrics = [
     },
   },
   {
-    id: 'today-quota',
-    label: '额度耗尽',
+    id: 'today-upstream-exhausted',
+    label: '上游 Key 耗尽',
     value: '42',
-    subtitle: '今日占比 · 0.4%',
+    subtitle: '今日新增',
     comparison: {
       label: '较昨日同刻',
       value: '+38 (950%)',
@@ -222,7 +252,7 @@ const zhDarkEvidenceMonthMetrics = [
   { id: 'month-total', label: '总请求数', value: '237,587', subtitle: '本月累计' },
   { id: 'month-success', label: '成功', value: '204,203', subtitle: '本月占比 · 85.9%' },
   { id: 'month-errors', label: '错误', value: '4,399', subtitle: '本月占比 · 1.9%' },
-  { id: 'month-quota', label: '额度耗尽', value: '73', subtitle: '本月占比 · 0%' },
+  { id: 'month-upstream-exhausted', label: '上游 Key 耗尽', value: '73', subtitle: '本月新增' },
   { id: 'month-new-keys', label: '新增密钥', value: '256', subtitle: '本月新增' },
   { id: 'month-new-quarantines', label: '新增隔离密钥', value: '66', subtitle: '本月新增' },
 ]
@@ -359,7 +389,7 @@ export const LargeNumbers: Story = {
       { id: 'month-total', label: 'Total Requests', value: '1,205,420', subtitle: 'Month to date' },
       { id: 'month-success', label: 'Successful', value: '1,084,031', subtitle: 'Month share · 89.9%' },
       { id: 'month-errors', label: 'Errors', value: '88,247', subtitle: 'Month share · 7.3%' },
-      { id: 'month-quota', label: 'Quota Exhausted', value: '33,142', subtitle: 'Month share · 2.8%' },
+      { id: 'month-upstream-exhausted', label: 'Upstream Keys Exhausted', value: '418', subtitle: 'Added this month' },
       { id: 'month-new-keys', label: 'New Keys', value: '1,248', subtitle: 'Added this month' },
       { id: 'month-new-quarantines', label: 'New Quarantines', value: '108', subtitle: 'Added this month' },
     ],
@@ -383,6 +413,7 @@ export const ZeroBaseline: Story = {
         success_count: 18,
         error_count: 6,
         quota_exhausted_count: 0,
+        upstream_exhausted_key_count: 0,
         new_keys: 0,
         new_quarantines: 0,
       },
@@ -391,6 +422,7 @@ export const ZeroBaseline: Story = {
         success_count: 0,
         error_count: 0,
         quota_exhausted_count: 0,
+        upstream_exhausted_key_count: 0,
         new_keys: 0,
         new_quarantines: 0,
       },
@@ -398,7 +430,7 @@ export const ZeroBaseline: Story = {
         total: 'Total Requests',
         success: 'Successful',
         errors: 'Errors',
-        quota: 'Quota Exhausted',
+        upstreamExhausted: 'Upstream Keys Exhausted',
       },
       strings,
       formatters: {

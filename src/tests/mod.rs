@@ -6361,6 +6361,52 @@ async fn insert_summary_window_logs_with_visibility(
     }
 }
 
+async fn insert_summary_window_maintenance_record(
+    proxy: &TavilyProxy,
+    key_id: &str,
+    created_at: i64,
+    source: &str,
+    operation_code: &str,
+    reason_code: Option<&str>,
+) {
+    let reason_summary = reason_code.map(|code| format!("{code} summary"));
+    sqlx::query(
+        r#"
+        INSERT INTO api_key_maintenance_records (
+            id,
+            key_id,
+            source,
+            operation_code,
+            operation_summary,
+            reason_code,
+            reason_summary,
+            reason_detail,
+            request_log_id,
+            auth_token_log_id,
+            auth_token_id,
+            actor_user_id,
+            actor_display_name,
+            status_before,
+            status_after,
+            quarantine_before,
+            quarantine_after,
+            created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, 'active', 'exhausted', 0, 0, ?)
+        "#,
+    )
+    .bind(format!("summary-window-maint-{}", nanoid!(8)))
+    .bind(key_id)
+    .bind(source)
+    .bind(operation_code)
+    .bind(format!("{operation_code} summary"))
+    .bind(reason_code)
+    .bind(reason_summary)
+    .bind(created_at)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert summary window maintenance record");
+}
+
 #[tokio::test]
 async fn summary_windows_split_today_yesterday_and_month() {
     let db_path = temp_db_path("summary-windows-split");
@@ -6435,6 +6481,7 @@ async fn summary_windows_split_today_yesterday_and_month() {
         success_count: 9,
         error_count: 2,
         quota_exhausted_count: 1,
+        upstream_exhausted_key_count: 0,
         new_keys: 1,
         new_quarantines: 0,
     };
@@ -6478,6 +6525,174 @@ async fn summary_windows_split_today_yesterday_and_month() {
         }
     );
     assert_eq!(summary.month, expected_month);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn summary_windows_count_distinct_upstream_exhausted_keys() {
+    let db_path = temp_db_path("summary-windows-upstream-exhausted-keys");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-summary-window-upstream".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let key_id = proxy
+        .list_api_key_metrics()
+        .await
+        .expect("list key metrics")
+        .into_iter()
+        .next()
+        .expect("seeded key")
+        .id;
+
+    sqlx::query(
+        r#"
+        INSERT INTO api_keys (id, api_key, status, created_at)
+        VALUES (?, ?, 'active', ?)
+        "#,
+    )
+    .bind("summary-window-extra-key")
+    .bind("tvly-summary-window-extra-key")
+    .bind(Utc::now().timestamp())
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert extra key");
+
+    sqlx::query(
+        r#"
+        INSERT INTO api_keys (id, api_key, status, created_at)
+        VALUES (?, ?, 'active', ?)
+        "#,
+    )
+    .bind("summary-window-month-key")
+    .bind("tvly-summary-window-month-key")
+    .bind(Utc::now().timestamp())
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert month key");
+
+    let fallback_now = Local::now();
+    let now_naive = fallback_now
+        .date_naive()
+        .and_hms_opt(12, 0, 0)
+        .expect("valid midday");
+    let now = match Local.from_local_datetime(&now_naive) {
+        chrono::LocalResult::Single(dt) => dt,
+        chrono::LocalResult::Ambiguous(dt, _) => dt,
+        chrono::LocalResult::None => fallback_now,
+    };
+    let today_start = start_of_local_day_utc_ts(now);
+    let yesterday_start = previous_local_day_start_utc_ts(now);
+    let yesterday_same_time = previous_local_same_time_utc_ts(now);
+    let month_start = start_of_local_month_utc_ts(now);
+
+    insert_summary_window_logs(
+        &proxy,
+        &key_id,
+        today_start + 60,
+        OUTCOME_QUOTA_EXHAUSTED,
+        4,
+    )
+    .await;
+    insert_summary_window_logs(
+        &proxy,
+        &key_id,
+        yesterday_start + 60,
+        OUTCOME_QUOTA_EXHAUSTED,
+        2,
+    )
+    .await;
+    insert_summary_window_bucket(&proxy, &key_id, today_start, 4, 0, 0, 4).await;
+    insert_summary_window_bucket(&proxy, &key_id, yesterday_start, 2, 0, 0, 2).await;
+
+    insert_summary_window_maintenance_record(
+        &proxy,
+        &key_id,
+        today_start + 60,
+        MAINTENANCE_SOURCE_SYSTEM,
+        MAINTENANCE_OP_AUTO_MARK_EXHAUSTED,
+        Some(OUTCOME_QUOTA_EXHAUSTED),
+    )
+    .await;
+    insert_summary_window_maintenance_record(
+        &proxy,
+        &key_id,
+        today_start + 120,
+        MAINTENANCE_SOURCE_SYSTEM,
+        MAINTENANCE_OP_AUTO_MARK_EXHAUSTED,
+        Some(OUTCOME_QUOTA_EXHAUSTED),
+    )
+    .await;
+    insert_summary_window_maintenance_record(
+        &proxy,
+        &key_id,
+        today_start + 180,
+        MAINTENANCE_SOURCE_ADMIN,
+        MAINTENANCE_OP_MANUAL_MARK_EXHAUSTED,
+        Some("manual_mark_exhausted"),
+    )
+    .await;
+    insert_summary_window_maintenance_record(
+        &proxy,
+        &key_id,
+        yesterday_start + 60,
+        MAINTENANCE_SOURCE_SYSTEM,
+        MAINTENANCE_OP_AUTO_MARK_EXHAUSTED,
+        Some(OUTCOME_QUOTA_EXHAUSTED),
+    )
+    .await;
+    insert_summary_window_maintenance_record(
+        &proxy,
+        "summary-window-extra-key",
+        yesterday_start + 120,
+        MAINTENANCE_SOURCE_SYSTEM,
+        MAINTENANCE_OP_AUTO_MARK_EXHAUSTED,
+        Some(OUTCOME_QUOTA_EXHAUSTED),
+    )
+    .await;
+    insert_summary_window_maintenance_record(
+        &proxy,
+        "summary-window-extra-key",
+        yesterday_same_time + 120,
+        MAINTENANCE_SOURCE_ADMIN,
+        MAINTENANCE_OP_MANUAL_MARK_EXHAUSTED,
+        Some("manual_mark_exhausted"),
+    )
+    .await;
+
+    let mut expected_month_upstream_exhausted = 2;
+    if month_start < yesterday_start {
+        insert_summary_window_maintenance_record(
+            &proxy,
+            "summary-window-month-key",
+            month_start + 60,
+            MAINTENANCE_SOURCE_SYSTEM,
+            MAINTENANCE_OP_AUTO_MARK_EXHAUSTED,
+            Some(OUTCOME_QUOTA_EXHAUSTED),
+        )
+        .await;
+        expected_month_upstream_exhausted += 1;
+    }
+
+    let summary = proxy
+        .summary_windows_at(now)
+        .await
+        .expect("summary windows");
+
+    assert_eq!(summary.today.quota_exhausted_count, 4);
+    assert_eq!(summary.today.upstream_exhausted_key_count, 1);
+    assert_eq!(summary.yesterday.quota_exhausted_count, 2);
+    assert_eq!(summary.yesterday.upstream_exhausted_key_count, 2);
+    assert_eq!(
+        summary.month.upstream_exhausted_key_count,
+        expected_month_upstream_exhausted
+    );
 
     let _ = std::fs::remove_file(db_path);
 }

@@ -492,6 +492,7 @@ pub struct SummaryWindowMetrics {
     pub success_count: i64,
     pub error_count: i64,
     pub quota_exhausted_count: i64,
+    pub upstream_exhausted_key_count: i64,
     pub new_keys: i64,
     pub new_quarantines: i64,
 }

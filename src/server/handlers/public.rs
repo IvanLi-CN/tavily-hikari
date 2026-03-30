@@ -24,6 +24,7 @@ struct SummaryWindowView {
     success_count: i64,
     error_count: i64,
     quota_exhausted_count: i64,
+    upstream_exhausted_key_count: i64,
     new_keys: i64,
     new_quarantines: i64,
 }
@@ -91,6 +92,7 @@ impl From<tavily_hikari::SummaryWindowMetrics> for SummaryWindowView {
             success_count: summary.success_count,
             error_count: summary.error_count,
             quota_exhausted_count: summary.quota_exhausted_count,
+            upstream_exhausted_key_count: summary.upstream_exhausted_key_count,
             new_keys: summary.new_keys,
             new_quarantines: summary.new_quarantines,
         }
@@ -720,18 +722,21 @@ async fn compute_signatures(
             today.success_count,
             today.error_count,
             today.quota_exhausted_count,
+            today.upstream_exhausted_key_count,
         ),
         yesterday: (
             yesterday.total_requests,
             yesterday.success_count,
             yesterday.error_count,
             yesterday.quota_exhausted_count,
+            yesterday.upstream_exhausted_key_count,
         ),
         month: (
             month.total_requests,
             month.success_count,
             month.error_count,
             month.quota_exhausted_count,
+            month.upstream_exhausted_key_count,
             month.new_keys,
             month.new_quarantines,
         ),

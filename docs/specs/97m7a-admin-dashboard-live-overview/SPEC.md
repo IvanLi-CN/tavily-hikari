@@ -4,7 +4,7 @@
 
 - Status: 已完成（快车道）
 - Created: 2026-03-14
-- Last: 2026-03-16
+- Last: 2026-03-30
 
 ## 背景
 
@@ -35,9 +35,10 @@
 
 - 继续仅管理员可访问。
 - 保留现有：
-  - `today`: `{ total_requests, success_count, error_count, quota_exhausted_count }`
-  - `yesterday`: `{ total_requests, success_count, error_count, quota_exhausted_count }`
-  - `month`: `{ total_requests, success_count, error_count, quota_exhausted_count }`
+  - `today`: `{ total_requests, success_count, error_count, quota_exhausted_count, upstream_exhausted_key_count }`
+  - `yesterday`: `{ total_requests, success_count, error_count, quota_exhausted_count, upstream_exhausted_key_count }`
+  - `month`: `{ total_requests, success_count, error_count, quota_exhausted_count, upstream_exhausted_key_count }`
+- `quota_exhausted_count` 继续保持请求级语义，不改变请求日志、Token/Key 详情与其它既有消费者；dashboard 总览耗尽卡统一读取 `upstream_exhausted_key_count`。
 - 扩展 `month`：
   - `new_keys`: 本月新增密钥数，基于 `api_keys.created_at >= local_month_start` 统计；生命周期统计不因后续软删除或状态变化而回退。
   - `new_quarantines`: 本月新增隔离密钥数，基于 `api_key_quarantines.created_at >= local_month_start` 统计当前月新建隔离记录数量。
@@ -75,6 +76,8 @@
   - 回填必须是一次性迁移，不能在后续重启时根据“迁移后新出现的日志/隔离记录”再次改写旧 key 的 `created_at`。
 - `new_keys` 统计基于 `api_keys.created_at`，不是基于 request log 首次使用时间。
 - `new_quarantines` 统计基于 `api_key_quarantines.created_at`，同一个 key 在当前月多次“新增隔离记录”计入多条记录；若当前实现只允许一个 active quarantine，则仍按记录数聚合。
+- `upstream_exhausted_key_count` 统计基于 `api_key_maintenance_records` 中 `source='system'`、`operation_code='auto_mark_exhausted'`、`reason_code='quota_exhausted'` 的记录，并按窗口内 `COUNT(DISTINCT key_id)` 聚合。
+- `upstream_exhausted_key_count` 只认系统自动把上游 Key 标记为 exhausted 的维护事件；管理员手动标记、以及本地 token/account quota 拦截不进入该口径。
 - `api_key_quarantines` 必须为月度隔离统计提供 `created_at` 前导索引，避免 admin SSE 的周期性 month lifecycle 查询退化成全表扫描。
 - `可用代理节点数` 定义为 `ForwardProxyLiveStatsResponse.nodes` 中 `available && !penalized` 的数量。
 - `代理节点总数` 定义为 `ForwardProxyLiveStatsResponse.nodes.len()`。
@@ -87,7 +90,8 @@
   2. `本月`
   3. `站点当前状态`（位于前两者下方，不再与本月并列竖排）
 - 桌面端保留“今日主块更突出”的层级，但 `本月` 与 `站点当前状态` 应在视觉上形成一体化总览区，而非彼此割裂的小侧栏。
-- `本月` 固定展示 6 个指标：`总请求数 / 成功 / 错误 / 额度耗尽 / 新增密钥 / 新增隔离密钥`。
+- `今日` 与 `本月` 的耗尽卡统一使用 dashboard 专用标签 `上游 Key 耗尽`；`今日` 固定显示 `今日新增` 并继续与“较昨日同刻”做数量对比，`本月` 固定显示 `本月新增` 且不再显示请求占比副标题。
+- `本月` 固定展示 6 个指标：`总请求数 / 成功 / 错误 / 上游 Key 耗尽 / 新增密钥 / 新增隔离密钥`。
 - `站点当前状态` 固定展示 6 个指标：`剩余可用 / 活跃密钥 / 隔离中 / 已耗尽 / 可用代理节点 / 代理节点总数`。
 - 大数显示规则：
   - 顶部主指标禁止默认 `ellipsis` 裁切完整值。
@@ -105,9 +109,11 @@
 ## 验收标准
 
 - `/admin/dashboard` 顶部总览在 SSE 收到新 `snapshot` 后直接刷新 `今日 / 本月 / 当前状态`，不依赖额外 overview 补拉才能看到 lifecycle 或代理节点变化。
+- `/api/summary/windows` 与 admin SSE `summaryWindows` 都返回 `upstream_exhausted_key_count`，并继续保留请求级 `quota_exhausted_count` 兼容字段。
 - `/api/summary/windows` 返回的 `month` 包含 `new_keys` 与 `new_quarantines`，空窗口时返回 `0`。
 - 历史库升级后新插入 key 的 `created_at` 必须准确写入；旧数据存在最佳努力回填且不会导致迁移失败。
-- `本月` 区稳定显示 6 张卡片，share/subtitle 文案与“当前快照”语义不混淆。
+- `今日` 的 `上游 Key 耗尽` 主值等于“今日自动标记 exhausted 的唯一上游 Key 数”，并使用 `今日新增` 副标题；比较值等于相对昨日同刻的唯一 Key 数差。
+- `本月` 区稳定显示 6 张卡片，其中 `上游 Key 耗尽` 使用 `本月新增` 副标题且不再显示请求占比。
 - `站点当前状态` 稳定显示 6 张卡片，并展示代理节点可用摘要。
 - 在大数字场景下，如 `49,482 / 120,000`、六位以上总量或更大分母，卡片仍能完整读到关键值。
 - `cargo test`、`cargo clippy -- -D warnings`、`cd web && bun run build`、`cd web && bun run build-storybook` 通过。
@@ -136,6 +142,7 @@
 - `2026-03-16`：根据验收反馈将“本月”卡片区固定为 2 列，并将“剩余可用”主值改为仅显示剩余额度、把百分比保留在副标题中；`cd web && bun run build`、`cd web && bun run build-storybook` 复跑通过，Storybook 已用更接近真实运营量级的数据复核。
 - `2026-03-16`：针对 PR #131 在 GitHub Actions 上暴露的 `database is locked` 抖动，为 token usage rollup 增加瞬时 SQLite 写锁重试；`cargo test tavily_http_usage_returns_daily_and_monthly_counts -- --nocapture`、`cargo test`、`cargo clippy -- -D warnings` 复跑通过。
 - `2026-03-16`：使用浏览器 MCP 复核当前 worktree 的 Storybook 与真实 `/admin` 页面，确认“本月”总览为 2 列、`剩余可用` 仅显示单值、桌面/移动端均无横向滚动，且 `/api/events`、`/api/summary/windows`、`/api/stats/forward-proxy/summary` 请求全部返回 `200`。
+- `2026-03-30`：继续同步 dashboard 耗尽卡口径：`/api/summary/windows` 与 admin SSE `summaryWindows` 新增 `upstream_exhausted_key_count`，并保留请求级 `quota_exhausted_count`；`cargo test`、`cargo clippy -- -D warnings`、`cd web && bun test src/admin/dashboardTodayMetrics.test.ts`、`cd web && bun run build`、`cd web && bun run build-storybook` 通过，浏览器 MCP 已复核 Storybook 与真实 `/admin` 的桌面/移动端均无横向滚动。
 
 ## 实现里程碑
 
@@ -151,6 +158,11 @@
 - 历史 `api_keys` 行缺少原始创建时间，回填只能做到“稳定近似”而不是绝对精确；需要在实现与最终说明中明确这一点。
 - 现有 admin SSE `snapshot` 已被 dashboard 首屏与基础 summary/logs 使用，扩容时必须保持向后兼容字段，避免破坏其他消费路径。
 - forward proxy live stats 是独立接口，若每次 SSE 都完整抓取重负载统计，会增加后台开销；总览只应抽取顶层节点摘要。
+
+## Visual Evidence
+
+- source_type: `storybook_canvas`; story_id_or_title: `Admin/Components/DashboardOverview/ZhDarkEvidence`; state: `upstream exhausted lifecycle cards`; evidence_note: 验证中文总览中的今日/本月耗尽卡已经统一使用 `上游 Key 耗尽` 标签，并分别显示 `今日新增` / `本月新增`，同时耗尽卡不再展示请求占比副标题。
+  ![管理仪表盘：上游 Key 耗尽新口径](./assets/dashboard-upstream-exhausted-key-cards.png)
 
 ## Change log
 
@@ -170,3 +182,4 @@
 - 2026-03-16: 将“本月”总览改为两列布局，并把“剩余可用”卡片从“剩余值 / 总额度”收敛为仅显示剩余值，避免主指标出现不必要的分隔与换行。
 - 2026-03-16: 为 token usage rollup 增加瞬时 SQLite 写锁重试，收敛 dashboard 相关改动引出的 CI 并发抖动。
 - 2026-03-16: 补齐浏览器 MCP 复核、同步 spec 完成态，并准备随 PR #131 一起并入 `main`。
+- 2026-03-30: 同步今日/本月耗尽卡的生命周期口径，新增 `upstream_exhausted_key_count` 窗口字段并保持 `quota_exhausted_count` 兼容，同时补齐最新 Storybook 视觉证据与浏览器验收。

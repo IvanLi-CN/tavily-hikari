@@ -49,7 +49,10 @@ import TokenDetail from './pages/TokenDetail'
 import { ArrowDown, ArrowUp, ArrowUpDown, ChartColumnIncreasing } from 'lucide-react'
 import AdminShell, { type AdminNavItem, type AdminNavTarget } from './admin/AdminShell'
 import DashboardOverview from './admin/DashboardOverview'
-import { createDashboardTodayMetrics } from './admin/dashboardTodayMetrics'
+import {
+  createDashboardMonthMetrics,
+  createDashboardTodayMetrics,
+} from './admin/dashboardTodayMetrics'
 import { fetchAllMonthlyBrokenKeyItems } from './admin/fetchAllMonthlyBrokenKeyItems'
 import ForwardProxySettingsModule, {
   type ForwardProxyDraft,
@@ -912,14 +915,6 @@ function formatNumber(value: number): string {
 function formatPercent(numerator: number, denominator: number): string {
   if (denominator === 0) return '—'
   return percentageFormatter.format(numerator / denominator)
-}
-
-function buildWindowSubtitle(
-  label: string,
-  value: number,
-  total: number,
-): string {
-  return total > 0 ? `${label} · ${formatPercent(value, total)}` : label
 }
 
 function formatTimestamp(value: number | null): string {
@@ -4129,13 +4124,19 @@ function AdminDashboard(): JSX.Element {
     return createDashboardTodayMetrics({
       today: dashboardSummaryWindows.today,
       yesterday: dashboardSummaryWindows.yesterday,
-      labels: metricsStrings.labels,
+      labels: {
+        total: metricsStrings.labels.total,
+        success: metricsStrings.labels.success,
+        errors: metricsStrings.labels.errors,
+        upstreamExhausted: adminStrings.dashboard.upstreamExhaustedLabel,
+      },
       strings: {
         deltaFromYesterday: adminStrings.dashboard.deltaFromYesterday,
         deltaNoBaseline: adminStrings.dashboard.deltaNoBaseline,
         percentagePointUnit: adminStrings.dashboard.percentagePointUnit,
         asOfNow: adminStrings.dashboard.asOfNow,
         todayShare: adminStrings.dashboard.todayShare,
+        todayAdded: adminStrings.dashboard.todayAdded,
       },
       formatters: {
         formatNumber,
@@ -4147,9 +4148,13 @@ function AdminDashboard(): JSX.Element {
     adminStrings.dashboard.deltaFromYesterday,
     adminStrings.dashboard.deltaNoBaseline,
     adminStrings.dashboard.percentagePointUnit,
+    adminStrings.dashboard.todayAdded,
     adminStrings.dashboard.todayShare,
+    adminStrings.dashboard.upstreamExhaustedLabel,
     dashboardSummaryWindows,
-    metricsStrings.labels,
+    metricsStrings.labels.errors,
+    metricsStrings.labels.success,
+    metricsStrings.labels.total,
   ])
 
   const monthMetrics = useMemo(() => {
@@ -4157,57 +4162,37 @@ function AdminDashboard(): JSX.Element {
       return []
     }
 
-    const month = dashboardSummaryWindows.month
-    const total = month.total_requests
-
-    return [
-      {
-        id: 'month-total',
-        label: metricsStrings.labels.total,
-        value: formatNumber(month.total_requests),
-        subtitle: adminStrings.dashboard.monthToDate,
+    return createDashboardMonthMetrics({
+      month: dashboardSummaryWindows.month,
+      labels: {
+        total: metricsStrings.labels.total,
+        success: metricsStrings.labels.success,
+        errors: metricsStrings.labels.errors,
+        upstreamExhausted: adminStrings.dashboard.upstreamExhaustedLabel,
+        newKeys: metricsStrings.labels.newKeys,
+        newQuarantines: metricsStrings.labels.newQuarantines,
       },
-      {
-        id: 'month-success',
-        label: metricsStrings.labels.success,
-        value: formatNumber(month.success_count),
-        subtitle: buildWindowSubtitle(adminStrings.dashboard.monthShare, month.success_count, total),
+      strings: {
+        monthToDate: adminStrings.dashboard.monthToDate,
+        monthShare: adminStrings.dashboard.monthShare,
+        monthAdded: adminStrings.dashboard.monthAdded,
       },
-      {
-        id: 'month-errors',
-        label: metricsStrings.labels.errors,
-        value: formatNumber(month.error_count),
-        subtitle: buildWindowSubtitle(adminStrings.dashboard.monthShare, month.error_count, total),
+      formatters: {
+        formatNumber,
+        formatPercent,
       },
-      {
-        id: 'month-quota',
-        label: metricsStrings.labels.quota,
-        value: formatNumber(month.quota_exhausted_count),
-        subtitle: buildWindowSubtitle(
-          adminStrings.dashboard.monthShare,
-          month.quota_exhausted_count,
-          total,
-        ),
-      },
-      {
-        id: 'month-new-keys',
-        label: metricsStrings.labels.newKeys,
-        value: formatNumber(month.new_keys),
-        subtitle: adminStrings.dashboard.monthAdded,
-      },
-      {
-        id: 'month-new-quarantines',
-        label: metricsStrings.labels.newQuarantines,
-        value: formatNumber(month.new_quarantines),
-        subtitle: adminStrings.dashboard.monthAdded,
-      },
-    ]
+    })
   }, [
     adminStrings.dashboard.monthAdded,
     adminStrings.dashboard.monthShare,
     adminStrings.dashboard.monthToDate,
+    adminStrings.dashboard.upstreamExhaustedLabel,
     dashboardSummaryWindows,
-    metricsStrings.labels,
+    metricsStrings.labels.errors,
+    metricsStrings.labels.newKeys,
+    metricsStrings.labels.newQuarantines,
+    metricsStrings.labels.success,
+    metricsStrings.labels.total,
   ])
 
   const statusMetrics = useMemo(() => {

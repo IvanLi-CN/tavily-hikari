@@ -2399,6 +2399,10 @@ button:disabled {
   letter-spacing: 0.04em;
 }
 
+.dashboard-summary-card h3 {
+  text-transform: none;
+}
+
 .metric-value {
   font-size: 1.9rem;
   font-weight: 700;

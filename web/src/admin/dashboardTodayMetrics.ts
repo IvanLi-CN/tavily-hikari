@@ -8,7 +8,7 @@ export interface DashboardTodayMetricLabels {
   total: string
   success: string
   errors: string
-  quota: string
+  upstreamExhausted: string
 }
 
 export interface DashboardTodayMetricStrings {
@@ -17,6 +17,22 @@ export interface DashboardTodayMetricStrings {
   percentagePointUnit: string
   asOfNow: string
   todayShare: string
+  todayAdded: string
+}
+
+export interface DashboardMonthMetricLabels {
+  total: string
+  success: string
+  errors: string
+  upstreamExhausted: string
+  newKeys: string
+  newQuarantines: string
+}
+
+export interface DashboardMonthMetricStrings {
+  monthToDate: string
+  monthShare: string
+  monthAdded: string
 }
 
 interface DashboardTodayMetricFormatters {
@@ -29,6 +45,13 @@ interface BuildDashboardTodayMetricsOptions {
   yesterday: SummaryWindowMetrics
   labels: DashboardTodayMetricLabels
   strings: DashboardTodayMetricStrings
+  formatters: DashboardTodayMetricFormatters
+}
+
+interface BuildDashboardMonthMetricsOptions {
+  month: SummaryWindowMetrics
+  labels: DashboardMonthMetricLabels
+  strings: DashboardMonthMetricStrings
   formatters: DashboardTodayMetricFormatters
 }
 
@@ -218,21 +241,74 @@ export function createDashboardTodayMetrics({
       }),
     },
     {
-      id: 'today-quota',
-      label: labels.quota,
-      value: formatNumber(today.quota_exhausted_count),
-      subtitle: buildWindowSubtitle(
-        strings.todayShare,
-        today.quota_exhausted_count,
-        today.total_requests,
-        formatPercent,
-      ),
+      id: 'today-upstream-exhausted',
+      label: labels.upstreamExhausted,
+      value: formatNumber(today.upstream_exhausted_key_count),
+      subtitle: strings.todayAdded,
       comparison: buildTodayCountComparison({
-        currentValue: today.quota_exhausted_count,
-        previousValue: yesterday.quota_exhausted_count,
+        currentValue: today.upstream_exhausted_key_count,
+        previousValue: yesterday.upstream_exhausted_key_count,
         strings,
         trend: 'lower-is-better',
       }),
+    },
+  ]
+}
+
+export function createDashboardMonthMetrics({
+  month,
+  labels,
+  strings,
+  formatters,
+}: BuildDashboardMonthMetricsOptions): DashboardMetricCard[] {
+  const { formatNumber, formatPercent } = formatters
+
+  return [
+    {
+      id: 'month-total',
+      label: labels.total,
+      value: formatNumber(month.total_requests),
+      subtitle: strings.monthToDate,
+    },
+    {
+      id: 'month-success',
+      label: labels.success,
+      value: formatNumber(month.success_count),
+      subtitle: buildWindowSubtitle(
+        strings.monthShare,
+        month.success_count,
+        month.total_requests,
+        formatPercent,
+      ),
+    },
+    {
+      id: 'month-errors',
+      label: labels.errors,
+      value: formatNumber(month.error_count),
+      subtitle: buildWindowSubtitle(
+        strings.monthShare,
+        month.error_count,
+        month.total_requests,
+        formatPercent,
+      ),
+    },
+    {
+      id: 'month-upstream-exhausted',
+      label: labels.upstreamExhausted,
+      value: formatNumber(month.upstream_exhausted_key_count),
+      subtitle: strings.monthAdded,
+    },
+    {
+      id: 'month-new-keys',
+      label: labels.newKeys,
+      value: formatNumber(month.new_keys),
+      subtitle: strings.monthAdded,
+    },
+    {
+      id: 'month-new-quarantines',
+      label: labels.newQuarantines,
+      value: formatNumber(month.new_quarantines),
+      subtitle: strings.monthAdded,
     },
   ]
 }

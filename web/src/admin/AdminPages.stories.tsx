@@ -64,7 +64,10 @@ import {
 
 import AdminShell, { type AdminNavItem, type AdminNavTarget } from './AdminShell'
 import DashboardOverview, { type DashboardMetricCard } from './DashboardOverview'
-import { createDashboardTodayMetrics } from './dashboardTodayMetrics'
+import {
+  createDashboardMonthMetrics,
+  createDashboardTodayMetrics,
+} from './dashboardTodayMetrics'
 import ForwardProxySettingsModule from './ForwardProxySettingsModule'
 import ModulePlaceholder from './ModulePlaceholder'
 import {
@@ -2605,6 +2608,7 @@ function DashboardPageCanvas(): JSX.Element {
       success_count: successCount,
       error_count: errorCount,
       quota_exhausted_count: quotaExhaustedCount,
+      upstream_exhausted_key_count: Math.max(0, Math.ceil(quotaExhaustedCount / 4)),
       new_keys: 0,
       new_quarantines: 0,
     },
@@ -2613,6 +2617,7 @@ function DashboardPageCanvas(): JSX.Element {
       success_count: successCount - 96,
       error_count: errorCount + 12,
       quota_exhausted_count: Math.max(0, quotaExhaustedCount - 4),
+      upstream_exhausted_key_count: Math.max(0, Math.ceil(quotaExhaustedCount / 5)),
       new_keys: 0,
       new_quarantines: 0,
     },
@@ -2620,7 +2625,7 @@ function DashboardPageCanvas(): JSX.Element {
       total: admin.metrics.labels.total,
       success: admin.metrics.labels.success,
       errors: admin.metrics.labels.errors,
-      quota: admin.metrics.labels.quota,
+      upstreamExhausted: admin.dashboard.upstreamExhaustedLabel,
     },
     strings: {
       deltaFromYesterday: admin.dashboard.deltaFromYesterday,
@@ -2628,6 +2633,7 @@ function DashboardPageCanvas(): JSX.Element {
       percentagePointUnit: admin.dashboard.percentagePointUnit,
       asOfNow: admin.dashboard.asOfNow,
       todayShare: admin.dashboard.todayShare,
+      todayAdded: admin.dashboard.todayAdded,
     },
     formatters: {
       formatNumber,
@@ -2635,32 +2641,34 @@ function DashboardPageCanvas(): JSX.Element {
     },
   })
 
-  const monthMetrics: DashboardMetricCard[] = [
-    {
-      id: 'month-total',
-      label: admin.metrics.labels.total,
-      value: formatNumber(totalRequests * 14),
-      subtitle: admin.dashboard.monthToDate,
+  const monthMetrics: DashboardMetricCard[] = createDashboardMonthMetrics({
+    month: {
+      total_requests: totalRequests * 14,
+      success_count: successCount * 14,
+      error_count: errorCount * 14,
+      quota_exhausted_count: quotaExhaustedCount * 14,
+      upstream_exhausted_key_count: Math.max(0, Math.ceil(quotaExhaustedCount / 2)),
+      new_keys: 3,
+      new_quarantines: 1,
     },
-    {
-      id: 'month-success',
-      label: admin.metrics.labels.success,
-      value: formatNumber(successCount * 14),
-      subtitle: `${admin.dashboard.monthShare} · ${formatPercent(successCount, totalRequests)}`,
+    labels: {
+      total: admin.metrics.labels.total,
+      success: admin.metrics.labels.success,
+      errors: admin.metrics.labels.errors,
+      upstreamExhausted: admin.dashboard.upstreamExhaustedLabel,
+      newKeys: admin.metrics.labels.newKeys,
+      newQuarantines: admin.metrics.labels.newQuarantines,
     },
-    {
-      id: 'month-errors',
-      label: admin.metrics.labels.errors,
-      value: formatNumber(errorCount * 14),
-      subtitle: `${admin.dashboard.monthShare} · ${formatPercent(errorCount, totalRequests)}`,
+    strings: {
+      monthToDate: admin.dashboard.monthToDate,
+      monthShare: admin.dashboard.monthShare,
+      monthAdded: admin.dashboard.monthAdded,
     },
-    {
-      id: 'month-quota',
-      label: admin.metrics.labels.quota,
-      value: formatNumber(quotaExhaustedCount * 14),
-      subtitle: `${admin.dashboard.monthShare} · ${formatPercent(quotaExhaustedCount, totalRequests)}`,
+    formatters: {
+      formatNumber,
+      formatPercent,
     },
-  ]
+  })
 
   const statusMetrics: DashboardMetricCard[] = [
     {

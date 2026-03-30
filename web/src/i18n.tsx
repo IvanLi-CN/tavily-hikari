@@ -221,9 +221,11 @@ interface AdminTranslationsShape {
     asOfNow: string
     currentSnapshot: string
     todayShare: string
+    todayAdded: string
     monthToDate: string
     monthAdded: string
     monthShare: string
+    upstreamExhaustedLabel: string
     trendsTitle: string
     trendsDescription: string
     requestTrend: string
@@ -1473,9 +1475,11 @@ export const translations: Record<Language, TranslationShape> = {
         asOfNow: 'Up to now',
         currentSnapshot: 'Current snapshot',
         todayShare: 'Today share',
+        todayAdded: 'Added today',
         monthToDate: 'Month to date',
         monthAdded: 'Added this month',
         monthShare: 'Month share',
+        upstreamExhaustedLabel: 'Upstream Keys Exhausted',
         trendsTitle: 'Traffic Trends',
         trendsDescription: 'Recent request and error changes from latest logs.',
         requestTrend: 'Request volume',
@@ -2713,9 +2717,11 @@ export const translations: Record<Language, TranslationShape> = {
         asOfNow: '截至当前',
         currentSnapshot: '当前快照',
         todayShare: '今日占比',
+        todayAdded: '今日新增',
         monthToDate: '本月累计',
         monthAdded: '本月新增',
         monthShare: '本月占比',
+        upstreamExhaustedLabel: '上游 Key 耗尽',
         trendsTitle: '流量趋势',
         trendsDescription: '基于最新请求日志的请求量与错误变化。',
         requestTrend: '请求量趋势',
