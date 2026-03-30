@@ -120,7 +120,8 @@
 
 - Storybook 证据画布：`Admin/Components/DashboardOverview/ZhDarkEvidence`
 - 证据目标源：`storybook_canvas`
-- 证据绑定：证据图已在聊天回图完成验收，并由本次 spec 同步提交绑定到当前快车道收口版本。
+- 证据绑定 SHA：`79a62149bd0102e1433ecd1af427dc45481a7fc6`
+- 证据绑定说明：证据图已在聊天回图完成验收；本次与 `main` 的同步未改动 `DashboardOverview.tsx`、`DashboardOverview.stories.tsx` 或 dashboard-overview 相关样式选择器，因此沿用已审阅的 spec 证据资产并重新绑定到当前快车道收口版本。
 - 证据资产：`docs/specs/ud3ru-admin-dashboard-overview-chrome-simplify/assets/dashboard-overview-zh-dark-evidence.png`
 
 ![Admin Dashboard 总览 ZhDarkEvidence](./assets/dashboard-overview-zh-dark-evidence.png)
@@ -156,6 +157,7 @@
 - 2026-03-30: 创建 PR #197，并将该项状态收口为 merge-ready。
 - 2026-03-30: review-loop follow-up 补回 summary 区在 admin shell 窄屏断点下的共享 gutter，并清理 specs index 的重复 `yc6pp` 行。
 - 2026-03-30: 按快车道收口要求将最终 Storybook 证据图落盘到 spec `assets/`，移除该 spec 的 PR-only 证据块表述，并补上 `.codex-artifacts/` 忽略规则。
+- 2026-03-30: 与 `main` 完成 base sync 后，移除仓库内已追踪的 `.codex-artifacts/*` 遗留文件，并确认 `DashboardOverview` 渲染输入未变，因此将已审阅的 spec 证据图重新绑定到同步后的最新 head。
 
 ## 参考（References）
 
