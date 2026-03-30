@@ -689,6 +689,12 @@
   display: none;
 }
 
+.admin-sidebar-utility-fallback {
+  margin-bottom: 14px;
+  padding-top: 0;
+  border-top: none;
+}
+
 .admin-sidebar-utility-stack {
   display: flex;
   flex-direction: column;

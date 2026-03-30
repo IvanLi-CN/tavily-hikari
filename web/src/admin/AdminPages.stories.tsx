@@ -3384,7 +3384,11 @@ function KeysPageCanvas({
   )
 }
 
-function RequestsPageCanvas(): JSX.Element {
+function RequestsPageCanvas({
+  initialDrawerTarget = null,
+}: {
+  initialDrawerTarget?: { kind: 'key' | 'token'; id: string } | null
+} = {}): JSX.Element {
   const admin = useTranslate().admin
   const { language } = useLanguage()
   const logStrings = admin.logs
@@ -3397,7 +3401,7 @@ function RequestsPageCanvas(): JSX.Element {
     useState<TokenLogRequestKindQuickProtocol>('all')
   const [outcomeFilter, setOutcomeFilter] = useState<RecentRequestsOutcomeFilter | null>(null)
   const [selectedKeyId, setSelectedKeyId] = useState<string | null>(null)
-  const [drawerTarget, setDrawerTarget] = useState<{ kind: 'key' | 'token'; id: string } | null>(null)
+  const [drawerTarget, setDrawerTarget] = useState<{ kind: 'key' | 'token'; id: string } | null>(initialDrawerTarget)
   const requestKindQuickFilters = useMemo(
     () => ({
       billing: requestKindQuickBilling,
@@ -5441,6 +5445,31 @@ export const Requests: Story = {
   render: () => <RequestsPageCanvas />,
   parameters: {
     viewport: { defaultViewport: '1440-device-desktop' },
+  },
+}
+
+export const RequestsTokenDrawerDesktop: Story = {
+  render: () => <RequestsPageCanvas initialDrawerTarget={{ kind: 'token', id: 'tok_req_001' }} />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 200))
+    const drawerBody = canvasElement.ownerDocument.querySelector<HTMLElement>('.request-entity-drawer-body')
+    if (!drawerBody) {
+      throw new Error('Expected request drawer body to be mounted.')
+    }
+    const utility = drawerBody?.querySelector<HTMLElement>('.admin-sidebar-utility')
+    const intro = drawerBody?.querySelector<HTMLElement>('.admin-compact-intro')
+    if (!utility || !intro) {
+      throw new Error('Expected request drawer token detail to render desktop utility fallback and compact intro.')
+    }
+    const text = drawerBody.textContent ?? ''
+    for (const expected of ['Regenerate Secret', 'Back']) {
+      if (!text.includes(expected)) {
+        throw new Error(`Expected request drawer token detail to contain: ${expected}`)
+      }
+    }
   },
 }
 

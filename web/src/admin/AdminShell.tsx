@@ -147,7 +147,9 @@ export default function AdminShell({
 export function AdminShellSidebarUtility({ children }: PropsWithChildren): JSX.Element | null {
   const host = useContext(AdminSidebarUtilityContext)
 
-  if (!host) return null
+  if (!host) {
+    return <div className="admin-sidebar-utility admin-sidebar-utility-fallback admin-desktop-only">{children}</div>
+  }
 
   return createPortal(children, host)
 }
