@@ -11,19 +11,20 @@ use dotenvy::dotenv;
 use serde::Serialize;
 use serde_json::Value;
 use sqlx::{
-    Row,
+    Connection, Row, SqliteConnection,
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
 };
-use tavily_hikari::{
-    DEFAULT_UPSTREAM, MonthlyQuotaRebaseReport, ProxyError, TavilyProxy,
-    rebase_current_month_business_quota,
-};
+use tavily_hikari::{MonthlyQuotaRebaseReport, ProxyError};
 
 const FAILURE_KIND_MCP_METHOD_405: &str = "mcp_method_405";
 const REQUEST_KIND_KEY: &str = "mcp:session-delete-unsupported";
 const REQUEST_KIND_LABEL: &str = "MCP | session delete unsupported";
 const BILLING_STATE_NONE: &str = "none";
 const SESSION_DELETE_MESSAGE: &str = "Session termination not supported";
+const META_KEY_TOKEN_USAGE_ROLLUP_TS: &str = "token_usage_rollup_last_ts";
+const META_KEY_TOKEN_USAGE_ROLLUP_LOG_ID_V2: &str = "token_usage_rollup_last_log_id_v2";
+const META_KEY_BUSINESS_QUOTA_MONTHLY_REBASE_V1: &str = "business_quota_monthly_rebase_v1";
+const TOKEN_USAGE_STATS_BUCKET_SECS: i64 = 3600;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -118,6 +119,53 @@ async fn connect_sqlite_pool(db_path: &str) -> Result<sqlx::SqlitePool, sqlx::Er
         .max_connections(5)
         .connect_with(options)
         .await
+}
+
+async fn connect_immediate_sqlite_connection(
+    db_path: &str,
+) -> Result<SqliteConnection, sqlx::Error> {
+    let options = SqliteConnectOptions::new()
+        .filename(db_path)
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_secs(5));
+    let mut connection = SqliteConnection::connect_with(&options).await?;
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut connection)
+        .await?;
+    Ok(connection)
+}
+
+async fn read_meta_i64(
+    connection: &mut SqliteConnection,
+    key: &str,
+) -> Result<Option<i64>, ProxyError> {
+    let value = sqlx::query_scalar::<_, String>("SELECT value FROM meta WHERE key = ? LIMIT 1")
+        .bind(key)
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(ProxyError::Database)?;
+    Ok(value.and_then(|raw| raw.parse::<i64>().ok()))
+}
+
+async fn write_meta_i64(
+    connection: &mut SqliteConnection,
+    key: &str,
+    value: i64,
+) -> Result<(), ProxyError> {
+    sqlx::query(
+        r#"
+        INSERT INTO meta (key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        "#,
+    )
+    .bind(key)
+    .bind(value.to_string())
+    .execute(&mut *connection)
+    .await
+    .map_err(ProxyError::Database)?;
+    Ok(())
 }
 
 fn repair_month_start(ts: i64) -> i64 {
@@ -261,12 +309,42 @@ async fn load_auth_token_log_candidates(
         .collect()
 }
 
+async fn apply_request_log_updates_on_connection(
+    connection: &mut SqliteConnection,
+    candidates: &[RequestLogCandidate],
+) -> Result<usize, sqlx::Error> {
+    let mut updated = 0usize;
+    for candidate in candidates
+        .iter()
+        .filter(|candidate| request_log_needs_update(candidate))
+    {
+        let result = sqlx::query(
+            r#"
+            UPDATE request_logs
+            SET request_kind_key = ?,
+                request_kind_label = ?,
+                request_kind_detail = NULL,
+                business_credits = NULL
+            WHERE id = ?
+            "#,
+        )
+        .bind(REQUEST_KIND_KEY)
+        .bind(REQUEST_KIND_LABEL)
+        .bind(candidate.id)
+        .execute(&mut *connection)
+        .await?;
+        updated += result.rows_affected() as usize;
+    }
+    Ok(updated)
+}
+
+#[cfg(test)]
 async fn apply_request_log_updates(
     pool: &sqlx::SqlitePool,
     candidates: &[RequestLogCandidate],
 ) -> Result<usize, sqlx::Error> {
-    let mut updated = 0usize;
     let mut tx = pool.begin().await?;
+    let mut updated = 0usize;
     for candidate in candidates
         .iter()
         .filter(|candidate| request_log_needs_update(candidate))
@@ -292,12 +370,46 @@ async fn apply_request_log_updates(
     Ok(updated)
 }
 
+async fn apply_auth_token_log_updates_on_connection(
+    connection: &mut SqliteConnection,
+    candidates: &[AuthTokenLogCandidate],
+) -> Result<usize, sqlx::Error> {
+    let mut updated = 0usize;
+    for candidate in candidates
+        .iter()
+        .filter(|candidate| auth_token_log_needs_update(candidate))
+    {
+        let result = sqlx::query(
+            r#"
+            UPDATE auth_token_logs
+            SET request_kind_key = ?,
+                request_kind_label = ?,
+                request_kind_detail = NULL,
+                counts_business_quota = 0,
+                business_credits = NULL,
+                billing_state = ?,
+                billing_subject = NULL
+            WHERE id = ?
+            "#,
+        )
+        .bind(REQUEST_KIND_KEY)
+        .bind(REQUEST_KIND_LABEL)
+        .bind(BILLING_STATE_NONE)
+        .bind(candidate.id)
+        .execute(&mut *connection)
+        .await?;
+        updated += result.rows_affected() as usize;
+    }
+    Ok(updated)
+}
+
+#[cfg(test)]
 async fn apply_auth_token_log_updates(
     pool: &sqlx::SqlitePool,
     candidates: &[AuthTokenLogCandidate],
 ) -> Result<usize, sqlx::Error> {
-    let mut updated = 0usize;
     let mut tx = pool.begin().await?;
+    let mut updated = 0usize;
     for candidate in candidates
         .iter()
         .filter(|candidate| auth_token_log_needs_update(candidate))
@@ -375,12 +487,19 @@ fn repair_month_end(month_start: i64) -> i64 {
     next_month_start.timestamp() - 1
 }
 
-async fn rebase_historical_business_quota_month_with_pool(
-    pool: &sqlx::SqlitePool,
-    target_month_start: i64,
+async fn rebase_current_month_business_quota_with_connection(
+    connection: &mut SqliteConnection,
+    now: chrono::DateTime<Utc>,
 ) -> Result<MonthlyQuotaRebaseReport, ProxyError> {
-    let generated_at = repair_month_end(target_month_start);
-    let mut tx = pool.begin().await.map_err(ProxyError::Database)?;
+    let locked_now = Utc::now();
+    let generated_at = if locked_now > now {
+        locked_now.timestamp()
+    } else {
+        now.timestamp()
+    };
+    let target_month_start = repair_month_start(generated_at);
+    let previous_rebase_month_start =
+        read_meta_i64(connection, META_KEY_BUSINESS_QUOTA_MONTHLY_REBASE_V1).await?;
 
     let invalid_count: i64 = sqlx::query_scalar(
         r#"
@@ -401,7 +520,7 @@ async fn rebase_historical_business_quota_month_with_pool(
     )
     .bind(target_month_start)
     .bind(generated_at)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut *connection)
     .await
     .map_err(ProxyError::Database)?;
     if invalid_count > 0 {
@@ -426,7 +545,7 @@ async fn rebase_historical_business_quota_month_with_pool(
     )
     .bind(target_month_start)
     .bind(generated_at)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut *connection)
     .await
     .map_err(ProxyError::Database)?;
 
@@ -447,21 +566,177 @@ async fn rebase_historical_business_quota_month_with_pool(
     )
     .bind(target_month_start)
     .bind(generated_at)
-    .fetch_all(&mut *tx)
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(ProxyError::Database)?;
+
+    let cleared_token_rows =
+        sqlx::query("UPDATE auth_token_quota SET month_start = ?, month_count = 0")
+            .bind(target_month_start)
+            .execute(&mut *connection)
+            .await
+            .map_err(ProxyError::Database)?
+            .rows_affected() as i64;
+    let cleared_account_rows =
+        sqlx::query("UPDATE account_monthly_quota SET month_start = ?, month_count = 0")
+            .bind(target_month_start)
+            .execute(&mut *connection)
+            .await
+            .map_err(ProxyError::Database)?
+            .rows_affected() as i64;
+
+    let mut rebased_token_subjects = 0usize;
+    let mut rebased_account_subjects = 0usize;
+    for (billing_subject, total_credits, _row_count) in &rebased_subjects {
+        if let Some(token_id) = billing_subject.strip_prefix("token:") {
+            sqlx::query(
+                r#"
+                INSERT INTO auth_token_quota (token_id, month_start, month_count)
+                VALUES (?, ?, ?)
+                ON CONFLICT(token_id) DO UPDATE SET
+                    month_start = excluded.month_start,
+                    month_count = excluded.month_count
+                "#,
+            )
+            .bind(token_id)
+            .bind(target_month_start)
+            .bind(*total_credits)
+            .execute(&mut *connection)
+            .await
+            .map_err(ProxyError::Database)?;
+            rebased_token_subjects += 1;
+            continue;
+        }
+
+        if let Some(user_id) = billing_subject.strip_prefix("account:") {
+            sqlx::query(
+                r#"
+                INSERT INTO account_monthly_quota (user_id, month_start, month_count)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    month_start = excluded.month_start,
+                    month_count = excluded.month_count
+                "#,
+            )
+            .bind(user_id)
+            .bind(target_month_start)
+            .bind(*total_credits)
+            .execute(&mut *connection)
+            .await
+            .map_err(ProxyError::Database)?;
+            rebased_account_subjects += 1;
+            continue;
+        }
+    }
+
+    let meta_updated = previous_rebase_month_start != Some(target_month_start);
+    write_meta_i64(
+        connection,
+        META_KEY_BUSINESS_QUOTA_MONTHLY_REBASE_V1,
+        target_month_start,
+    )
+    .await?;
+
+    Ok(MonthlyQuotaRebaseReport {
+        current_month_start: target_month_start,
+        previous_rebase_month_start,
+        current_month_charged_rows,
+        current_month_charged_credits,
+        rebased_subject_count: rebased_subjects.len(),
+        rebased_token_subjects,
+        rebased_account_subjects,
+        cleared_token_rows,
+        cleared_account_rows,
+        meta_updated,
+    })
+}
+
+async fn rebase_historical_business_quota_month_with_connection(
+    connection: &mut SqliteConnection,
+    target_month_start: i64,
+) -> Result<MonthlyQuotaRebaseReport, ProxyError> {
+    let generated_at = repair_month_end(target_month_start);
+
+    let invalid_count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM auth_token_logs
+        WHERE billing_state = 'charged'
+          AND COALESCE(business_credits, 0) > 0
+          AND created_at >= ?
+          AND created_at <= ?
+          AND (
+                billing_subject IS NULL
+                OR (
+                    billing_subject NOT LIKE 'token:%'
+                    AND billing_subject NOT LIKE 'account:%'
+                )
+          )
+        "#,
+    )
+    .bind(target_month_start)
+    .bind(generated_at)
+    .fetch_one(&mut *connection)
+    .await
+    .map_err(ProxyError::Database)?;
+    if invalid_count > 0 {
+        return Err(ProxyError::QuotaDataMissing {
+            reason: format!(
+                "found {invalid_count} charged auth_token_logs rows with invalid billing_subject between {target_month_start} and {generated_at}"
+            ),
+        });
+    }
+
+    let (current_month_charged_rows, current_month_charged_credits): (i64, i64) = sqlx::query_as(
+        r#"
+        SELECT
+            COUNT(*) AS charged_rows,
+            COALESCE(SUM(business_credits), 0) AS charged_credits
+        FROM auth_token_logs
+        WHERE billing_state = 'charged'
+          AND COALESCE(business_credits, 0) > 0
+          AND created_at >= ?
+          AND created_at <= ?
+        "#,
+    )
+    .bind(target_month_start)
+    .bind(generated_at)
+    .fetch_one(&mut *connection)
+    .await
+    .map_err(ProxyError::Database)?;
+
+    let rebased_subjects = sqlx::query_as::<_, (String, i64, i64)>(
+        r#"
+        SELECT
+            billing_subject,
+            COALESCE(SUM(business_credits), 0) AS total_credits,
+            COUNT(*) AS charged_rows
+        FROM auth_token_logs
+        WHERE billing_state = 'charged'
+          AND COALESCE(business_credits, 0) > 0
+          AND created_at >= ?
+          AND created_at <= ?
+        GROUP BY billing_subject
+        ORDER BY billing_subject ASC
+        "#,
+    )
+    .bind(target_month_start)
+    .bind(generated_at)
+    .fetch_all(&mut *connection)
     .await
     .map_err(ProxyError::Database)?;
 
     let cleared_token_rows =
         sqlx::query("UPDATE auth_token_quota SET month_count = 0 WHERE month_start = ?")
             .bind(target_month_start)
-            .execute(&mut *tx)
+            .execute(&mut *connection)
             .await
             .map_err(ProxyError::Database)?
             .rows_affected() as i64;
     let cleared_account_rows =
         sqlx::query("UPDATE account_monthly_quota SET month_count = 0 WHERE month_start = ?")
             .bind(target_month_start)
-            .execute(&mut *tx)
+            .execute(&mut *connection)
             .await
             .map_err(ProxyError::Database)?
             .rows_affected() as i64;
@@ -488,7 +763,7 @@ async fn rebase_historical_business_quota_month_with_pool(
             .bind(token_id)
             .bind(target_month_start)
             .bind(*total_credits)
-            .execute(&mut *tx)
+            .execute(&mut *connection)
             .await
             .map_err(ProxyError::Database)?;
             rebased_token_subjects += 1;
@@ -514,15 +789,13 @@ async fn rebase_historical_business_quota_month_with_pool(
             .bind(user_id)
             .bind(target_month_start)
             .bind(*total_credits)
-            .execute(&mut *tx)
+            .execute(&mut *connection)
             .await
             .map_err(ProxyError::Database)?;
             rebased_account_subjects += 1;
             continue;
         }
     }
-
-    tx.commit().await.map_err(ProxyError::Database)?;
 
     Ok(MonthlyQuotaRebaseReport {
         current_month_start: target_month_start,
@@ -538,11 +811,151 @@ async fn rebase_historical_business_quota_month_with_pool(
     })
 }
 
-async fn rebase_touched_business_quota_months(
-    pool: &sqlx::SqlitePool,
+async fn rebuild_all_token_usage_stats_with_connection(
+    connection: &mut SqliteConnection,
+) -> Result<i64, ProxyError> {
+    let (max_log_id, max_created_at): (Option<i64>, Option<i64>) = sqlx::query_as(
+        r#"
+        SELECT
+            MAX(id) AS max_log_id,
+            MAX(created_at) AS max_created_at
+        FROM auth_token_logs
+        WHERE counts_business_quota = 1
+        "#,
+    )
+    .fetch_one(&mut *connection)
+    .await
+    .map_err(ProxyError::Database)?;
+
+    let deleted = sqlx::query("DELETE FROM token_usage_stats")
+        .execute(&mut *connection)
+        .await
+        .map_err(ProxyError::Database)?
+        .rows_affected() as i64;
+    let inserted = sqlx::query(
+        r#"
+        INSERT INTO token_usage_stats (
+            token_id,
+            bucket_start,
+            bucket_secs,
+            success_count,
+            system_failure_count,
+            external_failure_count,
+            quota_exhausted_count
+        )
+        SELECT
+            token_id,
+            (created_at / ?) * ? AS bucket_start,
+            ? AS bucket_secs,
+            SUM(CASE WHEN result_status = 'success' THEN 1 ELSE 0 END) AS success_count,
+            SUM(
+                CASE
+                    WHEN result_status != 'success'
+                         AND result_status != 'quota_exhausted'
+                         AND (
+                            (http_status BETWEEN 400 AND 599)
+                            OR (mcp_status BETWEEN 400 AND 599)
+                        ) THEN 1
+                    ELSE 0
+                END
+            ) AS system_failure_count,
+            SUM(
+                CASE
+                    WHEN result_status != 'success'
+                         AND result_status != 'quota_exhausted'
+                         AND NOT (
+                            (http_status BETWEEN 400 AND 599)
+                            OR (mcp_status BETWEEN 400 AND 599)
+                        ) THEN 1
+                    ELSE 0
+                END
+            ) AS external_failure_count,
+            SUM(CASE WHEN result_status = 'quota_exhausted' THEN 1 ELSE 0 END) AS quota_exhausted_count
+        FROM auth_token_logs
+        WHERE counts_business_quota = 1
+        GROUP BY token_id, bucket_start
+        "#,
+    )
+    .bind(TOKEN_USAGE_STATS_BUCKET_SECS)
+    .bind(TOKEN_USAGE_STATS_BUCKET_SECS)
+    .bind(TOKEN_USAGE_STATS_BUCKET_SECS)
+    .execute(&mut *connection)
+    .await
+    .map_err(ProxyError::Database)?
+    .rows_affected() as i64;
+
+    write_meta_i64(
+        connection,
+        META_KEY_TOKEN_USAGE_ROLLUP_LOG_ID_V2,
+        max_log_id.unwrap_or(0),
+    )
+    .await?;
+    if let Some(ts) = max_created_at {
+        let legacy_ts = read_meta_i64(connection, META_KEY_TOKEN_USAGE_ROLLUP_TS).await?;
+        write_meta_i64(
+            connection,
+            META_KEY_TOKEN_USAGE_ROLLUP_TS,
+            legacy_ts.map_or(ts, |old| old.max(ts)),
+        )
+        .await?;
+    }
+
+    Ok(deleted + inserted)
+}
+
+async fn execute_apply_repair(
     db_path: &str,
+    request_candidates: &[RequestLogCandidate],
+    auth_candidates: &[AuthTokenLogCandidate],
+) -> Result<RepairExecutionSummary, ProxyError> {
+    let mut connection = connect_immediate_sqlite_connection(db_path)
+        .await
+        .map_err(ProxyError::Database)?;
+    let result = async {
+        let request_rows_updated =
+            apply_request_log_updates_on_connection(&mut connection, request_candidates).await?;
+        let auth_token_rows_updated =
+            apply_auth_token_log_updates_on_connection(&mut connection, auth_candidates).await?;
+        let token_usage_stats_rows_rebuilt = if auth_token_rows_updated == 0 {
+            0
+        } else {
+            rebuild_all_token_usage_stats_with_connection(&mut connection).await?
+        };
+        let touched_months = touched_months(request_candidates, auth_candidates);
+        let monthly_rebase = if auth_token_rows_updated == 0 {
+            None
+        } else {
+            rebase_touched_business_quota_months_with_connection(&mut connection, &touched_months)
+                .await?
+        };
+        Ok(RepairExecutionSummary {
+            request_rows_updated,
+            auth_token_rows_updated,
+            token_usage_stats_rows_rebuilt,
+            monthly_rebase,
+        })
+    }
+    .await;
+
+    match result {
+        Ok(summary) => {
+            sqlx::query("COMMIT")
+                .execute(&mut connection)
+                .await
+                .map_err(ProxyError::Database)?;
+            Ok(summary)
+        }
+        Err(err) => {
+            let _ = sqlx::query("ROLLBACK").execute(&mut connection).await;
+            Err(err)
+        }
+    }
+}
+
+async fn rebase_touched_business_quota_months_with_connection(
+    connection: &mut SqliteConnection,
     touched_months: &[RepairMonthSummary],
-) -> Result<Option<Value>, Box<dyn std::error::Error>> {
+) -> Result<Option<Value>, ProxyError> {
     if touched_months.is_empty() {
         return Ok(None);
     }
@@ -551,9 +964,10 @@ async fn rebase_touched_business_quota_months(
     let mut entries = Vec::with_capacity(touched_months.len());
     for month in touched_months {
         let report = if month.month_start == current_month_start {
-            rebase_current_month_business_quota(db_path, Utc::now()).await?
+            rebase_current_month_business_quota_with_connection(connection, Utc::now()).await?
         } else {
-            rebase_historical_business_quota_month_with_pool(pool, month.month_start).await?
+            rebase_historical_business_quota_month_with_connection(connection, month.month_start)
+                .await?
         };
         entries.push(MonthlyRebaseEntry {
             month_start: month.month_start,
@@ -562,7 +976,31 @@ async fn rebase_touched_business_quota_months(
         });
     }
 
-    Ok(Some(serde_json::to_value(entries)?))
+    serde_json::to_value(entries)
+        .map(Some)
+        .map_err(|err| ProxyError::Other(err.to_string()))
+}
+
+#[cfg(test)]
+async fn rebase_touched_business_quota_months(
+    pool: &sqlx::SqlitePool,
+    db_path: &str,
+    touched_months: &[RepairMonthSummary],
+) -> Result<Option<Value>, Box<dyn std::error::Error>> {
+    let _ = pool;
+    let mut connection = connect_immediate_sqlite_connection(db_path).await?;
+    let result =
+        rebase_touched_business_quota_months_with_connection(&mut connection, touched_months).await;
+    match result {
+        Ok(value) => {
+            sqlx::query("COMMIT").execute(&mut connection).await?;
+            Ok(value)
+        }
+        Err(err) => {
+            let _ = sqlx::query("ROLLBACK").execute(&mut connection).await;
+            Err(Box::new(err))
+        }
+    }
 }
 
 fn build_report(
@@ -636,33 +1074,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ) = if dry_run {
         (0, 0, 0, None)
     } else {
-        let request_rows_updated = apply_request_log_updates(&pool, &request_candidates).await?;
-        let auth_token_rows_updated = apply_auth_token_log_updates(&pool, &auth_candidates).await?;
-
-        let proxy =
-            TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &cli.db_path)
-                .await?;
-        let affected_tokens = affected_tokens(&auth_candidates);
-        let token_usage_stats_rows_rebuilt =
-            if affected_tokens.is_empty() || auth_token_rows_updated == 0 {
-                0
-            } else {
-                proxy
-                    .rebuild_token_usage_stats_for_tokens(&affected_tokens)
-                    .await?
-            };
-
-        let touched_months = touched_months(&request_candidates, &auth_candidates);
-        let monthly_rebase = if auth_token_rows_updated > 0 {
-            rebase_touched_business_quota_months(&pool, &cli.db_path, &touched_months).await?
-        } else {
-            None
-        };
+        let execution =
+            execute_apply_repair(&cli.db_path, &request_candidates, &auth_candidates).await?;
         (
-            request_rows_updated,
-            auth_token_rows_updated,
-            token_usage_stats_rows_rebuilt,
-            monthly_rebase,
+            execution.request_rows_updated,
+            execution.auth_token_rows_updated,
+            execution.token_usage_stats_rows_rebuilt,
+            execution.monthly_rebase,
         )
     };
 
@@ -685,11 +1103,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AuthTokenLogCandidate, BILLING_STATE_NONE, REQUEST_KIND_KEY, REQUEST_KIND_LABEL,
-        RepairExecutionSummary, apply_auth_token_log_updates, apply_request_log_updates,
-        build_report, connect_sqlite_pool, load_auth_token_log_candidates,
-        load_request_log_candidates, rebase_touched_business_quota_months, repair_month_start,
-        request_log_needs_update, touched_months,
+        AuthTokenLogCandidate, BILLING_STATE_NONE, META_KEY_TOKEN_USAGE_ROLLUP_LOG_ID_V2,
+        REQUEST_KIND_KEY, REQUEST_KIND_LABEL, RepairExecutionSummary, apply_auth_token_log_updates,
+        apply_request_log_updates, build_report, connect_sqlite_pool, execute_apply_repair,
+        load_auth_token_log_candidates, load_request_log_candidates,
+        rebase_touched_business_quota_months, repair_month_start, request_log_needs_update,
+        touched_months,
     };
     use chrono::{Datelike, TimeZone, Utc};
     use nanoid::nanoid;
@@ -833,6 +1252,69 @@ mod tests {
         .expect("insert auth token log");
 
         (request_log_id, auth_log_id)
+    }
+
+    async fn seed_billable_search_auth_log(
+        pool: &sqlx::SqlitePool,
+        token_id: &str,
+        created_at: i64,
+    ) -> i64 {
+        sqlx::query_scalar(
+            r#"
+            INSERT INTO auth_token_logs (
+                token_id,
+                method,
+                path,
+                query,
+                http_status,
+                mcp_status,
+                request_kind_key,
+                request_kind_label,
+                request_kind_detail,
+                result_status,
+                error_message,
+                failure_kind,
+                key_effect_code,
+                key_effect_summary,
+                counts_business_quota,
+                business_credits,
+                billing_subject,
+                billing_state,
+                api_key_id,
+                request_log_id,
+                created_at
+            ) VALUES (
+                ?,
+                'POST',
+                '/search',
+                NULL,
+                200,
+                NULL,
+                'api:search',
+                'API | search',
+                NULL,
+                'success',
+                NULL,
+                NULL,
+                'none',
+                NULL,
+                1,
+                1,
+                ?,
+                'charged',
+                NULL,
+                NULL,
+                ?
+            )
+            RETURNING id
+            "#,
+        )
+        .bind(token_id)
+        .bind(format!("token:{token_id}"))
+        .bind(created_at)
+        .fetch_one(pool)
+        .await
+        .expect("insert billable search auth log")
     }
 
     fn current_month_start(ts: i64) -> i64 {
@@ -1018,26 +1500,13 @@ mod tests {
         let auth_candidates = load_auth_token_log_candidates(&pool)
             .await
             .expect("load auth candidates");
-
-        let request_rows_updated = apply_request_log_updates(&pool, &request_candidates)
+        let execution = execute_apply_repair(&db_str, &request_candidates, &auth_candidates)
             .await
-            .expect("apply request updates");
-        let auth_rows_updated = apply_auth_token_log_updates(&pool, &auth_candidates)
-            .await
-            .expect("apply auth updates");
-        assert_eq!(request_rows_updated, 1);
-        assert_eq!(auth_rows_updated, 1);
-
-        let rebuilt_rows = proxy
-            .rebuild_token_usage_stats_for_tokens(std::slice::from_ref(&token.id))
-            .await
-            .expect("rebuild token usage stats");
-        assert!(rebuilt_rows >= 1);
-
-        let rebase = tavily_hikari::rebase_current_month_business_quota(&db_str, Utc::now())
-            .await
-            .expect("rebase current month");
-        assert_eq!(rebase.current_month_charged_credits, 0);
+            .expect("apply repair");
+        assert_eq!(execution.request_rows_updated, 1);
+        assert_eq!(execution.auth_token_rows_updated, 1);
+        assert!(execution.token_usage_stats_rows_rebuilt >= 1);
+        assert!(execution.monthly_rebase.is_some());
 
         let request_row = sqlx::query(
             "SELECT request_kind_key, request_kind_label, request_kind_detail, business_credits FROM request_logs WHERE id = ?",
@@ -1275,18 +1744,15 @@ mod tests {
         let first_auth_candidates = load_auth_token_log_candidates(&pool)
             .await
             .expect("load first auth candidates");
-        assert_eq!(
-            apply_request_log_updates(&pool, &first_request_candidates)
+        let first_execution =
+            execute_apply_repair(&db_str, &first_request_candidates, &first_auth_candidates)
                 .await
-                .expect("first request apply"),
-            1
-        );
-        assert_eq!(
-            apply_auth_token_log_updates(&pool, &first_auth_candidates)
-                .await
-                .expect("first auth apply"),
-            1
-        );
+                .expect("first repair apply");
+        assert_eq!(first_execution.request_rows_updated, 1);
+        assert!(first_execution.auth_token_rows_updated <= 1);
+        if first_execution.auth_token_rows_updated > 0 {
+            assert!(first_execution.monthly_rebase.is_some());
+        }
 
         let second_request_candidates = load_request_log_candidates(&pool)
             .await
@@ -1294,16 +1760,13 @@ mod tests {
         let second_auth_candidates = load_auth_token_log_candidates(&pool)
             .await
             .expect("load second auth candidates");
-        let second_auth_rows_updated = apply_auth_token_log_updates(&pool, &second_auth_candidates)
-            .await
-            .expect("second auth apply");
-        assert_eq!(
-            apply_request_log_updates(&pool, &second_request_candidates)
+        let second_execution =
+            execute_apply_repair(&db_str, &second_request_candidates, &second_auth_candidates)
                 .await
-                .expect("second request apply"),
-            0
-        );
-        assert_eq!(second_auth_rows_updated, 0);
+                .expect("second repair apply");
+        assert_eq!(second_execution.request_rows_updated, 0);
+        assert_eq!(second_execution.auth_token_rows_updated, 0);
+        assert_eq!(second_execution.token_usage_stats_rows_rebuilt, 0);
         assert_eq!(
             second_request_candidates
                 .iter()
@@ -1318,17 +1781,242 @@ mod tests {
                 .count(),
             0
         );
-        let second_affected_tokens = super::affected_tokens(&second_auth_candidates);
-        let second_rebuilt_rows =
-            if second_affected_tokens.is_empty() || second_auth_rows_updated == 0 {
-                0
-            } else {
-                proxy
-                    .rebuild_token_usage_stats_for_tokens(&second_affected_tokens)
-                    .await
-                    .expect("second rebuild token usage stats")
-            };
-        assert_eq!(second_rebuilt_rows, 0);
+
+        let _ = std::fs::remove_file(db_str);
+    }
+
+    #[tokio::test]
+    async fn apply_repair_rolls_back_when_derived_rebuild_fails() {
+        let (proxy, pool, db_str) =
+            init_proxy_and_pool("session-delete-repair-atomic-rollback").await;
+        let token = proxy
+            .create_access_token(Some("session-delete-repair-atomic-rollback"))
+            .await
+            .expect("create token");
+        let created_at = Utc::now().timestamp();
+        let (request_log_id, auth_log_id) =
+            seed_session_delete_misclassified_logs(&pool, &token.id, created_at).await;
+
+        proxy
+            .rollup_token_usage_stats()
+            .await
+            .expect("initial rollup");
+        let stats_before_failure: Option<(i64,)> =
+            sqlx::query_as("SELECT system_failure_count FROM token_usage_stats WHERE token_id = ?")
+                .bind(&token.id)
+                .fetch_optional(&pool)
+                .await
+                .expect("read usage stats before rollback");
+
+        sqlx::query(
+            r#"
+            INSERT INTO auth_token_logs (
+                token_id,
+                method,
+                path,
+                query,
+                http_status,
+                mcp_status,
+                request_kind_key,
+                request_kind_label,
+                request_kind_detail,
+                result_status,
+                error_message,
+                failure_kind,
+                key_effect_code,
+                key_effect_summary,
+                counts_business_quota,
+                business_credits,
+                billing_subject,
+                billing_state,
+                api_key_id,
+                request_log_id,
+                created_at
+            ) VALUES (
+                ?,
+                'POST',
+                '/search',
+                NULL,
+                200,
+                NULL,
+                'api:search',
+                'API | search',
+                NULL,
+                'success',
+                NULL,
+                NULL,
+                'none',
+                NULL,
+                1,
+                3,
+                'broken-subject',
+                'charged',
+                NULL,
+                NULL,
+                ?
+            )
+            "#,
+        )
+        .bind(&token.id)
+        .bind(created_at)
+        .execute(&pool)
+        .await
+        .expect("insert invalid charged row");
+
+        let request_candidates = load_request_log_candidates(&pool)
+            .await
+            .expect("load request candidates");
+        let auth_candidates = load_auth_token_log_candidates(&pool)
+            .await
+            .expect("load auth candidates");
+        let err = execute_apply_repair(&db_str, &request_candidates, &auth_candidates)
+            .await
+            .expect_err("repair should roll back on invalid quota data");
+        match err {
+            tavily_hikari::ProxyError::QuotaDataMissing { .. } => {}
+            other => panic!("unexpected repair error: {other}"),
+        }
+
+        let request_row =
+            sqlx::query("SELECT request_kind_key, business_credits FROM request_logs WHERE id = ?")
+                .bind(request_log_id)
+                .fetch_one(&pool)
+                .await
+                .expect("request row after rollback");
+        assert_eq!(
+            request_row
+                .try_get::<Option<String>, _>("request_kind_key")
+                .expect("request kind key")
+                .as_deref(),
+            Some("mcp:unknown-payload")
+        );
+        assert_eq!(
+            request_row
+                .try_get::<Option<i64>, _>("business_credits")
+                .expect("business credits"),
+            Some(2)
+        );
+
+        let auth_row = sqlx::query(
+            "SELECT request_kind_key, counts_business_quota, business_credits, billing_state FROM auth_token_logs WHERE id = ?",
+        )
+        .bind(auth_log_id)
+        .fetch_one(&pool)
+        .await
+        .expect("auth row after rollback");
+        assert_eq!(
+            auth_row
+                .try_get::<Option<String>, _>("request_kind_key")
+                .expect("request kind key")
+                .as_deref(),
+            Some("mcp:unknown-payload")
+        );
+        assert_eq!(
+            auth_row
+                .try_get::<i64, _>("counts_business_quota")
+                .expect("counts business quota"),
+            1
+        );
+        assert_eq!(
+            auth_row
+                .try_get::<Option<i64>, _>("business_credits")
+                .expect("business credits"),
+            Some(2)
+        );
+        assert_eq!(
+            auth_row
+                .try_get::<String, _>("billing_state")
+                .expect("billing state"),
+            "charged"
+        );
+
+        let stats_after_failure: Option<(i64,)> =
+            sqlx::query_as("SELECT system_failure_count FROM token_usage_stats WHERE token_id = ?")
+                .bind(&token.id)
+                .fetch_optional(&pool)
+                .await
+                .expect("read usage stats after rollback");
+        assert_eq!(stats_after_failure, stats_before_failure);
+
+        let _ = std::fs::remove_file(db_str);
+    }
+
+    #[tokio::test]
+    async fn apply_repair_rebuilds_usage_stats_without_tail_double_counting() {
+        let (proxy, pool, db_str) =
+            init_proxy_and_pool("session-delete-repair-rollup-cursor").await;
+        let repaired_token = proxy
+            .create_access_token(Some("session-delete-repair-rollup-cursor-primary"))
+            .await
+            .expect("create repaired token");
+        let unaffected_token = proxy
+            .create_access_token(Some("session-delete-repair-rollup-cursor-tail"))
+            .await
+            .expect("create unaffected token");
+        let created_at = Utc::now().timestamp();
+        seed_session_delete_misclassified_logs(&pool, &repaired_token.id, created_at).await;
+
+        proxy
+            .rollup_token_usage_stats()
+            .await
+            .expect("initial rollup");
+
+        let tail_log_id =
+            seed_billable_search_auth_log(&pool, &unaffected_token.id, created_at + 1).await;
+
+        let request_candidates = load_request_log_candidates(&pool)
+            .await
+            .expect("load request candidates");
+        let auth_candidates = load_auth_token_log_candidates(&pool)
+            .await
+            .expect("load auth candidates");
+        let execution = execute_apply_repair(&db_str, &request_candidates, &auth_candidates)
+            .await
+            .expect("apply repair");
+        assert_eq!(execution.request_rows_updated, 1);
+        assert_eq!(execution.auth_token_rows_updated, 1);
+        assert!(execution.token_usage_stats_rows_rebuilt >= 1);
+
+        let rollup_cursor: Option<String> =
+            sqlx::query_scalar("SELECT value FROM meta WHERE key = ? LIMIT 1")
+                .bind(META_KEY_TOKEN_USAGE_ROLLUP_LOG_ID_V2)
+                .fetch_optional(&pool)
+                .await
+                .expect("read rollup cursor");
+        assert_eq!(
+            rollup_cursor.and_then(|value| value.parse::<i64>().ok()),
+            Some(tail_log_id)
+        );
+
+        let repaired_stats: Option<(i64,)> =
+            sqlx::query_as("SELECT system_failure_count FROM token_usage_stats WHERE token_id = ?")
+                .bind(&repaired_token.id)
+                .fetch_optional(&pool)
+                .await
+                .expect("read repaired token stats");
+        assert_eq!(repaired_stats, None);
+
+        let tail_stats_before: Option<(i64,)> =
+            sqlx::query_as("SELECT success_count FROM token_usage_stats WHERE token_id = ?")
+                .bind(&unaffected_token.id)
+                .fetch_optional(&pool)
+                .await
+                .expect("read tail stats before follow-up rollup");
+        assert_eq!(tail_stats_before, Some((1,)));
+
+        let rollup = proxy
+            .rollup_token_usage_stats()
+            .await
+            .expect("follow-up rollup");
+        assert_eq!(rollup.0, 0);
+
+        let tail_stats_after: Option<(i64,)> =
+            sqlx::query_as("SELECT success_count FROM token_usage_stats WHERE token_id = ?")
+                .bind(&unaffected_token.id)
+                .fetch_optional(&pool)
+                .await
+                .expect("read tail stats after follow-up rollup");
+        assert_eq!(tail_stats_after, Some((1,)));
 
         let _ = std::fs::remove_file(db_str);
     }
