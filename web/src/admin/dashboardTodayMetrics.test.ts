@@ -15,8 +15,8 @@ const todayLabels: DashboardTodayMetricLabels = {
   failure: 'Failure',
   unknownCalls: 'Unknown Calls',
   upstreamExhausted: 'Upstream Keys Exhausted',
-  valuableTag: 'Valuable',
-  otherTag: 'Other',
+  valuableTag: 'Primary',
+  otherTag: 'Secondary',
   unknownTag: 'Unknown',
 }
 
@@ -42,7 +42,7 @@ const formatters = {
 }
 
 describe('dashboard request-value metric helpers', () => {
-  it('keeps the original grid card shape and builds 7 today cards', () => {
+  it('keeps total requests on a full-width row and builds 7 today cards', () => {
     const metrics = createDashboardTodayMetrics({
       today: {
         total_requests: 100,
@@ -81,6 +81,7 @@ describe('dashboard request-value metric helpers', () => {
     expect(metrics[0]).toMatchObject({
       id: 'today-total',
       label: 'Total Requests',
+      fullWidth: true,
       comparison: {
         label: 'vs same time yesterday',
         value: '+20 (25%)',
@@ -106,7 +107,7 @@ describe('dashboard request-value metric helpers', () => {
     })
   })
 
-  it('keeps category context in the subtitle and does not split unknown calls', () => {
+  it('adds primary/secondary markers and does not split unknown calls', () => {
     const metrics = createDashboardTodayMetrics({
       today: {
         total_requests: 24,
@@ -141,11 +142,25 @@ describe('dashboard request-value metric helpers', () => {
       formatters,
     })
 
-    expect(metrics.find((metric) => metric.id === 'today-unknown')).toEqual({
+    expect(metrics.find((metric) => metric.id === 'today-valuable-success')).toMatchObject({
+      id: 'today-valuable-success',
+      marker: 'Primary',
+      markerTone: 'primary',
+      subtitle: 'Today share · 50.0%',
+    })
+
+    expect(metrics.find((metric) => metric.id === 'today-other-failure')).toMatchObject({
+      id: 'today-other-failure',
+      marker: 'Secondary',
+      markerTone: 'secondary',
+      subtitle: 'Today share · 4.2%',
+    })
+
+    expect(metrics.find((metric) => metric.id === 'today-unknown')).toMatchObject({
       id: 'today-unknown',
       label: 'Unknown Calls',
       value: '2',
-      subtitle: 'Unknown · Today share · 8.3%',
+      subtitle: 'Today share · 8.3%',
       comparison: {
         label: 'vs same time yesterday',
         value: '+2 · No yesterday baseline',
@@ -192,12 +207,22 @@ describe('dashboard request-value metric helpers', () => {
       'month-new-keys',
       'month-new-quarantines',
     ])
-    expect(metrics.find((metric) => metric.id === 'month-upstream-exhausted')).toEqual({
+    expect(metrics.find((metric) => metric.id === 'month-upstream-exhausted')).toMatchObject({
       id: 'month-upstream-exhausted',
       label: 'Upstream Keys Exhausted',
       value: '6',
       subtitle: 'Added this month',
       comparison: undefined,
+    })
+    expect(metrics.find((metric) => metric.id === 'month-valuable-success')).toMatchObject({
+      marker: 'Primary',
+      markerTone: 'primary',
+      subtitle: 'Month share · 52.5%',
+    })
+    expect(metrics.find((metric) => metric.id === 'month-other-failure')).toMatchObject({
+      marker: 'Secondary',
+      markerTone: 'secondary',
+      subtitle: 'Month share · 7.5%',
     })
   })
 })

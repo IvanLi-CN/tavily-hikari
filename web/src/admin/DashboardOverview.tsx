@@ -5,7 +5,10 @@ export interface DashboardMetricCard {
   id: string
   label: string
   value: string
+  marker?: string
+  markerTone?: 'primary' | 'secondary' | 'neutral'
   subtitle?: string
+  fullWidth?: boolean
   comparison?: {
     label: string
     value: string
@@ -117,8 +120,17 @@ function SummaryMetricCard({ metric, compact = false }: { metric: DashboardMetri
   )
 
   return (
-    <div className={`metric-card dashboard-summary-card${compact ? ' dashboard-summary-card-compact' : ''}`}>
-      <h3>{metric.label}</h3>
+    <div
+      className={`metric-card dashboard-summary-card${compact ? ' dashboard-summary-card-compact' : ''}${metric.fullWidth ? ' dashboard-summary-card-full-width' : ''}`}
+    >
+      <div className="dashboard-summary-card-heading">
+        <h3>{metric.label}</h3>
+        {metric.marker ? (
+          <span className={`dashboard-summary-card-marker dashboard-summary-card-marker-${metric.markerTone ?? 'neutral'}`}>
+            {metric.marker}
+          </span>
+        ) : null}
+      </div>
       <MetricValue value={metric.value} compact={compact} />
       {metric.comparison ? (
         <div className={`metric-delta metric-delta-${deltaTone}`}>

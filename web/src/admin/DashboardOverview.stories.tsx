@@ -31,7 +31,7 @@ const meta = {
     docs: {
       description: {
         component:
-          'Dashboard overview shell with request-value summary cards. Today keeps the existing summary-card layout while rendering 7 cards with in-card deltas, and month keeps 9 compact cards for lifecycle plus request taxonomy.',
+          'Dashboard overview shell with request-value summary cards. Today renders 7 cards with the total card occupying its own row plus primary/secondary markers on success and failure cards, while month keeps 9 compact cards for lifecycle plus request taxonomy.',
       },
     },
   },
@@ -121,8 +121,8 @@ const todayMetrics = createDashboardTodayMetrics({
     failure: 'Failure',
     unknownCalls: 'Unknown Calls',
     upstreamExhausted: 'Upstream Keys Exhausted',
-    valuableTag: 'Valuable',
-    otherTag: 'Other',
+    valuableTag: 'Primary',
+    otherTag: 'Secondary',
     unknownTag: 'Unknown',
   },
   strings,
@@ -154,8 +154,8 @@ const monthMetrics = createDashboardMonthMetrics({
     failure: 'Failure',
     unknownCalls: 'Unknown Calls',
     upstreamExhausted: 'Upstream Keys Exhausted',
-    valuableTag: 'Valuable',
-    otherTag: 'Other',
+    valuableTag: 'Primary',
+    otherTag: 'Secondary',
     unknownTag: 'Unknown',
     newKeys: 'New Keys',
     newQuarantines: 'New Quarantines',
@@ -202,8 +202,8 @@ const zhStrings = {
   monthToDate: '本月累计',
   monthAdded: '本月新增',
   monthShare: '本月占比',
-  valuableTag: '有价值',
-  otherTag: '其他',
+  valuableTag: '主要',
+  otherTag: '次要',
   unknownTag: '未知',
   trendsTitle: '流量趋势',
   trendsDescription: '根据近期请求观察流量和错误变化。',
@@ -232,6 +232,7 @@ const zhDarkEvidenceTodayMetrics: DashboardMetricCard[] = [
     label: '总请求数',
     value: '10,683',
     subtitle: '截至当前',
+    fullWidth: true,
     comparison: {
       label: '较昨日同刻',
       value: '+226 (2.2%)',
@@ -242,8 +243,10 @@ const zhDarkEvidenceTodayMetrics: DashboardMetricCard[] = [
   {
     id: 'today-valuable-success',
     label: '成功',
+    marker: '主要',
+    markerTone: 'primary',
     value: '6,831',
-    subtitle: '有价值 · 今日占比 · 63.9%',
+    subtitle: '今日占比 · 63.9%',
     comparison: {
       label: '较昨日同刻',
       value: '+542 (8.6%)',
@@ -254,8 +257,10 @@ const zhDarkEvidenceTodayMetrics: DashboardMetricCard[] = [
   {
     id: 'today-valuable-failure',
     label: '失败',
+    marker: '主要',
+    markerTone: 'primary',
     value: '1,144',
-    subtitle: '有价值 · 今日占比 · 10.7%',
+    subtitle: '今日占比 · 10.7%',
     comparison: {
       label: '较昨日同刻',
       value: '-126 (-9.9%)',
@@ -266,8 +271,10 @@ const zhDarkEvidenceTodayMetrics: DashboardMetricCard[] = [
   {
     id: 'today-other-success',
     label: '成功',
+    marker: '次要',
+    markerTone: 'secondary',
     value: '1,882',
-    subtitle: '其他 · 今日占比 · 17.6%',
+    subtitle: '今日占比 · 17.6%',
     comparison: {
       label: '较昨日同刻',
       value: '+94 (5.3%)',
@@ -278,8 +285,10 @@ const zhDarkEvidenceTodayMetrics: DashboardMetricCard[] = [
   {
     id: 'today-other-failure',
     label: '失败',
+    marker: '次要',
+    markerTone: 'secondary',
     value: '552',
-    subtitle: '其他 · 今日占比 · 5.2%',
+    subtitle: '今日占比 · 5.2%',
     comparison: {
       label: '较昨日同刻',
       value: '+41 (8%)',
@@ -291,7 +300,7 @@ const zhDarkEvidenceTodayMetrics: DashboardMetricCard[] = [
     id: 'today-unknown',
     label: '未知调用',
     value: '274',
-    subtitle: '未知 · 今日占比 · 2.6%',
+    subtitle: '今日占比 · 2.6%',
     comparison: {
       label: '较昨日同刻',
       value: '+18 · 昨日无基线',
@@ -315,11 +324,11 @@ const zhDarkEvidenceTodayMetrics: DashboardMetricCard[] = [
 
 const zhDarkEvidenceMonthMetrics: DashboardMetricCard[] = [
   { id: 'month-total', label: '总请求数', value: '237,587', subtitle: '本月累计' },
-  { id: 'month-valuable-success', label: '成功', value: '152,204', subtitle: '有价值 · 本月占比 · 64%' },
-  { id: 'month-valuable-failure', label: '失败', value: '25,881', subtitle: '有价值 · 本月占比 · 10.9%' },
-  { id: 'month-other-success', label: '成功', value: '39,118', subtitle: '其他 · 本月占比 · 16.5%' },
-  { id: 'month-other-failure', label: '失败', value: '8,960', subtitle: '其他 · 本月占比 · 3.8%' },
-  { id: 'month-unknown', label: '未知调用', value: '3,654', subtitle: '未知 · 本月占比 · 1.5%' },
+  { id: 'month-valuable-success', label: '成功', marker: '主要', markerTone: 'primary', value: '152,204', subtitle: '本月占比 · 64%' },
+  { id: 'month-valuable-failure', label: '失败', marker: '主要', markerTone: 'primary', value: '25,881', subtitle: '本月占比 · 10.9%' },
+  { id: 'month-other-success', label: '成功', marker: '次要', markerTone: 'secondary', value: '39,118', subtitle: '本月占比 · 16.5%' },
+  { id: 'month-other-failure', label: '失败', marker: '次要', markerTone: 'secondary', value: '8,960', subtitle: '本月占比 · 3.8%' },
+  { id: 'month-unknown', label: '未知调用', value: '3,654', subtitle: '本月占比 · 1.5%' },
   { id: 'month-upstream-exhausted', label: '上游 Key 耗尽', value: '73', subtitle: '本月新增' },
   { id: 'month-new-keys', label: '新增密钥', value: '256', subtitle: '本月新增' },
   { id: 'month-new-quarantines', label: '新增隔离密钥', value: '66', subtitle: '本月新增' },
@@ -573,7 +582,7 @@ export const ZhDarkEvidence: Story = {
     docs: {
       description: {
         story:
-          '用于验收“保留原有摘要卡布局 + 今日 7 卡 + 本月 9 卡 + 卡内较昨日同刻胶囊”的稳定中文暗色画布。',
+          '用于验收“总请求数独占一行 + 成功/失败卡带主要/次要标记 + 本月 9 卡”的稳定中文暗色画布。',
       },
     },
   },
@@ -606,6 +615,9 @@ export const ZhDarkEvidence: Story = {
     if (canvasElement.querySelector('.dashboard-today-comparisons') != null) {
       throw new Error('Expected legacy today comparison tray to be removed')
     }
+    if (canvasElement.querySelector('.dashboard-summary-card-full-width') == null) {
+      throw new Error('Expected the today total card to occupy its own row')
+    }
     for (const selector of ['.metric-delta-positive', '.metric-delta-negative']) {
       if (canvasElement.querySelector(selector) == null) {
         throw new Error(`Expected dashboard evidence story to render ${selector}`)
@@ -613,7 +625,7 @@ export const ZhDarkEvidence: Story = {
     }
 
     const text = canvasElement.ownerDocument.body.textContent ?? ''
-    for (const expected of ['今日', '本月', '站点当前状态', '较昨日同刻', '未知调用']) {
+    for (const expected of ['今日', '本月', '站点当前状态', '较昨日同刻', '未知调用', '主要', '次要']) {
       if (!text.includes(expected)) {
         throw new Error(`Expected dashboard overview evidence story to contain: ${expected}`)
       }

@@ -74,8 +74,11 @@ interface BuildMetricCardOptions {
   id: string
   label: string
   value: string
+  marker?: string
+  markerTone?: DashboardMetricCard['markerTone']
   subtitle: string
   comparison?: DashboardMetricComparison
+  fullWidth?: boolean
 }
 
 const integerFormatter = new Intl.NumberFormat('en-US', {
@@ -121,26 +124,22 @@ function buildMetricCard({
   id,
   label,
   value,
+  marker,
+  markerTone,
   subtitle,
   comparison,
+  fullWidth = false,
 }: BuildMetricCardOptions): DashboardMetricCard {
   return {
     id,
     label,
     value,
+    marker,
+    markerTone,
     subtitle,
     comparison,
+    fullWidth,
   }
-}
-
-function buildCategorizedSubtitle(
-  categoryLabel: string,
-  shareLabel: string,
-  value: number,
-  total: number,
-  formatPercent: (numerator: number, denominator: number) => string,
-): string {
-  return `${categoryLabel} · ${buildWindowSubtitle(shareLabel, value, total, formatPercent)}`
 }
 
 export function buildTodayCountComparison({
@@ -188,13 +187,15 @@ export function createDashboardTodayMetrics({
         previousValue: yesterday.total_requests,
         strings,
       }),
+      fullWidth: true,
     }),
     buildMetricCard({
       id: 'today-valuable-success',
       label: labels.success,
+      marker: labels.valuableTag,
+      markerTone: 'primary',
       value: formatNumber(today.valuable_success_count),
-      subtitle: buildCategorizedSubtitle(
-        labels.valuableTag,
+      subtitle: buildWindowSubtitle(
         strings.todayShare,
         today.valuable_success_count,
         today.total_requests,
@@ -209,9 +210,10 @@ export function createDashboardTodayMetrics({
     buildMetricCard({
       id: 'today-valuable-failure',
       label: labels.failure,
+      marker: labels.valuableTag,
+      markerTone: 'primary',
       value: formatNumber(today.valuable_failure_count),
-      subtitle: buildCategorizedSubtitle(
-        labels.valuableTag,
+      subtitle: buildWindowSubtitle(
         strings.todayShare,
         today.valuable_failure_count,
         today.total_requests,
@@ -227,9 +229,10 @@ export function createDashboardTodayMetrics({
     buildMetricCard({
       id: 'today-other-success',
       label: labels.success,
+      marker: labels.otherTag,
+      markerTone: 'secondary',
       value: formatNumber(today.other_success_count),
-      subtitle: buildCategorizedSubtitle(
-        labels.otherTag,
+      subtitle: buildWindowSubtitle(
         strings.todayShare,
         today.other_success_count,
         today.total_requests,
@@ -244,9 +247,10 @@ export function createDashboardTodayMetrics({
     buildMetricCard({
       id: 'today-other-failure',
       label: labels.failure,
+      marker: labels.otherTag,
+      markerTone: 'secondary',
       value: formatNumber(today.other_failure_count),
-      subtitle: buildCategorizedSubtitle(
-        labels.otherTag,
+      subtitle: buildWindowSubtitle(
         strings.todayShare,
         today.other_failure_count,
         today.total_requests,
@@ -263,8 +267,7 @@ export function createDashboardTodayMetrics({
       id: 'today-unknown',
       label: labels.unknownCalls,
       value: formatNumber(today.unknown_count),
-      subtitle: buildCategorizedSubtitle(
-        labels.unknownTag,
+      subtitle: buildWindowSubtitle(
         strings.todayShare,
         today.unknown_count,
         today.total_requests,
@@ -310,9 +313,10 @@ export function createDashboardMonthMetrics({
     buildMetricCard({
       id: 'month-valuable-success',
       label: labels.success,
+      marker: labels.valuableTag,
+      markerTone: 'primary',
       value: formatNumber(month.valuable_success_count),
-      subtitle: buildCategorizedSubtitle(
-        labels.valuableTag,
+      subtitle: buildWindowSubtitle(
         strings.monthShare,
         month.valuable_success_count,
         month.total_requests,
@@ -322,9 +326,10 @@ export function createDashboardMonthMetrics({
     buildMetricCard({
       id: 'month-valuable-failure',
       label: labels.failure,
+      marker: labels.valuableTag,
+      markerTone: 'primary',
       value: formatNumber(month.valuable_failure_count),
-      subtitle: buildCategorizedSubtitle(
-        labels.valuableTag,
+      subtitle: buildWindowSubtitle(
         strings.monthShare,
         month.valuable_failure_count,
         month.total_requests,
@@ -334,9 +339,10 @@ export function createDashboardMonthMetrics({
     buildMetricCard({
       id: 'month-other-success',
       label: labels.success,
+      marker: labels.otherTag,
+      markerTone: 'secondary',
       value: formatNumber(month.other_success_count),
-      subtitle: buildCategorizedSubtitle(
-        labels.otherTag,
+      subtitle: buildWindowSubtitle(
         strings.monthShare,
         month.other_success_count,
         month.total_requests,
@@ -346,9 +352,10 @@ export function createDashboardMonthMetrics({
     buildMetricCard({
       id: 'month-other-failure',
       label: labels.failure,
+      marker: labels.otherTag,
+      markerTone: 'secondary',
       value: formatNumber(month.other_failure_count),
-      subtitle: buildCategorizedSubtitle(
-        labels.otherTag,
+      subtitle: buildWindowSubtitle(
         strings.monthShare,
         month.other_failure_count,
         month.total_requests,
@@ -359,8 +366,7 @@ export function createDashboardMonthMetrics({
       id: 'month-unknown',
       label: labels.unknownCalls,
       value: formatNumber(month.unknown_count),
-      subtitle: buildCategorizedSubtitle(
-        labels.unknownTag,
+      subtitle: buildWindowSubtitle(
         strings.monthShare,
         month.unknown_count,
         month.total_requests,

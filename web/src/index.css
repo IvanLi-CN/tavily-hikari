@@ -2710,6 +2710,44 @@ button:disabled {
   box-shadow: none;
 }
 
+.dashboard-summary-card-full-width {
+  grid-column: 1 / -1;
+}
+
+.dashboard-summary-card-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.dashboard-summary-card-marker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid hsl(var(--border) / 0.75);
+  background: hsl(var(--muted) / 0.7);
+  color: hsl(var(--muted-foreground));
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.dashboard-summary-card-marker-primary {
+  border-color: hsl(var(--primary) / 0.42);
+  background: hsl(var(--primary) / 0.14);
+  color: hsl(var(--primary));
+}
+
+.dashboard-summary-card-marker-secondary {
+  border-color: hsl(var(--secondary-foreground) / 0.18);
+  background: hsl(var(--secondary) / 0.42);
+  color: hsl(var(--foreground) / 0.9);
+}
+
 .dashboard-metric-value,
 .dashboard-summary-card .metric-value {
   font-size: clamp(1.55rem, 2vw, 2rem);
@@ -2721,6 +2759,7 @@ button:disabled {
 }
 
 .dashboard-summary-card h3 {
+  margin: 0;
   font-size: 0.86rem;
   letter-spacing: 0.03em;
 }
