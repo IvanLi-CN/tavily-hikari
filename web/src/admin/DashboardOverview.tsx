@@ -5,10 +5,7 @@ export interface DashboardMetricCard {
   id: string
   label: string
   value: string
-  eyebrow?: string
-  eyebrowTone?: 'valuable' | 'other' | 'unknown' | 'neutral'
   subtitle?: string
-  fullWidth?: boolean
   comparison?: {
     label: string
     value: string
@@ -120,16 +117,7 @@ function SummaryMetricCard({ metric, compact = false }: { metric: DashboardMetri
   )
 
   return (
-    <div
-      className={`metric-card dashboard-summary-card${compact ? ' dashboard-summary-card-compact' : ''}${metric.fullWidth ? ' dashboard-summary-card-full-width' : ''}`}
-    >
-      {metric.eyebrow ? (
-        <div
-          className={`dashboard-metric-eyebrow dashboard-metric-eyebrow-${metric.eyebrowTone ?? 'neutral'}`}
-        >
-          {metric.eyebrow}
-        </div>
-      ) : null}
+    <div className={`metric-card dashboard-summary-card${compact ? ' dashboard-summary-card-compact' : ''}`}>
       <h3>{metric.label}</h3>
       <MetricValue value={metric.value} compact={compact} />
       {metric.comparison ? (

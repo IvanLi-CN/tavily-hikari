@@ -42,7 +42,7 @@ const formatters = {
 }
 
 describe('dashboard request-value metric helpers', () => {
-  it('keeps total requests on a full-width card and builds 7 today cards', () => {
+  it('keeps the original grid card shape and builds 7 today cards', () => {
     const metrics = createDashboardTodayMetrics({
       today: {
         total_requests: 100,
@@ -81,7 +81,6 @@ describe('dashboard request-value metric helpers', () => {
     expect(metrics[0]).toMatchObject({
       id: 'today-total',
       label: 'Total Requests',
-      fullWidth: true,
       comparison: {
         label: 'vs same time yesterday',
         value: '+20 (25%)',
@@ -107,7 +106,7 @@ describe('dashboard request-value metric helpers', () => {
     })
   })
 
-  it('marks unknown calls with the unknown eyebrow and no success/failure split', () => {
+  it('keeps category context in the subtitle and does not split unknown calls', () => {
     const metrics = createDashboardTodayMetrics({
       today: {
         total_requests: 24,
@@ -144,18 +143,15 @@ describe('dashboard request-value metric helpers', () => {
 
     expect(metrics.find((metric) => metric.id === 'today-unknown')).toEqual({
       id: 'today-unknown',
-      eyebrow: 'Unknown',
-      eyebrowTone: 'unknown',
       label: 'Unknown Calls',
       value: '2',
-      subtitle: 'Today share · 8.3%',
+      subtitle: 'Unknown · Today share · 8.3%',
       comparison: {
         label: 'vs same time yesterday',
         value: '+2 · No yesterday baseline',
         direction: 'up',
         tone: 'negative',
       },
-      fullWidth: false,
     })
   })
 
@@ -201,10 +197,7 @@ describe('dashboard request-value metric helpers', () => {
       label: 'Upstream Keys Exhausted',
       value: '6',
       subtitle: 'Added this month',
-      eyebrow: undefined,
-      eyebrowTone: undefined,
       comparison: undefined,
-      fullWidth: false,
     })
   })
 })

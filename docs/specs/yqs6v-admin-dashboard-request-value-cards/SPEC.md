@@ -16,9 +16,10 @@
 ## Goals
 
 - 将 `今日 + 本月` 的请求摘要口径升级为 `有价值 / 其他 / 未知`，同时保留旧字段兼容。
-- `今日` 固定显示 7 张卡：`总请求数` 独占首行，余下 6 张卡为 `有价值成功 / 有价值失败 / 其他成功 / 其他失败 / 未知调用 / 上游 Key 耗尽`。
+- `今日` 固定显示 7 张卡：`总请求数 / 有价值成功 / 有价值失败 / 其他成功 / 其他失败 / 未知调用 / 上游 Key 耗尽`。
 - `本月` 固定显示 9 张紧凑卡：`总请求数 / 有价值成功 / 有价值失败 / 其他成功 / 其他失败 / 未知调用 / 上游 Key 耗尽 / 新增密钥 / 新增隔离密钥`。
 - 把 `较昨日同刻` 直接收进今日卡片本体，移除外部 comparison tray。
+- 保持摘要卡区域原有布局与响应式断点，不额外改动卡片排列方式。
 - 扩展 `/api/summary/windows` 与 admin SSE `summaryWindows`，让后端能稳定汇总并返回新分类字段。
 - 为该改版补齐 Storybook、视觉证据、规格追踪与回归测试。
 
@@ -113,15 +114,16 @@
 ### 今日
 
 - 卡片总数固定为 7。
-- `总请求数` 独占一整行，并显示卡内 `较昨日同刻`。
-- 第二行开始显示 6 张小卡：
-  - `有价值 / 成功`
-  - `有价值 / 失败`
-  - `其他 / 成功`
-  - `其他 / 失败`
-  - `未知 / 未知调用`
+- 保持现有 summary card 网格排列方式，不为 `总请求数` 增加特殊 full-width 行。
+- 7 张卡依次为：
+  - `总请求数`
+  - `成功`（有价值）
+  - `失败`（有价值）
+  - `成功`（其他）
+  - `失败`（其他）
+  - `未知调用`
   - `上游 Key 耗尽`
-- `有价值 / 其他 / 未知` 必须通过 eyebrow/tag 直接显示在卡片里。
+- `有价值 / 其他 / 未知` 通过卡片正文文案表达，不新增独立布局层。
 - 底部 comparison tray 必须彻底移除。
 
 ### 本月
@@ -142,10 +144,11 @@
 
 ### 布局
 
-- `今日` 桌面优先 3 列小卡、平板 2 列、窄屏 1 列。
-- `本月` 桌面优先 3 列、平板 2 列、窄屏 1 列。
+- 保持现有摘要区布局骨架：`今日 / 本月 / 当前状态` 的区块排布不变。
+- `今日` 延续原有 summary card 响应式网格：窄屏 1 列，平板及桌面 2 列。
+- `本月` 延续原有 compact card 响应式网格：窄屏 1 列，平板及桌面 2 列。
 - 任意断点下不得引入横向滚动。
-- 视觉风格延续现有 dark dashboard，但分类 eyebrow 与 delta chip 需更高对比、可快速扫读。
+- 视觉风格延续现有 dark dashboard，只允许围绕新数据口径调整卡片正文内容与 delta chip。
 
 ## 验收标准
 
@@ -155,7 +158,7 @@
 - `unknown-path / unknown-method / unknown-payload / unsupported-path / third-party-tool` 进入 `unknown_count`。
 - 混合 `mcp:batch` 必须按照 `unknown > valuable > other` 分类。
 - `quota_exhausted` 若调用方可见，必须计入对应分类的失败计数。
-- `/admin/dashboard` 的 `今日` 区块展示 7 张卡且 `总请求数` 独占首行。
+- `/admin/dashboard` 的 `今日` 区块展示 7 张卡，并保持原有摘要卡布局方式。
 - `/admin/dashboard` 的 `本月` 区块展示 9 张卡，保留生命周期卡，且无 comparison tray。
 - Storybook 必须提供稳定的中文暗色验收入口，覆盖：
   - today 7 卡
@@ -176,6 +179,7 @@
 - 2026-03-31：`cd web && bun run build-storybook` 通过。
 - 2026-03-31：通过 Storybook 静态页 `admin-components-dashboardoverview--zh-dark-evidence` 复核桌面与窄屏布局，确认 `今日` 为 7 卡、`本月` 为 9 卡，且 comparison tray 已移除。
 - 2026-04-01：重新拉起后端 `127.0.0.1:58087` 与前端 `127.0.0.1:55173` 后，用 Chrome 复核真实 `/admin` 页面窄屏布局；`documentElement.scrollWidth == clientWidth == 485`，确认无横向滚动。
+- 2026-04-01：按主人要求撤回未授权的摘要卡布局调整后，重新执行 `cd web && bun test`、`cd web && bun run build`、`cd web && bun run build-storybook`，并重拍 Storybook 证据图确认保留原有摘要卡布局。
 
 ## 风险与开放点
 
@@ -185,8 +189,8 @@
 
 ## Visual Evidence
 
-- source_type: `storybook_canvas`; target_program: `mock-only`; capture_scope: `browser-viewport`; story_id_or_title: `Admin/Components/DashboardOverview/ZhDarkEvidence`; state: `desktop`; evidence_note: 桌面端验证 `今日 7 卡 / 本月 9 卡 / 总请求数 full-width / 卡内较昨日同刻胶囊 / 无 comparison tray`。
+- source_type: `storybook_canvas`; target_program: `mock-only`; capture_scope: `browser-viewport`; story_id_or_title: `Admin/Components/DashboardOverview/ZhDarkEvidence`; state: `desktop`; evidence_note: 桌面端验证 `保留原有摘要卡布局 / 今日 7 卡 / 本月 9 卡 / 卡内较昨日同刻胶囊 / 无 comparison tray`。
   ![Admin 仪表盘请求价值分类卡（桌面）](./assets/dashboard-request-value-cards-storybook-desktop.png)
 
-- source_type: `storybook_canvas`; target_program: `mock-only`; capture_scope: `browser-viewport`; story_id_or_title: `Admin/Components/DashboardOverview/ZhDarkEvidence`; state: `mobile`; evidence_note: 窄屏验证纵向单列重排稳定，无横向滚动，分类 eyebrow 与 delta chip 仍可完整读取。
+- source_type: `storybook_canvas`; target_program: `mock-only`; capture_scope: `browser-viewport`; story_id_or_title: `Admin/Components/DashboardOverview/ZhDarkEvidence`; state: `mobile`; evidence_note: 窄屏验证纵向单列重排稳定，无横向滚动，卡内分类文案与 delta chip 仍可完整读取。
   ![Admin 仪表盘请求价值分类卡（移动端）](./assets/dashboard-request-value-cards-storybook-mobile.png)

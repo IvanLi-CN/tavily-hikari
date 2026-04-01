@@ -3,7 +3,6 @@ import type { DashboardMetricCard } from './DashboardOverview'
 
 type DashboardMetricComparison = NonNullable<DashboardMetricCard['comparison']>
 type ComparisonTrend = 'higher-is-better' | 'lower-is-better'
-type MetricEyebrowTone = NonNullable<DashboardMetricCard['eyebrowTone']>
 
 interface DashboardMetricCategoryLabels {
   valuableTag: string
@@ -76,10 +75,7 @@ interface BuildMetricCardOptions {
   label: string
   value: string
   subtitle: string
-  eyebrow?: string
-  eyebrowTone?: MetricEyebrowTone
   comparison?: DashboardMetricComparison
-  fullWidth?: boolean
 }
 
 const integerFormatter = new Intl.NumberFormat('en-US', {
@@ -126,21 +122,25 @@ function buildMetricCard({
   label,
   value,
   subtitle,
-  eyebrow,
-  eyebrowTone,
   comparison,
-  fullWidth = false,
 }: BuildMetricCardOptions): DashboardMetricCard {
   return {
     id,
     label,
     value,
     subtitle,
-    eyebrow,
-    eyebrowTone,
     comparison,
-    fullWidth,
   }
+}
+
+function buildCategorizedSubtitle(
+  categoryLabel: string,
+  shareLabel: string,
+  value: number,
+  total: number,
+  formatPercent: (numerator: number, denominator: number) => string,
+): string {
+  return `${categoryLabel} · ${buildWindowSubtitle(shareLabel, value, total, formatPercent)}`
 }
 
 export function buildTodayCountComparison({
@@ -188,15 +188,13 @@ export function createDashboardTodayMetrics({
         previousValue: yesterday.total_requests,
         strings,
       }),
-      fullWidth: true,
     }),
     buildMetricCard({
       id: 'today-valuable-success',
-      eyebrow: labels.valuableTag,
-      eyebrowTone: 'valuable',
       label: labels.success,
       value: formatNumber(today.valuable_success_count),
-      subtitle: buildWindowSubtitle(
+      subtitle: buildCategorizedSubtitle(
+        labels.valuableTag,
         strings.todayShare,
         today.valuable_success_count,
         today.total_requests,
@@ -210,11 +208,10 @@ export function createDashboardTodayMetrics({
     }),
     buildMetricCard({
       id: 'today-valuable-failure',
-      eyebrow: labels.valuableTag,
-      eyebrowTone: 'valuable',
       label: labels.failure,
       value: formatNumber(today.valuable_failure_count),
-      subtitle: buildWindowSubtitle(
+      subtitle: buildCategorizedSubtitle(
+        labels.valuableTag,
         strings.todayShare,
         today.valuable_failure_count,
         today.total_requests,
@@ -229,11 +226,10 @@ export function createDashboardTodayMetrics({
     }),
     buildMetricCard({
       id: 'today-other-success',
-      eyebrow: labels.otherTag,
-      eyebrowTone: 'other',
       label: labels.success,
       value: formatNumber(today.other_success_count),
-      subtitle: buildWindowSubtitle(
+      subtitle: buildCategorizedSubtitle(
+        labels.otherTag,
         strings.todayShare,
         today.other_success_count,
         today.total_requests,
@@ -247,11 +243,10 @@ export function createDashboardTodayMetrics({
     }),
     buildMetricCard({
       id: 'today-other-failure',
-      eyebrow: labels.otherTag,
-      eyebrowTone: 'other',
       label: labels.failure,
       value: formatNumber(today.other_failure_count),
-      subtitle: buildWindowSubtitle(
+      subtitle: buildCategorizedSubtitle(
+        labels.otherTag,
         strings.todayShare,
         today.other_failure_count,
         today.total_requests,
@@ -266,11 +261,10 @@ export function createDashboardTodayMetrics({
     }),
     buildMetricCard({
       id: 'today-unknown',
-      eyebrow: labels.unknownTag,
-      eyebrowTone: 'unknown',
       label: labels.unknownCalls,
       value: formatNumber(today.unknown_count),
-      subtitle: buildWindowSubtitle(
+      subtitle: buildCategorizedSubtitle(
+        labels.unknownTag,
         strings.todayShare,
         today.unknown_count,
         today.total_requests,
@@ -315,11 +309,10 @@ export function createDashboardMonthMetrics({
     }),
     buildMetricCard({
       id: 'month-valuable-success',
-      eyebrow: labels.valuableTag,
-      eyebrowTone: 'valuable',
       label: labels.success,
       value: formatNumber(month.valuable_success_count),
-      subtitle: buildWindowSubtitle(
+      subtitle: buildCategorizedSubtitle(
+        labels.valuableTag,
         strings.monthShare,
         month.valuable_success_count,
         month.total_requests,
@@ -328,11 +321,10 @@ export function createDashboardMonthMetrics({
     }),
     buildMetricCard({
       id: 'month-valuable-failure',
-      eyebrow: labels.valuableTag,
-      eyebrowTone: 'valuable',
       label: labels.failure,
       value: formatNumber(month.valuable_failure_count),
-      subtitle: buildWindowSubtitle(
+      subtitle: buildCategorizedSubtitle(
+        labels.valuableTag,
         strings.monthShare,
         month.valuable_failure_count,
         month.total_requests,
@@ -341,11 +333,10 @@ export function createDashboardMonthMetrics({
     }),
     buildMetricCard({
       id: 'month-other-success',
-      eyebrow: labels.otherTag,
-      eyebrowTone: 'other',
       label: labels.success,
       value: formatNumber(month.other_success_count),
-      subtitle: buildWindowSubtitle(
+      subtitle: buildCategorizedSubtitle(
+        labels.otherTag,
         strings.monthShare,
         month.other_success_count,
         month.total_requests,
@@ -354,11 +345,10 @@ export function createDashboardMonthMetrics({
     }),
     buildMetricCard({
       id: 'month-other-failure',
-      eyebrow: labels.otherTag,
-      eyebrowTone: 'other',
       label: labels.failure,
       value: formatNumber(month.other_failure_count),
-      subtitle: buildWindowSubtitle(
+      subtitle: buildCategorizedSubtitle(
+        labels.otherTag,
         strings.monthShare,
         month.other_failure_count,
         month.total_requests,
@@ -367,11 +357,10 @@ export function createDashboardMonthMetrics({
     }),
     buildMetricCard({
       id: 'month-unknown',
-      eyebrow: labels.unknownTag,
-      eyebrowTone: 'unknown',
       label: labels.unknownCalls,
       value: formatNumber(month.unknown_count),
-      subtitle: buildWindowSubtitle(
+      subtitle: buildCategorizedSubtitle(
+        labels.unknownTag,
         strings.monthShare,
         month.unknown_count,
         month.total_requests,
