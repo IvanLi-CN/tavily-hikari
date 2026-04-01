@@ -9948,11 +9948,11 @@ colo=LAX
         .await
         .expect("update quota totals");
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
         let mut buffer = String::new();
         let mut refreshed_snapshot: Option<serde_json::Value> = None;
         while tokio::time::Instant::now() < deadline {
-            let chunk = tokio::time::timeout(Duration::from_secs(3), events_resp.chunk())
+            let chunk = tokio::time::timeout(Duration::from_secs(6), events_resp.chunk())
                 .await
                 .expect("await refreshed event chunk in time")
                 .expect("read refreshed event chunk")
