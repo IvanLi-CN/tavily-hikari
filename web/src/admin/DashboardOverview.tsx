@@ -5,7 +5,10 @@ export interface DashboardMetricCard {
   id: string
   label: string
   value: string
+  eyebrow?: string
+  eyebrowTone?: 'valuable' | 'other' | 'unknown' | 'neutral'
   subtitle?: string
+  fullWidth?: boolean
   comparison?: {
     label: string
     value: string
@@ -117,7 +120,16 @@ function SummaryMetricCard({ metric, compact = false }: { metric: DashboardMetri
   )
 
   return (
-    <div className={`metric-card dashboard-summary-card${compact ? ' dashboard-summary-card-compact' : ''}`}>
+    <div
+      className={`metric-card dashboard-summary-card${compact ? ' dashboard-summary-card-compact' : ''}${metric.fullWidth ? ' dashboard-summary-card-full-width' : ''}`}
+    >
+      {metric.eyebrow ? (
+        <div
+          className={`dashboard-metric-eyebrow dashboard-metric-eyebrow-${metric.eyebrowTone ?? 'neutral'}`}
+        >
+          {metric.eyebrow}
+        </div>
+      ) : null}
       <h3>{metric.label}</h3>
       <MetricValue value={metric.value} compact={compact} />
       {metric.comparison ? (
@@ -129,16 +141,6 @@ function SummaryMetricCard({ metric, compact = false }: { metric: DashboardMetri
         <div className="metric-subtitle">{metric.subtitle}</div>
       ) : null}
       {metric.comparison && metric.subtitle ? <div className="metric-subtitle">{metric.subtitle}</div> : null}
-    </div>
-  )
-}
-
-function TodayMetricCard({ metric }: { metric: DashboardMetricCard }): JSX.Element {
-  return (
-    <div className="metric-card dashboard-summary-card dashboard-today-card">
-      <h3>{metric.label}</h3>
-      <MetricValue value={metric.value} />
-      {metric.subtitle ? <div className="metric-subtitle">{metric.subtitle}</div> : null}
     </div>
   )
 }
@@ -244,39 +246,11 @@ export default function DashboardOverview({
                   </div>
                 </header>
                 {hasTodaySummary ? (
-                  <>
-                    <div className="dashboard-summary-metrics dashboard-summary-metrics-primary dashboard-today-grid">
-                      {todayMetrics.map((metric) => (
-                        <TodayMetricCard key={metric.id} metric={metric} />
-                      ))}
-                    </div>
-                    <div className="dashboard-today-comparisons">
-                      {todayMetrics.map((metric) => {
-                        const deltaTone = metric.comparison?.tone ?? (
-                          metric.comparison?.direction === 'flat'
-                            ? 'neutral'
-                            : metric.comparison?.direction === 'up'
-                              ? 'positive'
-                              : 'negative'
-                        )
-
-                        return (
-                          <div key={`${metric.id}-comparison`} className="dashboard-today-comparison-row">
-                            <div className="dashboard-today-comparison-copy">
-                              <div className="dashboard-today-comparison-label">{metric.label}</div>
-                              {metric.subtitle ? <div className="dashboard-today-comparison-subtitle">{metric.subtitle}</div> : null}
-                            </div>
-                            {metric.comparison ? (
-                              <div className={`metric-delta metric-delta-${deltaTone}`}>
-                                <span className="metric-delta-label">{metric.comparison.label}</span>
-                                <span className="metric-delta-value">{metric.comparison.value}</span>
-                              </div>
-                            ) : null}
-                          </div>
-                        )
-                      })}
-                    </div>
-                  </>
+                  <div className="dashboard-summary-metrics dashboard-summary-metrics-primary dashboard-today-grid">
+                    {todayMetrics.map((metric) => (
+                      <SummaryMetricCard key={metric.id} metric={metric} />
+                    ))}
+                  </div>
                 ) : (
                   <div className="empty-state alert dashboard-summary-empty">{strings.summaryUnavailable}</div>
                 )}

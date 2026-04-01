@@ -225,6 +225,9 @@ interface AdminTranslationsShape {
     monthToDate: string
     monthAdded: string
     monthShare: string
+    valuableTag: string
+    otherTag: string
+    unknownTag: string
     upstreamExhaustedLabel: string
     trendsTitle: string
     trendsDescription: string
@@ -816,8 +819,10 @@ interface AdminTranslationsShape {
       labels: {
         total: string
         success: string
+        failure: string
         errors: string
         quota: string
+        unknownCalls: string
         newKeys: string
         newQuarantines: string
         keys: string
@@ -1479,6 +1484,9 @@ export const translations: Record<Language, TranslationShape> = {
         monthToDate: 'Month to date',
         monthAdded: 'Added this month',
         monthShare: 'Month share',
+        valuableTag: 'Valuable',
+        otherTag: 'Other',
+        unknownTag: 'Unknown',
         upstreamExhaustedLabel: 'Upstream Keys Exhausted',
         trendsTitle: 'Traffic Trends',
         trendsDescription: 'Recent request and error changes from latest logs.',
@@ -2073,9 +2081,11 @@ export const translations: Record<Language, TranslationShape> = {
       metrics: {
         labels: {
           total: 'Total Requests',
-          success: 'Successful',
+          success: 'Success',
+          failure: 'Failure',
           errors: 'Errors',
           quota: 'Quota Exhausted',
+          unknownCalls: 'Unknown Calls',
           newKeys: 'New Keys',
           newQuarantines: 'New Quarantines',
           keys: 'Active Keys',
@@ -2721,6 +2731,9 @@ export const translations: Record<Language, TranslationShape> = {
         monthToDate: '本月累计',
         monthAdded: '本月新增',
         monthShare: '本月占比',
+        valuableTag: '有价值',
+        otherTag: '其他',
+        unknownTag: '未知',
         upstreamExhaustedLabel: '上游 Key 耗尽',
         trendsTitle: '流量趋势',
         trendsDescription: '基于最新请求日志的请求量与错误变化。',
@@ -3316,8 +3329,10 @@ export const translations: Record<Language, TranslationShape> = {
         labels: {
           total: '总请求数',
           success: '成功',
+          failure: '失败',
           errors: '错误',
           quota: '额度耗尽',
+          unknownCalls: '未知调用',
           newKeys: '新增密钥',
           newQuarantines: '新增隔离密钥',
           keys: '活跃密钥',

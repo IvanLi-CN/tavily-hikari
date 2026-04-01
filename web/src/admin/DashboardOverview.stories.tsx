@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
-import DashboardOverview from './DashboardOverview'
+import DashboardOverview, { type DashboardMetricCard } from './DashboardOverview'
 import {
   createDashboardMonthMetrics,
   createDashboardTodayMetrics,
@@ -31,7 +31,7 @@ const meta = {
     docs: {
       description: {
         component:
-          'Dashboard overview shell with today/month/status summary cards. Success and error deltas use rate shifts, while upstream exhaustion cards count distinct auto-exhausted keys instead of request volume.',
+          'Dashboard overview shell with request-value summary cards. Today renders 7 cards with a full-width total row and in-card deltas, while month keeps 9 compact cards for lifecycle plus request taxonomy.',
       },
     },
   },
@@ -48,12 +48,12 @@ const strings = {
   summaryUnavailable: 'Unable to load the summary windows right now.',
   statusUnavailable: 'Unable to load the current site status right now.',
   todayTitle: 'Today',
-  todayDescription: 'Core request signals up to now, directly compared with yesterday.',
+  todayDescription: 'Request-value signals up to now, compared with the same time yesterday.',
   monthTitle: 'This Month',
-  monthDescription: 'Month-to-date request totals in one compact view.',
+  monthDescription: 'Month-to-date request taxonomy and lifecycle totals in one compact view.',
   currentStatusTitle: 'Current Site Status',
   currentStatusDescription: 'Live quota, active keys, and pool health right now.',
-  deltaFromYesterday: 'vs yesterday',
+  deltaFromYesterday: 'vs same time yesterday',
   deltaNoBaseline: 'No yesterday baseline',
   percentagePointUnit: 'pp',
   asOfNow: 'Up to now',
@@ -62,6 +62,9 @@ const strings = {
   monthToDate: 'Month to date',
   monthAdded: 'Added this month',
   monthShare: 'Month share',
+  valuableTag: 'Valuable',
+  otherTag: 'Other',
+  unknownTag: 'Unknown',
   trendsTitle: 'Traffic Trends',
   trendsDescription: 'Recent request and error changes from latest logs.',
   requestTrend: 'Request volume',
@@ -86,27 +89,41 @@ const strings = {
 const todayMetrics = createDashboardTodayMetrics({
   today: {
     total_requests: 4_812,
-    success_count: 4_192,
-    error_count: 451,
-    quota_exhausted_count: 169,
+    success_count: 0,
+    error_count: 0,
+    quota_exhausted_count: 0,
+    valuable_success_count: 3_442,
+    valuable_failure_count: 604,
+    other_success_count: 498,
+    other_failure_count: 176,
+    unknown_count: 92,
     upstream_exhausted_key_count: 7,
     new_keys: 0,
     new_quarantines: 0,
   },
   yesterday: {
     total_requests: 4_386,
-    success_count: 3_694,
-    error_count: 527,
-    quota_exhausted_count: 19,
+    success_count: 0,
+    error_count: 0,
+    quota_exhausted_count: 0,
+    valuable_success_count: 3_118,
+    valuable_failure_count: 582,
+    other_success_count: 454,
+    other_failure_count: 161,
+    unknown_count: 71,
     upstream_exhausted_key_count: 3,
     new_keys: 0,
     new_quarantines: 0,
   },
   labels: {
     total: 'Total Requests',
-    success: 'Successful',
-    errors: 'Errors',
+    success: 'Success',
+    failure: 'Failure',
+    unknownCalls: 'Unknown Calls',
     upstreamExhausted: 'Upstream Keys Exhausted',
+    valuableTag: 'Valuable',
+    otherTag: 'Other',
+    unknownTag: 'Unknown',
   },
   strings,
   formatters: {
@@ -119,18 +136,27 @@ const todayMetrics = createDashboardTodayMetrics({
 const monthMetrics = createDashboardMonthMetrics({
   month: {
     total_requests: 105_041,
-    success_count: 86_279,
-    error_count: 2_368,
-    quota_exhausted_count: 401,
+    success_count: 0,
+    error_count: 0,
+    quota_exhausted_count: 0,
+    valuable_success_count: 70_211,
+    valuable_failure_count: 12_440,
+    other_success_count: 10_062,
+    other_failure_count: 4_083,
+    unknown_count: 1_844,
     upstream_exhausted_key_count: 12,
     new_keys: 3,
     new_quarantines: 0,
   },
   labels: {
     total: 'Total Requests',
-    success: 'Successful',
-    errors: 'Errors',
+    success: 'Success',
+    failure: 'Failure',
+    unknownCalls: 'Unknown Calls',
     upstreamExhausted: 'Upstream Keys Exhausted',
+    valuableTag: 'Valuable',
+    otherTag: 'Other',
+    unknownTag: 'Unknown',
     newKeys: 'New Keys',
     newQuarantines: 'New Quarantines',
   },
@@ -162,9 +188,9 @@ const zhStrings = {
   summaryUnavailable: '暂时无法加载期间摘要。',
   statusUnavailable: '暂时无法加载站点当前状态。',
   todayTitle: '今日',
-  todayDescription: '截至当前的核心请求指标，并与昨日同一时刻直接对比。',
+  todayDescription: '按调用价值查看截至当前的请求表现，并直接对比昨日同刻。',
   monthTitle: '本月',
-  monthDescription: '按月累计的请求表现，方便快速判断整体趋势。',
+  monthDescription: '把本月累计的请求价值分类与生命周期指标压缩到同一组卡片里。',
   currentStatusTitle: '站点当前状态',
   currentStatusDescription: '当前额度、活跃密钥和代理池健康度快照。',
   deltaFromYesterday: '较昨日同刻',
@@ -176,6 +202,9 @@ const zhStrings = {
   monthToDate: '本月累计',
   monthAdded: '本月新增',
   monthShare: '本月占比',
+  valuableTag: '有价值',
+  otherTag: '其他',
+  unknownTag: '未知',
   trendsTitle: '流量趋势',
   trendsDescription: '根据近期请求观察流量和错误变化。',
   requestTrend: '请求量',
@@ -197,41 +226,88 @@ const zhStrings = {
   tokenCoverageError: '令牌范围数据加载失败。',
 }
 
-const zhDarkEvidenceTodayMetrics = [
+const zhDarkEvidenceTodayMetrics: DashboardMetricCard[] = [
   {
     id: 'today-total',
     label: '总请求数',
     value: '10,683',
     subtitle: '截至当前',
+    fullWidth: true,
     comparison: {
       label: '较昨日同刻',
       value: '+226 (2.2%)',
-      direction: 'up' as const,
-      tone: 'positive' as const,
+      direction: 'up',
+      tone: 'positive',
     },
   },
   {
-    id: 'today-success',
+    id: 'today-valuable-success',
+    eyebrow: '有价值',
+    eyebrowTone: 'valuable',
     label: '成功',
-    value: '8,762',
-    subtitle: '今日占比 · 82%',
+    value: '6,831',
+    subtitle: '今日占比 · 63.9%',
     comparison: {
       label: '较昨日同刻',
-      value: '-2.0 个百分点',
-      direction: 'down' as const,
-      tone: 'negative' as const,
+      value: '+542 (8.6%)',
+      direction: 'up',
+      tone: 'positive',
     },
   },
   {
-    id: 'today-errors',
-    label: '错误',
-    value: '681',
-    subtitle: '今日占比 · 6.4%',
+    id: 'today-valuable-failure',
+    eyebrow: '有价值',
+    eyebrowTone: 'valuable',
+    label: '失败',
+    value: '1,144',
+    subtitle: '今日占比 · 10.7%',
     comparison: {
       label: '较昨日同刻',
-      value: '昨日无基线',
-      direction: 'flat' as const,
-      tone: 'neutral' as const,
+      value: '-126 (-9.9%)',
+      direction: 'down',
+      tone: 'positive',
+    },
+  },
+  {
+    id: 'today-other-success',
+    eyebrow: '其他',
+    eyebrowTone: 'other',
+    label: '成功',
+    value: '1,882',
+    subtitle: '今日占比 · 17.6%',
+    comparison: {
+      label: '较昨日同刻',
+      value: '+94 (5.3%)',
+      direction: 'up',
+      tone: 'positive',
+    },
+  },
+  {
+    id: 'today-other-failure',
+    eyebrow: '其他',
+    eyebrowTone: 'other',
+    label: '失败',
+    value: '552',
+    subtitle: '今日占比 · 5.2%',
+    comparison: {
+      label: '较昨日同刻',
+      value: '+41 (8%)',
+      direction: 'up',
+      tone: 'negative',
+    },
+  },
+  {
+    id: 'today-unknown',
+    eyebrow: '未知',
+    eyebrowTone: 'unknown',
+    label: '未知调用',
+    value: '274',
+    subtitle: '今日占比 · 2.6%',
+    comparison: {
+      label: '较昨日同刻',
+      value: '+18 · 昨日无基线',
+      direction: 'up',
+      tone: 'negative',
     },
   },
   {
@@ -242,16 +318,19 @@ const zhDarkEvidenceTodayMetrics = [
     comparison: {
       label: '较昨日同刻',
       value: '+38 (950%)',
-      direction: 'up' as const,
-      tone: 'negative' as const,
+      direction: 'up',
+      tone: 'negative',
     },
   },
 ]
 
-const zhDarkEvidenceMonthMetrics = [
+const zhDarkEvidenceMonthMetrics: DashboardMetricCard[] = [
   { id: 'month-total', label: '总请求数', value: '237,587', subtitle: '本月累计' },
-  { id: 'month-success', label: '成功', value: '204,203', subtitle: '本月占比 · 85.9%' },
-  { id: 'month-errors', label: '错误', value: '4,399', subtitle: '本月占比 · 1.9%' },
+  { id: 'month-valuable-success', eyebrow: '有价值', eyebrowTone: 'valuable', label: '成功', value: '152,204', subtitle: '本月占比 · 64%' },
+  { id: 'month-valuable-failure', eyebrow: '有价值', eyebrowTone: 'valuable', label: '失败', value: '25,881', subtitle: '本月占比 · 10.9%' },
+  { id: 'month-other-success', eyebrow: '其他', eyebrowTone: 'other', label: '成功', value: '39,118', subtitle: '本月占比 · 16.5%' },
+  { id: 'month-other-failure', eyebrow: '其他', eyebrowTone: 'other', label: '失败', value: '8,960', subtitle: '本月占比 · 3.8%' },
+  { id: 'month-unknown', eyebrow: '未知', eyebrowTone: 'unknown', label: '未知调用', value: '3,654', subtitle: '本月占比 · 1.5%' },
   { id: 'month-upstream-exhausted', label: '上游 Key 耗尽', value: '73', subtitle: '本月新增' },
   { id: 'month-new-keys', label: '新增密钥', value: '256', subtitle: '本月新增' },
   { id: 'month-new-quarantines', label: '新增隔离密钥', value: '66', subtitle: '本月新增' },
@@ -385,14 +464,44 @@ export const QuarantineState: Story = {
 export const LargeNumbers: Story = {
   args: {
     ...Default.args,
-    monthMetrics: [
-      { id: 'month-total', label: 'Total Requests', value: '1,205,420', subtitle: 'Month to date' },
-      { id: 'month-success', label: 'Successful', value: '1,084,031', subtitle: 'Month share · 89.9%' },
-      { id: 'month-errors', label: 'Errors', value: '88,247', subtitle: 'Month share · 7.3%' },
-      { id: 'month-upstream-exhausted', label: 'Upstream Keys Exhausted', value: '418', subtitle: 'Added this month' },
-      { id: 'month-new-keys', label: 'New Keys', value: '1,248', subtitle: 'Added this month' },
-      { id: 'month-new-quarantines', label: 'New Quarantines', value: '108', subtitle: 'Added this month' },
-    ],
+    monthMetrics: createDashboardMonthMetrics({
+      month: {
+        total_requests: 1_205_420,
+        success_count: 0,
+        error_count: 0,
+        quota_exhausted_count: 0,
+        valuable_success_count: 784_031,
+        valuable_failure_count: 121_247,
+        other_success_count: 214_500,
+        other_failure_count: 58_420,
+        unknown_count: 27_222,
+        upstream_exhausted_key_count: 418,
+        new_keys: 1_248,
+        new_quarantines: 108,
+      },
+      labels: {
+        total: 'Total Requests',
+        success: 'Success',
+        failure: 'Failure',
+        unknownCalls: 'Unknown Calls',
+        upstreamExhausted: 'Upstream Keys Exhausted',
+        valuableTag: 'Valuable',
+        otherTag: 'Other',
+        unknownTag: 'Unknown',
+        newKeys: 'New Keys',
+        newQuarantines: 'New Quarantines',
+      },
+      strings: {
+        monthToDate: 'Month to date',
+        monthShare: 'Month share',
+        monthAdded: 'Added this month',
+      },
+      formatters: {
+        formatNumber: (value) => storyNumberFormatter.format(value),
+        formatPercent: (numerator, denominator) =>
+          denominator === 0 ? '—' : storyPercentageFormatter.format(numerator / denominator),
+      },
+    }),
     statusMetrics: [
       { id: 'remaining', label: 'Remaining', value: '149,482', subtitle: 'Current snapshot · 12.5%' },
       { id: 'keys', label: 'Active Keys', value: '1,231', subtitle: 'Current snapshot' },
@@ -410,9 +519,14 @@ export const ZeroBaseline: Story = {
     todayMetrics: createDashboardTodayMetrics({
       today: {
         total_requests: 24,
-        success_count: 18,
-        error_count: 6,
+        success_count: 0,
+        error_count: 0,
         quota_exhausted_count: 0,
+        valuable_success_count: 12,
+        valuable_failure_count: 6,
+        other_success_count: 4,
+        other_failure_count: 2,
+        unknown_count: 0,
         upstream_exhausted_key_count: 0,
         new_keys: 0,
         new_quarantines: 0,
@@ -422,15 +536,24 @@ export const ZeroBaseline: Story = {
         success_count: 0,
         error_count: 0,
         quota_exhausted_count: 0,
+        valuable_success_count: 0,
+        valuable_failure_count: 0,
+        other_success_count: 0,
+        other_failure_count: 0,
+        unknown_count: 0,
         upstream_exhausted_key_count: 0,
         new_keys: 0,
         new_quarantines: 0,
       },
       labels: {
         total: 'Total Requests',
-        success: 'Successful',
-        errors: 'Errors',
+        success: 'Success',
+        failure: 'Failure',
+        unknownCalls: 'Unknown Calls',
         upstreamExhausted: 'Upstream Keys Exhausted',
+        valuableTag: 'Valuable',
+        otherTag: 'Other',
+        unknownTag: 'Unknown',
       },
       strings,
       formatters: {
@@ -443,7 +566,7 @@ export const ZeroBaseline: Story = {
   play: async ({ canvasElement }) => {
     await new Promise((resolve) => window.setTimeout(resolve, 50))
     const text = canvasElement.ownerDocument.body.textContent ?? ''
-    for (const expected of ['No yesterday baseline', '75%', '25%']) {
+    for (const expected of ['No yesterday baseline', '50%', '25%', '17%']) {
       if (!text.includes(expected)) {
         throw new Error(`Expected dashboard overview zero-baseline story to contain: ${expected}`)
       }
@@ -461,7 +584,7 @@ export const ZhDarkEvidence: Story = {
     docs: {
       description: {
         story:
-          '用于验收“去掉外层卡片壳 + 去渐变 + 高对比度胶囊”的稳定中文暗色画布。',
+          '用于验收“今日 7 卡 + 本月 9 卡 + 卡内较昨日同刻胶囊”的稳定中文暗色画布。',
       },
     },
   },
@@ -482,14 +605,29 @@ export const ZhDarkEvidence: Story = {
     if (summaryPanel.classList.contains('surface') || summaryPanel.classList.contains('panel')) {
       throw new Error('Expected dashboard summary panel to render without the legacy outer shell')
     }
-    for (const selector of ['.metric-delta-positive', '.metric-delta-negative', '.metric-delta-neutral']) {
+
+    const todayCards = canvasElement.querySelectorAll('.dashboard-today-grid .dashboard-summary-card')
+    if (todayCards.length !== 7) {
+      throw new Error(`Expected 7 today cards, received ${todayCards.length}`)
+    }
+    const monthCards = canvasElement.querySelectorAll('.dashboard-summary-metrics-month .dashboard-summary-card')
+    if (monthCards.length !== 9) {
+      throw new Error(`Expected 9 month cards, received ${monthCards.length}`)
+    }
+    if (canvasElement.querySelector('.dashboard-today-comparisons') != null) {
+      throw new Error('Expected legacy today comparison tray to be removed')
+    }
+    if (canvasElement.querySelector('.dashboard-summary-card-full-width') == null) {
+      throw new Error('Expected today total card to render as full-width')
+    }
+    for (const selector of ['.metric-delta-positive', '.metric-delta-negative', '.dashboard-metric-eyebrow-valuable']) {
       if (canvasElement.querySelector(selector) == null) {
         throw new Error(`Expected dashboard evidence story to render ${selector}`)
       }
     }
 
     const text = canvasElement.ownerDocument.body.textContent ?? ''
-    for (const expected of ['今日', '本月', '站点当前状态', '较昨日同刻', '昨日无基线']) {
+    for (const expected of ['今日', '本月', '站点当前状态', '较昨日同刻', '未知调用']) {
       if (!text.includes(expected)) {
         throw new Error(`Expected dashboard overview evidence story to contain: ${expected}`)
       }

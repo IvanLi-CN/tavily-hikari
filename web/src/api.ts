@@ -23,6 +23,11 @@ export interface SummaryWindowMetrics {
   success_count: number
   error_count: number
   quota_exhausted_count: number
+  valuable_success_count: number
+  valuable_failure_count: number
+  other_success_count: number
+  other_failure_count: number
+  unknown_count: number
   upstream_exhausted_key_count: number
   new_keys: number
   new_quarantines: number

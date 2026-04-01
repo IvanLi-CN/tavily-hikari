@@ -4130,8 +4130,12 @@ function AdminDashboard(): JSX.Element {
       labels: {
         total: metricsStrings.labels.total,
         success: metricsStrings.labels.success,
-        errors: metricsStrings.labels.errors,
+        failure: metricsStrings.labels.failure,
+        unknownCalls: metricsStrings.labels.unknownCalls,
         upstreamExhausted: adminStrings.dashboard.upstreamExhaustedLabel,
+        valuableTag: adminStrings.dashboard.valuableTag,
+        otherTag: adminStrings.dashboard.otherTag,
+        unknownTag: adminStrings.dashboard.unknownTag,
       },
       strings: {
         deltaFromYesterday: adminStrings.dashboard.deltaFromYesterday,
@@ -4152,12 +4156,16 @@ function AdminDashboard(): JSX.Element {
     adminStrings.dashboard.deltaNoBaseline,
     adminStrings.dashboard.percentagePointUnit,
     adminStrings.dashboard.todayAdded,
+    adminStrings.dashboard.otherTag,
     adminStrings.dashboard.todayShare,
+    adminStrings.dashboard.unknownTag,
     adminStrings.dashboard.upstreamExhaustedLabel,
+    adminStrings.dashboard.valuableTag,
     dashboardSummaryWindows,
-    metricsStrings.labels.errors,
+    metricsStrings.labels.failure,
     metricsStrings.labels.success,
     metricsStrings.labels.total,
+    metricsStrings.labels.unknownCalls,
   ])
 
   const monthMetrics = useMemo(() => {
@@ -4170,8 +4178,12 @@ function AdminDashboard(): JSX.Element {
       labels: {
         total: metricsStrings.labels.total,
         success: metricsStrings.labels.success,
-        errors: metricsStrings.labels.errors,
+        failure: metricsStrings.labels.failure,
+        unknownCalls: metricsStrings.labels.unknownCalls,
         upstreamExhausted: adminStrings.dashboard.upstreamExhaustedLabel,
+        valuableTag: adminStrings.dashboard.valuableTag,
+        otherTag: adminStrings.dashboard.otherTag,
+        unknownTag: adminStrings.dashboard.unknownTag,
         newKeys: metricsStrings.labels.newKeys,
         newQuarantines: metricsStrings.labels.newQuarantines,
       },
@@ -4187,15 +4199,19 @@ function AdminDashboard(): JSX.Element {
     })
   }, [
     adminStrings.dashboard.monthAdded,
+    adminStrings.dashboard.otherTag,
     adminStrings.dashboard.monthShare,
     adminStrings.dashboard.monthToDate,
+    adminStrings.dashboard.unknownTag,
     adminStrings.dashboard.upstreamExhaustedLabel,
+    adminStrings.dashboard.valuableTag,
     dashboardSummaryWindows,
-    metricsStrings.labels.errors,
+    metricsStrings.labels.failure,
     metricsStrings.labels.newKeys,
     metricsStrings.labels.newQuarantines,
     metricsStrings.labels.success,
     metricsStrings.labels.total,
+    metricsStrings.labels.unknownCalls,
   ])
 
   const statusMetrics = useMemo(() => {

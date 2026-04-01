@@ -1,21 +1,26 @@
 import { describe, expect, it } from 'bun:test'
 
 import {
-  buildTodayRateComparison,
+  buildTodayCountComparison,
   createDashboardMonthMetrics,
   createDashboardTodayMetrics,
+  type DashboardMonthMetricLabels,
   type DashboardTodayMetricLabels,
   type DashboardTodayMetricStrings,
 } from './dashboardTodayMetrics'
 
-const labels: DashboardTodayMetricLabels = {
+const todayLabels: DashboardTodayMetricLabels = {
   total: 'Total Requests',
-  success: 'Successful',
-  errors: 'Errors',
+  success: 'Success',
+  failure: 'Failure',
+  unknownCalls: 'Unknown Calls',
   upstreamExhausted: 'Upstream Keys Exhausted',
+  valuableTag: 'Valuable',
+  otherTag: 'Other',
+  unknownTag: 'Unknown',
 }
 
-const strings: DashboardTodayMetricStrings = {
+const todayStrings: DashboardTodayMetricStrings = {
   deltaFromYesterday: 'vs same time yesterday',
   deltaNoBaseline: 'No yesterday baseline',
   percentagePointUnit: 'pp',
@@ -24,156 +29,153 @@ const strings: DashboardTodayMetricStrings = {
   todayAdded: 'Added today',
 }
 
+const monthLabels: DashboardMonthMetricLabels = {
+  ...todayLabels,
+  newKeys: 'New Keys',
+  newQuarantines: 'New Quarantines',
+}
+
 const formatters = {
   formatNumber: (value: number) => value.toString(),
   formatPercent: (numerator: number, denominator: number) =>
     denominator === 0 ? '—' : `${((numerator / denominator) * 100).toFixed(1)}%`,
 }
 
-describe('dashboard today metrics helpers', () => {
-  it('compares success by rate instead of raw count delta', () => {
+describe('dashboard request-value metric helpers', () => {
+  it('keeps total requests on a full-width card and builds 7 today cards', () => {
     const metrics = createDashboardTodayMetrics({
       today: {
         total_requests: 100,
-        success_count: 50,
-        error_count: 50,
+        success_count: 0,
+        error_count: 0,
         quota_exhausted_count: 0,
-        upstream_exhausted_key_count: 0,
+        valuable_success_count: 50,
+        valuable_failure_count: 20,
+        other_success_count: 15,
+        other_failure_count: 10,
+        unknown_count: 5,
+        upstream_exhausted_key_count: 2,
         new_keys: 0,
         new_quarantines: 0,
       },
       yesterday: {
         total_requests: 80,
-        success_count: 40,
-        error_count: 40,
+        success_count: 0,
+        error_count: 0,
         quota_exhausted_count: 0,
-        upstream_exhausted_key_count: 0,
+        valuable_success_count: 40,
+        valuable_failure_count: 15,
+        other_success_count: 14,
+        other_failure_count: 8,
+        unknown_count: 3,
+        upstream_exhausted_key_count: 1,
         new_keys: 0,
         new_quarantines: 0,
       },
-      labels,
-      strings,
+      labels: todayLabels,
+      strings: todayStrings,
       formatters,
     })
 
-    expect(metrics.find((metric) => metric.id === 'today-success')?.comparison).toEqual({
-      label: 'vs same time yesterday',
-      value: '0.0 pp',
-      direction: 'flat',
-      tone: 'neutral',
+    expect(metrics).toHaveLength(7)
+    expect(metrics[0]).toMatchObject({
+      id: 'today-total',
+      label: 'Total Requests',
+      fullWidth: true,
+      comparison: {
+        label: 'vs same time yesterday',
+        value: '+20 (25%)',
+        direction: 'up',
+        tone: 'positive',
+      },
     })
   })
 
-  it('treats a lower error rate as a positive shift', () => {
-    const comparison = buildTodayRateComparison({
-      currentNumerator: 10,
-      currentDenominator: 100,
-      previousNumerator: 20,
-      previousDenominator: 100,
-      strings,
+  it('treats a lower failure count as a positive shift', () => {
+    const comparison = buildTodayCountComparison({
+      currentValue: 10,
+      previousValue: 20,
+      strings: todayStrings,
       trend: 'lower-is-better',
     })
 
     expect(comparison).toEqual({
       label: 'vs same time yesterday',
-      value: '-10.0 pp',
+      value: '-10 (-50%)',
       direction: 'down',
       tone: 'positive',
     })
   })
 
-  it('falls back to no baseline when yesterday has no traffic but today does', () => {
-    const comparison = buildTodayRateComparison({
-      currentNumerator: 8,
-      currentDenominator: 20,
-      previousNumerator: 0,
-      previousDenominator: 0,
-      strings,
-    })
-
-    expect(comparison).toEqual({
-      label: 'vs same time yesterday',
-      value: 'No yesterday baseline',
-      direction: 'flat',
-      tone: 'neutral',
-    })
-  })
-
-  it('returns a flat 0.0 pp delta when both windows are empty', () => {
-    const comparison = buildTodayRateComparison({
-      currentNumerator: 0,
-      currentDenominator: 0,
-      previousNumerator: 0,
-      previousDenominator: 0,
-      strings,
-    })
-
-    expect(comparison).toEqual({
-      label: 'vs same time yesterday',
-      value: '0.0 pp',
-      direction: 'flat',
-      tone: 'neutral',
-    })
-  })
-
-  it('uses upstream exhausted key counts for the today lifecycle card', () => {
+  it('marks unknown calls with the unknown eyebrow and no success/failure split', () => {
     const metrics = createDashboardTodayMetrics({
       today: {
-        total_requests: 120,
-        success_count: 100,
-        error_count: 20,
-        quota_exhausted_count: 15,
-        upstream_exhausted_key_count: 3,
+        total_requests: 24,
+        success_count: 0,
+        error_count: 0,
+        quota_exhausted_count: 0,
+        valuable_success_count: 12,
+        valuable_failure_count: 4,
+        other_success_count: 5,
+        other_failure_count: 1,
+        unknown_count: 2,
+        upstream_exhausted_key_count: 0,
         new_keys: 0,
         new_quarantines: 0,
       },
       yesterday: {
-        total_requests: 90,
-        success_count: 81,
-        error_count: 9,
-        quota_exhausted_count: 4,
-        upstream_exhausted_key_count: 1,
+        total_requests: 0,
+        success_count: 0,
+        error_count: 0,
+        quota_exhausted_count: 0,
+        valuable_success_count: 0,
+        valuable_failure_count: 0,
+        other_success_count: 0,
+        other_failure_count: 0,
+        unknown_count: 0,
+        upstream_exhausted_key_count: 0,
         new_keys: 0,
         new_quarantines: 0,
       },
-      labels,
-      strings,
+      labels: todayLabels,
+      strings: todayStrings,
       formatters,
     })
 
-    expect(metrics.find((metric) => metric.id === 'today-upstream-exhausted')).toEqual({
-      id: 'today-upstream-exhausted',
-      label: 'Upstream Keys Exhausted',
-      value: '3',
-      subtitle: 'Added today',
+    expect(metrics.find((metric) => metric.id === 'today-unknown')).toEqual({
+      id: 'today-unknown',
+      eyebrow: 'Unknown',
+      eyebrowTone: 'unknown',
+      label: 'Unknown Calls',
+      value: '2',
+      subtitle: 'Today share · 8.3%',
       comparison: {
         label: 'vs same time yesterday',
-        value: '+2 (200%)',
+        value: '+2 · No yesterday baseline',
         direction: 'up',
         tone: 'negative',
       },
+      fullWidth: false,
     })
   })
 
-  it('uses month-added subtitles for upstream exhausted key counts', () => {
+  it('builds 9 compact month cards with preserved lifecycle cards', () => {
     const metrics = createDashboardMonthMetrics({
       month: {
         total_requests: 800,
-        success_count: 640,
-        error_count: 80,
-        quota_exhausted_count: 48,
+        success_count: 0,
+        error_count: 0,
+        quota_exhausted_count: 0,
+        valuable_success_count: 420,
+        valuable_failure_count: 120,
+        other_success_count: 160,
+        other_failure_count: 60,
+        unknown_count: 40,
         upstream_exhausted_key_count: 6,
         new_keys: 4,
         new_quarantines: 2,
       },
-      labels: {
-        total: 'Total Requests',
-        success: 'Successful',
-        errors: 'Errors',
-        upstreamExhausted: 'Upstream Keys Exhausted',
-        newKeys: 'New Keys',
-        newQuarantines: 'New Quarantines',
-      },
+      labels: monthLabels,
       strings: {
         monthToDate: 'Month to date',
         monthShare: 'Month share',
@@ -182,11 +184,27 @@ describe('dashboard today metrics helpers', () => {
       formatters,
     })
 
+    expect(metrics).toHaveLength(9)
+    expect(metrics.map((metric) => metric.id)).toEqual([
+      'month-total',
+      'month-valuable-success',
+      'month-valuable-failure',
+      'month-other-success',
+      'month-other-failure',
+      'month-unknown',
+      'month-upstream-exhausted',
+      'month-new-keys',
+      'month-new-quarantines',
+    ])
     expect(metrics.find((metric) => metric.id === 'month-upstream-exhausted')).toEqual({
       id: 'month-upstream-exhausted',
       label: 'Upstream Keys Exhausted',
       value: '6',
       subtitle: 'Added this month',
+      eyebrow: undefined,
+      eyebrowTone: undefined,
+      comparison: undefined,
+      fullWidth: false,
     })
   })
 })

@@ -1387,6 +1387,84 @@ pub fn token_request_kind_billing_group(key: &str) -> &'static str {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RequestValueBucket {
+    Valuable,
+    Other,
+    Unknown,
+}
+
+fn request_value_bucket_from_kind(key: &str) -> RequestValueBucket {
+    match key.trim() {
+        "api:search"
+        | "api:extract"
+        | "api:crawl"
+        | "api:map"
+        | "api:research"
+        | "api:research-result"
+        | "mcp:search"
+        | "mcp:extract"
+        | "mcp:crawl"
+        | "mcp:map"
+        | "mcp:research" => RequestValueBucket::Valuable,
+        "api:usage" | "mcp:initialize" | "mcp:ping" | "mcp:tools/list" => RequestValueBucket::Other,
+        "api:unknown-path"
+        | "mcp:unknown-method"
+        | "mcp:unknown-payload"
+        | "mcp:unsupported-path"
+        | "mcp:third-party-tool" => RequestValueBucket::Unknown,
+        key if key.starts_with("mcp:resources/")
+            || key.starts_with("mcp:prompts/")
+            || key.starts_with("mcp:notifications/") =>
+        {
+            RequestValueBucket::Other
+        }
+        _ => RequestValueBucket::Unknown,
+    }
+}
+
+fn request_value_bucket_for_batch_body(body: Option<&[u8]>) -> RequestValueBucket {
+    let Some(body) = body else {
+        return RequestValueBucket::Unknown;
+    };
+    let Ok(Value::Array(items)) = serde_json::from_slice::<Value>(body) else {
+        return RequestValueBucket::Unknown;
+    };
+    if items.is_empty() {
+        return RequestValueBucket::Unknown;
+    }
+
+    let mut saw_valuable = false;
+    for item in &items {
+        let Some(kind) = classify_mcp_request_kind_from_message(item) else {
+            return RequestValueBucket::Unknown;
+        };
+        match request_value_bucket_from_kind(&kind.key) {
+            RequestValueBucket::Unknown => return RequestValueBucket::Unknown,
+            RequestValueBucket::Valuable => saw_valuable = true,
+            RequestValueBucket::Other => {}
+        }
+    }
+
+    if saw_valuable {
+        RequestValueBucket::Valuable
+    } else {
+        RequestValueBucket::Other
+    }
+}
+
+pub(crate) fn request_value_bucket_for_request_log(
+    request_kind_key: &str,
+    body: Option<&[u8]>,
+) -> RequestValueBucket {
+    let normalized = request_kind_key.trim();
+    if normalized == "mcp:batch" {
+        request_value_bucket_for_batch_body(body)
+    } else {
+        request_value_bucket_from_kind(normalized)
+    }
+}
+
 pub(crate) fn token_request_kind_option_billing_group(
     key: &str,
     has_billable: bool,
@@ -1656,6 +1734,89 @@ fn mcp_request_body_all_non_billable(body: Option<&[u8]>) -> bool {
                     && token_request_kind_billing_group(&kind.key) == "non_billable"
             })
         })
+}
+
+fn request_value_bucket_from_kind_sql(expr: &str) -> String {
+    let normalized = format!("LOWER(TRIM(COALESCE({expr}, '')))");
+    format!(
+        "
+        CASE
+            WHEN {normalized} IN (
+                'api:search',
+                'api:extract',
+                'api:crawl',
+                'api:map',
+                'api:research',
+                'api:research-result',
+                'mcp:search',
+                'mcp:extract',
+                'mcp:crawl',
+                'mcp:map',
+                'mcp:research'
+            ) THEN 'valuable'
+            WHEN {normalized} IN (
+                'api:usage',
+                'mcp:initialize',
+                'mcp:ping',
+                'mcp:tools/list'
+            )
+              OR {normalized} LIKE 'mcp:resources/%'
+              OR {normalized} LIKE 'mcp:prompts/%'
+              OR {normalized} LIKE 'mcp:notifications/%'
+                THEN 'other'
+            WHEN {normalized} IN (
+                'api:unknown-path',
+                'mcp:unknown-method',
+                'mcp:unknown-payload',
+                'mcp:unsupported-path',
+                'mcp:third-party-tool'
+            ) THEN 'unknown'
+            ELSE 'unknown'
+        END
+        "
+    )
+}
+
+fn request_value_bucket_for_batch_body_sql(body_expr: &str) -> String {
+    let body_json = format!("CAST({body_expr} AS TEXT)");
+    let array_item_kind = mcp_message_request_kind_sql("items.value");
+    let array_item_bucket = request_value_bucket_from_kind_sql(&array_item_kind);
+    format!(
+        "
+        CASE
+            WHEN NOT json_valid({body_json}) OR json_type({body_json}) <> 'array'
+                THEN 'unknown'
+            WHEN NOT EXISTS (SELECT 1 FROM json_each({body_json}) AS items)
+                THEN 'unknown'
+            WHEN EXISTS (
+                SELECT 1
+                FROM json_each({body_json}) AS items
+                WHERE ({array_item_kind}) IS NULL
+                   OR ({array_item_bucket}) = 'unknown'
+            ) THEN 'unknown'
+            WHEN EXISTS (
+                SELECT 1
+                FROM json_each({body_json}) AS items
+                WHERE ({array_item_bucket}) = 'valuable'
+            ) THEN 'valuable'
+            ELSE 'other'
+        END
+        "
+    )
+}
+
+pub(crate) fn request_value_bucket_sql(request_kind_expr: &str, body_expr: &str) -> String {
+    let normalized = format!("LOWER(TRIM(COALESCE({request_kind_expr}, '')))");
+    let batch_bucket = request_value_bucket_for_batch_body_sql(body_expr);
+    let single_bucket = request_value_bucket_from_kind_sql(request_kind_expr);
+    format!(
+        "
+        CASE
+            WHEN {normalized} = 'mcp:batch' THEN ({batch_bucket})
+            ELSE ({single_bucket})
+        END
+        "
+    )
 }
 
 pub(crate) fn token_log_operational_class_case_sql(

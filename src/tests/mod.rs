@@ -409,6 +409,53 @@ fn classify_token_request_kind_maps_mcp_mixed_batch_to_batch_with_detail() {
 }
 
 #[test]
+fn request_value_bucket_classifies_known_kinds_and_batch_precedence() {
+    assert_eq!(
+        request_value_bucket_for_request_log("api:search", None),
+        RequestValueBucket::Valuable
+    );
+    assert_eq!(
+        request_value_bucket_for_request_log("api:research-result", None),
+        RequestValueBucket::Valuable
+    );
+    assert_eq!(
+        request_value_bucket_for_request_log("mcp:initialize", None),
+        RequestValueBucket::Other
+    );
+    assert_eq!(
+        request_value_bucket_for_request_log("api:unknown-path", None),
+        RequestValueBucket::Unknown
+    );
+
+    let other_batch = br#"[
+      {"jsonrpc":"2.0","id":1,"method":"initialize"},
+      {"jsonrpc":"2.0","id":2,"method":"tools/list"}
+    ]"#;
+    assert_eq!(
+        request_value_bucket_for_request_log("mcp:batch", Some(other_batch)),
+        RequestValueBucket::Other
+    );
+
+    let valuable_batch = br#"[
+      {"jsonrpc":"2.0","id":1,"method":"initialize"},
+      {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tavily-search"}}
+    ]"#;
+    assert_eq!(
+        request_value_bucket_for_request_log("mcp:batch", Some(valuable_batch)),
+        RequestValueBucket::Valuable
+    );
+
+    let unknown_batch = br#"[
+      {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tavily-search"}},
+      {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"Acme Lookup"}}
+    ]"#;
+    assert_eq!(
+        request_value_bucket_for_request_log("mcp:batch", Some(unknown_batch)),
+        RequestValueBucket::Unknown
+    );
+}
+
+#[test]
 fn token_request_kind_option_groups_match_protocol_and_billing_contract() {
     assert_eq!(token_request_kind_protocol_group("api:search"), "api");
     assert_eq!(token_request_kind_protocol_group("mcp:search"), "mcp");
@@ -6287,8 +6334,13 @@ async fn insert_summary_window_bucket(
             success_count,
             error_count,
             quota_exhausted_count,
+            valuable_success_count,
+            valuable_failure_count,
+            other_success_count,
+            other_failure_count,
+            unknown_count,
             updated_at
-        ) VALUES (?, ?, 86400, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, 86400, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?)
         "#,
     )
     .bind(key_id)
@@ -6297,6 +6349,8 @@ async fn insert_summary_window_bucket(
     .bind(success_count)
     .bind(error_count)
     .bind(quota_exhausted_count)
+    .bind(success_count)
+    .bind(error_count + quota_exhausted_count)
     .bind(bucket_start + 60)
     .execute(&proxy.key_store.pool)
     .await
@@ -6348,7 +6402,7 @@ async fn insert_summary_window_logs_with_visibility(
                 dropped_headers,
                 visibility,
                 created_at
-            ) VALUES (?, NULL, 'GET', '/v1/search', NULL, 200, 200, NULL, ?, NULL, NULL, '[]', '[]', ?, ?)
+            ) VALUES (?, NULL, 'GET', '/api/tavily/search', NULL, 200, 200, NULL, ?, NULL, NULL, '[]', '[]', ?, ?)
             "#,
         )
         .bind(key_id)
@@ -6481,21 +6535,28 @@ async fn summary_windows_split_today_yesterday_and_month() {
         success_count: 9,
         error_count: 2,
         quota_exhausted_count: 1,
+        valuable_success_count: 9,
+        valuable_failure_count: 3,
         upstream_exhausted_key_count: 0,
         new_keys: 1,
         new_quarantines: 0,
+        ..SummaryWindowMetrics::default()
     };
     if yesterday_start >= month_start {
         expected_month.total_requests += 10;
         expected_month.success_count += 8;
         expected_month.error_count += 1;
         expected_month.quota_exhausted_count += 1;
+        expected_month.valuable_success_count += 8;
+        expected_month.valuable_failure_count += 2;
     }
     if month_start < yesterday_start {
         insert_summary_window_bucket(&proxy, &key_id, month_start, 3, 2, 1, 0).await;
         expected_month.total_requests += 3;
         expected_month.success_count += 2;
         expected_month.error_count += 1;
+        expected_month.valuable_success_count += 2;
+        expected_month.valuable_failure_count += 1;
     }
     insert_summary_window_bucket(&proxy, &key_id, previous_month_start, 99, 80, 10, 9).await;
 
@@ -6511,6 +6572,8 @@ async fn summary_windows_split_today_yesterday_and_month() {
             success_count: 9,
             error_count: 2,
             quota_exhausted_count: 1,
+            valuable_success_count: 9,
+            valuable_failure_count: 3,
             ..SummaryWindowMetrics::default()
         }
     );
@@ -6521,6 +6584,8 @@ async fn summary_windows_split_today_yesterday_and_month() {
             success_count: 5,
             error_count: 1,
             quota_exhausted_count: 1,
+            valuable_success_count: 5,
+            valuable_failure_count: 2,
             ..SummaryWindowMetrics::default()
         }
     );
@@ -6666,7 +6731,7 @@ async fn summary_windows_count_distinct_upstream_exhausted_keys() {
     )
     .await;
 
-    let mut expected_month_upstream_exhausted = 2;
+    let mut expected_month_upstream_exhausted = if month_start <= yesterday_start { 2 } else { 1 };
     if month_start < yesterday_start {
         insert_summary_window_maintenance_record(
             &proxy,

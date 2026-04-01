@@ -1111,6 +1111,11 @@ impl KeyStore {
                 success_count INTEGER NOT NULL,
                 error_count INTEGER NOT NULL,
                 quota_exhausted_count INTEGER NOT NULL,
+                valuable_success_count INTEGER NOT NULL DEFAULT 0,
+                valuable_failure_count INTEGER NOT NULL DEFAULT 0,
+                other_success_count INTEGER NOT NULL DEFAULT 0,
+                other_failure_count INTEGER NOT NULL DEFAULT 0,
+                unknown_count INTEGER NOT NULL DEFAULT 0,
                 updated_at INTEGER NOT NULL,
                 PRIMARY KEY (api_key_id, bucket_start, bucket_secs),
                 FOREIGN KEY (api_key_id) REFERENCES api_keys(id)
@@ -1119,6 +1124,10 @@ impl KeyStore {
         )
         .execute(&self.pool)
         .await?;
+
+        let api_key_usage_buckets_schema_changed = self
+            .ensure_api_key_usage_bucket_request_value_columns()
+            .await?;
 
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_api_key_usage_buckets_time
@@ -1954,10 +1963,11 @@ impl KeyStore {
 
         // Backfill API key usage buckets exactly once. This enables safe request_logs retention
         // without changing the meaning of cumulative statistics.
-        if self
-            .get_meta_i64(META_KEY_API_KEY_USAGE_BUCKETS_V1_DONE)
-            .await?
-            .is_none()
+        if api_key_usage_buckets_schema_changed
+            || self
+                .get_meta_i64(META_KEY_API_KEY_USAGE_BUCKETS_V1_DONE)
+                .await?
+                .is_none()
         {
             self.migrate_api_key_usage_buckets_v1().await?;
             self.set_meta_i64(META_KEY_API_KEY_USAGE_BUCKETS_V1_DONE, 1)
@@ -2450,7 +2460,7 @@ impl KeyStore {
 
         let mut rows = sqlx::query(
             r#"
-            SELECT api_key_id, created_at, result_status
+            SELECT api_key_id, created_at, result_status, request_kind_key, request_body, path
             FROM request_logs
             WHERE visibility = ?
               AND api_key_id IS NOT NULL
@@ -2466,6 +2476,11 @@ impl KeyStore {
             success_count: i64,
             error_count: i64,
             quota_exhausted_count: i64,
+            valuable_success_count: i64,
+            valuable_failure_count: i64,
+            other_success_count: i64,
+            other_failure_count: i64,
+            unknown_count: i64,
         }
 
         async fn flush_bucket(
@@ -2488,8 +2503,13 @@ impl KeyStore {
                     success_count,
                     error_count,
                     quota_exhausted_count,
+                    valuable_success_count,
+                    valuable_failure_count,
+                    other_success_count,
+                    other_failure_count,
+                    unknown_count,
                     updated_at
-                ) VALUES (?, ?, 86400, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, 86400, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 "#,
             )
             .bind(key)
@@ -2498,6 +2518,11 @@ impl KeyStore {
             .bind(counts.success_count)
             .bind(counts.error_count)
             .bind(counts.quota_exhausted_count)
+            .bind(counts.valuable_success_count)
+            .bind(counts.valuable_failure_count)
+            .bind(counts.other_success_count)
+            .bind(counts.other_failure_count)
+            .bind(counts.unknown_count)
             .bind(now_ts)
             .execute(&mut **tx)
             .await?;
@@ -2512,6 +2537,9 @@ impl KeyStore {
             let key_id: String = row.try_get("api_key_id")?;
             let created_at: i64 = row.try_get("created_at")?;
             let status: String = row.try_get("result_status")?;
+            let stored_request_kind_key: Option<String> = row.try_get("request_kind_key")?;
+            let request_body: Option<Vec<u8>> = row.try_get("request_body")?;
+            let path: String = row.try_get("path")?;
 
             let bucket_start = local_day_bucket_start_utc_ts(created_at);
 
@@ -2533,6 +2561,27 @@ impl KeyStore {
             current_bucket_start = bucket_start;
 
             counts.total_requests += 1;
+            let request_kind_key = canonicalize_request_log_request_kind(
+                &path,
+                request_body.as_deref(),
+                stored_request_kind_key,
+                None,
+                None,
+            )
+            .key;
+            match request_value_bucket_for_request_log(&request_kind_key, request_body.as_deref()) {
+                RequestValueBucket::Valuable => match status.as_str() {
+                    OUTCOME_SUCCESS => counts.valuable_success_count += 1,
+                    OUTCOME_ERROR | OUTCOME_QUOTA_EXHAUSTED => counts.valuable_failure_count += 1,
+                    _ => {}
+                },
+                RequestValueBucket::Other => match status.as_str() {
+                    OUTCOME_SUCCESS => counts.other_success_count += 1,
+                    OUTCOME_ERROR | OUTCOME_QUOTA_EXHAUSTED => counts.other_failure_count += 1,
+                    _ => {}
+                },
+                RequestValueBucket::Unknown => counts.unknown_count += 1,
+            }
             match status.as_str() {
                 OUTCOME_SUCCESS => counts.success_count += 1,
                 OUTCOME_ERROR => counts.error_count += 1,
@@ -3899,6 +3948,32 @@ impl KeyStore {
         .fetch_optional(&self.pool)
         .await?;
         Ok(not_null.unwrap_or_default() != 0)
+    }
+
+    async fn ensure_api_key_usage_bucket_request_value_columns(&self) -> Result<bool, ProxyError> {
+        let mut schema_changed = false;
+
+        for column in [
+            "valuable_success_count",
+            "valuable_failure_count",
+            "other_success_count",
+            "other_failure_count",
+            "unknown_count",
+        ] {
+            if !self
+                .table_column_exists("api_key_usage_buckets", column)
+                .await?
+            {
+                sqlx::query(&format!(
+                    "ALTER TABLE api_key_usage_buckets ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"
+                ))
+                .execute(&self.pool)
+                .await?;
+                schema_changed = true;
+            }
+        }
+
+        Ok(schema_changed)
     }
 
     async fn rebuild_request_logs_table(
@@ -11785,6 +11860,27 @@ impl KeyStore {
             OUTCOME_QUOTA_EXHAUSTED => (0_i64, 0_i64, 1_i64),
             _ => (0_i64, 0_i64, 0_i64),
         };
+        let request_value_bucket =
+            request_value_bucket_for_request_log(&request_kind.key, Some(entry.request_body));
+        let (
+            bucket_valuable_success,
+            bucket_valuable_failure,
+            bucket_other_success,
+            bucket_other_failure,
+            bucket_unknown,
+        ) = match request_value_bucket {
+            RequestValueBucket::Valuable => match entry.outcome {
+                OUTCOME_SUCCESS => (1_i64, 0_i64, 0_i64, 0_i64, 0_i64),
+                OUTCOME_ERROR | OUTCOME_QUOTA_EXHAUSTED => (0_i64, 1_i64, 0_i64, 0_i64, 0_i64),
+                _ => (0_i64, 0_i64, 0_i64, 0_i64, 0_i64),
+            },
+            RequestValueBucket::Other => match entry.outcome {
+                OUTCOME_SUCCESS => (0_i64, 0_i64, 1_i64, 0_i64, 0_i64),
+                OUTCOME_ERROR | OUTCOME_QUOTA_EXHAUSTED => (0_i64, 0_i64, 0_i64, 1_i64, 0_i64),
+                _ => (0_i64, 0_i64, 0_i64, 0_i64, 0_i64),
+            },
+            RequestValueBucket::Unknown => (0_i64, 0_i64, 0_i64, 0_i64, 1_i64),
+        };
 
         let mut tx = self.pool.begin().await?;
 
@@ -11852,14 +11948,26 @@ impl KeyStore {
                     success_count,
                     error_count,
                     quota_exhausted_count,
+                    valuable_success_count,
+                    valuable_failure_count,
+                    other_success_count,
+                    other_failure_count,
+                    unknown_count,
                     updated_at
-                ) VALUES (?, ?, 86400, 1, ?, ?, ?, ?)
+                ) VALUES (?, ?, 86400, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(api_key_id, bucket_start, bucket_secs)
                 DO UPDATE SET
                     total_requests = total_requests + 1,
                     success_count = success_count + excluded.success_count,
                     error_count = error_count + excluded.error_count,
                     quota_exhausted_count = quota_exhausted_count + excluded.quota_exhausted_count,
+                    valuable_success_count =
+                        valuable_success_count + excluded.valuable_success_count,
+                    valuable_failure_count =
+                        valuable_failure_count + excluded.valuable_failure_count,
+                    other_success_count = other_success_count + excluded.other_success_count,
+                    other_failure_count = other_failure_count + excluded.other_failure_count,
+                    unknown_count = unknown_count + excluded.unknown_count,
                     updated_at = excluded.updated_at
                 "#,
             )
@@ -11868,6 +11976,11 @@ impl KeyStore {
             .bind(bucket_success)
             .bind(bucket_error)
             .bind(bucket_quota_exhausted)
+            .bind(bucket_valuable_success)
+            .bind(bucket_valuable_failure)
+            .bind(bucket_other_success)
+            .bind(bucket_other_failure)
+            .bind(bucket_unknown)
             .bind(created_at)
             .execute(&mut *tx)
             .await?;
@@ -13388,50 +13501,104 @@ impl KeyStore {
     ) -> Result<SummaryWindows, ProxyError> {
         let mut tx = self.pool.begin().await?;
         let upstream_exhausted_floor = yesterday_start.min(month_start);
-        let window_row = sqlx::query(
+        let request_kind_sql =
+            request_log_request_kind_key_sql("path", "request_body", "request_kind_key");
+        let request_value_bucket_case_sql =
+            request_value_bucket_sql(&request_kind_sql, "request_body");
+        let window_query = format!(
             r#"
+            WITH scoped_logs AS (
+                SELECT
+                    created_at,
+                    result_status,
+                    ({request_value_bucket_case_sql}) AS request_value_bucket
+                FROM request_logs
+                WHERE visibility = ?
+                  AND created_at >= ?
+                  AND created_at < ?
+            )
             SELECT
                 COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? THEN 1 ELSE 0 END), 0) AS today_total_requests,
                 COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS today_success_count,
                 COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS today_error_count,
                 COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS today_quota_exhausted_count,
+                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND request_value_bucket = 'valuable' AND result_status = ? THEN 1 ELSE 0 END), 0) AS today_valuable_success_count,
+                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND request_value_bucket = 'valuable' AND result_status IN (?, ?) THEN 1 ELSE 0 END), 0) AS today_valuable_failure_count,
+                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND request_value_bucket = 'other' AND result_status = ? THEN 1 ELSE 0 END), 0) AS today_other_success_count,
+                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND request_value_bucket = 'other' AND result_status IN (?, ?) THEN 1 ELSE 0 END), 0) AS today_other_failure_count,
+                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND request_value_bucket = 'unknown' THEN 1 ELSE 0 END), 0) AS today_unknown_count,
                 COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? THEN 1 ELSE 0 END), 0) AS yesterday_total_requests,
                 COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS yesterday_success_count,
                 COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS yesterday_error_count,
-                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS yesterday_quota_exhausted_count
-            FROM request_logs
-            WHERE visibility = ?
-              AND created_at >= ?
-              AND created_at < ?
+                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS yesterday_quota_exhausted_count,
+                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND request_value_bucket = 'valuable' AND result_status = ? THEN 1 ELSE 0 END), 0) AS yesterday_valuable_success_count,
+                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND request_value_bucket = 'valuable' AND result_status IN (?, ?) THEN 1 ELSE 0 END), 0) AS yesterday_valuable_failure_count,
+                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND request_value_bucket = 'other' AND result_status = ? THEN 1 ELSE 0 END), 0) AS yesterday_other_success_count,
+                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND request_value_bucket = 'other' AND result_status IN (?, ?) THEN 1 ELSE 0 END), 0) AS yesterday_other_failure_count,
+                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND request_value_bucket = 'unknown' THEN 1 ELSE 0 END), 0) AS yesterday_unknown_count
+            FROM scoped_logs
             "#,
-        )
-        .bind(today_start)
-        .bind(today_end)
-        .bind(today_start)
-        .bind(today_end)
-        .bind(OUTCOME_SUCCESS)
-        .bind(today_start)
-        .bind(today_end)
-        .bind(OUTCOME_ERROR)
-        .bind(today_start)
-        .bind(today_end)
-        .bind(OUTCOME_QUOTA_EXHAUSTED)
-        .bind(yesterday_start)
-        .bind(yesterday_end)
-        .bind(yesterday_start)
-        .bind(yesterday_end)
-        .bind(OUTCOME_SUCCESS)
-        .bind(yesterday_start)
-        .bind(yesterday_end)
-        .bind(OUTCOME_ERROR)
-        .bind(yesterday_start)
-        .bind(yesterday_end)
-        .bind(OUTCOME_QUOTA_EXHAUSTED)
-        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-        .bind(yesterday_start)
-        .bind(today_end)
-        .fetch_one(&mut *tx)
-        .await?;
+        );
+        let window_row = sqlx::query(&window_query)
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+            .bind(yesterday_start)
+            .bind(today_end)
+            .bind(today_start)
+            .bind(today_end)
+            .bind(today_start)
+            .bind(today_end)
+            .bind(OUTCOME_SUCCESS)
+            .bind(today_start)
+            .bind(today_end)
+            .bind(OUTCOME_ERROR)
+            .bind(today_start)
+            .bind(today_end)
+            .bind(OUTCOME_QUOTA_EXHAUSTED)
+            .bind(today_start)
+            .bind(today_end)
+            .bind(OUTCOME_SUCCESS)
+            .bind(today_start)
+            .bind(today_end)
+            .bind(OUTCOME_ERROR)
+            .bind(OUTCOME_QUOTA_EXHAUSTED)
+            .bind(today_start)
+            .bind(today_end)
+            .bind(OUTCOME_SUCCESS)
+            .bind(today_start)
+            .bind(today_end)
+            .bind(OUTCOME_ERROR)
+            .bind(OUTCOME_QUOTA_EXHAUSTED)
+            .bind(today_start)
+            .bind(today_end)
+            .bind(yesterday_start)
+            .bind(yesterday_end)
+            .bind(yesterday_start)
+            .bind(yesterday_end)
+            .bind(OUTCOME_SUCCESS)
+            .bind(yesterday_start)
+            .bind(yesterday_end)
+            .bind(OUTCOME_ERROR)
+            .bind(yesterday_start)
+            .bind(yesterday_end)
+            .bind(OUTCOME_QUOTA_EXHAUSTED)
+            .bind(yesterday_start)
+            .bind(yesterday_end)
+            .bind(OUTCOME_SUCCESS)
+            .bind(yesterday_start)
+            .bind(yesterday_end)
+            .bind(OUTCOME_ERROR)
+            .bind(OUTCOME_QUOTA_EXHAUSTED)
+            .bind(yesterday_start)
+            .bind(yesterday_end)
+            .bind(OUTCOME_SUCCESS)
+            .bind(yesterday_start)
+            .bind(yesterday_end)
+            .bind(OUTCOME_ERROR)
+            .bind(OUTCOME_QUOTA_EXHAUSTED)
+            .bind(yesterday_start)
+            .bind(yesterday_end)
+            .fetch_one(&mut *tx)
+            .await?;
 
         let lifecycle_row = sqlx::query(
             r#"
@@ -13467,12 +13634,22 @@ impl KeyStore {
                 COALESCE(SUM(CASE WHEN bucket_start >= ? THEN total_requests ELSE 0 END), 0) AS month_total_requests,
                 COALESCE(SUM(CASE WHEN bucket_start >= ? THEN success_count ELSE 0 END), 0) AS month_success_count,
                 COALESCE(SUM(CASE WHEN bucket_start >= ? THEN error_count ELSE 0 END), 0) AS month_error_count,
-                COALESCE(SUM(CASE WHEN bucket_start >= ? THEN quota_exhausted_count ELSE 0 END), 0) AS month_quota_exhausted_count
+                COALESCE(SUM(CASE WHEN bucket_start >= ? THEN quota_exhausted_count ELSE 0 END), 0) AS month_quota_exhausted_count,
+                COALESCE(SUM(CASE WHEN bucket_start >= ? THEN valuable_success_count ELSE 0 END), 0) AS month_valuable_success_count,
+                COALESCE(SUM(CASE WHEN bucket_start >= ? THEN valuable_failure_count ELSE 0 END), 0) AS month_valuable_failure_count,
+                COALESCE(SUM(CASE WHEN bucket_start >= ? THEN other_success_count ELSE 0 END), 0) AS month_other_success_count,
+                COALESCE(SUM(CASE WHEN bucket_start >= ? THEN other_failure_count ELSE 0 END), 0) AS month_other_failure_count,
+                COALESCE(SUM(CASE WHEN bucket_start >= ? THEN unknown_count ELSE 0 END), 0) AS month_unknown_count
             FROM api_key_usage_buckets
             WHERE bucket_secs = 86400
               AND bucket_start >= ?
             "#,
         )
+        .bind(month_start)
+        .bind(month_start)
+        .bind(month_start)
+        .bind(month_start)
+        .bind(month_start)
         .bind(month_start)
         .bind(month_start)
         .bind(month_start)
@@ -13509,6 +13686,11 @@ impl KeyStore {
                 success_count: window_row.try_get("today_success_count")?,
                 error_count: window_row.try_get("today_error_count")?,
                 quota_exhausted_count: window_row.try_get("today_quota_exhausted_count")?,
+                valuable_success_count: window_row.try_get("today_valuable_success_count")?,
+                valuable_failure_count: window_row.try_get("today_valuable_failure_count")?,
+                other_success_count: window_row.try_get("today_other_success_count")?,
+                other_failure_count: window_row.try_get("today_other_failure_count")?,
+                unknown_count: window_row.try_get("today_unknown_count")?,
                 upstream_exhausted_key_count: lifecycle_row
                     .try_get("today_upstream_exhausted_key_count")?,
                 new_keys: 0,
@@ -13519,6 +13701,11 @@ impl KeyStore {
                 success_count: window_row.try_get("yesterday_success_count")?,
                 error_count: window_row.try_get("yesterday_error_count")?,
                 quota_exhausted_count: window_row.try_get("yesterday_quota_exhausted_count")?,
+                valuable_success_count: window_row.try_get("yesterday_valuable_success_count")?,
+                valuable_failure_count: window_row.try_get("yesterday_valuable_failure_count")?,
+                other_success_count: window_row.try_get("yesterday_other_success_count")?,
+                other_failure_count: window_row.try_get("yesterday_other_failure_count")?,
+                unknown_count: window_row.try_get("yesterday_unknown_count")?,
                 upstream_exhausted_key_count: lifecycle_row
                     .try_get("yesterday_upstream_exhausted_key_count")?,
                 new_keys: 0,
@@ -13529,6 +13716,11 @@ impl KeyStore {
                 success_count: month_row.try_get("month_success_count")?,
                 error_count: month_row.try_get("month_error_count")?,
                 quota_exhausted_count: month_row.try_get("month_quota_exhausted_count")?,
+                valuable_success_count: month_row.try_get("month_valuable_success_count")?,
+                valuable_failure_count: month_row.try_get("month_valuable_failure_count")?,
+                other_success_count: month_row.try_get("month_other_success_count")?,
+                other_failure_count: month_row.try_get("month_other_failure_count")?,
+                unknown_count: month_row.try_get("month_unknown_count")?,
                 upstream_exhausted_key_count: lifecycle_row
                     .try_get("month_upstream_exhausted_key_count")?,
                 new_keys: month_lifecycle_row.try_get("month_new_keys")?,

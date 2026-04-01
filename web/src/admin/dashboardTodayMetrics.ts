@@ -3,11 +3,19 @@ import type { DashboardMetricCard } from './DashboardOverview'
 
 type DashboardMetricComparison = NonNullable<DashboardMetricCard['comparison']>
 type ComparisonTrend = 'higher-is-better' | 'lower-is-better'
+type MetricEyebrowTone = NonNullable<DashboardMetricCard['eyebrowTone']>
 
-export interface DashboardTodayMetricLabels {
+interface DashboardMetricCategoryLabels {
+  valuableTag: string
+  otherTag: string
+  unknownTag: string
+}
+
+export interface DashboardTodayMetricLabels extends DashboardMetricCategoryLabels {
   total: string
   success: string
-  errors: string
+  failure: string
+  unknownCalls: string
   upstreamExhausted: string
 }
 
@@ -20,10 +28,11 @@ export interface DashboardTodayMetricStrings {
   todayAdded: string
 }
 
-export interface DashboardMonthMetricLabels {
+export interface DashboardMonthMetricLabels extends DashboardMetricCategoryLabels {
   total: string
   success: string
-  errors: string
+  failure: string
+  unknownCalls: string
   upstreamExhausted: string
   newKeys: string
   newQuarantines: string
@@ -35,7 +44,7 @@ export interface DashboardMonthMetricStrings {
   monthAdded: string
 }
 
-interface DashboardTodayMetricFormatters {
+interface DashboardMetricFormatters {
   formatNumber: (value: number) => string
   formatPercent: (numerator: number, denominator: number) => string
 }
@@ -45,14 +54,14 @@ interface BuildDashboardTodayMetricsOptions {
   yesterday: SummaryWindowMetrics
   labels: DashboardTodayMetricLabels
   strings: DashboardTodayMetricStrings
-  formatters: DashboardTodayMetricFormatters
+  formatters: DashboardMetricFormatters
 }
 
 interface BuildDashboardMonthMetricsOptions {
   month: SummaryWindowMetrics
   labels: DashboardMonthMetricLabels
   strings: DashboardMonthMetricStrings
-  formatters: DashboardTodayMetricFormatters
+  formatters: DashboardMetricFormatters
 }
 
 interface BuildCountComparisonOptions {
@@ -62,16 +71,15 @@ interface BuildCountComparisonOptions {
   trend?: ComparisonTrend
 }
 
-interface BuildRateComparisonOptions {
-  currentNumerator: number
-  currentDenominator: number
-  previousNumerator: number
-  previousDenominator: number
-  strings: Pick<
-    DashboardTodayMetricStrings,
-    'deltaFromYesterday' | 'deltaNoBaseline' | 'percentagePointUnit'
-  >
-  trend?: ComparisonTrend
+interface BuildMetricCardOptions {
+  id: string
+  label: string
+  value: string
+  subtitle: string
+  eyebrow?: string
+  eyebrowTone?: MetricEyebrowTone
+  comparison?: DashboardMetricComparison
+  fullWidth?: boolean
 }
 
 const integerFormatter = new Intl.NumberFormat('en-US', {
@@ -84,22 +92,9 @@ const percentageFormatter = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 1,
 })
 
-const percentagePointFormatter = new Intl.NumberFormat('en-US', {
-  minimumFractionDigits: 1,
-  maximumFractionDigits: 1,
-})
-
 function formatSignedInteger(value: number): string {
   if (value > 0) return `+${integerFormatter.format(value)}`
   return integerFormatter.format(value)
-}
-
-function formatSignedPercentagePoint(value: number): string {
-  const normalized = Object.is(value, -0) ? 0 : value
-  const formatted = percentagePointFormatter.format(Math.abs(normalized))
-  if (normalized > 0) return `+${formatted}`
-  if (normalized < 0) return `-${formatted}`
-  return formatted
 }
 
 function resolveComparisonTone(
@@ -124,6 +119,28 @@ function buildWindowSubtitle(
   formatPercent: (numerator: number, denominator: number) => string,
 ): string {
   return total > 0 ? `${label} · ${formatPercent(value, total)}` : label
+}
+
+function buildMetricCard({
+  id,
+  label,
+  value,
+  subtitle,
+  eyebrow,
+  eyebrowTone,
+  comparison,
+  fullWidth = false,
+}: BuildMetricCardOptions): DashboardMetricCard {
+  return {
+    id,
+    label,
+    value,
+    subtitle,
+    eyebrow,
+    eyebrowTone,
+    comparison,
+    fullWidth,
+  }
 }
 
 export function buildTodayCountComparison({
@@ -151,37 +168,6 @@ export function buildTodayCountComparison({
   }
 }
 
-export function buildTodayRateComparison({
-  currentNumerator,
-  currentDenominator,
-  previousNumerator,
-  previousDenominator,
-  strings,
-  trend = 'higher-is-better',
-}: BuildRateComparisonOptions): DashboardMetricComparison {
-  if (previousDenominator === 0 && currentDenominator > 0) {
-    return {
-      label: strings.deltaFromYesterday,
-      value: strings.deltaNoBaseline,
-      direction: 'flat',
-      tone: 'neutral',
-    }
-  }
-
-  const currentRate = currentDenominator > 0 ? currentNumerator / currentDenominator : 0
-  const previousRate = previousDenominator > 0 ? previousNumerator / previousDenominator : 0
-  const deltaPercentagePoints = (currentRate - previousRate) * 100
-  const direction: DashboardMetricComparison['direction'] =
-    deltaPercentagePoints > 0 ? 'up' : deltaPercentagePoints < 0 ? 'down' : 'flat'
-
-  return {
-    label: strings.deltaFromYesterday,
-    value: `${formatSignedPercentagePoint(deltaPercentagePoints)} ${strings.percentagePointUnit}`,
-    direction,
-    tone: resolveComparisonTone(direction, trend),
-  }
-}
-
 export function createDashboardTodayMetrics({
   today,
   yesterday,
@@ -192,7 +178,7 @@ export function createDashboardTodayMetrics({
   const { formatNumber, formatPercent } = formatters
 
   return [
-    {
+    buildMetricCard({
       id: 'today-total',
       label: labels.total,
       value: formatNumber(today.total_requests),
@@ -202,45 +188,102 @@ export function createDashboardTodayMetrics({
         previousValue: yesterday.total_requests,
         strings,
       }),
-    },
-    {
-      id: 'today-success',
+      fullWidth: true,
+    }),
+    buildMetricCard({
+      id: 'today-valuable-success',
+      eyebrow: labels.valuableTag,
+      eyebrowTone: 'valuable',
       label: labels.success,
-      value: formatNumber(today.success_count),
+      value: formatNumber(today.valuable_success_count),
       subtitle: buildWindowSubtitle(
         strings.todayShare,
-        today.success_count,
+        today.valuable_success_count,
         today.total_requests,
         formatPercent,
       ),
-      comparison: buildTodayRateComparison({
-        currentNumerator: today.success_count,
-        currentDenominator: today.total_requests,
-        previousNumerator: yesterday.success_count,
-        previousDenominator: yesterday.total_requests,
+      comparison: buildTodayCountComparison({
+        currentValue: today.valuable_success_count,
+        previousValue: yesterday.valuable_success_count,
         strings,
       }),
-    },
-    {
-      id: 'today-errors',
-      label: labels.errors,
-      value: formatNumber(today.error_count),
+    }),
+    buildMetricCard({
+      id: 'today-valuable-failure',
+      eyebrow: labels.valuableTag,
+      eyebrowTone: 'valuable',
+      label: labels.failure,
+      value: formatNumber(today.valuable_failure_count),
       subtitle: buildWindowSubtitle(
         strings.todayShare,
-        today.error_count,
+        today.valuable_failure_count,
         today.total_requests,
         formatPercent,
       ),
-      comparison: buildTodayRateComparison({
-        currentNumerator: today.error_count,
-        currentDenominator: today.total_requests,
-        previousNumerator: yesterday.error_count,
-        previousDenominator: yesterday.total_requests,
+      comparison: buildTodayCountComparison({
+        currentValue: today.valuable_failure_count,
+        previousValue: yesterday.valuable_failure_count,
         strings,
         trend: 'lower-is-better',
       }),
-    },
-    {
+    }),
+    buildMetricCard({
+      id: 'today-other-success',
+      eyebrow: labels.otherTag,
+      eyebrowTone: 'other',
+      label: labels.success,
+      value: formatNumber(today.other_success_count),
+      subtitle: buildWindowSubtitle(
+        strings.todayShare,
+        today.other_success_count,
+        today.total_requests,
+        formatPercent,
+      ),
+      comparison: buildTodayCountComparison({
+        currentValue: today.other_success_count,
+        previousValue: yesterday.other_success_count,
+        strings,
+      }),
+    }),
+    buildMetricCard({
+      id: 'today-other-failure',
+      eyebrow: labels.otherTag,
+      eyebrowTone: 'other',
+      label: labels.failure,
+      value: formatNumber(today.other_failure_count),
+      subtitle: buildWindowSubtitle(
+        strings.todayShare,
+        today.other_failure_count,
+        today.total_requests,
+        formatPercent,
+      ),
+      comparison: buildTodayCountComparison({
+        currentValue: today.other_failure_count,
+        previousValue: yesterday.other_failure_count,
+        strings,
+        trend: 'lower-is-better',
+      }),
+    }),
+    buildMetricCard({
+      id: 'today-unknown',
+      eyebrow: labels.unknownTag,
+      eyebrowTone: 'unknown',
+      label: labels.unknownCalls,
+      value: formatNumber(today.unknown_count),
+      subtitle: buildWindowSubtitle(
+        strings.todayShare,
+        today.unknown_count,
+        today.total_requests,
+        formatPercent,
+      ),
+      comparison: buildTodayCountComparison({
+        currentValue: today.unknown_count,
+        previousValue: yesterday.unknown_count,
+        strings,
+        trend: 'lower-is-better',
+      }),
+    }),
+    buildMetricCard({
       id: 'today-upstream-exhausted',
       label: labels.upstreamExhausted,
       value: formatNumber(today.upstream_exhausted_key_count),
@@ -251,7 +294,7 @@ export function createDashboardTodayMetrics({
         strings,
         trend: 'lower-is-better',
       }),
-    },
+    }),
   ]
 }
 
@@ -264,51 +307,94 @@ export function createDashboardMonthMetrics({
   const { formatNumber, formatPercent } = formatters
 
   return [
-    {
+    buildMetricCard({
       id: 'month-total',
       label: labels.total,
       value: formatNumber(month.total_requests),
       subtitle: strings.monthToDate,
-    },
-    {
-      id: 'month-success',
+    }),
+    buildMetricCard({
+      id: 'month-valuable-success',
+      eyebrow: labels.valuableTag,
+      eyebrowTone: 'valuable',
       label: labels.success,
-      value: formatNumber(month.success_count),
+      value: formatNumber(month.valuable_success_count),
       subtitle: buildWindowSubtitle(
         strings.monthShare,
-        month.success_count,
+        month.valuable_success_count,
         month.total_requests,
         formatPercent,
       ),
-    },
-    {
-      id: 'month-errors',
-      label: labels.errors,
-      value: formatNumber(month.error_count),
+    }),
+    buildMetricCard({
+      id: 'month-valuable-failure',
+      eyebrow: labels.valuableTag,
+      eyebrowTone: 'valuable',
+      label: labels.failure,
+      value: formatNumber(month.valuable_failure_count),
       subtitle: buildWindowSubtitle(
         strings.monthShare,
-        month.error_count,
+        month.valuable_failure_count,
         month.total_requests,
         formatPercent,
       ),
-    },
-    {
+    }),
+    buildMetricCard({
+      id: 'month-other-success',
+      eyebrow: labels.otherTag,
+      eyebrowTone: 'other',
+      label: labels.success,
+      value: formatNumber(month.other_success_count),
+      subtitle: buildWindowSubtitle(
+        strings.monthShare,
+        month.other_success_count,
+        month.total_requests,
+        formatPercent,
+      ),
+    }),
+    buildMetricCard({
+      id: 'month-other-failure',
+      eyebrow: labels.otherTag,
+      eyebrowTone: 'other',
+      label: labels.failure,
+      value: formatNumber(month.other_failure_count),
+      subtitle: buildWindowSubtitle(
+        strings.monthShare,
+        month.other_failure_count,
+        month.total_requests,
+        formatPercent,
+      ),
+    }),
+    buildMetricCard({
+      id: 'month-unknown',
+      eyebrow: labels.unknownTag,
+      eyebrowTone: 'unknown',
+      label: labels.unknownCalls,
+      value: formatNumber(month.unknown_count),
+      subtitle: buildWindowSubtitle(
+        strings.monthShare,
+        month.unknown_count,
+        month.total_requests,
+        formatPercent,
+      ),
+    }),
+    buildMetricCard({
       id: 'month-upstream-exhausted',
       label: labels.upstreamExhausted,
       value: formatNumber(month.upstream_exhausted_key_count),
       subtitle: strings.monthAdded,
-    },
-    {
+    }),
+    buildMetricCard({
       id: 'month-new-keys',
       label: labels.newKeys,
       value: formatNumber(month.new_keys),
       subtitle: strings.monthAdded,
-    },
-    {
+    }),
+    buildMetricCard({
       id: 'month-new-quarantines',
       label: labels.newQuarantines,
       value: formatNumber(month.new_quarantines),
       subtitle: strings.monthAdded,
-    },
+    }),
   ]
 }

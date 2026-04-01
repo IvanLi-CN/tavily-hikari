@@ -7816,7 +7816,7 @@ colo=LAX
                     forwarded_headers,
                     dropped_headers,
                     created_at
-                ) VALUES (?, NULL, 'GET', '/v1/search', NULL, 200, 200, NULL, 'success', NULL, NULL, '[]', '[]', ?)
+                ) VALUES (?, NULL, 'GET', '/api/tavily/search', NULL, 200, 200, NULL, 'success', NULL, NULL, '[]', '[]', ?)
                 "#,
             )
             .bind(&key_id)
@@ -7843,12 +7843,12 @@ colo=LAX
                 dropped_headers,
                 created_at
             ) VALUES
-                (?, NULL, 'GET', '/v1/search', NULL, 500, 500, 'boom', 'error', NULL, NULL, '[]', '[]', ?),
-                (?, NULL, 'GET', '/v1/search', NULL, 429, 429, 'quota', 'quota_exhausted', NULL, NULL, '[]', '[]', ?),
-                (?, NULL, 'GET', '/v1/search', NULL, 200, 200, NULL, 'success', NULL, NULL, '[]', '[]', ?),
-                (?, NULL, 'GET', '/v1/search', NULL, 200, 200, NULL, 'success', NULL, NULL, '[]', '[]', ?),
-                (?, NULL, 'GET', '/v1/search', NULL, 200, 200, NULL, 'success', NULL, NULL, '[]', '[]', ?),
-                (?, NULL, 'GET', '/v1/search', NULL, 500, 500, 'boom', 'error', NULL, NULL, '[]', '[]', ?)
+                (?, NULL, 'GET', '/api/tavily/search', NULL, 500, 500, 'boom', 'error', NULL, NULL, '[]', '[]', ?),
+                (?, NULL, 'GET', '/api/tavily/search', NULL, 429, 429, 'quota', 'quota_exhausted', NULL, NULL, '[]', '[]', ?),
+                (?, NULL, 'GET', '/api/tavily/search', NULL, 200, 200, NULL, 'success', NULL, NULL, '[]', '[]', ?),
+                (?, NULL, 'GET', '/api/tavily/search', NULL, 200, 200, NULL, 'success', NULL, NULL, '[]', '[]', ?),
+                (?, NULL, 'GET', '/api/tavily/search', NULL, 200, 200, NULL, 'success', NULL, NULL, '[]', '[]', ?),
+                (?, NULL, 'GET', '/api/tavily/search', NULL, 500, 500, 'boom', 'error', NULL, NULL, '[]', '[]', ?)
             "#,
         )
         .bind(&key_id)
@@ -7999,6 +7999,21 @@ colo=LAX
                 .is_some(),
             "month upstream exhausted key count should exist"
         );
+        for pointer in [
+            "/today/valuable_success_count",
+            "/today/valuable_failure_count",
+            "/today/other_success_count",
+            "/today/other_failure_count",
+            "/today/unknown_count",
+            "/yesterday/valuable_success_count",
+            "/month/valuable_success_count",
+            "/month/unknown_count",
+        ] {
+            assert!(
+                body.pointer(pointer).and_then(|v| v.as_i64()).is_some(),
+                "summary windows should expose {pointer}"
+            );
+        }
         assert_eq!(
             body.pointer("/month/new_keys").and_then(|v| v.as_i64()),
             Some(3)
@@ -8887,6 +8902,20 @@ colo=LAX
                 .and_then(|value| value.as_i64())
                 .is_some(),
             "snapshot summary windows should expose upstream exhausted key counts"
+        );
+        assert!(
+            snapshot_json
+                .pointer("/summaryWindows/today/valuable_success_count")
+                .and_then(|value| value.as_i64())
+                .is_some(),
+            "snapshot summary windows should expose valuable success counts"
+        );
+        assert!(
+            snapshot_json
+                .pointer("/summaryWindows/month/unknown_count")
+                .and_then(|value| value.as_i64())
+                .is_some(),
+            "snapshot summary windows should expose unknown request counts"
         );
         assert_eq!(
             snapshot_json
