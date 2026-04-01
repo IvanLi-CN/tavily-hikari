@@ -76,7 +76,8 @@ interface BuildMetricCardOptions {
   value: string
   marker?: string
   markerTone?: DashboardMetricCard['markerTone']
-  subtitle: string
+  valueMeta?: string
+  subtitle?: string
   comparison?: DashboardMetricComparison
   fullWidth?: boolean
 }
@@ -126,6 +127,7 @@ function buildMetricCard({
   value,
   marker,
   markerTone,
+  valueMeta,
   subtitle,
   comparison,
   fullWidth = false,
@@ -136,6 +138,7 @@ function buildMetricCard({
     value,
     marker,
     markerTone,
+    valueMeta,
     subtitle,
     comparison,
     fullWidth,
@@ -195,7 +198,7 @@ export function createDashboardTodayMetrics({
       marker: labels.valuableTag,
       markerTone: 'primary',
       value: formatNumber(today.valuable_success_count),
-      subtitle: buildWindowSubtitle(
+      valueMeta: buildWindowSubtitle(
         strings.todayShare,
         today.valuable_success_count,
         today.total_requests,
@@ -213,7 +216,7 @@ export function createDashboardTodayMetrics({
       marker: labels.valuableTag,
       markerTone: 'primary',
       value: formatNumber(today.valuable_failure_count),
-      subtitle: buildWindowSubtitle(
+      valueMeta: buildWindowSubtitle(
         strings.todayShare,
         today.valuable_failure_count,
         today.total_requests,
@@ -232,7 +235,7 @@ export function createDashboardTodayMetrics({
       marker: labels.otherTag,
       markerTone: 'secondary',
       value: formatNumber(today.other_success_count),
-      subtitle: buildWindowSubtitle(
+      valueMeta: buildWindowSubtitle(
         strings.todayShare,
         today.other_success_count,
         today.total_requests,
@@ -250,7 +253,7 @@ export function createDashboardTodayMetrics({
       marker: labels.otherTag,
       markerTone: 'secondary',
       value: formatNumber(today.other_failure_count),
-      subtitle: buildWindowSubtitle(
+      valueMeta: buildWindowSubtitle(
         strings.todayShare,
         today.other_failure_count,
         today.total_requests,
@@ -267,7 +270,7 @@ export function createDashboardTodayMetrics({
       id: 'today-unknown',
       label: labels.unknownCalls,
       value: formatNumber(today.unknown_count),
-      subtitle: buildWindowSubtitle(
+      valueMeta: buildWindowSubtitle(
         strings.todayShare,
         today.unknown_count,
         today.total_requests,

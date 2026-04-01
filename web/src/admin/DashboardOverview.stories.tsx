@@ -31,7 +31,7 @@ const meta = {
     docs: {
       description: {
         component:
-          'Dashboard overview shell with request-value summary cards. Today renders 7 cards with the total card occupying its own row plus primary/secondary markers on success and failure cards, while month keeps 9 compact cards for lifecycle plus request taxonomy.',
+          'Dashboard overview shell with request-value summary cards. Today renders 7 cards with the total card occupying its own row, primary/secondary markers on success and failure cards, and the today-share text aligned on the value row to save height; month keeps 9 compact cards for lifecycle plus request taxonomy.',
       },
     },
   },
@@ -246,7 +246,7 @@ const zhDarkEvidenceTodayMetrics: DashboardMetricCard[] = [
     marker: '主要',
     markerTone: 'primary',
     value: '6,831',
-    subtitle: '今日占比 · 63.9%',
+    valueMeta: '今日占比 · 63.9%',
     comparison: {
       label: '较昨日同刻',
       value: '+542 (8.6%)',
@@ -260,7 +260,7 @@ const zhDarkEvidenceTodayMetrics: DashboardMetricCard[] = [
     marker: '主要',
     markerTone: 'primary',
     value: '1,144',
-    subtitle: '今日占比 · 10.7%',
+    valueMeta: '今日占比 · 10.7%',
     comparison: {
       label: '较昨日同刻',
       value: '-126 (-9.9%)',
@@ -274,7 +274,7 @@ const zhDarkEvidenceTodayMetrics: DashboardMetricCard[] = [
     marker: '次要',
     markerTone: 'secondary',
     value: '1,882',
-    subtitle: '今日占比 · 17.6%',
+    valueMeta: '今日占比 · 17.6%',
     comparison: {
       label: '较昨日同刻',
       value: '+94 (5.3%)',
@@ -288,7 +288,7 @@ const zhDarkEvidenceTodayMetrics: DashboardMetricCard[] = [
     marker: '次要',
     markerTone: 'secondary',
     value: '552',
-    subtitle: '今日占比 · 5.2%',
+    valueMeta: '今日占比 · 5.2%',
     comparison: {
       label: '较昨日同刻',
       value: '+41 (8%)',
@@ -300,7 +300,7 @@ const zhDarkEvidenceTodayMetrics: DashboardMetricCard[] = [
     id: 'today-unknown',
     label: '未知调用',
     value: '274',
-    subtitle: '今日占比 · 2.6%',
+    valueMeta: '今日占比 · 2.6%',
     comparison: {
       label: '较昨日同刻',
       value: '+18 · 昨日无基线',

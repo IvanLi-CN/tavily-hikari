@@ -146,21 +146,24 @@ describe('dashboard request-value metric helpers', () => {
       id: 'today-valuable-success',
       marker: 'Primary',
       markerTone: 'primary',
-      subtitle: 'Today share · 50.0%',
+      valueMeta: 'Today share · 50.0%',
+      subtitle: undefined,
     })
 
     expect(metrics.find((metric) => metric.id === 'today-other-failure')).toMatchObject({
       id: 'today-other-failure',
       marker: 'Secondary',
       markerTone: 'secondary',
-      subtitle: 'Today share · 4.2%',
+      valueMeta: 'Today share · 4.2%',
+      subtitle: undefined,
     })
 
     expect(metrics.find((metric) => metric.id === 'today-unknown')).toMatchObject({
       id: 'today-unknown',
       label: 'Unknown Calls',
       value: '2',
-      subtitle: 'Today share · 8.3%',
+      valueMeta: 'Today share · 8.3%',
+      subtitle: undefined,
       comparison: {
         label: 'vs same time yesterday',
         value: '+2 · No yesterday baseline',

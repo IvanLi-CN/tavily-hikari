@@ -2764,6 +2764,28 @@ button:disabled {
   letter-spacing: 0.03em;
 }
 
+.dashboard-summary-card-value-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dashboard-summary-card-value-row .metric-value {
+  min-width: 0;
+}
+
+.dashboard-summary-card-value-meta {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding-bottom: 1px;
+  font-size: 0.78rem;
+  color: hsl(var(--muted-foreground));
+  line-height: 1.2;
+  white-space: nowrap;
+  text-align: right;
+}
+
 .dashboard-summary-card .metric-subtitle {
   min-height: 2.4em;
   font-size: 0.8rem;
@@ -2790,6 +2812,16 @@ button:disabled {
 .dashboard-metric-value-divider {
   font-size: 0.82em;
   color: hsl(var(--muted-foreground));
+}
+
+@media (max-width: 420px) {
+  .dashboard-summary-card-value-row {
+    gap: 8px;
+  }
+
+  .dashboard-summary-card-value-meta {
+    font-size: 0.72rem;
+  }
 }
 
 .metric-delta {

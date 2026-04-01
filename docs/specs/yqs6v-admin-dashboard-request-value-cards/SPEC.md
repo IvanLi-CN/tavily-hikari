@@ -184,6 +184,7 @@
 - 2026-04-01：重新拉起后端 `127.0.0.1:58087` 与前端 `127.0.0.1:55173` 后，用 Chrome 复核真实 `/admin` 页面窄屏布局；`documentElement.scrollWidth == clientWidth == 485`，确认无横向滚动。
 - 2026-04-01：按主人要求撤回未授权的摘要卡布局调整后，重新执行 `cd web && bun test`、`cd web && bun run build`、`cd web && bun run build-storybook`，并重拍 Storybook 证据图确认保留原有摘要卡布局。
 - 2026-04-01：按主人最新要求补回 `总请求数` 独占首行，并为两组 `成功 / 失败` 添加 `主要 / 次要` 标记；随后重新执行 `cd web && bun test`、`cd web && bun run build`、`cd web && bun run build-storybook`，并完成 Storybook + 真实 `/admin` 浏览器复核。
+- 2026-04-01：将 `今日占比` 从副标题移到今日卡片数值行右侧，重新执行 `cd web && bun test`、`cd web && bun run build`、`cd web && bun run build-storybook`，并用 Storybook 中文暗色验收图确认卡片高度收紧且窄屏仍无横向滚动。
 
 ## 风险与开放点
 
@@ -193,8 +194,8 @@
 
 ## Visual Evidence
 
-- source_type: `storybook_canvas`; target_program: `mock-only`; capture_scope: `browser-viewport`; story_id_or_title: `Admin/Components/DashboardOverview/ZhDarkEvidence`; state: `desktop`; evidence_note: 桌面端验证 `总请求数独占首行 / 成功失败卡带主要次要标记 / 今日 7 卡 / 本月 9 卡 / 无 comparison tray`。
+- source_type: `storybook_canvas`; target_program: `mock-only`; capture_scope: `browser-viewport`; story_id_or_title: `Admin/Components/DashboardOverview/ZhDarkEvidence`; state: `desktop`; evidence_note: 桌面端验证 `总请求数独占首行 / 成功失败卡带主要次要标记 / 今日占比右移到数值行 / 今日 7 卡 / 本月 9 卡 / 无 comparison tray`。
   ![Admin 仪表盘请求价值分类卡（桌面）](./assets/dashboard-request-value-cards-storybook-desktop.png)
 
-- source_type: `storybook_canvas`; target_program: `mock-only`; capture_scope: `browser-viewport`; story_id_or_title: `Admin/Components/DashboardOverview/ZhDarkEvidence`; state: `mobile`; evidence_note: 窄屏验证纵向单列重排稳定，无横向滚动，`主要 / 次要` 标记与 delta chip 仍可完整读取。
+- source_type: `storybook_canvas`; target_program: `mock-only`; capture_scope: `browser-viewport`; story_id_or_title: `Admin/Components/DashboardOverview/ZhDarkEvidence`; state: `mobile`; evidence_note: 窄屏验证纵向单列重排稳定，无横向滚动，`今日占比` 保持在数值行右侧，`主要 / 次要` 标记与 delta chip 仍可完整读取。
   ![Admin 仪表盘请求价值分类卡（移动端）](./assets/dashboard-request-value-cards-storybook-mobile.png)
