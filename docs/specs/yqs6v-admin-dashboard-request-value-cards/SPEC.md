@@ -4,7 +4,7 @@
 
 - Status: 已完成（快车道）
 - Created: 2026-03-31
-- Last: 2026-04-01
+- Last: 2026-04-02
 
 ## 背景
 
@@ -185,12 +185,13 @@
 - 2026-04-01：按主人要求撤回未授权的摘要卡布局调整后，重新执行 `cd web && bun test`、`cd web && bun run build`、`cd web && bun run build-storybook`，并重拍 Storybook 证据图确认保留原有摘要卡布局。
 - 2026-04-01：按主人最新要求补回 `总请求数` 独占首行，并为两组 `成功 / 失败` 添加 `主要 / 次要` 标记；随后重新执行 `cd web && bun test`、`cd web && bun run build`、`cd web && bun run build-storybook`，并完成 Storybook + 真实 `/admin` 浏览器复核。
 - 2026-04-01：将 `今日占比` 从副标题移到今日卡片数值行右侧，重新执行 `cd web && bun test`、`cd web && bun run build`、`cd web && bun run build-storybook`，并用 Storybook 中文暗色验收图确认卡片高度收紧且窄屏仍无横向滚动。
+- 2026-04-02：补充 `startup_preserves_existing_usage_buckets_when_request_value_columns_are_added` 回归测试，并修正启动迁移逻辑：旧库仅补齐 request-value 分类字段，不再因为 schema 自愈而重建整月 `api_key_usage_buckets`，避免在 `request_logs` 已按保留策略裁剪时丢失既有月度累计数据。
 
 ## 风险与开放点
 
 - 月度分类计数依赖 `api_key_usage_buckets` 的 schema 自愈与历史重建，若线上存在非常旧的桶表，需要确保迁移幂等且不会重复污染旧数据。
 - `unknown_count` 只展示总量，不拆 success/failure；后续若产品要求继续拆分，应新增字段而不是复用现有口径。
-- 视觉证据与最终 PR 收口前，还需要确认 Storybook/build-storybook 与浏览器复核都绑定到最新 `HEAD`。
+- 2026-04-02 的启动迁移修复仅影响后端持久化与回归测试，不改变已验收的 dashboard 视觉结果；因此现有 Storybook 证据图继续作为最新 `HEAD` 的有效视觉证据。
 
 ## Visual Evidence
 

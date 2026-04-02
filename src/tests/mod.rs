@@ -6876,6 +6876,170 @@ async fn suppressed_retry_shadow_logs_are_hidden_from_recent_logs_and_summary_wi
 }
 
 #[tokio::test]
+async fn startup_preserves_existing_usage_buckets_when_request_value_columns_are_added() {
+    let db_path = temp_db_path("usage-bucket-request-value-upgrade");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-summary-window-upgrade".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let key_id = proxy
+        .list_api_key_metrics()
+        .await
+        .expect("list key metrics")
+        .into_iter()
+        .next()
+        .expect("seeded key")
+        .id;
+
+    let fallback_now = Local::now();
+    let now_naive = fallback_now
+        .date_naive()
+        .and_hms_opt(12, 0, 0)
+        .expect("valid midday");
+    let now = match Local.from_local_datetime(&now_naive) {
+        chrono::LocalResult::Single(dt) => dt,
+        chrono::LocalResult::Ambiguous(dt, _) => dt,
+        chrono::LocalResult::None => fallback_now,
+    };
+    let today_start = start_of_local_day_utc_ts(now);
+
+    insert_summary_window_bucket(&proxy, &key_id, today_start, 10, 8, 1, 1).await;
+    insert_summary_window_logs(&proxy, &key_id, today_start + 60, OUTCOME_SUCCESS, 1).await;
+
+    drop(proxy);
+
+    let pool = open_sqlite_pool(&db_str, false, false)
+        .await
+        .expect("open sqlite pool");
+    let mut conn = pool.acquire().await.expect("acquire sqlite connection");
+    sqlx::query("DELETE FROM meta WHERE key = ?")
+        .bind(META_KEY_API_KEY_USAGE_BUCKETS_REQUEST_VALUE_V2_DONE)
+        .execute(&mut *conn)
+        .await
+        .expect("clear request-value bucket migration marker");
+    sqlx::query("PRAGMA foreign_keys = OFF")
+        .execute(&mut *conn)
+        .await
+        .expect("disable foreign keys for legacy bucket rewrite");
+    sqlx::query(
+        r#"
+        CREATE TABLE api_key_usage_buckets_legacy (
+            api_key_id TEXT NOT NULL,
+            bucket_start INTEGER NOT NULL,
+            bucket_secs INTEGER NOT NULL,
+            total_requests INTEGER NOT NULL,
+            success_count INTEGER NOT NULL,
+            error_count INTEGER NOT NULL,
+            quota_exhausted_count INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (api_key_id, bucket_start, bucket_secs),
+            FOREIGN KEY (api_key_id) REFERENCES api_keys(id)
+        )
+        "#,
+    )
+    .execute(&mut *conn)
+    .await
+    .expect("create legacy usage bucket table");
+    sqlx::query(
+        r#"
+        INSERT INTO api_key_usage_buckets_legacy (
+            api_key_id,
+            bucket_start,
+            bucket_secs,
+            total_requests,
+            success_count,
+            error_count,
+            quota_exhausted_count,
+            updated_at
+        )
+        SELECT
+            api_key_id,
+            bucket_start,
+            bucket_secs,
+            total_requests,
+            success_count,
+            error_count,
+            quota_exhausted_count,
+            updated_at
+        FROM api_key_usage_buckets
+        "#,
+    )
+    .execute(&mut *conn)
+    .await
+    .expect("copy usage buckets into legacy schema");
+    sqlx::query("DROP TABLE api_key_usage_buckets")
+        .execute(&mut *conn)
+        .await
+        .expect("drop current usage bucket table");
+    sqlx::query("ALTER TABLE api_key_usage_buckets_legacy RENAME TO api_key_usage_buckets")
+        .execute(&mut *conn)
+        .await
+        .expect("rename legacy usage bucket table");
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&mut *conn)
+        .await
+        .expect("re-enable foreign keys after legacy bucket rewrite");
+    drop(conn);
+    drop(pool);
+
+    let reopened = TavilyProxy::with_endpoint(
+        vec!["tvly-summary-window-upgrade".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy reopened");
+
+    let row = sqlx::query(
+        r#"
+        SELECT
+            total_requests,
+            success_count,
+            error_count,
+            quota_exhausted_count,
+            valuable_success_count,
+            valuable_failure_count,
+            other_success_count,
+            other_failure_count,
+            unknown_count
+        FROM api_key_usage_buckets
+        WHERE api_key_id = ? AND bucket_start = ?
+        "#,
+    )
+    .bind(&key_id)
+    .bind(today_start)
+    .fetch_one(&reopened.key_store.pool)
+    .await
+    .expect("bucket row after startup migration");
+
+    assert_eq!(row.try_get::<i64, _>("total_requests").unwrap(), 10);
+    assert_eq!(row.try_get::<i64, _>("success_count").unwrap(), 8);
+    assert_eq!(row.try_get::<i64, _>("error_count").unwrap(), 1);
+    assert_eq!(row.try_get::<i64, _>("quota_exhausted_count").unwrap(), 1);
+    assert_eq!(row.try_get::<i64, _>("valuable_success_count").unwrap(), 1);
+    assert_eq!(row.try_get::<i64, _>("valuable_failure_count").unwrap(), 0);
+    assert_eq!(row.try_get::<i64, _>("other_success_count").unwrap(), 0);
+    assert_eq!(row.try_get::<i64, _>("other_failure_count").unwrap(), 0);
+    assert_eq!(row.try_get::<i64, _>("unknown_count").unwrap(), 0);
+
+    let request_value_marker: Option<i64> =
+        sqlx::query_scalar("SELECT CAST(value AS INTEGER) FROM meta WHERE key = ?")
+            .bind(META_KEY_API_KEY_USAGE_BUCKETS_REQUEST_VALUE_V2_DONE)
+            .fetch_optional(&reopened.key_store.pool)
+            .await
+            .expect("load request-value bucket migration marker");
+    assert_eq!(request_value_marker, Some(1));
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn research_usage_probe_401_quarantines_key() {
     let db_path = temp_db_path("research-usage-quarantine");
     let db_str = db_path.to_string_lossy().to_string();
