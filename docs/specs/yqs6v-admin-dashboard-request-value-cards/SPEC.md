@@ -186,6 +186,7 @@
 - 2026-04-01：按主人最新要求补回 `总请求数` 独占首行，并为两组 `成功 / 失败` 添加 `主要 / 次要` 标记；随后重新执行 `cd web && bun test`、`cd web && bun run build`、`cd web && bun run build-storybook`，并完成 Storybook + 真实 `/admin` 浏览器复核。
 - 2026-04-01：将 `今日占比` 从副标题移到今日卡片数值行右侧，重新执行 `cd web && bun test`、`cd web && bun run build`、`cd web && bun run build-storybook`，并用 Storybook 中文暗色验收图确认卡片高度收紧且窄屏仍无横向滚动。
 - 2026-04-02：补充 `startup_preserves_existing_usage_buckets_when_request_value_columns_are_added` 回归测试，并修正启动迁移逻辑：旧库仅补齐 request-value 分类字段，不再因为 schema 自愈而重建整月 `api_key_usage_buckets`，避免在 `request_logs` 已按保留策略裁剪时丢失既有月度累计数据。
+- 2026-04-02：补充 `startup_request_value_backfill_preserves_existing_breakdown_for_pruned_buckets` 回归测试，并收紧 v2 回填条件：仅在桶行尚无 request-value 数据或仍可由保留日志完整重建时才覆盖分类计数，避免重跑迁移时抹掉已保留的历史分类统计。
 
 ## 风险与开放点
 

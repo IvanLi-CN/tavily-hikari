@@ -2465,19 +2465,6 @@ impl KeyStore {
         let mut read_conn = self.pool.acquire().await?;
         let mut tx = self.pool.begin().await?;
 
-        sqlx::query(
-            r#"
-            UPDATE api_key_usage_buckets
-            SET valuable_success_count = 0,
-                valuable_failure_count = 0,
-                other_success_count = 0,
-                other_failure_count = 0,
-                unknown_count = 0
-            "#,
-        )
-        .execute(&mut *tx)
-        .await?;
-
         #[derive(Clone, Copy, Default)]
         struct BucketCounts {
             total_requests: i64,
@@ -2525,6 +2512,18 @@ impl KeyStore {
                     other_failure_count = excluded.other_failure_count,
                     unknown_count = excluded.unknown_count,
                     updated_at = excluded.updated_at
+                WHERE (
+                    api_key_usage_buckets.valuable_success_count = 0
+                    AND api_key_usage_buckets.valuable_failure_count = 0
+                    AND api_key_usage_buckets.other_success_count = 0
+                    AND api_key_usage_buckets.other_failure_count = 0
+                    AND api_key_usage_buckets.unknown_count = 0
+                ) OR (
+                    api_key_usage_buckets.total_requests = excluded.total_requests
+                    AND api_key_usage_buckets.success_count = excluded.success_count
+                    AND api_key_usage_buckets.error_count = excluded.error_count
+                    AND api_key_usage_buckets.quota_exhausted_count = excluded.quota_exhausted_count
+                )
                 "#,
             )
             .bind(key)
