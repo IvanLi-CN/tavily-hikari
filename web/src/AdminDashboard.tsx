@@ -51,6 +51,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from './components/ui/tooltip
 import TokenDetail from './pages/TokenDetail'
 import { ArrowDown, ArrowUp, ArrowUpDown, ChartColumnIncreasing } from 'lucide-react'
 import AdminShell, { AdminShellSidebarUtility, type AdminNavItem, type AdminNavTarget } from './admin/AdminShell'
+import AdminOverlayHost from './admin/AdminOverlayHost'
 import DashboardOverview from './admin/DashboardOverview'
 import {
   createDashboardMonthMetrics,
@@ -6318,8 +6319,560 @@ function AdminDashboard(): JSX.Element {
     </AdminShell>
   )
 
+  const appFooter = (
+      <div className="app-footer">
+        <span>{footerStrings.title}</span>
+        <span className="footer-meta">
+          {/* GitHub repository link with Iconify icon */}
+          <a
+            href="https://github.com/IvanLi-CN/tavily-hikari"
+            className="footer-link"
+            target="_blank"
+            rel="noreferrer"
+            aria-label={footerStrings.githubAria}
+          >
+            <Icon icon="mdi:github" width={18} height={18} className="footer-link-icon" />
+            <span>{footerStrings.githubLabel}</span>
+          </a>
+        </span>
+        <span className="footer-meta">
+          {version ? (
+            (() => {
+              const raw = version.backend || ''
+              const clean = raw.replace(/-.+$/, '')
+              const tag = clean.startsWith('v') ? clean : `v${clean}`
+              const href = `https://github.com/IvanLi-CN/tavily-hikari/releases/tag/${tag}`
+              return (
+                <>
+                  {footerStrings.tagPrefix}
+                  <a href={href} className="footer-link" target="_blank" rel="noreferrer">
+                    {`v${raw}`}
+                  </a>
+                </>
+              )
+            })()
+          ) : (
+            footerStrings.loadingVersion
+          )}
+        </span>
+      </div>
+  )
+
+  const renderAdminGlobalOverlayHost = (): JSX.Element => (
+    <>
+      <Drawer
+        open={monthlyBrokenDrawer != null}
+        onOpenChange={(open) => {
+          if (!open) closeMonthlyBrokenDrawer()
+        }}
+        shouldScaleBackground={false}
+      >
+        <DrawerContent className="request-entity-drawer-content-fit">
+          <div className="request-entity-drawer-body-fit">
+            <section className="surface panel">
+              <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
+                <div>
+                  <h2>{usersStrings.brokenKeys.drawerTitle}</h2>
+                  <p className="panel-description">
+                    {usersStrings.brokenKeys.drawerDescription.replace('{label}', monthlyBrokenDrawer?.label ?? '—')}
+                  </p>
+                </div>
+              </div>
+              <AdminLoadingRegion
+                className="table-wrapper jobs-table-wrapper admin-responsive-up"
+                loadState={monthlyBrokenDrawerLoadState}
+                loadingLabel={usersStrings.brokenKeys.loading}
+                errorLabel={monthlyBrokenDrawerError ?? loadingStateStrings.error}
+                minHeight={240}
+              >
+                {monthlyBrokenDrawerItems.length === 0 ? (
+                  <div className="empty-state alert">{usersStrings.brokenKeys.empty}</div>
+                ) : (
+                  <Table className="jobs-table admin-users-table">
+                    <thead>
+                      <tr>
+                        <th>{usersStrings.brokenKeys.table.key}</th>
+                        <th>{usersStrings.brokenKeys.table.status}</th>
+                        <th>{usersStrings.brokenKeys.table.reason}</th>
+                        <th>{usersStrings.brokenKeys.table.latestBreakAt}</th>
+                        <th>{usersStrings.brokenKeys.table.breaker}</th>
+                        <th>{usersStrings.brokenKeys.table.relatedUsers}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {monthlyBrokenDrawerItems.map((item) => {
+                        const stateKey = copyStateKey('brokenKeys', item.keyId)
+                        const state = copyState.get(stateKey)
+                        return (
+                          <tr key={`${item.keyId}:${item.latestBreakAt}`}>
+                            <td>
+                              <MonthlyBrokenKeyValue
+                                keyId={item.keyId}
+                                ungroupedLabel={keyStrings.groups.ungrouped}
+                                detailLabel={keyStrings.actions.details}
+                                copyLabel={usersStrings.brokenKeys.actions.copyKeyId}
+                                copiedLabel={usersStrings.brokenKeys.actions.copied}
+                                copyState={state}
+                                onOpenKey={navigateKey}
+                                onCopy={(anchorEl) =>
+                                  handleCopyMonthlyBrokenKeyId(item.keyId, stateKey, anchorEl)
+                                }
+                              />
+                            </td>
+                            <td>
+                              <StatusBadge tone={item.currentStatus === 'quarantined' ? 'warning' : 'error'}>
+                                {adminStrings.statuses[item.currentStatus] ?? item.currentStatus}
+                              </StatusBadge>
+                            </td>
+                            <td>{item.reasonSummary || item.reasonCode || usersStrings.brokenKeys.noReason}</td>
+                            <td>{formatTimestamp(item.latestBreakAt)}</td>
+                            <td>{formatMonthlyBrokenBreaker(item, usersStrings.brokenKeys)}</td>
+                            <td>
+                              {formatMonthlyBrokenRelatedUsers(
+                                item.relatedUsers,
+                                usersStrings.brokenKeys.noRelatedUsers,
+                              )}
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </Table>
+                )}
+              </AdminLoadingRegion>
+              <AdminLoadingRegion
+                className="admin-mobile-list admin-responsive-down"
+                loadState={monthlyBrokenDrawerLoadState}
+                loadingLabel={usersStrings.brokenKeys.loading}
+                errorLabel={monthlyBrokenDrawerError ?? loadingStateStrings.error}
+                minHeight={240}
+              >
+                {monthlyBrokenDrawerItems.length === 0 ? (
+                  <div className="empty-state alert">{usersStrings.brokenKeys.empty}</div>
+                ) : (
+                  monthlyBrokenDrawerItems.map((item) => {
+                    const stateKey = copyStateKey('brokenKeys', item.keyId)
+                    const state = copyState.get(stateKey)
+                    return (
+                      <article key={`${item.keyId}:${item.latestBreakAt}`} className="admin-mobile-card">
+                        <div className="admin-mobile-kv">
+                          <span>{usersStrings.brokenKeys.table.key}</span>
+                          <strong>
+                            <MonthlyBrokenKeyValue
+                              keyId={item.keyId}
+                              ungroupedLabel={keyStrings.groups.ungrouped}
+                              detailLabel={keyStrings.actions.details}
+                              copyLabel={usersStrings.brokenKeys.actions.copyKeyId}
+                              copiedLabel={usersStrings.brokenKeys.actions.copied}
+                              copyState={state}
+                              onOpenKey={navigateKey}
+                              onCopy={(anchorEl) =>
+                                handleCopyMonthlyBrokenKeyId(item.keyId, stateKey, anchorEl)
+                              }
+                            />
+                          </strong>
+                        </div>
+                        <div className="admin-mobile-kv">
+                          <span>{usersStrings.brokenKeys.table.status}</span>
+                          <strong>{adminStrings.statuses[item.currentStatus] ?? item.currentStatus}</strong>
+                        </div>
+                        <div className="admin-mobile-kv">
+                          <span>{usersStrings.brokenKeys.table.reason}</span>
+                          <strong>{item.reasonSummary || item.reasonCode || usersStrings.brokenKeys.noReason}</strong>
+                        </div>
+                        <div className="admin-mobile-kv">
+                          <span>{usersStrings.brokenKeys.table.latestBreakAt}</span>
+                          <strong>{formatTimestamp(item.latestBreakAt)}</strong>
+                        </div>
+                        <div className="admin-mobile-kv">
+                          <span>{usersStrings.brokenKeys.table.breaker}</span>
+                          <strong>{formatMonthlyBrokenBreaker(item, usersStrings.brokenKeys)}</strong>
+                        </div>
+                        <div className="admin-mobile-kv">
+                          <span>{usersStrings.brokenKeys.table.relatedUsers}</span>
+                          <strong>
+                            {formatMonthlyBrokenRelatedUsers(
+                              item.relatedUsers,
+                              usersStrings.brokenKeys.noRelatedUsers,
+                            )}
+                          </strong>
+                        </div>
+                      </article>
+                    )
+                  })
+                )}
+              </AdminLoadingRegion>
+            </section>
+          </div>
+        </DrawerContent>
+      </Drawer>
+
+      <Drawer
+        open={requestEntityDrawer != null}
+        onOpenChange={(open) => {
+          if (!open) closeRequestEntityDrawer()
+        }}
+        shouldScaleBackground={false}
+      >
+        <DrawerContent className="request-entity-drawer-content">
+          <div className="request-entity-drawer-body">
+            {requestEntityDrawer?.kind === 'key' ? (
+              <KeyDetails
+                key={`drawer-key-${requestEntityDrawer.id}`}
+                id={requestEntityDrawer.id}
+                onBack={closeRequestEntityDrawer}
+                onOpenUser={navigateUser}
+                onOpenToken={navigateToken}
+              />
+            ) : requestEntityDrawer?.kind === 'token' ? (
+              <TokenDetail
+                key={`drawer-token-${requestEntityDrawer.id}`}
+                id={requestEntityDrawer.id}
+                onBack={closeRequestEntityDrawer}
+                onOpenKey={navigateKey}
+                onOpenUser={navigateUser}
+                onSecretRotated={handleTokenSecretRotated}
+              />
+            ) : null}
+          </div>
+        </DrawerContent>
+      </Drawer>
+
+    {/* Batch Create Tokens modal */}
+    <Dialog open={batchDialogOpen} onOpenChange={(open) => { if (!open) closeBatchDialog() }}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>{tokenStrings.batchDialog.title}</DialogTitle>
+        </DialogHeader>
+        {batchShareText == null ? (
+          <>
+            <div className="flex flex-col gap-3 py-2 sm:flex-row">
+              <Input
+                type="text"
+                name="batch-token-group"
+                placeholder={tokenStrings.batchDialog.groupPlaceholder}
+                value={batchGroup}
+                onChange={(e) => setBatchGroup(e.target.value)}
+                style={{ flex: 1 }}
+              />
+              <Input
+                type="number"
+                name="batch-token-count"
+                min={1}
+                max={1000}
+                value={batchCount}
+                onChange={(e) => setBatchCount(Number(e.target.value) || 1)}
+                className="w-full sm:w-[120px]"
+              />
+            </div>
+            <DialogFooter className="modal-action">
+              <Button type="button" variant="outline" onClick={closeBatchDialog}>
+                {tokenStrings.batchDialog.cancel}
+              </Button>
+              <Button type="button" onClick={() => void submitBatchCreate()} disabled={batchCreating}>
+                {batchCreating ? tokenStrings.batchDialog.creating : tokenStrings.batchDialog.confirm}
+              </Button>
+            </DialogFooter>
+          </>
+        ) : (
+          <>
+            <div className="batch-dialog-body">
+              <p className="py-2">
+                {tokenStrings.batchDialog.createdN.replace(
+                  '{n}',
+                  String((batchShareText ?? '').split('\n').filter((line) => line.length > 0).length),
+                )}
+              </p>
+              <Textarea
+                readOnly
+                wrap="off"
+                rows={6}
+                className="min-h-[144px] resize-none"
+                style={{
+                  width: '100%',
+                  fontFamily:
+                    'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+                  whiteSpace: 'pre',
+                  overflowX: 'auto',
+                  overflowY: 'auto',
+                }}
+                value={batchShareText ?? ''}
+                onClick={(event) => selectAllReadonlyText(event.currentTarget)}
+                onFocus={(event) => selectAllReadonlyText(event.currentTarget)}
+              />
+            </div>
+            <DialogFooter className="modal-action">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={async () => {
+                  if (!batchShareText) return
+                  const copyResult = await copyToClipboard(batchShareText, { preferExecCommand: true })
+                  if (!copyResult.ok) {
+                    setError(errorStrings.copyToken)
+                  }
+                }}
+              >
+                {tokenStrings.batchDialog.copyAll}
+              </Button>
+              <Button type="button" onClick={closeBatchDialog}>
+                {tokenStrings.batchDialog.done}
+              </Button>
+            </DialogFooter>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
+
+{/* API Keys Validation modal */}
+<ApiKeysValidationDialog
+  open={keysValidationVisibleState != null}
+  state={keysValidationVisibleState}
+  counts={keysValidationCounts}
+  validKeys={keysValidationValidKeys}
+  exhaustedKeys={keysValidationExhaustedKeys}
+  onClose={closeKeysValidationDialog}
+  onRetryFailed={() => void handleRetryFailedValidation()}
+  onRetryOne={(apiKey) => void handleRetryOneValidation(apiKey)}
+  onImportValid={() => void handleImportValidatedKeys()}
+/>
+
+{/* Batch Add API Keys Report modal */}
+<Dialog open={keysBatchReport != null} onOpenChange={(open) => { if (!open) closeKeysBatchReportDialog() }}>
+  <DialogContent className="max-w-4xl sm:max-h-[min(calc(100dvh-6rem),calc(100vh-6rem))]">
+    <DialogHeader>
+      <DialogTitle>{keyStrings.batch.report.title}</DialogTitle>
+    </DialogHeader>
+    <div style={{ overflowY: 'auto', minHeight: 0, paddingTop: 12 }}>
+      {keysBatchReport?.kind === 'error' ? (
+        <>
+          <div className="alert alert-error">
+            {keysBatchReport.message}
+          </div>
+          <div className="py-2" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 }}>
+            <div>
+              <span className="opacity-70">{keyStrings.batch.report.summary.inputLines}</span> {formatNumber(keysBatchReport.input_lines)}
+            </div>
+            <div>
+              <span className="opacity-70">{keyStrings.batch.report.summary.validLines}</span> {formatNumber(keysBatchReport.valid_lines)}
+            </div>
+          </div>
+        </>
+      ) : keysBatchReport?.kind === 'success' ? (
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div>
+            <div className="py-2" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 }}>
+              <div>
+                <span className="opacity-70">{keyStrings.batch.report.summary.inputLines}</span>{' '}
+                {formatNumber(keysBatchReport.response.summary.input_lines)}
+              </div>
+              <div>
+                <span className="opacity-70">{keyStrings.batch.report.summary.validLines}</span>{' '}
+                {formatNumber(keysBatchReport.response.summary.valid_lines)}
+              </div>
+              <div>
+                <span className="opacity-70">{keyStrings.batch.report.summary.uniqueInInput}</span>{' '}
+                {formatNumber(keysBatchReport.response.summary.unique_in_input)}
+              </div>
+              <div>
+                <span className="opacity-70">{keyStrings.batch.report.summary.duplicateInInput}</span>{' '}
+                {formatNumber(keysBatchReport.response.summary.duplicate_in_input)}
+              </div>
+              <div>
+                <span className="opacity-70">{keyStrings.batch.report.summary.created}</span>{' '}
+                {formatNumber(keysBatchReport.response.summary.created)}
+              </div>
+              <div>
+                <span className="opacity-70">{keyStrings.batch.report.summary.undeleted}</span>{' '}
+                {formatNumber(keysBatchReport.response.summary.undeleted)}
+              </div>
+              <div>
+                <span className="opacity-70">{keyStrings.batch.report.summary.existed}</span>{' '}
+                {formatNumber(keysBatchReport.response.summary.existed)}
+              </div>
+              <div>
+                <span className="opacity-70">{keyStrings.batch.report.summary.failed}</span>{' '}
+                {formatNumber(keysBatchReport.response.summary.failed)}
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <h4 className="font-bold">{keyStrings.batch.report.failures.title}</h4>
+            {keysBatchFailures.length === 0 ? (
+              <div className="py-2">{keyStrings.batch.report.failures.none}</div>
+            ) : (
+              <div
+                className="overflow-x-auto"
+                style={{
+                  marginTop: 8,
+                  maxHeight: 'min(calc(100dvh - 18rem), calc(100vh - 18rem))',
+                  overflowY: 'auto',
+                }}
+              >
+                <Table className="table-zebra">
+                  <thead>
+                    <tr>
+                      <th>{keyStrings.batch.report.failures.table.apiKey}</th>
+                      <th>{keyStrings.batch.report.failures.table.error}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {keysBatchFailures.map((item, index) => (
+                      <tr key={`${item.api_key}-${index}`}>
+                        <td style={{ wordBreak: 'break-all' }}>
+                          <code>{item.api_key}</code>
+                        </td>
+                        <td style={{ wordBreak: 'break-word' }}>{item.error || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </Table>
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="py-2">{keyStrings.batch.hint}</div>
+      )}
+    </div>
+    <DialogFooter className="modal-action" style={{ marginTop: 12 }}>
+      <Button type="button" variant="outline" onClick={closeKeysBatchReportDialog}>
+        {keyStrings.batch.report.close}
+      </Button>
+    </DialogFooter>
+  </DialogContent>
+</Dialog>
+
+{/* Disable Confirmation modal */}
+<Dialog open={pendingDisableId != null} onOpenChange={(open) => { if (!open) cancelDisable() }}>
+  <DialogContent className="max-w-md">
+    <DialogHeader>
+      <DialogTitle>{keyStrings.dialogs.disable.title}</DialogTitle>
+      <DialogDescription>{keyStrings.dialogs.disable.description}</DialogDescription>
+    </DialogHeader>
+    <DialogFooter className="modal-action">
+      <Button type="button" variant="outline" onClick={cancelDisable}>
+        {keyStrings.dialogs.disable.cancel}
+      </Button>
+      <Button type="button" onClick={() => void confirmDisable()} disabled={!!togglingId}>
+        {keyStrings.dialogs.disable.confirm}
+      </Button>
+    </DialogFooter>
+  </DialogContent>
+</Dialog>
+
+{/* Delete Confirmation modal */}
+<Dialog open={pendingDeleteId != null} onOpenChange={(open) => { if (!open) cancelDelete() }}>
+  <DialogContent className="max-w-md">
+    <DialogHeader>
+      <DialogTitle>{keyStrings.dialogs.delete.title}</DialogTitle>
+      <DialogDescription>{keyStrings.dialogs.delete.description}</DialogDescription>
+    </DialogHeader>
+    <DialogFooter className="modal-action">
+      <Button type="button" variant="outline" onClick={cancelDelete}>
+        {keyStrings.dialogs.delete.cancel}
+      </Button>
+      <Button type="button" variant="destructive" onClick={() => void confirmDelete()} disabled={!!deletingId}>
+        {keyStrings.dialogs.delete.confirm}
+      </Button>
+    </DialogFooter>
+  </DialogContent>
+</Dialog>
+
+{/* Token Delete Confirmation */}
+<Dialog open={pendingTokenDeleteId != null} onOpenChange={(open) => { if (!open) cancelTokenDelete() }}>
+  <DialogContent className="max-w-md">
+    <DialogHeader>
+      <DialogTitle>{tokenStrings.dialogs.delete.title}</DialogTitle>
+      <DialogDescription>{tokenStrings.dialogs.delete.description}</DialogDescription>
+    </DialogHeader>
+    <DialogFooter className="modal-action">
+      <Button type="button" variant="outline" onClick={cancelTokenDelete}>
+        {tokenStrings.dialogs.delete.cancel}
+      </Button>
+      <Button type="button" variant="destructive" onClick={() => void confirmTokenDelete()} disabled={!!deletingId}>
+        {tokenStrings.dialogs.delete.confirm}
+      </Button>
+    </DialogFooter>
+  </DialogContent>
+</Dialog>
+
+{/* Token Edit Note modal */}
+<Dialog open={editingTokenId != null} onOpenChange={(open) => { if (!open) cancelTokenNote() }}>
+  <DialogContent className="max-w-lg">
+    <DialogHeader>
+      <DialogTitle>{tokenStrings.dialogs.note.title}</DialogTitle>
+    </DialogHeader>
+    <Input
+      type="text"
+      name="editing-token-note"
+      placeholder={tokenStrings.dialogs.note.placeholder}
+      value={editingTokenNote}
+      onChange={(e) => setEditingTokenNote(e.target.value)}
+    />
+    <DialogFooter className="modal-action">
+      <Button type="button" variant="outline" onClick={cancelTokenNote}>
+        {tokenStrings.dialogs.note.cancel}
+      </Button>
+      <Button type="button" onClick={() => void saveTokenNote()} disabled={savingTokenNote}>
+        {savingTokenNote ? tokenStrings.dialogs.note.saving : tokenStrings.dialogs.note.confirm}
+      </Button>
+    </DialogFooter>
+  </DialogContent>
+</Dialog>
+<Dialog open={manualCopyDialog != null} onOpenChange={(open) => { if (!open) setManualCopyDialog(null) }}>
+  <DialogContent
+    className="max-w-lg"
+    onEscapeKeyDown={(event) => event.preventDefault()}
+    onInteractOutside={(event) => event.preventDefault()}
+  >
+    <DialogHeader>
+      <DialogTitle>{manualCopyDialog?.title ?? manualCopyText.createToken.title}</DialogTitle>
+      <DialogDescription>{manualCopyDialog?.description ?? manualCopyText.createToken.description}</DialogDescription>
+    </DialogHeader>
+    <div className="grid gap-2">
+      <label className="manual-copy-bubble-label" htmlFor="admin-manual-copy-dialog-field">
+        {manualCopyDialog?.fieldLabel ?? manualCopyText.fields.token}
+      </label>
+      <Input
+        id="admin-manual-copy-dialog-field"
+        ref={manualCopyDialogFieldRef}
+        className="manual-copy-bubble-field"
+        readOnly
+        value={manualCopyDialog?.value ?? ''}
+        onFocus={(event) => selectAllReadonlyText(event.currentTarget)}
+        onClick={(event) => selectAllReadonlyText(event.currentTarget)}
+      />
+    </div>
+    <DialogFooter className="modal-action">
+      <Button type="button" onClick={() => setManualCopyDialog(null)}>
+        {manualCopyText.close}
+      </Button>
+    </DialogFooter>
+  </DialogContent>
+</Dialog>
+      <ManualCopyBubble
+        open={manualCopyBubble != null}
+        anchorEl={manualCopyBubble?.anchorEl ?? null}
+        title={manualCopyBubble?.title ?? manualCopyText.title}
+        description={manualCopyBubble?.description ?? manualCopyText.description}
+        fieldLabel={manualCopyBubble?.fieldLabel ?? manualCopyText.fields.token}
+        value={manualCopyBubble?.value ?? ''}
+        multiline={manualCopyBubble?.multiline ?? false}
+        closeLabel={manualCopyText.close}
+        onClose={() => setManualCopyBubble(null)}
+      />
+    </>
+  )
+
+  const renderAdminPageWithGlobalOverlays = (pageShell: JSX.Element): JSX.Element => (
+    <AdminOverlayHost overlays={renderAdminGlobalOverlayHost()}>{pageShell}</AdminOverlayHost>
+  )
+
+
   if (route.name === 'key') {
-    return (
+    return renderAdminPageWithGlobalOverlays(
       <AdminShell
         activeItem={activeNavItem}
         navItems={navItems}
@@ -6347,7 +6900,7 @@ function AdminDashboard(): JSX.Element {
     )
   }
   if (route.name === 'token') {
-    return (
+    return renderAdminPageWithGlobalOverlays(
       <AdminShell
         activeItem={activeNavItem}
         navItems={navItems}
@@ -6366,7 +6919,7 @@ function AdminDashboard(): JSX.Element {
     )
   }
   if (route.name === 'user-tags' || route.name === 'user-tag-editor') {
-    return renderUserTagCatalogIndexPage()
+    return renderAdminPageWithGlobalOverlays(renderUserTagCatalogIndexPage())
   }
   if (route.name === 'user') {
     const detail = selectedUserDetail
@@ -6374,7 +6927,7 @@ function AdminDashboard(): JSX.Element {
     const boundTags = detail?.tags ?? []
     const hasBlockAllTag = boundTags.some((tag) => tag.effectKind === 'block_all')
 
-    return (
+    return renderAdminPageWithGlobalOverlays(
       <AdminShell
         activeItem={activeNavItem}
         navItems={navItems}
@@ -7030,7 +7583,7 @@ function AdminDashboard(): JSX.Element {
       </AdminShellSidebarUtility>
     )
 
-    return (
+    return renderAdminPageWithGlobalOverlays(
       <AdminShell
         activeItem={activeNavItem}
         navItems={navItems}
@@ -7354,7 +7907,7 @@ function AdminDashboard(): JSX.Element {
     const usageMonthlyRateLabel =
       language === 'zh' ? unboundTokenUsageStrings.table.monthlySuccessRate : 'Monthly'
 
-    return (
+    return renderAdminPageWithGlobalOverlays(
       <AdminShell
         activeItem={activeNavItem}
         navItems={navItems}
@@ -7956,13 +8509,14 @@ function AdminDashboard(): JSX.Element {
 	          </div>,
           document.body,
         )}
-      <AdminShell
-        activeItem={activeNavItem}
-        navItems={navItems}
-        skipToContentLabel={adminStrings.accessibility.skipToContent}
-        onSelectItem={navigateModule}
-      >
-      {moduleDesktopUtility}
+      {renderAdminPageWithGlobalOverlays(
+        <AdminShell
+          activeItem={activeNavItem}
+          navItems={navItems}
+          skipToContentLabel={adminStrings.accessibility.skipToContent}
+          onSelectItem={navigateModule}
+        >
+          {moduleDesktopUtility}
 
       <div className="admin-stacked-only">
         <AdminPanelHeader
@@ -9732,546 +10286,9 @@ function AdminDashboard(): JSX.Element {
         />
       )}
 
-      <Drawer
-        open={monthlyBrokenDrawer != null}
-        onOpenChange={(open) => {
-          if (!open) closeMonthlyBrokenDrawer()
-        }}
-        shouldScaleBackground={false}
-      >
-        <DrawerContent className="request-entity-drawer-content-fit">
-          <div className="request-entity-drawer-body-fit">
-            <section className="surface panel">
-              <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
-                <div>
-                  <h2>{usersStrings.brokenKeys.drawerTitle}</h2>
-                  <p className="panel-description">
-                    {usersStrings.brokenKeys.drawerDescription.replace('{label}', monthlyBrokenDrawer?.label ?? '—')}
-                  </p>
-                </div>
-              </div>
-              <AdminLoadingRegion
-                className="table-wrapper jobs-table-wrapper admin-responsive-up"
-                loadState={monthlyBrokenDrawerLoadState}
-                loadingLabel={usersStrings.brokenKeys.loading}
-                errorLabel={monthlyBrokenDrawerError ?? loadingStateStrings.error}
-                minHeight={240}
-              >
-                {monthlyBrokenDrawerItems.length === 0 ? (
-                  <div className="empty-state alert">{usersStrings.brokenKeys.empty}</div>
-                ) : (
-                  <Table className="jobs-table admin-users-table">
-                    <thead>
-                      <tr>
-                        <th>{usersStrings.brokenKeys.table.key}</th>
-                        <th>{usersStrings.brokenKeys.table.status}</th>
-                        <th>{usersStrings.brokenKeys.table.reason}</th>
-                        <th>{usersStrings.brokenKeys.table.latestBreakAt}</th>
-                        <th>{usersStrings.brokenKeys.table.breaker}</th>
-                        <th>{usersStrings.brokenKeys.table.relatedUsers}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {monthlyBrokenDrawerItems.map((item) => {
-                        const stateKey = copyStateKey('brokenKeys', item.keyId)
-                        const state = copyState.get(stateKey)
-                        return (
-                          <tr key={`${item.keyId}:${item.latestBreakAt}`}>
-                            <td>
-                              <MonthlyBrokenKeyValue
-                                keyId={item.keyId}
-                                ungroupedLabel={keyStrings.groups.ungrouped}
-                                detailLabel={keyStrings.actions.details}
-                                copyLabel={usersStrings.brokenKeys.actions.copyKeyId}
-                                copiedLabel={usersStrings.brokenKeys.actions.copied}
-                                copyState={state}
-                                onOpenKey={navigateKey}
-                                onCopy={(anchorEl) =>
-                                  handleCopyMonthlyBrokenKeyId(item.keyId, stateKey, anchorEl)
-                                }
-                              />
-                            </td>
-                            <td>
-                              <StatusBadge tone={item.currentStatus === 'quarantined' ? 'warning' : 'error'}>
-                                {adminStrings.statuses[item.currentStatus] ?? item.currentStatus}
-                              </StatusBadge>
-                            </td>
-                            <td>{item.reasonSummary || item.reasonCode || usersStrings.brokenKeys.noReason}</td>
-                            <td>{formatTimestamp(item.latestBreakAt)}</td>
-                            <td>{formatMonthlyBrokenBreaker(item, usersStrings.brokenKeys)}</td>
-                            <td>
-                              {formatMonthlyBrokenRelatedUsers(
-                                item.relatedUsers,
-                                usersStrings.brokenKeys.noRelatedUsers,
-                              )}
-                            </td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </Table>
-                )}
-              </AdminLoadingRegion>
-              <AdminLoadingRegion
-                className="admin-mobile-list admin-responsive-down"
-                loadState={monthlyBrokenDrawerLoadState}
-                loadingLabel={usersStrings.brokenKeys.loading}
-                errorLabel={monthlyBrokenDrawerError ?? loadingStateStrings.error}
-                minHeight={240}
-              >
-                {monthlyBrokenDrawerItems.length === 0 ? (
-                  <div className="empty-state alert">{usersStrings.brokenKeys.empty}</div>
-                ) : (
-                  monthlyBrokenDrawerItems.map((item) => {
-                    const stateKey = copyStateKey('brokenKeys', item.keyId)
-                    const state = copyState.get(stateKey)
-                    return (
-                      <article key={`${item.keyId}:${item.latestBreakAt}`} className="admin-mobile-card">
-                        <div className="admin-mobile-kv">
-                          <span>{usersStrings.brokenKeys.table.key}</span>
-                          <strong>
-                            <MonthlyBrokenKeyValue
-                              keyId={item.keyId}
-                              ungroupedLabel={keyStrings.groups.ungrouped}
-                              detailLabel={keyStrings.actions.details}
-                              copyLabel={usersStrings.brokenKeys.actions.copyKeyId}
-                              copiedLabel={usersStrings.brokenKeys.actions.copied}
-                              copyState={state}
-                              onOpenKey={navigateKey}
-                              onCopy={(anchorEl) =>
-                                handleCopyMonthlyBrokenKeyId(item.keyId, stateKey, anchorEl)
-                              }
-                            />
-                          </strong>
-                        </div>
-                        <div className="admin-mobile-kv">
-                          <span>{usersStrings.brokenKeys.table.status}</span>
-                          <strong>{adminStrings.statuses[item.currentStatus] ?? item.currentStatus}</strong>
-                        </div>
-                        <div className="admin-mobile-kv">
-                          <span>{usersStrings.brokenKeys.table.reason}</span>
-                          <strong>{item.reasonSummary || item.reasonCode || usersStrings.brokenKeys.noReason}</strong>
-                        </div>
-                        <div className="admin-mobile-kv">
-                          <span>{usersStrings.brokenKeys.table.latestBreakAt}</span>
-                          <strong>{formatTimestamp(item.latestBreakAt)}</strong>
-                        </div>
-                        <div className="admin-mobile-kv">
-                          <span>{usersStrings.brokenKeys.table.breaker}</span>
-                          <strong>{formatMonthlyBrokenBreaker(item, usersStrings.brokenKeys)}</strong>
-                        </div>
-                        <div className="admin-mobile-kv">
-                          <span>{usersStrings.brokenKeys.table.relatedUsers}</span>
-                          <strong>
-                            {formatMonthlyBrokenRelatedUsers(
-                              item.relatedUsers,
-                              usersStrings.brokenKeys.noRelatedUsers,
-                            )}
-                          </strong>
-                        </div>
-                      </article>
-                    )
-                  })
-                )}
-              </AdminLoadingRegion>
-            </section>
-          </div>
-        </DrawerContent>
-      </Drawer>
-
-      <Drawer
-        open={requestEntityDrawer != null}
-        onOpenChange={(open) => {
-          if (!open) closeRequestEntityDrawer()
-        }}
-        shouldScaleBackground={false}
-      >
-        <DrawerContent className="request-entity-drawer-content">
-          <div className="request-entity-drawer-body">
-            {requestEntityDrawer?.kind === 'key' ? (
-              <KeyDetails
-                key={`drawer-key-${requestEntityDrawer.id}`}
-                id={requestEntityDrawer.id}
-                onBack={closeRequestEntityDrawer}
-                onOpenUser={navigateUser}
-                onOpenToken={navigateToken}
-              />
-            ) : requestEntityDrawer?.kind === 'token' ? (
-              <TokenDetail
-                key={`drawer-token-${requestEntityDrawer.id}`}
-                id={requestEntityDrawer.id}
-                onBack={closeRequestEntityDrawer}
-                onOpenKey={navigateKey}
-                onOpenUser={navigateUser}
-                onSecretRotated={handleTokenSecretRotated}
-              />
-            ) : null}
-          </div>
-        </DrawerContent>
-      </Drawer>
-
-      <div className="app-footer">
-        <span>{footerStrings.title}</span>
-        <span className="footer-meta">
-          {/* GitHub repository link with Iconify icon */}
-          <a
-            href="https://github.com/IvanLi-CN/tavily-hikari"
-            className="footer-link"
-            target="_blank"
-            rel="noreferrer"
-            aria-label={footerStrings.githubAria}
-          >
-            <Icon icon="mdi:github" width={18} height={18} className="footer-link-icon" />
-            <span>{footerStrings.githubLabel}</span>
-          </a>
-        </span>
-        <span className="footer-meta">
-          {version ? (
-            (() => {
-              const raw = version.backend || ''
-              const clean = raw.replace(/-.+$/, '')
-              const tag = clean.startsWith('v') ? clean : `v${clean}`
-              const href = `https://github.com/IvanLi-CN/tavily-hikari/releases/tag/${tag}`
-              return (
-                <>
-                  {footerStrings.tagPrefix}
-                  <a href={href} className="footer-link" target="_blank" rel="noreferrer">
-                    {`v${raw}`}
-                  </a>
-                </>
-              )
-            })()
-          ) : (
-            footerStrings.loadingVersion
-          )}
-        </span>
-      </div>
-    </AdminShell>
-    {/* Batch Create Tokens modal */}
-    <Dialog open={batchDialogOpen} onOpenChange={(open) => { if (!open) closeBatchDialog() }}>
-      <DialogContent className="max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>{tokenStrings.batchDialog.title}</DialogTitle>
-        </DialogHeader>
-        {batchShareText == null ? (
-          <>
-            <div className="flex flex-col gap-3 py-2 sm:flex-row">
-              <Input
-                type="text"
-                name="batch-token-group"
-                placeholder={tokenStrings.batchDialog.groupPlaceholder}
-                value={batchGroup}
-                onChange={(e) => setBatchGroup(e.target.value)}
-                style={{ flex: 1 }}
-              />
-              <Input
-                type="number"
-                name="batch-token-count"
-                min={1}
-                max={1000}
-                value={batchCount}
-                onChange={(e) => setBatchCount(Number(e.target.value) || 1)}
-                className="w-full sm:w-[120px]"
-              />
-            </div>
-            <DialogFooter className="modal-action">
-              <Button type="button" variant="outline" onClick={closeBatchDialog}>
-                {tokenStrings.batchDialog.cancel}
-              </Button>
-              <Button type="button" onClick={() => void submitBatchCreate()} disabled={batchCreating}>
-                {batchCreating ? tokenStrings.batchDialog.creating : tokenStrings.batchDialog.confirm}
-              </Button>
-            </DialogFooter>
-          </>
-        ) : (
-          <>
-            <div className="batch-dialog-body">
-              <p className="py-2">
-                {tokenStrings.batchDialog.createdN.replace(
-                  '{n}',
-                  String((batchShareText ?? '').split('\n').filter((line) => line.length > 0).length),
-                )}
-              </p>
-              <Textarea
-                readOnly
-                wrap="off"
-                rows={6}
-                className="min-h-[144px] resize-none"
-                style={{
-                  width: '100%',
-                  fontFamily:
-                    'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-                  whiteSpace: 'pre',
-                  overflowX: 'auto',
-                  overflowY: 'auto',
-                }}
-                value={batchShareText ?? ''}
-                onClick={(event) => selectAllReadonlyText(event.currentTarget)}
-                onFocus={(event) => selectAllReadonlyText(event.currentTarget)}
-              />
-            </div>
-            <DialogFooter className="modal-action">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={async () => {
-                  if (!batchShareText) return
-                  const copyResult = await copyToClipboard(batchShareText, { preferExecCommand: true })
-                  if (!copyResult.ok) {
-                    setError(errorStrings.copyToken)
-                  }
-                }}
-              >
-                {tokenStrings.batchDialog.copyAll}
-              </Button>
-              <Button type="button" onClick={closeBatchDialog}>
-                {tokenStrings.batchDialog.done}
-              </Button>
-            </DialogFooter>
-          </>
-        )}
-      </DialogContent>
-    </Dialog>
-
-{/* API Keys Validation modal */}
-<ApiKeysValidationDialog
-  open={keysValidationVisibleState != null}
-  state={keysValidationVisibleState}
-  counts={keysValidationCounts}
-  validKeys={keysValidationValidKeys}
-  exhaustedKeys={keysValidationExhaustedKeys}
-  onClose={closeKeysValidationDialog}
-  onRetryFailed={() => void handleRetryFailedValidation()}
-  onRetryOne={(apiKey) => void handleRetryOneValidation(apiKey)}
-  onImportValid={() => void handleImportValidatedKeys()}
-/>
-
-{/* Batch Add API Keys Report modal */}
-<Dialog open={keysBatchReport != null} onOpenChange={(open) => { if (!open) closeKeysBatchReportDialog() }}>
-  <DialogContent className="max-w-4xl sm:max-h-[min(calc(100dvh-6rem),calc(100vh-6rem))]">
-    <DialogHeader>
-      <DialogTitle>{keyStrings.batch.report.title}</DialogTitle>
-    </DialogHeader>
-    <div style={{ overflowY: 'auto', minHeight: 0, paddingTop: 12 }}>
-      {keysBatchReport?.kind === 'error' ? (
-        <>
-          <div className="alert alert-error">
-            {keysBatchReport.message}
-          </div>
-          <div className="py-2" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 }}>
-            <div>
-              <span className="opacity-70">{keyStrings.batch.report.summary.inputLines}</span> {formatNumber(keysBatchReport.input_lines)}
-            </div>
-            <div>
-              <span className="opacity-70">{keyStrings.batch.report.summary.validLines}</span> {formatNumber(keysBatchReport.valid_lines)}
-            </div>
-          </div>
-        </>
-      ) : keysBatchReport?.kind === 'success' ? (
-        <div className="grid gap-4 lg:grid-cols-2">
-          <div>
-            <div className="py-2" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 }}>
-              <div>
-                <span className="opacity-70">{keyStrings.batch.report.summary.inputLines}</span>{' '}
-                {formatNumber(keysBatchReport.response.summary.input_lines)}
-              </div>
-              <div>
-                <span className="opacity-70">{keyStrings.batch.report.summary.validLines}</span>{' '}
-                {formatNumber(keysBatchReport.response.summary.valid_lines)}
-              </div>
-              <div>
-                <span className="opacity-70">{keyStrings.batch.report.summary.uniqueInInput}</span>{' '}
-                {formatNumber(keysBatchReport.response.summary.unique_in_input)}
-              </div>
-              <div>
-                <span className="opacity-70">{keyStrings.batch.report.summary.duplicateInInput}</span>{' '}
-                {formatNumber(keysBatchReport.response.summary.duplicate_in_input)}
-              </div>
-              <div>
-                <span className="opacity-70">{keyStrings.batch.report.summary.created}</span>{' '}
-                {formatNumber(keysBatchReport.response.summary.created)}
-              </div>
-              <div>
-                <span className="opacity-70">{keyStrings.batch.report.summary.undeleted}</span>{' '}
-                {formatNumber(keysBatchReport.response.summary.undeleted)}
-              </div>
-              <div>
-                <span className="opacity-70">{keyStrings.batch.report.summary.existed}</span>{' '}
-                {formatNumber(keysBatchReport.response.summary.existed)}
-              </div>
-              <div>
-                <span className="opacity-70">{keyStrings.batch.report.summary.failed}</span>{' '}
-                {formatNumber(keysBatchReport.response.summary.failed)}
-              </div>
-            </div>
-          </div>
-
-          <div>
-            <h4 className="font-bold">{keyStrings.batch.report.failures.title}</h4>
-            {keysBatchFailures.length === 0 ? (
-              <div className="py-2">{keyStrings.batch.report.failures.none}</div>
-            ) : (
-              <div
-                className="overflow-x-auto"
-                style={{
-                  marginTop: 8,
-                  maxHeight: 'min(calc(100dvh - 18rem), calc(100vh - 18rem))',
-                  overflowY: 'auto',
-                }}
-              >
-                <Table className="table-zebra">
-                  <thead>
-                    <tr>
-                      <th>{keyStrings.batch.report.failures.table.apiKey}</th>
-                      <th>{keyStrings.batch.report.failures.table.error}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {keysBatchFailures.map((item, index) => (
-                      <tr key={`${item.api_key}-${index}`}>
-                        <td style={{ wordBreak: 'break-all' }}>
-                          <code>{item.api_key}</code>
-                        </td>
-                        <td style={{ wordBreak: 'break-word' }}>{item.error || '—'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </Table>
-              </div>
-            )}
-          </div>
-        </div>
-      ) : (
-        <div className="py-2">{keyStrings.batch.hint}</div>
+          {appFooter}
+        </AdminShell>,
       )}
-    </div>
-    <DialogFooter className="modal-action" style={{ marginTop: 12 }}>
-      <Button type="button" variant="outline" onClick={closeKeysBatchReportDialog}>
-        {keyStrings.batch.report.close}
-      </Button>
-    </DialogFooter>
-  </DialogContent>
-</Dialog>
-
-{/* Disable Confirmation modal */}
-<Dialog open={pendingDisableId != null} onOpenChange={(open) => { if (!open) cancelDisable() }}>
-  <DialogContent className="max-w-md">
-    <DialogHeader>
-      <DialogTitle>{keyStrings.dialogs.disable.title}</DialogTitle>
-      <DialogDescription>{keyStrings.dialogs.disable.description}</DialogDescription>
-    </DialogHeader>
-    <DialogFooter className="modal-action">
-      <Button type="button" variant="outline" onClick={cancelDisable}>
-        {keyStrings.dialogs.disable.cancel}
-      </Button>
-      <Button type="button" onClick={() => void confirmDisable()} disabled={!!togglingId}>
-        {keyStrings.dialogs.disable.confirm}
-      </Button>
-    </DialogFooter>
-  </DialogContent>
-</Dialog>
-
-{/* Delete Confirmation modal */}
-<Dialog open={pendingDeleteId != null} onOpenChange={(open) => { if (!open) cancelDelete() }}>
-  <DialogContent className="max-w-md">
-    <DialogHeader>
-      <DialogTitle>{keyStrings.dialogs.delete.title}</DialogTitle>
-      <DialogDescription>{keyStrings.dialogs.delete.description}</DialogDescription>
-    </DialogHeader>
-    <DialogFooter className="modal-action">
-      <Button type="button" variant="outline" onClick={cancelDelete}>
-        {keyStrings.dialogs.delete.cancel}
-      </Button>
-      <Button type="button" variant="destructive" onClick={() => void confirmDelete()} disabled={!!deletingId}>
-        {keyStrings.dialogs.delete.confirm}
-      </Button>
-    </DialogFooter>
-  </DialogContent>
-</Dialog>
-
-{/* Token Delete Confirmation */}
-<Dialog open={pendingTokenDeleteId != null} onOpenChange={(open) => { if (!open) cancelTokenDelete() }}>
-  <DialogContent className="max-w-md">
-    <DialogHeader>
-      <DialogTitle>{tokenStrings.dialogs.delete.title}</DialogTitle>
-      <DialogDescription>{tokenStrings.dialogs.delete.description}</DialogDescription>
-    </DialogHeader>
-    <DialogFooter className="modal-action">
-      <Button type="button" variant="outline" onClick={cancelTokenDelete}>
-        {tokenStrings.dialogs.delete.cancel}
-      </Button>
-      <Button type="button" variant="destructive" onClick={() => void confirmTokenDelete()} disabled={!!deletingId}>
-        {tokenStrings.dialogs.delete.confirm}
-      </Button>
-    </DialogFooter>
-  </DialogContent>
-</Dialog>
-
-{/* Token Edit Note modal */}
-<Dialog open={editingTokenId != null} onOpenChange={(open) => { if (!open) cancelTokenNote() }}>
-  <DialogContent className="max-w-lg">
-    <DialogHeader>
-      <DialogTitle>{tokenStrings.dialogs.note.title}</DialogTitle>
-    </DialogHeader>
-    <Input
-      type="text"
-      name="editing-token-note"
-      placeholder={tokenStrings.dialogs.note.placeholder}
-      value={editingTokenNote}
-      onChange={(e) => setEditingTokenNote(e.target.value)}
-    />
-    <DialogFooter className="modal-action">
-      <Button type="button" variant="outline" onClick={cancelTokenNote}>
-        {tokenStrings.dialogs.note.cancel}
-      </Button>
-      <Button type="button" onClick={() => void saveTokenNote()} disabled={savingTokenNote}>
-        {savingTokenNote ? tokenStrings.dialogs.note.saving : tokenStrings.dialogs.note.confirm}
-      </Button>
-    </DialogFooter>
-  </DialogContent>
-</Dialog>
-<Dialog open={manualCopyDialog != null} onOpenChange={(open) => { if (!open) setManualCopyDialog(null) }}>
-  <DialogContent
-    className="max-w-lg"
-    onEscapeKeyDown={(event) => event.preventDefault()}
-    onInteractOutside={(event) => event.preventDefault()}
-  >
-    <DialogHeader>
-      <DialogTitle>{manualCopyDialog?.title ?? manualCopyText.createToken.title}</DialogTitle>
-      <DialogDescription>{manualCopyDialog?.description ?? manualCopyText.createToken.description}</DialogDescription>
-    </DialogHeader>
-    <div className="grid gap-2">
-      <label className="manual-copy-bubble-label" htmlFor="admin-manual-copy-dialog-field">
-        {manualCopyDialog?.fieldLabel ?? manualCopyText.fields.token}
-      </label>
-      <Input
-        id="admin-manual-copy-dialog-field"
-        ref={manualCopyDialogFieldRef}
-        className="manual-copy-bubble-field"
-        readOnly
-        value={manualCopyDialog?.value ?? ''}
-        onFocus={(event) => selectAllReadonlyText(event.currentTarget)}
-        onClick={(event) => selectAllReadonlyText(event.currentTarget)}
-      />
-    </div>
-    <DialogFooter className="modal-action">
-      <Button type="button" onClick={() => setManualCopyDialog(null)}>
-        {manualCopyText.close}
-      </Button>
-    </DialogFooter>
-  </DialogContent>
-</Dialog>
-      <ManualCopyBubble
-        open={manualCopyBubble != null}
-        anchorEl={manualCopyBubble?.anchorEl ?? null}
-        title={manualCopyBubble?.title ?? manualCopyText.title}
-        description={manualCopyBubble?.description ?? manualCopyText.description}
-        fieldLabel={manualCopyBubble?.fieldLabel ?? manualCopyText.fields.token}
-        value={manualCopyBubble?.value ?? ''}
-        multiline={manualCopyBubble?.multiline ?? false}
-        closeLabel={manualCopyText.close}
-        onClose={() => setManualCopyBubble(null)}
-      />
     </>
   )
 }

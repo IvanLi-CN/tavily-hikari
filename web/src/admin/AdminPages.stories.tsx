@@ -97,6 +97,7 @@ import {
   type QuotaSliderField,
   type QuotaSliderSeed,
 } from './quotaSlider'
+import AdminOverlayHost from './AdminOverlayHost'
 const now = 1_762_380_000
 const ADMIN_USERS_DEFAULT_SORT_FIELD: AdminUsersSortField = 'lastLoginAt'
 const ADMIN_USERS_DEFAULT_SORT_ORDER: SortDirection = 'desc'
@@ -1749,7 +1750,10 @@ function MonthlyBrokenDrawerStoryCanvas({
   items: MonthlyBrokenKeyDetail[]
 }): JSX.Element {
   return (
-    <AdminPageFrame activeModule="users">
+    <AdminPageFrame
+      activeModule="users"
+      overlays={<StoryMonthlyBrokenDrawer open label={label} items={items} onOpenChange={() => undefined} />}
+    >
       <section className="surface panel">
         <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
           <div>
@@ -1759,7 +1763,6 @@ function MonthlyBrokenDrawerStoryCanvas({
         </div>
         <div className="empty-state alert">Background reference only. Use the open drawer to inspect sizing.</div>
       </section>
-      <StoryMonthlyBrokenDrawer open label={label} items={items} onOpenChange={() => undefined} />
     </AdminPageFrame>
   )
 }
@@ -2564,12 +2567,14 @@ function buildNavItems(strings: AdminTranslations): AdminNavItem[] {
 interface AdminPageFrameProps {
   activeModule: AdminNavTarget
   children: ReactNode
+  overlays?: ReactNode
   showDefaultShellChrome?: boolean
 }
 
 function AdminPageFrame({
   activeModule,
   children,
+  overlays,
   showDefaultShellChrome = true,
 }: AdminPageFrameProps): JSX.Element {
   const admin = useTranslate().admin
@@ -2624,75 +2629,74 @@ function AdminPageFrame({
   })()
 
   return (
-    <AdminShell
-      activeItem={activeModule}
-      navItems={buildNavItems(admin)}
-      skipToContentLabel={admin.accessibility.skipToContent}
-      onSelectItem={() => {}}
-    >
-      {showDefaultShellChrome && (
-        <>
-          <AdminShellSidebarUtility>
-            <AdminSidebarUtilityStack>
-              <AdminSidebarUtilityCard>
-                <div className="admin-sidebar-utility-toolbar">
-                  <ThemeToggle />
-                  <LanguageSwitcher />
-                </div>
-                <div className="admin-sidebar-utility-meta">
-                  <div className="user-badge user-badge-admin">
-                    <Icon icon="mdi:crown-outline" className="user-badge-icon" aria-hidden="true" />
-                    <span>Ops Admin</span>
+    <AdminOverlayHost overlays={overlays}>
+      <AdminShell
+        activeItem={activeModule}
+        navItems={buildNavItems(admin)}
+        skipToContentLabel={admin.accessibility.skipToContent}
+        onSelectItem={() => {}}
+      >
+        {showDefaultShellChrome && (
+          <>
+            <AdminShellSidebarUtility>
+              <AdminSidebarUtilityStack>
+                <AdminSidebarUtilityCard>
+                  <div className="admin-sidebar-utility-toolbar">
+                    <ThemeToggle />
+                    <LanguageSwitcher />
                   </div>
-                  <span className="admin-panel-header-time" aria-live="polite">
-                    <Icon icon="mdi:clock-time-four-outline" width={14} height={14} className="admin-panel-header-time-icon" aria-hidden="true" />
-                    <span className="admin-panel-header-time-label">{admin.header.updatedPrefix}</span>
-                    <span className="admin-panel-header-time-value">11:42:10</span>
-                  </span>
-                </div>
-              </AdminSidebarUtilityCard>
-              <AdminSidebarUtilityCard>
-                <div className="admin-sidebar-utility-actions">
-                  <AdminReturnToConsoleLink
-                    label={admin.header.returnToConsole}
-                    href="/console"
-                    className="admin-sidebar-utility-action"
-                  />
-                  <Button type="button" variant="outline" size="sm" className="admin-panel-refresh-button admin-sidebar-utility-action">
-                    <Icon icon="mdi:refresh" width={16} height={16} aria-hidden="true" />
-                    <span>{admin.header.refreshNow}</span>
-                  </Button>
-                </div>
-              </AdminSidebarUtilityCard>
-            </AdminSidebarUtilityStack>
-          </AdminShellSidebarUtility>
+                  <div className="admin-sidebar-utility-meta">
+                    <div className="user-badge user-badge-admin">
+                      <Icon icon="mdi:crown-outline" className="user-badge-icon" aria-hidden="true" />
+                      <span>Ops Admin</span>
+                    </div>
+                    <span className="admin-panel-header-time" aria-live="polite">
+                      <Icon icon="mdi:clock-time-four-outline" width={14} height={14} className="admin-panel-header-time-icon" aria-hidden="true" />
+                      <span className="admin-panel-header-time-label">{admin.header.updatedPrefix}</span>
+                      <span className="admin-panel-header-time-value">11:42:10</span>
+                    </span>
+                  </div>
+                </AdminSidebarUtilityCard>
+                <AdminSidebarUtilityCard>
+                  <div className="admin-sidebar-utility-actions">
+                    <AdminReturnToConsoleLink
+                      label={admin.header.returnToConsole}
+                      href="/console"
+                      className="admin-sidebar-utility-action"
+                    />
+                    <Button type="button" variant="outline" size="sm" className="admin-panel-refresh-button admin-sidebar-utility-action">
+                      <Icon icon="mdi:refresh" width={16} height={16} aria-hidden="true" />
+                      <span>{admin.header.refreshNow}</span>
+                    </Button>
+                  </div>
+                </AdminSidebarUtilityCard>
+              </AdminSidebarUtilityStack>
+            </AdminShellSidebarUtility>
 
-          <div className="admin-stacked-only">
-            <AdminPanelHeader
-              title={admin.header.title}
-              subtitle={admin.header.subtitle}
-              displayName="Ops Admin"
-              isAdmin
-              updatedPrefix={admin.header.updatedPrefix}
-              updatedTime="11:42:10"
-              isRefreshing={false}
-              refreshLabel={admin.header.refreshNow}
-              refreshingLabel={admin.header.refreshing}
-              userConsoleLabel={admin.header.returnToConsole}
-              userConsoleHref="/console"
-              onRefresh={() => {}}
-            />
-          </div>
-          <div className="admin-desktop-only">
-            <AdminCompactIntro
-              title={intro.title}
-              description={intro.description}
-            />
-          </div>
-        </>
-      )}
-      {children}
-    </AdminShell>
+            <div className="admin-stacked-only">
+              <AdminPanelHeader
+                title={admin.header.title}
+                subtitle={admin.header.subtitle}
+                displayName="Ops Admin"
+                isAdmin
+                updatedPrefix={admin.header.updatedPrefix}
+                updatedTime="11:42:10"
+                isRefreshing={false}
+                refreshLabel={admin.header.refreshNow}
+                refreshingLabel={admin.header.refreshing}
+                userConsoleLabel={admin.header.returnToConsole}
+                userConsoleHref="/console"
+                onRefresh={() => {}}
+              />
+            </div>
+            <div className="admin-desktop-only">
+              <AdminCompactIntro title={intro.title} description={intro.description} />
+            </div>
+          </>
+        )}
+        {children}
+      </AdminShell>
+    </AdminOverlayHost>
   )
 }
 
@@ -4021,7 +4025,20 @@ function UsersUsagePageCanvas({
   }
 
   return (
-    <AdminPageFrame activeModule="user-usage" showDefaultShellChrome={false}>
+    <AdminPageFrame
+      activeModule="user-usage"
+      overlays={
+        <StoryMonthlyBrokenDrawer
+          open={monthlyBrokenDrawer != null}
+          label={monthlyBrokenDrawer?.label ?? '—'}
+          items={monthlyBrokenDrawer?.items ?? []}
+          onOpenChange={(open) => {
+            if (!open) setMonthlyBrokenDrawer(null)
+          }}
+        />
+      }
+      showDefaultShellChrome={false}
+    >
       <AdminShellSidebarUtility>
         <AdminSidebarUtilityStack>
           <AdminSidebarUtilityCard>
@@ -4275,15 +4292,6 @@ function UsersUsagePageCanvas({
             </table>
           )}
         </div>
-
-        <StoryMonthlyBrokenDrawer
-          open={monthlyBrokenDrawer != null}
-          label={monthlyBrokenDrawer?.label ?? '—'}
-          items={monthlyBrokenDrawer?.items ?? []}
-          onOpenChange={(open) => {
-            if (!open) setMonthlyBrokenDrawer(null)
-          }}
-        />
       </section>
     </AdminPageFrame>
   )
@@ -4359,7 +4367,19 @@ function UnboundTokenUsagePageCanvas({
   }
 
   return (
-    <AdminPageFrame activeModule="tokens">
+    <AdminPageFrame
+      activeModule="tokens"
+      overlays={
+        <StoryMonthlyBrokenDrawer
+          open={monthlyBrokenDrawer != null}
+          label={monthlyBrokenDrawer?.label ?? '—'}
+          items={monthlyBrokenDrawer?.items ?? []}
+          onOpenChange={(open) => {
+            if (!open) setMonthlyBrokenDrawer(null)
+          }}
+        />
+      }
+    >
       <section className="surface panel">
         <div className="panel-header" style={{ gap: 12, flexWrap: 'wrap' }}>
           <div className="admin-stacked-only" style={{ flex: '1 1 340px', minWidth: 260 }}>
@@ -4686,15 +4706,6 @@ function UnboundTokenUsagePageCanvas({
             onNext={() => setPage((current) => Math.min(totalPages, current + 1))}
           />
         )}
-
-        <StoryMonthlyBrokenDrawer
-          open={monthlyBrokenDrawer != null}
-          label={monthlyBrokenDrawer?.label ?? '—'}
-          items={monthlyBrokenDrawer?.items ?? []}
-          onOpenChange={(open) => {
-            if (!open) setMonthlyBrokenDrawer(null)
-          }}
-        />
       </section>
     </AdminPageFrame>
   )
@@ -4859,7 +4870,17 @@ function UserDetailPageCanvas(): JSX.Element {
   const hasBlockAllTag = detail.tags.some((tag) => tag.effectKind === 'block_all')
 
   return (
-    <AdminPageFrame activeModule="users">
+    <AdminPageFrame
+      activeModule="users"
+      overlays={
+        <StoryMonthlyBrokenDrawer
+          open={monthlyBrokenDrawerOpen}
+          label={detail.displayName || detail.username || detail.userId}
+          items={MOCK_MONTHLY_BROKEN_ITEMS[`user:${detail.userId}`] ?? []}
+          onOpenChange={setMonthlyBrokenDrawerOpen}
+        />
+      }
+    >
       <section className="surface panel">
         <div className="panel-header">
           <div>
@@ -5293,13 +5314,6 @@ function UserDetailPageCanvas(): JSX.Element {
           </table>
         </div>
       </section>
-
-      <StoryMonthlyBrokenDrawer
-        open={monthlyBrokenDrawerOpen}
-        label={detail.displayName || detail.username || detail.userId}
-        items={MOCK_MONTHLY_BROKEN_ITEMS[`user:${detail.userId}`] ?? []}
-        onOpenChange={setMonthlyBrokenDrawerOpen}
-      />
     </AdminPageFrame>
   )
 }
