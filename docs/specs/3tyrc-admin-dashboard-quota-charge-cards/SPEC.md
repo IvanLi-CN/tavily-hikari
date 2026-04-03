@@ -105,7 +105,7 @@
 - [x] M2: quota sync 样本表、写入与窗口聚合完成
 - [x] M3: 热/冷双路径调度完成
 - [x] M4: DashboardOverview 新卡与布局完成
-- [ ] M5: Storybook、浏览器验收、快车道收口完成
+- [x] M5: Storybook、浏览器验收、快车道收口完成
 
 ## 风险与假设
 
@@ -115,14 +115,26 @@
 
 ## Visual Evidence
 
+- 证据绑定：
+  - `HEAD=9de1c428c421bbc70cbcb95c2f4e822ac4ad7941`
+  - 视觉证据目标源：`storybook_canvas + mock_ui`
+  - 空白裁剪：已执行 `trim_whitespace.py`，四张图均因 `ambiguous_border` fail-open 保持原始构图。
 - Storybook 桌面截图：
-  - `/Users/ivan/.codex/worktrees/92b7/tavily-hikari/tmp/visual-evidence/3tyrc/storybook-dashboard-desktop.png`
+
+![Storybook 桌面截图](assets/storybook-dashboard-desktop.png)
+
 - Storybook 移动端截图：
-  - `/Users/ivan/.codex/worktrees/92b7/tavily-hikari/tmp/visual-evidence/3tyrc/storybook-dashboard-mobile.png`
+
+![Storybook 移动端截图](assets/storybook-dashboard-mobile.png)
+
 - 真实 `/admin/dashboard` 桌面截图：
-  - `/Users/ivan/.codex/worktrees/92b7/tavily-hikari/tmp/visual-evidence/3tyrc/admin-dashboard-desktop.png`
+
+![真实 admin dashboard 桌面截图](assets/admin-dashboard-desktop.png)
+
 - 真实 `/admin/dashboard` 移动端截图：
-  - `/Users/ivan/.codex/worktrees/92b7/tavily-hikari/tmp/visual-evidence/3tyrc/admin-dashboard-mobile.png`
+
+![真实 admin dashboard 移动端截图](assets/admin-dashboard-mobile.png)
+
 - 桌面端验证：
   - Storybook `clientWidth=1425 / scrollWidth=1425`，无横向滚动。
   - 真实 `/admin/dashboard` `clientWidth=1425 / scrollWidth=1425`，无横向滚动。
