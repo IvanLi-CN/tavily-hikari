@@ -225,6 +225,14 @@ interface AdminTranslationsShape {
     monthToDate: string
     monthAdded: string
     monthShare: string
+    quotaChargeTitle: string
+    quotaChargeLocalEstimate: string
+    quotaChargeUpstreamActual: string
+    quotaChargeDelta: string
+    quotaChargeSampledKeys: string
+    quotaChargeStaleKeys: string
+    quotaChargeLatestSync: string
+    quotaChargeNoSync: string
     valuableTag: string
     otherTag: string
     unknownTag: string
@@ -1484,6 +1492,14 @@ export const translations: Record<Language, TranslationShape> = {
         monthToDate: 'Month to date',
         monthAdded: 'Added this month',
         monthShare: 'Month share',
+        quotaChargeTitle: 'Quota Charges',
+        quotaChargeLocalEstimate: 'Local estimate',
+        quotaChargeUpstreamActual: 'Upstream actual',
+        quotaChargeDelta: 'Delta',
+        quotaChargeSampledKeys: 'Sampled',
+        quotaChargeStaleKeys: 'Stale',
+        quotaChargeLatestSync: 'Latest sync',
+        quotaChargeNoSync: 'No sync data',
         valuableTag: 'Primary',
         otherTag: 'Secondary',
         unknownTag: 'Unknown',
@@ -2348,6 +2364,7 @@ export const translations: Record<Language, TranslationShape> = {
         },
         types: {
           quota_sync: 'Sync quota',
+          'quota_sync/hot': 'Hot quota sync',
           'quota_sync/manual': 'Manual sync',
           token_usage_rollup: 'Usage rollups',
           usage_aggregation: 'Usage rollups',
@@ -2732,6 +2749,14 @@ export const translations: Record<Language, TranslationShape> = {
         monthToDate: '本月累计',
         monthAdded: '本月新增',
         monthShare: '本月占比',
+        quotaChargeTitle: '额度扣减',
+        quotaChargeLocalEstimate: '本地估算',
+        quotaChargeUpstreamActual: '上游 Key 实扣',
+        quotaChargeDelta: '差值',
+        quotaChargeSampledKeys: '已采样',
+        quotaChargeStaleKeys: '滞后',
+        quotaChargeLatestSync: '最新同步',
+        quotaChargeNoSync: '暂无同步数据',
         valuableTag: '主要',
         otherTag: '次要',
         unknownTag: '未知',
@@ -3596,6 +3621,7 @@ export const translations: Record<Language, TranslationShape> = {
         },
         types: {
           quota_sync: '同步额度',
+          'quota_sync/hot': '热 Key 同步',
           'quota_sync/manual': '手动同步',
           token_usage_rollup: '用量聚合',
           usage_aggregation: '用量聚合',

@@ -1,11 +1,19 @@
-fn random_delay_secs() -> u64 {
+fn random_delay_secs(max_inclusive: u64) -> u64 {
     use rand::Rng;
     let mut rng = rand::thread_rng();
-    rng.gen_range(0..=300)
+    rng.gen_range(0..=max_inclusive)
 }
 
 fn twenty_four_hours_secs() -> i64 {
     24 * 60 * 60
+}
+
+fn two_hours_secs() -> i64 {
+    2 * 60 * 60
+}
+
+fn fifteen_minutes_secs() -> i64 {
+    15 * 60
 }
 
 fn forward_proxy_geo_refresh_recheck_secs() -> i64 {
@@ -13,10 +21,10 @@ fn forward_proxy_geo_refresh_recheck_secs() -> i64 {
 }
 
 fn spawn_quota_sync_scheduler(state: Arc<AppState>) {
+    let cold_state = state.clone();
     tokio::spawn(async move {
         loop {
-            // Initial cycle runs immediately on startup
-            let keys = match state
+            let keys = match cold_state
                 .proxy
                 .list_keys_pending_quota_sync(twenty_four_hours_secs())
                 .await
@@ -29,9 +37,9 @@ fn spawn_quota_sync_scheduler(state: Arc<AppState>) {
             };
 
             for key_id in keys {
-                let delay = random_delay_secs();
+                let delay = random_delay_secs(300);
                 tokio::time::sleep(Duration::from_secs(delay)).await;
-                let job_id = match state
+                let job_id = match cold_state
                     .proxy
                     .scheduled_job_start("quota_sync", Some(&key_id), 1)
                     .await
@@ -42,30 +50,34 @@ fn spawn_quota_sync_scheduler(state: Arc<AppState>) {
                         continue;
                     }
                 };
-                match state.proxy.sync_key_quota(&key_id, &state.usage_base).await {
+                match cold_state
+                    .proxy
+                    .sync_key_quota(&key_id, &cold_state.usage_base, "quota_sync")
+                    .await
+                {
                     Ok((limit, remaining)) => {
                         let msg = format!("limit={limit} remaining={remaining}");
-                        let _ = state
+                        let _ = cold_state
                             .proxy
                             .scheduled_job_finish(job_id, "success", Some(&msg))
                             .await;
                     }
                     Err(ProxyError::QuotaDataMissing { reason }) => {
                         let msg = format!("quota_data_missing: {reason}");
-                        let _ = state
+                        let _ = cold_state
                             .proxy
                             .scheduled_job_finish(job_id, "error", Some(&msg))
                             .await;
                     }
                     Err(ProxyError::UsageHttp { status, body }) => {
                         let msg = format!("usage_http {status}: {body}");
-                        let _ = state
+                        let _ = cold_state
                             .proxy
                             .scheduled_job_finish(job_id, "error", Some(&msg))
                             .await;
                     }
                     Err(err) => {
-                        let _ = state
+                        let _ = cold_state
                             .proxy
                             .scheduled_job_finish(job_id, "error", Some(&err.to_string()))
                             .await;
@@ -73,8 +85,75 @@ fn spawn_quota_sync_scheduler(state: Arc<AppState>) {
                 }
             }
 
-            // Sleep one hour before next cycle
             tokio::time::sleep(Duration::from_secs(3600)).await;
+        }
+    });
+
+    let hot_state = state;
+    tokio::spawn(async move {
+        loop {
+            let keys = match hot_state
+                .proxy
+                .list_keys_pending_hot_quota_sync(two_hours_secs(), fifteen_minutes_secs())
+                .await
+            {
+                Ok(list) => list,
+                Err(err) => {
+                    eprintln!("quota-sync-hot: list pending error: {err}");
+                    vec![]
+                }
+            };
+
+            for key_id in keys {
+                let delay = random_delay_secs(60);
+                tokio::time::sleep(Duration::from_secs(delay)).await;
+                let job_id = match hot_state
+                    .proxy
+                    .scheduled_job_start("quota_sync/hot", Some(&key_id), 1)
+                    .await
+                {
+                    Ok(id) => id,
+                    Err(err) => {
+                        eprintln!("quota-sync-hot: start job error: {err}");
+                        continue;
+                    }
+                };
+                match hot_state
+                    .proxy
+                    .sync_key_quota(&key_id, &hot_state.usage_base, "quota_sync/hot")
+                    .await
+                {
+                    Ok((limit, remaining)) => {
+                        let msg = format!("limit={limit} remaining={remaining}");
+                        let _ = hot_state
+                            .proxy
+                            .scheduled_job_finish(job_id, "success", Some(&msg))
+                            .await;
+                    }
+                    Err(ProxyError::QuotaDataMissing { reason }) => {
+                        let msg = format!("quota_data_missing: {reason}");
+                        let _ = hot_state
+                            .proxy
+                            .scheduled_job_finish(job_id, "error", Some(&msg))
+                            .await;
+                    }
+                    Err(ProxyError::UsageHttp { status, body }) => {
+                        let msg = format!("usage_http {status}: {body}");
+                        let _ = hot_state
+                            .proxy
+                            .scheduled_job_finish(job_id, "error", Some(&msg))
+                            .await;
+                    }
+                    Err(err) => {
+                        let _ = hot_state
+                            .proxy
+                            .scheduled_job_finish(job_id, "error", Some(&err.to_string()))
+                            .await;
+                    }
+                }
+            }
+
+            tokio::time::sleep(Duration::from_secs(300)).await;
         }
     });
 }

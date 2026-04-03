@@ -75,6 +75,20 @@ pub(crate) async fn begin_read_snapshot_sqlite_connection(
     Ok(conn)
 }
 
+#[derive(Debug, Clone, Copy)]
+struct QuotaSyncSampleRow {
+    quota_remaining: i64,
+    captured_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct QuotaChargeAccumulator {
+    upstream_actual_credits: i64,
+    sampled_key_count: i64,
+    stale_key_count: i64,
+    latest_sync_at: Option<i64>,
+}
+
 const REQUEST_LOGS_REBUILT_SCHEMA_SQL: &str = r#"
 CREATE TABLE request_logs_new (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1027,6 +1041,7 @@ impl KeyStore {
         self.upgrade_api_keys_schema().await?;
         self.ensure_api_key_quarantines_schema().await?;
         self.ensure_api_key_maintenance_records_schema().await?;
+        self.ensure_api_key_quota_sync_samples_schema().await?;
 
         sqlx::query(
             r#"
@@ -5033,6 +5048,39 @@ impl KeyStore {
 
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_api_key_quarantines_created_at ON api_key_quarantines(created_at DESC, key_id)",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn ensure_api_key_quota_sync_samples_schema(&self) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS api_key_quota_sync_samples (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                key_id TEXT NOT NULL,
+                quota_limit INTEGER NOT NULL,
+                quota_remaining INTEGER NOT NULL,
+                captured_at INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                FOREIGN KEY (key_id) REFERENCES api_keys(id)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_api_key_quota_sync_samples_key_captured
+               ON api_key_quota_sync_samples(key_id, captured_at DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_api_key_quota_sync_samples_captured
+               ON api_key_quota_sync_samples(captured_at DESC, key_id)"#,
         )
         .execute(&self.pool)
         .await?;
@@ -13723,6 +13771,7 @@ impl KeyStore {
         Ok(())
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) async fn update_quota_for_key(
         &self,
         key_id: &str,
@@ -13744,6 +13793,48 @@ impl KeyStore {
         Ok(())
     }
 
+    pub(crate) async fn record_quota_sync_sample(
+        &self,
+        key_id: &str,
+        limit: i64,
+        remaining: i64,
+        synced_at: i64,
+        source: &str,
+    ) -> Result<(), ProxyError> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            r#"
+            INSERT INTO api_key_quota_sync_samples (
+                key_id,
+                quota_limit,
+                quota_remaining,
+                captured_at,
+                source
+            ) VALUES (?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(key_id)
+        .bind(limit)
+        .bind(remaining)
+        .bind(synced_at)
+        .bind(source)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"UPDATE api_keys
+               SET quota_limit = ?, quota_remaining = ?, quota_synced_at = ?
+             WHERE id = ?"#,
+        )
+        .bind(limit)
+        .bind(remaining)
+        .bind(synced_at)
+        .bind(key_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     pub(crate) async fn list_keys_pending_quota_sync(
         &self,
         older_than_secs: i64,
@@ -13755,6 +13846,7 @@ impl KeyStore {
             SELECT id
             FROM api_keys
             WHERE deleted_at IS NULL
+              AND status <> ?
               AND NOT EXISTS (
                   SELECT 1
                   FROM api_key_quarantines aq
@@ -13766,7 +13858,42 @@ impl KeyStore {
             ORDER BY CASE WHEN quota_synced_at IS NULL OR quota_synced_at = 0 THEN 0 ELSE 1 END, quota_synced_at ASC
             "#,
         )
+        .bind(STATUS_EXHAUSTED)
         .bind(threshold)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub(crate) async fn list_keys_pending_hot_quota_sync(
+        &self,
+        active_within_secs: i64,
+        stale_after_secs: i64,
+    ) -> Result<Vec<String>, ProxyError> {
+        let now = Utc::now().timestamp();
+        let active_since = now - active_within_secs;
+        let stale_before = now - stale_after_secs;
+        let rows = sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT id
+            FROM api_keys
+            WHERE deleted_at IS NULL
+              AND status <> ?
+              AND last_used_at >= ?
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM api_key_quarantines aq
+                  WHERE aq.key_id = api_keys.id AND aq.cleared_at IS NULL
+              )
+              AND (
+                quota_synced_at IS NULL OR quota_synced_at = 0 OR quota_synced_at < ?
+              )
+            ORDER BY last_used_at DESC, quota_synced_at ASC, id ASC
+            "#,
+        )
+        .bind(STATUS_EXHAUSTED)
+        .bind(active_since)
+        .bind(stale_before)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
@@ -13862,7 +13989,9 @@ impl KeyStore {
         let offset = ((page - 1) as i64).saturating_mul(per_page);
 
         let where_clause = match group {
-            "quota" => "WHERE j.job_type = 'quota_sync' OR j.job_type = 'quota_sync/manual'",
+            "quota" => {
+                "WHERE j.job_type = 'quota_sync' OR j.job_type = 'quota_sync/manual' OR j.job_type = 'quota_sync/hot'"
+            }
             "usage" => "WHERE j.job_type = 'token_usage_rollup'",
             "logs" => "WHERE j.job_type = 'auth_token_logs_gc' OR j.job_type = 'request_logs_gc'",
             "geo" => "WHERE j.job_type = 'forward_proxy_geo_refresh'",
@@ -13870,7 +13999,9 @@ impl KeyStore {
         };
 
         let count_where_clause = match group {
-            "quota" => "WHERE job_type = 'quota_sync' OR job_type = 'quota_sync/manual'",
+            "quota" => {
+                "WHERE job_type = 'quota_sync' OR job_type = 'quota_sync/manual' OR job_type = 'quota_sync/hot'"
+            }
             "usage" => "WHERE job_type = 'token_usage_rollup'",
             "logs" => "WHERE job_type = 'auth_token_logs_gc' OR job_type = 'request_logs_gc'",
             "geo" => "WHERE job_type = 'forward_proxy_geo_refresh'",
@@ -14048,6 +14179,11 @@ impl KeyStore {
     ) -> Result<SummaryWindows, ProxyError> {
         let mut tx = self.pool.begin().await?;
         let upstream_exhausted_floor = yesterday_start.min(month_start);
+        let sample_window_start = yesterday_start.min(month_start);
+        let now_ts = today_end.saturating_sub(1);
+        let hot_active_since = now_ts.saturating_sub(2 * 60 * 60);
+        let hot_stale_before = now_ts.saturating_sub(15 * 60);
+        let cold_stale_before = now_ts.saturating_sub(24 * 60 * 60);
         let request_kind_sql =
             request_log_request_kind_key_sql("path", "request_body", "request_kind_key");
         let request_value_bucket_case_sql =
@@ -14058,6 +14194,7 @@ impl KeyStore {
                 SELECT
                     created_at,
                     result_status,
+                    COALESCE(business_credits, 0) AS business_credits,
                     ({request_value_bucket_case_sql}) AS request_value_bucket
                 FROM request_logs
                 WHERE visibility = ?
@@ -14074,6 +14211,7 @@ impl KeyStore {
                 COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND request_value_bucket = 'other' AND result_status = ? THEN 1 ELSE 0 END), 0) AS today_other_success_count,
                 COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND request_value_bucket = 'other' AND result_status IN (?, ?) THEN 1 ELSE 0 END), 0) AS today_other_failure_count,
                 COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND request_value_bucket = 'unknown' THEN 1 ELSE 0 END), 0) AS today_unknown_count,
+                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? THEN business_credits ELSE 0 END), 0) AS today_local_estimated_credits,
                 COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? THEN 1 ELSE 0 END), 0) AS yesterday_total_requests,
                 COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS yesterday_success_count,
                 COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS yesterday_error_count,
@@ -14082,7 +14220,8 @@ impl KeyStore {
                 COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND request_value_bucket = 'valuable' AND result_status IN (?, ?) THEN 1 ELSE 0 END), 0) AS yesterday_valuable_failure_count,
                 COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND request_value_bucket = 'other' AND result_status = ? THEN 1 ELSE 0 END), 0) AS yesterday_other_success_count,
                 COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND request_value_bucket = 'other' AND result_status IN (?, ?) THEN 1 ELSE 0 END), 0) AS yesterday_other_failure_count,
-                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND request_value_bucket = 'unknown' THEN 1 ELSE 0 END), 0) AS yesterday_unknown_count
+                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND request_value_bucket = 'unknown' THEN 1 ELSE 0 END), 0) AS yesterday_unknown_count,
+                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? THEN business_credits ELSE 0 END), 0) AS yesterday_local_estimated_credits
             FROM scoped_logs
             "#,
         );
@@ -14117,6 +14256,8 @@ impl KeyStore {
             .bind(OUTCOME_QUOTA_EXHAUSTED)
             .bind(today_start)
             .bind(today_end)
+            .bind(today_start)
+            .bind(today_end)
             .bind(yesterday_start)
             .bind(yesterday_end)
             .bind(yesterday_start)
@@ -14142,6 +14283,8 @@ impl KeyStore {
             .bind(yesterday_end)
             .bind(OUTCOME_ERROR)
             .bind(OUTCOME_QUOTA_EXHAUSTED)
+            .bind(yesterday_start)
+            .bind(yesterday_end)
             .bind(yesterday_start)
             .bind(yesterday_end)
             .fetch_one(&mut *tx)
@@ -14225,7 +14368,156 @@ impl KeyStore {
         .fetch_one(&mut *tx)
         .await?;
 
+        let month_local_estimated_credits: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COALESCE(SUM(COALESCE(business_credits, 0)), 0)
+            FROM request_logs
+            WHERE visibility = ?
+              AND created_at >= ?
+              AND created_at < ?
+            "#,
+        )
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(month_start)
+        .bind(today_end)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        let sample_rows = sqlx::query(
+            r#"
+            WITH window_rows AS (
+                SELECT key_id, quota_remaining, captured_at
+                FROM api_key_quota_sync_samples
+                WHERE captured_at >= ?
+                  AND captured_at < ?
+            ),
+            sampled_keys AS (
+                SELECT DISTINCT key_id FROM window_rows
+            ),
+            baseline_rows AS (
+                SELECT s.key_id, s.quota_remaining, s.captured_at
+                FROM api_key_quota_sync_samples s
+                INNER JOIN (
+                    SELECT key_id, MAX(captured_at) AS captured_at
+                    FROM api_key_quota_sync_samples
+                    WHERE captured_at < ?
+                      AND key_id IN (SELECT key_id FROM sampled_keys)
+                    GROUP BY key_id
+                ) latest
+                    ON latest.key_id = s.key_id
+                   AND latest.captured_at = s.captured_at
+            )
+            SELECT key_id, quota_remaining, captured_at
+            FROM window_rows
+            UNION ALL
+            SELECT key_id, quota_remaining, captured_at
+            FROM baseline_rows
+            ORDER BY key_id ASC, captured_at ASC
+            "#,
+        )
+        .bind(sample_window_start)
+        .bind(today_end)
+        .bind(sample_window_start)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        let stale_key_count: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COALESCE(COUNT(*), 0)
+            FROM api_keys
+            WHERE deleted_at IS NULL
+              AND status <> ?
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM api_key_quarantines aq
+                  WHERE aq.key_id = api_keys.id AND aq.cleared_at IS NULL
+              )
+              AND CASE
+                  WHEN last_used_at >= ? THEN (
+                      quota_synced_at IS NULL OR quota_synced_at = 0 OR quota_synced_at < ?
+                  )
+                  ELSE (
+                      quota_synced_at IS NULL OR quota_synced_at = 0 OR quota_synced_at < ?
+                  )
+              END
+            "#,
+        )
+        .bind(STATUS_EXHAUSTED)
+        .bind(hot_active_since)
+        .bind(hot_stale_before)
+        .bind(cold_stale_before)
+        .fetch_one(&mut *tx)
+        .await?;
+
         tx.commit().await?;
+
+        let mut today_charge = QuotaChargeAccumulator::default();
+        let mut yesterday_charge = QuotaChargeAccumulator::default();
+        let mut month_charge = QuotaChargeAccumulator::default();
+        let mut today_sampled_keys = std::collections::HashSet::new();
+        let mut yesterday_sampled_keys = std::collections::HashSet::new();
+        let mut month_sampled_keys = std::collections::HashSet::new();
+        let mut current_key: Option<String> = None;
+        let mut previous_sample: Option<QuotaSyncSampleRow> = None;
+
+        for row in sample_rows {
+            let key_id: String = row.try_get("key_id")?;
+            if current_key.as_deref() != Some(key_id.as_str()) {
+                current_key = Some(key_id.clone());
+                previous_sample = None;
+            }
+
+            let sample = QuotaSyncSampleRow {
+                quota_remaining: row.try_get("quota_remaining")?,
+                captured_at: row.try_get("captured_at")?,
+            };
+            let delta = previous_sample
+                .map(|previous| (previous.quota_remaining - sample.quota_remaining).max(0))
+                .unwrap_or(0);
+
+            if sample.captured_at >= month_start && sample.captured_at < today_end {
+                month_charge.upstream_actual_credits += delta;
+                month_sampled_keys.insert(key_id.clone());
+                if month_charge
+                    .latest_sync_at
+                    .map(|latest| sample.captured_at > latest)
+                    .unwrap_or(true)
+                {
+                    month_charge.latest_sync_at = Some(sample.captured_at);
+                }
+            }
+            if sample.captured_at >= today_start && sample.captured_at < today_end {
+                today_charge.upstream_actual_credits += delta;
+                today_sampled_keys.insert(key_id.clone());
+                if today_charge
+                    .latest_sync_at
+                    .map(|latest| sample.captured_at > latest)
+                    .unwrap_or(true)
+                {
+                    today_charge.latest_sync_at = Some(sample.captured_at);
+                }
+            }
+            if sample.captured_at >= yesterday_start && sample.captured_at < yesterday_end {
+                yesterday_charge.upstream_actual_credits += delta;
+                yesterday_sampled_keys.insert(key_id.clone());
+                if yesterday_charge
+                    .latest_sync_at
+                    .map(|latest| sample.captured_at > latest)
+                    .unwrap_or(true)
+                {
+                    yesterday_charge.latest_sync_at = Some(sample.captured_at);
+                }
+            }
+
+            previous_sample = Some(sample);
+        }
+
+        today_charge.sampled_key_count = today_sampled_keys.len() as i64;
+        today_charge.stale_key_count = stale_key_count;
+        yesterday_charge.sampled_key_count = yesterday_sampled_keys.len() as i64;
+        yesterday_charge.stale_key_count = stale_key_count;
+        month_charge.sampled_key_count = month_sampled_keys.len() as i64;
+        month_charge.stale_key_count = stale_key_count;
 
         Ok(SummaryWindows {
             today: SummaryWindowMetrics {
@@ -14242,6 +14534,13 @@ impl KeyStore {
                     .try_get("today_upstream_exhausted_key_count")?,
                 new_keys: 0,
                 new_quarantines: 0,
+                quota_charge: SummaryQuotaCharge {
+                    local_estimated_credits: window_row.try_get("today_local_estimated_credits")?,
+                    upstream_actual_credits: today_charge.upstream_actual_credits,
+                    sampled_key_count: today_charge.sampled_key_count,
+                    stale_key_count: today_charge.stale_key_count,
+                    latest_sync_at: today_charge.latest_sync_at,
+                },
             },
             yesterday: SummaryWindowMetrics {
                 total_requests: window_row.try_get("yesterday_total_requests")?,
@@ -14257,6 +14556,14 @@ impl KeyStore {
                     .try_get("yesterday_upstream_exhausted_key_count")?,
                 new_keys: 0,
                 new_quarantines: 0,
+                quota_charge: SummaryQuotaCharge {
+                    local_estimated_credits: window_row
+                        .try_get("yesterday_local_estimated_credits")?,
+                    upstream_actual_credits: yesterday_charge.upstream_actual_credits,
+                    sampled_key_count: yesterday_charge.sampled_key_count,
+                    stale_key_count: yesterday_charge.stale_key_count,
+                    latest_sync_at: yesterday_charge.latest_sync_at,
+                },
             },
             month: SummaryWindowMetrics {
                 total_requests: month_row.try_get("month_total_requests")?,
@@ -14272,6 +14579,13 @@ impl KeyStore {
                     .try_get("month_upstream_exhausted_key_count")?,
                 new_keys: month_lifecycle_row.try_get("month_new_keys")?,
                 new_quarantines: month_lifecycle_row.try_get("month_new_quarantines")?,
+                quota_charge: SummaryQuotaCharge {
+                    local_estimated_credits: month_local_estimated_credits,
+                    upstream_actual_credits: month_charge.upstream_actual_credits,
+                    sampled_key_count: month_charge.sampled_key_count,
+                    stale_key_count: month_charge.stale_key_count,
+                    latest_sync_at: month_charge.latest_sync_at,
+                },
             },
         })
     }

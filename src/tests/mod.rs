@@ -6260,6 +6260,102 @@ async fn list_keys_pending_quota_sync_skips_quarantined_keys() {
 }
 
 #[tokio::test]
+async fn list_keys_pending_hot_quota_sync_only_returns_recent_stale_keys() {
+    let db_path = temp_db_path("quota-sync-hot-selection");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(
+        vec![
+            "tvly-hot-sync-a".to_string(),
+            "tvly-hot-sync-b".to_string(),
+            "tvly-hot-sync-c".to_string(),
+            "tvly-hot-sync-d".to_string(),
+        ],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let rows = sqlx::query_as::<_, (String, String)>(
+        "SELECT id, api_key FROM api_keys ORDER BY api_key ASC",
+    )
+    .fetch_all(&proxy.key_store.pool)
+    .await
+    .expect("fetch keys");
+    let now = Utc::now().timestamp();
+
+    for (id, secret) in rows {
+        match secret.as_str() {
+            "tvly-hot-sync-a" => {
+                sqlx::query(
+                    "UPDATE api_keys SET last_used_at = ?, quota_synced_at = ?, status = ? WHERE id = ?",
+                )
+                .bind(now - 10 * 60)
+                .bind(now - 2 * 60 * 60)
+                .bind(STATUS_ACTIVE)
+                .bind(&id)
+                .execute(&proxy.key_store.pool)
+                .await
+                .expect("mark stale recent key");
+            }
+            "tvly-hot-sync-b" => {
+                sqlx::query(
+                    "UPDATE api_keys SET last_used_at = ?, quota_synced_at = ?, status = ? WHERE id = ?",
+                )
+                .bind(now - 10 * 60)
+                .bind(now - 5 * 60)
+                .bind(STATUS_ACTIVE)
+                .bind(&id)
+                .execute(&proxy.key_store.pool)
+                .await
+                .expect("mark fresh recent key");
+            }
+            "tvly-hot-sync-c" => {
+                sqlx::query(
+                    "UPDATE api_keys SET last_used_at = ?, quota_synced_at = ?, status = ? WHERE id = ?",
+                )
+                .bind(now - 6 * 60 * 60)
+                .bind(now - 3 * 60 * 60)
+                .bind(STATUS_ACTIVE)
+                .bind(&id)
+                .execute(&proxy.key_store.pool)
+                .await
+                .expect("mark cold key");
+            }
+            "tvly-hot-sync-d" => {
+                sqlx::query(
+                    "UPDATE api_keys SET last_used_at = ?, quota_synced_at = ?, status = ? WHERE id = ?",
+                )
+                .bind(now - 5 * 60)
+                .bind(now - 3 * 60 * 60)
+                .bind(STATUS_EXHAUSTED)
+                .bind(&id)
+                .execute(&proxy.key_store.pool)
+                .await
+                .expect("mark exhausted key");
+            }
+            _ => {}
+        }
+    }
+
+    let pending = proxy
+        .list_keys_pending_hot_quota_sync(2 * 60 * 60, 15 * 60)
+        .await
+        .expect("list hot pending keys");
+    assert_eq!(pending.len(), 1);
+
+    let api_key: String = sqlx::query_scalar("SELECT api_key FROM api_keys WHERE id = ?")
+        .bind(&pending[0])
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("resolve selected key");
+    assert_eq!(api_key, "tvly-hot-sync-a");
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn summary_quota_totals_exclude_quarantined_keys() {
     let db_path = temp_db_path("summary-quota-excludes-quarantine");
     let db_str = db_path.to_string_lossy().to_string();
@@ -6423,6 +6519,47 @@ async fn insert_summary_window_logs_with_visibility(
     }
 }
 
+async fn insert_summary_window_charged_logs(
+    proxy: &TavilyProxy,
+    key_id: &str,
+    created_at: i64,
+    credits: i64,
+    count: usize,
+) {
+    for offset in 0..count {
+        sqlx::query(
+            r#"
+            INSERT INTO request_logs (
+                api_key_id,
+                auth_token_id,
+                method,
+                path,
+                query,
+                status_code,
+                tavily_status_code,
+                error_message,
+                result_status,
+                business_credits,
+                request_body,
+                response_body,
+                forwarded_headers,
+                dropped_headers,
+                visibility,
+                created_at
+            ) VALUES (?, NULL, 'GET', '/api/tavily/search', NULL, 200, 200, NULL, ?, ?, NULL, NULL, '[]', '[]', ?, ?)
+            "#,
+        )
+        .bind(key_id)
+        .bind(OUTCOME_SUCCESS)
+        .bind(credits)
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(created_at + offset as i64)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("insert summary window charged log");
+    }
+}
+
 async fn insert_summary_window_maintenance_record(
     proxy: &TavilyProxy,
     key_id: &str,
@@ -6550,6 +6687,7 @@ async fn summary_windows_split_today_yesterday_and_month() {
         new_quarantines: 0,
         ..SummaryWindowMetrics::default()
     };
+    expected_month.quota_charge.stale_key_count = 1;
     if yesterday_start >= month_start {
         expected_month.total_requests += 10;
         expected_month.success_count += 8;
@@ -6582,6 +6720,10 @@ async fn summary_windows_split_today_yesterday_and_month() {
             quota_exhausted_count: 1,
             valuable_success_count: 9,
             valuable_failure_count: 3,
+            quota_charge: SummaryQuotaCharge {
+                stale_key_count: 1,
+                ..SummaryQuotaCharge::default()
+            },
             ..SummaryWindowMetrics::default()
         }
     );
@@ -6594,6 +6736,10 @@ async fn summary_windows_split_today_yesterday_and_month() {
             quota_exhausted_count: 1,
             valuable_success_count: 5,
             valuable_failure_count: 2,
+            quota_charge: SummaryQuotaCharge {
+                stale_key_count: 1,
+                ..SummaryQuotaCharge::default()
+            },
             ..SummaryWindowMetrics::default()
         }
     );
@@ -6771,6 +6917,139 @@ async fn summary_windows_count_distinct_upstream_exhausted_keys() {
 }
 
 #[tokio::test]
+async fn summary_windows_include_quota_charge_estimates_and_sample_diffs() {
+    let db_path = temp_db_path("summary-windows-quota-charge");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-summary-window-quota-charge".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let key_id = proxy
+        .list_api_key_metrics()
+        .await
+        .expect("list key metrics")
+        .into_iter()
+        .next()
+        .expect("seeded key")
+        .id;
+
+    let fallback_now = Local::now();
+    let now_naive = fallback_now
+        .date_naive()
+        .and_hms_opt(12, 0, 0)
+        .expect("valid midday");
+    let now = match Local.from_local_datetime(&now_naive) {
+        chrono::LocalResult::Single(dt) => dt,
+        chrono::LocalResult::Ambiguous(dt, _) => dt,
+        chrono::LocalResult::None => fallback_now,
+    };
+    let today_start = start_of_local_day_utc_ts(now);
+    let yesterday_start = previous_local_day_start_utc_ts(now);
+    let yesterday_same_time = previous_local_same_time_utc_ts(now);
+    let month_start = start_of_local_month_utc_ts(now);
+    let now_ts = now.with_timezone(&Utc).timestamp();
+
+    sqlx::query("UPDATE api_keys SET last_used_at = ?, quota_synced_at = ? WHERE id = ?")
+        .bind(now_ts - 30 * 60)
+        .bind(now_ts - 2 * 60 * 60)
+        .bind(&key_id)
+        .execute(&proxy.key_store.pool)
+        .await
+        .expect("mark key stale for summary");
+
+    insert_summary_window_charged_logs(&proxy, &key_id, today_start + 60, 7, 1).await;
+    insert_summary_window_charged_logs(&proxy, &key_id, today_start + 120, 3, 1).await;
+    insert_summary_window_charged_logs(&proxy, &key_id, yesterday_start + 60, 5, 1).await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO api_key_quota_sync_samples (
+            key_id,
+            quota_limit,
+            quota_remaining,
+            captured_at,
+            source
+        ) VALUES
+            (?, 1000, 1000, ?, 'quota_sync/test'),
+            (?, 1000, 980, ?, 'quota_sync/test'),
+            (?, 1000, 970, ?, 'quota_sync/test'),
+            (?, 1000, 975, ?, 'quota_sync/test'),
+            (?, 1000, 960, ?, 'quota_sync/test')
+        "#,
+    )
+    .bind(&key_id)
+    .bind(yesterday_start - 60)
+    .bind(&key_id)
+    .bind(yesterday_start + 60)
+    .bind(&key_id)
+    .bind(today_start + 60)
+    .bind(&key_id)
+    .bind(today_start + 120)
+    .bind(&key_id)
+    .bind(today_start + 180)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert quota sync samples");
+
+    let summary = proxy
+        .summary_windows_at(now)
+        .await
+        .expect("summary windows");
+
+    let expected_month_local = if month_start <= yesterday_start {
+        15
+    } else {
+        10
+    };
+    let expected_month_upstream = if month_start <= yesterday_start {
+        45
+    } else {
+        25
+    };
+
+    assert_eq!(summary.today.quota_charge.local_estimated_credits, 10);
+    assert_eq!(summary.today.quota_charge.upstream_actual_credits, 25);
+    assert_eq!(summary.today.quota_charge.sampled_key_count, 1);
+    assert_eq!(summary.today.quota_charge.stale_key_count, 1);
+    assert_eq!(
+        summary.today.quota_charge.latest_sync_at,
+        Some(today_start + 180)
+    );
+
+    assert_eq!(summary.yesterday.quota_charge.local_estimated_credits, 5);
+    assert_eq!(summary.yesterday.quota_charge.upstream_actual_credits, 20);
+    assert_eq!(summary.yesterday.quota_charge.sampled_key_count, 1);
+
+    assert_eq!(
+        summary.month.quota_charge.local_estimated_credits,
+        expected_month_local
+    );
+    assert_eq!(
+        summary.month.quota_charge.upstream_actual_credits,
+        expected_month_upstream
+    );
+    assert_eq!(summary.month.quota_charge.sampled_key_count, 1);
+    assert_eq!(summary.month.quota_charge.stale_key_count, 1);
+
+    // The same-time window should end before the sample inserted at the current day's midday.
+    assert!(
+        summary
+            .yesterday
+            .quota_charge
+            .latest_sync_at
+            .unwrap_or_default()
+            <= yesterday_same_time + 180
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn summary_windows_return_zero_for_empty_yesterday_bucket() {
     let db_path = temp_db_path("summary-windows-empty-yesterday");
     let db_str = db_path.to_string_lossy().to_string();
@@ -6811,7 +7090,16 @@ async fn summary_windows_return_zero_for_empty_yesterday_bucket() {
         .summary_windows_at(now)
         .await
         .expect("summary windows");
-    assert_eq!(summary.yesterday, SummaryWindowMetrics::default());
+    assert_eq!(
+        summary.yesterday,
+        SummaryWindowMetrics {
+            quota_charge: SummaryQuotaCharge {
+                stale_key_count: 1,
+                ..SummaryQuotaCharge::default()
+            },
+            ..SummaryWindowMetrics::default()
+        }
+    );
 
     let _ = std::fs::remove_file(db_path);
 }
@@ -7318,7 +7606,7 @@ async fn sync_key_quota_quarantines_usage_auth_failures() {
 
     let usage_base = format!("http://{addr}");
     let err = proxy
-        .sync_key_quota(&key_id, &usage_base)
+        .sync_key_quota(&key_id, &usage_base, "quota_sync/test")
         .await
         .expect_err("sync should fail");
     match err {

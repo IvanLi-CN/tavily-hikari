@@ -19,6 +19,15 @@ async fn fetch_summary(
 }
 
 #[derive(Debug, Serialize)]
+struct SummaryQuotaChargeView {
+    local_estimated_credits: i64,
+    upstream_actual_credits: i64,
+    sampled_key_count: i64,
+    stale_key_count: i64,
+    latest_sync_at: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
 struct SummaryWindowView {
     total_requests: i64,
     success_count: i64,
@@ -32,6 +41,7 @@ struct SummaryWindowView {
     upstream_exhausted_key_count: i64,
     new_keys: i64,
     new_quarantines: i64,
+    quota_charge: SummaryQuotaChargeView,
 }
 
 #[derive(Debug, Serialize)]
@@ -105,6 +115,13 @@ impl From<tavily_hikari::SummaryWindowMetrics> for SummaryWindowView {
             upstream_exhausted_key_count: summary.upstream_exhausted_key_count,
             new_keys: summary.new_keys,
             new_quarantines: summary.new_quarantines,
+            quota_charge: SummaryQuotaChargeView {
+                local_estimated_credits: summary.quota_charge.local_estimated_credits,
+                upstream_actual_credits: summary.quota_charge.upstream_actual_credits,
+                sampled_key_count: summary.quota_charge.sampled_key_count,
+                stale_key_count: summary.quota_charge.stale_key_count,
+                latest_sync_at: summary.quota_charge.latest_sync_at,
+            },
         }
     }
 }
@@ -717,7 +734,7 @@ async fn compute_signatures(
     let logs = state.proxy.recent_request_logs(1).await.map_err(|_| ())?;
     let latest_id = logs.first().map(|l| l.id);
     let sig: Option<SummarySig> = Some(SummarySig {
-        summary: (
+        summary: [
             summary.total_requests,
             summary.success_count,
             summary.error_count,
@@ -725,11 +742,11 @@ async fn compute_signatures(
             summary.active_keys,
             summary.exhausted_keys,
             summary.quarantined_keys,
-            summary.last_activity,
             summary.total_quota_limit,
             summary.total_quota_remaining,
-        ),
-        today: (
+        ],
+        summary_last_activity: summary.last_activity,
+        today: [
             today.total_requests,
             today.success_count,
             today.error_count,
@@ -740,8 +757,13 @@ async fn compute_signatures(
             today.other_failure_count,
             today.unknown_count,
             today.upstream_exhausted_key_count,
-        ),
-        yesterday: (
+            today.quota_charge.local_estimated_credits,
+            today.quota_charge.upstream_actual_credits,
+            today.quota_charge.sampled_key_count,
+            today.quota_charge.stale_key_count,
+            today.quota_charge.latest_sync_at.unwrap_or_default(),
+        ],
+        yesterday: [
             yesterday.total_requests,
             yesterday.success_count,
             yesterday.error_count,
@@ -752,8 +774,13 @@ async fn compute_signatures(
             yesterday.other_failure_count,
             yesterday.unknown_count,
             yesterday.upstream_exhausted_key_count,
-        ),
-        month: (
+            yesterday.quota_charge.local_estimated_credits,
+            yesterday.quota_charge.upstream_actual_credits,
+            yesterday.quota_charge.sampled_key_count,
+            yesterday.quota_charge.stale_key_count,
+            yesterday.quota_charge.latest_sync_at.unwrap_or_default(),
+        ],
+        month: [
             month.total_requests,
             month.success_count,
             month.error_count,
@@ -766,7 +793,12 @@ async fn compute_signatures(
             month.upstream_exhausted_key_count,
             month.new_keys,
             month.new_quarantines,
-        ),
+            month.quota_charge.local_estimated_credits,
+            month.quota_charge.upstream_actual_credits,
+            month.quota_charge.sampled_key_count,
+            month.quota_charge.stale_key_count,
+            month.quota_charge.latest_sync_at.unwrap_or_default(),
+        ],
         proxy: Some((forward_proxy.available_nodes, forward_proxy.total_nodes)),
     });
     Ok((sig, latest_id))

@@ -8220,6 +8220,18 @@ colo=LAX
             "month upstream exhausted key count should exist"
         );
         for pointer in [
+            "/today/quota_charge/local_estimated_credits",
+            "/today/quota_charge/upstream_actual_credits",
+            "/today/quota_charge/sampled_key_count",
+            "/today/quota_charge/stale_key_count",
+            "/month/quota_charge/local_estimated_credits",
+        ] {
+            assert!(
+                body.pointer(pointer).and_then(|v| v.as_i64()).is_some(),
+                "summary windows should expose {pointer}"
+            );
+        }
+        for pointer in [
             "/today/valuable_success_count",
             "/today/valuable_failure_count",
             "/today/other_success_count",
@@ -9285,6 +9297,20 @@ colo=LAX
                 .is_some(),
             "snapshot summary windows should expose unknown request counts"
         );
+        assert!(
+            snapshot_json
+                .pointer("/summaryWindows/today/quota_charge/local_estimated_credits")
+                .and_then(|value| value.as_i64())
+                .is_some(),
+            "snapshot summary windows should expose quota charge local estimates"
+        );
+        assert!(
+            snapshot_json
+                .pointer("/summaryWindows/month/quota_charge/upstream_actual_credits")
+                .and_then(|value| value.as_i64())
+                .is_some(),
+            "snapshot summary windows should expose quota charge upstream actual values"
+        );
         assert_eq!(
             snapshot_json
                 .pointer("/siteStatus/totalProxyNodes")
@@ -10212,9 +10238,9 @@ colo=LAX
             .await
             .expect("compute signatures");
         let sig = sig.expect("summary signature");
-        assert_eq!(sig.summary.4, 1);
-        assert_eq!(sig.summary.5, 0);
-        assert_eq!(sig.summary.6, 1);
+        assert_eq!(sig.summary[4], 1);
+        assert_eq!(sig.summary[5], 0);
+        assert_eq!(sig.summary[6], 1);
         assert!(latest_id.is_none());
 
         let _ = std::fs::remove_file(db_path);

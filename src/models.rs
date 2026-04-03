@@ -487,6 +487,15 @@ pub struct ProxySummary {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SummaryQuotaCharge {
+    pub local_estimated_credits: i64,
+    pub upstream_actual_credits: i64,
+    pub sampled_key_count: i64,
+    pub stale_key_count: i64,
+    pub latest_sync_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SummaryWindowMetrics {
     pub total_requests: i64,
     pub success_count: i64,
@@ -500,6 +509,7 @@ pub struct SummaryWindowMetrics {
     pub upstream_exhausted_key_count: i64,
     pub new_keys: i64,
     pub new_quarantines: i64,
+    pub quota_charge: SummaryQuotaCharge,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

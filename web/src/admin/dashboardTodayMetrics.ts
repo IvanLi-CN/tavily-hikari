@@ -312,6 +312,7 @@ export function createDashboardMonthMetrics({
       label: labels.total,
       value: formatNumber(month.total_requests),
       subtitle: strings.monthToDate,
+      fullWidth: true,
     }),
     buildMetricCard({
       id: 'month-valuable-success',

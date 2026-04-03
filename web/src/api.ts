@@ -18,6 +18,14 @@ export interface Summary {
   total_quota_remaining: number
 }
 
+export interface SummaryQuotaCharge {
+  local_estimated_credits: number
+  upstream_actual_credits: number
+  sampled_key_count: number
+  stale_key_count: number
+  latest_sync_at: number | null
+}
+
 export interface SummaryWindowMetrics {
   total_requests: number
   success_count: number
@@ -31,6 +39,7 @@ export interface SummaryWindowMetrics {
   upstream_exhausted_key_count: number
   new_keys: number
   new_quarantines: number
+  quota_charge?: SummaryQuotaCharge
 }
 
 export interface SummaryWindowsResponse {

@@ -6979,11 +6979,22 @@ impl TavilyProxy {
             .await
     }
 
+    pub async fn list_keys_pending_hot_quota_sync(
+        &self,
+        active_within_secs: i64,
+        stale_after_secs: i64,
+    ) -> Result<Vec<String>, ProxyError> {
+        self.key_store
+            .list_keys_pending_hot_quota_sync(active_within_secs, stale_after_secs)
+            .await
+    }
+
     /// Sync usage/quota for specific key via Tavily Usage API base (e.g., https://api.tavily.com).
     pub async fn sync_key_quota(
         &self,
         key_id: &str,
         usage_base: &str,
+        source: &str,
     ) -> Result<(i64, i64), ProxyError> {
         let Some(secret) = self.key_store.fetch_api_key_secret(key_id).await? else {
             return Err(ProxyError::Database(sqlx::Error::RowNotFound));
@@ -7008,7 +7019,7 @@ impl TavilyProxy {
         };
         let now = Utc::now().timestamp();
         self.key_store
-            .update_quota_for_key(key_id, limit, remaining, now)
+            .record_quota_sync_sample(key_id, limit, remaining, now, source)
             .await?;
         Ok((limit, remaining))
     }

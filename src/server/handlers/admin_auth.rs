@@ -92,7 +92,11 @@ async fn post_sync_key_usage(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    match state.proxy.sync_key_quota(&id, &state.usage_base).await {
+    match state
+        .proxy
+        .sync_key_quota(&id, &state.usage_base, "quota_sync/manual")
+        .await
+    {
         Ok((limit, remaining)) => {
             let msg = format!("limit={limit} remaining={remaining}");
             let _ = state

@@ -217,6 +217,10 @@ describe('dashboard request-value metric helpers', () => {
       subtitle: 'Added this month',
       comparison: undefined,
     })
+    expect(metrics[0]).toMatchObject({
+      id: 'month-total',
+      fullWidth: true,
+    })
     expect(metrics.find((metric) => metric.id === 'month-valuable-success')).toMatchObject({
       marker: 'Primary',
       markerTone: 'primary',

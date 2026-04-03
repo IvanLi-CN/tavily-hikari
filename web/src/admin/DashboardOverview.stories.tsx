@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
-import DashboardOverview, { type DashboardMetricCard } from './DashboardOverview'
+import DashboardOverview, { type DashboardMetricCard, type DashboardQuotaChargeCardData } from './DashboardOverview'
 import {
   createDashboardMonthMetrics,
   createDashboardTodayMetrics,
@@ -31,7 +31,7 @@ const meta = {
     docs: {
       description: {
         component:
-          'Dashboard overview shell with request-value summary cards. Today renders 7 cards with the total card occupying its own row, primary/secondary markers on success and failure cards, and the today-share text aligned on the value row to save height; month keeps 9 compact cards for lifecycle plus request taxonomy.',
+          'Dashboard overview shell with fixed summary rows. Today and month both render the total card on the first row, a dedicated quota-charge card on the second row, then the remaining taxonomy cards in the grid.',
       },
     },
   },
@@ -171,6 +171,32 @@ const monthMetrics = createDashboardMonthMetrics({
       denominator === 0 ? '—' : storyPercentageFormatter.format(numerator / denominator),
   },
 })
+
+const todayQuotaCharge: DashboardQuotaChargeCardData = {
+  title: 'Quota Charges',
+  localLabel: 'Local estimate',
+  localValue: '4,768',
+  upstreamLabel: 'Upstream actual',
+  upstreamValue: '4,721',
+  deltaLabel: 'Delta',
+  deltaValue: '+47',
+  deltaTone: 'negative',
+  coverage: 'Sampled 24 · Stale 3',
+  freshness: 'Latest sync · 2 minutes ago · 14:28',
+}
+
+const monthQuotaCharge: DashboardQuotaChargeCardData = {
+  title: 'Quota Charges',
+  localLabel: 'Local estimate',
+  localValue: '104,881',
+  upstreamLabel: 'Upstream actual',
+  upstreamValue: '104,744',
+  deltaLabel: 'Delta',
+  deltaValue: '+137',
+  deltaTone: 'negative',
+  coverage: 'Sampled 68 · Stale 5',
+  freshness: 'Latest sync · 2 minutes ago · 14:28',
+}
 
 const statusMetrics = [
   { id: 'remaining', label: 'Remaining', value: '49,482', subtitle: 'Current snapshot · 88.4%' },
@@ -343,13 +369,41 @@ const zhDarkEvidenceStatusMetrics = [
   { id: 'proxy-total', label: '代理节点总数', value: '75', subtitle: '当前快照' },
 ]
 
+const zhDarkTodayQuotaCharge: DashboardQuotaChargeCardData = {
+  title: '额度扣减',
+  localLabel: '本地估算',
+  localValue: '10,622',
+  upstreamLabel: '上游 Key 实扣',
+  upstreamValue: '10,587',
+  deltaLabel: '差值',
+  deltaValue: '+35',
+  deltaTone: 'negative',
+  coverage: '已采样 31 · 滞后 4',
+  freshness: '最新同步 · 2 分钟前 · 14:28',
+}
+
+const zhDarkMonthQuotaCharge: DashboardQuotaChargeCardData = {
+  title: '额度扣减',
+  localLabel: '本地估算',
+  localValue: '236,901',
+  upstreamLabel: '上游 Key 实扣',
+  upstreamValue: '236,744',
+  deltaLabel: '差值',
+  deltaValue: '+157',
+  deltaTone: 'negative',
+  coverage: '已采样 73 · 滞后 6',
+  freshness: '最新同步 · 2 分钟前 · 14:28',
+}
+
 export const Default: Story = {
   args: {
     strings,
     overviewReady: true,
     statusLoading: false,
     todayMetrics,
+    todayQuotaCharge,
     monthMetrics,
+    monthQuotaCharge,
     statusMetrics,
     trend: {
       request: [4, 7, 8, 5, 9, 11, 12, 10],
@@ -462,6 +516,18 @@ export const QuarantineState: Story = {
 export const LargeNumbers: Story = {
   args: {
     ...Default.args,
+    monthQuotaCharge: {
+      title: 'Quota Charges',
+      localLabel: 'Local estimate',
+      localValue: '1,204,880',
+      upstreamLabel: 'Upstream actual',
+      upstreamValue: '1,204,441',
+      deltaLabel: 'Delta',
+      deltaValue: '+439',
+      deltaTone: 'negative',
+      coverage: 'Sampled 418 · Stale 9',
+      freshness: 'Latest sync · 1 minute ago · 14:28',
+    },
     monthMetrics: createDashboardMonthMetrics({
       month: {
         total_requests: 1_205_420,
@@ -582,7 +648,7 @@ export const ZhDarkEvidence: Story = {
     docs: {
       description: {
         story:
-          '用于验收“总请求数独占一行 + 成功/失败卡带主要/次要标记 + 本月 9 卡”的稳定中文暗色画布。',
+          '用于验收“总请求数独占第一行 + 额度扣减卡独占第二行 + 其余卡片回到网格”的稳定中文暗色画布。',
       },
     },
   },
@@ -590,7 +656,9 @@ export const ZhDarkEvidence: Story = {
     ...Default.args,
     strings: zhStrings,
     todayMetrics: zhDarkEvidenceTodayMetrics,
+    todayQuotaCharge: zhDarkTodayQuotaCharge,
     monthMetrics: zhDarkEvidenceMonthMetrics,
+    monthQuotaCharge: zhDarkMonthQuotaCharge,
     statusMetrics: zhDarkEvidenceStatusMetrics,
   },
   play: async ({ canvasElement }) => {
@@ -605,18 +673,21 @@ export const ZhDarkEvidence: Story = {
     }
 
     const todayCards = canvasElement.querySelectorAll('.dashboard-today-grid .dashboard-summary-card')
-    if (todayCards.length !== 7) {
-      throw new Error(`Expected 7 today cards, received ${todayCards.length}`)
+    if (todayCards.length !== 6) {
+      throw new Error(`Expected 6 today grid cards, received ${todayCards.length}`)
     }
     const monthCards = canvasElement.querySelectorAll('.dashboard-summary-metrics-month .dashboard-summary-card')
-    if (monthCards.length !== 9) {
-      throw new Error(`Expected 9 month cards, received ${monthCards.length}`)
+    if (monthCards.length !== 8) {
+      throw new Error(`Expected 8 month grid cards, received ${monthCards.length}`)
     }
     if (canvasElement.querySelector('.dashboard-today-comparisons') != null) {
       throw new Error('Expected legacy today comparison tray to be removed')
     }
     if (canvasElement.querySelector('.dashboard-summary-card-full-width') == null) {
       throw new Error('Expected the today total card to occupy its own row')
+    }
+    if (canvasElement.querySelectorAll('.dashboard-quota-charge-card').length < 2) {
+      throw new Error('Expected both today and month quota charge cards to render')
     }
     for (const selector of ['.metric-delta-positive', '.metric-delta-negative']) {
       if (canvasElement.querySelector(selector) == null) {

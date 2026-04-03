@@ -18,6 +18,19 @@ export interface DashboardMetricCard {
   }
 }
 
+export interface DashboardQuotaChargeCardData {
+  title: string
+  localLabel: string
+  localValue: string
+  upstreamLabel: string
+  upstreamValue: string
+  deltaLabel: string
+  deltaValue: string
+  deltaTone?: 'positive' | 'negative' | 'neutral'
+  coverage: string
+  freshness: string
+}
+
 export interface DashboardOverviewStrings {
   title: string
   description: string
@@ -56,7 +69,9 @@ interface DashboardOverviewProps {
   overviewReady: boolean
   statusLoading: boolean
   todayMetrics: DashboardMetricCard[]
+  todayQuotaCharge?: DashboardQuotaChargeCardData | null
   monthMetrics: DashboardMetricCard[]
+  monthQuotaCharge?: DashboardQuotaChargeCardData | null
   statusMetrics: DashboardMetricCard[]
   trend: {
     request: number[]
@@ -149,12 +164,44 @@ function SummaryMetricCard({ metric, compact = false }: { metric: DashboardMetri
   )
 }
 
+function QuotaChargeCard({ card }: { card: DashboardQuotaChargeCardData }): JSX.Element {
+  return (
+    <article className="metric-card dashboard-summary-card dashboard-quota-charge-card">
+      <div className="dashboard-summary-card-heading">
+        <h3>{card.title}</h3>
+      </div>
+      <div className="dashboard-quota-charge-grid">
+        <div className="dashboard-quota-charge-value">
+          <span className="dashboard-quota-charge-label">{card.localLabel}</span>
+          <span className="metric-value dashboard-metric-value">{card.localValue}</span>
+        </div>
+        <div className="dashboard-quota-charge-value">
+          <span className="dashboard-quota-charge-label">{card.upstreamLabel}</span>
+          <span className="metric-value dashboard-metric-value">{card.upstreamValue}</span>
+        </div>
+      </div>
+      <div className="dashboard-quota-charge-footer">
+        <div className={`metric-delta metric-delta-${card.deltaTone ?? 'neutral'}`}>
+          <span className="metric-delta-label">{card.deltaLabel}</span>
+          <span className="metric-delta-value">{card.deltaValue}</span>
+        </div>
+        <div className="dashboard-quota-charge-meta">
+          <span>{card.coverage}</span>
+          <span>{card.freshness}</span>
+        </div>
+      </div>
+    </article>
+  )
+}
+
 export default function DashboardOverview({
   strings,
   overviewReady,
   statusLoading,
   todayMetrics,
+  todayQuotaCharge,
   monthMetrics,
+  monthQuotaCharge,
   statusMetrics,
   trend,
   tokenCoverage,
@@ -215,6 +262,10 @@ export default function DashboardOverview({
   const hasTodaySummary = todayMetrics.length > 0
   const hasMonthSummary = monthMetrics.length > 0
   const hasStatusSummary = statusMetrics.length > 0
+  const todayTotalMetric = todayMetrics.find((metric) => metric.id === 'today-total') ?? null
+  const todayDetailMetrics = todayMetrics.filter((metric) => metric.id !== 'today-total')
+  const monthTotalMetric = monthMetrics.find((metric) => metric.id === 'month-total') ?? null
+  const monthDetailMetrics = monthMetrics.filter((metric) => metric.id !== 'month-total')
 
   return (
     <div className="dashboard-overview-stack">
@@ -250,10 +301,14 @@ export default function DashboardOverview({
                   </div>
                 </header>
                 {hasTodaySummary ? (
-                  <div className="dashboard-summary-metrics dashboard-summary-metrics-primary dashboard-today-grid">
-                    {todayMetrics.map((metric) => (
-                      <SummaryMetricCard key={metric.id} metric={metric} />
-                    ))}
+                  <div className="dashboard-summary-section-stack">
+                    {todayTotalMetric ? <SummaryMetricCard metric={todayTotalMetric} /> : null}
+                    {todayQuotaCharge ? <QuotaChargeCard card={todayQuotaCharge} /> : null}
+                    <div className="dashboard-summary-metrics dashboard-summary-metrics-primary dashboard-today-grid">
+                      {todayDetailMetrics.map((metric) => (
+                        <SummaryMetricCard key={metric.id} metric={metric} />
+                      ))}
+                    </div>
                   </div>
                 ) : (
                   <div className="empty-state alert dashboard-summary-empty">{strings.summaryUnavailable}</div>
@@ -268,10 +323,14 @@ export default function DashboardOverview({
                   </div>
                 </header>
                 {hasMonthSummary ? (
-                  <div className="dashboard-summary-metrics dashboard-summary-metrics-compact dashboard-summary-metrics-month">
-                    {monthMetrics.map((metric) => (
-                      <SummaryMetricCard key={metric.id} metric={metric} compact />
-                    ))}
+                  <div className="dashboard-summary-section-stack">
+                    {monthTotalMetric ? <SummaryMetricCard metric={monthTotalMetric} /> : null}
+                    {monthQuotaCharge ? <QuotaChargeCard card={monthQuotaCharge} /> : null}
+                    <div className="dashboard-summary-metrics dashboard-summary-metrics-compact dashboard-summary-metrics-month">
+                      {monthDetailMetrics.map((metric) => (
+                        <SummaryMetricCard key={metric.id} metric={metric} compact />
+                      ))}
+                    </div>
                   </div>
                 ) : (
                   <div className="empty-state alert dashboard-summary-empty">{strings.summaryUnavailable}</div>

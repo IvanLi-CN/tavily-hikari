@@ -35,10 +35,11 @@ use sha2::{Digest, Sha256};
 use url::form_urlencoded;
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SummarySig {
-    summary: (i64, i64, i64, i64, i64, i64, i64, Option<i64>, i64, i64),
-    today: (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64),
-    yesterday: (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64),
-    month: (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64),
+    summary: [i64; 9],
+    summary_last_activity: Option<i64>,
+    today: [i64; 15],
+    yesterday: [i64; 15],
+    month: [i64; 17],
     proxy: Option<(i64, i64)>,
 }
 use std::time::{Duration, Instant};

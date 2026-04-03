@@ -52,7 +52,7 @@ import TokenDetail from './pages/TokenDetail'
 import { ArrowDown, ArrowUp, ArrowUpDown, ChartColumnIncreasing } from 'lucide-react'
 import AdminShell, { AdminShellSidebarUtility, type AdminNavItem, type AdminNavTarget } from './admin/AdminShell'
 import AdminOverlayHost from './admin/AdminOverlayHost'
-import DashboardOverview from './admin/DashboardOverview'
+import DashboardOverview, { type DashboardQuotaChargeCardData } from './admin/DashboardOverview'
 import {
   createDashboardMonthMetrics,
   createDashboardTodayMetrics,
@@ -191,6 +191,7 @@ import {
   type ForwardProxyStatsResponse,
   type ForwardProxyDashboardSummaryResponse,
   type ForwardProxyValidationKind,
+  type SummaryWindowMetrics,
   type StickyNode,
   type StickyUserRow,
   fetchForwardProxyDashboardSummary,
@@ -931,6 +932,47 @@ function formatTimestamp(value: number | null): string {
 function formatTimestampNoYear(value: number | null): string {
   if (!value) return '—'
   return dateTimeNoYearFormatter.format(new Date(value * 1000))
+}
+
+function buildDashboardQuotaChargeCard(
+  window: SummaryWindowMetrics,
+  strings: {
+    title: string
+    localEstimate: string
+    upstreamActual: string
+    delta: string
+    sampledKeys: string
+    staleKeys: string
+    latestSync: string
+    noSync: string
+  },
+): DashboardQuotaChargeCardData {
+  const quotaCharge = window.quota_charge ?? {
+    local_estimated_credits: 0,
+    upstream_actual_credits: 0,
+    sampled_key_count: 0,
+    stale_key_count: 0,
+    latest_sync_at: null,
+  }
+  const deltaValue =
+    quotaCharge.local_estimated_credits - quotaCharge.upstream_actual_credits
+  const latestSync =
+    quotaCharge.latest_sync_at != null
+      ? `${strings.latestSync} · ${formatRelativeTime(quotaCharge.latest_sync_at)} · ${formatTimestampNoYear(quotaCharge.latest_sync_at)}`
+      : `${strings.latestSync} · ${strings.noSync}`
+
+  return {
+    title: strings.title,
+    localLabel: strings.localEstimate,
+    localValue: formatNumber(quotaCharge.local_estimated_credits),
+    upstreamLabel: strings.upstreamActual,
+    upstreamValue: formatNumber(quotaCharge.upstream_actual_credits),
+    deltaLabel: strings.delta,
+    deltaValue: formatSignedQuotaDelta(deltaValue),
+    deltaTone: deltaValue === 0 ? 'neutral' : 'negative',
+    coverage: `${strings.sampledKeys} ${formatNumber(quotaCharge.sampled_key_count)} · ${strings.staleKeys} ${formatNumber(quotaCharge.stale_key_count)}`,
+    freshness: latestSync,
+  }
 }
 
 function formatDateOnly(value: number | null, language: 'en' | 'zh'): string {
@@ -4214,6 +4256,40 @@ function AdminDashboard(): JSX.Element {
     metricsStrings.labels.total,
     metricsStrings.labels.unknownCalls,
   ])
+
+  const todayQuotaCharge = useMemo(() => {
+    if (!dashboardSummaryWindows) {
+      return null
+    }
+
+    return buildDashboardQuotaChargeCard(dashboardSummaryWindows.today, {
+      title: adminStrings.dashboard.quotaChargeTitle,
+      localEstimate: adminStrings.dashboard.quotaChargeLocalEstimate,
+      upstreamActual: adminStrings.dashboard.quotaChargeUpstreamActual,
+      delta: adminStrings.dashboard.quotaChargeDelta,
+      sampledKeys: adminStrings.dashboard.quotaChargeSampledKeys,
+      staleKeys: adminStrings.dashboard.quotaChargeStaleKeys,
+      latestSync: adminStrings.dashboard.quotaChargeLatestSync,
+      noSync: adminStrings.dashboard.quotaChargeNoSync,
+    })
+  }, [adminStrings.dashboard, dashboardSummaryWindows])
+
+  const monthQuotaCharge = useMemo(() => {
+    if (!dashboardSummaryWindows) {
+      return null
+    }
+
+    return buildDashboardQuotaChargeCard(dashboardSummaryWindows.month, {
+      title: adminStrings.dashboard.quotaChargeTitle,
+      localEstimate: adminStrings.dashboard.quotaChargeLocalEstimate,
+      upstreamActual: adminStrings.dashboard.quotaChargeUpstreamActual,
+      delta: adminStrings.dashboard.quotaChargeDelta,
+      sampledKeys: adminStrings.dashboard.quotaChargeSampledKeys,
+      staleKeys: adminStrings.dashboard.quotaChargeStaleKeys,
+      latestSync: adminStrings.dashboard.quotaChargeLatestSync,
+      noSync: adminStrings.dashboard.quotaChargeNoSync,
+    })
+  }, [adminStrings.dashboard, dashboardSummaryWindows])
 
   const statusMetrics = useMemo(() => {
     if (!dashboardSiteStatusSnapshot) {
@@ -8565,7 +8641,9 @@ function AdminDashboard(): JSX.Element {
           overviewReady={dashboardOverviewLoaded}
           statusLoading={dashboardStatusLoading}
           todayMetrics={todayMetrics}
+          todayQuotaCharge={todayQuotaCharge}
           monthMetrics={monthMetrics}
+          monthQuotaCharge={monthQuotaCharge}
           statusMetrics={statusMetrics}
           trend={trendBuckets}
           tokenCoverage={dashboardTokenCoverage}
