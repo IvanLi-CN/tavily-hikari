@@ -275,7 +275,10 @@ async fn load_auth_token_log_candidates(
           AND atl.path = '/mcp'
           AND COALESCE(atl.http_status, rl.status_code) = 405
           AND COALESCE(atl.mcp_status, rl.tavily_status_code) = 405
-          AND COALESCE(atl.failure_kind, rl.failure_kind) = ?
+          AND (
+                COALESCE(atl.failure_kind, rl.failure_kind) = ?
+                OR COALESCE(atl.failure_kind, rl.failure_kind) IS NULL
+          )
           AND (
                 LOWER(COALESCE(atl.error_message, '')) LIKE ?
                 OR LOWER(COALESCE(rl.error_message, '')) LIKE ?
@@ -1724,6 +1727,82 @@ mod tests {
                 .expect("billing_state"),
             BILLING_STATE_NONE
         );
+
+        let _ = std::fs::remove_file(db_str);
+    }
+
+    #[tokio::test]
+    async fn auth_candidates_include_rows_when_failure_kind_is_missing() {
+        let (proxy, pool, db_str) =
+            init_proxy_and_pool("session-delete-repair-null-failure-kind").await;
+        let token = proxy
+            .create_access_token(Some("session-delete-repair-null-failure-kind"))
+            .await
+            .expect("create token");
+        let created_at = Utc::now().timestamp();
+
+        let auth_log_id: i64 = sqlx::query_scalar(
+            r#"
+            INSERT INTO auth_token_logs (
+                token_id,
+                method,
+                path,
+                query,
+                http_status,
+                mcp_status,
+                request_kind_key,
+                request_kind_label,
+                request_kind_detail,
+                result_status,
+                error_message,
+                failure_kind,
+                key_effect_code,
+                key_effect_summary,
+                counts_business_quota,
+                business_credits,
+                billing_subject,
+                billing_state,
+                api_key_id,
+                request_log_id,
+                created_at
+            ) VALUES (
+                ?,
+                'DELETE',
+                '/mcp',
+                NULL,
+                405,
+                405,
+                'mcp:unknown-payload',
+                'MCP | unknown payload',
+                '/mcp',
+                'error',
+                'Method Not Allowed: Session termination not supported',
+                NULL,
+                'none',
+                NULL,
+                1,
+                2,
+                ?,
+                'charged',
+                NULL,
+                NULL,
+                ?
+            )
+            RETURNING id
+            "#,
+        )
+        .bind(&token.id)
+        .bind(format!("token:{}", token.id))
+        .bind(created_at)
+        .fetch_one(&pool)
+        .await
+        .expect("insert standalone auth token log without failure kind");
+
+        let auth_candidates = load_auth_token_log_candidates(&pool)
+            .await
+            .expect("load auth candidates");
+        assert_eq!(auth_candidates.len(), 1);
+        assert_eq!(auth_candidates[0].id, auth_log_id);
 
         let _ = std::fs::remove_file(db_str);
     }
