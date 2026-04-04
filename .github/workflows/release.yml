@@ -20,7 +20,6 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  PLATFORMS: linux/amd64
   RELEASE_HEAD_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.head_sha || github.event.workflow_run.head_sha }}
 
 concurrency:
@@ -169,15 +168,25 @@ jobs:
             echo "- version: ${{ steps.tagmeta.outputs.version || '<none>' }}"
           } >> "${GITHUB_STEP_SUMMARY}"
 
-  docker:
-    name: Build and push image (ghcr)
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+  docker-native:
+    name: Build and smoke image (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
     needs: [prepare]
     if: ${{ needs.prepare.outputs.should_release == 'true' }}
     permissions:
       contents: read
       packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
     env:
       APP_EFFECTIVE_VERSION: ${{ needs.prepare.outputs.version }}
     steps:
@@ -208,9 +217,6 @@ jobs:
           bun install --frozen-lockfile
           bun run build
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
       - name: Compute lowercase image name
         id: image-name
         shell: bash
@@ -218,7 +224,8 @@ jobs:
           set -euo pipefail
           lower="${GITHUB_REPOSITORY,,}"
           echo "IMAGE_NAME_LOWER=${lower}" >> "$GITHUB_ENV"
-          echo "LOCAL_SMOKE_IMAGE=tavily-hikari-release-smoke:${GITHUB_RUN_ID}" >> "$GITHUB_ENV"
+          echo "LOCAL_SMOKE_IMAGE=tavily-hikari-release-smoke:${GITHUB_RUN_ID}-${{ matrix.arch }}" >> "$GITHUB_ENV"
+          echo "DIGEST_FILE=${RUNNER_TEMP}/release-digests/${{ matrix.arch }}.txt" >> "$GITHUB_ENV"
           echo "image_name_lower=${lower}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
@@ -230,9 +237,11 @@ jobs:
           context: .
           file: ./Dockerfile
           load: true
+          platforms: ${{ matrix.platform }}
           tags: ${{ env.LOCAL_SMOKE_IMAGE }}
           build-args: |
             APP_EFFECTIVE_VERSION=${{ env.APP_EFFECTIVE_VERSION }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:buildcache-${{ matrix.arch }}
 
       - name: Build smoke helpers
         run: cargo build --locked --bin mock_tavily
@@ -513,6 +522,89 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Build and push Docker image by digest
+        id: build-push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            APP_EFFECTIVE_VERSION=${{ env.APP_EFFECTIVE_VERSION }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:buildcache-${{ matrix.arch }}
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:buildcache-${{ matrix.arch }},mode=max
+
+      - name: Export image digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          digest="${{ steps.build-push.outputs.digest }}"
+          if [[ -z "${digest}" ]]; then
+            echo "missing pushed digest for ${{ matrix.arch }}" >&2
+            exit 1
+          fi
+
+          mkdir -p "$(dirname "${DIGEST_FILE}")"
+          printf '%s\n' "${digest}" > "${DIGEST_FILE}"
+
+      - name: Upload image digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-digest-${{ matrix.arch }}
+          path: ${{ env.DIGEST_FILE }}
+          if-no-files-found: error
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### Native image build (${{ matrix.arch }})"
+            echo "- runner: ${{ matrix.runner }}"
+            echo "- platform: ${{ matrix.platform }}"
+            echo "- version: ${{ env.APP_EFFECTIVE_VERSION }}"
+            echo "- digest: ${{ steps.build-push.outputs.digest || '<none>' }}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  docker-manifest:
+    name: Publish multi-arch manifest (ghcr)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    needs: [prepare, docker-native]
+    if: ${{ needs.prepare.outputs.should_release == 'true' }}
+    permissions:
+      contents: read
+      packages: write
+    env:
+      APP_EFFECTIVE_VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - name: Compute lowercase image name
+        id: image-name
+        shell: bash
+        run: |
+          set -euo pipefail
+          lower="${GITHUB_REPOSITORY,,}"
+          echo "IMAGE_NAME_LOWER=${lower}" >> "$GITHUB_ENV"
+          echo "image_name_lower=${lower}" >> "$GITHUB_OUTPUT"
+
+      - name: Download image digests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-digest-*
+          path: ${{ runner.temp }}/release-digests
+          merge-multiple: true
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Extract metadata (tags, labels)
         id: meta
         uses: docker/metadata-action@v5
@@ -522,25 +614,69 @@ jobs:
             type=raw,value=latest,enable=${{ needs.prepare.outputs.release_channel == 'stable' }}
             type=raw,value=v${{ env.APP_EFFECTIVE_VERSION }}
 
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          platforms: ${{ env.PLATFORMS }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            APP_EFFECTIVE_VERSION=${{ env.APP_EFFECTIVE_VERSION }}
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:buildcache
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name_lower }}:buildcache,mode=max
+      - name: Create multi-arch manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          image="${REGISTRY}/${IMAGE_NAME_LOWER}"
+          refs=()
+          while IFS= read -r digest_file; do
+            digest="$(tr -d '\n' < "${digest_file}")"
+            [[ -n "${digest}" ]] || continue
+            refs+=("${image}@${digest}")
+          done < <(find "${RUNNER_TEMP}/release-digests" -type f -name '*.txt' | sort)
+
+          if [[ "${#refs[@]}" -ne 2 ]]; then
+            echo "expected exactly 2 architecture digests, got ${#refs[@]}" >&2
+            printf 'refs=%s\n' "${refs[*]}" >&2
+            exit 1
+          fi
+
+          tag_args=()
+          while IFS= read -r tag; do
+            [[ -n "${tag}" ]] || continue
+            tag_args+=("-t" "${tag}")
+          done <<< "${{ steps.meta.outputs.tags }}"
+
+          if [[ "${#tag_args[@]}" -eq 0 ]]; then
+            echo "metadata-action produced no tags" >&2
+            exit 1
+          fi
+
+          docker buildx imagetools create "${tag_args[@]}" "${refs[@]}"
+
+      - name: Validate manifest platforms
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r tag; do
+            [[ -n "${tag}" ]] || continue
+            inspect_output="$(docker buildx imagetools inspect "${tag}")"
+            printf '%s\n' "${inspect_output}"
+            grep -q 'linux/amd64' <<< "${inspect_output}"
+            grep -q 'linux/arm64' <<< "${inspect_output}"
+          done <<< "${{ steps.meta.outputs.tags }}"
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### Multi-arch manifest"
+            echo "- version: ${{ env.APP_EFFECTIVE_VERSION }}"
+            echo "- tags:"
+            while IFS= read -r tag; do
+              [[ -n "${tag}" ]] || continue
+              echo "  - ${tag}"
+            done <<< "${{ steps.meta.outputs.tags }}"
+          } >> "${GITHUB_STEP_SUMMARY}"
 
   github-release:
     name: GitHub Release
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [prepare, docker]
+    needs: [prepare, docker-manifest]
     if: ${{ needs.prepare.outputs.should_release == 'true' }}
     permissions:
       contents: write
