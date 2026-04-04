@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 已实现（待审查）
+- Status: 已完成（merge-ready）
 - Created: 2026-04-04
 - Last: 2026-04-04
 
@@ -81,7 +81,7 @@
 - [x] M1: 冻结 `TAVILY_UPSTREAM` / `TAVILY_USAGE_BASE` 的 path-prefix 兼容契约与文档口径
 - [x] M2: 落共享 URL helper，并替换 MCP / HTTP façade / research result / usage probe 的 path 构造逻辑
 - [x] M3: 补齐 prefixed path、trailing slash、encoded request id、无 path 不回归等测试
-- [ ] M4: 完成 README / docs-site / 设计文档同步、review-loop 收敛与 merge-ready 收口
+- [x] M4: 完成 README / docs-site / 设计文档同步、review-loop 收敛与 merge-ready 收口
 
 ## 风险 / 假设
 
@@ -93,6 +93,7 @@
 
 - 2026-04-04: 新建 spec，锁定修复目标为“增强 path-prefix URL 兼容性”，不引入新的 env var 或 Resin 专属语义。
 - 2026-04-04: 共享 URL path helper、MCP/HTTP/usage probe 路径拼接改造、契约测试、server 回归测试和文档同步已完成；待进入 PR review-loop 与 merge-ready 收口。
+- 2026-04-04: PR #208 已创建并补齐 `type:patch` + `channel:stable` 标签；本地验证、PR checks 与 review-loop 已收敛到 merge-ready。
 
 ## 参考（References）
 
