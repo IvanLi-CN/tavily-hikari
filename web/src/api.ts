@@ -357,6 +357,56 @@ export interface AuthTokenSecret {
   token: string // th-<id>-<secret>
 }
 
+export interface TodayWindowRange {
+  todayStart: string
+  todayEnd: string
+}
+
+function formatIso8601WithOffset(date: Date): string {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  const hours = String(date.getHours()).padStart(2, '0')
+  const minutes = String(date.getMinutes()).padStart(2, '0')
+  const seconds = String(date.getSeconds()).padStart(2, '0')
+  const offsetMinutes = -date.getTimezoneOffset()
+  const sign = offsetMinutes >= 0 ? '+' : '-'
+  const absoluteOffsetMinutes = Math.abs(offsetMinutes)
+  const offsetHours = String(Math.floor(absoluteOffsetMinutes / 60)).padStart(2, '0')
+  const offsetRemainderMinutes = String(absoluteOffsetMinutes % 60).padStart(2, '0')
+  return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}${sign}${offsetHours}:${offsetRemainderMinutes}`
+}
+
+export function createBrowserTodayWindow(now = new Date()): TodayWindowRange {
+  const start = new Date(now)
+  start.setHours(0, 0, 0, 0)
+  const end = new Date(start)
+  end.setDate(end.getDate() + 1)
+  return {
+    todayStart: formatIso8601WithOffset(start),
+    todayEnd: formatIso8601WithOffset(end),
+  }
+}
+
+export function millisecondsUntilNextBrowserDayBoundary(now = new Date()): number {
+  const next = new Date(now)
+  next.setHours(24, 0, 0, 0)
+  return Math.max(1, next.getTime() - now.getTime())
+}
+
+function appendTodayWindowRange(params: URLSearchParams, todayWindow?: TodayWindowRange): void {
+  if (!todayWindow) return
+  params.set('today_start', todayWindow.todayStart)
+  params.set('today_end', todayWindow.todayEnd)
+}
+
+export function buildPublicEventsUrl(token?: string, todayWindow?: TodayWindowRange): string {
+  const params = new URLSearchParams()
+  if (token) params.set('token', token)
+  appendTodayWindowRange(params, todayWindow)
+  return `/api/public/events${params.toString() ? `?${params.toString()}` : ''}`
+}
+
 async function requestJson<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
   const response = await fetch(input, init)
   if (!response.ok) {
@@ -582,12 +632,20 @@ export function fetchSummaryWindows(signal?: AbortSignal): Promise<SummaryWindow
   return requestJson('/api/summary/windows', { signal })
 }
 
-export function fetchPublicMetrics(signal?: AbortSignal): Promise<PublicMetrics> {
-  return requestJson('/api/public/metrics', { signal })
+export function fetchPublicMetrics(todayWindow?: TodayWindowRange, signal?: AbortSignal): Promise<PublicMetrics> {
+  const params = new URLSearchParams()
+  appendTodayWindowRange(params, todayWindow)
+  const url = `/api/public/metrics${params.toString() ? `?${params.toString()}` : ''}`
+  return requestJson(url, { signal })
 }
 
-export function fetchTokenMetrics(token: string, signal?: AbortSignal): Promise<TokenMetrics> {
+export function fetchTokenMetrics(
+  token: string,
+  todayWindow?: TodayWindowRange,
+  signal?: AbortSignal,
+): Promise<TokenMetrics> {
   const params = new URLSearchParams({ token })
+  appendTodayWindowRange(params, todayWindow)
   return requestJson(`/api/token/metrics?${params.toString()}`, { signal })
 }
 
@@ -965,17 +1023,30 @@ export interface UserTokenSummary {
   monthlySuccess: number
 }
 
-export function fetchUserDashboard(signal?: AbortSignal): Promise<UserDashboard> {
-  return requestJson('/api/user/dashboard', { signal })
+export function fetchUserDashboard(todayWindow?: TodayWindowRange, signal?: AbortSignal): Promise<UserDashboard> {
+  const params = new URLSearchParams()
+  appendTodayWindowRange(params, todayWindow)
+  const url = `/api/user/dashboard${params.toString() ? `?${params.toString()}` : ''}`
+  return requestJson(url, { signal })
 }
 
-export function fetchUserTokens(signal?: AbortSignal): Promise<UserTokenSummary[]> {
-  return requestJson('/api/user/tokens', { signal })
+export function fetchUserTokens(todayWindow?: TodayWindowRange, signal?: AbortSignal): Promise<UserTokenSummary[]> {
+  const params = new URLSearchParams()
+  appendTodayWindowRange(params, todayWindow)
+  const url = `/api/user/tokens${params.toString() ? `?${params.toString()}` : ''}`
+  return requestJson(url, { signal })
 }
 
-export function fetchUserTokenDetail(id: string, signal?: AbortSignal): Promise<UserTokenSummary> {
+export function fetchUserTokenDetail(
+  id: string,
+  todayWindow?: TodayWindowRange,
+  signal?: AbortSignal,
+): Promise<UserTokenSummary> {
   const encoded = encodeURIComponent(id)
-  return requestJson(`/api/user/tokens/${encoded}`, { signal })
+  const params = new URLSearchParams()
+  appendTodayWindowRange(params, todayWindow)
+  const url = `/api/user/tokens/${encoded}${params.toString() ? `?${params.toString()}` : ''}`
+  return requestJson(url, { signal })
 }
 
 export function fetchUserTokenSecret(id: string, signal?: AbortSignal): Promise<UserTokenResponse> {

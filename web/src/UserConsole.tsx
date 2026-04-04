@@ -12,8 +12,10 @@ import TokenSecretField, { type TokenSecretCopyState } from './components/TokenS
 import ManualCopyBubble from './components/ManualCopyBubble'
 
 import {
+  createBrowserTodayWindow,
   fetchVersion,
   fetchProfile,
+  millisecondsUntilNextBrowserDayBoundary,
   probeApiTavilyCrawl,
   probeApiTavilyExtract,
   probeApiTavilyMap,
@@ -929,6 +931,14 @@ export default function UserConsole(): JSX.Element {
   const [detailLogs, setDetailLogs] = useState<PublicTokenLog[]>([])
   const [loading, setLoading] = useState(true)
   const [detailLoading, setDetailLoading] = useState(false)
+  const [todayWindow, setTodayWindow] = useState(() => createBrowserTodayWindow())
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setTodayWindow(createBrowserTodayWindow())
+    }, millisecondsUntilNextBrowserDayBoundary())
+    return () => window.clearTimeout(timer)
+  }, [todayWindow.todayEnd])
   const [error, setError] = useState<string | null>(null)
   const [copyState, setCopyState] = useState<Record<string, TokenSecretCopyState>>({})
   const [tokenSecretTokenId, setTokenSecretTokenId] = useState<string | null>(null)
@@ -1005,8 +1015,8 @@ export default function UserConsole(): JSX.Element {
       }
 
       const [nextDashboard, nextTokens] = await Promise.all([
-        fetchUserDashboard(signal),
-        fetchUserTokens(signal),
+        fetchUserDashboard(todayWindow, signal),
+        fetchUserTokens(todayWindow, signal),
       ])
       setDashboard(nextDashboard)
       setTokens(nextTokens)
@@ -1020,7 +1030,7 @@ export default function UserConsole(): JSX.Element {
     } finally {
       setLoading(false)
     }
-  }, [text.errors.load])
+  }, [text.errors.load, todayWindow])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -1054,7 +1064,7 @@ export default function UserConsole(): JSX.Element {
     setDetailLoading(true)
     const controller = new AbortController()
     Promise.all([
-      fetchUserTokenDetail(route.id, controller.signal),
+      fetchUserTokenDetail(route.id, todayWindow, controller.signal),
       fetchUserTokenLogs(route.id, 20, controller.signal),
     ])
       .then(([nextDetail, nextLogs]) => {
@@ -1072,7 +1082,7 @@ export default function UserConsole(): JSX.Element {
       })
       .finally(() => setDetailLoading(false))
     return () => controller.abort()
-  }, [consoleAvailability, route, text.errors.detail])
+  }, [consoleAvailability, route, text.errors.detail, todayWindow])
 
   useEffect(() => {
     probeRunIdRef.current += 1
@@ -1547,7 +1557,7 @@ export default function UserConsole(): JSX.Element {
     if (quotaBlockedWindow) {
       try {
         const revalidatedQuota = await revalidateBlockedQuotaWindow(detail, async () => {
-          return await fetchUserTokenDetail(route.id)
+          return await fetchUserTokenDetail(route.id, todayWindow)
         })
         if (!isActiveRun()) return
         quotaBlockedWindow = revalidatedQuota.window
@@ -1605,7 +1615,7 @@ export default function UserConsole(): JSX.Element {
           if (quotaWindow) {
             quotaBlockedWindow = quotaWindow
             try {
-              const refreshedDetail = await fetchUserTokenDetail(route.id)
+              const refreshedDetail = await fetchUserTokenDetail(route.id, todayWindow)
               if (!isActiveRun()) return
               setDetail(refreshedDetail)
             } catch {
@@ -1970,7 +1980,7 @@ export default function UserConsole(): JSX.Element {
                 <p><RollingNumber value={loading ? null : dashboard?.dailyFailure ?? 0} /></p>
               </div>
               <div className="access-stat">
-                <h4>{text.dashboard.monthlySuccess}</h4>
+                <h4>{text.dashboard.monthlySuccessUtc}</h4>
                 <p><RollingNumber value={loading ? null : dashboard?.monthlySuccess ?? 0} /></p>
               </div>
             </div>
@@ -2202,7 +2212,7 @@ export default function UserConsole(): JSX.Element {
                 <p><RollingNumber value={detailLoading ? null : detail?.dailyFailure ?? 0} /></p>
               </div>
               <div className="access-stat">
-                <h4>{text.dashboard.monthlySuccess}</h4>
+                <h4>{text.dashboard.monthlySuccessUtc}</h4>
                 <p><RollingNumber value={detailLoading ? null : detail?.monthlySuccess ?? 0} /></p>
               </div>
             </div>
@@ -2763,6 +2773,7 @@ const EN = {
     dailySuccess: 'Daily Success',
     dailyFailure: 'Daily Failure',
     monthlySuccess: 'Monthly Success',
+    monthlySuccessUtc: 'Monthly Success (UTC)',
     hourlyAny: 'Hourly Any Requests',
     hourly: 'Hourly Quota',
     daily: 'Daily Quota',
@@ -2925,6 +2936,7 @@ const ZH = {
     dailySuccess: '今日成功',
     dailyFailure: '今日失败',
     monthlySuccess: '本月成功',
+    monthlySuccessUtc: '本月成功（UTC）',
     hourlyAny: '每小时任意请求',
     hourly: '小时配额',
     daily: '日配额',

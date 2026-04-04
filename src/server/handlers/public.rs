@@ -81,12 +81,27 @@ async fn fetch_summary_windows(
         })
 }
 
+#[derive(Debug, Deserialize)]
+struct PublicTodayWindowQuery {
+    today_start: Option<String>,
+    today_end: Option<String>,
+}
+
+fn parse_public_today_window_query(
+    query: &PublicTodayWindowQuery,
+) -> Result<Option<tavily_hikari::TimeRangeUtc>, (StatusCode, String)> {
+    tavily_hikari::parse_explicit_today_window(query.today_start.as_deref(), query.today_end.as_deref())
+        .map_err(|message| (StatusCode::BAD_REQUEST, message))
+}
+
 async fn get_public_metrics(
     State(state): State<Arc<AppState>>,
-) -> Result<Json<PublicMetricsView>, StatusCode> {
+    Query(query): Query<PublicTodayWindowQuery>,
+) -> Result<Json<PublicMetricsView>, (StatusCode, String)> {
+    let daily_window = parse_public_today_window_query(&query)?;
     state
         .proxy
-        .success_breakdown()
+        .success_breakdown(daily_window)
         .await
         .map(|metrics| {
             Json(PublicMetricsView {
@@ -96,7 +111,10 @@ async fn get_public_metrics(
         })
         .map_err(|err| {
             eprintln!("public metrics error: {err}");
-            StatusCode::INTERNAL_SERVER_ERROR
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to load public metrics".to_string(),
+            )
         })
 }
 
@@ -144,20 +162,31 @@ struct TokenMetricsView {
 #[derive(Deserialize)]
 struct TokenQuery {
     token: String,
+    today_start: Option<String>,
+    today_end: Option<String>,
 }
 
 async fn get_token_metrics_public(
     State(state): State<Arc<AppState>>,
     Query(q): Query<TokenQuery>,
-) -> Result<Json<TokenMetricsView>, StatusCode> {
+) -> Result<Json<TokenMetricsView>, (StatusCode, String)> {
+    let daily_window = parse_public_today_window_query(&PublicTodayWindowQuery {
+        today_start: q.today_start.clone(),
+        today_end: q.today_end.clone(),
+    })?;
     // Validate token first
     if !state
         .proxy
         .validate_access_token(&q.token)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to validate token".to_string(),
+            )
+        })?
     {
-        return Err(StatusCode::UNAUTHORIZED);
+        return Err((StatusCode::UNAUTHORIZED, "unauthorized".to_string()));
     }
 
     // Extract id
@@ -165,19 +194,29 @@ async fn get_token_metrics_public(
         .token
         .strip_prefix("th-")
         .and_then(|rest| rest.split_once('-').map(|(id, _)| id))
-        .ok_or(StatusCode::BAD_REQUEST)?;
+        .ok_or_else(|| (StatusCode::BAD_REQUEST, "invalid token".to_string()))?;
     let (monthly_success, daily_success, daily_failure) = state
         .proxy
-        .token_success_breakdown(token_id)
+        .token_success_breakdown(token_id, daily_window)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to load token metrics".to_string(),
+            )
+        })?;
 
     // Use the same quota snapshot logic as the admin views so numbers stay consistent.
     let quota_verdict = state
         .proxy
         .token_quota_snapshot(token_id)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to load token quota".to_string(),
+            )
+        })?;
     let (
         quota_hourly_used,
         quota_hourly_limit,
@@ -221,6 +260,8 @@ async fn get_token_metrics_public(
 #[derive(Debug, Deserialize)]
 struct TavilyUsageQuery {
     token_id: Option<String>,
+    today_start: Option<String>,
+    today_end: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -237,7 +278,11 @@ async fn tavily_http_usage(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Query(q): Query<TavilyUsageQuery>,
-) -> Result<Json<TavilyUsageView>, StatusCode> {
+) -> Result<Json<TavilyUsageView>, (StatusCode, String)> {
+    let daily_window = parse_public_today_window_query(&PublicTodayWindowQuery {
+        today_start: q.today_start.clone(),
+        today_end: q.today_end.clone(),
+    })?;
     // Prefer Authorization: Bearer th-<id>-<secret>.
     let auth_bearer = headers
         .get(axum::http::header::AUTHORIZATION)
@@ -261,11 +306,11 @@ async fn tavily_http_usage(
                 .as_deref()
                 .map(str::trim)
                 .filter(|v| !v.is_empty())
-                .ok_or(StatusCode::UNAUTHORIZED)?;
+                .ok_or_else(|| (StatusCode::UNAUTHORIZED, "unauthorized".to_string()))?;
             format!("th-{id}-dev")
         }
         // Production: usage endpoint always requires an access token.
-        (false, None) => return Err(StatusCode::UNAUTHORIZED),
+        (false, None) => return Err((StatusCode::UNAUTHORIZED, "unauthorized".to_string())),
     };
 
     // Validate token when not in dev-open-admin mode.
@@ -274,9 +319,14 @@ async fn tavily_http_usage(
             .proxy
             .validate_access_token(&token_str)
             .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            .map_err(|_| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "failed to validate token".to_string(),
+                )
+            })?;
         if !valid {
-            return Err(StatusCode::UNAUTHORIZED);
+            return Err((StatusCode::UNAUTHORIZED, "unauthorized".to_string()));
         }
     }
 
@@ -287,25 +337,30 @@ async fn tavily_http_usage(
     let token_id = if let Some(explicit) = q.token_id.as_ref() {
         let trimmed = explicit.trim();
         if trimmed.is_empty() {
-            return Err(StatusCode::BAD_REQUEST);
+            return Err((StatusCode::BAD_REQUEST, "invalid token_id".to_string()));
         }
         if !using_dev_open_admin_fallback
             && token_id_from_token
                 .as_ref()
                 .is_some_and(|from_token| trimmed != from_token)
         {
-            return Err(StatusCode::FORBIDDEN);
+            return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
         }
         trimmed.to_string()
     } else {
-        token_id_from_token.ok_or(StatusCode::BAD_REQUEST)?
+        token_id_from_token.ok_or_else(|| (StatusCode::BAD_REQUEST, "invalid token".to_string()))?
     };
 
     let (monthly_success, daily_success, daily_failure) = state
         .proxy
-        .token_success_breakdown(&token_id)
+        .token_success_breakdown(&token_id, daily_window)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to load token usage".to_string(),
+            )
+        })?;
 
     let now = Utc::now();
     let month_start = start_of_month_dt(now).timestamp();
@@ -314,7 +369,12 @@ async fn tavily_http_usage(
         .proxy
         .token_summary_since(&token_id, month_start, Some(now_ts))
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to load token summary".to_string(),
+            )
+        })?;
 
     Ok(Json(TavilyUsageView {
         token_id,
@@ -556,6 +616,8 @@ async fn sse_dashboard(
 #[derive(Deserialize)]
 struct PublicEventsQuery {
     token: Option<String>,
+    today_start: Option<String>,
+    today_end: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -568,21 +630,29 @@ struct PublicMetricsPayload {
 async fn sse_public(
     State(state): State<Arc<AppState>>,
     Query(q): Query<PublicEventsQuery>,
-) -> Result<Sse<impl Stream<Item = Result<Event, axum::http::Error>>>, StatusCode> {
+) -> Result<Sse<impl Stream<Item = Result<Event, axum::http::Error>>>, (StatusCode, String)> {
     let state = state.clone();
     let token_param = q.token.clone();
+    let daily_window = parse_public_today_window_query(&PublicTodayWindowQuery {
+        today_start: q.today_start.clone(),
+        today_end: q.today_end.clone(),
+    })?;
 
     let stream = stream! {
         type TokenSig = (i64, i64, i64, i64, i64, i64, i64, i64, i64);
         type PublicSig = (i64, i64, Option<TokenSig>);
-        async fn compute(state: &Arc<AppState>, token_param: &Option<String>) -> Option<(PublicMetricsPayload, PublicSig)> {
-            let m = state.proxy.success_breakdown().await.ok()?;
+        async fn compute(
+            state: &Arc<AppState>,
+            token_param: &Option<String>,
+            daily_window: Option<tavily_hikari::TimeRangeUtc>,
+        ) -> Option<(PublicMetricsPayload, PublicSig)> {
+            let m = state.proxy.success_breakdown(daily_window).await.ok()?;
             let public = PublicMetricsView { monthly_success: m.monthly_success, daily_success: m.daily_success };
             let token_sig: Option<TokenSig> = if let Some(token) = token_param.as_ref() {
                 let valid = state.proxy.validate_access_token(token).await.ok()?;
                 if !valid { None } else {
                     let id = token.strip_prefix("th-").and_then(|r| r.split_once('-').map(|(id, _)| id))?;
-                    let (ms, ds, df) = state.proxy.token_success_breakdown(id).await.ok()?;
+                    let (ms, ds, df) = state.proxy.token_success_breakdown(id, daily_window).await.ok()?;
                     let quota_verdict = state.proxy.token_quota_snapshot(id).await.ok()?;
                     let (
                         quota_hourly_used,
@@ -652,13 +722,13 @@ async fn sse_public(
         }
 
         let mut last_sig: Option<PublicSig> = None;
-        if let Some((payload, sig)) = compute(&state, &token_param).await {
+        if let Some((payload, sig)) = compute(&state, &token_param, daily_window).await {
             let json = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
             yield Ok(Event::default().event("metrics").data(json));
             last_sig = Some(sig);
         }
         loop {
-            if let Some((payload, sig)) = compute(&state, &token_param).await {
+            if let Some((payload, sig)) = compute(&state, &token_param, daily_window).await {
                 if last_sig != Some(sig) {
                     let json = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
                     yield Ok(Event::default().event("metrics").data(json));

@@ -1275,8 +1275,8 @@ export const translations: Record<Language, TranslationShape> = {
           subtitle: 'Tavily quotas reset at the start of every UTC month',
         },
         daily: {
-          title: 'Today (server timezone)',
-          subtitle: 'Successful requests since the server midnight',
+          title: 'Today',
+          subtitle: 'Successful requests in today’s browser-local window',
         },
         pool: {
           title: 'Key Pool Status',
@@ -1328,7 +1328,7 @@ export const translations: Record<Language, TranslationShape> = {
         stats: {
           dailySuccess: 'Daily Success',
           dailyFailure: 'Daily Failure',
-          monthlySuccess: 'Monthly Success',
+          monthlySuccess: 'Monthly Success (UTC)',
           hourlyLimit: 'Hourly Limit',
           dailyLimit: 'Daily Limit',
           monthlyLimit: 'Monthly Limit',
@@ -2533,8 +2533,8 @@ export const translations: Record<Language, TranslationShape> = {
           subtitle: 'Tavily 月额度按 UTC 月初自动重置',
         },
         daily: {
-          title: '今日（服务器时区）',
-          subtitle: '从服务器午夜起累计的成功请求',
+          title: '今日',
+          subtitle: '按当前浏览器本地今日窗口统计的成功请求',
         },
         pool: {
           title: '号池可用数',
@@ -2585,9 +2585,9 @@ export const translations: Record<Language, TranslationShape> = {
         stats: {
           dailySuccess: '今日成功',
           dailyFailure: '今日失败',
-          monthlySuccess: '本月成功',
+          monthlySuccess: '本月成功（UTC）',
           hourlyLimit: '1 小时限额',
-          dailyLimit: '24 小时限额',
+          dailyLimit: '日限额',
           monthlyLimit: '月度限额',
         },
       },

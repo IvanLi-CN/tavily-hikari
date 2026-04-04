@@ -2872,7 +2872,7 @@ async fn list_users(
         let user_ids: Vec<String> = users.iter().map(|user| user.user_id.clone()).collect();
         let summaries = state
             .proxy
-            .user_dashboard_summaries_for_users(&user_ids)
+            .user_dashboard_summaries_for_users(&user_ids, None)
             .await
             .map_err(|err| {
                 eprintln!("list admin users dashboard summaries error: {err}");
@@ -2925,7 +2925,7 @@ async fn list_users(
         let user_ids: Vec<String> = users.iter().map(|user| user.user_id.clone()).collect();
         let summaries = state
             .proxy
-            .user_dashboard_summaries_for_users(&user_ids)
+            .user_dashboard_summaries_for_users(&user_ids, None)
             .await
             .map_err(|err| {
                 eprintln!("list admin users dashboard summaries error: {err}");
@@ -3196,7 +3196,7 @@ async fn get_user_detail(
 
     let summary = state
         .proxy
-        .user_dashboard_summary(&user.user_id)
+        .user_dashboard_summary(&user.user_id, None)
         .await
         .map_err(|err| {
             eprintln!("get admin user dashboard summary error: {err}");
@@ -3253,7 +3253,7 @@ async fn get_user_detail(
     for token in tokens {
         let (monthly_success, daily_success, daily_failure) = state
             .proxy
-            .token_success_breakdown(&token.id)
+            .token_success_breakdown(&token.id, None)
             .await
             .map_err(|err| {
                 eprintln!("get admin user token success breakdown error: {err}");

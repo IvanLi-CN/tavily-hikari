@@ -110,6 +110,80 @@ fn parse_hhmm_validates_clock_time() {
 }
 
 #[test]
+fn parse_explicit_today_window_accepts_rfc3339_midnight_pair() {
+    let expected_start = chrono::DateTime::parse_from_rfc3339("2026-04-03T00:00:00+08:00")
+        .expect("parse start")
+        .with_timezone(&Utc)
+        .timestamp();
+    let expected_end = chrono::DateTime::parse_from_rfc3339("2026-04-04T00:00:00+08:00")
+        .expect("parse end")
+        .with_timezone(&Utc)
+        .timestamp();
+    let window = parse_explicit_today_window(
+        Some("2026-04-03T00:00:00+08:00"),
+        Some("2026-04-04T00:00:00+08:00"),
+    )
+    .expect("parse explicit today window")
+    .expect("window present");
+
+    assert_eq!(
+        window,
+        TimeRangeUtc {
+            start: expected_start,
+            end: expected_end,
+        }
+    );
+}
+
+#[test]
+fn parse_explicit_today_window_requires_complete_pair() {
+    let err = parse_explicit_today_window(Some("2026-04-03T00:00:00+08:00"), None)
+        .expect_err("missing end should fail");
+    assert!(err.contains("today_start and today_end must be provided together"));
+}
+
+#[test]
+fn parse_explicit_today_window_requires_offset() {
+    let err = parse_explicit_today_window(Some("2026-04-03T00:00:00"), Some("2026-04-04T00:00:00"))
+        .expect_err("offset-less timestamps should fail");
+    assert!(err.contains("today_start must be a valid ISO8601 datetime with offset"));
+}
+
+#[test]
+fn parse_explicit_today_window_rejects_non_midnight_boundaries() {
+    let err = parse_explicit_today_window(
+        Some("2026-04-03T01:00:00+08:00"),
+        Some("2026-04-04T00:00:00+08:00"),
+    )
+    .expect_err("non-midnight start should fail");
+    assert!(err.contains("must align to local midnight"));
+}
+
+#[test]
+fn parse_explicit_today_window_rejects_non_daily_ranges() {
+    let err = parse_explicit_today_window(
+        Some("2026-04-03T00:00:00+08:00"),
+        Some("2026-04-05T00:00:00+08:00"),
+    )
+    .expect_err("two-day range should fail");
+    assert!(err.contains("must describe exactly one natural-day window"));
+
+    let err = parse_explicit_today_window(
+        Some("2026-04-03T00:00:00+08:00"),
+        Some("2026-04-03T00:00:00+08:00"),
+    )
+    .expect_err("zero-length range should fail");
+    assert!(err.contains("must be later than today_start"));
+
+    let err = parse_explicit_today_window(
+        Some("2026-04-03T00:00:00+14:00"),
+        Some("2026-04-04T00:00:00-12:00"),
+    )
+    .expect_err("mixed-offset multi-day utc span should fail");
+    assert!(err.contains("must describe exactly one natural-day window"));
+}
+
+#[test]
 fn parse_forward_proxy_trace_response_normalizes_ipv6_addresses() {
     let parsed = parse_forward_proxy_trace_response(
         "ip=2602:FEDA:F30F:DD6A:782D:DE80:6148:5EE2\nloc=US\ncolo=SJC\n",
@@ -644,18 +718,18 @@ fn request_logs_env_settings_enforce_minimums_and_defaults() {
     unsafe {
         std::env::set_var("REQUEST_LOGS_RETENTION_DAYS", "3");
     }
-    assert_eq!(effective_request_logs_retention_days(), 7);
+    assert_eq!(effective_request_logs_retention_days(), 32);
 
     unsafe {
-        std::env::set_var("REQUEST_LOGS_RETENTION_DAYS", "10");
+        std::env::set_var("REQUEST_LOGS_RETENTION_DAYS", "40");
     }
-    assert_eq!(effective_request_logs_retention_days(), 10);
+    assert_eq!(effective_request_logs_retention_days(), 40);
 
     unsafe {
         std::env::set_var("REQUEST_LOGS_RETENTION_DAYS", "not-a-number");
         std::env::set_var("REQUEST_LOGS_GC_AT", "23:30");
     }
-    assert_eq!(effective_request_logs_retention_days(), 7);
+    assert_eq!(effective_request_logs_retention_days(), 32);
     assert_eq!(effective_request_logs_gc_at(), (23, 30));
 
     unsafe {
@@ -6606,6 +6680,36 @@ async fn insert_summary_window_maintenance_record(
     .expect("insert summary window maintenance record");
 }
 
+async fn insert_auth_token_metric_log(
+    proxy: &TavilyProxy,
+    token_id: &str,
+    created_at: i64,
+    result_status: &str,
+) {
+    sqlx::query(
+        r#"
+        INSERT INTO auth_token_logs (
+            token_id,
+            method,
+            path,
+            query,
+            http_status,
+            mcp_status,
+            result_status,
+            error_message,
+            created_at,
+            counts_business_quota
+        ) VALUES (?, 'POST', '/api/tavily/search', NULL, 200, 200, ?, NULL, ?, 1)
+        "#,
+    )
+    .bind(token_id)
+    .bind(result_status)
+    .bind(created_at)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert auth token metric log");
+}
+
 #[tokio::test]
 async fn summary_windows_split_today_yesterday_and_month() {
     let db_path = temp_db_path("summary-windows-split");
@@ -6641,8 +6745,9 @@ async fn summary_windows_split_today_yesterday_and_month() {
     let today_start = start_of_local_day_utc_ts(now);
     let yesterday_start = previous_local_day_start_utc_ts(now);
     let yesterday_same_time = previous_local_same_time_utc_ts(now);
-    let month_start = start_of_local_month_utc_ts(now);
-    let previous_month_start = start_of_local_month_utc_ts(now - chrono::Duration::days(32));
+    let month_start = start_of_month(now.with_timezone(&Utc)).timestamp();
+    let previous_month_start =
+        start_of_month(now.with_timezone(&Utc) - chrono::Duration::days(32)).timestamp();
 
     insert_summary_window_logs(&proxy, &key_id, today_start + 60, OUTCOME_SUCCESS, 9).await;
     insert_summary_window_logs(&proxy, &key_id, today_start + 3600, OUTCOME_ERROR, 2).await;
@@ -6689,21 +6794,19 @@ async fn summary_windows_split_today_yesterday_and_month() {
     };
     expected_month.quota_charge.stale_key_count = 1;
     if yesterday_start >= month_start {
-        expected_month.total_requests += 10;
-        expected_month.success_count += 8;
+        expected_month.total_requests += 7;
+        expected_month.success_count += 5;
         expected_month.error_count += 1;
         expected_month.quota_exhausted_count += 1;
-        expected_month.valuable_success_count += 8;
+        expected_month.valuable_success_count += 5;
         expected_month.valuable_failure_count += 2;
     }
-    if month_start < yesterday_start {
-        insert_summary_window_bucket(&proxy, &key_id, month_start, 3, 2, 1, 0).await;
+    if yesterday_same_time + 60 >= month_start {
         expected_month.total_requests += 3;
-        expected_month.success_count += 2;
-        expected_month.error_count += 1;
-        expected_month.valuable_success_count += 2;
-        expected_month.valuable_failure_count += 1;
+        expected_month.success_count += 3;
+        expected_month.valuable_success_count += 3;
     }
+    insert_summary_window_bucket(&proxy, &key_id, month_start, 3, 2, 1, 0).await;
     insert_summary_window_bucket(&proxy, &key_id, previous_month_start, 99, 80, 10, 9).await;
 
     let summary = proxy
@@ -6746,6 +6849,247 @@ async fn summary_windows_split_today_yesterday_and_month() {
     assert_eq!(summary.month, expected_month);
 
     let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn summary_windows_month_uses_utc_boundary() {
+    let db_path = temp_db_path("summary-windows-utc-month");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-summary-window-utc".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let key_id = proxy
+        .list_api_key_metrics()
+        .await
+        .expect("list key metrics")
+        .into_iter()
+        .next()
+        .expect("seeded key")
+        .id;
+
+    let utc_now = Utc::now();
+    let month_start = start_of_month(utc_now).timestamp();
+    let local_month_start = start_of_local_month_utc_ts(utc_now.with_timezone(&Local));
+    if month_start == local_month_start {
+        return;
+    }
+
+    let boundary_ts = month_start.max(local_month_start);
+    let month_only_ts = boundary_ts + 120;
+    let local_only_ts = boundary_ts - 120;
+
+    insert_summary_window_logs(&proxy, &key_id, month_only_ts, OUTCOME_SUCCESS, 5).await;
+    insert_summary_window_logs(&proxy, &key_id, month_only_ts + 30, OUTCOME_ERROR, 2).await;
+    insert_summary_window_logs(&proxy, &key_id, local_only_ts, OUTCOME_SUCCESS, 9).await;
+    insert_summary_window_logs(&proxy, &key_id, local_only_ts + 30, OUTCOME_ERROR, 2).await;
+
+    let summary = proxy
+        .summary_windows_at(utc_now.with_timezone(&Local))
+        .await
+        .expect("summary windows");
+
+    assert_eq!(summary.month.total_requests, 7);
+    assert_eq!(summary.month.success_count, 5);
+    assert_eq!(summary.month.error_count, 2);
+}
+
+#[tokio::test]
+async fn user_dashboard_summary_daily_metrics_follow_explicit_window() {
+    let db_path = temp_db_path("user-dashboard-explicit-window");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "linuxdo".to_string(),
+            provider_user_id: "browser-window-user".to_string(),
+            username: Some("browser_window_user".to_string()),
+            name: Some("Browser Window User".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: Some(1),
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+    let token = proxy
+        .ensure_user_token_binding(&user.user_id, Some("linuxdo:browser-window-user"))
+        .await
+        .expect("bind token");
+
+    let now_ts = Utc::now().timestamp();
+    let explicit_window = TimeRangeUtc {
+        start: now_ts - 3_600,
+        end: now_ts + 3_600,
+    };
+    insert_auth_token_metric_log(&proxy, &token.id, now_ts - 600, OUTCOME_SUCCESS).await;
+    insert_auth_token_metric_log(&proxy, &token.id, now_ts - 300, OUTCOME_ERROR).await;
+    insert_auth_token_metric_log(&proxy, &token.id, now_ts - 86_400, OUTCOME_SUCCESS).await;
+
+    let summary = proxy
+        .user_dashboard_summary(&user.user_id, Some(explicit_window))
+        .await
+        .expect("user dashboard summary");
+
+    assert_eq!(summary.daily_success, 1);
+    assert_eq!(summary.daily_failure, 1);
+    assert_eq!(summary.monthly_success, 2);
+}
+
+#[tokio::test]
+async fn user_dashboard_summary_daily_quota_includes_legacy_hour_buckets() {
+    let db_path = temp_db_path("user-dashboard-legacy-hour-quota");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "linuxdo".to_string(),
+            provider_user_id: "legacy-hour-user".to_string(),
+            username: Some("legacy_hour_user".to_string()),
+            name: Some("Legacy Hour User".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: Some(1),
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+    proxy
+        .ensure_user_token_binding(&user.user_id, Some("linuxdo:legacy-hour-user"))
+        .await
+        .expect("bind token");
+
+    let day_window = server_local_day_window_utc(Local::now());
+    sqlx::query(
+        r#"
+        INSERT INTO account_usage_buckets (user_id, bucket_start, granularity, count)
+        VALUES (?, ?, ?, ?), (?, ?, ?, ?)
+        "#,
+    )
+    .bind(&user.user_id)
+    .bind(day_window.start)
+    .bind(GRANULARITY_DAY)
+    .bind(4_i64)
+    .bind(&user.user_id)
+    .bind(day_window.start)
+    .bind(GRANULARITY_HOUR)
+    .bind(6_i64)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed account usage buckets");
+
+    let summary = proxy
+        .user_dashboard_summary(&user.user_id, None)
+        .await
+        .expect("user dashboard summary");
+
+    assert_eq!(summary.quota_daily_used, 10);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn token_quota_snapshot_daily_usage_uses_server_local_day_boundary() {
+    let db_path = temp_db_path("token-quota-local-day");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let token = proxy
+        .create_access_token(Some("local-day-quota"))
+        .await
+        .expect("create token");
+
+    let now_local = Local::now();
+    let today_start = start_of_local_day_utc_ts(now_local);
+    let yesterday_start = previous_local_day_start_utc_ts(now_local);
+
+    sqlx::query(
+        r#"
+        INSERT INTO token_usage_buckets (token_id, bucket_start, granularity, count)
+        VALUES (?, ?, ?, ?), (?, ?, ?, ?)
+        "#,
+    )
+    .bind(&token.id)
+    .bind(yesterday_start)
+    .bind(GRANULARITY_DAY)
+    .bind(9_i64)
+    .bind(&token.id)
+    .bind(today_start)
+    .bind(GRANULARITY_DAY)
+    .bind(4_i64)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed token daily quota buckets");
+
+    let verdict = proxy
+        .token_quota_snapshot(&token.id)
+        .await
+        .expect("token quota snapshot")
+        .expect("quota verdict");
+
+    assert_eq!(verdict.daily_used, 4);
+}
+
+#[tokio::test]
+async fn token_quota_snapshot_daily_usage_includes_legacy_hour_buckets_during_cutover() {
+    let db_path = temp_db_path("token-quota-legacy-hour-cutover");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let token = proxy
+        .create_access_token(Some("legacy-hour-cutover"))
+        .await
+        .expect("create token");
+
+    let now_local = Local::now();
+    let today_start = start_of_local_day_utc_ts(now_local);
+    let next_day_start = next_local_day_start_utc_ts(today_start);
+    let legacy_hour_bucket = today_start + SECS_PER_HOUR;
+
+    sqlx::query(
+        r#"
+        INSERT INTO token_usage_buckets (token_id, bucket_start, granularity, count)
+        VALUES (?, ?, ?, ?), (?, ?, ?, ?), (?, ?, ?, ?)
+        "#,
+    )
+    .bind(&token.id)
+    .bind(today_start)
+    .bind(GRANULARITY_DAY)
+    .bind(4_i64)
+    .bind(&token.id)
+    .bind(legacy_hour_bucket)
+    .bind(GRANULARITY_HOUR)
+    .bind(6_i64)
+    .bind(&token.id)
+    .bind(next_day_start)
+    .bind(GRANULARITY_HOUR)
+    .bind(99_i64)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed cutover quota buckets");
+
+    let verdict = proxy
+        .token_quota_snapshot(&token.id)
+        .await
+        .expect("token quota snapshot")
+        .expect("quota verdict");
+
+    assert_eq!(verdict.daily_used, 10);
 }
 
 #[tokio::test]
@@ -6809,7 +7153,7 @@ async fn summary_windows_count_distinct_upstream_exhausted_keys() {
     let today_start = start_of_local_day_utc_ts(now);
     let yesterday_start = previous_local_day_start_utc_ts(now);
     let yesterday_same_time = previous_local_same_time_utc_ts(now);
-    let month_start = start_of_local_month_utc_ts(now);
+    let month_start = start_of_month(now.with_timezone(&Utc)).timestamp();
 
     insert_summary_window_logs(
         &proxy,
@@ -7045,6 +7389,183 @@ async fn summary_windows_include_quota_charge_estimates_and_sample_diffs() {
             .unwrap_or_default()
             <= yesterday_same_time + 180
     );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn summary_windows_month_bucket_fallback_skips_unaligned_first_local_day_bucket() {
+    let db_path = temp_db_path("summary-windows-month-bucket-fallback");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-summary-window-bucket-fallback".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let key_id = proxy
+        .list_api_key_metrics()
+        .await
+        .expect("list key metrics")
+        .into_iter()
+        .next()
+        .expect("seeded key")
+        .id;
+
+    let now = Local::now();
+    let month_start = (Utc::now() - chrono::Duration::days(10))
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .expect("valid synthetic month start")
+        .and_utc()
+        .timestamp();
+    let bucket_start = local_day_bucket_start_utc_ts(month_start);
+    if bucket_start == month_start {
+        let _ = std::fs::remove_file(db_path);
+        return;
+    }
+    insert_summary_window_bucket(&proxy, &key_id, bucket_start, 12, 9, 2, 1).await;
+
+    let summary = proxy
+        .key_store
+        .fetch_summary_windows(
+            start_of_local_day_utc_ts(now),
+            now.with_timezone(&Utc).timestamp().saturating_add(1),
+            previous_local_day_start_utc_ts(now),
+            previous_local_same_time_utc_ts(now).saturating_add(1),
+            month_start,
+        )
+        .await
+        .expect("summary windows");
+
+    assert_eq!(summary.month.total_requests, 0);
+    assert_eq!(summary.month.success_count, 0);
+    assert_eq!(summary.month.error_count, 0);
+    assert_eq!(summary.month.quota_exhausted_count, 0);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn summary_windows_month_falls_back_to_usage_buckets_for_partial_gap_before_logs_resume() {
+    let db_path = temp_db_path("summary-windows-month-bucket-partial-gap-fallback");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-public-success-bucket-fallback".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let key_id = proxy
+        .list_api_key_metrics()
+        .await
+        .expect("list key metrics")
+        .into_iter()
+        .next()
+        .expect("seeded key")
+        .id;
+
+    let month_start = (Utc::now() - chrono::Duration::days(10))
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .expect("valid synthetic month start")
+        .and_utc()
+        .timestamp();
+    let first_bucket_start = local_day_bucket_start_utc_ts(month_start);
+    let first_full_bucket_start = if first_bucket_start == month_start {
+        month_start
+    } else {
+        next_local_day_start_utc_ts(first_bucket_start)
+    };
+    let partial_bucket_start = next_local_day_start_utc_ts(first_full_bucket_start);
+    let partial_bucket_end = next_local_day_start_utc_ts(partial_bucket_start);
+    let partial_gap_end = partial_bucket_start + ((partial_bucket_end - partial_bucket_start) / 2);
+    let now = Local::now();
+
+    insert_summary_window_bucket(&proxy, &key_id, first_full_bucket_start, 10, 7, 2, 1).await;
+    insert_summary_window_bucket(&proxy, &key_id, partial_bucket_start, 8, 6, 1, 1).await;
+    insert_summary_window_logs(&proxy, &key_id, partial_gap_end, OUTCOME_SUCCESS, 3).await;
+    insert_summary_window_logs(&proxy, &key_id, partial_gap_end + 300, OUTCOME_ERROR, 1).await;
+
+    let summary = proxy
+        .key_store
+        .fetch_summary_windows(
+            start_of_local_day_utc_ts(now),
+            now.with_timezone(&Utc).timestamp().saturating_add(1),
+            previous_local_day_start_utc_ts(now),
+            previous_local_same_time_utc_ts(now).saturating_add(1),
+            month_start,
+        )
+        .await
+        .expect("summary windows");
+
+    assert_eq!(summary.month.total_requests, 18);
+    assert_eq!(summary.month.success_count, 13);
+    assert_eq!(summary.month.error_count, 3);
+    assert_eq!(summary.month.quota_exhausted_count, 2);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn public_success_breakdown_month_falls_back_to_usage_buckets_for_partial_gap_before_logs_resume()
+{
+    let db_path = temp_db_path("public-success-breakdown-bucket-fallback");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-public-success-bucket-fallback".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let key_id = proxy
+        .list_api_key_metrics()
+        .await
+        .expect("list key metrics")
+        .into_iter()
+        .next()
+        .expect("seeded key")
+        .id;
+
+    let month_start = (Utc::now() - chrono::Duration::days(10))
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .expect("valid synthetic month start")
+        .and_utc()
+        .timestamp();
+    let first_bucket_start = local_day_bucket_start_utc_ts(month_start);
+    let first_full_bucket_start = if first_bucket_start == month_start {
+        month_start
+    } else {
+        next_local_day_start_utc_ts(first_bucket_start)
+    };
+    let partial_bucket_start = next_local_day_start_utc_ts(first_full_bucket_start);
+    let partial_bucket_end = next_local_day_start_utc_ts(partial_bucket_start);
+    let partial_gap_end = partial_bucket_start + ((partial_bucket_end - partial_bucket_start) / 2);
+    let today_window = server_local_day_window_utc(Local::now());
+
+    insert_summary_window_bucket(&proxy, &key_id, first_full_bucket_start, 10, 7, 2, 1).await;
+    insert_summary_window_bucket(&proxy, &key_id, partial_bucket_start, 8, 6, 1, 1).await;
+    insert_summary_window_logs(&proxy, &key_id, partial_gap_end, OUTCOME_SUCCESS, 3).await;
+    insert_summary_window_logs(&proxy, &key_id, partial_gap_end + 300, OUTCOME_ERROR, 1).await;
+
+    let summary = proxy
+        .key_store
+        .fetch_success_breakdown(month_start, today_window.start, today_window.end)
+        .await
+        .expect("success breakdown");
+
+    assert_eq!(summary.monthly_success, 13);
+    assert_eq!(summary.daily_success, 0);
 
     let _ = std::fs::remove_file(db_path);
 }
@@ -10443,7 +10964,7 @@ async fn account_quota_limits_sync_with_env_defaults_on_restart() {
         .await
         .expect("bind token");
     proxy
-        .user_dashboard_summary(&user.user_id)
+        .user_dashboard_summary(&user.user_id, None)
         .await
         .expect("seed account quota row");
 
@@ -10543,7 +11064,7 @@ async fn legacy_current_default_account_quota_limits_keep_following_defaults_aft
         .await
         .expect("bind token");
     proxy
-        .user_dashboard_summary(&user.user_id)
+        .user_dashboard_summary(&user.user_id, None)
         .await
         .expect("seed account quota row");
     sqlx::query(
@@ -10683,7 +11204,7 @@ async fn shared_legacy_noncurrent_tuple_is_left_custom_during_reclassification()
             .await
             .expect("bind token");
         proxy
-            .user_dashboard_summary(&user.user_id)
+            .user_dashboard_summary(&user.user_id, None)
             .await
             .expect("seed account quota row");
     }
@@ -11778,7 +12299,7 @@ async fn legacy_custom_account_quota_limits_with_initial_timestamps_are_reclassi
         .await
         .expect("bind token");
     proxy
-        .user_dashboard_summary(&user.user_id)
+        .user_dashboard_summary(&user.user_id, None)
         .await
         .expect("seed account quota row");
     sqlx::query(
@@ -11876,7 +12397,7 @@ async fn custom_account_quota_limits_survive_default_resync() {
         .await
         .expect("bind token");
     proxy
-        .user_dashboard_summary(&user.user_id)
+        .user_dashboard_summary(&user.user_id, None)
         .await
         .expect("seed account quota row");
     let updated = proxy
@@ -12181,6 +12702,42 @@ async fn seed_charged_business_attempt(proxy: &TavilyProxy, token_id: &str, cred
     assert_eq!(outcome, PendingBillingSettleOutcome::Charged);
 }
 
+async fn insert_charged_business_log(
+    proxy: &TavilyProxy,
+    token_id: &str,
+    created_at: i64,
+    credits: i64,
+) {
+    sqlx::query(
+        r#"
+        INSERT INTO auth_token_logs (
+            token_id,
+            method,
+            path,
+            query,
+            http_status,
+            mcp_status,
+            result_status,
+            error_message,
+            created_at,
+            counts_business_quota,
+            billing_state,
+            business_credits,
+            billing_subject
+        ) VALUES (?, 'POST', '/api/tavily/search', NULL, 200, 200, ?, NULL, ?, 1, ?, ?, ?)
+        "#,
+    )
+    .bind(token_id)
+    .bind(OUTCOME_SUCCESS)
+    .bind(created_at)
+    .bind(BILLING_STATE_CHARGED)
+    .bind(credits)
+    .bind(format!("token:{token_id}"))
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert charged business log");
+}
+
 async fn current_month_charged_stats(pool: &SqlitePool) -> (i64, i64) {
     let now = Utc::now();
     let month_start = start_of_month(now).timestamp();
@@ -12379,6 +12936,78 @@ async fn billing_ledger_audit_detects_bound_token_month_residue_and_rebase_prese
     assert_eq!(verdict_after.hourly_used, 5);
     assert_eq!(verdict_after.daily_used, 5);
     assert_eq!(verdict_after.monthly_used, 5);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn billing_ledger_audit_day_quota_includes_same_day_legacy_hour_buckets() {
+    let db_path = temp_db_path("billing-ledger-day-cutover-audit");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let token = proxy
+        .create_access_token(Some("billing-day-cutover"))
+        .await
+        .expect("create token");
+
+    let now = Utc::now();
+    let day_window = server_local_day_window_utc(now.with_timezone(&Local));
+    let current_month_start = start_of_month(now).timestamp();
+    let first_log = (day_window.start + 60).min(now.timestamp());
+    let second_log = (day_window.start + 120).min(now.timestamp());
+
+    insert_charged_business_log(&proxy, &token.id, first_log, 4).await;
+    insert_charged_business_log(&proxy, &token.id, second_log, 6).await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO token_usage_buckets (token_id, bucket_start, granularity, count)
+        VALUES (?, ?, ?, ?), (?, ?, ?, ?)
+        "#,
+    )
+    .bind(&token.id)
+    .bind(day_window.start)
+    .bind(GRANULARITY_DAY)
+    .bind(4_i64)
+    .bind(&token.id)
+    .bind(day_window.start)
+    .bind(GRANULARITY_HOUR)
+    .bind(6_i64)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed day and legacy hour buckets");
+    sqlx::query(
+        r#"
+        INSERT INTO auth_token_quota (token_id, month_start, month_count)
+        VALUES (?, ?, ?)
+        ON CONFLICT(token_id) DO UPDATE SET
+            month_start = excluded.month_start,
+            month_count = excluded.month_count
+        "#,
+    )
+    .bind(&token.id)
+    .bind(current_month_start)
+    .bind(10_i64)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("seed token monthly quota");
+
+    let audit = audit_business_quota_ledger_with_pool(&proxy.key_store.pool, now)
+        .await
+        .expect("audit business quota ledger");
+    let token_subject = format!("token:{}", token.id);
+    let entry = audit
+        .entries
+        .iter()
+        .find(|entry| entry.billing_subject == token_subject)
+        .expect("token entry present");
+
+    assert_eq!(entry.day.ledger_credits, 10);
+    assert_eq!(entry.day.quota_credits, 10);
+    assert_eq!(entry.day.diff_credits, 0);
 
     let _ = std::fs::remove_file(db_path);
 }

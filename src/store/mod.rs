@@ -37,6 +37,55 @@ pub(crate) fn is_invalid_current_month_billing_subject_error(err: &ProxyError) -
     }
 }
 
+fn add_summary_window_metrics(target: &mut SummaryWindowMetrics, delta: &SummaryWindowMetrics) {
+    target.total_requests += delta.total_requests;
+    target.success_count += delta.success_count;
+    target.error_count += delta.error_count;
+    target.quota_exhausted_count += delta.quota_exhausted_count;
+    target.valuable_success_count += delta.valuable_success_count;
+    target.valuable_failure_count += delta.valuable_failure_count;
+    target.other_success_count += delta.other_success_count;
+    target.other_failure_count += delta.other_failure_count;
+    target.unknown_count += delta.unknown_count;
+    target.upstream_exhausted_key_count += delta.upstream_exhausted_key_count;
+    target.new_keys += delta.new_keys;
+    target.new_quarantines += delta.new_quarantines;
+}
+
+fn subtract_summary_window_metrics(
+    total: &SummaryWindowMetrics,
+    subtract: &SummaryWindowMetrics,
+) -> SummaryWindowMetrics {
+    SummaryWindowMetrics {
+        total_requests: total.total_requests.saturating_sub(subtract.total_requests),
+        success_count: total.success_count.saturating_sub(subtract.success_count),
+        error_count: total.error_count.saturating_sub(subtract.error_count),
+        quota_exhausted_count: total
+            .quota_exhausted_count
+            .saturating_sub(subtract.quota_exhausted_count),
+        valuable_success_count: total
+            .valuable_success_count
+            .saturating_sub(subtract.valuable_success_count),
+        valuable_failure_count: total
+            .valuable_failure_count
+            .saturating_sub(subtract.valuable_failure_count),
+        other_success_count: total
+            .other_success_count
+            .saturating_sub(subtract.other_success_count),
+        other_failure_count: total
+            .other_failure_count
+            .saturating_sub(subtract.other_failure_count),
+        unknown_count: total.unknown_count.saturating_sub(subtract.unknown_count),
+        upstream_exhausted_key_count: total
+            .upstream_exhausted_key_count
+            .saturating_sub(subtract.upstream_exhausted_key_count),
+        new_keys: total.new_keys.saturating_sub(subtract.new_keys),
+        new_quarantines: total
+            .new_quarantines
+            .saturating_sub(subtract.new_quarantines),
+    }
+}
+
 pub(crate) async fn open_sqlite_pool(
     database_path: &str,
     create_if_missing: bool,
@@ -3341,6 +3390,32 @@ impl KeyStore {
         Ok(sum.unwrap_or(0))
     }
 
+    pub(crate) async fn sum_usage_buckets_between(
+        &self,
+        token_id: &str,
+        granularity: &str,
+        bucket_start_at_least: i64,
+        bucket_start_before: i64,
+    ) -> Result<i64, ProxyError> {
+        let sum = sqlx::query_scalar::<_, Option<i64>>(
+            r#"
+            SELECT SUM(count)
+            FROM token_usage_buckets
+            WHERE token_id = ?
+              AND granularity = ?
+              AND bucket_start >= ?
+              AND bucket_start < ?
+            "#,
+        )
+        .bind(token_id)
+        .bind(granularity)
+        .bind(bucket_start_at_least)
+        .bind(bucket_start_before)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(sum.unwrap_or(0))
+    }
+
     pub(crate) async fn sum_account_usage_buckets(
         &self,
         user_id: &str,
@@ -3357,6 +3432,32 @@ impl KeyStore {
         .bind(user_id)
         .bind(granularity)
         .bind(bucket_start_at_least)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(sum.unwrap_or(0))
+    }
+
+    pub(crate) async fn sum_account_usage_buckets_between(
+        &self,
+        user_id: &str,
+        granularity: &str,
+        bucket_start_at_least: i64,
+        bucket_start_before: i64,
+    ) -> Result<i64, ProxyError> {
+        let sum = sqlx::query_scalar::<_, Option<i64>>(
+            r#"
+            SELECT SUM(count)
+            FROM account_usage_buckets
+            WHERE user_id = ?
+              AND granularity = ?
+              AND bucket_start >= ?
+              AND bucket_start < ?
+            "#,
+        )
+        .bind(user_id)
+        .bind(granularity)
+        .bind(bucket_start_at_least)
+        .bind(bucket_start_before)
         .fetch_one(&self.pool)
         .await?;
         Ok(sum.unwrap_or(0))
@@ -3396,6 +3497,43 @@ impl KeyStore {
         Ok(map)
     }
 
+    pub(crate) async fn sum_account_usage_buckets_bulk_between(
+        &self,
+        user_ids: &[String],
+        granularity: &str,
+        bucket_start_at_least: i64,
+        bucket_start_before: i64,
+    ) -> Result<HashMap<String, i64>, ProxyError> {
+        if user_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut builder = QueryBuilder::new(
+            "SELECT user_id, SUM(count) as total FROM account_usage_buckets WHERE granularity = ",
+        );
+        builder.push_bind(granularity);
+        builder.push(" AND bucket_start >= ");
+        builder.push_bind(bucket_start_at_least);
+        builder.push(" AND bucket_start < ");
+        builder.push_bind(bucket_start_before);
+        builder.push(" AND user_id IN (");
+        {
+            let mut separated = builder.separated(", ");
+            for user_id in user_ids {
+                separated.push_bind(user_id);
+            }
+        }
+        builder.push(") GROUP BY user_id");
+        let rows = builder
+            .build_query_as::<(String, i64)>()
+            .fetch_all(&self.pool)
+            .await?;
+        let mut map = HashMap::new();
+        for (user_id, total) in rows {
+            map.insert(user_id, total);
+        }
+        Ok(map)
+    }
+
     pub(crate) async fn sum_usage_buckets_bulk(
         &self,
         token_ids: &[String],
@@ -3411,6 +3549,43 @@ impl KeyStore {
         builder.push_bind(granularity);
         builder.push(" AND bucket_start >= ");
         builder.push_bind(bucket_start_at_least);
+        builder.push(" AND token_id IN (");
+        {
+            let mut separated = builder.separated(", ");
+            for token_id in token_ids {
+                separated.push_bind(token_id);
+            }
+        }
+        builder.push(") GROUP BY token_id");
+        let rows = builder
+            .build_query_as::<(String, i64)>()
+            .fetch_all(&self.pool)
+            .await?;
+        let mut map = HashMap::new();
+        for (token_id, total) in rows {
+            map.insert(token_id, total);
+        }
+        Ok(map)
+    }
+
+    pub(crate) async fn sum_usage_buckets_bulk_between(
+        &self,
+        token_ids: &[String],
+        granularity: &str,
+        bucket_start_at_least: i64,
+        bucket_start_before: i64,
+    ) -> Result<HashMap<String, i64>, ProxyError> {
+        if token_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut builder = QueryBuilder::new(
+            "SELECT token_id, SUM(count) as total FROM token_usage_buckets WHERE granularity = ",
+        );
+        builder.push_bind(granularity);
+        builder.push(" AND bucket_start >= ");
+        builder.push_bind(bucket_start_at_least);
+        builder.push(" AND bucket_start < ");
+        builder.push_bind(bucket_start_before);
         builder.push(" AND token_id IN (");
         {
             let mut separated = builder.separated(", ");
@@ -9523,6 +9698,8 @@ impl KeyStore {
     pub(crate) async fn fetch_user_log_metrics_bulk(
         &self,
         user_ids: &[String],
+        day_start: i64,
+        day_end: i64,
     ) -> Result<HashMap<String, UserLogMetricsSummary>, ProxyError> {
         if user_ids.is_empty() {
             return Ok(HashMap::new());
@@ -9530,7 +9707,6 @@ impl KeyStore {
 
         let now = Utc::now();
         let month_start = start_of_month(now).timestamp();
-        let day_start = start_of_day(now).timestamp();
 
         let mut builder = QueryBuilder::new(
             r#"
@@ -9541,11 +9717,15 @@ impl KeyStore {
         builder.push_bind(OUTCOME_SUCCESS);
         builder.push(" AND l.created_at >= ");
         builder.push_bind(day_start);
+        builder.push(" AND l.created_at < ");
+        builder.push_bind(day_end);
         builder.push(" THEN 1 ELSE 0 END), 0) AS daily_success, ");
         builder.push("COALESCE(SUM(CASE WHEN l.result_status = ");
         builder.push_bind(OUTCOME_ERROR);
         builder.push(" AND l.created_at >= ");
         builder.push_bind(day_start);
+        builder.push(" AND l.created_at < ");
+        builder.push_bind(day_end);
         builder.push(" THEN 1 ELSE 0 END), 0) AS daily_failure, ");
         builder.push("COALESCE(SUM(CASE WHEN l.result_status = ");
         builder.push_bind(OUTCOME_SUCCESS);
@@ -9605,6 +9785,8 @@ impl KeyStore {
     pub(crate) async fn fetch_token_log_metrics_bulk(
         &self,
         token_ids: &[String],
+        day_start: i64,
+        day_end: i64,
     ) -> Result<HashMap<String, TokenLogMetricsSummary>, ProxyError> {
         if token_ids.is_empty() {
             return Ok(HashMap::new());
@@ -9612,7 +9794,6 @@ impl KeyStore {
 
         let now = Utc::now();
         let month_start = start_of_month(now).timestamp();
-        let day_start = start_of_day(now).timestamp();
 
         let mut builder = QueryBuilder::new(
             r#"
@@ -9623,11 +9804,15 @@ impl KeyStore {
         builder.push_bind(OUTCOME_SUCCESS);
         builder.push(" AND l.created_at >= ");
         builder.push_bind(day_start);
+        builder.push(" AND l.created_at < ");
+        builder.push_bind(day_end);
         builder.push(" THEN 1 ELSE 0 END), 0) AS daily_success, ");
         builder.push("COALESCE(SUM(CASE WHEN l.result_status = ");
         builder.push_bind(OUTCOME_ERROR);
         builder.push(" AND l.created_at >= ");
         builder.push_bind(day_start);
+        builder.push(" AND l.created_at < ");
+        builder.push_bind(day_end);
         builder.push(" THEN 1 ELSE 0 END), 0) AS daily_failure, ");
         builder.push("COALESCE(SUM(CASE WHEN l.result_status = ");
         builder.push_bind(OUTCOME_SUCCESS);
@@ -10795,7 +10980,7 @@ impl KeyStore {
             .unwrap_or_else(Utc::now);
         let charge_ts = charge_time.timestamp();
         let minute_bucket = charge_ts - (charge_ts % SECS_PER_MINUTE);
-        let hour_bucket = charge_ts - (charge_ts % SECS_PER_HOUR);
+        let day_bucket = local_day_bucket_start_utc_ts(charge_ts);
         let month_start = start_of_month(charge_time).timestamp();
 
         if let Some(user_id) = billing_subject.strip_prefix("account:") {
@@ -10823,8 +11008,8 @@ impl KeyStore {
                 "#,
             )
             .bind(user_id)
-            .bind(hour_bucket)
-            .bind(GRANULARITY_HOUR)
+            .bind(day_bucket)
+            .bind(GRANULARITY_DAY)
             .bind(credits)
             .execute(&mut *tx)
             .await?;
@@ -10893,8 +11078,8 @@ impl KeyStore {
                 "#,
             )
             .bind(token_id)
-            .bind(hour_bucket)
-            .bind(GRANULARITY_HOUR)
+            .bind(day_bucket)
+            .bind(GRANULARITY_DAY)
             .bind(credits)
             .execute(&mut *tx)
             .await?;
@@ -14169,6 +14354,428 @@ impl KeyStore {
         })
     }
 
+    async fn fetch_visible_request_log_floor_since(
+        &self,
+        since: i64,
+    ) -> Result<Option<i64>, ProxyError> {
+        sqlx::query_scalar::<_, Option<i64>>(
+            r#"
+            SELECT MIN(created_at)
+            FROM request_logs
+            WHERE visibility = ?
+              AND created_at >= ?
+            "#,
+        )
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(since)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(ProxyError::Database)
+    }
+
+    async fn fetch_visible_request_log_window_metrics(
+        &self,
+        start: i64,
+        end: i64,
+    ) -> Result<SummaryWindowMetrics, ProxyError> {
+        if start >= end {
+            return Ok(SummaryWindowMetrics::default());
+        }
+
+        let request_kind_sql =
+            request_log_request_kind_key_sql("path", "request_body", "request_kind_key");
+        let request_value_bucket_case_sql =
+            request_value_bucket_sql(&request_kind_sql, "request_body");
+        let query = format!(
+            r#"
+            WITH scoped_logs AS (
+                SELECT
+                    result_status,
+                    ({request_value_bucket_case_sql}) AS request_value_bucket
+                FROM request_logs
+                WHERE visibility = ?
+                  AND created_at >= ?
+                  AND created_at < ?
+            )
+            SELECT
+                COUNT(*) AS total_requests,
+                COALESCE(SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END), 0) AS success_count,
+                COALESCE(SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END), 0) AS error_count,
+                COALESCE(SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END), 0) AS quota_exhausted_count,
+                COALESCE(SUM(CASE WHEN request_value_bucket = 'valuable' AND result_status = ? THEN 1 ELSE 0 END), 0) AS valuable_success_count,
+                COALESCE(SUM(CASE WHEN request_value_bucket = 'valuable' AND result_status IN (?, ?) THEN 1 ELSE 0 END), 0) AS valuable_failure_count,
+                COALESCE(SUM(CASE WHEN request_value_bucket = 'other' AND result_status = ? THEN 1 ELSE 0 END), 0) AS other_success_count,
+                COALESCE(SUM(CASE WHEN request_value_bucket = 'other' AND result_status IN (?, ?) THEN 1 ELSE 0 END), 0) AS other_failure_count,
+                COALESCE(SUM(CASE WHEN request_value_bucket = 'unknown' THEN 1 ELSE 0 END), 0) AS unknown_count
+            FROM scoped_logs
+            "#,
+        );
+        let row = sqlx::query(&query)
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+            .bind(start)
+            .bind(end)
+            .bind(OUTCOME_SUCCESS)
+            .bind(OUTCOME_ERROR)
+            .bind(OUTCOME_QUOTA_EXHAUSTED)
+            .bind(OUTCOME_SUCCESS)
+            .bind(OUTCOME_ERROR)
+            .bind(OUTCOME_QUOTA_EXHAUSTED)
+            .bind(OUTCOME_SUCCESS)
+            .bind(OUTCOME_ERROR)
+            .bind(OUTCOME_QUOTA_EXHAUSTED)
+            .fetch_one(&self.pool)
+            .await?;
+
+        Ok(SummaryWindowMetrics {
+            total_requests: row.try_get("total_requests")?,
+            success_count: row.try_get("success_count")?,
+            error_count: row.try_get("error_count")?,
+            quota_exhausted_count: row.try_get("quota_exhausted_count")?,
+            valuable_success_count: row.try_get("valuable_success_count")?,
+            valuable_failure_count: row.try_get("valuable_failure_count")?,
+            other_success_count: row.try_get("other_success_count")?,
+            other_failure_count: row.try_get("other_failure_count")?,
+            unknown_count: row.try_get("unknown_count")?,
+            upstream_exhausted_key_count: 0,
+            new_keys: 0,
+            new_quarantines: 0,
+        })
+    }
+
+    async fn fetch_visible_request_log_floor_since_tx(
+        tx: &mut Transaction<'_, Sqlite>,
+        since: i64,
+    ) -> Result<Option<i64>, ProxyError> {
+        sqlx::query_scalar::<_, Option<i64>>(
+            r#"
+            SELECT MIN(created_at)
+            FROM request_logs
+            WHERE visibility = ?
+              AND created_at >= ?
+            "#,
+        )
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(since)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(ProxyError::Database)
+    }
+
+    async fn fetch_api_key_usage_bucket_window_metrics(
+        &self,
+        bucket_start_at_least: i64,
+        bucket_start_before: Option<i64>,
+    ) -> Result<SummaryWindowMetrics, ProxyError> {
+        let row = if let Some(bucket_start_before) = bucket_start_before {
+            sqlx::query(
+                r#"
+                SELECT
+                    COALESCE(SUM(total_requests), 0) AS total_requests,
+                    COALESCE(SUM(success_count), 0) AS success_count,
+                    COALESCE(SUM(error_count), 0) AS error_count,
+                    COALESCE(SUM(quota_exhausted_count), 0) AS quota_exhausted_count,
+                    COALESCE(SUM(valuable_success_count), 0) AS valuable_success_count,
+                    COALESCE(SUM(valuable_failure_count), 0) AS valuable_failure_count,
+                    COALESCE(SUM(other_success_count), 0) AS other_success_count,
+                    COALESCE(SUM(other_failure_count), 0) AS other_failure_count,
+                    COALESCE(SUM(unknown_count), 0) AS unknown_count
+                FROM api_key_usage_buckets
+                WHERE bucket_secs = 86400
+                  AND bucket_start >= ?
+                  AND bucket_start < ?
+                "#,
+            )
+            .bind(bucket_start_at_least)
+            .bind(bucket_start_before)
+            .fetch_one(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                r#"
+                SELECT
+                    COALESCE(SUM(total_requests), 0) AS total_requests,
+                    COALESCE(SUM(success_count), 0) AS success_count,
+                    COALESCE(SUM(error_count), 0) AS error_count,
+                    COALESCE(SUM(quota_exhausted_count), 0) AS quota_exhausted_count,
+                    COALESCE(SUM(valuable_success_count), 0) AS valuable_success_count,
+                    COALESCE(SUM(valuable_failure_count), 0) AS valuable_failure_count,
+                    COALESCE(SUM(other_success_count), 0) AS other_success_count,
+                    COALESCE(SUM(other_failure_count), 0) AS other_failure_count,
+                    COALESCE(SUM(unknown_count), 0) AS unknown_count
+                FROM api_key_usage_buckets
+                WHERE bucket_secs = 86400
+                  AND bucket_start >= ?
+                "#,
+            )
+            .bind(bucket_start_at_least)
+            .fetch_one(&self.pool)
+            .await?
+        };
+
+        Ok(SummaryWindowMetrics {
+            total_requests: row.try_get("total_requests")?,
+            success_count: row.try_get("success_count")?,
+            error_count: row.try_get("error_count")?,
+            quota_exhausted_count: row.try_get("quota_exhausted_count")?,
+            valuable_success_count: row.try_get("valuable_success_count")?,
+            valuable_failure_count: row.try_get("valuable_failure_count")?,
+            other_success_count: row.try_get("other_success_count")?,
+            other_failure_count: row.try_get("other_failure_count")?,
+            unknown_count: row.try_get("unknown_count")?,
+            upstream_exhausted_key_count: 0,
+            new_keys: 0,
+            new_quarantines: 0,
+        })
+    }
+
+    async fn fetch_visible_request_log_window_metrics_tx(
+        tx: &mut Transaction<'_, Sqlite>,
+        start: i64,
+        end: i64,
+    ) -> Result<SummaryWindowMetrics, ProxyError> {
+        if start >= end {
+            return Ok(SummaryWindowMetrics::default());
+        }
+
+        let request_kind_sql =
+            request_log_request_kind_key_sql("path", "request_body", "request_kind_key");
+        let request_value_bucket_case_sql =
+            request_value_bucket_sql(&request_kind_sql, "request_body");
+        let query = format!(
+            r#"
+            WITH scoped_logs AS (
+                SELECT
+                    result_status,
+                    ({request_value_bucket_case_sql}) AS request_value_bucket
+                FROM request_logs
+                WHERE visibility = ?
+                  AND created_at >= ?
+                  AND created_at < ?
+            )
+            SELECT
+                COUNT(*) AS total_requests,
+                COALESCE(SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END), 0) AS success_count,
+                COALESCE(SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END), 0) AS error_count,
+                COALESCE(SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END), 0) AS quota_exhausted_count,
+                COALESCE(SUM(CASE WHEN request_value_bucket = 'valuable' AND result_status = ? THEN 1 ELSE 0 END), 0) AS valuable_success_count,
+                COALESCE(SUM(CASE WHEN request_value_bucket = 'valuable' AND result_status IN (?, ?) THEN 1 ELSE 0 END), 0) AS valuable_failure_count,
+                COALESCE(SUM(CASE WHEN request_value_bucket = 'other' AND result_status = ? THEN 1 ELSE 0 END), 0) AS other_success_count,
+                COALESCE(SUM(CASE WHEN request_value_bucket = 'other' AND result_status IN (?, ?) THEN 1 ELSE 0 END), 0) AS other_failure_count,
+                COALESCE(SUM(CASE WHEN request_value_bucket = 'unknown' THEN 1 ELSE 0 END), 0) AS unknown_count
+            FROM scoped_logs
+            "#,
+        );
+        let row = sqlx::query(&query)
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+            .bind(start)
+            .bind(end)
+            .bind(OUTCOME_SUCCESS)
+            .bind(OUTCOME_ERROR)
+            .bind(OUTCOME_QUOTA_EXHAUSTED)
+            .bind(OUTCOME_SUCCESS)
+            .bind(OUTCOME_ERROR)
+            .bind(OUTCOME_QUOTA_EXHAUSTED)
+            .bind(OUTCOME_SUCCESS)
+            .bind(OUTCOME_ERROR)
+            .bind(OUTCOME_QUOTA_EXHAUSTED)
+            .fetch_one(&mut **tx)
+            .await?;
+
+        Ok(SummaryWindowMetrics {
+            total_requests: row.try_get("total_requests")?,
+            success_count: row.try_get("success_count")?,
+            error_count: row.try_get("error_count")?,
+            quota_exhausted_count: row.try_get("quota_exhausted_count")?,
+            valuable_success_count: row.try_get("valuable_success_count")?,
+            valuable_failure_count: row.try_get("valuable_failure_count")?,
+            other_success_count: row.try_get("other_success_count")?,
+            other_failure_count: row.try_get("other_failure_count")?,
+            unknown_count: row.try_get("unknown_count")?,
+            upstream_exhausted_key_count: 0,
+            new_keys: 0,
+            new_quarantines: 0,
+        })
+    }
+
+    async fn fetch_api_key_usage_bucket_window_metrics_tx(
+        tx: &mut Transaction<'_, Sqlite>,
+        bucket_start_at_least: i64,
+        bucket_start_before: Option<i64>,
+    ) -> Result<SummaryWindowMetrics, ProxyError> {
+        let row = if let Some(bucket_start_before) = bucket_start_before {
+            sqlx::query(
+                r#"
+                SELECT
+                    COALESCE(SUM(total_requests), 0) AS total_requests,
+                    COALESCE(SUM(success_count), 0) AS success_count,
+                    COALESCE(SUM(error_count), 0) AS error_count,
+                    COALESCE(SUM(quota_exhausted_count), 0) AS quota_exhausted_count,
+                    COALESCE(SUM(valuable_success_count), 0) AS valuable_success_count,
+                    COALESCE(SUM(valuable_failure_count), 0) AS valuable_failure_count,
+                    COALESCE(SUM(other_success_count), 0) AS other_success_count,
+                    COALESCE(SUM(other_failure_count), 0) AS other_failure_count,
+                    COALESCE(SUM(unknown_count), 0) AS unknown_count
+                FROM api_key_usage_buckets
+                WHERE bucket_secs = 86400
+                  AND bucket_start >= ?
+                  AND bucket_start < ?
+                "#,
+            )
+            .bind(bucket_start_at_least)
+            .bind(bucket_start_before)
+            .fetch_one(&mut **tx)
+            .await?
+        } else {
+            sqlx::query(
+                r#"
+                SELECT
+                    COALESCE(SUM(total_requests), 0) AS total_requests,
+                    COALESCE(SUM(success_count), 0) AS success_count,
+                    COALESCE(SUM(error_count), 0) AS error_count,
+                    COALESCE(SUM(quota_exhausted_count), 0) AS quota_exhausted_count,
+                    COALESCE(SUM(valuable_success_count), 0) AS valuable_success_count,
+                    COALESCE(SUM(valuable_failure_count), 0) AS valuable_failure_count,
+                    COALESCE(SUM(other_success_count), 0) AS other_success_count,
+                    COALESCE(SUM(other_failure_count), 0) AS other_failure_count,
+                    COALESCE(SUM(unknown_count), 0) AS unknown_count
+                FROM api_key_usage_buckets
+                WHERE bucket_secs = 86400
+                  AND bucket_start >= ?
+                "#,
+            )
+            .bind(bucket_start_at_least)
+            .fetch_one(&mut **tx)
+            .await?
+        };
+
+        Ok(SummaryWindowMetrics {
+            total_requests: row.try_get("total_requests")?,
+            success_count: row.try_get("success_count")?,
+            error_count: row.try_get("error_count")?,
+            quota_exhausted_count: row.try_get("quota_exhausted_count")?,
+            valuable_success_count: row.try_get("valuable_success_count")?,
+            valuable_failure_count: row.try_get("valuable_failure_count")?,
+            other_success_count: row.try_get("other_success_count")?,
+            other_failure_count: row.try_get("other_failure_count")?,
+            unknown_count: row.try_get("unknown_count")?,
+            upstream_exhausted_key_count: 0,
+            new_keys: 0,
+            new_quarantines: 0,
+        })
+    }
+
+    async fn fetch_utc_month_gap_bucket_metrics(
+        &self,
+        month_start: i64,
+        month_request_log_floor: Option<i64>,
+        gap_fallback_end: i64,
+    ) -> Result<SummaryWindowMetrics, ProxyError> {
+        let gap_end = match month_request_log_floor {
+            Some(floor) if floor > month_start => floor,
+            Some(_) => return Ok(SummaryWindowMetrics::default()),
+            None => gap_fallback_end,
+        };
+        if gap_end <= month_start {
+            return Ok(SummaryWindowMetrics::default());
+        }
+
+        let first_bucket_start = local_day_bucket_start_utc_ts(month_start);
+        let first_exact_bucket_start = if first_bucket_start == month_start {
+            month_start
+        } else {
+            next_local_day_start_utc_ts(first_bucket_start)
+        };
+        let last_gap_bucket_start = local_day_bucket_start_utc_ts(gap_end);
+
+        let mut backfill = SummaryWindowMetrics::default();
+        if first_exact_bucket_start < last_gap_bucket_start {
+            add_summary_window_metrics(
+                &mut backfill,
+                &self
+                    .fetch_api_key_usage_bucket_window_metrics(
+                        first_exact_bucket_start,
+                        Some(last_gap_bucket_start),
+                    )
+                    .await?,
+            );
+        }
+
+        if gap_end > last_gap_bucket_start && last_gap_bucket_start >= month_start {
+            let last_gap_bucket_end = next_local_day_start_utc_ts(last_gap_bucket_start);
+            let full_day_bucket = self
+                .fetch_api_key_usage_bucket_window_metrics(
+                    last_gap_bucket_start,
+                    Some(last_gap_bucket_end),
+                )
+                .await?;
+            let retained_tail = self
+                .fetch_visible_request_log_window_metrics(gap_end, last_gap_bucket_end)
+                .await?;
+            add_summary_window_metrics(
+                &mut backfill,
+                &subtract_summary_window_metrics(&full_day_bucket, &retained_tail),
+            );
+        }
+
+        Ok(backfill)
+    }
+
+    async fn fetch_utc_month_gap_bucket_metrics_tx(
+        tx: &mut Transaction<'_, Sqlite>,
+        month_start: i64,
+        month_request_log_floor: Option<i64>,
+        gap_fallback_end: i64,
+    ) -> Result<SummaryWindowMetrics, ProxyError> {
+        let gap_end = match month_request_log_floor {
+            Some(floor) if floor > month_start => floor,
+            Some(_) => return Ok(SummaryWindowMetrics::default()),
+            None => gap_fallback_end,
+        };
+        if gap_end <= month_start {
+            return Ok(SummaryWindowMetrics::default());
+        }
+
+        let first_bucket_start = local_day_bucket_start_utc_ts(month_start);
+        let first_exact_bucket_start = if first_bucket_start == month_start {
+            month_start
+        } else {
+            next_local_day_start_utc_ts(first_bucket_start)
+        };
+        let last_gap_bucket_start = local_day_bucket_start_utc_ts(gap_end);
+
+        let mut backfill = SummaryWindowMetrics::default();
+        if first_exact_bucket_start < last_gap_bucket_start {
+            add_summary_window_metrics(
+                &mut backfill,
+                &Self::fetch_api_key_usage_bucket_window_metrics_tx(
+                    tx,
+                    first_exact_bucket_start,
+                    Some(last_gap_bucket_start),
+                )
+                .await?,
+            );
+        }
+
+        if gap_end > last_gap_bucket_start && last_gap_bucket_start >= month_start {
+            let last_gap_bucket_end = next_local_day_start_utc_ts(last_gap_bucket_start);
+            let full_day_bucket = Self::fetch_api_key_usage_bucket_window_metrics_tx(
+                tx,
+                last_gap_bucket_start,
+                Some(last_gap_bucket_end),
+            )
+            .await?;
+            let retained_tail =
+                Self::fetch_visible_request_log_window_metrics_tx(tx, gap_end, last_gap_bucket_end)
+                    .await?;
+            add_summary_window_metrics(
+                &mut backfill,
+                &subtract_summary_window_metrics(&full_day_bucket, &retained_tail),
+            );
+        }
+
+        Ok(backfill)
+    }
+
     pub(crate) async fn fetch_summary_windows(
         &self,
         today_start: i64,
@@ -14318,35 +14925,63 @@ impl KeyStore {
         .fetch_one(&mut *tx)
         .await?;
 
-        let month_row = sqlx::query(
-            r#"
-            SELECT
-                COALESCE(SUM(CASE WHEN bucket_start >= ? THEN total_requests ELSE 0 END), 0) AS month_total_requests,
-                COALESCE(SUM(CASE WHEN bucket_start >= ? THEN success_count ELSE 0 END), 0) AS month_success_count,
-                COALESCE(SUM(CASE WHEN bucket_start >= ? THEN error_count ELSE 0 END), 0) AS month_error_count,
-                COALESCE(SUM(CASE WHEN bucket_start >= ? THEN quota_exhausted_count ELSE 0 END), 0) AS month_quota_exhausted_count,
-                COALESCE(SUM(CASE WHEN bucket_start >= ? THEN valuable_success_count ELSE 0 END), 0) AS month_valuable_success_count,
-                COALESCE(SUM(CASE WHEN bucket_start >= ? THEN valuable_failure_count ELSE 0 END), 0) AS month_valuable_failure_count,
-                COALESCE(SUM(CASE WHEN bucket_start >= ? THEN other_success_count ELSE 0 END), 0) AS month_other_success_count,
-                COALESCE(SUM(CASE WHEN bucket_start >= ? THEN other_failure_count ELSE 0 END), 0) AS month_other_failure_count,
-                COALESCE(SUM(CASE WHEN bucket_start >= ? THEN unknown_count ELSE 0 END), 0) AS month_unknown_count
-            FROM api_key_usage_buckets
-            WHERE bucket_secs = 86400
-              AND bucket_start >= ?
-            "#,
+        let month_request_log_floor =
+            Self::fetch_visible_request_log_floor_since_tx(&mut tx, month_start).await?;
+        let bucket_month_metrics = Self::fetch_utc_month_gap_bucket_metrics_tx(
+            &mut tx,
+            month_start,
+            month_request_log_floor,
+            Utc::now().timestamp(),
         )
-        .bind(month_start)
-        .bind(month_start)
-        .bind(month_start)
-        .bind(month_start)
-        .bind(month_start)
-        .bind(month_start)
-        .bind(month_start)
-        .bind(month_start)
-        .bind(month_start)
-        .bind(month_start)
-        .fetch_one(&mut *tx)
         .await?;
+
+        let month_query = format!(
+            r#"
+            WITH scoped_logs AS (
+                SELECT
+                    created_at,
+                    result_status,
+                    ({request_value_bucket_case_sql}) AS request_value_bucket
+                FROM request_logs
+                WHERE visibility = ?
+                  AND created_at >= ?
+            )
+            SELECT
+                COALESCE(SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END), 0) AS month_total_requests,
+                COALESCE(SUM(CASE WHEN created_at >= ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS month_success_count,
+                COALESCE(SUM(CASE WHEN created_at >= ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS month_error_count,
+                COALESCE(SUM(CASE WHEN created_at >= ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS month_quota_exhausted_count,
+                COALESCE(SUM(CASE WHEN created_at >= ? AND request_value_bucket = 'valuable' AND result_status = ? THEN 1 ELSE 0 END), 0) AS month_valuable_success_count,
+                COALESCE(SUM(CASE WHEN created_at >= ? AND request_value_bucket = 'valuable' AND result_status IN (?, ?) THEN 1 ELSE 0 END), 0) AS month_valuable_failure_count,
+                COALESCE(SUM(CASE WHEN created_at >= ? AND request_value_bucket = 'other' AND result_status = ? THEN 1 ELSE 0 END), 0) AS month_other_success_count,
+                COALESCE(SUM(CASE WHEN created_at >= ? AND request_value_bucket = 'other' AND result_status IN (?, ?) THEN 1 ELSE 0 END), 0) AS month_other_failure_count,
+                COALESCE(SUM(CASE WHEN created_at >= ? AND request_value_bucket = 'unknown' THEN 1 ELSE 0 END), 0) AS month_unknown_count
+            FROM scoped_logs
+            "#,
+        );
+        let month_row = sqlx::query(&month_query)
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+            .bind(month_start)
+            .bind(month_start)
+            .bind(month_start)
+            .bind(OUTCOME_SUCCESS)
+            .bind(month_start)
+            .bind(OUTCOME_ERROR)
+            .bind(month_start)
+            .bind(OUTCOME_QUOTA_EXHAUSTED)
+            .bind(month_start)
+            .bind(OUTCOME_SUCCESS)
+            .bind(month_start)
+            .bind(OUTCOME_ERROR)
+            .bind(OUTCOME_QUOTA_EXHAUSTED)
+            .bind(month_start)
+            .bind(OUTCOME_SUCCESS)
+            .bind(month_start)
+            .bind(OUTCOME_ERROR)
+            .bind(OUTCOME_QUOTA_EXHAUSTED)
+            .bind(month_start)
+            .fetch_one(&mut *tx)
+            .await?;
 
         let month_lifecycle_row = sqlx::query(
             r#"
@@ -14448,6 +15083,25 @@ impl KeyStore {
         .bind(cold_stale_before)
         .fetch_one(&mut *tx)
         .await?;
+
+        let month_total_requests = bucket_month_metrics.total_requests
+            + month_row.try_get::<i64, _>("month_total_requests")?;
+        let month_success_count = bucket_month_metrics.success_count
+            + month_row.try_get::<i64, _>("month_success_count")?;
+        let month_error_count =
+            bucket_month_metrics.error_count + month_row.try_get::<i64, _>("month_error_count")?;
+        let month_quota_exhausted_count = bucket_month_metrics.quota_exhausted_count
+            + month_row.try_get::<i64, _>("month_quota_exhausted_count")?;
+        let month_valuable_success_count = bucket_month_metrics.valuable_success_count
+            + month_row.try_get::<i64, _>("month_valuable_success_count")?;
+        let month_valuable_failure_count = bucket_month_metrics.valuable_failure_count
+            + month_row.try_get::<i64, _>("month_valuable_failure_count")?;
+        let month_other_success_count = bucket_month_metrics.other_success_count
+            + month_row.try_get::<i64, _>("month_other_success_count")?;
+        let month_other_failure_count = bucket_month_metrics.other_failure_count
+            + month_row.try_get::<i64, _>("month_other_failure_count")?;
+        let month_unknown_count = bucket_month_metrics.unknown_count
+            + month_row.try_get::<i64, _>("month_unknown_count")?;
 
         tx.commit().await?;
 
@@ -14566,15 +15220,15 @@ impl KeyStore {
                 },
             },
             month: SummaryWindowMetrics {
-                total_requests: month_row.try_get("month_total_requests")?,
-                success_count: month_row.try_get("month_success_count")?,
-                error_count: month_row.try_get("month_error_count")?,
-                quota_exhausted_count: month_row.try_get("month_quota_exhausted_count")?,
-                valuable_success_count: month_row.try_get("month_valuable_success_count")?,
-                valuable_failure_count: month_row.try_get("month_valuable_failure_count")?,
-                other_success_count: month_row.try_get("month_other_success_count")?,
-                other_failure_count: month_row.try_get("month_other_failure_count")?,
-                unknown_count: month_row.try_get("month_unknown_count")?,
+                total_requests: month_total_requests,
+                success_count: month_success_count,
+                error_count: month_error_count,
+                quota_exhausted_count: month_quota_exhausted_count,
+                valuable_success_count: month_valuable_success_count,
+                valuable_failure_count: month_valuable_failure_count,
+                other_success_count: month_other_success_count,
+                other_failure_count: month_other_failure_count,
+                unknown_count: month_unknown_count,
                 upstream_exhausted_key_count: lifecycle_row
                     .try_get("month_upstream_exhausted_key_count")?,
                 new_keys: month_lifecycle_row.try_get("month_new_keys")?,
@@ -14593,24 +15247,43 @@ impl KeyStore {
     pub(crate) async fn fetch_success_breakdown(
         &self,
         month_since: i64,
-        day_since: i64,
+        day_start: i64,
+        day_end: i64,
     ) -> Result<SuccessBreakdown, ProxyError> {
+        let month_request_log_floor = self
+            .fetch_visible_request_log_floor_since(month_since)
+            .await?;
+        let bucket_month_success = self
+            .fetch_utc_month_gap_bucket_metrics(
+                month_since,
+                month_request_log_floor,
+                Utc::now().timestamp(),
+            )
+            .await?
+            .success_count;
+        let scan_floor = month_since.min(day_start);
         let row = sqlx::query(
             r#"
             SELECT
-              COALESCE(SUM(CASE WHEN bucket_start >= ? THEN success_count ELSE 0 END), 0) AS monthly_success,
-              COALESCE(SUM(CASE WHEN bucket_start >= ? THEN success_count ELSE 0 END), 0) AS daily_success
-            FROM api_key_usage_buckets
-            WHERE bucket_secs = 86400
+              COALESCE(SUM(CASE WHEN created_at >= ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS monthly_success,
+              COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS daily_success
+            FROM request_logs
+            WHERE visibility = ?
+              AND created_at >= ?
             "#,
         )
         .bind(month_since)
-        .bind(day_since)
+        .bind(OUTCOME_SUCCESS)
+        .bind(day_start)
+        .bind(day_end)
+        .bind(OUTCOME_SUCCESS)
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .bind(scan_floor)
         .fetch_one(&self.pool)
         .await?;
 
         Ok(SuccessBreakdown {
-            monthly_success: row.try_get("monthly_success")?,
+            monthly_success: bucket_month_success + row.try_get::<i64, _>("monthly_success")?,
             daily_success: row.try_get("daily_success")?,
         })
     }
@@ -14619,25 +15292,31 @@ impl KeyStore {
         &self,
         token_id: &str,
         month_since: i64,
-        day_since: i64,
+        day_start: i64,
+        day_end: i64,
     ) -> Result<(i64, i64, i64), ProxyError> {
+        let scan_floor = month_since.min(day_start);
         let row = sqlx::query(
             r#"
             SELECT
               COALESCE(SUM(CASE WHEN result_status = ? AND created_at >= ? THEN 1 ELSE 0 END), 0) AS monthly_success,
-              COALESCE(SUM(CASE WHEN result_status = ? AND created_at >= ? THEN 1 ELSE 0 END), 0) AS daily_success,
-              COALESCE(SUM(CASE WHEN result_status = ? AND created_at >= ? THEN 1 ELSE 0 END), 0) AS daily_failure
+              COALESCE(SUM(CASE WHEN result_status = ? AND created_at >= ? AND created_at < ? THEN 1 ELSE 0 END), 0) AS daily_success,
+              COALESCE(SUM(CASE WHEN result_status = ? AND created_at >= ? AND created_at < ? THEN 1 ELSE 0 END), 0) AS daily_failure
             FROM auth_token_logs
             WHERE token_id = ?
+              AND created_at >= ?
             "#,
         )
         .bind(OUTCOME_SUCCESS)
         .bind(month_since)
         .bind(OUTCOME_SUCCESS)
-        .bind(day_since)
+        .bind(day_start)
+        .bind(day_end)
         .bind(OUTCOME_ERROR)
-        .bind(day_since)
+        .bind(day_start)
+        .bind(day_end)
         .bind(token_id)
+        .bind(scan_floor)
         .fetch_one(&self.pool)
         .await?;
 
