@@ -561,6 +561,7 @@ jobs:
           name: release-digest-${{ matrix.arch }}
           path: ${{ env.DIGEST_FILE }}
           if-no-files-found: error
+          overwrite: true
 
       - name: Summary
         if: always()
