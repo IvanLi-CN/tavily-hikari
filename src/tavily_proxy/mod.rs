@@ -3482,8 +3482,7 @@ impl TavilyProxy {
                 .await?
         };
 
-        let mut url = self.upstream.clone();
-        url.set_path(request.path.as_str());
+        let mut url = build_mcp_upstream_url(&self.upstream, request.path.as_str());
 
         {
             let mut pairs = url.query_pairs_mut();
@@ -3629,8 +3628,7 @@ impl TavilyProxy {
         })?;
         let origin = origin_from_url(&base);
 
-        let mut url = base.clone();
-        url.set_path(upstream_path);
+        let url = build_path_prefixed_url(&base, upstream_path);
 
         let sanitized_headers = sanitize_headers_inner(original_headers, &base, &origin);
 
@@ -3827,8 +3825,7 @@ impl TavilyProxy {
         })?;
         let origin = origin_from_url(&base);
 
-        let mut url = base.clone();
-        url.set_path("/research");
+        let url = build_path_prefixed_url(&base, "/research");
 
         let sanitized_headers = sanitize_headers_inner(original_headers, &base, &origin);
 
@@ -4019,8 +4016,7 @@ impl TavilyProxy {
         })?;
         let origin = origin_from_url(&base);
 
-        let mut url = base.clone();
-        url.set_path(upstream_path);
+        let url = build_path_prefixed_url(&base, upstream_path);
 
         let sanitized_headers = sanitize_headers_inner(original_headers, &base, &origin);
 
@@ -7239,8 +7235,7 @@ impl TavilyProxy {
             endpoint: usage_base.to_string(),
             source: e,
         })?;
-        let mut url = base.clone();
-        url.set_path("/usage");
+        let url = build_path_prefixed_url(&base, "/usage");
 
         let secret_header = secret.to_string();
         let request_url = url.clone();
@@ -7327,8 +7322,7 @@ impl TavilyProxy {
             endpoint: usage_base.to_string(),
             source: e,
         })?;
-        let mut url = base.clone();
-        url.set_path("/usage");
+        let url = build_path_prefixed_url(&base, "/usage");
 
         let secret_header = secret.to_string();
         let request_url = url.clone();

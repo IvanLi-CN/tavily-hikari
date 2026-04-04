@@ -290,6 +290,39 @@ fn compute_latency_median(samples: &[f64]) -> Option<f64> {
 /// Tavily MCP upstream默认端点。
 pub const DEFAULT_UPSTREAM: &str = "https://mcp.tavily.com/mcp";
 
+fn join_url_paths(prefix_path: &str, appended_path: &str) -> String {
+    let prefix = prefix_path.trim_matches('/');
+    let appended = appended_path.trim_matches('/');
+    match (prefix.is_empty(), appended.is_empty()) {
+        (true, true) => "/".to_string(),
+        (true, false) => format!("/{appended}"),
+        (false, true) => format!("/{prefix}"),
+        (false, false) => format!("/{prefix}/{appended}"),
+    }
+}
+
+pub(crate) fn build_path_prefixed_url(base: &Url, appended_path: &str) -> Url {
+    let mut url = base.clone();
+    url.set_path(&join_url_paths(base.path(), appended_path));
+    url
+}
+
+pub(crate) fn build_mcp_upstream_url(base: &Url, request_path: &str) -> Url {
+    if matches!(base.path(), "" | "/") {
+        return build_path_prefixed_url(base, request_path);
+    }
+
+    let appended_path = if request_path == "/mcp" {
+        ""
+    } else if let Some(relative) = request_path.strip_prefix("/mcp/") {
+        relative
+    } else {
+        request_path
+    };
+
+    build_path_prefixed_url(base, appended_path)
+}
+
 const STATUS_ACTIVE: &str = "active";
 const STATUS_EXHAUSTED: &str = "exhausted";
 const STATUS_DISABLED: &str = "disabled";

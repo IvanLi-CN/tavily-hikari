@@ -39,6 +39,10 @@ Notes:
 - `TAVILY_UPSTREAM` has a default and usually does not need to be overridden in local development,
   but you should override it when using a mock, sandbox, or custom upstream.
 - `TAVILY_USAGE_BASE` defaults to `https://api.tavily.com` and affects usage / quota sync flows.
+- `TAVILY_UPSTREAM` is treated as the full MCP endpoint. If your reverse proxy preserves a path
+  prefix, include the final `/mcp` path in the configured URL.
+- `TAVILY_USAGE_BASE` may also include a path prefix. Hikari appends `/search`, `/extract`,
+  `/crawl`, `/map`, `/research`, `/research/{id}`, and `/usage` under that prefix.
 - `WEB_STATIC_DIR` is optional. If omitted, the app will try to use `web/dist` when that directory
   exists.
 - `TAVILY_API_KEYS` is convenient for bootstrapping, but long-term key lifecycle should be managed

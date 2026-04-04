@@ -98,7 +98,7 @@ curl -X POST http://127.0.0.1:8787/api/keys \
 | Flag / Env                                                                | 说明                                                                                                                         |
 | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | `--keys` / `TAVILY_API_KEYS`                                              | Tavily API key 列表（可选），支持逗号分隔或多次传参，仅用于一次性导入或开发场景；生产环境推荐通过管理员 API/前端控制台录入。 |
-| `--upstream` / `TAVILY_UPSTREAM`                                          | Tavily MCP 上游地址，默认 `https://mcp.tavily.com/mcp`。                                                                     |
+| `--upstream` / `TAVILY_UPSTREAM`                                          | Tavily MCP 上游端点，默认 `https://mcp.tavily.com/mcp`；支持带 path prefix 的反代 URL。                                      |
 | `--bind` / `PROXY_BIND`                                                   | 监听地址，默认 `127.0.0.1`。                                                                                                 |
 | `--port` / `PROXY_PORT`                                                   | 监听端口，默认 `8787`。建议开发期使用高位端口（如 `58087`）。                                                                |
 | `--db-path` / `PROXY_DB_PATH`                                             | SQLite 文件路径，默认 `tavily_proxy.db`。                                                                                    |
@@ -124,6 +124,9 @@ curl -X POST http://127.0.0.1:8787/api/keys \
 | `--oauth-login-state-ttl-secs` / `OAUTH_LOGIN_STATE_TTL_SECS`             | OAuth 一次性 state 的有效期（秒，默认 `600`）。                                                                              |
 
 首次运行会自动建表。若在 CLI/环境变量里显式传入 `--keys` 或 `TAVILY_API_KEYS`，会同步 `api_keys` 表：**在列表中**的 Key 会被新增或恢复为 `active`；**不在列表中**的 Key 会被标记为 `deleted`。默认推荐通过管理员 API/前端控制台维护 Key 集合。
+
+- `TAVILY_UPSTREAM` 按完整的 MCP 端点解释；如果反代保留了 path prefix，配置值里需要包含最终的 `/mcp` 路径。
+- `TAVILY_USAGE_BASE` 可以带 path prefix；Hikari 会在这个 prefix 后继续追加 `/search`、`/extract`、`/crawl`、`/map`、`/research`、`/research/{id}` 与 `/usage`。
 
 ## HTTP API 速览
 

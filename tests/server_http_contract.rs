@@ -36,15 +36,16 @@ impl Drop for BackendGuard {
     }
 }
 
-async fn spawn_mock_upstream(
+async fn spawn_mock_upstream_at_path(
     expected_api_key: String,
-    upstream_path: &'static str,
+    upstream_path: &str,
 ) -> (SocketAddr, oneshot::Receiver<(String, String)>) {
     let (tx, rx) = oneshot::channel::<(String, String)>();
     let tx = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
+    let upstream_path = upstream_path.to_string();
     let app = Router::new()
         .route(
-            upstream_path,
+            upstream_path.as_str(),
             post({
                 let tx = tx.clone();
                 move |headers: HeaderMap, Json(body): Json<Value>| {
@@ -95,6 +96,13 @@ async fn spawn_mock_upstream(
     (addr, rx)
 }
 
+async fn spawn_mock_upstream(
+    expected_api_key: String,
+    upstream_path: &'static str,
+) -> (SocketAddr, oneshot::Receiver<(String, String)>) {
+    spawn_mock_upstream_at_path(expected_api_key, upstream_path).await
+}
+
 async fn wait_for_health_ready(port: u16) -> bool {
     let client = Client::new();
     for _ in 0..80 {
@@ -112,9 +120,10 @@ async fn wait_for_health_ready(port: u16) -> bool {
     false
 }
 
-fn spawn_backend_process_with_mode(
+fn spawn_backend_process_with_urls(
     port: u16,
-    upstream_addr: SocketAddr,
+    upstream: &str,
+    usage_base: &str,
     db_path: PathBuf,
     dev_open_admin: bool,
 ) -> BackendGuard {
@@ -129,9 +138,9 @@ fn spawn_backend_process_with_mode(
         .arg("--keys")
         .arg("tvly-test-key")
         .arg("--upstream")
-        .arg(format!("http://{upstream_addr}/mcp"))
+        .arg(upstream)
         .arg("--usage-base")
-        .arg(format!("http://{upstream_addr}"));
+        .arg(usage_base);
     if dev_open_admin {
         cmd.arg("--dev-open-admin");
     }
@@ -149,14 +158,30 @@ async fn spawn_backend_ready(
     db_path: PathBuf,
     dev_open_admin: bool,
 ) -> (BackendGuard, u16) {
+    let upstream = format!("http://{upstream_addr}/mcp");
+    let usage_base = format!("http://{upstream_addr}");
+    spawn_backend_ready_with_urls(&upstream, &usage_base, db_path, dev_open_admin).await
+}
+
+async fn spawn_backend_ready_with_urls(
+    upstream: &str,
+    usage_base: &str,
+    db_path: PathBuf,
+    dev_open_admin: bool,
+) -> (BackendGuard, u16) {
     const MAX_RETRIES: usize = 5;
     for attempt in 1..=MAX_RETRIES {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let backend =
-            spawn_backend_process_with_mode(port, upstream_addr, db_path.clone(), dev_open_admin);
+        let backend = spawn_backend_process_with_urls(
+            port,
+            upstream,
+            usage_base,
+            db_path.clone(),
+            dev_open_admin,
+        );
         if wait_for_health_ready(port).await {
             return (backend, port);
         }
@@ -178,13 +203,27 @@ async fn assert_upstream_rewrite_contract(
     upstream_path: &'static str,
     request_body: Value,
 ) {
+    assert_upstream_rewrite_contract_with_usage_base(api_path, upstream_path, request_body, None)
+        .await;
+}
+
+async fn assert_upstream_rewrite_contract_with_usage_base(
+    api_path: &str,
+    upstream_path: &str,
+    request_body: Value,
+    usage_base_override: Option<String>,
+) {
     const CONTRACT_TOKEN_ID: &str = "demo";
     const CONTRACT_TOKEN_SECRET: &str = "abcdefghijkl";
 
-    let (upstream_addr, rx) = spawn_mock_upstream("tvly-test-key".to_string(), upstream_path).await;
+    let (upstream_addr, rx) =
+        spawn_mock_upstream_at_path("tvly-test-key".to_string(), upstream_path).await;
 
     let db_path = temp_db_path("server-http-contract-endpoint");
-    let (_backend, port) = spawn_backend_ready(upstream_addr, db_path.clone(), true).await;
+    let usage_base = usage_base_override.unwrap_or_else(|| format!("http://{upstream_addr}"));
+    let upstream = format!("http://{upstream_addr}/mcp");
+    let (_backend, port) =
+        spawn_backend_ready_with_urls(&upstream, &usage_base, db_path.clone(), true).await;
     insert_auth_token(&db_path, CONTRACT_TOKEN_ID, CONTRACT_TOKEN_SECRET).await;
 
     let mut request_body = request_body;
@@ -266,12 +305,20 @@ fn assert_probe_http_auth(
     );
 }
 
-async fn spawn_mock_mcp_probe_upstream(
+async fn spawn_mock_mcp_probe_upstream_at_path(
     expected_api_key: String,
 ) -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
+    spawn_mock_mcp_probe_upstream_at_route(expected_api_key, "/mcp").await
+}
+
+async fn spawn_mock_mcp_probe_upstream_at_route(
+    expected_api_key: String,
+    route_path: &str,
+) -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
     let calls = Arc::new(Mutex::new(Vec::new()));
+    let route_path = route_path.to_string();
     let app = Router::new().route(
-        "/mcp",
+        route_path.as_str(),
         any({
             let calls = calls.clone();
             move |headers: HeaderMap,
@@ -348,6 +395,12 @@ async fn spawn_mock_mcp_probe_upstream(
             .unwrap();
     });
     (addr, calls)
+}
+
+async fn spawn_mock_mcp_probe_upstream(
+    expected_api_key: String,
+) -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
+    spawn_mock_mcp_probe_upstream_at_path(expected_api_key).await
 }
 
 async fn spawn_mock_mcp_tools_contract_upstream(
@@ -455,14 +508,32 @@ async fn spawn_mock_mcp_tools_contract_upstream(
     (addr, calls)
 }
 
-async fn spawn_mock_api_probe_upstream(
+async fn spawn_mock_api_probe_upstream_with_prefix(
     expected_api_key: String,
+    path_prefix: &str,
 ) -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
     let calls = Arc::new(Mutex::new(Vec::new()));
     let usage_calls = Arc::new(AtomicUsize::new(0));
+    let prefixed = |suffix: &str| {
+        let prefix = path_prefix.trim_matches('/');
+        let suffix = suffix.trim_matches('/');
+        if prefix.is_empty() {
+            format!("/{suffix}")
+        } else {
+            format!("/{prefix}/{suffix}")
+        }
+    };
+    let search_path = prefixed("/search");
+    let extract_path = prefixed("/extract");
+    let crawl_path = prefixed("/crawl");
+    let map_path = prefixed("/map");
+    let usage_path = prefixed("/usage");
+    let research_path = prefixed("/research");
+    let research_result_path = prefixed("/research/:request_id");
+    let mcp_path = prefixed("/mcp");
     let app = Router::new()
         .route(
-            "/search",
+            search_path.as_str(),
             post({
                 let calls = calls.clone();
                 let expected_api_key = expected_api_key.clone();
@@ -488,7 +559,7 @@ async fn spawn_mock_api_probe_upstream(
             }),
         )
         .route(
-            "/extract",
+            extract_path.as_str(),
             post({
                 let calls = calls.clone();
                 let expected_api_key = expected_api_key.clone();
@@ -514,7 +585,7 @@ async fn spawn_mock_api_probe_upstream(
             }),
         )
         .route(
-            "/crawl",
+            crawl_path.as_str(),
             post({
                 let calls = calls.clone();
                 let expected_api_key = expected_api_key.clone();
@@ -540,7 +611,7 @@ async fn spawn_mock_api_probe_upstream(
             }),
         )
         .route(
-            "/map",
+            map_path.as_str(),
             post({
                 let calls = calls.clone();
                 let expected_api_key = expected_api_key.clone();
@@ -566,7 +637,7 @@ async fn spawn_mock_api_probe_upstream(
             }),
         )
         .route(
-            "/usage",
+            usage_path.as_str(),
             get({
                 let calls = calls.clone();
                 let usage_calls = usage_calls.clone();
@@ -594,7 +665,7 @@ async fn spawn_mock_api_probe_upstream(
             }),
         )
         .route(
-            "/research",
+            research_path.as_str(),
             post({
                 let calls = calls.clone();
                 let expected_api_key = expected_api_key.clone();
@@ -619,7 +690,7 @@ async fn spawn_mock_api_probe_upstream(
             }),
         )
         .route(
-            "/research/:request_id",
+            research_result_path.as_str(),
             get({
                 let calls = calls.clone();
                 let expected_api_key = expected_api_key.clone();
@@ -648,7 +719,10 @@ async fn spawn_mock_api_probe_upstream(
                 }
             }),
         )
-        .route("/mcp", any(|| async { (StatusCode::OK, Body::from("{}")) }));
+        .route(
+            mcp_path.as_str(),
+            any(|| async { (StatusCode::OK, Body::from("{}")) }),
+        );
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -658,6 +732,12 @@ async fn spawn_mock_api_probe_upstream(
             .unwrap();
     });
     (addr, calls)
+}
+
+async fn spawn_mock_api_probe_upstream(
+    expected_api_key: String,
+) -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
+    spawn_mock_api_probe_upstream_with_prefix(expected_api_key, "").await
 }
 
 #[tokio::test]
@@ -687,6 +767,41 @@ async fn search_endpoint_rewrites_upstream_credentials() {
         }),
     )
     .await;
+}
+
+#[tokio::test]
+async fn search_endpoint_supports_prefixed_usage_base_paths() {
+    const CONTRACT_TOKEN_ID: &str = "demo";
+    const CONTRACT_TOKEN_SECRET: &str = "abcdefghijkl";
+    let upstream_route = "/token/Tavily/https/api.tavily.com/search";
+    let (upstream_addr, rx) =
+        spawn_mock_upstream_at_path("tvly-test-key".to_string(), upstream_route).await;
+
+    let db_path = temp_db_path("server-http-contract-prefixed-search");
+    let upstream = format!("http://{upstream_addr}/mcp");
+    let usage_base = format!("http://{upstream_addr}/token/Tavily/https/api.tavily.com/");
+    let (_backend, port) =
+        spawn_backend_ready_with_urls(&upstream, &usage_base, db_path.clone(), true).await;
+    insert_auth_token(&db_path, CONTRACT_TOKEN_ID, CONTRACT_TOKEN_SECRET).await;
+
+    let resp = Client::new()
+        .post(format!("http://127.0.0.1:{port}/api/tavily/search"))
+        .json(&serde_json::json!({
+            "query": "prefixed search contract",
+            "api_key": format!("th-{CONTRACT_TOKEN_ID}-{CONTRACT_TOKEN_SECRET}"),
+            "max_results": 2
+        }))
+        .send()
+        .await
+        .expect("prefixed search request");
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+    let (forwarded_auth, forwarded_api_key) = tokio::time::timeout(Duration::from_secs(2), rx)
+        .await
+        .expect("mock upstream timeout")
+        .expect("receive forwarded credentials");
+    assert_eq!(forwarded_auth, "Bearer tvly-test-key");
+    assert_eq!(forwarded_api_key, "tvly-test-key");
 }
 
 #[tokio::test]
@@ -822,6 +937,48 @@ async fn mcp_probe_requests_with_authorization_header_reach_upstream() {
         upstream_calls,
         vec!["ping".to_string(), "tools/list".to_string()]
     );
+}
+
+#[tokio::test]
+async fn mcp_probe_requests_preserve_prefixed_upstream_path() {
+    let upstream_path = "/token/Tavily/https/mcp.tavily.com/mcp";
+    let (upstream_addr, calls) =
+        spawn_mock_mcp_probe_upstream_at_route("tvly-test-key".to_string(), upstream_path).await;
+
+    let db_path = temp_db_path("server-http-contract-mcp-prefixed");
+    let upstream = format!("http://{upstream_addr}{upstream_path}/");
+    let usage_base = format!("http://{upstream_addr}");
+    let (_backend, port) =
+        spawn_backend_ready_with_urls(&upstream, &usage_base, db_path.clone(), false).await;
+    insert_auth_token(&db_path, "zjvc", "abcdefghijkl").await;
+
+    let client = Client::new();
+    let token = "th-zjvc-abcdefghijkl";
+    let mcp_url = format!("http://127.0.0.1:{port}/mcp");
+
+    let ping = client
+        .post(&mcp_url)
+        .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(
+            axum::http::header::ACCEPT,
+            "application/json, text/event-stream",
+        )
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "probe-ping",
+            "method": "ping",
+            "params": {}
+        }))
+        .send()
+        .await
+        .expect("mcp prefixed ping request");
+    assert_eq!(ping.status(), reqwest::StatusCode::OK);
+
+    let upstream_calls = calls
+        .lock()
+        .expect("mcp prefixed calls lock poisoned")
+        .clone();
+    assert_eq!(upstream_calls, vec!["ping".to_string()]);
 }
 
 #[tokio::test]
@@ -1178,5 +1335,78 @@ async fn api_probe_requests_with_authorization_header_reach_upstream() {
         upstream_calls
             .iter()
             .any(|call| call == "research-result:probe-research-request")
+    );
+}
+
+#[tokio::test]
+async fn api_probe_requests_support_prefixed_usage_base_paths() {
+    let prefix = "token/Tavily/https/api.tavily.com";
+    let (upstream_addr, calls) =
+        spawn_mock_api_probe_upstream_with_prefix("tvly-test-key".to_string(), prefix).await;
+
+    let db_path = temp_db_path("server-http-contract-api-prefixed");
+    let upstream = format!("http://{upstream_addr}/mcp");
+    let usage_base = format!("http://{upstream_addr}/{prefix}/");
+    let (_backend, port) =
+        spawn_backend_ready_with_urls(&upstream, &usage_base, db_path.clone(), false).await;
+    insert_auth_token(&db_path, "zjvc", "abcdefghijkl").await;
+
+    let client = Client::new();
+    let auth_header = "Bearer th-zjvc-abcdefghijkl";
+    let base = format!("http://127.0.0.1:{port}");
+
+    let search = client
+        .post(format!("{base}/api/tavily/search"))
+        .header(axum::http::header::AUTHORIZATION, auth_header)
+        .json(&serde_json::json!({
+            "query": "prefixed api probe",
+            "max_results": 1
+        }))
+        .send()
+        .await
+        .expect("prefixed search request");
+    assert_eq!(search.status(), reqwest::StatusCode::OK);
+
+    let research = client
+        .post(format!("{base}/api/tavily/research"))
+        .header(axum::http::header::AUTHORIZATION, auth_header)
+        .json(&serde_json::json!({
+            "input": "prefixed api probe",
+            "model": "mini"
+        }))
+        .send()
+        .await
+        .expect("prefixed research request");
+    assert_eq!(research.status(), reqwest::StatusCode::OK);
+
+    let research_result = client
+        .get(format!("{base}/api/tavily/research/probe-research-request"))
+        .header(axum::http::header::AUTHORIZATION, auth_header)
+        .send()
+        .await
+        .expect("prefixed research result request");
+    assert_eq!(research_result.status(), reqwest::StatusCode::OK);
+
+    let usage = client
+        .get(format!("{base}/api/tavily/usage"))
+        .header(axum::http::header::AUTHORIZATION, auth_header)
+        .send()
+        .await
+        .expect("prefixed usage request");
+    assert_eq!(usage.status(), reqwest::StatusCode::OK);
+
+    let upstream_calls = calls
+        .lock()
+        .expect("prefixed api probe calls lock poisoned")
+        .clone();
+    assert_eq!(
+        upstream_calls,
+        vec![
+            "search".to_string(),
+            "usage".to_string(),
+            "research".to_string(),
+            "usage".to_string(),
+            "research-result:probe-research-request".to_string(),
+        ],
     );
 }

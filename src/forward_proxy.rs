@@ -24,7 +24,7 @@ use tokio::{
     time::{sleep, timeout},
 };
 
-use crate::{ProxyError, store::KeyStore};
+use crate::{ProxyError, build_path_prefixed_url, store::KeyStore};
 
 pub const DEFAULT_XRAY_BINARY: &str = "xray";
 pub const DEFAULT_XRAY_RUNTIME_DIR: &str = "data/xray-runtime";
@@ -3450,12 +3450,11 @@ fn classify_forward_proxy_error(err: &ProxyError) -> &'static str {
 }
 
 fn build_forward_proxy_probe_target(usage_base: &str) -> Result<Url, ProxyError> {
-    let mut url = Url::parse(usage_base).map_err(|err| ProxyError::InvalidEndpoint {
+    let url = Url::parse(usage_base).map_err(|err| ProxyError::InvalidEndpoint {
         endpoint: usage_base.to_string(),
         source: err,
     })?;
-    url.set_path("/usage");
-    Ok(url)
+    Ok(build_path_prefixed_url(&url, "/usage"))
 }
 
 pub async fn probe_forward_proxy_endpoint(

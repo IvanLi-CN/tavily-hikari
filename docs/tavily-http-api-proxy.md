@@ -186,7 +186,7 @@
    - 调 `check_token_quota(token_id)`，不允许时按 3.2 逻辑返回 429。
 3. 调用 Tavily HTTP：
    - 使用 `acquire_key_for(Some(token_id))` 从 Tavily Key 池选一把 key（`lease.secret`）；
-   - 构造上游 URL：`{usage_base}/search`，其中 `usage_base` 使用 CLI 的 `--usage-base` / `TAVILY_USAGE_BASE`（默认 `https://api.tavily.com`）；
+   - 构造上游 URL：在 `usage_base` 后追加 `/search`，其中 `usage_base` 使用 CLI 的 `--usage-base` / `TAVILY_USAGE_BASE`（默认 `https://api.tavily.com`）；若 `usage_base` 自带 path prefix，则保持 prefix 并继续追加；
    - 构造上游请求 body：
      - 以原始 `options` 为基础；
      - 移除其中的 `api_key` 字段（避免将访问令牌当成 Tavily key 透传上游）；

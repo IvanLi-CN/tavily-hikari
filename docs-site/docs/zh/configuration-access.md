@@ -38,6 +38,8 @@ Tavily Hikari 至少有两层访问要分清：
 
 - `TAVILY_UPSTREAM` 有默认值，通常不需要在本地额外指定；但如果你要接 mock、sandbox 或自建上游，就必须改掉它。
 - `TAVILY_USAGE_BASE` 默认是 `https://api.tavily.com`，它影响 usage / 配额同步相关能力。
+- `TAVILY_UPSTREAM` 按完整的 MCP 端点解释；如果你的反代保留了 path prefix，配置值里需要包含最终的 `/mcp` 路径。
+- `TAVILY_USAGE_BASE` 也可以带 path prefix；Hikari 会在这个 prefix 后继续追加 `/search`、`/extract`、`/crawl`、`/map`、`/research`、`/research/{id}` 与 `/usage`。
 - `WEB_STATIC_DIR` 不配置时，会自动尝试使用当前仓库下的 `web/dist`。
 - `TAVILY_API_KEYS` 只是引导启动时导入 key 的助手，不适合长期运维；长期管理还是用管理员后台或管理员 API。
 

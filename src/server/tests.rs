@@ -3127,12 +3127,14 @@ mod tests {
         (addr, usage_calls, research_calls)
     }
 
-    async fn spawn_http_research_result_mock_asserting_bearer(
+    async fn spawn_http_research_result_mock_asserting_bearer_at_path(
         expected_api_key: String,
         expected_request_id: String,
+        route_path: &str,
     ) -> SocketAddr {
+        let route_path = route_path.to_string();
         let app = Router::new().route(
-            "/research/:request_id",
+            route_path.as_str(),
             get({
                 move |headers: HeaderMap, Path(request_id): Path<String>| {
                     let expected_api_key = expected_api_key.clone();
@@ -3167,6 +3169,18 @@ mod tests {
                 .unwrap();
         });
         addr
+    }
+
+    async fn spawn_http_research_result_mock_asserting_bearer(
+        expected_api_key: String,
+        expected_request_id: String,
+    ) -> SocketAddr {
+        spawn_http_research_result_mock_asserting_bearer_at_path(
+            expected_api_key,
+            expected_request_id,
+            "/research/:request_id",
+        )
+        .await
     }
 
     async fn spawn_http_research_mock_requiring_same_key_for_result() -> SocketAddr {
@@ -14869,6 +14883,80 @@ colo=LAX
         )
         .await;
         let usage_base = format!("http://{}", upstream_addr);
+        let proxy_addr = spawn_proxy_server_with_dev(proxy.clone(), usage_base, true).await;
+
+        let client = Client::new();
+        let encoded_request_id = urlencoding::encode(request_id);
+        let url = format!(
+            "http://{}/api/tavily/research/{}",
+            proxy_addr, encoded_request_id
+        );
+        let resp = client
+            .get(url)
+            .header("Authorization", format!("Bearer {}", access_token.token))
+            .send()
+            .await
+            .expect("request to proxy succeeds");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: Value = resp.json().await.expect("parse json body");
+        assert_eq!(
+            body.get("request_id").and_then(|v| v.as_str()),
+            Some(request_id)
+        );
+        assert_eq!(body.get("status").and_then(|v| v.as_str()), Some("pending"));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn tavily_http_research_result_keeps_prefixed_usage_base_path() {
+        let db_path = temp_db_path("http-research-result-prefixed-path");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let expected_api_key = "tvly-http-research-result-prefixed-key";
+        let proxy = TavilyProxy::with_endpoint(
+            vec![expected_api_key.to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let access_token = proxy
+            .create_access_token(Some("http-research-result-prefixed-path"))
+            .await
+            .expect("create token");
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let api_key_id: String = sqlx::query_scalar("SELECT id FROM api_keys LIMIT 1")
+            .fetch_one(&pool)
+            .await
+            .expect("api key id");
+
+        let request_id = "req/segment";
+        sqlx::query(
+            r#"
+            INSERT INTO research_requests (request_id, key_id, token_id, expires_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(request_id)
+        .bind(&api_key_id)
+        .bind(&access_token.id)
+        .bind(Utc::now().timestamp() + 3600)
+        .bind(Utc::now().timestamp())
+        .bind(Utc::now().timestamp())
+        .execute(&pool)
+        .await
+        .expect("seed research request owner");
+        let route_path = "/token/Tavily/https/api.tavily.com/research/:request_id";
+        let upstream_addr = spawn_http_research_result_mock_asserting_bearer_at_path(
+            expected_api_key.to_string(),
+            request_id.to_string(),
+            route_path,
+        )
+        .await;
+        let usage_base = format!("http://{upstream_addr}/token/Tavily/https/api.tavily.com/");
         let proxy_addr = spawn_proxy_server_with_dev(proxy.clone(), usage_base, true).await;
 
         let client = Client::new();
