@@ -141,10 +141,26 @@ const tableFieldStyle = {
   lineHeight: 1.35,
 } as const
 
+const tableEllipsisFieldStyle = {
+  ...tableFieldStyle,
+  display: 'block',
+  minWidth: 0,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+} as const
+
 const tableSecondaryFieldStyle = {
   ...tableFieldStyle,
   fontSize: '0.92em',
   opacity: 0.68,
+} as const
+
+const tableEllipsisSecondaryFieldStyle = {
+  ...tableSecondaryFieldStyle,
+  display: 'block',
+  minWidth: 0,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
 } as const
 
 const tableInlineFieldStyle = {
@@ -181,6 +197,41 @@ const keysFilterClusterStyle = {
   flexWrap: 'wrap',
   flex: '1 1 360px',
   minWidth: 260,
+} as const
+
+const keysBulkToolbarStyle = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: 12,
+  flexWrap: 'wrap',
+  marginBottom: 16,
+  padding: 12,
+  borderRadius: 16,
+  border: '1px solid hsl(var(--border))',
+  background: 'hsl(var(--muted) / 0.35)',
+} as const
+
+const keysBulkSelectionStyle = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 10,
+  flexWrap: 'wrap',
+} as const
+
+const keysBulkActionsStyle = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 8,
+  flexWrap: 'wrap',
+} as const
+
+const keySelectionCheckboxLabelStyle = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 8,
+  cursor: 'pointer',
+  whiteSpace: 'nowrap',
 } as const
 
 const keysQuickAddCardStyle = {
@@ -3006,9 +3057,11 @@ function TokensPageCanvas(): JSX.Element {
 function KeysPageCanvas({
   initialRegistrationIp = '',
   initialRegions = [],
+  initialSelectedIds = [],
 }: {
   initialRegistrationIp?: string
   initialRegions?: string[]
+  initialSelectedIds?: string[]
 } = {}): JSX.Element {
   const admin = useTranslate().admin
   const keyStrings = admin.keys
@@ -3016,6 +3069,7 @@ function KeysPageCanvas({
   const [selectedStatuses, setSelectedStatuses] = useState<string[]>([])
   const [selectedRegistrationIp, setSelectedRegistrationIp] = useState(initialRegistrationIp)
   const [selectedRegions, setSelectedRegions] = useState<string[]>(initialRegions)
+  const [selectedKeyIds, setSelectedKeyIds] = useState<string[]>(initialSelectedIds)
   const [page, setPage] = useState(1)
   const [perPage, setPerPage] = useState(20)
   const keys = MOCK_KEYS
@@ -3072,6 +3126,9 @@ function KeysPageCanvas({
   const totalPages = Math.max(1, Math.ceil(filteredKeys.length / perPage))
   const safePage = Math.min(page, totalPages)
   const pagedKeys = filteredKeys.slice((safePage - 1) * perPage, safePage * perPage)
+  const selectedVisibleKeys = pagedKeys.filter((item) => selectedKeyIds.includes(item.id))
+  const selectedVisibleKeyCount = selectedVisibleKeys.length
+  const allVisibleKeysSelected = pagedKeys.length > 0 && selectedVisibleKeyCount === pagedKeys.length
   const groupSummary = summarizeFilterSelection(
     keyStrings.groups.label,
     groupOptions.filter((option) => selectedGroups.includes(option.value)).map((option) => option.label),
@@ -3258,11 +3315,53 @@ function KeysPageCanvas({
             </DropdownMenu>
           </div>
         </div>
+        <div style={keysBulkToolbarStyle}>
+          <div style={keysBulkSelectionStyle}>
+            <span className="panel-description">
+              {keyStrings.selection.selectedCount.replace('{count}', String(selectedVisibleKeyCount))}
+            </span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => setSelectedKeyIds(pagedKeys.map((item) => item.id))}
+              disabled={allVisibleKeysSelected}
+            >
+              {keyStrings.selection.selectCurrentPage}
+            </Button>
+            <Button type="button" variant="ghost" size="sm" onClick={() => setSelectedKeyIds([])} disabled={selectedVisibleKeyCount === 0}>
+              {keyStrings.selection.clear}
+            </Button>
+          </div>
+          <div style={keysBulkActionsStyle}>
+            <Button type="button" variant="outline" size="sm">
+              {keyStrings.bulkActions.syncUsage}
+            </Button>
+            <Button type="button" variant="outline" size="sm">
+              {keyStrings.bulkActions.clearQuarantine}
+            </Button>
+            <Button type="button" variant="warning" size="sm">
+              {keyStrings.bulkActions.delete}
+            </Button>
+          </div>
+        </div>
 
         <div className="table-wrapper jobs-table-wrapper">
-          <table className="jobs-table">
+          <table className="jobs-table api-keys-table api-keys-table--admin">
             <thead>
               <tr>
+                <th style={{ width: 52 }}>
+                  <label style={keySelectionCheckboxLabelStyle}>
+                    <input
+                      type="checkbox"
+                      checked={allVisibleKeysSelected}
+                      aria-label={keyStrings.selection.selectAll}
+                      onChange={(event) =>
+                        setSelectedKeyIds(event.currentTarget.checked ? pagedKeys.map((item) => item.id) : [])
+                      }
+                    />
+                  </label>
+                </th>
                 <th>
                   <div style={tableHeaderStackStyle}>
                     <span style={tableFieldStyle}>{keyStrings.table.keyId}</span>
@@ -3311,6 +3410,22 @@ function KeysPageCanvas({
               {pagedKeys.map((item) => (
                 <tr key={item.id}>
                   <td>
+                    <label style={keySelectionCheckboxLabelStyle}>
+                      <input
+                        type="checkbox"
+                        checked={selectedKeyIds.includes(item.id)}
+                        aria-label={`${keyStrings.selection.selectRow}: ${item.id}`}
+                        onChange={() =>
+                          setSelectedKeyIds((current) =>
+                            current.includes(item.id)
+                              ? current.filter((value) => value !== item.id)
+                              : [...current, item.id],
+                          )
+                        }
+                      />
+                    </label>
+                  </td>
+                  <td>
                     <div style={tableStackStyle}>
                       <div style={tableInlineFieldStyle}>
                         <code>{item.id}</code>
@@ -3333,13 +3448,13 @@ function KeysPageCanvas({
                           <Icon icon="mdi:content-copy" width={18} height={18} aria-hidden="true" />
                         </button>
                       </div>
-                      <span style={tableSecondaryFieldStyle}>{formatKeyGroupName(item.group, keyStrings.groups.ungrouped)}</span>
+                      <span className="api-keys-cell-text-secondary" style={tableEllipsisSecondaryFieldStyle}>{formatKeyGroupName(item.group, keyStrings.groups.ungrouped)}</span>
                     </div>
                   </td>
                   <td>
                     <div style={tableStackStyle}>
-                      <span style={tableFieldStyle}>{formatRegistrationValue(item.registration_ip)}</span>
-                      <span style={tableSecondaryFieldStyle}>
+                      <span className="api-keys-cell-text" style={tableEllipsisFieldStyle}>{formatRegistrationValue(item.registration_ip)}</span>
+                      <span className="api-keys-cell-text-secondary" style={tableEllipsisSecondaryFieldStyle}>
                         {formatRegistrationValue(item.registration_region)}
                       </span>
                     </div>
@@ -3355,12 +3470,12 @@ function KeysPageCanvas({
                   </td>
                   <td>
                     <div style={tableStackStyle}>
-                      <span style={tableFieldStyle}>{formatNumber(item.success_count)}</span>
-                      <span style={tableSecondaryFieldStyle}>{formatNumber(item.error_count)}</span>
+                      <span className="api-keys-cell-text" style={tableEllipsisFieldStyle}>{formatNumber(item.success_count)}</span>
+                      <span className="api-keys-cell-text-secondary" style={tableEllipsisSecondaryFieldStyle}>{formatNumber(item.error_count)}</span>
                     </div>
                   </td>
                   <td>
-                    <span style={tableFieldStyle}>
+                    <span className="api-keys-cell-text" style={tableEllipsisFieldStyle}>
                       {item.quota_remaining != null && item.quota_limit != null
                         ? `${formatNumber(item.quota_remaining)} / ${formatNumber(item.quota_limit)}`
                         : '—'}
@@ -3368,21 +3483,66 @@ function KeysPageCanvas({
                   </td>
                   <td>
                     <div style={tableStackStyle}>
-                      <span style={tableFieldStyle}>{formatTimestamp(item.last_used_at)}</span>
-                      <span style={tableSecondaryFieldStyle}>{formatTimestamp(item.status_changed_at)}</span>
+                      <span className="api-keys-cell-text" style={tableEllipsisFieldStyle}>{formatTimestamp(item.last_used_at)}</span>
+                      <span className="api-keys-cell-text-secondary" style={tableEllipsisSecondaryFieldStyle}>{formatTimestamp(item.status_changed_at)}</span>
                     </div>
                   </td>
                   <td>
-                    <div className="table-actions" style={{ flexWrap: 'nowrap' }}>
-                      <button type="button" className="btn btn-circle btn-ghost btn-sm" aria-label={keyStrings.actions.disable}>
-                        P
-                      </button>
-                      <button type="button" className="btn btn-circle btn-ghost btn-sm" aria-label={keyStrings.actions.delete}>
-                        D
-                      </button>
-                      <button type="button" className="btn btn-circle btn-ghost btn-sm" aria-label={keyStrings.actions.details}>
-                        V
-                      </button>
+                    <div className="table-actions api-keys-actions">
+                      {item.quarantine ? (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="api-keys-action-button rounded-full shadow-none"
+                          title={keyStrings.actions.clearQuarantine}
+                          aria-label={keyStrings.actions.clearQuarantine}
+                        >
+                          <Icon icon="mdi:shield-check-outline" width={18} height={18} />
+                        </Button>
+                      ) : item.status === 'disabled' ? (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="api-keys-action-button rounded-full shadow-none"
+                          title={keyStrings.actions.enable}
+                          aria-label={keyStrings.actions.enable}
+                        >
+                          <Icon icon="mdi:play-circle-outline" width={18} height={18} />
+                        </Button>
+                      ) : (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="api-keys-action-button rounded-full shadow-none"
+                          title={keyStrings.actions.disable}
+                          aria-label={keyStrings.actions.disable}
+                        >
+                          <Icon icon="mdi:pause-circle-outline" width={18} height={18} />
+                        </Button>
+                      )}
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="api-keys-action-button rounded-full shadow-none"
+                        title={keyStrings.actions.delete}
+                        aria-label={keyStrings.actions.delete}
+                      >
+                        <Icon icon="mdi:trash-outline" width={18} height={18} color="#ef4444" />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="api-keys-action-button rounded-full shadow-none"
+                        title={keyStrings.actions.details}
+                        aria-label={keyStrings.actions.details}
+                      >
+                        <Icon icon="mdi:eye-outline" width={18} height={18} />
+                      </Button>
                     </div>
                   </td>
                 </tr>
@@ -5471,6 +5631,13 @@ export const Keys: Story = {
   render: () => <KeysPageCanvas />,
   parameters: {
     viewport: { defaultViewport: '1440-device-desktop' },
+  },
+}
+
+export const KeysSelected: Story = {
+  render: () => <KeysPageCanvas initialSelectedIds={['MZli', 'c7Pk']} />,
+  parameters: {
+    viewport: { defaultViewport: '1280-breakpoint-tailwind-xl' },
   },
 }
 

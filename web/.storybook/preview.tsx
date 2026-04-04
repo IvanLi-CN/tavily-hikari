@@ -259,6 +259,11 @@ const viewportOptions = {
     styles: { width: '1200px', height: '900px' },
     type: 'desktop',
   },
+  '1280-breakpoint-tailwind-xl': {
+    name: 'Tailwind xl breakpoint (1280px)',
+    styles: { width: '1280px', height: '900px' },
+    type: 'desktop',
+  },
   '1440-device-desktop': {
     name: 'Desktop baseline (1440px)',
     styles: { width: '1440px', height: '900px' },

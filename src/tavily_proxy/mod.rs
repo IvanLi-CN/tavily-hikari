@@ -6208,7 +6208,7 @@ impl TavilyProxy {
     }
 
     /// Admin: clear the active quarantine record for a key.
-    pub async fn clear_key_quarantine_by_id(&self, key_id: &str) -> Result<(), ProxyError> {
+    pub async fn clear_key_quarantine_by_id(&self, key_id: &str) -> Result<bool, ProxyError> {
         self.clear_key_quarantine_by_id_with_actor(key_id, MaintenanceActor::default())
             .await
     }
@@ -6218,7 +6218,7 @@ impl TavilyProxy {
         &self,
         key_id: &str,
         actor: MaintenanceActor,
-    ) -> Result<(), ProxyError> {
+    ) -> Result<bool, ProxyError> {
         let before = self.key_store.fetch_key_state_snapshot(key_id).await?;
         let changed = self.key_store.clear_key_quarantine_by_id(key_id).await?;
         if changed {
@@ -6246,7 +6246,7 @@ impl TavilyProxy {
                 })
                 .await?;
         }
-        Ok(())
+        Ok(changed)
     }
 
     /// 获取整体运行情况汇总。

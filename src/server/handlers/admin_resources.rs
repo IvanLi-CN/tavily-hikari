@@ -232,6 +232,53 @@ struct NormalizedBatchCreateKeyItem {
     assigned_proxy_key: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct BulkApiKeyActionRequest {
+    action: String,
+    #[serde(default)]
+    key_ids: Vec<String>,
+}
+
+#[derive(Debug, Default, Serialize)]
+struct BulkApiKeyActionSummary {
+    requested: u64,
+    succeeded: u64,
+    skipped: u64,
+    failed: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct BulkApiKeyActionResult {
+    key_id: String,
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct BulkApiKeyActionResponse {
+    summary: BulkApiKeyActionSummary,
+    results: Vec<BulkApiKeyActionResult>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum BulkApiKeyActionKind {
+    Delete,
+    ClearQuarantine,
+    SyncUsage,
+}
+
+impl BulkApiKeyActionKind {
+    fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "delete" => Some(Self::Delete),
+            "clear_quarantine" => Some(Self::ClearQuarantine),
+            "sync_usage" => Some(Self::SyncUsage),
+            _ => None,
+        }
+    }
+}
+
 impl BatchCreateKeysRequest {
     fn into_items(self) -> Vec<BatchCreateKeyItem> {
         if let Some(items) = self.items {
@@ -1668,6 +1715,132 @@ async fn create_api_keys_batch(
     Ok((
         StatusCode::OK,
         Json(BatchCreateKeysResponse { summary, results }),
+    )
+        .into_response())
+}
+
+async fn post_api_key_bulk_actions(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<BulkApiKeyActionRequest>,
+) -> Result<Response<Body>, StatusCode> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let Some(action) = BulkApiKeyActionKind::parse(&payload.action) else {
+        let body = Json(json!({
+            "error": "invalid_action",
+            "detail": "action must be one of delete, clear_quarantine, sync_usage",
+        }));
+        return Ok((StatusCode::BAD_REQUEST, body).into_response());
+    };
+
+    let mut normalized_ids = Vec::with_capacity(payload.key_ids.len());
+    let mut seen = HashSet::<String>::new();
+    for raw_id in payload.key_ids {
+        let key_id = raw_id.trim();
+        if key_id.is_empty() {
+            continue;
+        }
+        if seen.insert(key_id.to_string()) {
+            normalized_ids.push(key_id.to_string());
+        }
+    }
+
+    if normalized_ids.is_empty() {
+        let body = Json(json!({
+            "error": "empty_key_ids",
+            "detail": "key_ids must contain at least one non-empty value",
+        }));
+        return Ok((StatusCode::BAD_REQUEST, body).into_response());
+    }
+
+    if normalized_ids.len() > API_KEYS_BATCH_LIMIT {
+        let body = Json(json!({
+            "error": "too_many_items",
+            "detail": format!("key_ids exceeds limit (max {})", API_KEYS_BATCH_LIMIT),
+        }));
+        return Ok((StatusCode::BAD_REQUEST, body).into_response());
+    }
+
+    let maintenance_actor = if matches!(action, BulkApiKeyActionKind::ClearQuarantine) {
+        Some(admin_maintenance_actor(state.as_ref(), &headers, None).await)
+    } else {
+        None
+    };
+
+    let mut summary = BulkApiKeyActionSummary {
+        requested: normalized_ids.len() as u64,
+        ..Default::default()
+    };
+    let mut results = Vec::with_capacity(normalized_ids.len());
+
+    for key_id in normalized_ids {
+        let result = match action {
+            BulkApiKeyActionKind::Delete => match state.proxy.soft_delete_key_by_id(&key_id).await {
+                Ok(()) => BulkApiKeyActionResult {
+                    key_id,
+                    status: "success".to_string(),
+                    detail: None,
+                },
+                Err(err) => BulkApiKeyActionResult {
+                    key_id,
+                    status: "failed".to_string(),
+                    detail: Some(err.to_string()),
+                },
+            },
+            BulkApiKeyActionKind::ClearQuarantine => match state
+                .proxy
+                .clear_key_quarantine_by_id_with_actor(
+                    &key_id,
+                    maintenance_actor
+                        .clone()
+                        .expect("maintenance actor for bulk clear quarantine"),
+                )
+                .await
+            {
+                Ok(true) => BulkApiKeyActionResult {
+                    key_id,
+                    status: "success".to_string(),
+                    detail: None,
+                },
+                Ok(false) => BulkApiKeyActionResult {
+                    key_id,
+                    status: "skipped".to_string(),
+                    detail: Some("no active quarantine".to_string()),
+                },
+                Err(err) => BulkApiKeyActionResult {
+                    key_id,
+                    status: "failed".to_string(),
+                    detail: Some(err.to_string()),
+                },
+            },
+            BulkApiKeyActionKind::SyncUsage => match run_manual_key_quota_sync(state.as_ref(), &key_id).await {
+                Ok(()) => BulkApiKeyActionResult {
+                    key_id,
+                    status: "success".to_string(),
+                    detail: None,
+                },
+                Err(err) => BulkApiKeyActionResult {
+                    key_id,
+                    status: "failed".to_string(),
+                    detail: Some(err.detail),
+                },
+            },
+        };
+
+        match result.status.as_str() {
+            "success" => summary.succeeded += 1,
+            "skipped" => summary.skipped += 1,
+            _ => summary.failed += 1,
+        }
+        results.push(result);
+    }
+
+    Ok((
+        StatusCode::OK,
+        Json(BulkApiKeyActionResponse { summary, results }),
     )
         .into_response())
 }

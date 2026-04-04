@@ -947,6 +947,13 @@ interface AdminTranslationsShape {
       clearRegions: string
       selectedSuffix: string
     }
+    selection: {
+      selectRow: string
+      selectAll: string
+      selectCurrentPage: string
+      clear: string
+      selectedCount: string
+    }
     pagination: {
       page: string
       perPage: string
@@ -983,6 +990,13 @@ interface AdminTranslationsShape {
       delete: string
       details: string
     }
+    bulkActions: {
+      syncUsage: string
+      clearQuarantine: string
+      delete: string
+      running: string
+      summary: string
+    }
     quarantine: {
       badge: string
       sourcePrefix: string
@@ -996,6 +1010,12 @@ interface AdminTranslationsShape {
         confirm: string
       }
       delete: {
+        title: string
+        description: string
+        cancel: string
+        confirm: string
+      }
+      bulkDelete: {
         title: string
         description: string
         cancel: string
@@ -2218,6 +2238,13 @@ export const translations: Record<Language, TranslationShape> = {
           clearRegions: 'Show all regions',
           selectedSuffix: 'selected',
         },
+        selection: {
+          selectRow: 'Select key',
+          selectAll: 'Select all keys on this page',
+          selectCurrentPage: 'Select current page',
+          clear: 'Clear selection',
+          selectedCount: '{count} selected',
+        },
         pagination: {
           page: 'Page {page} of {total}',
           perPage: 'Per page',
@@ -2254,6 +2281,13 @@ export const translations: Record<Language, TranslationShape> = {
           delete: 'Remove key',
           details: 'Details',
         },
+        bulkActions: {
+          syncUsage: 'Sync usage',
+          clearQuarantine: 'Clear quarantine',
+          delete: 'Remove selected',
+          running: 'Running…',
+          summary: '{action}: {succeeded} succeeded, {skipped} skipped, {failed} failed (requested {requested})',
+        },
         quarantine: {
           badge: 'Quarantined',
           sourcePrefix: 'Source: {source}',
@@ -2271,6 +2305,12 @@ export const translations: Record<Language, TranslationShape> = {
             description: 'This will mark the key as Deleted. You can restore it later by re-adding the same secret.',
             cancel: 'Cancel',
             confirm: 'Remove',
+          },
+          bulkDelete: {
+            title: 'Remove selected API Keys',
+            description: 'Selected keys will be marked as Deleted. You can restore them later by re-adding the same secrets.',
+            cancel: 'Cancel',
+            confirm: 'Remove selected',
           },
         },
       },
@@ -3475,6 +3515,13 @@ export const translations: Record<Language, TranslationShape> = {
           clearRegions: '显示全部地区',
           selectedSuffix: '项已选',
         },
+        selection: {
+          selectRow: '选择该密钥',
+          selectAll: '勾选当前页全部密钥',
+          selectCurrentPage: '勾选当前页',
+          clear: '清空选择',
+          selectedCount: '已选 {count} 项',
+        },
         pagination: {
           page: '第 {page}/{total} 页',
           perPage: '每页',
@@ -3511,6 +3558,13 @@ export const translations: Record<Language, TranslationShape> = {
           delete: '移除密钥',
           details: '查看详情',
         },
+        bulkActions: {
+          syncUsage: '同步额度',
+          clearQuarantine: '解除隔离',
+          delete: '批量移除',
+          running: '执行中…',
+          summary: '{action}：成功 {succeeded}，跳过 {skipped}，失败 {failed}（共 {requested} 项）',
+        },
         quarantine: {
           badge: '隔离中',
           sourcePrefix: '来源：{source}',
@@ -3528,6 +3582,12 @@ export const translations: Record<Language, TranslationShape> = {
             description: '该密钥会被标记为 Deleted，稍后可以通过重新添加同一个密钥来恢复。',
             cancel: '取消',
             confirm: '移除',
+          },
+          bulkDelete: {
+            title: '批量移除 API Keys',
+            description: '已选密钥会被标记为 Deleted，稍后可以通过重新添加相同密钥恢复。',
+            cancel: '取消',
+            confirm: '批量移除',
           },
         },
       },

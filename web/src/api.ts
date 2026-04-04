@@ -677,6 +677,26 @@ export interface PaginatedApiKeys extends Paginated<ApiKeyStats> {
   facets: ApiKeyListFacets
 }
 
+export type ApiKeyBulkAction = 'delete' | 'clear_quarantine' | 'sync_usage'
+
+export interface ApiKeyBulkActionSummary {
+  requested: number
+  succeeded: number
+  skipped: number
+  failed: number
+}
+
+export interface ApiKeyBulkActionResult {
+  key_id: string
+  status: 'success' | 'skipped' | 'failed'
+  detail?: string | null
+}
+
+export interface ApiKeyBulkActionResponse {
+  summary: ApiKeyBulkActionSummary
+  results: ApiKeyBulkActionResult[]
+}
+
 export function fetchApiKeys(
   page = 1,
   perPage = 20,
@@ -732,6 +752,32 @@ export async function syncApiKeyUsage(id: string): Promise<void> {
     const statusPart = ` (HTTP ${res.status})`
     throw new Error((message ? `${message}` : 'Failed to sync key usage') + statusPart)
   }
+}
+
+export async function applyApiKeyBulkAction(
+  action: ApiKeyBulkAction,
+  keyIds: string[],
+): Promise<ApiKeyBulkActionResponse> {
+  const res = await fetch('/api/keys/bulk-actions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      action,
+      key_ids: keyIds,
+    }),
+  })
+  if (!res.ok) {
+    let message = ''
+    try {
+      const data = await res.json()
+      message = (data?.detail as string) ?? (data?.error as string) ?? ''
+    } catch {
+      message = await res.text().catch(() => '')
+    }
+    const statusPart = ` (HTTP ${res.status})`
+    throw new Error((message ? `${message}` : 'Failed to apply bulk key action') + statusPart)
+  }
+  return (await res.json()) as ApiKeyBulkActionResponse
 }
 
 export interface JobLogView {
