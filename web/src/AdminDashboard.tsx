@@ -118,6 +118,8 @@ import {
 } from './lib/logOperationalClass'
 import {
   fetchApiKeys,
+  applyApiKeyBulkAction,
+  type ApiKeyBulkAction,
   fetchApiKeySecret,
   addApiKeysBatch,
   type AddApiKeysBatchItem,
@@ -577,10 +579,26 @@ const adminTableFieldStyle = {
   lineHeight: 1.35,
 } as const
 
+const adminTableEllipsisFieldStyle = {
+  ...adminTableFieldStyle,
+  display: 'block',
+  minWidth: 0,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+} as const
+
 const adminTableSecondaryFieldStyle = {
   ...adminTableFieldStyle,
   fontSize: '0.92em',
   opacity: 0.68,
+} as const
+
+const adminTableEllipsisSecondaryFieldStyle = {
+  ...adminTableSecondaryFieldStyle,
+  display: 'block',
+  minWidth: 0,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
 } as const
 
 const adminTableInlineFieldStyle = {
@@ -617,6 +635,41 @@ const keysFilterClusterStyle = {
   flexWrap: 'wrap',
   flex: '1 1 360px',
   minWidth: 260,
+} as const
+
+const keysBulkToolbarStyle = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: 12,
+  flexWrap: 'wrap',
+  marginBottom: 16,
+  padding: 12,
+  borderRadius: 16,
+  border: '1px solid hsl(var(--border))',
+  background: 'hsl(var(--muted) / 0.35)',
+} as const
+
+const keysBulkSelectionStyle = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 10,
+  flexWrap: 'wrap',
+} as const
+
+const keysBulkActionsStyle = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 8,
+  flexWrap: 'wrap',
+} as const
+
+const keySelectionCheckboxLabelStyle = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 8,
+  cursor: 'pointer',
+  whiteSpace: 'nowrap',
 } as const
 
 const keysQuickAddCardStyle = {
@@ -1590,7 +1643,12 @@ function AdminDashboard(): JSX.Element {
   const [togglingId, setTogglingId] = useState<string | null>(null)
   const [clearingQuarantineId, setClearingQuarantineId] = useState<string | null>(null)
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
+  const [pendingBulkDelete, setPendingBulkDelete] = useState(false)
   const [pendingDisableId, setPendingDisableId] = useState<string | null>(null)
+  const [selectedKeyIds, setSelectedKeyIds] = useState<Set<string>>(() => new Set())
+  const [bulkKeyActionInFlight, setBulkKeyActionInFlight] = useState<ApiKeyBulkAction | null>(null)
+  const [keysBulkFeedback, setKeysBulkFeedback] = useState<{ kind: 'success' | 'error'; message: string } | null>(null)
+  const keysSelectAllRef = useRef<HTMLInputElement | null>(null)
   const [pendingTokenDeleteId, setPendingTokenDeleteId] = useState<string | null>(null)
   const [editingTokenId, setEditingTokenId] = useState<string | null>(null)
   const [editingTokenNote, setEditingTokenNote] = useState('')
@@ -4003,6 +4061,10 @@ function AdminDashboard(): JSX.Element {
   const handleManualRefresh = () => {
     const controller = new AbortController()
     setLoading(true)
+    if (route.name === 'module' && route.module === 'keys') {
+      clearKeySelection()
+      setKeysBulkFeedback(null)
+    }
     const tasks: Array<Promise<unknown>> = [loadData({ signal: controller.signal, reason: 'refresh', showGlobalLoading: true })]
     if (route.name === 'unbound-token-usage') {
       tasks.push(loadUnboundTokenUsage({ signal: controller.signal, reason: 'refresh' }))
@@ -4416,6 +4478,33 @@ function AdminDashboard(): JSX.Element {
   }, [selectedTokenGroupName, selectedTokenUngrouped, tokens])
 
   const visibleKeys = keys
+  const selectedVisibleKeyIds = useMemo(
+    () => visibleKeys.filter((item) => selectedKeyIds.has(item.id)).map((item) => item.id),
+    [selectedKeyIds, visibleKeys],
+  )
+  const selectedVisibleKeyCount = selectedVisibleKeyIds.length
+  const allVisibleKeysSelected = visibleKeys.length > 0 && selectedVisibleKeyCount === visibleKeys.length
+  const someVisibleKeysSelected = selectedVisibleKeyCount > 0 && !allVisibleKeysSelected
+  const keysSelectionQueryKey = useMemo(
+    () => [
+      route.name === 'module' ? route.module : route.name,
+      keysPage,
+      keysPerPage,
+      selectedKeyGroups.join('\u0000'),
+      selectedKeyStatuses.join('\u0000'),
+      selectedKeyRegistrationIp,
+      selectedKeyRegions.join('\u0000'),
+    ].join(':'),
+    [
+      keysPage,
+      keysPerPage,
+      route,
+      selectedKeyGroups,
+      selectedKeyRegistrationIp,
+      selectedKeyRegions,
+      selectedKeyStatuses,
+    ],
+  )
 
   const selectedKeyGroupLabels = useMemo(
     () =>
@@ -4432,6 +4521,17 @@ function AdminDashboard(): JSX.Element {
         .map((option) => option.label),
     [keyStatusFilterOptions, selectedKeyStatuses],
   )
+
+  useEffect(() => {
+    if (keysSelectAllRef.current) {
+      keysSelectAllRef.current.indeterminate = someVisibleKeysSelected
+    }
+  }, [someVisibleKeysSelected])
+
+  useEffect(() => {
+    setSelectedKeyIds(new Set())
+    setKeysBulkFeedback(null)
+  }, [keysSelectionQueryKey])
 
   const selectedKeyRegionLabels = useMemo(
     () =>
@@ -5889,6 +5989,113 @@ function AdminDashboard(): JSX.Element {
     setEditingTokenNote('')
   }
 
+  const clearKeySelection = useCallback(() => {
+    setSelectedKeyIds(new Set())
+  }, [])
+
+  const toggleSelectedKey = useCallback((id: string) => {
+    if (!id) return
+    setSelectedKeyIds((previous) => {
+      const next = new Set(previous)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
+      return next
+    })
+  }, [])
+
+  const toggleAllVisibleKeys = useCallback(
+    (checked: boolean) => {
+      setSelectedKeyIds((previous) => {
+        const next = new Set(previous)
+        for (const item of visibleKeys) {
+          if (checked) {
+            next.add(item.id)
+          } else {
+            next.delete(item.id)
+          }
+        }
+        return next
+      })
+    },
+    [visibleKeys],
+  )
+
+  const formatBulkActionSummary = useCallback(
+    (
+      action: ApiKeyBulkAction,
+      summary: { requested: number; succeeded: number; skipped: number; failed: number },
+    ) => {
+      const actionLabel =
+        action === 'delete'
+          ? keyStrings.bulkActions.delete
+          : action === 'clear_quarantine'
+            ? keyStrings.bulkActions.clearQuarantine
+            : keyStrings.bulkActions.syncUsage
+      return keyStrings.bulkActions.summary
+        .replace('{action}', actionLabel)
+        .replace('{requested}', String(summary.requested))
+        .replace('{succeeded}', String(summary.succeeded))
+        .replace('{skipped}', String(summary.skipped))
+        .replace('{failed}', String(summary.failed))
+    },
+    [keyStrings.bulkActions],
+  )
+
+  const runBulkKeyAction = useCallback(
+    async (action: ApiKeyBulkAction) => {
+      if (selectedVisibleKeyIds.length === 0 || bulkKeyActionInFlight) return
+      setBulkKeyActionInFlight(action)
+      setKeysBulkFeedback(null)
+      setError(null)
+      try {
+        const response = await applyApiKeyBulkAction(action, selectedVisibleKeyIds)
+        await refreshBaseData({ includeKeys: true })
+        clearKeySelection()
+        setKeysBulkFeedback({
+          kind: response.summary.failed > 0 ? 'error' : 'success',
+          message: formatBulkActionSummary(action, response.summary),
+        })
+      } catch (err) {
+        console.error(err)
+        setKeysBulkFeedback({
+          kind: 'error',
+          message:
+            err instanceof Error
+              ? err.message
+              : action === 'delete'
+                ? errorStrings.deleteKey
+                : action === 'clear_quarantine'
+                  ? errorStrings.clearQuarantine
+                  : errorStrings.syncUsage,
+        })
+      } finally {
+        setBulkKeyActionInFlight(null)
+      }
+    },
+    [
+      bulkKeyActionInFlight,
+      clearKeySelection,
+      errorStrings.clearQuarantine,
+      errorStrings.deleteKey,
+      errorStrings.syncUsage,
+      formatBulkActionSummary,
+      selectedVisibleKeyIds,
+    ],
+  )
+
+  const confirmBulkDelete = async () => {
+    if (selectedVisibleKeyIds.length === 0) return
+    setPendingBulkDelete(false)
+    await runBulkKeyAction('delete')
+  }
+
+  const cancelBulkDelete = () => {
+    setPendingBulkDelete(false)
+  }
+
   const openDeleteConfirm = (id: string) => {
     if (!id) return
     setPendingDeleteId(id)
@@ -6867,6 +7074,28 @@ function AdminDashboard(): JSX.Element {
       </Button>
       <Button type="button" variant="destructive" onClick={() => void confirmDelete()} disabled={!!deletingId}>
         {keyStrings.dialogs.delete.confirm}
+      </Button>
+    </DialogFooter>
+  </DialogContent>
+</Dialog>
+
+<Dialog open={pendingBulkDelete} onOpenChange={(open) => { if (!open) cancelBulkDelete() }}>
+  <DialogContent className="max-w-md">
+    <DialogHeader>
+      <DialogTitle>{keyStrings.dialogs.bulkDelete.title}</DialogTitle>
+      <DialogDescription>{keyStrings.dialogs.bulkDelete.description}</DialogDescription>
+    </DialogHeader>
+    <DialogFooter className="modal-action">
+      <Button type="button" variant="outline" onClick={cancelBulkDelete}>
+        {keyStrings.dialogs.bulkDelete.cancel}
+      </Button>
+      <Button
+        type="button"
+        variant="destructive"
+        onClick={() => void confirmBulkDelete()}
+        disabled={selectedVisibleKeyCount === 0 || bulkKeyActionInFlight != null}
+      >
+        {keyStrings.dialogs.bulkDelete.confirm}
       </Button>
     </DialogFooter>
   </DialogContent>
@@ -9310,8 +9539,80 @@ function AdminDashboard(): JSX.Element {
               </DropdownMenu>
             </div>
           </div>
+          {isAdmin && visibleKeys.length > 0 ? (
+            <div style={keysBulkToolbarStyle}>
+              <div style={keysBulkSelectionStyle}>
+                <span className="panel-description">
+                  {keyStrings.selection.selectedCount.replace('{count}', String(selectedVisibleKeyCount))}
+                </span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => toggleAllVisibleKeys(true)}
+                  disabled={allVisibleKeysSelected || bulkKeyActionInFlight != null}
+                >
+                  {keyStrings.selection.selectCurrentPage}
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={clearKeySelection}
+                  disabled={selectedVisibleKeyCount === 0 || bulkKeyActionInFlight != null}
+                >
+                  {keyStrings.selection.clear}
+                </Button>
+              </div>
+              <div style={keysBulkActionsStyle}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void runBulkKeyAction('sync_usage')}
+                  disabled={selectedVisibleKeyCount === 0 || bulkKeyActionInFlight != null}
+                >
+                  {bulkKeyActionInFlight === 'sync_usage'
+                    ? keyStrings.bulkActions.running
+                    : keyStrings.bulkActions.syncUsage}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void runBulkKeyAction('clear_quarantine')}
+                  disabled={selectedVisibleKeyCount === 0 || bulkKeyActionInFlight != null}
+                >
+                  {bulkKeyActionInFlight === 'clear_quarantine'
+                    ? keyStrings.bulkActions.running
+                    : keyStrings.bulkActions.clearQuarantine}
+                </Button>
+                <Button
+                  type="button"
+                  variant="warning"
+                  size="sm"
+                  onClick={() => setPendingBulkDelete(true)}
+                  disabled={selectedVisibleKeyCount === 0 || bulkKeyActionInFlight != null}
+                >
+                  {bulkKeyActionInFlight === 'delete'
+                    ? keyStrings.bulkActions.running
+                    : keyStrings.bulkActions.delete}
+                </Button>
+              </div>
+            </div>
+          ) : null}
+          {keysBulkFeedback ? (
+            <div
+              className={keysBulkFeedback.kind === 'error' ? 'alert alert-error' : 'alert alert-warning'}
+              role={keysBulkFeedback.kind === 'error' ? 'alert' : 'status'}
+              style={{ marginBottom: 16 }}
+            >
+              {keysBulkFeedback.message}
+            </div>
+          ) : null}
         <AdminTableShell
           className="jobs-table-wrapper admin-responsive-up"
+          tableClassName={`jobs-table api-keys-table${isAdmin ? ' api-keys-table--admin' : ''}`}
           loadState={keysLoadState}
           loadingLabel={keysRefreshing ? loadingStateStrings.refreshing : keyStrings.empty.loading}
           errorLabel={keysError ?? loadingStateStrings.error}
@@ -9320,7 +9621,7 @@ function AdminDashboard(): JSX.Element {
           {visibleKeys.length === 0 ? (
             <tbody>
               <tr>
-                <td colSpan={isAdmin ? 7 : 6}>
+                <td colSpan={isAdmin ? 8 : 6}>
                   <div className="empty-state alert">
                     {keysHasFilters ? keyStrings.empty.filtered : keyStrings.empty.none}
                   </div>
@@ -9331,6 +9632,20 @@ function AdminDashboard(): JSX.Element {
             <>
               <thead>
                 <tr>
+                  {isAdmin && (
+                    <th style={{ width: 52 }}>
+                      <label style={keySelectionCheckboxLabelStyle}>
+                        <input
+                          ref={keysSelectAllRef}
+                          type="checkbox"
+                          checked={allVisibleKeysSelected}
+                          aria-label={keyStrings.selection.selectAll}
+                          onChange={(event) => toggleAllVisibleKeys(event.currentTarget.checked)}
+                          disabled={bulkKeyActionInFlight != null}
+                        />
+                      </label>
+                    </th>
+                  )}
                   <th>
                     <div style={adminTableHeaderStackStyle}>
                       <span style={adminTableFieldStyle}>{keyStrings.table.keyId}</span>
@@ -9384,6 +9699,19 @@ function AdminDashboard(): JSX.Element {
                   const keyGroupName = formatKeyGroupName(item.group, keyStrings.groups.ungrouped)
                   return (
                     <tr key={item.id}>
+                      {isAdmin && (
+                        <td>
+                          <label style={keySelectionCheckboxLabelStyle}>
+                            <input
+                              type="checkbox"
+                              checked={selectedKeyIds.has(item.id)}
+                              aria-label={`${keyStrings.selection.selectRow}: ${item.id}`}
+                              onChange={() => toggleSelectedKey(item.id)}
+                              disabled={bulkKeyActionInFlight != null}
+                            />
+                          </label>
+                        </td>
+                      )}
                       <td>
                         <div style={adminTableStackStyle}>
                           <div style={adminTableInlineFieldStyle}>
@@ -9418,13 +9746,13 @@ function AdminDashboard(): JSX.Element {
 </Button>
                             )}
                           </div>
-                          <span style={adminTableSecondaryFieldStyle}>{keyGroupName}</span>
+                          <span className="api-keys-cell-text-secondary" style={adminTableEllipsisSecondaryFieldStyle}>{keyGroupName}</span>
                         </div>
                       </td>
                       <td>
                         <div style={adminTableStackStyle}>
-                          <span style={adminTableFieldStyle}>{formatRegistrationValue(item.registration_ip)}</span>
-                          <span style={adminTableSecondaryFieldStyle}>
+                          <span className="api-keys-cell-text" style={adminTableEllipsisFieldStyle}>{formatRegistrationValue(item.registration_ip)}</span>
+                          <span className="api-keys-cell-text-secondary" style={adminTableEllipsisSecondaryFieldStyle}>
                             {formatRegistrationValue(item.registration_region)}
                           </span>
                         </div>
@@ -9440,12 +9768,12 @@ function AdminDashboard(): JSX.Element {
                       </td>
                       <td>
                         <div style={adminTableStackStyle}>
-                          <span style={adminTableFieldStyle}>{formatNumber(item.success_count)}</span>
-                          <span style={adminTableSecondaryFieldStyle}>{formatNumber(item.error_count)}</span>
+                          <span className="api-keys-cell-text" style={adminTableEllipsisFieldStyle}>{formatNumber(item.success_count)}</span>
+                          <span className="api-keys-cell-text-secondary" style={adminTableEllipsisSecondaryFieldStyle}>{formatNumber(item.error_count)}</span>
                         </div>
                       </td>
                       <td>
-                        <span style={adminTableFieldStyle}>
+                        <span className="api-keys-cell-text" style={adminTableEllipsisFieldStyle}>
                           {item.quota_remaining != null && item.quota_limit != null
                             ? `${formatNumber(item.quota_remaining)} / ${formatNumber(item.quota_limit)}`
                             : '—'}
@@ -9453,19 +9781,19 @@ function AdminDashboard(): JSX.Element {
                       </td>
                       <td>
                         <div style={adminTableStackStyle}>
-                          <span style={adminTableFieldStyle}>{formatTimestampNoYear(item.last_used_at)}</span>
-                          <span style={adminTableSecondaryFieldStyle}>{formatTimestamp(item.status_changed_at)}</span>
+                          <span className="api-keys-cell-text" style={adminTableEllipsisFieldStyle}>{formatTimestampNoYear(item.last_used_at)}</span>
+                          <span className="api-keys-cell-text-secondary" style={adminTableEllipsisSecondaryFieldStyle}>{formatTimestampNoYear(item.status_changed_at)}</span>
                         </div>
                       </td>
                       {isAdmin && (
                         <td>
-                          <div className="table-actions" style={{ flexWrap: 'nowrap' }}>
+                          <div className="table-actions api-keys-actions">
                             {item.quarantine ? (
   <Button
     type="button"
     variant="ghost"
     size="icon"
-    className="h-8 w-8 rounded-full p-0 shadow-none"
+    className="api-keys-action-button rounded-full shadow-none"
     title={keyStrings.actions.clearQuarantine}
     aria-label={keyStrings.actions.clearQuarantine}
     onClick={() => void handleClearQuarantine(item.id)}
@@ -9482,7 +9810,7 @@ function AdminDashboard(): JSX.Element {
     type="button"
     variant="ghost"
     size="icon"
-    className="h-8 w-8 rounded-full p-0 shadow-none"
+    className="api-keys-action-button rounded-full shadow-none"
     title={keyStrings.actions.enable}
     aria-label={keyStrings.actions.enable}
     onClick={() => void handleToggleDisable(item.id, false)}
@@ -9495,7 +9823,7 @@ function AdminDashboard(): JSX.Element {
     type="button"
     variant="ghost"
     size="icon"
-    className="h-8 w-8 rounded-full p-0 shadow-none"
+    className="api-keys-action-button rounded-full shadow-none"
     title={keyStrings.actions.disable}
     aria-label={keyStrings.actions.disable}
     onClick={() => openDisableConfirm(item.id)}
@@ -9508,7 +9836,7 @@ function AdminDashboard(): JSX.Element {
   type="button"
   variant="ghost"
   size="icon"
-  className="h-8 w-8 rounded-full p-0 shadow-none"
+  className="api-keys-action-button rounded-full shadow-none"
   title={keyStrings.actions.delete}
   aria-label={keyStrings.actions.delete}
   onClick={() => openDeleteConfirm(item.id)}
@@ -9525,7 +9853,7 @@ function AdminDashboard(): JSX.Element {
   type="button"
   variant="ghost"
   size="icon"
-  className="h-8 w-8 rounded-full p-0 shadow-none"
+  className="api-keys-action-button rounded-full shadow-none"
   title={keyStrings.actions.details}
   aria-label={keyStrings.actions.details}
   onClick={() => navigateKey(item.id, { preserveKeysContext: true })}
@@ -9560,6 +9888,20 @@ function AdminDashboard(): JSX.Element {
               const state = copyState.get(stateKey)
               return (
                 <article key={item.id} className="admin-mobile-card">
+                  {isAdmin && (
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+                      <label style={keySelectionCheckboxLabelStyle}>
+                        <input
+                          type="checkbox"
+                          checked={selectedKeyIds.has(item.id)}
+                          aria-label={`${keyStrings.selection.selectRow}: ${item.id}`}
+                          onChange={() => toggleSelectedKey(item.id)}
+                          disabled={bulkKeyActionInFlight != null}
+                        />
+                        <span className="panel-description">{keyStrings.selection.selectRow}</span>
+                      </label>
+                    </div>
+                  )}
                   <div className="admin-mobile-kv">
                     <span>{keyStrings.table.keyId}</span>
                     <strong>

@@ -5422,6 +5422,83 @@ tbody tr:hover {
   border-radius: 999px;
 }
 
+.jobs-table.api-keys-table {
+  table-layout: fixed;
+  min-width: 0;
+}
+
+.jobs-table.api-keys-table th,
+.jobs-table.api-keys-table td {
+  min-width: 0;
+  vertical-align: middle;
+}
+
+.jobs-table.api-keys-table .api-keys-cell-text,
+.jobs-table.api-keys-table .api-keys-cell-text-secondary {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jobs-table.api-keys-table .api-keys-actions {
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+  gap: 2px;
+  min-width: 5.5rem;
+  padding-right: 0.35rem;
+}
+
+.jobs-table.api-keys-table .api-keys-action-button {
+  width: 1.75rem;
+  min-width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  border-radius: 999px;
+}
+
+.jobs-table.api-keys-table--admin th:nth-child(1),
+.jobs-table.api-keys-table--admin td:nth-child(1) {
+  width: 44px;
+}
+
+.jobs-table.api-keys-table--admin th:nth-child(2),
+.jobs-table.api-keys-table--admin td:nth-child(2) {
+  width: 14%;
+}
+
+.jobs-table.api-keys-table--admin th:nth-child(3),
+.jobs-table.api-keys-table--admin td:nth-child(3) {
+  width: 14%;
+}
+
+.jobs-table.api-keys-table--admin th:nth-child(4),
+.jobs-table.api-keys-table--admin td:nth-child(4) {
+  width: 11%;
+}
+
+.jobs-table.api-keys-table--admin th:nth-child(5),
+.jobs-table.api-keys-table--admin td:nth-child(5) {
+  width: 11%;
+}
+
+.jobs-table.api-keys-table--admin th:nth-child(6),
+.jobs-table.api-keys-table--admin td:nth-child(6) {
+  width: 14%;
+}
+
+.jobs-table.api-keys-table--admin th:nth-child(7),
+.jobs-table.api-keys-table--admin td:nth-child(7) {
+  width: 17%;
+}
+
+.jobs-table.api-keys-table--admin th:nth-child(8),
+.jobs-table.api-keys-table--admin td:nth-child(8) {
+  width: 7rem;
+  padding-right: 1.1rem;
+}
+
 .jobs-table.admin-users-table {
   width: 100%;
 }

@@ -58,6 +58,41 @@ mod tests {
             .is_some()
     }
 
+    async fn fetch_api_key_rows(pool: &sqlx::SqlitePool) -> Vec<(String, String)> {
+        sqlx::query_as("SELECT id, api_key FROM api_keys ORDER BY api_key ASC")
+            .fetch_all(pool)
+            .await
+            .expect("fetch api key rows")
+    }
+
+    fn find_api_key_id(rows: &[(String, String)], api_key: &str) -> String {
+        rows.iter()
+            .find(|(_, secret)| secret == api_key)
+            .map(|(id, _)| id.clone())
+            .unwrap_or_else(|| panic!("missing api key row for {api_key}"))
+    }
+
+    async fn fetch_key_quota_snapshot(
+        pool: &sqlx::SqlitePool,
+        key_id: &str,
+    ) -> (Option<i64>, Option<i64>, Option<i64>) {
+        sqlx::query_as(
+            "SELECT quota_limit, quota_remaining, quota_synced_at FROM api_keys WHERE id = ?",
+        )
+        .bind(key_id)
+        .fetch_one(pool)
+        .await
+        .expect("fetch key quota snapshot")
+    }
+
+    async fn fetch_key_quota_sample_count(pool: &sqlx::SqlitePool, key_id: &str) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM api_key_quota_sync_samples WHERE key_id = ?")
+            .bind(key_id)
+            .fetch_one(pool)
+            .await
+            .expect("fetch quota sync sample count")
+    }
+
     async fn create_request_log_reference_tables(pool: &sqlx::SqlitePool) {
         sqlx::query(
             r#"
@@ -3362,6 +3397,8 @@ mod tests {
 
         let app = Router::new()
             .route("/api/keys/batch", post(create_api_keys_batch))
+            .route("/api/keys/bulk-actions", post(post_api_key_bulk_actions))
+            .route("/api/keys/:id/sync-usage", post(post_sync_key_usage))
             .route("/api/admin/login", post(post_admin_login))
             .with_state(state);
 
@@ -3395,7 +3432,9 @@ mod tests {
 
         let app = Router::new()
             .route("/api/keys/batch", post(create_api_keys_batch))
+            .route("/api/keys/bulk-actions", post(post_api_key_bulk_actions))
             .route("/api/keys/validate", post(post_validate_api_keys))
+            .route("/api/keys/:id/sync-usage", post(post_sync_key_usage))
             .route("/api/admin/login", post(post_admin_login))
             .with_state(state);
 
@@ -3429,6 +3468,8 @@ mod tests {
 
         let app = Router::new()
             .route("/api/keys/batch", post(create_api_keys_batch))
+            .route("/api/keys/bulk-actions", post(post_api_key_bulk_actions))
+            .route("/api/keys/:id/sync-usage", post(post_sync_key_usage))
             .route("/api/admin/login", post(post_admin_login))
             .with_state(state);
 
@@ -3463,7 +3504,9 @@ mod tests {
 
         let app = Router::new()
             .route("/api/keys/batch", post(create_api_keys_batch))
+            .route("/api/keys/bulk-actions", post(post_api_key_bulk_actions))
             .route("/api/keys/validate", post(post_validate_api_keys))
+            .route("/api/keys/:id/sync-usage", post(post_sync_key_usage))
             .route("/api/admin/login", post(post_admin_login))
             .with_state(state);
 
@@ -3492,6 +3535,34 @@ mod tests {
                         StatusCode::OK,
                         Json(serde_json::json!({
                             "key": { "limit": 1000, "usage": 10 },
+                        })),
+                    )
+                        .into_response(),
+                    "Bearer tvly-ok-active" => (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "key": { "limit": 1000, "usage": 10 },
+                        })),
+                    )
+                        .into_response(),
+                    "Bearer tvly-ok-disabled" => (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "key": { "limit": 1000, "usage": 11 },
+                        })),
+                    )
+                        .into_response(),
+                    "Bearer tvly-ok-exhausted" => (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "key": { "limit": 1000, "usage": 12 },
+                        })),
+                    )
+                        .into_response(),
+                    "Bearer tvly-ok-quarantined" => (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "key": { "limit": 1000, "usage": 13 },
                         })),
                     )
                         .into_response(),
@@ -4370,6 +4441,500 @@ mod tests {
             .expect("request succeeds");
 
         assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn api_keys_bulk_actions_returns_403_for_non_admin() {
+        let db_path = temp_db_path("keys-bulk-actions-403-non-admin");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        let forward_auth = ForwardAuthConfig::new(
+            Some(HeaderName::from_static("x-forward-user")),
+            Some("admin".to_string()),
+            None,
+            None,
+        );
+        let addr = spawn_keys_admin_server(proxy, forward_auth, false).await;
+
+        let client = Client::new();
+        let url = format!("http://{}/api/keys/bulk-actions", addr);
+        let resp = client
+            .post(url)
+            .json(&serde_json::json!({
+                "action": "delete",
+                "key_ids": ["key-1"]
+            }))
+            .send()
+            .await
+            .expect("request succeeds");
+
+        assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn api_keys_bulk_actions_soft_delete_selected_keys() {
+        let db_path = temp_db_path("keys-bulk-actions-delete");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let proxy = TavilyProxy::with_endpoint(
+            vec![
+                "tvly-delete-a".to_string(),
+                "tvly-delete-b".to_string(),
+                "tvly-delete-c".to_string(),
+            ],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let rows = fetch_api_key_rows(&pool).await;
+        let delete_a_id = find_api_key_id(&rows, "tvly-delete-a");
+        let delete_b_id = find_api_key_id(&rows, "tvly-delete-b");
+        let keep_id = find_api_key_id(&rows, "tvly-delete-c");
+
+        let forward_auth = ForwardAuthConfig::new(
+            Some(HeaderName::from_static("x-forward-user")),
+            Some("admin".to_string()),
+            None,
+            None,
+        );
+        let addr = spawn_keys_admin_server(proxy, forward_auth, false).await;
+
+        let client = Client::new();
+        let url = format!("http://{}/api/keys/bulk-actions", addr);
+        let resp = client
+            .post(url)
+            .header("x-forward-user", "admin")
+            .json(&serde_json::json!({
+                "action": "delete",
+                "key_ids": [delete_a_id, delete_b_id]
+            }))
+            .send()
+            .await
+            .expect("request succeeds");
+
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        let body: serde_json::Value = resp.json().await.expect("parse json body");
+        assert_eq!(
+            body.pointer("/summary/requested").and_then(|value| value.as_u64()),
+            Some(2)
+        );
+        assert_eq!(
+            body.pointer("/summary/succeeded").and_then(|value| value.as_u64()),
+            Some(2)
+        );
+        assert_eq!(
+            body.pointer("/summary/failed").and_then(|value| value.as_u64()),
+            Some(0)
+        );
+
+        let deleted_a: Option<i64> = sqlx::query_scalar("SELECT deleted_at FROM api_keys WHERE id = ?")
+            .bind(find_api_key_id(&rows, "tvly-delete-a"))
+            .fetch_one(&pool)
+            .await
+            .expect("fetch deleted_at for delete-a");
+        let deleted_b: Option<i64> = sqlx::query_scalar("SELECT deleted_at FROM api_keys WHERE id = ?")
+            .bind(find_api_key_id(&rows, "tvly-delete-b"))
+            .fetch_one(&pool)
+            .await
+            .expect("fetch deleted_at for delete-b");
+        let keep_deleted_at: Option<i64> =
+            sqlx::query_scalar("SELECT deleted_at FROM api_keys WHERE id = ?")
+                .bind(&keep_id)
+                .fetch_one(&pool)
+                .await
+                .expect("fetch deleted_at for keep key");
+
+        assert!(deleted_a.is_some());
+        assert!(deleted_b.is_some());
+        assert_eq!(keep_deleted_at, None);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn api_keys_bulk_actions_clear_quarantine_skips_non_quarantined_keys() {
+        let db_path = temp_db_path("keys-bulk-actions-clear-quarantine");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let proxy = TavilyProxy::with_endpoint(
+            vec![
+                "tvly-clear-active".to_string(),
+                "tvly-clear-quarantined".to_string(),
+            ],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let rows = fetch_api_key_rows(&pool).await;
+        let active_id = find_api_key_id(&rows, "tvly-clear-active");
+        let quarantined_id = find_api_key_id(&rows, "tvly-clear-quarantined");
+
+        sqlx::query(
+            r#"INSERT INTO api_key_quarantines
+               (key_id, source, reason_code, reason_summary, reason_detail, created_at, cleared_at)
+               VALUES (?, ?, ?, ?, ?, ?, NULL)"#,
+        )
+        .bind(&quarantined_id)
+        .bind("/api/tavily/search")
+        .bind("account_deactivated")
+        .bind("Tavily account deactivated (HTTP 401)")
+        .bind("deactivated")
+        .bind(Utc::now().timestamp())
+        .execute(&pool)
+        .await
+        .expect("seed quarantine");
+
+        let forward_auth = ForwardAuthConfig::new(
+            Some(HeaderName::from_static("x-forward-user")),
+            Some("admin".to_string()),
+            None,
+            None,
+        );
+        let addr = spawn_keys_admin_server(proxy, forward_auth, false).await;
+
+        let client = Client::new();
+        let url = format!("http://{}/api/keys/bulk-actions", addr);
+        let resp = client
+            .post(url)
+            .header("x-forward-user", "admin")
+            .json(&serde_json::json!({
+                "action": "clear_quarantine",
+                "key_ids": [quarantined_id, active_id]
+            }))
+            .send()
+            .await
+            .expect("request succeeds");
+
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        let body: serde_json::Value = resp.json().await.expect("parse json body");
+        assert_eq!(
+            body.pointer("/summary/requested").and_then(|value| value.as_u64()),
+            Some(2)
+        );
+        assert_eq!(
+            body.pointer("/summary/succeeded").and_then(|value| value.as_u64()),
+            Some(1)
+        );
+        assert_eq!(
+            body.pointer("/summary/skipped").and_then(|value| value.as_u64()),
+            Some(1)
+        );
+        assert_eq!(
+            body.pointer("/summary/failed").and_then(|value| value.as_u64()),
+            Some(0)
+        );
+
+        let results = body
+            .get("results")
+            .and_then(|value| value.as_array())
+            .expect("results array");
+        let statuses: HashMap<String, String> = results
+            .iter()
+            .map(|item| {
+                (
+                    item.get("key_id")
+                        .and_then(|value| value.as_str())
+                        .expect("result key_id")
+                        .to_string(),
+                    item.get("status")
+                        .and_then(|value| value.as_str())
+                        .expect("result status")
+                        .to_string(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            statuses.get(&find_api_key_id(&rows, "tvly-clear-quarantined")),
+            Some(&"success".to_string())
+        );
+        assert_eq!(
+            statuses.get(&find_api_key_id(&rows, "tvly-clear-active")),
+            Some(&"skipped".to_string())
+        );
+
+        let active_quarantine_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM api_key_quarantines WHERE key_id = ? AND cleared_at IS NULL",
+        )
+        .bind(find_api_key_id(&rows, "tvly-clear-active"))
+        .fetch_one(&pool)
+        .await
+        .expect("count active key quarantine rows");
+        let quarantined_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM api_key_quarantines WHERE key_id = ? AND cleared_at IS NULL",
+        )
+        .bind(find_api_key_id(&rows, "tvly-clear-quarantined"))
+        .fetch_one(&pool)
+        .await
+        .expect("count quarantined key quarantine rows");
+        assert_eq!(active_quarantine_count, 0);
+        assert_eq!(quarantined_count, 0);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn manual_sync_usage_endpoint_allows_non_active_keys_and_preserves_failed_quota_data() {
+        let db_path = temp_db_path("keys-manual-sync-status-agnostic");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let proxy = TavilyProxy::with_endpoint(
+            vec![
+                "tvly-ok-disabled".to_string(),
+                "tvly-ok-exhausted".to_string(),
+                "tvly-ok-quarantined".to_string(),
+                "tvly-unauth".to_string(),
+            ],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let rows = fetch_api_key_rows(&pool).await;
+        let disabled_id = find_api_key_id(&rows, "tvly-ok-disabled");
+        let exhausted_id = find_api_key_id(&rows, "tvly-ok-exhausted");
+        let quarantined_id = find_api_key_id(&rows, "tvly-ok-quarantined");
+        let failing_id = find_api_key_id(&rows, "tvly-unauth");
+
+        proxy
+            .disable_key_by_id(&disabled_id)
+            .await
+            .expect("disable key");
+        proxy
+            .mark_key_quota_exhausted_by_secret("tvly-ok-exhausted")
+            .await
+            .expect("mark exhausted key");
+        sqlx::query(
+            r#"INSERT INTO api_key_quarantines
+               (key_id, source, reason_code, reason_summary, reason_detail, created_at, cleared_at)
+               VALUES (?, ?, ?, ?, ?, ?, NULL)"#,
+        )
+        .bind(&quarantined_id)
+        .bind("/api/tavily/usage")
+        .bind("account_deactivated")
+        .bind("Tavily account deactivated (HTTP 401)")
+        .bind("deactivated")
+        .bind(Utc::now().timestamp())
+        .execute(&pool)
+        .await
+        .expect("seed quarantined key");
+
+        sqlx::query(
+            "UPDATE api_keys SET quota_limit = ?, quota_remaining = ?, quota_synced_at = ? WHERE id = ?",
+        )
+        .bind(555_i64)
+        .bind(444_i64)
+        .bind(333_i64)
+        .bind(&failing_id)
+        .execute(&pool)
+        .await
+        .expect("seed failing key quota snapshot");
+
+        let usage_addr = spawn_usage_mock_server().await;
+        let usage_base = format!("http://{usage_addr}");
+        let forward_auth = ForwardAuthConfig::new(
+            Some(HeaderName::from_static("x-forward-user")),
+            Some("admin".to_string()),
+            None,
+            None,
+        );
+        let addr =
+            spawn_keys_admin_server_with_usage_base(proxy, forward_auth, false, usage_base).await;
+
+        let client = Client::new();
+        for key_id in [&disabled_id, &exhausted_id, &quarantined_id] {
+            let resp = client
+                .post(format!("http://{}/api/keys/{}/sync-usage", addr, key_id))
+                .header("x-forward-user", "admin")
+                .send()
+                .await
+                .expect("manual sync request succeeds");
+            assert_eq!(resp.status(), reqwest::StatusCode::NO_CONTENT);
+        }
+
+        for key_id in [&disabled_id, &exhausted_id, &quarantined_id] {
+            let (_, _, quota_synced_at) = fetch_key_quota_snapshot(&pool, key_id).await;
+            assert!(quota_synced_at.is_some(), "quota should be synced for {key_id}");
+            assert_eq!(fetch_key_quota_sample_count(&pool, key_id).await, 1);
+        }
+
+        let failing_resp = client
+            .post(format!("http://{}/api/keys/{}/sync-usage", addr, failing_id))
+            .header("x-forward-user", "admin")
+            .send()
+            .await
+            .expect("failing manual sync request succeeds");
+        assert_eq!(failing_resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+        let failing_body: serde_json::Value =
+            failing_resp.json().await.expect("parse failing response body");
+        assert_eq!(
+            failing_body.get("error").and_then(|value| value.as_str()),
+            Some("usage_http")
+        );
+
+        assert_eq!(
+            fetch_key_quota_snapshot(&pool, &failing_id).await,
+            (Some(555), Some(444), Some(333))
+        );
+        assert_eq!(fetch_key_quota_sample_count(&pool, &failing_id).await, 0);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn api_keys_bulk_actions_sync_usage_handles_mixed_statuses_and_failures() {
+        let db_path = temp_db_path("keys-bulk-actions-sync-usage");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let proxy = TavilyProxy::with_endpoint(
+            vec![
+                "tvly-ok-active".to_string(),
+                "tvly-ok-disabled".to_string(),
+                "tvly-ok-exhausted".to_string(),
+                "tvly-ok-quarantined".to_string(),
+                "tvly-unauth".to_string(),
+            ],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let rows = fetch_api_key_rows(&pool).await;
+        let active_id = find_api_key_id(&rows, "tvly-ok-active");
+        let disabled_id = find_api_key_id(&rows, "tvly-ok-disabled");
+        let exhausted_id = find_api_key_id(&rows, "tvly-ok-exhausted");
+        let quarantined_id = find_api_key_id(&rows, "tvly-ok-quarantined");
+        let failing_id = find_api_key_id(&rows, "tvly-unauth");
+
+        proxy
+            .disable_key_by_id(&disabled_id)
+            .await
+            .expect("disable key");
+        proxy
+            .mark_key_quota_exhausted_by_secret("tvly-ok-exhausted")
+            .await
+            .expect("mark exhausted key");
+        sqlx::query(
+            r#"INSERT INTO api_key_quarantines
+               (key_id, source, reason_code, reason_summary, reason_detail, created_at, cleared_at)
+               VALUES (?, ?, ?, ?, ?, ?, NULL)"#,
+        )
+        .bind(&quarantined_id)
+        .bind("/api/tavily/usage")
+        .bind("account_deactivated")
+        .bind("Tavily account deactivated (HTTP 401)")
+        .bind("deactivated")
+        .bind(Utc::now().timestamp())
+        .execute(&pool)
+        .await
+        .expect("seed quarantined key");
+
+        sqlx::query(
+            "UPDATE api_keys SET quota_limit = ?, quota_remaining = ?, quota_synced_at = ? WHERE id = ?",
+        )
+        .bind(777_i64)
+        .bind(666_i64)
+        .bind(555_i64)
+        .bind(&failing_id)
+        .execute(&pool)
+        .await
+        .expect("seed failing key quota snapshot");
+
+        let usage_addr = spawn_usage_mock_server().await;
+        let usage_base = format!("http://{usage_addr}");
+        let forward_auth = ForwardAuthConfig::new(
+            Some(HeaderName::from_static("x-forward-user")),
+            Some("admin".to_string()),
+            None,
+            None,
+        );
+        let addr =
+            spawn_keys_admin_server_with_usage_base(proxy, forward_auth, false, usage_base).await;
+
+        let client = Client::new();
+        let resp = client
+            .post(format!("http://{}/api/keys/bulk-actions", addr))
+            .header("x-forward-user", "admin")
+            .json(&serde_json::json!({
+                "action": "sync_usage",
+                "key_ids": [active_id, disabled_id, exhausted_id, quarantined_id, failing_id]
+            }))
+            .send()
+            .await
+            .expect("bulk sync request succeeds");
+
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        let body: serde_json::Value = resp.json().await.expect("parse json body");
+        assert_eq!(
+            body.pointer("/summary/requested").and_then(|value| value.as_u64()),
+            Some(5)
+        );
+        assert_eq!(
+            body.pointer("/summary/succeeded").and_then(|value| value.as_u64()),
+            Some(4)
+        );
+        assert_eq!(
+            body.pointer("/summary/failed").and_then(|value| value.as_u64()),
+            Some(1)
+        );
+        assert_eq!(
+            body.pointer("/summary/skipped").and_then(|value| value.as_u64()),
+            Some(0)
+        );
+
+        let results = body
+            .get("results")
+            .and_then(|value| value.as_array())
+            .expect("results array");
+        let statuses: HashMap<String, String> = results
+            .iter()
+            .map(|item| {
+                (
+                    item.get("key_id")
+                        .and_then(|value| value.as_str())
+                        .expect("result key_id")
+                        .to_string(),
+                    item.get("status")
+                        .and_then(|value| value.as_str())
+                        .expect("result status")
+                        .to_string(),
+                )
+            })
+            .collect();
+        assert_eq!(statuses.get(&active_id), Some(&"success".to_string()));
+        assert_eq!(statuses.get(&disabled_id), Some(&"success".to_string()));
+        assert_eq!(statuses.get(&exhausted_id), Some(&"success".to_string()));
+        assert_eq!(statuses.get(&quarantined_id), Some(&"success".to_string()));
+        assert_eq!(statuses.get(&failing_id), Some(&"failed".to_string()));
+
+        for key_id in [&active_id, &disabled_id, &exhausted_id, &quarantined_id] {
+            let (_, _, quota_synced_at) = fetch_key_quota_snapshot(&pool, key_id).await;
+            assert!(quota_synced_at.is_some(), "quota should be synced for {key_id}");
+            assert_eq!(fetch_key_quota_sample_count(&pool, key_id).await, 1);
+        }
+
+        assert_eq!(
+            fetch_key_quota_snapshot(&pool, &failing_id).await,
+            (Some(777), Some(666), Some(555))
+        );
+        assert_eq!(fetch_key_quota_sample_count(&pool, &failing_id).await, 0);
 
         let _ = std::fs::remove_file(db_path);
     }

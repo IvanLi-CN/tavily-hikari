@@ -86,15 +86,55 @@ async fn post_sync_key_usage(
     if !is_admin_request(state.as_ref(), &headers) {
         return Err(StatusCode::FORBIDDEN);
     }
+    match run_manual_key_quota_sync(state.as_ref(), &id).await {
+        Ok(()) => Ok(StatusCode::NO_CONTENT.into_response()),
+        Err(err) => Ok((
+            err.status_code,
+            Json(json!({
+                "error": err.error_code,
+                "detail": err.detail,
+            })),
+        )
+            .into_response()),
+    }
+}
+
+#[derive(Debug)]
+struct ManualQuotaSyncError {
+    status_code: StatusCode,
+    error_code: &'static str,
+    detail: String,
+}
+
+impl ManualQuotaSyncError {
+    fn new(status_code: StatusCode, error_code: &'static str, detail: String) -> Self {
+        Self {
+            status_code,
+            error_code,
+            detail,
+        }
+    }
+}
+
+async fn run_manual_key_quota_sync(
+    state: &AppState,
+    key_id: &str,
+) -> Result<(), ManualQuotaSyncError> {
     let job_id = state
         .proxy
-        .scheduled_job_start("quota_sync/manual", Some(&id), 1)
+        .scheduled_job_start("quota_sync/manual", Some(key_id), 1)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|err| {
+            ManualQuotaSyncError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "sync_failed",
+                err.to_string(),
+            )
+        })?;
 
     match state
         .proxy
-        .sync_key_quota(&id, &state.usage_base, "quota_sync/manual")
+        .sync_key_quota(key_id, &state.usage_base, "quota_sync/manual")
         .await
     {
         Ok((limit, remaining)) => {
@@ -103,7 +143,7 @@ async fn post_sync_key_usage(
                 .proxy
                 .scheduled_job_finish(job_id, "success", Some(&msg))
                 .await;
-            Ok(StatusCode::NO_CONTENT.into_response())
+            Ok(())
         }
         Err(ProxyError::QuotaDataMissing { reason }) => {
             let msg = format!("quota_data_missing: {reason}");
@@ -111,11 +151,11 @@ async fn post_sync_key_usage(
                 .proxy
                 .scheduled_job_finish(job_id, "error", Some(&msg))
                 .await;
-            let body = Json(json!({
-                "error": "quota_data_missing",
-                "detail": reason,
-            }));
-            Ok((StatusCode::BAD_REQUEST, body).into_response())
+            Err(ManualQuotaSyncError::new(
+                StatusCode::BAD_REQUEST,
+                "quota_data_missing",
+                reason,
+            ))
         }
         Err(ProxyError::UsageHttp { status, body }) => {
             let detail = format!("Tavily usage request failed with {status}: {body}");
@@ -132,11 +172,11 @@ async fn post_sync_key_usage(
                 .proxy
                 .scheduled_job_finish(job_id, "error", Some(&detail))
                 .await;
-            let body = Json(json!({
-                "error": "usage_http",
-                "detail": detail,
-            }));
-            Ok((http_status, body).into_response())
+            Err(ManualQuotaSyncError::new(
+                http_status,
+                "usage_http",
+                detail,
+            ))
         }
         Err(err) => {
             let reason = err.to_string();
@@ -144,11 +184,11 @@ async fn post_sync_key_usage(
                 .proxy
                 .scheduled_job_finish(job_id, "error", Some(&reason))
                 .await;
-            let body = Json(json!({
-                "error": "sync_failed",
-                "detail": reason,
-            }));
-            Ok((StatusCode::BAD_GATEWAY, body).into_response())
+            Err(ManualQuotaSyncError::new(
+                StatusCode::BAD_GATEWAY,
+                "sync_failed",
+                reason,
+            ))
         }
     }
 }
