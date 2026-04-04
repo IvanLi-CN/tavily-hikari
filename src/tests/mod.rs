@@ -6806,6 +6806,13 @@ async fn summary_windows_split_today_yesterday_and_month() {
         expected_month.success_count += 3;
         expected_month.valuable_success_count += 3;
     }
+    if local_day_bucket_start_utc_ts(month_start) == month_start {
+        expected_month.total_requests += 3;
+        expected_month.success_count += 2;
+        expected_month.error_count += 1;
+        expected_month.valuable_success_count += 2;
+        expected_month.valuable_failure_count += 1;
+    }
     insert_summary_window_bucket(&proxy, &key_id, month_start, 3, 2, 1, 0).await;
     insert_summary_window_bucket(&proxy, &key_id, previous_month_start, 99, 80, 10, 9).await;
 
