@@ -6,6 +6,15 @@
 - Change: New
 - Auth: `hikari_user_session` cookie
 
+### Query
+
+- optional: `today_start`, `today_end`
+- contract:
+  - must be RFC3339 / ISO8601 datetimes with explicit offset or `Z`
+  - must be provided together
+  - must describe exactly one natural-day window aligned to local midnight
+  - omitted pair falls back to the server-timezone current day window
+
 ### Response
 
 - `200`
@@ -17,6 +26,13 @@
   - `dailySuccess`, `dailyFailure`, `monthlySuccess`
   - `lastActivity`
 
+### Semantics
+
+- `dailySuccess` / `dailyFailure`: explicit browser-window today when query params are present; otherwise server timezone current day
+- `monthlySuccess`: current UTC month
+- `quotaDailyUsed` / `quotaDailyLimit`: server timezone natural day
+- `quotaMonthlyUsed` / `quotaMonthlyLimit`: current UTC month
+
 ### Error
 
 - `401` 未登录
@@ -27,6 +43,11 @@
 - Scope: external
 - Change: New
 - Auth: `hikari_user_session`
+
+### Query
+
+- optional: `today_start`, `today_end`
+- same validation contract as `GET /api/user/dashboard`
 
 ### Response
 
@@ -44,6 +65,11 @@
 - Scope: external
 - Change: New
 - Auth: `hikari_user_session`
+
+### Query
+
+- optional: `today_start`, `today_end`
+- same validation contract as `GET /api/user/dashboard`
 
 ### Response
 

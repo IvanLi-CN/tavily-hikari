@@ -4418,16 +4418,13 @@ impl TavilyProxy {
         let now = Utc::now();
         let now_ts = now.timestamp();
         let minute_bucket = now_ts - (now_ts % 60);
-        let hour_bucket = now_ts - (now_ts % SECS_PER_HOUR);
+        let local_now = now.with_timezone(&Local);
         let hour_window_start = minute_bucket - 59 * 60;
-        let day_window_start = hour_bucket - 23 * SECS_PER_HOUR;
+        let day_window_start = start_of_local_day_utc_ts(local_now);
+        let day_window_end = next_local_day_start_utc_ts(day_window_start);
         let token_hourly_oldest = self
             .key_store
             .earliest_usage_bucket_since_bulk(&ids, GRANULARITY_MINUTE, hour_window_start)
-            .await?;
-        let token_daily_oldest = self
-            .key_store
-            .earliest_usage_bucket_since_bulk(&ids, GRANULARITY_HOUR, day_window_start)
             .await?;
         let mut user_ids: Vec<String> = token_bindings.values().cloned().collect();
         user_ids.sort_unstable();
@@ -4440,10 +4437,6 @@ impl TavilyProxy {
                 hour_window_start,
             )
             .await?;
-        let account_daily_oldest = self
-            .key_store
-            .earliest_account_usage_bucket_since_bulk(&user_ids, GRANULARITY_HOUR, day_window_start)
-            .await?;
         let month_start = start_of_month(now);
         let next_month_reset = start_of_next_month(month_start).timestamp();
         for token in tokens.iter_mut() {
@@ -4453,18 +4446,13 @@ impl TavilyProxy {
                 } else {
                     token_hourly_oldest.get(&token.id).copied()
                 };
-                let daily_oldest = if let Some(user_id) = token_bindings.get(&token.id) {
-                    account_daily_oldest.get(user_id).copied()
-                } else {
-                    token_daily_oldest.get(&token.id).copied()
-                };
                 token.quota_hourly_reset_at = if verdict.hourly_used > 0 {
                     hourly_oldest.map(|bucket| bucket + SECS_PER_HOUR)
                 } else {
                     None
                 };
                 token.quota_daily_reset_at = if verdict.daily_used > 0 {
-                    daily_oldest.map(|bucket| bucket + SECS_PER_DAY)
+                    Some(day_window_end)
                 } else {
                     None
                 };
@@ -4689,9 +4677,10 @@ impl TavilyProxy {
     pub async fn user_dashboard_summary(
         &self,
         user_id: &str,
+        daily_window: Option<TimeRangeUtc>,
     ) -> Result<UserDashboardSummary, ProxyError> {
         let mut summaries = self
-            .user_dashboard_summaries_for_users(&[user_id.to_string()])
+            .user_dashboard_summaries_for_users(&[user_id.to_string()], daily_window)
             .await?;
         Ok(summaries.remove(user_id).unwrap_or(UserDashboardSummary {
             hourly_any_used: 0,
@@ -4714,6 +4703,7 @@ impl TavilyProxy {
     pub async fn user_dashboard_summaries_for_users(
         &self,
         user_ids: &[String],
+        daily_window: Option<TimeRangeUtc>,
     ) -> Result<HashMap<String, UserDashboardSummary>, ProxyError> {
         if user_ids.is_empty() {
             return Ok(HashMap::new());
@@ -4722,10 +4712,10 @@ impl TavilyProxy {
         let now = Utc::now();
         let now_ts = now.timestamp();
         let minute_bucket = now_ts - (now_ts % SECS_PER_MINUTE);
-        let hour_bucket = now_ts - (now_ts % SECS_PER_HOUR);
         let hour_window_start = minute_bucket - 59 * SECS_PER_MINUTE;
-        let day_window_start = hour_bucket - 23 * SECS_PER_HOUR;
         let month_start = start_of_month(now).timestamp();
+        let server_daily_window = server_local_day_window_utc(now.with_timezone(&Local));
+        let resolved_daily_window = daily_window.unwrap_or(server_daily_window);
 
         let mut deduped_user_ids = user_ids.to_vec();
         deduped_user_ids.sort_unstable();
@@ -4753,7 +4743,20 @@ impl TavilyProxy {
             .await?;
         let daily_totals = self
             .key_store
-            .sum_account_usage_buckets_bulk(&deduped_user_ids, GRANULARITY_HOUR, day_window_start)
+            .sum_account_usage_buckets_bulk(
+                &deduped_user_ids,
+                GRANULARITY_DAY,
+                server_daily_window.start,
+            )
+            .await?;
+        let legacy_daily_totals = self
+            .key_store
+            .sum_account_usage_buckets_bulk_between(
+                &deduped_user_ids,
+                GRANULARITY_HOUR,
+                server_daily_window.start,
+                server_daily_window.end,
+            )
             .await?;
         let monthly_totals = self
             .key_store
@@ -4761,7 +4764,11 @@ impl TavilyProxy {
             .await?;
         let log_metrics = self
             .key_store
-            .fetch_user_log_metrics_bulk(&deduped_user_ids)
+            .fetch_user_log_metrics_bulk(
+                &deduped_user_ids,
+                resolved_daily_window.start,
+                resolved_daily_window.end,
+            )
             .await?;
         let default_limits = AccountQuotaLimits::zero_base();
 
@@ -4780,7 +4787,8 @@ impl TavilyProxy {
                         hourly_any_limit: limits.hourly_any_limit,
                         quota_hourly_used: hourly_totals.get(&user_id).copied().unwrap_or(0),
                         quota_hourly_limit: limits.hourly_limit,
-                        quota_daily_used: daily_totals.get(&user_id).copied().unwrap_or(0),
+                        quota_daily_used: daily_totals.get(&user_id).copied().unwrap_or(0)
+                            + legacy_daily_totals.get(&user_id).copied().unwrap_or(0),
                         quota_daily_limit: limits.daily_limit,
                         quota_monthly_used: monthly_totals.get(&user_id).copied().unwrap_or(0),
                         quota_monthly_limit: limits.monthly_limit,
@@ -4799,7 +4807,10 @@ impl TavilyProxy {
         &self,
         token_ids: &[String],
     ) -> Result<HashMap<String, TokenLogMetricsSummary>, ProxyError> {
-        self.key_store.fetch_token_log_metrics_bulk(token_ids).await
+        let daily_window = server_local_day_window_utc(Local::now());
+        self.key_store
+            .fetch_token_log_metrics_bulk(token_ids, daily_window.start, daily_window.end)
+            .await
     }
 
     pub async fn list_api_key_binding_counts_for_users(
@@ -6258,7 +6269,7 @@ impl TavilyProxy {
     ) -> Result<SummaryWindows, ProxyError> {
         let today_start = start_of_local_day_utc_ts(now);
         let yesterday_start = previous_local_day_start_utc_ts(now);
-        let month_start = start_of_local_month_utc_ts(now);
+        let month_start = start_of_month(now.with_timezone(&Utc)).timestamp();
         let today_end = now.with_timezone(&Utc).timestamp().saturating_add(1);
         let yesterday_same_time_end = previous_local_same_time_utc_ts(now).saturating_add(1);
 
@@ -6274,12 +6285,20 @@ impl TavilyProxy {
     }
 
     /// Public metrics: successful requests today and this month.
-    pub async fn success_breakdown(&self) -> Result<SuccessBreakdown, ProxyError> {
-        let now = Local::now();
-        let month_start = start_of_local_month_utc_ts(now);
-        let day_start = start_of_local_day_utc_ts(now);
+    pub async fn success_breakdown(
+        &self,
+        daily_window: Option<TimeRangeUtc>,
+    ) -> Result<SuccessBreakdown, ProxyError> {
+        let now = Utc::now();
+        let month_start = start_of_month(now).timestamp();
+        let resolved_daily_window =
+            daily_window.unwrap_or_else(|| server_local_day_window_utc(now.with_timezone(&Local)));
         self.key_store
-            .fetch_success_breakdown(month_start, day_start)
+            .fetch_success_breakdown(
+                month_start,
+                resolved_daily_window.start,
+                resolved_daily_window.end,
+            )
             .await
     }
 
@@ -6287,12 +6306,19 @@ impl TavilyProxy {
     pub async fn token_success_breakdown(
         &self,
         token_id: &str,
+        daily_window: Option<TimeRangeUtc>,
     ) -> Result<(i64, i64, i64), ProxyError> {
         let now = Utc::now();
         let month_start = start_of_month(now).timestamp();
-        let day_start = start_of_day(now).timestamp();
+        let resolved_daily_window =
+            daily_window.unwrap_or_else(|| server_local_day_window_utc(now.with_timezone(&Local)));
         self.key_store
-            .fetch_token_success_failure(token_id, month_start, day_start)
+            .fetch_token_success_failure(
+                token_id,
+                month_start,
+                resolved_daily_window.start,
+                resolved_daily_window.end,
+            )
             .await
     }
 
@@ -6416,14 +6442,49 @@ impl TokenQuota {
         }
     }
 
+    async fn current_token_daily_used(
+        &self,
+        token_id: &str,
+        day_start: i64,
+        day_end: i64,
+    ) -> Result<i64, ProxyError> {
+        let current_day = self
+            .store
+            .sum_usage_buckets(token_id, GRANULARITY_DAY, day_start)
+            .await?;
+        let legacy_same_day = self
+            .store
+            .sum_usage_buckets_between(token_id, GRANULARITY_HOUR, day_start, day_end)
+            .await?;
+        Ok(current_day + legacy_same_day)
+    }
+
+    async fn current_account_daily_used(
+        &self,
+        user_id: &str,
+        day_start: i64,
+        day_end: i64,
+    ) -> Result<i64, ProxyError> {
+        let current_day = self
+            .store
+            .sum_account_usage_buckets(user_id, GRANULARITY_DAY, day_start)
+            .await?;
+        let legacy_same_day = self
+            .store
+            .sum_account_usage_buckets_between(user_id, GRANULARITY_HOUR, day_start, day_end)
+            .await?;
+        Ok(current_day + legacy_same_day)
+    }
+
     pub(crate) async fn check(&self, token_id: &str) -> Result<TokenQuotaVerdict, ProxyError> {
         let now = Utc::now();
         let now_ts = now.timestamp();
         let minute_bucket = now_ts - (now_ts % SECS_PER_MINUTE);
-        let hour_bucket = now_ts - (now_ts % SECS_PER_HOUR);
+        let local_now = now.with_timezone(&Local);
+        let day_bucket = start_of_local_day_utc_ts(local_now);
+        let day_bucket_end = next_local_day_start_utc_ts(day_bucket);
 
         let hour_window_start = minute_bucket - 59 * SECS_PER_MINUTE;
-        let day_window_start = hour_bucket - 23 * SECS_PER_HOUR;
         let month_start = start_of_month(now).timestamp();
 
         let verdict = match self.resolve_subject(token_id).await? {
@@ -6440,8 +6501,7 @@ impl TokenQuota {
                         .sum_account_usage_buckets(&user_id, GRANULARITY_MINUTE, hour_window_start)
                         .await?;
                     let daily_used = self
-                        .store
-                        .sum_account_usage_buckets(&user_id, GRANULARITY_HOUR, day_window_start)
+                        .current_account_daily_used(&user_id, day_bucket, day_bucket_end)
                         .await?;
                     let monthly_used = self
                         .store
@@ -6460,15 +6520,14 @@ impl TokenQuota {
                         .increment_account_usage_bucket(&user_id, minute_bucket, GRANULARITY_MINUTE)
                         .await?;
                     self.store
-                        .increment_account_usage_bucket(&user_id, hour_bucket, GRANULARITY_HOUR)
+                        .increment_account_usage_bucket(&user_id, day_bucket, GRANULARITY_DAY)
                         .await?;
                     let hourly_used = self
                         .store
                         .sum_account_usage_buckets(&user_id, GRANULARITY_MINUTE, hour_window_start)
                         .await?;
                     let daily_used = self
-                        .store
-                        .sum_account_usage_buckets(&user_id, GRANULARITY_HOUR, day_window_start)
+                        .current_account_daily_used(&user_id, day_bucket, day_bucket_end)
                         .await?;
                     let monthly_used = self
                         .store
@@ -6492,7 +6551,7 @@ impl TokenQuota {
                     .increment_usage_bucket(&token_id, minute_bucket, GRANULARITY_MINUTE)
                     .await?;
                 self.store
-                    .increment_usage_bucket(&token_id, hour_bucket, GRANULARITY_HOUR)
+                    .increment_usage_bucket(&token_id, day_bucket, GRANULARITY_DAY)
                     .await?;
 
                 let hourly_used = self
@@ -6500,8 +6559,7 @@ impl TokenQuota {
                     .sum_usage_buckets(&token_id, GRANULARITY_MINUTE, hour_window_start)
                     .await?;
                 let daily_used = self
-                    .store
-                    .sum_usage_buckets(&token_id, GRANULARITY_HOUR, day_window_start)
+                    .current_token_daily_used(&token_id, day_bucket, day_bucket_end)
                     .await?;
                 let monthly_used = self
                     .store
@@ -6531,7 +6589,7 @@ impl TokenQuota {
         let now = Utc::now();
         let now_ts = now.timestamp();
         let minute_bucket = now_ts - (now_ts % SECS_PER_MINUTE);
-        let hour_bucket = now_ts - (now_ts % SECS_PER_HOUR);
+        let day_bucket = start_of_local_day_utc_ts(now.with_timezone(&Local));
         let month_start = start_of_month(now).timestamp();
 
         match self.resolve_subject(token_id).await? {
@@ -6547,8 +6605,8 @@ impl TokenQuota {
                 self.store
                     .increment_account_usage_bucket_by(
                         &user_id,
-                        hour_bucket,
-                        GRANULARITY_HOUR,
+                        day_bucket,
+                        GRANULARITY_DAY,
                         credits,
                     )
                     .await?;
@@ -6567,7 +6625,7 @@ impl TokenQuota {
                     )
                     .await?;
                 self.store
-                    .increment_usage_bucket_by(&token_id, hour_bucket, GRANULARITY_HOUR, credits)
+                    .increment_usage_bucket_by(&token_id, day_bucket, GRANULARITY_DAY, credits)
                     .await?;
                 let _ = self
                     .store
@@ -6605,9 +6663,10 @@ impl TokenQuota {
     ) -> Result<TokenQuotaVerdict, ProxyError> {
         let now_ts = now.timestamp();
         let minute_bucket = now_ts - (now_ts % SECS_PER_MINUTE);
-        let hour_bucket = now_ts - (now_ts % SECS_PER_HOUR);
+        let local_now = now.with_timezone(&Local);
         let hour_window_start = minute_bucket - 59 * SECS_PER_MINUTE;
-        let day_window_start = hour_bucket - 23 * SECS_PER_HOUR;
+        let day_window_start = start_of_local_day_utc_ts(local_now);
+        let day_window_end = next_local_day_start_utc_ts(day_window_start);
         let month_start = start_of_month(now).timestamp();
         match subject {
             QuotaSubject::Account(user_id) => {
@@ -6621,8 +6680,7 @@ impl TokenQuota {
                     .sum_account_usage_buckets(user_id, GRANULARITY_MINUTE, hour_window_start)
                     .await?;
                 let daily_used = self
-                    .store
-                    .sum_account_usage_buckets(user_id, GRANULARITY_HOUR, day_window_start)
+                    .current_account_daily_used(user_id, day_window_start, day_window_end)
                     .await?;
                 let monthly_used = self
                     .store
@@ -6643,8 +6701,7 @@ impl TokenQuota {
                     .sum_usage_buckets(token_id, GRANULARITY_MINUTE, hour_window_start)
                     .await?;
                 let daily_used = self
-                    .store
-                    .sum_usage_buckets(token_id, GRANULARITY_HOUR, day_window_start)
+                    .current_token_daily_used(token_id, day_window_start, day_window_end)
                     .await?;
                 let monthly_used = self
                     .store
@@ -6672,9 +6729,10 @@ impl TokenQuota {
         let now = Utc::now();
         let now_ts = now.timestamp();
         let minute_bucket = now_ts - (now_ts % SECS_PER_MINUTE);
-        let hour_bucket = now_ts - (now_ts % SECS_PER_HOUR);
+        let local_now = now.with_timezone(&Local);
         let hour_window_start = minute_bucket - 59 * SECS_PER_MINUTE;
-        let day_window_start = hour_bucket - 23 * SECS_PER_HOUR;
+        let day_window_start = start_of_local_day_utc_ts(local_now);
+        let day_window_end = next_local_day_start_utc_ts(day_window_start);
         let month_start = start_of_month(now).timestamp();
 
         let token_bindings = self.store.list_user_bindings_for_tokens(token_ids).await?;
@@ -6698,7 +6756,16 @@ impl TokenQuota {
             .await?;
         let token_daily_totals = self
             .store
-            .sum_usage_buckets_bulk(&token_subjects, GRANULARITY_HOUR, day_window_start)
+            .sum_usage_buckets_bulk(&token_subjects, GRANULARITY_DAY, day_window_start)
+            .await?;
+        let token_legacy_daily_totals = self
+            .store
+            .sum_usage_buckets_bulk_between(
+                &token_subjects,
+                GRANULARITY_HOUR,
+                day_window_start,
+                day_window_end,
+            )
             .await?;
         let token_monthly_totals = self
             .store
@@ -6708,7 +6775,11 @@ impl TokenQuota {
         let mut verdicts = HashMap::new();
         for token_id in token_subjects {
             let hourly_used = token_hourly_totals.get(&token_id).copied().unwrap_or(0);
-            let daily_used = token_daily_totals.get(&token_id).copied().unwrap_or(0);
+            let daily_used = token_daily_totals.get(&token_id).copied().unwrap_or(0)
+                + token_legacy_daily_totals
+                    .get(&token_id)
+                    .copied()
+                    .unwrap_or(0);
             let monthly_used = token_monthly_totals.get(&token_id).copied().unwrap_or(0);
             verdicts.insert(
                 token_id,
@@ -6739,8 +6810,17 @@ impl TokenQuota {
                 .store
                 .sum_account_usage_buckets_bulk(
                     &account_user_ids,
+                    GRANULARITY_DAY,
+                    day_window_start,
+                )
+                .await?;
+            let account_legacy_daily_totals = self
+                .store
+                .sum_account_usage_buckets_bulk_between(
+                    &account_user_ids,
                     GRANULARITY_HOUR,
                     day_window_start,
+                    day_window_end,
                 )
                 .await?;
             let account_monthly_totals = self
@@ -6755,7 +6835,11 @@ impl TokenQuota {
                     .cloned()
                     .unwrap_or_else(|| default_limits.clone());
                 let hourly_used = account_hourly_totals.get(&user_id).copied().unwrap_or(0);
-                let daily_used = account_daily_totals.get(&user_id).copied().unwrap_or(0);
+                let daily_used = account_daily_totals.get(&user_id).copied().unwrap_or(0)
+                    + account_legacy_daily_totals
+                        .get(&user_id)
+                        .copied()
+                        .unwrap_or(0);
                 let monthly_used = account_monthly_totals.get(&user_id).copied().unwrap_or(0);
                 verdicts.insert(
                     token_id,
@@ -6793,10 +6877,16 @@ impl TokenQuota {
                 .delete_old_usage_buckets(GRANULARITY_HOUR, threshold)
                 .await?;
             self.store
+                .delete_old_usage_buckets(GRANULARITY_DAY, threshold)
+                .await?;
+            self.store
                 .delete_old_account_usage_buckets(GRANULARITY_MINUTE, threshold)
                 .await?;
             self.store
                 .delete_old_account_usage_buckets(GRANULARITY_HOUR, threshold)
+                .await?;
+            self.store
+                .delete_old_account_usage_buckets(GRANULARITY_DAY, threshold)
                 .await?;
         }
 

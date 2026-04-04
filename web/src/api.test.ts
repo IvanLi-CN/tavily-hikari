@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, mock } from 'bun:test'
 
 import {
+  buildPublicEventsUrl,
   bindAdminUserTag,
+  createBrowserTodayWindow,
   fetchAdminRegistrationSettings,
   fetchAdminUnboundTokenUsage,
   fetchAdminUsers,
@@ -9,9 +11,15 @@ import {
   fetchApiKeys,
   fetchJobs,
   fetchKeyLogDetails,
+  fetchPublicMetrics,
   fetchRequestLogs,
   fetchRequestLogDetails,
+  fetchTokenMetrics,
   fetchTokenLogDetails,
+  fetchUserDashboard,
+  fetchUserTokenDetail,
+  fetchUserTokens,
+  millisecondsUntilNextBrowserDayBoundary,
   updateForwardProxySettingsWithProgress,
   updateAdminRegistrationSettings,
   updateAdminUserQuota,
@@ -43,6 +51,70 @@ function createSseResponse(chunks: string[]): Response {
 }
 
 describe('admin user tag api helpers', () => {
+  it('formats browser today windows with explicit ISO8601 offsets', () => {
+    const localNoon = new Date()
+    localNoon.setFullYear(2026, 2, 8)
+    localNoon.setHours(12, 34, 56, 0)
+    const windowRange = createBrowserTodayWindow(localNoon)
+
+    expect(windowRange.todayStart).toMatch(/^2026-03-08T00:00:00[+-]\d{2}:\d{2}$/)
+    expect(windowRange.todayEnd).toMatch(/^2026-03-09T00:00:00[+-]\d{2}:\d{2}$/)
+  })
+
+  it('computes the next browser-day refresh delay from the local clock', () => {
+    const nearMidnight = new Date()
+    nearMidnight.setHours(23, 59, 30, 0)
+    const delay = millisecondsUntilNextBrowserDayBoundary(nearMidnight)
+
+    expect(delay).toBe(30_000)
+  })
+
+  it('appends explicit today windows to user-facing metric endpoints', async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(new Response(JSON.stringify({ monthlySuccess: 1, dailySuccess: 2 }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })),
+    )
+    globalThis.fetch = fetchMock as typeof fetch
+
+    const todayWindow = {
+      todayStart: '2026-04-03T00:00:00+08:00',
+      todayEnd: '2026-04-04T00:00:00+08:00',
+    }
+
+    await fetchPublicMetrics(todayWindow)
+    await fetchTokenMetrics('th-a1b2-secretsecret', todayWindow)
+    await fetchUserDashboard(todayWindow)
+    await fetchUserTokens(todayWindow)
+    await fetchUserTokenDetail('a1b2', todayWindow)
+
+    expect((fetchMock.mock.calls[0] as [string])[0]).toBe(
+      '/api/public/metrics?today_start=2026-04-03T00%3A00%3A00%2B08%3A00&today_end=2026-04-04T00%3A00%3A00%2B08%3A00',
+    )
+    expect((fetchMock.mock.calls[1] as [string])[0]).toBe(
+      '/api/token/metrics?token=th-a1b2-secretsecret&today_start=2026-04-03T00%3A00%3A00%2B08%3A00&today_end=2026-04-04T00%3A00%3A00%2B08%3A00',
+    )
+    expect((fetchMock.mock.calls[2] as [string])[0]).toBe(
+      '/api/user/dashboard?today_start=2026-04-03T00%3A00%3A00%2B08%3A00&today_end=2026-04-04T00%3A00%3A00%2B08%3A00',
+    )
+    expect((fetchMock.mock.calls[3] as [string])[0]).toBe(
+      '/api/user/tokens?today_start=2026-04-03T00%3A00%3A00%2B08%3A00&today_end=2026-04-04T00%3A00%3A00%2B08%3A00',
+    )
+    expect((fetchMock.mock.calls[4] as [string])[0]).toBe(
+      '/api/user/tokens/a1b2?today_start=2026-04-03T00%3A00%3A00%2B08%3A00&today_end=2026-04-04T00%3A00%3A00%2B08%3A00',
+    )
+  })
+
+  it('builds the public SSE url with token and explicit today windows', () => {
+    expect(buildPublicEventsUrl('th-a1b2-secretsecret', {
+      todayStart: '2026-04-03T00:00:00+08:00',
+      todayEnd: '2026-04-04T00:00:00+08:00',
+    })).toBe(
+      '/api/public/events?token=th-a1b2-secretsecret&today_start=2026-04-03T00%3A00%3A00%2B08%3A00&today_end=2026-04-04T00%3A00%3A00%2B08%3A00',
+    )
+  })
+
   it('streams forward proxy validation progress events before returning the final payload', async () => {
     const events: string[] = []
     const fetchMock = mock(() =>

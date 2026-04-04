@@ -430,7 +430,7 @@ const QUOTA_SUBJECT_LOCK_ACQUIRE_TIMEOUT_SECS: u64 = 30;
 const QUOTA_SUBJECT_LOCK_REFRESH_SECS: u64 = 5;
 const QUOTA_SUBJECT_LOCK_REFRESH_RETRY_SECS: u64 = 1;
 
-const REQUEST_LOGS_MIN_RETENTION_DAYS: i64 = 7;
+const REQUEST_LOGS_MIN_RETENTION_DAYS: i64 = 32;
 
 const BILLING_STATE_NONE: &str = "none";
 const BILLING_STATE_PENDING: &str = "pending";
@@ -440,6 +440,7 @@ static QUOTA_SUBJECT_LOCK_OWNER_SEQ: AtomicU64 = AtomicU64::new(1);
 
 const GRANULARITY_MINUTE: &str = "minute";
 const GRANULARITY_HOUR: &str = "hour";
+const GRANULARITY_DAY: &str = "day";
 // Per-token raw request counter (any request type), aggregated per minute.
 const GRANULARITY_REQUEST_MINUTE: &str = "request_minute";
 const BUCKET_RETENTION_SECS: i64 = 2 * 24 * 3600; // 48h，足够覆盖 24h 窗口
@@ -550,7 +551,7 @@ pub fn effective_request_logs_gc_at() -> (u32, u32) {
 
 /// Effective request log retention days (minimum enforced), including environment overrides.
 ///
-/// Environment variable: `REQUEST_LOGS_RETENTION_DAYS` (positive integer; min 7).
+/// Environment variable: `REQUEST_LOGS_RETENTION_DAYS` (positive integer; min 32).
 pub fn effective_request_logs_retention_days() -> i64 {
     let days = token_limit_from_env(
         "REQUEST_LOGS_RETENTION_DAYS",

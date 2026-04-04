@@ -434,23 +434,38 @@ struct UserTokenLogsQuery {
     limit: Option<usize>,
 }
 
+#[derive(Debug, Deserialize)]
+struct UserTodayWindowQuery {
+    today_start: Option<String>,
+    today_end: Option<String>,
+}
+
+fn parse_user_today_window_query(
+    query: &UserTodayWindowQuery,
+) -> Result<Option<tavily_hikari::TimeRangeUtc>, (StatusCode, String)> {
+    tavily_hikari::parse_explicit_today_window(query.today_start.as_deref(), query.today_end.as_deref())
+        .map_err(|message| (StatusCode::BAD_REQUEST, message))
+}
+
 async fn get_user_dashboard(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<UserDashboardView>, StatusCode> {
+    Query(query): Query<UserTodayWindowQuery>,
+) -> Result<Json<UserDashboardView>, (StatusCode, String)> {
     if !state.linuxdo_oauth.is_enabled_and_configured() {
-        return Err(StatusCode::NOT_FOUND);
+        return Err((StatusCode::NOT_FOUND, "not found".to_string()));
     }
     let Some(user_session) = resolve_user_session(state.as_ref(), &headers).await else {
-        return Err(StatusCode::UNAUTHORIZED);
+        return Err((StatusCode::UNAUTHORIZED, "unauthorized".to_string()));
     };
+    let daily_window = parse_user_today_window_query(&query)?;
     let summary = state
         .proxy
-        .user_dashboard_summary(&user_session.user.user_id)
+        .user_dashboard_summary(&user_session.user.user_id, daily_window)
         .await
         .map_err(|err| {
             eprintln!("get user dashboard error: {err}");
-            StatusCode::INTERNAL_SERVER_ERROR
+            (StatusCode::INTERNAL_SERVER_ERROR, "failed to load dashboard".to_string())
         })?;
     Ok(Json(UserDashboardView {
         hourly_any_used: summary.hourly_any_used,
@@ -495,13 +510,15 @@ fn user_token_quota_values(token: &AuthToken) -> (i64, i64, i64, i64, i64, i64) 
 async fn get_user_tokens(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<Vec<UserTokenSummaryView>>, StatusCode> {
+    Query(query): Query<UserTodayWindowQuery>,
+) -> Result<Json<Vec<UserTokenSummaryView>>, (StatusCode, String)> {
     if !state.linuxdo_oauth.is_enabled_and_configured() {
-        return Err(StatusCode::NOT_FOUND);
+        return Err((StatusCode::NOT_FOUND, "not found".to_string()));
     }
     let Some(user_session) = resolve_user_session(state.as_ref(), &headers).await else {
-        return Err(StatusCode::UNAUTHORIZED);
+        return Err((StatusCode::UNAUTHORIZED, "unauthorized".to_string()));
     };
+    let daily_window = parse_user_today_window_query(&query)?;
 
     let tokens = state
         .proxy
@@ -509,7 +526,7 @@ async fn get_user_tokens(
         .await
         .map_err(|err| {
             eprintln!("list user tokens error: {err}");
-            StatusCode::INTERNAL_SERVER_ERROR
+            (StatusCode::INTERNAL_SERVER_ERROR, "failed to load tokens".to_string())
         })?;
     let token_ids: Vec<String> = tokens.iter().map(|t| t.id.clone()).collect();
     let hourly_any = state
@@ -518,17 +535,23 @@ async fn get_user_tokens(
         .await
         .map_err(|err| {
             eprintln!("list user tokens hourly snapshot error: {err}");
-            StatusCode::INTERNAL_SERVER_ERROR
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to load token hourly limits".to_string(),
+            )
         })?;
     let mut items = Vec::with_capacity(tokens.len());
     for token in tokens {
         let (monthly_success, daily_success, daily_failure) = state
             .proxy
-            .token_success_breakdown(&token.id)
+            .token_success_breakdown(&token.id, daily_window)
             .await
             .map_err(|err| {
                 eprintln!("list user tokens success breakdown error: {err}");
-                StatusCode::INTERNAL_SERVER_ERROR
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "failed to load token metrics".to_string(),
+                )
             })?;
         let (
             quota_hourly_used,
@@ -567,23 +590,28 @@ async fn get_user_token_detail(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Result<Json<UserTokenSummaryView>, StatusCode> {
+    Query(query): Query<UserTodayWindowQuery>,
+) -> Result<Json<UserTokenSummaryView>, (StatusCode, String)> {
     if !state.linuxdo_oauth.is_enabled_and_configured() {
-        return Err(StatusCode::NOT_FOUND);
+        return Err((StatusCode::NOT_FOUND, "not found".to_string()));
     }
     let Some(user_session) = resolve_user_session(state.as_ref(), &headers).await else {
-        return Err(StatusCode::UNAUTHORIZED);
+        return Err((StatusCode::UNAUTHORIZED, "unauthorized".to_string()));
     };
+    let daily_window = parse_user_today_window_query(&query)?;
     let owned = state
         .proxy
         .is_user_token_bound(&user_session.user.user_id, &id)
         .await
         .map_err(|err| {
             eprintln!("get user token detail ownership error: {err}");
-            StatusCode::INTERNAL_SERVER_ERROR
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to verify token ownership".to_string(),
+            )
         })?;
     if !owned {
-        return Err(StatusCode::NOT_FOUND);
+        return Err((StatusCode::NOT_FOUND, "not found".to_string()));
     }
     let tokens = state
         .proxy
@@ -591,18 +619,21 @@ async fn get_user_token_detail(
         .await
         .map_err(|err| {
             eprintln!("get user token detail list error: {err}");
-            StatusCode::INTERNAL_SERVER_ERROR
+            (StatusCode::INTERNAL_SERVER_ERROR, "failed to load token".to_string())
         })?;
     let Some(token) = tokens.into_iter().find(|t| t.id == id) else {
-        return Err(StatusCode::NOT_FOUND);
+        return Err((StatusCode::NOT_FOUND, "not found".to_string()));
     };
     let (monthly_success, daily_success, daily_failure) = state
         .proxy
-        .token_success_breakdown(&token.id)
+        .token_success_breakdown(&token.id, daily_window)
         .await
         .map_err(|err| {
             eprintln!("get user token detail breakdown error: {err}");
-            StatusCode::INTERNAL_SERVER_ERROR
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to load token metrics".to_string(),
+            )
         })?;
     let hourly_any = state
         .proxy
@@ -610,7 +641,10 @@ async fn get_user_token_detail(
         .await
         .map_err(|err| {
             eprintln!("get user token detail hourly snapshot error: {err}");
-            StatusCode::INTERNAL_SERVER_ERROR
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to load token hourly limits".to_string(),
+            )
         })?;
     let (hourly_any_used, hourly_any_limit) = hourly_any
         .get(&token.id)

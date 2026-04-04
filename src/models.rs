@@ -675,6 +675,12 @@ pub struct TokenLogMetricsSummary {
     pub last_activity: Option<i64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimeRangeUtc {
+    pub start: i64,
+    pub end: i64,
+}
+
 #[derive(Debug, Clone)]
 pub struct AdminUserIdentity {
     pub user_id: String,
@@ -1054,6 +1060,7 @@ struct BillingLedgerWindows {
     hour_bucket_start: i64,
     hour_window_start: i64,
     day_window_start: i64,
+    day_window_end: i64,
     month_window_start: i64,
 }
 
@@ -1062,12 +1069,14 @@ impl BillingLedgerWindows {
         let generated_at = now.timestamp();
         let minute_bucket_start = generated_at - (generated_at % SECS_PER_MINUTE);
         let hour_bucket_start = generated_at - (generated_at % SECS_PER_HOUR);
+        let day_window = server_local_day_window_utc(now.with_timezone(&Local));
         Self {
             generated_at,
             minute_bucket_start,
             hour_bucket_start,
             hour_window_start: minute_bucket_start - 59 * SECS_PER_MINUTE,
-            day_window_start: hour_bucket_start - 23 * SECS_PER_HOUR,
+            day_window_start: day_window.start,
+            day_window_end: day_window.end,
             month_window_start: start_of_month(now).timestamp(),
         }
     }
@@ -1413,9 +1422,9 @@ pub(crate) async fn audit_business_quota_ledger_with_pool(
 
         for (token_id, total_credits) in fetch_token_quota_window(
             &mut *conn,
-            GRANULARITY_HOUR,
+            GRANULARITY_DAY,
             windows.day_window_start,
-            windows.hour_bucket_start,
+            windows.day_window_start,
         )
         .await?
         {
@@ -1424,11 +1433,24 @@ pub(crate) async fn audit_business_quota_ledger_with_pool(
                 .or_default()
                 .day_quota = total_credits;
         }
-        for (user_id, total_credits) in fetch_account_quota_window(
+        for (token_id, total_credits) in fetch_token_quota_window(
             &mut *conn,
             GRANULARITY_HOUR,
             windows.day_window_start,
-            windows.hour_bucket_start,
+            windows.day_window_end.saturating_sub(1),
+        )
+        .await?
+        {
+            subjects
+                .entry(format!("token:{token_id}"))
+                .or_default()
+                .day_quota += total_credits;
+        }
+        for (user_id, total_credits) in fetch_account_quota_window(
+            &mut *conn,
+            GRANULARITY_DAY,
+            windows.day_window_start,
+            windows.day_window_start,
         )
         .await?
         {
@@ -1436,6 +1458,19 @@ pub(crate) async fn audit_business_quota_ledger_with_pool(
                 .entry(format!("account:{user_id}"))
                 .or_default()
                 .day_quota = total_credits;
+        }
+        for (user_id, total_credits) in fetch_account_quota_window(
+            &mut *conn,
+            GRANULARITY_HOUR,
+            windows.day_window_start,
+            windows.day_window_end.saturating_sub(1),
+        )
+        .await?
+        {
+            subjects
+                .entry(format!("account:{user_id}"))
+                .or_default()
+                .day_quota += total_credits;
         }
 
         for (token_id, stored_month_start, month_count) in
@@ -1661,13 +1696,6 @@ pub(crate) async fn rebase_current_month_business_quota_with_pool(
     Ok(report)
 }
 
-pub(crate) fn start_of_day(now: chrono::DateTime<Utc>) -> chrono::DateTime<Utc> {
-    now.date_naive()
-        .and_hms_opt(0, 0, 0)
-        .expect("valid start of day")
-        .and_utc()
-}
-
 pub(crate) fn local_date_start_utc_ts(
     date: chrono::NaiveDate,
     fallback_now: chrono::DateTime<Local>,
@@ -1716,6 +1744,73 @@ pub(crate) fn local_day_bucket_start_utc_ts(created_at_utc_ts: i64) -> i64 {
         return 0;
     };
     start_of_local_day_utc_ts(utc_dt.with_timezone(&Local))
+}
+
+pub(crate) fn next_local_day_start_utc_ts(current_day_start_utc_ts: i64) -> i64 {
+    let Some(utc_dt) = Utc.timestamp_opt(current_day_start_utc_ts, 0).single() else {
+        return current_day_start_utc_ts.saturating_add(SECS_PER_DAY);
+    };
+    let local_dt = utc_dt.with_timezone(&Local);
+    let next_date = local_dt
+        .date_naive()
+        .succ_opt()
+        .unwrap_or_else(|| local_dt.date_naive());
+    local_date_start_utc_ts(next_date, local_dt)
+}
+
+pub(crate) fn server_local_day_window_utc(now: chrono::DateTime<Local>) -> TimeRangeUtc {
+    let start = start_of_local_day_utc_ts(now);
+    let end = next_local_day_start_utc_ts(start);
+    TimeRangeUtc { start, end }
+}
+
+pub fn parse_explicit_today_window(
+    today_start: Option<&str>,
+    today_end: Option<&str>,
+) -> Result<Option<TimeRangeUtc>, String> {
+    let normalized_start = today_start.map(str::trim).filter(|value| !value.is_empty());
+    let normalized_end = today_end.map(str::trim).filter(|value| !value.is_empty());
+    match (normalized_start, normalized_end) {
+        (None, None) => Ok(None),
+        (Some(_), None) | (None, Some(_)) => {
+            Err("today_start and today_end must be provided together".to_string())
+        }
+        (Some(raw_start), Some(raw_end)) => {
+            let start = chrono::DateTime::parse_from_rfc3339(raw_start).map_err(|_| {
+                "today_start must be a valid ISO8601 datetime with offset".to_string()
+            })?;
+            let end = chrono::DateTime::parse_from_rfc3339(raw_end).map_err(|_| {
+                "today_end must be a valid ISO8601 datetime with offset".to_string()
+            })?;
+            if end <= start {
+                return Err("today_end must be later than today_start".to_string());
+            }
+            if start.time() != chrono::NaiveTime::MIN || end.time() != chrono::NaiveTime::MIN {
+                return Err("today_start and today_end must align to local midnight".to_string());
+            }
+            let duration = end.signed_duration_since(start);
+            if duration < chrono::Duration::hours(23) || duration > chrono::Duration::hours(25) {
+                return Err(
+                    "today_start and today_end must describe exactly one natural-day window"
+                        .to_string(),
+                );
+            }
+            let next_date = start
+                .date_naive()
+                .succ_opt()
+                .ok_or_else(|| "today_start must be a single natural-day window".to_string())?;
+            if end.date_naive() != next_date {
+                return Err(
+                    "today_start and today_end must describe exactly one natural-day window"
+                        .to_string(),
+                );
+            }
+            Ok(Some(TimeRangeUtc {
+                start: start.with_timezone(&Utc).timestamp(),
+                end: end.with_timezone(&Utc).timestamp(),
+            }))
+        }
+    }
 }
 
 pub(crate) fn request_logs_retention_threshold_utc_ts(retention_days: i64) -> i64 {
