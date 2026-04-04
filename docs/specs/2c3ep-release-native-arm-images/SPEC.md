@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 待实现
+- Status: 已完成
 - Created: 2026-04-04
 - Last: 2026-04-04
 
@@ -69,10 +69,10 @@
 
 ## 实现里程碑（Milestones / Delivery checklist）
 
-- [ ] M1: 新建 spec，锁定 native ARM runner、manifest 聚合与 release 契约
-- [ ] M2: 将 release workflow 重构为 `amd64` / `arm64` 原生构建与独立 smoke
-- [ ] M3: 新增 manifest 聚合与最终 tag 校验，阻断半发布
-- [ ] M4: 完成本地验证、PR、checks 与 review-loop 收敛到 merge-ready
+- [x] M1: 新建 spec，锁定 native ARM runner、manifest 聚合与 release 契约
+- [x] M2: 将 release workflow 重构为 `amd64` / `arm64` 原生构建与独立 smoke
+- [x] M3: 新增 manifest 聚合与最终 tag 校验，阻断半发布
+- [x] M4: 完成本地验证、PR、checks 与 review-loop 收敛到 merge-ready
 
 ## 风险 / 假设
 
@@ -82,3 +82,5 @@
 ## 进展记录
 
 - 2026-04-04: 新建 spec，锁定 issue #182 的真实修复范围为“发布双架构镜像，并强制 ARM 走原生 runner 构建”。
+- 2026-04-04: `release.yml` 已重构为 `docker-native` + `docker-manifest`，`arm64` 改由 `ubuntu-24.04-arm` 原生构建并在两架构 smoke 通过后汇总正式 tag。
+- 2026-04-04: PR #207 已进入 merge-ready；CI checks 通过，`codex review --base origin/main` 无待修阻塞项。
