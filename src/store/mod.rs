@@ -83,6 +83,7 @@ fn subtract_summary_window_metrics(
         new_quarantines: total
             .new_quarantines
             .saturating_sub(subtract.new_quarantines),
+        quota_charge: SummaryQuotaCharge::default(),
     }
 }
 
@@ -14439,6 +14440,7 @@ impl KeyStore {
             upstream_exhausted_key_count: 0,
             new_keys: 0,
             new_quarantines: 0,
+            quota_charge: SummaryQuotaCharge::default(),
         })
     }
 
@@ -14525,6 +14527,7 @@ impl KeyStore {
             upstream_exhausted_key_count: 0,
             new_keys: 0,
             new_quarantines: 0,
+            quota_charge: SummaryQuotaCharge::default(),
         })
     }
 
@@ -14594,6 +14597,7 @@ impl KeyStore {
             upstream_exhausted_key_count: 0,
             new_keys: 0,
             new_quarantines: 0,
+            quota_charge: SummaryQuotaCharge::default(),
         })
     }
 
@@ -14661,6 +14665,7 @@ impl KeyStore {
             upstream_exhausted_key_count: 0,
             new_keys: 0,
             new_quarantines: 0,
+            quota_charge: SummaryQuotaCharge::default(),
         })
     }
 
