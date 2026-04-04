@@ -7515,7 +7515,7 @@ async fn summary_windows_month_falls_back_to_usage_buckets_for_partial_gap_befor
 
 #[tokio::test]
 async fn public_success_breakdown_month_falls_back_to_usage_buckets_for_partial_gap_before_logs_resume()
-{
+ {
     let db_path = temp_db_path("public-success-breakdown-bucket-fallback");
     let db_str = db_path.to_string_lossy().to_string();
 
