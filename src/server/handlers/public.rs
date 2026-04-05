@@ -539,9 +539,17 @@ async fn get_public_logs(
 
 const DASHBOARD_EXHAUSTED_KEYS_LIMIT: usize = 5;
 const DASHBOARD_RECENT_LOGS_LIMIT: usize = 5;
+const DASHBOARD_TREND_SOURCE_LIMIT: usize = 64;
+const DASHBOARD_TREND_WINDOW_SIZE: usize = 8;
 const DASHBOARD_RECENT_JOBS_LIMIT: usize = 5;
 const DASHBOARD_DISABLED_TOKENS_LIMIT: usize = 5;
 const DASHBOARD_DISABLED_TOKENS_QUERY_LIMIT: usize = DASHBOARD_DISABLED_TOKENS_LIMIT + 1;
+
+#[derive(Debug, Clone, Serialize)]
+struct DashboardTrendView {
+    request: Vec<i64>,
+    error: Vec<i64>,
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -553,6 +561,7 @@ struct DashboardOverviewPayload {
     site_status: DashboardSiteStatusView,
     #[serde(rename = "forwardProxy")]
     forward_proxy: DashboardForwardProxyView,
+    trend: DashboardTrendView,
     #[serde(rename = "exhaustedKeys")]
     exhausted_keys: Vec<ApiKeyView>,
     #[serde(rename = "recentLogs")]
@@ -572,6 +581,40 @@ struct DashboardSnapshot {
     overview: DashboardOverviewPayload,
     keys: Vec<ApiKeyView>,
     logs: Vec<RequestLogView>,
+}
+
+fn build_dashboard_trend(logs: &[RequestLogView]) -> DashboardTrendView {
+    let mut sorted: Vec<&RequestLogView> = logs
+        .iter()
+        .filter(|log| log.created_at >= 0)
+        .collect();
+    sorted.sort_by_key(|log| log.created_at);
+
+    let mut request = vec![0_i64; DASHBOARD_TREND_WINDOW_SIZE];
+    let mut error = vec![0_i64; DASHBOARD_TREND_WINDOW_SIZE];
+
+    let Some(first) = sorted.first() else {
+        return DashboardTrendView { request, error };
+    };
+    let Some(last) = sorted.last() else {
+        return DashboardTrendView { request, error };
+    };
+
+    let min_time = first.created_at;
+    let max_time = last.created_at;
+    let span = (max_time - min_time).max(0) + 1;
+
+    for log in sorted {
+        let offset = (log.created_at - min_time).max(0);
+        let index = (((offset as u128) * (DASHBOARD_TREND_WINDOW_SIZE as u128)) / (span as u128))
+            .min((DASHBOARD_TREND_WINDOW_SIZE - 1) as u128) as usize;
+        request[index] += 1;
+        if log.result_status == "error" || log.result_status == "quota_exhausted" {
+            error[index] += 1;
+        }
+    }
+
+    DashboardTrendView { request, error }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -797,25 +840,44 @@ async fn build_dashboard_overview_payload(
     let exhausted_keys = state
         .proxy
         .list_dashboard_exhausted_key_metrics(DASHBOARD_EXHAUSTED_KEYS_LIMIT)
-        .await?;
-    let recent_logs = state
+        .await
+        .unwrap_or_default();
+    let recent_log_views: Vec<RequestLogView> = state
         .proxy
-        .recent_request_logs(DASHBOARD_RECENT_LOGS_LIMIT)
-        .await?;
+        .recent_request_logs(DASHBOARD_TREND_SOURCE_LIMIT)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(RequestLogView::from_summary_record)
+        .collect();
+    let trend = build_dashboard_trend(&recent_log_views);
+    let recent_logs: Vec<RequestLogView> = recent_log_views
+        .into_iter()
+        .take(DASHBOARD_RECENT_LOGS_LIMIT)
+        .collect();
     let recent_jobs = state
         .proxy
         .list_recent_jobs(DASHBOARD_RECENT_JOBS_LIMIT)
-        .await?;
-    let mut disabled_tokens = state
+        .await
+        .unwrap_or_default();
+    let (mut disabled_tokens, token_coverage) = match state
         .proxy
         .list_dashboard_disabled_tokens(DASHBOARD_DISABLED_TOKENS_QUERY_LIMIT)
-        .await?;
-    let token_coverage = if disabled_tokens.len() > DASHBOARD_DISABLED_TOKENS_LIMIT {
-        disabled_tokens.truncate(DASHBOARD_DISABLED_TOKENS_LIMIT);
-        "truncated"
-    } else {
-        "ok"
+        .await
+    {
+        Ok(disabled_tokens) => {
+            let token_coverage = if disabled_tokens.len() > DASHBOARD_DISABLED_TOKENS_LIMIT {
+                "truncated"
+            } else {
+                "ok"
+            };
+            (disabled_tokens, token_coverage)
+        }
+        Err(_) => (Vec::new(), "error"),
     };
+    if disabled_tokens.len() > DASHBOARD_DISABLED_TOKENS_LIMIT {
+        disabled_tokens.truncate(DASHBOARD_DISABLED_TOKENS_LIMIT);
+    }
 
     Ok(DashboardOverviewPayload {
         summary: summary.clone().into(),
@@ -837,11 +899,9 @@ async fn build_dashboard_overview_payload(
             available_nodes: Some(forward_proxy.available_nodes),
             total_nodes: Some(forward_proxy.total_nodes),
         },
+        trend,
         exhausted_keys: exhausted_keys.into_iter().map(ApiKeyView::from_list).collect(),
-        recent_logs: recent_logs
-            .into_iter()
-            .map(RequestLogView::from_summary_record)
-            .collect(),
+        recent_logs,
         recent_jobs: recent_jobs.into_iter().map(JobLogView::from).collect(),
         disabled_tokens: disabled_tokens.into_iter().map(AuthTokenView::from).collect(),
         token_coverage: token_coverage.to_string(),
@@ -883,17 +943,17 @@ async fn compute_signatures(
         .proxy
         .list_dashboard_exhausted_key_ids(DASHBOARD_EXHAUSTED_KEYS_LIMIT)
         .await
-        .map_err(|_| ())?;
+        .unwrap_or_default();
     let disabled_tokens = state
         .proxy
         .list_dashboard_disabled_token_ids(DASHBOARD_DISABLED_TOKENS_QUERY_LIMIT)
         .await
-        .map_err(|_| ())?;
+        .unwrap_or_default();
     let recent_jobs = state
         .proxy
         .list_recent_job_signatures(DASHBOARD_RECENT_JOBS_LIMIT)
         .await
-        .map_err(|_| ())?;
+        .unwrap_or_default();
     let disabled_token_ids = disabled_tokens
         .iter()
         .take(DASHBOARD_DISABLED_TOKENS_LIMIT)

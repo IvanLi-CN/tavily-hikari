@@ -139,6 +139,7 @@ describe('admin user tag api helpers', () => {
               totalProxyNodes: 1,
             },
             forwardProxy: { availableNodes: 1, totalNodes: 1 },
+            trend: { request: [1, 0, 0, 0, 0, 0, 0, 0], error: [0, 0, 0, 0, 0, 0, 0, 0] },
             exhaustedKeys: [],
             recentLogs: [],
             recentJobs: [],
@@ -155,6 +156,7 @@ describe('admin user tag api helpers', () => {
 
     expect((fetchMock.mock.calls[0] as [string])[0]).toBe('/api/dashboard/overview')
     expect(overview.siteStatus.activeKeys).toBe(1)
+    expect(overview.trend.request).toHaveLength(8)
     expect(overview.tokenCoverage).toBe('ok')
   })
 

@@ -8725,31 +8725,46 @@ colo=LAX
             .await
             .expect("mark key exhausted");
 
-        sqlx::query(
-            r#"
-            INSERT INTO request_logs (
-                api_key_id,
-                auth_token_id,
-                method,
-                path,
-                query,
-                status_code,
-                tavily_status_code,
-                error_message,
-                result_status,
-                request_body,
-                response_body,
-                forwarded_headers,
-                dropped_headers,
-                created_at
-            ) VALUES (?, NULL, 'GET', '/api/tavily/search', NULL, 200, 200, NULL, 'success', NULL, NULL, '[]', '[]', ?)
-            "#,
-        )
-        .bind(&key_id)
-        .bind(Utc::now().timestamp())
-        .execute(&pool)
-        .await
-        .expect("insert request log");
+        let log_base = Utc::now().timestamp();
+        for (offset, result_status) in [
+            "success",
+            "error",
+            "success",
+            "quota_exhausted",
+            "success",
+            "success",
+            "error",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            sqlx::query(
+                r#"
+                INSERT INTO request_logs (
+                    api_key_id,
+                    auth_token_id,
+                    method,
+                    path,
+                    query,
+                    status_code,
+                    tavily_status_code,
+                    error_message,
+                    result_status,
+                    request_body,
+                    response_body,
+                    forwarded_headers,
+                    dropped_headers,
+                    created_at
+                ) VALUES (?, NULL, 'GET', '/api/tavily/search', NULL, 200, 200, NULL, ?, NULL, NULL, '[]', '[]', ?)
+                "#,
+            )
+            .bind(&key_id)
+            .bind(result_status)
+            .bind(log_base + offset as i64)
+            .execute(&pool)
+            .await
+            .expect("insert request log");
+        }
 
         let admin_password = "dashboard-overview-lightweight-password";
         let admin_addr = spawn_builtin_keys_admin_server(proxy, admin_password).await;
@@ -8784,6 +8799,7 @@ colo=LAX
         );
         assert!(body.get("siteStatus").is_some(), "site status should exist");
         assert!(body.get("forwardProxy").is_some(), "forward proxy should exist");
+        assert!(body.get("trend").is_some(), "trend should exist");
         assert!(body.get("exhaustedKeys").is_some(), "exhausted keys should exist");
         assert!(body.get("recentLogs").is_some(), "recent logs should exist");
         assert!(body.get("recentJobs").is_some(), "recent jobs should exist");
@@ -8808,10 +8824,130 @@ colo=LAX
             Some("failed")
         );
         assert_eq!(
+            body.get("recentLogs")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(5)
+        );
+        assert_eq!(
+            body.pointer("/trend/request")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(8)
+        );
+        assert_eq!(
+            body.pointer("/trend/error")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(8)
+        );
+        assert_eq!(
+            body.pointer("/trend/request")
+                .and_then(|value| value.as_array())
+                .map(|values| values.iter().filter_map(|value| value.as_i64()).sum::<i64>()),
+            Some(7)
+        );
+        assert_eq!(
+            body.pointer("/trend/error")
+                .and_then(|value| value.as_array())
+                .map(|values| values.iter().filter_map(|value| value.as_i64()).sum::<i64>()),
+            Some(3)
+        );
+        assert_eq!(
             body.get("disabledTokens")
                 .and_then(|value| value.as_array())
                 .map(Vec::len),
             Some(5)
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn dashboard_overview_degrades_optional_feeds_without_failing_core_summary() {
+        let db_path = temp_db_path("dashboard-overview-optional-feed-degrade");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-dashboard-overview-optional-feed-degrade".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        proxy
+            .create_access_token(Some("disabled-feed"))
+            .await
+            .expect("create access token");
+
+        let options = SqliteConnectOptions::new()
+            .filename(&db_str)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open db pool");
+
+        sqlx::query("DROP TABLE scheduled_jobs")
+            .execute(&pool)
+            .await
+            .expect("drop scheduled_jobs");
+        sqlx::query("DROP TABLE auth_tokens")
+            .execute(&pool)
+            .await
+            .expect("drop auth_tokens");
+
+        let admin_password = "dashboard-overview-optional-feed-password";
+        let admin_addr = spawn_builtin_keys_admin_server(proxy, admin_password).await;
+        let client = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build client");
+
+        let login_resp = client
+            .post(format!("http://{}/api/admin/login", admin_addr))
+            .json(&serde_json::json!({ "password": admin_password }))
+            .send()
+            .await
+            .expect("admin login");
+        assert_eq!(login_resp.status(), reqwest::StatusCode::OK);
+        let admin_cookie = find_cookie_pair(login_resp.headers(), BUILTIN_ADMIN_COOKIE_NAME)
+            .expect("admin session cookie");
+
+        let resp = client
+            .get(format!("http://{}/api/dashboard/overview", admin_addr))
+            .header(reqwest::header::COOKIE, admin_cookie)
+            .send()
+            .await
+            .expect("dashboard overview request");
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+        let body: serde_json::Value = resp.json().await.expect("dashboard overview json");
+        assert!(body.get("summary").is_some(), "summary should still exist");
+        assert!(
+            body.get("summaryWindows").is_some(),
+            "summary windows should still exist"
+        );
+        assert!(body.get("siteStatus").is_some(), "site status should still exist");
+        assert_eq!(
+            body.get("recentJobs")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(0)
+        );
+        assert_eq!(
+            body.get("disabledTokens")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(0)
+        );
+        assert_eq!(
+            body.get("tokenCoverage").and_then(|value| value.as_str()),
+            Some("error")
         );
 
         let _ = std::fs::remove_file(db_path);
@@ -10211,6 +10347,7 @@ colo=LAX
             snapshot_json.get("forwardProxy").is_some(),
             "forwardProxy should exist"
         );
+        assert!(snapshot_json.get("trend").is_some(), "trend should exist");
         assert_eq!(
             snapshot_json
                 .pointer("/summaryWindows/month/new_keys")
@@ -10283,6 +10420,20 @@ colo=LAX
         assert!(
             snapshot_json.get("tokenCoverage").is_some(),
             "snapshot should expose token coverage"
+        );
+        assert_eq!(
+            snapshot_json
+                .pointer("/trend/request")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(8)
+        );
+        assert_eq!(
+            snapshot_json
+                .pointer("/trend/error")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(8)
         );
         let exhausted_key_count = snapshot_json
             .get("exhaustedKeys")

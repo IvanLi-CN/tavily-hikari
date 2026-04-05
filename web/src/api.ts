@@ -70,11 +70,17 @@ export interface ForwardProxyDashboardSummaryResponse {
 
 export type DashboardTokenCoverage = 'ok' | 'truncated' | 'error'
 
+export interface DashboardTrendBuckets {
+  request: number[]
+  error: number[]
+}
+
 export interface DashboardOverviewResponse {
   summary: Summary
   summaryWindows: SummaryWindowsResponse
   siteStatus: DashboardSiteStatusSnapshot
   forwardProxy: DashboardForwardProxySnapshot
+  trend: DashboardTrendBuckets
   exhaustedKeys: ApiKeyStats[]
   recentLogs: RequestLog[]
   recentJobs: JobLogView[]

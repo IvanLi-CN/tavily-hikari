@@ -154,6 +154,7 @@ import {
   type DashboardSnapshotEvent,
   type DashboardSiteStatusSnapshot,
   type DashboardTokenCoverage,
+  type DashboardTrendBuckets,
   type Profile,
   type RequestLog,
   type RequestLogFacets,
@@ -252,6 +253,7 @@ const API_KEYS_IMPORT_CHUNK_SIZE = 1000
 const USER_TAG_DISPLAY_LIMIT = 3
 const MONTHLY_BROKEN_DRAWER_PAGE_SIZE = 100
 const NEW_USER_TAG_CARD_ID = '__new__'
+const DASHBOARD_TREND_WINDOW_SIZE = 8
 const ADMIN_USERS_DEFAULT_SORT_FIELD: AdminUsersSortField = 'lastLoginAt'
 const ADMIN_USERS_DEFAULT_SORT_ORDER: SortDirection = 'desc'
 const ADMIN_USERS_SORT_FIELDS: readonly AdminUsersSortField[] = [
@@ -271,6 +273,13 @@ const ADMIN_USERS_OVERVIEW_SORT_FIELDS = new Set<AdminUsersSortField>([
   'lastActivity',
   'lastLoginAt',
 ])
+
+function createEmptyDashboardTrend(): DashboardTrendBuckets {
+  return {
+    request: new Array(DASHBOARD_TREND_WINDOW_SIZE).fill(0),
+    error: new Array(DASHBOARD_TREND_WINDOW_SIZE).fill(0),
+  }
+}
 const ADMIN_UNBOUND_TOKEN_USAGE_DEFAULT_SORT_FIELD: AdminUnboundTokenUsageSortField = 'lastUsedAt'
 const ADMIN_UNBOUND_TOKEN_USAGE_DEFAULT_SORT_ORDER: SortDirection = 'desc'
 const ADMIN_UNBOUND_TOKEN_USAGE_SORT_FIELDS: readonly AdminUnboundTokenUsageSortField[] = [
@@ -1422,6 +1431,7 @@ function AdminDashboard(): JSX.Element {
   const [tokens, setTokens] = useState<AuthToken[]>([])
   const [dashboardTokens, setDashboardTokens] = useState<AuthToken[]>([])
   const [dashboardTokenCoverage, setDashboardTokenCoverage] = useState<DashboardTokenCoverage>('ok')
+  const [dashboardTrend, setDashboardTrend] = useState<DashboardTrendBuckets>(() => createEmptyDashboardTrend())
   const [dashboardOverviewLoaded, setDashboardOverviewLoaded] = useState(false)
   const [tokensPage, setTokensPage] = useState(1)
   const tokensPerPage = 10
@@ -2306,6 +2316,7 @@ function AdminDashboard(): JSX.Element {
           setDashboardSiteStatusSnapshot(overview.siteStatus)
           setDashboardTokens(overview.disabledTokens)
           setDashboardTokenCoverage(overview.tokenCoverage)
+          setDashboardTrend(overview.trend)
           setDashboardKeys(overview.exhaustedKeys)
           setDashboardLogs(overview.recentLogs)
           setDashboardJobs(overview.recentJobs)
@@ -2324,6 +2335,7 @@ function AdminDashboard(): JSX.Element {
         setDashboardSiteStatusSnapshot(null)
         setDashboardTokens([])
         setDashboardTokenCoverage('error')
+        setDashboardTrend(createEmptyDashboardTrend())
         setDashboardKeys([])
         setDashboardLogs([])
         setDashboardJobs([])
@@ -3626,6 +3638,7 @@ function AdminDashboard(): JSX.Element {
             setDashboardSiteStatusSnapshot(data.siteStatus)
             setDashboardTokens(data.disabledTokens)
             setDashboardTokenCoverage(data.tokenCoverage)
+            setDashboardTrend(data.trend)
             setDashboardKeys(data.exhaustedKeys)
             setDashboardLogs(data.recentLogs)
             setDashboardJobs(data.recentJobs)
@@ -8652,30 +8665,6 @@ function AdminDashboard(): JSX.Element {
   const showAlerts = activeModule === 'alerts'
   const showSystemSettings = activeModule === 'system-settings'
   const showProxySettings = activeModule === 'proxy-settings'
-  const trendBuckets = (() => {
-    const windowSize = 8
-    const sorted = [...dashboardLogs]
-      .filter((log) => typeof log.created_at === 'number' && Number.isFinite(log.created_at))
-      .sort((a, b) => a.created_at - b.created_at)
-      .slice(-64)
-    if (sorted.length === 0) {
-      return { request: new Array(windowSize).fill(0), error: new Array(windowSize).fill(0) }
-    }
-    const minTime = sorted[0].created_at
-    const maxTime = sorted[sorted.length - 1].created_at
-    const span = Math.max(1, maxTime - minTime + 1)
-    const request = new Array<number>(windowSize).fill(0)
-    const error = new Array<number>(windowSize).fill(0)
-    for (const item of sorted) {
-      const ratio = (item.created_at - minTime) / span
-      const index = Math.min(windowSize - 1, Math.max(0, Math.floor(ratio * windowSize)))
-      request[index] += 1
-      if (item.result_status === 'error' || item.result_status === 'quota_exhausted') {
-        error[index] += 1
-      }
-    }
-    return { request, error }
-  })()
   const headerUpdatedTime = lastUpdated ? timeOnlyFormatter.format(lastUpdated) : null
 
   const moduleDesktopUtility = (
@@ -8936,7 +8925,7 @@ function AdminDashboard(): JSX.Element {
           monthMetrics={monthMetrics}
           monthQuotaCharge={monthQuotaCharge}
           statusMetrics={statusMetrics}
-          trend={trendBuckets}
+          trend={dashboardTrend}
           tokenCoverage={dashboardTokenCoverage}
           tokens={dashboardTokens}
           keys={dashboardKeys}
