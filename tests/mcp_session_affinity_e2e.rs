@@ -598,11 +598,13 @@ fn choose_token_ids_different_from_user_pool(
     user_id: &str,
 ) -> Vec<(String, Vec<String>)> {
     let expected_user_top2 = rank_top_key_ids(&format!("user:{user_id}"), key_records, 2);
+    let expected_user_top2_set = expected_user_top2.iter().cloned().collect::<HashSet<_>>();
     let mut found = Vec::new();
     for idx in 0..4096usize {
         let token_id = format!("{idx:04x}");
         let token_top2 = rank_top_key_ids(&format!("token:{token_id}"), key_records, 2);
-        if token_top2 != expected_user_top2 {
+        let token_top2_set = token_top2.iter().cloned().collect::<HashSet<_>>();
+        if token_top2_set != expected_user_top2_set {
             found.push((token_id, token_top2));
             if found.len() == 2 {
                 break;

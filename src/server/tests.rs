@@ -651,7 +651,6 @@ mod tests {
             "/mcp",
             any({
                 let calls = calls.clone();
-                let initialize_delay = initialize_delay;
                 move |headers: HeaderMap,
                       Query(params): Query<HashMap<String, String>>,
                       Json(body): Json<Value>| {
@@ -10948,7 +10947,8 @@ colo=LAX
         let mut buffer = String::new();
         let mut refreshed_snapshot: Option<serde_json::Value> = None;
         while tokio::time::Instant::now() < deadline {
-            let chunk = tokio::time::timeout(Duration::from_secs(10), events_resp.chunk())
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let chunk = tokio::time::timeout(remaining, events_resp.chunk())
                 .await
                 .expect("await refreshed event chunk in time")
                 .expect("read refreshed event chunk")
