@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import meta, * as systemSettingsStories from './SystemSettingsModule.stories'
 
 describe('SystemSettingsModule Storybook proofs', () => {
-  it('keeps the default, applying, and error stories available', () => {
+  it('keeps the default, applying, error, and help-bubble stories available', () => {
     expect(meta).toMatchObject({
       title: 'Admin/SystemSettingsModule',
     })
@@ -13,6 +13,7 @@ describe('SystemSettingsModule Storybook proofs', () => {
     expect(systemSettingsStories.Default).toMatchObject({})
     expect(systemSettingsStories.Applying).toMatchObject({})
     expect(systemSettingsStories.ErrorState).toMatchObject({})
+    expect(systemSettingsStories.HelpBubbleOpen).toMatchObject({})
   })
 
   it('renders the applying story without Storybook runtime helpers', () => {
@@ -21,5 +22,14 @@ describe('SystemSettingsModule Storybook proofs', () => {
 
     const markup = renderToStaticMarkup(createElement(renderStory!))
     expect(markup).toContain('应用中')
+  })
+
+  it('renders the help bubble story in the forced-open state', () => {
+    const renderStory = systemSettingsStories.HelpBubbleOpen.render as (() => JSX.Element) | undefined
+    expect(renderStory).toBeDefined()
+
+    const markup = renderToStaticMarkup(createElement(renderStory!))
+    expect(markup).toContain('显示系统设置说明')
+    expect(markup).toContain('data-state="instant-open"')
   })
 })

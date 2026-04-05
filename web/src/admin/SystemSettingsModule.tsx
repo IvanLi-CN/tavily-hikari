@@ -7,6 +7,7 @@ import AdminLoadingRegion from '../components/AdminLoadingRegion'
 import { Icon } from '../lib/icons'
 import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../components/ui/tooltip'
 
 interface SystemSettingsModuleProps {
   strings: AdminTranslations['systemSettings']
@@ -14,6 +15,7 @@ interface SystemSettingsModuleProps {
   loadState: QueryLoadState
   error: string | null
   saving: boolean
+  helpBubbleOpen?: boolean
   onApply: (mcpSessionAffinityKeyCount: number) => Promise<void> | void
 }
 
@@ -23,12 +25,48 @@ function isValidCountDraft(value: string): value is `${number}` {
   return Number.isSafeInteger(parsed) && parsed >= 1 && parsed <= 1000
 }
 
+function SystemSettingsHelpBubble({
+  strings,
+  open,
+}: {
+  strings: AdminTranslations['systemSettings']
+  open?: boolean
+}): JSX.Element {
+  return (
+    <TooltipProvider>
+      <Tooltip {...(open == null ? {} : { open })}>
+        <TooltipTrigger asChild>
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            className="h-7 w-7 rounded-full px-0 text-muted-foreground hover:text-foreground"
+            aria-label={strings.helpLabel}
+            data-testid="system-settings-help-trigger"
+          >
+            <Icon icon="mdi:help-circle-outline" width={16} height={16} aria-hidden="true" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="right" align="start" className="max-w-[min(24rem,calc(100vw-2rem))]">
+          <div style={{ display: 'grid', gap: 8 }}>
+            <p>{strings.description}</p>
+            <p>{strings.form.description}</p>
+            <p>{strings.form.countHint}</p>
+            <p>{strings.form.applyScopeHint}</p>
+          </div>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  )
+}
+
 export default function SystemSettingsModule({
   strings,
   settings,
   loadState,
   error,
   saving,
+  helpBubbleOpen,
   onApply,
 }: SystemSettingsModuleProps): JSX.Element {
   const [draftCount, setDraftCount] = useState(() =>
@@ -50,9 +88,9 @@ export default function SystemSettingsModule({
   return (
     <section className="surface panel">
       <div className="panel-header">
-        <div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <h2>{strings.title}</h2>
-          <p className="panel-description">{strings.description}</p>
+          <SystemSettingsHelpBubble strings={strings} open={helpBubbleOpen} />
         </div>
       </div>
 
@@ -68,9 +106,6 @@ export default function SystemSettingsModule({
         >
           <div>
             <h3 className="text-base font-semibold">{strings.form.title}</h3>
-            <p className="panel-description" style={{ marginTop: 6 }}>
-              {strings.form.description}
-            </p>
           </div>
 
           <div
@@ -95,13 +130,11 @@ export default function SystemSettingsModule({
               onChange={(event) => setDraftCount(event.target.value)}
               aria-invalid={inlineError ? true : undefined}
             />
-            <p className="text-xs text-muted-foreground">{strings.form.countHint}</p>
             {settings && (
               <p className="text-xs text-muted-foreground">
                 {strings.form.currentValue.replace('{count}', String(settings.mcpSessionAffinityKeyCount))}
               </p>
             )}
-            <p className="text-xs text-muted-foreground">{strings.form.applyScopeHint}</p>
           </div>
 
           {(inlineError || saving) && (

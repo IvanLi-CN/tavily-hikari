@@ -8,6 +8,7 @@ function SystemSettingsCanvas(props: {
   loadState?: 'initial_loading' | 'switch_loading' | 'refreshing' | 'ready' | 'error'
   error?: string | null
   saving?: boolean
+  helpBubbleOpen?: boolean
 }): JSX.Element {
   return (
     <div style={{ maxWidth: 960, margin: '0 auto' }}>
@@ -17,6 +18,7 @@ function SystemSettingsCanvas(props: {
         loadState={props.loadState ?? 'ready'}
         error={props.error ?? null}
         saving={props.saving ?? false}
+        helpBubbleOpen={props.helpBubbleOpen}
         onApply={() => {}}
       />
     </div>
@@ -40,6 +42,7 @@ const meta = {
     loadState: 'ready',
     error: null,
     saving: false,
+    helpBubbleOpen: undefined,
     onApply: () => {},
   },
   render: () => <SystemSettingsCanvas />,
@@ -57,4 +60,8 @@ export const Applying: Story = {
 
 export const ErrorState: Story = {
   render: () => <SystemSettingsCanvas error="Failed to save system settings." />,
+}
+
+export const HelpBubbleOpen: Story = {
+  render: () => <SystemSettingsCanvas helpBubbleOpen />,
 }

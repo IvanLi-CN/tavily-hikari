@@ -491,6 +491,7 @@ interface AdminTranslationsShape {
   systemSettings: {
     title: string
     description: string
+    helpLabel: string
     form: {
       title: string
       description: string
@@ -1796,6 +1797,7 @@ export const translations: Record<Language, TranslationShape> = {
       systemSettings: {
         title: 'System Settings',
         description: 'Adjust system-level MCP session affinity behavior and apply it without restarting.',
+        helpLabel: 'Show system settings help',
         form: {
           title: 'MCP session affinity pool',
           description: 'New MCP initialize requests pick from a stable per-user upstream key pool, then balance sessions inside that pool.',
@@ -3092,6 +3094,7 @@ export const translations: Record<Language, TranslationShape> = {
       systemSettings: {
         title: '系统设置',
         description: '调整系统级 MCP session 亲和策略，并且无需重启即可生效。',
+        helpLabel: '显示系统设置说明',
         form: {
           title: 'MCP session 亲和池',
           description: '新的 MCP initialize 请求会先命中每个用户稳定的上游 key 池，再在池内按活跃 session 数做均衡。',
