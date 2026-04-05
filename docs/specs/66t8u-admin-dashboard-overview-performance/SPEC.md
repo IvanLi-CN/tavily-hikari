@@ -146,6 +146,7 @@
 ## Visual Evidence
 
 - source_type: `storybook_canvas`; story_id_or_title: `Admin/Components/DashboardOverview/ZhDarkEvidence`; state: `dashboard overview preserved after lightweight bootstrap refactor`; evidence_note: 验证 dashboard 在改为单一 overview bootstrap、SSE 复用 payload 与风险区轻量子集后，今日/本月/当前状态、风险观察与快捷入口仍保持既有可见结构。
+  PR: include
   ![管理仪表盘总览轻量快照验收图](./assets/dashboard-overview-performance-proof.png)
 
 ## Change log
