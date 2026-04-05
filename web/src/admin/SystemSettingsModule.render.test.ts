@@ -22,6 +22,7 @@ describe('SystemSettingsModule rendering', () => {
 
     expect(markup).toContain(strings.title)
     expect(markup).toContain(strings.helpLabel)
+    expect(markup.match(/system-settings-help-trigger/g)?.length).toBe(1)
     expect(markup).toContain(strings.form.currentValue.replace('{count}', '5'))
     expect(markup).not.toContain(strings.description)
     expect(markup).not.toContain(strings.form.description)

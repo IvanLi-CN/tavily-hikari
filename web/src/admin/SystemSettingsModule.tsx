@@ -88,9 +88,8 @@ export default function SystemSettingsModule({
   return (
     <section className="surface panel">
       <div className="panel-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div>
           <h2>{strings.title}</h2>
-          <SystemSettingsHelpBubble strings={strings} open={helpBubbleOpen} />
         </div>
       </div>
 
@@ -115,9 +114,12 @@ export default function SystemSettingsModule({
               gridTemplateColumns: 'minmax(220px, 320px)',
             }}
           >
-            <label className="text-sm font-medium" htmlFor="system-settings-affinity-count">
-              {strings.form.countLabel}
-            </label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <label className="text-sm font-medium" htmlFor="system-settings-affinity-count">
+                {strings.form.countLabel}
+              </label>
+              <SystemSettingsHelpBubble strings={strings} open={helpBubbleOpen} />
+            </div>
             <Input
               id="system-settings-affinity-count"
               type="number"
