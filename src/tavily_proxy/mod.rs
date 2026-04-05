@@ -42,6 +42,23 @@ struct CachedSummaryWindows {
     value: SummaryWindows,
 }
 
+#[derive(Clone, Debug)]
+struct SummaryWindowsCacheState {
+    cached: Option<CachedSummaryWindows>,
+    loading: bool,
+    notify: Arc<tokio::sync::Notify>,
+}
+
+impl Default for SummaryWindowsCacheState {
+    fn default() -> Self {
+        Self {
+            cached: None,
+            loading: false,
+            notify: Arc::new(tokio::sync::Notify::new()),
+        }
+    }
+}
+
 /// 负责均衡 Tavily API key 并透传请求的代理。
 #[derive(Clone, Debug)]
 pub struct TavilyProxy {
@@ -61,7 +78,7 @@ pub struct TavilyProxy {
     token_request_limit: TokenRequestLimit,
     pub(crate) research_request_affinity: Arc<Mutex<TokenAffinityState>>,
     pub(crate) research_request_owner_affinity: Arc<Mutex<TokenAffinityState>>,
-    summary_windows_cache: Arc<Mutex<Option<CachedSummaryWindows>>>,
+    summary_windows_cache: Arc<Mutex<SummaryWindowsCacheState>>,
     // Fast in-process lock to collapse duplicate work within one instance. Cross-instance
     // serialization is provided by quota_subject_locks in SQLite.
     pub(crate) token_billing_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
@@ -528,7 +545,7 @@ impl TavilyProxy {
             research_request_owner_affinity: Arc::new(Mutex::new(TokenAffinityState::new(
                 RESEARCH_REQUEST_AFFINITY_TTL_SECS,
             ))),
-            summary_windows_cache: Arc::new(Mutex::new(None)),
+            summary_windows_cache: Arc::new(Mutex::new(SummaryWindowsCacheState::default())),
             token_billing_locks: Arc::new(Mutex::new(HashMap::new())),
             mcp_session_init_locks: Arc::new(Mutex::new(HashMap::new())),
             research_key_locks: Arc::new(Mutex::new(HashMap::new())),
@@ -6750,22 +6767,39 @@ impl TavilyProxy {
     pub async fn summary_windows(&self) -> Result<SummaryWindows, ProxyError> {
         const SUMMARY_WINDOWS_CACHE_TTL: Duration = Duration::from_secs(2);
 
-        {
-            let cache = self.summary_windows_cache.lock().await;
-            if let Some(cached) = cache.as_ref()
-                && cached.generated_at.elapsed() < SUMMARY_WINDOWS_CACHE_TTL
-            {
-                return Ok(cached.value.clone());
-            }
-        }
+        loop {
+            let waiter = {
+                let mut cache = self.summary_windows_cache.lock().await;
+                if let Some(cached) = cache.cached.as_ref()
+                    && cached.generated_at.elapsed() < SUMMARY_WINDOWS_CACHE_TTL
+                {
+                    return Ok(cached.value.clone());
+                }
+                if cache.loading {
+                    Some(cache.notify.clone())
+                } else {
+                    cache.loading = true;
+                    None
+                }
+            };
 
-        let summary = self.summary_windows_at(Local::now()).await?;
-        let mut cache = self.summary_windows_cache.lock().await;
-        *cache = Some(CachedSummaryWindows {
-            generated_at: Instant::now(),
-            value: summary.clone(),
-        });
-        Ok(summary)
+            if let Some(waiter) = waiter {
+                waiter.notified().await;
+                continue;
+            }
+
+            let summary = self.summary_windows_at(Local::now()).await;
+            let mut cache = self.summary_windows_cache.lock().await;
+            cache.loading = false;
+            if let Ok(value) = summary.as_ref() {
+                cache.cached = Some(CachedSummaryWindows {
+                    generated_at: Instant::now(),
+                    value: value.clone(),
+                });
+            }
+            cache.notify.notify_waiters();
+            return summary;
+        }
     }
 
     pub(crate) async fn summary_windows_at(

@@ -2211,7 +2211,6 @@ function AdminDashboard(): JSX.Element {
         setProfile(profileData ?? null)
         setVersion(ver ?? null)
         setLastUpdated(new Date())
-        setError(null)
         baseDataLoadedRef.current = true
       } catch (err) {
         if ((err as Error).name === 'AbortError') {
