@@ -2,6 +2,7 @@ use crate::analysis::*;
 use crate::models::*;
 use crate::store::*;
 use crate::*;
+use sha2::{Digest, Sha256};
 
 #[derive(Clone, Debug)]
 struct TokenQuota {
@@ -57,6 +58,7 @@ pub struct TavilyProxy {
     // Fast in-process lock to collapse duplicate work within one instance. Cross-instance
     // serialization is provided by quota_subject_locks in SQLite.
     pub(crate) token_billing_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
+    pub(crate) mcp_session_init_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
     pub(crate) research_key_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
 }
 
@@ -206,6 +208,18 @@ impl TokenBillingGuard {
     }
 }
 
+#[derive(Debug)]
+pub struct McpSessionInitGuard {
+    _local: tokio::sync::OwnedMutexGuard<()>,
+    _subject_lock: QuotaSubjectLockGuard,
+}
+
+impl McpSessionInitGuard {
+    pub fn ensure_live(&self) -> Result<(), ProxyError> {
+        self._subject_lock.ensure_live()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PendingBillingSettleOutcome {
     Charged,
@@ -270,6 +284,28 @@ fn default_forward_proxy_trace_url() -> Url {
 }
 
 impl TavilyProxy {
+    fn mcp_session_affinity_subject(user_id: Option<&str>, token_id: &str) -> String {
+        match user_id {
+            Some(user_id) => format!("user:{user_id}"),
+            None => format!("token:{token_id}"),
+        }
+    }
+
+    fn mcp_session_affinity_score(subject: &str, key_id: &str) -> [u8; 32] {
+        let mut digest = Sha256::new();
+        digest.update(subject.as_bytes());
+        digest.update(b":");
+        digest.update(key_id.as_bytes());
+        digest.finalize().into()
+    }
+
+    fn mcp_session_init_lock_subject(user_id: Option<&str>, token_id: &str) -> String {
+        format!(
+            "mcp-init:{}",
+            Self::mcp_session_affinity_subject(user_id, token_id)
+        )
+    }
+
     pub async fn new<I, S>(keys: I, database_path: &str) -> Result<Self, ProxyError>
     where
         I: IntoIterator<Item = S>,
@@ -368,6 +404,7 @@ impl TavilyProxy {
                 RESEARCH_REQUEST_AFFINITY_TTL_SECS,
             ))),
             token_billing_locks: Arc::new(Mutex::new(HashMap::new())),
+            mcp_session_init_locks: Arc::new(Mutex::new(HashMap::new())),
             research_key_locks: Arc::new(Mutex::new(HashMap::new())),
         };
         proxy.initialize_forward_proxy_runtime().await?;
@@ -408,6 +445,38 @@ impl TavilyProxy {
                 .count() as i64,
             total_nodes: runtime_rows.len() as i64,
         })
+    }
+
+    pub async fn get_system_settings(&self) -> Result<SystemSettings, ProxyError> {
+        self.key_store.get_system_settings().await
+    }
+
+    pub async fn set_mcp_session_affinity_key_count(
+        &self,
+        count: i64,
+    ) -> Result<SystemSettings, ProxyError> {
+        self.key_store
+            .set_mcp_session_affinity_key_count(count)
+            .await
+    }
+
+    pub async fn seed_user_primary_api_key_affinity_for_test(
+        &self,
+        user_id: &str,
+        key_id: &str,
+    ) -> Result<(), ProxyError> {
+        self.key_store
+            .sync_user_primary_api_key_affinity(user_id, key_id)
+            .await
+    }
+
+    pub async fn acquire_key_id_for_test(
+        &self,
+        auth_token_id: Option<&str>,
+    ) -> Result<String, ProxyError> {
+        self.acquire_key_for(auth_token_id)
+            .await
+            .map(|lease| lease.id)
     }
 
     pub(crate) async fn validate_forward_proxy_egress_socks5(
@@ -2977,6 +3046,45 @@ impl TavilyProxy {
         })
     }
 
+    pub async fn lock_mcp_session_init(
+        &self,
+        auth_token_id: Option<&str>,
+        user_id: Option<&str>,
+    ) -> Result<Option<McpSessionInitGuard>, ProxyError> {
+        let Some(token_id) = auth_token_id else {
+            return Ok(None);
+        };
+
+        let subject = Self::mcp_session_init_lock_subject(user_id, token_id);
+        let lock = {
+            let mut locks = self.mcp_session_init_locks.lock().await;
+            if locks.len() > 1024 {
+                locks.retain(|_, lock| lock.strong_count() > 0);
+            }
+
+            if let Some(existing) = locks.get(&subject).and_then(|lock| lock.upgrade()) {
+                existing
+            } else {
+                let lock = Arc::new(Mutex::new(()));
+                locks.insert(subject.clone(), Arc::downgrade(&lock));
+                lock
+            }
+        };
+        let local_guard = lock.lock_owned().await;
+        let lease = self
+            .key_store
+            .acquire_quota_subject_lock(
+                &subject,
+                Duration::from_secs(QUOTA_SUBJECT_LOCK_TTL_SECS),
+                Duration::from_secs(QUOTA_SUBJECT_LOCK_ACQUIRE_TIMEOUT_SECS),
+            )
+            .await?;
+        Ok(Some(McpSessionInitGuard {
+            _local: local_guard,
+            _subject_lock: QuotaSubjectLockGuard::new(self.key_store.clone(), lease),
+        }))
+    }
+
     /// Serialize quota/billing work per effective quota subject across both the local process
     /// and any other instances sharing the same SQLite database.
     pub async fn lock_token_billing(
@@ -3061,9 +3169,11 @@ impl TavilyProxy {
         self.key_store
             .sync_user_primary_api_key_affinity(user_id, &lease.id)
             .await?;
-        self.key_store
-            .revoke_mcp_sessions_for_user(user_id, "primary_api_key_rebound")
-            .await?;
+        if let Some(old_key_id) = old_key_id {
+            self.key_store
+                .revoke_mcp_sessions_for_user_key(user_id, old_key_id, "primary_api_key_rebound")
+                .await?;
+        }
         Ok(lease)
     }
 
@@ -3079,10 +3189,83 @@ impl TavilyProxy {
         self.key_store
             .set_token_primary_api_key_affinity(token_id, None, &lease.id)
             .await?;
-        self.key_store
-            .revoke_mcp_sessions_for_token(token_id, "primary_api_key_rebound")
-            .await?;
+        if let Some(old_key_id) = old_key_id {
+            self.key_store
+                .revoke_mcp_sessions_for_token_key(token_id, old_key_id, "primary_api_key_rebound")
+                .await?;
+        }
         Ok(lease)
+    }
+
+    async fn rank_mcp_session_affinity_candidate_keys(
+        &self,
+        token_id: &str,
+        user_id: Option<&str>,
+        desired_count: i64,
+    ) -> Result<Vec<String>, ProxyError> {
+        let mut candidates = self.key_store.list_mcp_session_candidate_key_ids().await?;
+        if candidates.is_empty() {
+            return Err(ProxyError::NoAvailableKeys);
+        }
+
+        let subject = Self::mcp_session_affinity_subject(user_id, token_id);
+        candidates.sort_by(|left, right| {
+            Self::mcp_session_affinity_score(&subject, right)
+                .cmp(&Self::mcp_session_affinity_score(&subject, left))
+                .then_with(|| left.cmp(right))
+        });
+        candidates.truncate(desired_count.clamp(1, candidates.len() as i64).max(1) as usize);
+        Ok(candidates)
+    }
+
+    pub(crate) async fn acquire_key_for_mcp_session_init(
+        &self,
+        auth_token_id: Option<&str>,
+    ) -> Result<ApiKeyLease, ProxyError> {
+        let Some(token_id) = auth_token_id else {
+            return self.key_store.acquire_key().await;
+        };
+
+        let user_id = self.key_store.find_user_id_by_token(token_id).await?;
+        let settings = self.key_store.get_system_settings().await?;
+        let ranked = self
+            .rank_mcp_session_affinity_candidate_keys(
+                token_id,
+                user_id.as_deref(),
+                settings.mcp_session_affinity_key_count,
+            )
+            .await?;
+        let now = Utc::now().timestamp();
+        let counts = if let Some(user_id) = user_id.as_deref() {
+            self.key_store
+                .list_active_mcp_session_counts_for_user(user_id, &ranked, now)
+                .await?
+        } else {
+            self.key_store
+                .list_active_mcp_session_counts_for_token(token_id, &ranked, now)
+                .await?
+        };
+
+        let mut ordered = ranked
+            .iter()
+            .enumerate()
+            .map(|(index, key_id)| {
+                (
+                    counts.get(key_id).copied().unwrap_or(0),
+                    index,
+                    key_id.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        ordered.sort();
+
+        for (_, _, key_id) in ordered {
+            if let Some(lease) = self.key_store.try_acquire_specific_key(&key_id).await? {
+                return Ok(lease);
+            }
+        }
+
+        Err(ProxyError::NoAvailableKeys)
     }
 
     pub(crate) async fn acquire_key_for(
@@ -3477,6 +3660,9 @@ impl TavilyProxy {
                 return Err(ProxyError::PinnedMcpSessionUnavailable);
             };
             lease
+        } else if request.prefer_mcp_session_affinity {
+            self.acquire_key_for_mcp_session_init(request.auth_token_id.as_deref())
+                .await?
         } else {
             self.acquire_key_for(request.auth_token_id.as_deref())
                 .await?
@@ -6364,7 +6550,7 @@ impl TavilyProxy {
                 last_event_id: last_event_id.map(str::to_string),
                 created_at: now,
                 updated_at: now,
-                expires_at: now + MCP_SESSION_IDLE_TTL_SECS,
+                expires_at: now + MCP_SESSION_RETENTION_SECS,
                 revoked_at: None,
                 revoke_reason: None,
             })
@@ -6385,7 +6571,7 @@ impl TavilyProxy {
                 protocol_version,
                 last_event_id,
                 now,
-                now + MCP_SESSION_IDLE_TTL_SECS,
+                now + MCP_SESSION_RETENTION_SECS,
             )
             .await
     }
@@ -6403,7 +6589,7 @@ impl TavilyProxy {
                 upstream_session_id,
                 protocol_version,
                 now,
-                now + MCP_SESSION_IDLE_TTL_SECS,
+                now + MCP_SESSION_RETENTION_SECS,
             )
             .await
     }
@@ -7469,6 +7655,13 @@ impl TavilyProxy {
         let retention_days = effective_request_logs_retention_days();
         let threshold = request_logs_retention_threshold_utc_ts(retention_days);
         self.key_store.delete_old_request_logs(threshold).await
+    }
+
+    pub async fn gc_mcp_sessions(&self) -> Result<i64, ProxyError> {
+        let now = Utc::now().timestamp();
+        self.key_store
+            .delete_stale_mcp_sessions(now, now - MCP_SESSION_RETENTION_SECS)
+            .await
     }
 
     /// Job logging helpers

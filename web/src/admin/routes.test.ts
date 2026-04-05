@@ -28,6 +28,10 @@ describe('admin user tag routes', () => {
     expect(parseAdminPath('/admin/tokens/leaderboard')).toEqual({ name: 'unbound-token-usage' })
   })
 
+  it('parses the system settings module route', () => {
+    expect(parseAdminPath('/admin/system-settings')).toEqual({ name: 'module', module: 'system-settings' })
+  })
+
   it('parses the user tag create page', () => {
     expect(parseAdminPath('/admin/users/tags/new')).toEqual({ name: 'user-tag-editor', mode: 'create' })
   })

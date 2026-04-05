@@ -606,6 +606,7 @@ struct ValidateKeysResponse {
 #[serde(rename_all = "camelCase")]
 struct SettingsResponse {
     forward_proxy: Option<tavily_hikari::ForwardProxySettingsResponse>,
+    system_settings: tavily_hikari::SystemSettings,
 }
 
 #[derive(Debug, Deserialize)]
@@ -625,6 +626,12 @@ struct ForwardProxySettingsUpdatePayload {
     egress_socks5_url: String,
     #[serde(default)]
     skip_bootstrap_probe: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SystemSettingsUpdatePayload {
+    mcp_session_affinity_key_count: i64,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy)]
@@ -772,9 +779,41 @@ async fn get_settings(
         eprintln!("get settings error: {err}");
         (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
     })?;
+    let system_settings = state.proxy.get_system_settings().await.map_err(|err| {
+        eprintln!("get system settings error: {err}");
+        (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+    })?;
     Ok(Json(SettingsResponse {
         forward_proxy: Some(forward_proxy),
+        system_settings,
     }))
+}
+
+async fn put_system_settings(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<SystemSettingsUpdatePayload>,
+) -> Result<Json<tavily_hikari::SystemSettings>, (StatusCode, String)> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
+    }
+
+    state
+        .proxy
+        .set_mcp_session_affinity_key_count(payload.mcp_session_affinity_key_count)
+        .await
+        .map(Json)
+        .map_err(|err| {
+            eprintln!("update system settings error: {err}");
+            if err
+                .to_string()
+                .contains("mcp_session_affinity_key_count must be between")
+            {
+                (StatusCode::BAD_REQUEST, err.to_string())
+            } else {
+                (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+            }
+        })
 }
 
 async fn put_forward_proxy_settings(

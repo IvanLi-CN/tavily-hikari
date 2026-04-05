@@ -10,6 +10,7 @@ mod tests {
     use bytes::Bytes;
     use nanoid::nanoid;
     use reqwest::Client;
+    use sha2::{Digest, Sha256};
     use sqlx::Row;
     use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
     use std::collections::HashMap;
@@ -631,16 +632,32 @@ mod tests {
         SocketAddr,
         Arc<Mutex<Vec<SessionHeaderCall>>>,
     ) {
+        spawn_mock_mcp_upstream_for_session_headers_with_initialize_delay(
+            allowed_api_keys,
+            Duration::from_millis(0),
+        )
+        .await
+    }
+
+    async fn spawn_mock_mcp_upstream_for_session_headers_with_initialize_delay(
+        allowed_api_keys: Vec<String>,
+        initialize_delay: Duration,
+    ) -> (
+        SocketAddr,
+        Arc<Mutex<Vec<SessionHeaderCall>>>,
+    ) {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let app = Router::new().route(
             "/mcp",
             any({
                 let calls = calls.clone();
+                let initialize_delay = initialize_delay;
                 move |headers: HeaderMap,
                       Query(params): Query<HashMap<String, String>>,
                       Json(body): Json<Value>| {
                     let allowed_api_keys = allowed_api_keys.clone();
                     let calls = calls.clone();
+                    let initialize_delay = initialize_delay;
                     async move {
                         let received = params.get("tavilyApiKey").cloned();
                         assert!(
@@ -683,23 +700,28 @@ mod tests {
                         });
 
                         match method.as_str() {
-                            "initialize" => Response::builder()
-                                .status(StatusCode::OK)
-                                .header(CONTENT_TYPE, "application/json")
-                                .header("mcp-session-id", "session-123")
-                                .body(Body::from(
-                                    serde_json::json!({
-                                        "jsonrpc": "2.0",
-                                        "id": body.get("id").cloned().unwrap_or_else(|| serde_json::json!(1)),
-                                        "result": {
-                                            "protocolVersion": "2025-03-26",
-                                            "serverInfo": { "name": "mock-mcp", "version": "1.0.0" },
-                                            "capabilities": {}
-                                        }
-                                    })
-                                    .to_string(),
-                                ))
-                                .expect("build initialize response"),
+                            "initialize" => {
+                                if !initialize_delay.is_zero() {
+                                    tokio::time::sleep(initialize_delay).await;
+                                }
+                                Response::builder()
+                                    .status(StatusCode::OK)
+                                    .header(CONTENT_TYPE, "application/json")
+                                    .header("mcp-session-id", "session-123")
+                                    .body(Body::from(
+                                        serde_json::json!({
+                                            "jsonrpc": "2.0",
+                                            "id": body.get("id").cloned().unwrap_or_else(|| serde_json::json!(1)),
+                                            "result": {
+                                                "protocolVersion": "2025-03-26",
+                                                "serverInfo": { "name": "mock-mcp", "version": "1.0.0" },
+                                                "capabilities": {}
+                                            }
+                                        })
+                                        .to_string(),
+                                    ))
+                                    .expect("build initialize response")
+                            }
                             "notifications/initialized" => {
                                 assert_eq!(
                                     session_id.as_deref(),
@@ -3953,6 +3975,7 @@ mod tests {
 
         let app = Router::new()
             .route("/api/settings", get(get_settings))
+            .route("/api/settings/system", put(put_system_settings))
             .route("/api/settings/forward-proxy", put(put_forward_proxy_settings))
             .route(
                 "/api/settings/forward-proxy/validate",
@@ -12012,7 +12035,7 @@ colo=LAX
             .add_or_undelete_key_with_status("tvly-unbound-breakage-sort-key-b")
             .await
             .expect("create breakage key b");
-        let now = Utc::now().timestamp();
+        let now = chrono::Utc::now().timestamp();
         let pool = connect_sqlite_test_pool(&db_str).await;
         sqlx::query(
             r#"INSERT INTO token_api_key_bindings (token_id, api_key_id, created_at, updated_at, last_success_at)
@@ -19652,12 +19675,12 @@ colo=LAX
 
         let pool = connect_sqlite_test_pool(&db_str).await;
         let key_id: String = sqlx::query_scalar(
-            r#"SELECT api_key_id
-               FROM token_primary_api_key_affinity
-               WHERE token_id = ?
+            r#"SELECT upstream_key_id
+               FROM mcp_sessions
+               WHERE proxy_session_id = ?
                LIMIT 1"#,
         )
-        .bind(&access_token.id)
+        .bind(&proxy_session_id)
         .fetch_one(&pool)
         .await
         .expect("bound key id");
@@ -19872,12 +19895,12 @@ colo=LAX
 
         let pool = connect_sqlite_test_pool(&db_str).await;
         let old_key_id: String = sqlx::query_scalar(
-            r#"SELECT api_key_id
-               FROM token_primary_api_key_affinity
-               WHERE token_id = ?
+            r#"SELECT upstream_key_id
+               FROM mcp_sessions
+               WHERE proxy_session_id = ?
                LIMIT 1"#,
         )
-        .bind(&access_token.id)
+        .bind(&old_proxy_session_id)
         .fetch_one(&pool)
         .await
         .expect("old key id");
@@ -19913,16 +19936,16 @@ colo=LAX
         assert_ne!(old_proxy_session_id, new_proxy_session_id);
 
         let new_key_id: String = sqlx::query_scalar(
-            r#"SELECT api_key_id
-               FROM token_primary_api_key_affinity
-               WHERE token_id = ?
+            r#"SELECT upstream_key_id
+               FROM mcp_sessions
+               WHERE proxy_session_id = ?
                LIMIT 1"#,
         )
-        .bind(&access_token.id)
+        .bind(&new_proxy_session_id)
         .fetch_one(&pool)
         .await
         .expect("new key id");
-        assert_ne!(old_key_id, new_key_id, "token primary key should be rebound");
+        assert_ne!(old_key_id, new_key_id, "new initialize should select a different upstream key");
 
         let stale_follow_up = client
             .post(&url)
@@ -19953,6 +19976,724 @@ colo=LAX
         assert_eq!(recorded[0].method, "initialize");
         assert_eq!(recorded[1].method, "initialize");
         assert_ne!(recorded[0].tavily_api_key, recorded[1].tavily_api_key);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_primary_rebind_only_revokes_sessions_on_the_old_key() {
+        let db_path = temp_db_path("mcp-session-rebind-scoped");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let first_api_key = "tvly-mcp-rebind-scope-a".to_string();
+        let second_api_key = "tvly-mcp-rebind-scope-b".to_string();
+        let third_api_key = "tvly-mcp-rebind-scope-c".to_string();
+        let (upstream_addr, calls) = spawn_mock_mcp_upstream_for_session_headers(vec![
+            first_api_key.clone(),
+            second_api_key.clone(),
+            third_api_key.clone(),
+        ])
+        .await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy = TavilyProxy::with_endpoint(
+            vec![
+                first_api_key.clone(),
+                second_api_key.clone(),
+                third_api_key.clone(),
+            ],
+            &upstream,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+        proxy
+            .set_mcp_session_affinity_key_count(2)
+            .await
+            .expect("set affinity count");
+
+        let user = proxy
+            .upsert_oauth_account(&OAuthAccountProfile {
+                provider: "linuxdo".to_string(),
+                provider_user_id: "mcp-rebind-scope-user".to_string(),
+                username: Some("rebind-user".to_string()),
+                name: Some("Rebind User".to_string()),
+                avatar_template: None,
+                active: true,
+                trust_level: Some(2),
+                raw_payload_json: None,
+            })
+            .await
+            .expect("upsert user");
+        let first_token = proxy
+            .ensure_user_token_binding(&user.user_id, Some("linuxdo:mcp-rebind-scope-first"))
+            .await
+            .expect("bind first token");
+        let second_seed = proxy
+            .create_access_token(Some("linuxdo:mcp-rebind-scope-second"))
+            .await
+            .expect("create second token");
+        let second_token = proxy
+            .ensure_user_token_binding_with_preferred(
+                &user.user_id,
+                Some("linuxdo:mcp-rebind-scope-second"),
+                Some(&second_seed.id),
+            )
+            .await
+            .expect("bind second token");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), upstream.clone()).await;
+        let client = Client::new();
+        let first_url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, first_token.token
+        );
+        let second_url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, second_token.token
+        );
+
+        let first_initialize = client
+            .post(&first_url)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "init-rebind-scope-1",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {}
+                }
+            }))
+            .send()
+            .await
+            .expect("first initialize");
+        assert!(first_initialize.status().is_success());
+        let first_proxy_session_id = first_initialize
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("first proxy session id")
+            .to_string();
+
+        let second_initialize = client
+            .post(&second_url)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "init-rebind-scope-2",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {}
+                }
+            }))
+            .send()
+            .await
+            .expect("second initialize");
+        assert!(second_initialize.status().is_success());
+        let second_proxy_session_id = second_initialize
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("second proxy session id")
+            .to_string();
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let first_key_id: String = sqlx::query_scalar(
+            r#"SELECT upstream_key_id
+               FROM mcp_sessions
+               WHERE proxy_session_id = ?
+               LIMIT 1"#,
+        )
+        .bind(&first_proxy_session_id)
+        .fetch_one(&pool)
+        .await
+        .expect("first key id");
+        let second_key_id: String = sqlx::query_scalar(
+            r#"SELECT upstream_key_id
+               FROM mcp_sessions
+               WHERE proxy_session_id = ?
+               LIMIT 1"#,
+        )
+        .bind(&second_proxy_session_id)
+        .fetch_one(&pool)
+        .await
+        .expect("second key id");
+        assert_ne!(first_key_id, second_key_id, "affinity pool should spread the first two sessions");
+
+        proxy
+            .seed_user_primary_api_key_affinity_for_test(&user.user_id, &first_key_id)
+            .await
+            .expect("seed primary affinity to the first session key");
+        proxy
+            .disable_key_by_id(&first_key_id)
+            .await
+            .expect("disable old primary key");
+
+        let rebound = proxy
+            .acquire_key_id_for_test(Some(&first_token.id))
+            .await
+            .expect("rebind primary key");
+        assert_ne!(rebound, first_key_id, "rebind should move away from the disabled key");
+
+        let stale_follow_up = client
+            .post(&first_url)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .header("mcp-session-id", &first_proxy_session_id)
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "tools-rebind-scope-stale",
+                "method": "tools/list"
+            }))
+            .send()
+            .await
+            .expect("stale follow-up");
+        assert_eq!(stale_follow_up.status(), reqwest::StatusCode::CONFLICT);
+
+        let healthy_follow_up = client
+            .post(&second_url)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .header("mcp-session-id", &second_proxy_session_id)
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "tools-rebind-scope-healthy",
+                "method": "tools/list"
+            }))
+            .send()
+            .await
+            .expect("healthy follow-up");
+        assert_eq!(healthy_follow_up.status(), reqwest::StatusCode::OK);
+
+        let first_revoke_reason: Option<String> = sqlx::query_scalar(
+            r#"SELECT revoke_reason
+               FROM mcp_sessions
+               WHERE proxy_session_id = ?
+               LIMIT 1"#,
+        )
+        .bind(&first_proxy_session_id)
+        .fetch_one(&pool)
+        .await
+        .expect("first revoke reason");
+        let second_revoke_reason: Option<String> = sqlx::query_scalar(
+            r#"SELECT revoke_reason
+               FROM mcp_sessions
+               WHERE proxy_session_id = ?
+               LIMIT 1"#,
+        )
+        .bind(&second_proxy_session_id)
+        .fetch_one(&pool)
+        .await
+        .expect("second revoke reason");
+        assert_eq!(first_revoke_reason.as_deref(), Some("primary_api_key_rebound"));
+        assert_eq!(second_revoke_reason, None);
+
+        let recorded = calls
+            .lock()
+            .expect("session header calls lock poisoned")
+            .clone();
+        assert_eq!(
+            recorded
+                .iter()
+                .filter(|call| call.method == "tools/list")
+                .count(),
+            1,
+            "only the healthy session should reach upstream after the rebind",
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_session_affinity_pool_balances_new_sessions_and_keeps_existing_sessions_alive() {
+        let db_path = temp_db_path("mcp-session-affinity-pool");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let first_api_key = "tvly-mcp-affinity-a".to_string();
+        let second_api_key = "tvly-mcp-affinity-b".to_string();
+        let third_api_key = "tvly-mcp-affinity-c".to_string();
+        let (upstream_addr, calls) = spawn_mock_mcp_upstream_for_session_headers(vec![
+            first_api_key.clone(),
+            second_api_key.clone(),
+            third_api_key.clone(),
+        ])
+        .await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy = TavilyProxy::with_endpoint(
+            vec![
+                first_api_key.clone(),
+                second_api_key.clone(),
+                third_api_key.clone(),
+            ],
+            &upstream,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+        proxy
+            .set_mcp_session_affinity_key_count(2)
+            .await
+            .expect("set affinity count");
+
+        let user = proxy
+            .upsert_oauth_account(&OAuthAccountProfile {
+                provider: "linuxdo".to_string(),
+                provider_user_id: "mcp-session-affinity-user".to_string(),
+                username: Some("affinity-user".to_string()),
+                name: Some("Affinity User".to_string()),
+                avatar_template: None,
+                active: true,
+                trust_level: Some(2),
+                raw_payload_json: None,
+            })
+            .await
+            .expect("upsert user");
+        let first_token = proxy
+            .ensure_user_token_binding(&user.user_id, Some("linuxdo:mcp-affinity-first"))
+            .await
+            .expect("bind first token");
+        let second_seed = proxy
+            .create_access_token(Some("linuxdo:mcp-affinity-second"))
+            .await
+            .expect("create second token");
+        let second_token = proxy
+            .ensure_user_token_binding_with_preferred(
+                &user.user_id,
+                Some("linuxdo:mcp-affinity-second"),
+                Some(&second_seed.id),
+            )
+            .await
+            .expect("bind second token");
+        let third_seed = proxy
+            .create_access_token(Some("linuxdo:mcp-affinity-third"))
+            .await
+            .expect("create third token");
+        let third_token = proxy
+            .ensure_user_token_binding_with_preferred(
+                &user.user_id,
+                Some("linuxdo:mcp-affinity-third"),
+                Some(&third_seed.id),
+            )
+            .await
+            .expect("bind third token");
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let mut ranked_keys = fetch_api_key_rows(&pool).await;
+        let subject = format!("user:{}", user.user_id);
+        ranked_keys.sort_by(|(left_id, _), (right_id, _)| {
+            let mut left_digest = Sha256::new();
+            left_digest.update(subject.as_bytes());
+            left_digest.update(b":");
+            left_digest.update(left_id.as_bytes());
+            let left_score: [u8; 32] = left_digest.finalize().into();
+
+            let mut right_digest = Sha256::new();
+            right_digest.update(subject.as_bytes());
+            right_digest.update(b":");
+            right_digest.update(right_id.as_bytes());
+            let right_score: [u8; 32] = right_digest.finalize().into();
+
+            right_score.cmp(&left_score).then_with(|| left_id.cmp(right_id))
+        });
+        let ranked_secrets = ranked_keys
+            .iter()
+            .map(|(_, api_key)| api_key.clone())
+            .collect::<Vec<_>>();
+        let top_one_key = ranked_secrets[0].clone();
+        let top_two_keys = ranked_secrets[..2].to_vec();
+        let second_pool_key = ranked_secrets[1].clone();
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), upstream.clone()).await;
+        let client = Client::new();
+
+        let first_url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, first_token.token
+        );
+        let second_url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, second_token.token
+        );
+        let third_url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, third_token.token
+        );
+
+        let first_initialize = client
+            .post(&first_url)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "init-affinity-1",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {}
+                }
+            }))
+            .send()
+            .await
+            .expect("first initialize");
+        assert!(first_initialize.status().is_success());
+
+        let second_initialize = client
+            .post(&second_url)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "init-affinity-2",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {}
+                }
+            }))
+            .send()
+            .await
+            .expect("second initialize");
+        assert!(second_initialize.status().is_success());
+        let second_proxy_session_id = second_initialize
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("second proxy session id")
+            .to_string();
+
+        proxy
+            .set_mcp_session_affinity_key_count(1)
+            .await
+            .expect("shrink affinity count");
+
+        let pinned_follow_up = client
+            .post(&second_url)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .header("mcp-session-id", &second_proxy_session_id)
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "tools-affinity-existing",
+                "method": "tools/list"
+            }))
+            .send()
+            .await
+            .expect("existing session follow-up");
+        assert_eq!(pinned_follow_up.status(), reqwest::StatusCode::OK);
+
+        let third_initialize = client
+            .post(&third_url)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "init-affinity-3",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {}
+                }
+            }))
+            .send()
+            .await
+            .expect("third initialize");
+        assert!(third_initialize.status().is_success());
+
+        let recorded = calls
+            .lock()
+            .expect("session header calls lock poisoned")
+            .clone();
+        assert_eq!(recorded.len(), 4, "expected two initializes, one existing-session call, and one new initialize");
+        assert_eq!(recorded[0].method, "initialize");
+        assert_eq!(recorded[1].method, "initialize");
+        assert_eq!(recorded[2].method, "tools/list");
+        assert_eq!(recorded[3].method, "initialize");
+        assert_eq!(recorded[0].tavily_api_key.as_deref(), Some(top_one_key.as_str()));
+        assert_eq!(recorded[1].tavily_api_key.as_deref(), Some(second_pool_key.as_str()));
+        assert_eq!(recorded[2].tavily_api_key.as_deref(), Some(second_pool_key.as_str()));
+        assert_eq!(recorded[3].tavily_api_key.as_deref(), Some(top_one_key.as_str()));
+        assert!(
+            recorded[..2]
+                .iter()
+                .all(|call| call.tavily_api_key.as_ref().is_some_and(|key| top_two_keys.contains(key))),
+            "new sessions should stay inside the stable top-2 pool"
+        );
+
+        let stored_upstream_key: String = sqlx::query_scalar(
+            r#"SELECT upstream_key_id
+               FROM mcp_sessions
+               WHERE proxy_session_id = ?
+               LIMIT 1"#,
+        )
+        .bind(&second_proxy_session_id)
+        .fetch_one(&pool)
+        .await
+        .expect("stored pinned upstream key");
+        let second_pool_key_id = ranked_keys[1].0.clone();
+        assert_eq!(stored_upstream_key, second_pool_key_id);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_session_affinity_pool_balances_concurrent_initializes() {
+        let db_path = temp_db_path("mcp-session-affinity-concurrent");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let first_api_key = "tvly-mcp-affinity-concurrent-a".to_string();
+        let second_api_key = "tvly-mcp-affinity-concurrent-b".to_string();
+        let third_api_key = "tvly-mcp-affinity-concurrent-c".to_string();
+        let (upstream_addr, calls) =
+            spawn_mock_mcp_upstream_for_session_headers_with_initialize_delay(
+                vec![
+                    first_api_key.clone(),
+                    second_api_key.clone(),
+                    third_api_key.clone(),
+                ],
+                Duration::from_millis(150),
+            )
+            .await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy = TavilyProxy::with_endpoint(
+            vec![
+                first_api_key.clone(),
+                second_api_key.clone(),
+                third_api_key.clone(),
+            ],
+            &upstream,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+        proxy
+            .set_mcp_session_affinity_key_count(2)
+            .await
+            .expect("set affinity count");
+        let access_token = proxy
+            .create_access_token(Some("mcp-session-affinity-concurrent"))
+            .await
+            .expect("create access token");
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let mut ranked_keys = fetch_api_key_rows(&pool).await;
+        let subject = format!("token:{}", access_token.id);
+        ranked_keys.sort_by(|(left_id, _), (right_id, _)| {
+            let mut left_digest = Sha256::new();
+            left_digest.update(subject.as_bytes());
+            left_digest.update(b":");
+            left_digest.update(left_id.as_bytes());
+            let left_score: [u8; 32] = left_digest.finalize().into();
+
+            let mut right_digest = Sha256::new();
+            right_digest.update(subject.as_bytes());
+            right_digest.update(b":");
+            right_digest.update(right_id.as_bytes());
+            let right_score: [u8; 32] = right_digest.finalize().into();
+
+            right_score.cmp(&left_score).then_with(|| left_id.cmp(right_id))
+        });
+        let top_two_key_ids = ranked_keys
+            .iter()
+            .take(2)
+            .map(|(key_id, _)| key_id.clone())
+            .collect::<Vec<_>>();
+        let top_two_key_secrets = ranked_keys
+            .iter()
+            .take(2)
+            .map(|(_, api_key)| api_key.clone())
+            .collect::<Vec<_>>();
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), upstream.clone()).await;
+        let client = Client::new();
+        let url = format!("http://{}/mcp?tavilyApiKey={}", proxy_addr, access_token.token);
+        let request = |id: &str| {
+            client
+                .post(&url)
+                .header("content-type", "application/json")
+                .header("mcp-protocol-version", "2025-03-26")
+                .json(&serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-03-26",
+                        "capabilities": {}
+                    }
+                }))
+        };
+
+        let (first_initialize, second_initialize) = tokio::join!(
+            request("init-affinity-concurrent-1").send(),
+            request("init-affinity-concurrent-2").send(),
+        );
+        assert!(
+            first_initialize
+                .expect("first concurrent initialize")
+                .status()
+                .is_success()
+        );
+        assert!(
+            second_initialize
+                .expect("second concurrent initialize")
+                .status()
+                .is_success()
+        );
+
+        let recorded = calls
+            .lock()
+            .expect("session header calls lock poisoned")
+            .clone();
+        assert_eq!(recorded.len(), 2, "expected two initialize calls");
+        assert!(
+            recorded
+                .iter()
+                .all(|call| call.method == "initialize"),
+            "only initialize calls should be recorded",
+        );
+        assert!(
+            recorded.iter().all(|call| {
+                call.tavily_api_key
+                    .as_ref()
+                    .is_some_and(|key| top_two_key_secrets.contains(key))
+            }),
+            "concurrent initializes should stay inside the stable top-2 pool",
+        );
+        assert_ne!(
+            recorded[0].tavily_api_key,
+            recorded[1].tavily_api_key,
+            "serialized initialize scheduling should spread concurrent sessions across pool keys",
+        );
+
+        let stored_key_ids: Vec<String> = sqlx::query_scalar(
+            r#"SELECT upstream_key_id
+               FROM mcp_sessions
+               ORDER BY created_at ASC, proxy_session_id ASC"#,
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("stored upstream keys");
+        assert_eq!(stored_key_ids.len(), 2);
+        assert!(
+            stored_key_ids
+                .iter()
+                .all(|key_id| top_two_key_ids.contains(key_id)),
+            "stored sessions should remain inside the stable top-2 pool",
+        );
+        assert_ne!(
+            stored_key_ids[0], stored_key_ids[1],
+            "serialized initialize scheduling should persist distinct upstream keys",
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_session_gc_deletes_expired_and_old_revoked_records_after_seven_days() {
+        let db_path = temp_db_path("mcp-session-gc");
+        let db_str = db_path.to_string_lossy().to_string();
+        let upstream_addr = spawn_forward_proxy_probe_upstream().await;
+        let upstream = format!("http://{}/mcp", upstream_addr);
+        let proxy = TavilyProxy::with_endpoint(vec!["tvly-mcp-session-gc".to_string()], &upstream, &db_str)
+            .await
+            .expect("proxy created");
+        let access_token = proxy
+            .create_access_token(Some("mcp-session-gc"))
+            .await
+            .expect("create access token");
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let key_id: String = sqlx::query_scalar(
+            r#"SELECT id
+               FROM api_keys
+               WHERE api_key = ?
+               LIMIT 1"#,
+        )
+        .bind("tvly-mcp-session-gc")
+        .fetch_one(&pool)
+        .await
+        .expect("key id");
+
+        let now = Utc::now().timestamp();
+        let retention_secs = 7 * 24 * 60 * 60;
+
+        for (
+            proxy_session_id,
+            expires_at,
+            revoked_at,
+            revoke_reason,
+            updated_at,
+        ) in [
+            (
+                "session-expired",
+                now - 60,
+                None,
+                None,
+                now - 60,
+            ),
+            (
+                "session-revoked-old",
+                now + 3_600,
+                Some(now - 120),
+                Some("manual_cleanup"),
+                now - retention_secs - 1,
+            ),
+            (
+                "session-active",
+                now + 3_600,
+                None,
+                None,
+                now,
+            ),
+        ] {
+            sqlx::query(
+                r#"INSERT INTO mcp_sessions (
+                       proxy_session_id,
+                       upstream_session_id,
+                       upstream_key_id,
+                       auth_token_id,
+                       user_id,
+                       protocol_version,
+                       last_event_id,
+                       created_at,
+                       updated_at,
+                       expires_at,
+                       revoked_at,
+                       revoke_reason
+                   ) VALUES (?, ?, ?, ?, NULL, ?, NULL, ?, ?, ?, ?, ?)"#,
+            )
+            .bind(proxy_session_id)
+            .bind(format!("upstream-{proxy_session_id}"))
+            .bind(&key_id)
+            .bind(&access_token.id)
+            .bind("2025-03-26")
+            .bind(now - 120)
+            .bind(updated_at)
+            .bind(expires_at)
+            .bind(revoked_at)
+            .bind(revoke_reason)
+            .execute(&pool)
+            .await
+            .expect("insert mcp session fixture");
+        }
+
+        let deleted = proxy.gc_mcp_sessions().await.expect("gc mcp sessions");
+        assert_eq!(deleted, 2);
+
+        let remaining: Vec<String> = sqlx::query_scalar(
+            r#"SELECT proxy_session_id
+               FROM mcp_sessions
+               ORDER BY proxy_session_id ASC"#,
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("remaining mcp sessions");
+        assert_eq!(remaining, vec!["session-active".to_string()]);
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -20196,6 +20937,43 @@ colo=LAX
             settings_body["forwardProxy"]["insertDirect"].as_bool(),
             Some(true)
         );
+        assert_eq!(
+            settings_body["systemSettings"]["mcpSessionAffinityKeyCount"].as_i64(),
+            Some(5)
+        );
+
+        let updated_system = client
+            .put(format!("http://{addr}/api/settings/system"))
+            .json(&serde_json::json!({
+                "mcpSessionAffinityKeyCount": 3,
+            }))
+            .send()
+            .await
+            .expect("update system settings");
+        assert_eq!(updated_system.status(), StatusCode::OK);
+        let updated_system_body = updated_system
+            .json::<serde_json::Value>()
+            .await
+            .expect("decode updated system settings");
+        assert_eq!(
+            updated_system_body["mcpSessionAffinityKeyCount"].as_i64(),
+            Some(3)
+        );
+
+        let persisted_settings = client
+            .get(format!("http://{addr}/api/settings"))
+            .send()
+            .await
+            .expect("get persisted settings");
+        assert_eq!(persisted_settings.status(), StatusCode::OK);
+        let persisted_settings_body = persisted_settings
+            .json::<serde_json::Value>()
+            .await
+            .expect("decode persisted settings");
+        assert_eq!(
+            persisted_settings_body["systemSettings"]["mcpSessionAffinityKeyCount"].as_i64(),
+            Some(3)
+        );
 
         let updated = client
             .put(format!("http://{addr}/api/settings/forward-proxy"))
@@ -20261,6 +21039,38 @@ colo=LAX
                 .as_i64()
                 .is_some_and(|value| value >= 0),
             "dashboard summary should expose available node count",
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn admin_system_settings_reject_invalid_affinity_count() {
+        let db_path = temp_db_path("admin-system-settings-invalid");
+        let db_str = db_path.to_string_lossy().to_string();
+        let upstream_addr = spawn_forward_proxy_probe_upstream().await;
+        let upstream = format!("http://{}/mcp", upstream_addr);
+        let usage_base = format!("http://{}", upstream_addr);
+        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+            .await
+            .expect("create proxy");
+        let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
+
+        let client = Client::new();
+        let response = client
+            .put(format!("http://{addr}/api/settings/system"))
+            .json(&serde_json::json!({
+                "mcpSessionAffinityKeyCount": 0,
+            }))
+            .send()
+            .await
+            .expect("update invalid system settings");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response.text().await.expect("invalid body");
+        assert!(
+            body.contains("mcp_session_affinity_key_count"),
+            "expected range validation error, got {body}"
         );
 
         let _ = std::fs::remove_file(db_path);
@@ -21390,6 +22200,7 @@ colo=LAX
                 headers: HeaderMap::new(),
                 body: bytes::Bytes::new(),
                 auth_token_id: None,
+                prefer_mcp_session_affinity: false,
                 pinned_api_key_id: None,
             })
             .await;

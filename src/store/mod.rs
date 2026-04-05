@@ -5920,6 +5920,50 @@ impl KeyStore {
         Err(ProxyError::NoAvailableKeys)
     }
 
+    pub(crate) async fn list_mcp_session_candidate_key_ids(
+        &self,
+    ) -> Result<Vec<String>, ProxyError> {
+        self.reset_monthly().await?;
+
+        let active = sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT id
+            FROM api_keys
+            WHERE status = ? AND deleted_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM api_key_quarantines q
+                  WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
+              )
+            ORDER BY id ASC
+            "#,
+        )
+        .bind(STATUS_ACTIVE)
+        .fetch_all(&self.pool)
+        .await?;
+        if !active.is_empty() {
+            return Ok(active);
+        }
+
+        sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT id
+            FROM api_keys
+            WHERE status = ? AND deleted_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM api_key_quarantines q
+                  WHERE q.key_id = api_keys.id AND q.cleared_at IS NULL
+              )
+            ORDER BY id ASC
+            "#,
+        )
+        .bind(STATUS_EXHAUSTED)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(ProxyError::from)
+    }
+
     pub(crate) async fn try_acquire_specific_key(
         &self,
         key_id: &str,
@@ -7731,9 +7775,10 @@ impl KeyStore {
         Ok(())
     }
 
-    pub(crate) async fn revoke_mcp_sessions_for_user(
+    pub(crate) async fn revoke_mcp_sessions_for_user_key(
         &self,
         user_id: &str,
+        upstream_key_id: &str,
         reason: &str,
     ) -> Result<(), ProxyError> {
         let now = Utc::now().timestamp();
@@ -7741,21 +7786,23 @@ impl KeyStore {
             r#"
             UPDATE mcp_sessions
             SET revoked_at = ?, revoke_reason = ?, updated_at = ?
-            WHERE user_id = ? AND revoked_at IS NULL
+            WHERE user_id = ? AND upstream_key_id = ? AND revoked_at IS NULL
             "#,
         )
         .bind(now)
         .bind(reason)
         .bind(now)
         .bind(user_id)
+        .bind(upstream_key_id)
         .execute(&self.pool)
         .await?;
         Ok(())
     }
 
-    pub(crate) async fn revoke_mcp_sessions_for_token(
+    pub(crate) async fn revoke_mcp_sessions_for_token_key(
         &self,
         token_id: &str,
+        upstream_key_id: &str,
         reason: &str,
     ) -> Result<(), ProxyError> {
         let now = Utc::now().timestamp();
@@ -7763,16 +7810,91 @@ impl KeyStore {
             r#"
             UPDATE mcp_sessions
             SET revoked_at = ?, revoke_reason = ?, updated_at = ?
-            WHERE auth_token_id = ? AND revoked_at IS NULL
+            WHERE auth_token_id = ? AND upstream_key_id = ? AND revoked_at IS NULL
             "#,
         )
         .bind(now)
         .bind(reason)
         .bind(now)
         .bind(token_id)
+        .bind(upstream_key_id)
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    async fn list_active_mcp_session_counts_by_subject(
+        &self,
+        subject_column: &str,
+        subject_value: &str,
+        key_ids: &[String],
+        now: i64,
+    ) -> Result<HashMap<String, i64>, ProxyError> {
+        if key_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut builder = QueryBuilder::new(format!(
+            "SELECT upstream_key_id, COUNT(*) AS session_count FROM mcp_sessions \
+             WHERE {subject_column} = "
+        ));
+        builder.push_bind(subject_value);
+        builder.push(" AND revoked_at IS NULL AND expires_at > ");
+        builder.push_bind(now);
+        builder.push(" AND upstream_key_id IN (");
+        {
+            let mut separated = builder.separated(", ");
+            for key_id in key_ids {
+                separated.push_bind(key_id);
+            }
+        }
+        builder.push(") GROUP BY upstream_key_id");
+
+        let rows = builder
+            .build_query_as::<(String, i64)>()
+            .fetch_all(&self.pool)
+            .await?;
+
+        Ok(rows.into_iter().collect())
+    }
+
+    pub(crate) async fn list_active_mcp_session_counts_for_user(
+        &self,
+        user_id: &str,
+        key_ids: &[String],
+        now: i64,
+    ) -> Result<HashMap<String, i64>, ProxyError> {
+        self.list_active_mcp_session_counts_by_subject("user_id", user_id, key_ids, now)
+            .await
+    }
+
+    pub(crate) async fn list_active_mcp_session_counts_for_token(
+        &self,
+        token_id: &str,
+        key_ids: &[String],
+        now: i64,
+    ) -> Result<HashMap<String, i64>, ProxyError> {
+        self.list_active_mcp_session_counts_by_subject("auth_token_id", token_id, key_ids, now)
+            .await
+    }
+
+    pub(crate) async fn delete_stale_mcp_sessions(
+        &self,
+        now: i64,
+        revoked_retention_threshold: i64,
+    ) -> Result<i64, ProxyError> {
+        let result = sqlx::query(
+            r#"
+            DELETE FROM mcp_sessions
+            WHERE expires_at <= ?
+               OR (revoked_at IS NOT NULL AND updated_at <= ?)
+            "#,
+        )
+        .bind(now)
+        .bind(revoked_retention_threshold)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() as i64)
     }
 
     pub(crate) async fn list_api_key_binding_counts_for_users(
@@ -8979,6 +9101,36 @@ impl KeyStore {
         self.set_meta_i64(META_KEY_ALLOW_REGISTRATION_V1, if allow { 1 } else { 0 })
             .await?;
         Ok(allow)
+    }
+
+    pub(crate) async fn get_system_settings(&self) -> Result<SystemSettings, ProxyError> {
+        let count = self
+            .get_meta_i64(META_KEY_MCP_SESSION_AFFINITY_KEY_COUNT_V1)
+            .await?
+            .unwrap_or(MCP_SESSION_AFFINITY_KEY_COUNT_DEFAULT);
+        Ok(SystemSettings {
+            mcp_session_affinity_key_count: count.clamp(
+                MCP_SESSION_AFFINITY_KEY_COUNT_MIN,
+                MCP_SESSION_AFFINITY_KEY_COUNT_MAX,
+            ),
+        })
+    }
+
+    pub(crate) async fn set_mcp_session_affinity_key_count(
+        &self,
+        count: i64,
+    ) -> Result<SystemSettings, ProxyError> {
+        if !(MCP_SESSION_AFFINITY_KEY_COUNT_MIN..=MCP_SESSION_AFFINITY_KEY_COUNT_MAX)
+            .contains(&count)
+        {
+            return Err(ProxyError::Other(format!(
+                "mcp_session_affinity_key_count must be between {} and {}",
+                MCP_SESSION_AFFINITY_KEY_COUNT_MIN, MCP_SESSION_AFFINITY_KEY_COUNT_MAX,
+            )));
+        }
+        self.set_meta_i64(META_KEY_MCP_SESSION_AFFINITY_KEY_COUNT_V1, count)
+            .await?;
+        self.get_system_settings().await
     }
 
     pub(crate) async fn sync_linuxdo_system_tag_default_deltas_with_env(

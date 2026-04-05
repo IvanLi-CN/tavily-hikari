@@ -815,6 +815,7 @@ async fn proxy_handler(
         body: forwarded_body.clone(),
         auth_token_id: token_id.clone(),
         pinned_api_key_id,
+        prefer_mcp_session_affinity: is_mcp_initialize && incoming_proxy_session_id.is_none(),
     };
 
     // Serialize per-token billable tool calls to keep `peek -> upstream -> charge` consistent.
@@ -966,6 +967,27 @@ async fn proxy_handler(
         }
     }
 
+    let mcp_session_init_guard =
+        if is_mcp_initialize && incoming_proxy_session_id.is_none() {
+            let guard = state
+                .proxy
+                .lock_mcp_session_init(token_id.as_deref(), token_user_id.as_deref())
+                .await
+                .map_err(|err| {
+                    eprintln!("mcp session init lock failed: {err}");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?;
+            if let Some(guard) = guard.as_ref() {
+                guard.ensure_live().map_err(|err| {
+                    eprintln!("mcp session init lock lost before upstream initialize: {err}");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?;
+            }
+            guard
+        } else {
+            None
+        };
+
     let proxy_result = state.proxy.proxy_request(proxy_request).await;
 
     match proxy_result {
@@ -1029,6 +1051,12 @@ async fn proxy_handler(
                         }
                     }
                 } else if is_mcp_initialize && resp.status.is_success() {
+                    if let Some(guard) = mcp_session_init_guard.as_ref() {
+                        guard.ensure_live().map_err(|err| {
+                            eprintln!("mcp session init lock lost before session bind: {err}");
+                            StatusCode::INTERNAL_SERVER_ERROR
+                        })?;
+                    }
                     let upstream_session_id = resp
                         .headers
                         .get("mcp-session-id")

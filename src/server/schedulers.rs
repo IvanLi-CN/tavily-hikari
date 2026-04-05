@@ -237,6 +237,43 @@ fn spawn_auth_token_logs_gc_scheduler(state: Arc<AppState>) {
     });
 }
 
+fn spawn_mcp_sessions_gc_scheduler(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        loop {
+            let job_id = match state
+                .proxy
+                .scheduled_job_start("mcp_sessions_gc", None, 1)
+                .await
+            {
+                Ok(id) => id,
+                Err(err) => {
+                    eprintln!("mcp-sessions-gc: start job error: {err}");
+                    tokio::time::sleep(Duration::from_secs(3600)).await;
+                    continue;
+                }
+            };
+
+            match state.proxy.gc_mcp_sessions().await {
+                Ok(deleted) => {
+                    let msg = format!("deleted_rows={deleted}");
+                    let _ = state
+                        .proxy
+                        .scheduled_job_finish(job_id, "success", Some(&msg))
+                        .await;
+                }
+                Err(err) => {
+                    let _ = state
+                        .proxy
+                        .scheduled_job_finish(job_id, "error", Some(&err.to_string()))
+                        .await;
+                }
+            }
+
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+        }
+    });
+}
+
 fn spawn_request_logs_gc_scheduler(state: Arc<AppState>) {
     tokio::spawn(async move {
         // Schedule: daily at configured local time.

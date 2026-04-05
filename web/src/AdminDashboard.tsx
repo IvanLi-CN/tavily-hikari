@@ -64,6 +64,7 @@ import ForwardProxySettingsModule, {
 } from './admin/ForwardProxySettingsModule'
 import KeyStickyPanels from './admin/KeyStickyPanels'
 import ModulePlaceholder from './admin/ModulePlaceholder'
+import SystemSettingsModule from './admin/SystemSettingsModule'
 import {
   type QueryLoadState,
   getBlockingLoadState,
@@ -190,6 +191,7 @@ import {
   type SortDirection,
   type MonthlyBrokenKeyDetail,
   type ForwardProxySettings,
+  type SystemSettings,
   type ForwardProxyStatsResponse,
   type ForwardProxyDashboardSummaryResponse,
   type ForwardProxyValidationKind,
@@ -199,8 +201,10 @@ import {
   fetchForwardProxyDashboardSummary,
   type ForwardProxyProgressEvent,
   fetchForwardProxySettings,
+  fetchSystemSettings,
   fetchForwardProxyStats,
   revalidateForwardProxyWithProgress,
+  updateSystemSettings,
   updateForwardProxySettingsWithProgress,
   validateForwardProxyCandidateWithProgress,
 } from './api'
@@ -1398,6 +1402,7 @@ function AdminDashboard(): JSX.Element {
   const logStrings = adminStrings.logs
   const jobsStrings = adminStrings.jobs
   const proxySettingsStrings = adminStrings.proxySettings
+  const systemSettingsStrings = adminStrings.systemSettings
   const footerStrings = adminStrings.footer
   const errorStrings = adminStrings.errors
   const [summary, setSummary] = useState<Summary | null>(null)
@@ -1516,6 +1521,11 @@ function AdminDashboard(): JSX.Element {
   const [forwardProxySettingsLoadState, setForwardProxySettingsLoadState] =
     useState<QueryLoadState>('initial_loading')
   const [forwardProxySettingsError, setForwardProxySettingsError] = useState<string | null>(null)
+  const [systemSettings, setSystemSettings] = useState<SystemSettings | null>(null)
+  const [systemSettingsLoadState, setSystemSettingsLoadState] =
+    useState<QueryLoadState>('initial_loading')
+  const [systemSettingsError, setSystemSettingsError] = useState<string | null>(null)
+  const [systemSettingsSaving, setSystemSettingsSaving] = useState(false)
   const [forwardProxyStats, setForwardProxyStats] = useState<ForwardProxyStatsResponse | null>(null)
   const [forwardProxyStatsLoadState, setForwardProxyStatsLoadState] =
     useState<QueryLoadState>('initial_loading')
@@ -1550,8 +1560,10 @@ function AdminDashboard(): JSX.Element {
   const usersAbortRef = useRef<AbortController | null>(null)
   const unboundTokenUsageAbortRef = useRef<AbortController | null>(null)
   const forwardProxySettingsAbortRef = useRef<AbortController | null>(null)
+  const systemSettingsAbortRef = useRef<AbortController | null>(null)
   const forwardProxyStatsAbortRef = useRef<AbortController | null>(null)
   const forwardProxySettingsLoadedRef = useRef(false)
+  const systemSettingsLoadedRef = useRef(false)
   const forwardProxyStatsLoadedRef = useRef(false)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
   const [version, setVersion] = useState<{ backend: string; frontend: string } | null>(null)
@@ -2545,6 +2557,41 @@ function AdminDashboard(): JSX.Element {
     [beginManagedRequest, loadingStateStrings.error],
   )
 
+  const loadSystemSettingsData = useCallback(
+    async ({
+      signal,
+      reason = 'refresh',
+    }: {
+      signal?: AbortSignal
+      reason?: 'initial' | 'switch' | 'refresh'
+    } = {}) => {
+      const request = beginManagedRequest(systemSettingsAbortRef, signal)
+      setSystemSettingsLoadState(
+        reason === 'refresh'
+          ? getRefreshingLoadState(systemSettingsLoadedRef.current)
+          : getBlockingLoadState(systemSettingsLoadedRef.current),
+      )
+      setSystemSettingsError(null)
+
+      try {
+        const nextSettings = await fetchSystemSettings(request.signal)
+        if (request.signal.aborted) return
+        setSystemSettings(nextSettings)
+        setSystemSettingsLoadState('ready')
+        setLastUpdated(new Date())
+        systemSettingsLoadedRef.current = true
+      } catch (err) {
+        if (request.signal.aborted) return
+        console.error(err)
+        setSystemSettingsError(err instanceof Error ? err.message : loadingStateStrings.error)
+        setSystemSettingsLoadState('error')
+      } finally {
+        request.cleanup()
+      }
+    },
+    [beginManagedRequest, loadingStateStrings.error],
+  )
+
   const loadForwardProxyStatsData = useCallback(
     async ({
       signal,
@@ -2959,6 +3006,20 @@ function AdminDashboard(): JSX.Element {
     unboundTokenUsageSort,
     unboundTokenUsageSortOrder,
   ])
+
+  useEffect(() => {
+    if (!(route.name === 'module' && route.module === 'system-settings')) {
+      return
+    }
+
+    const controller = new AbortController()
+    void loadSystemSettingsData({
+      signal: controller.signal,
+      reason: systemSettingsLoadedRef.current ? 'switch' : 'initial',
+    })
+
+    return () => controller.abort()
+  }, [route, loadSystemSettingsData])
 
   useEffect(() => {
     if (!(route.name === 'module' && route.module === 'proxy-settings')) {
@@ -4069,6 +4130,9 @@ function AdminDashboard(): JSX.Element {
     if (route.name === 'unbound-token-usage') {
       tasks.push(loadUnboundTokenUsage({ signal: controller.signal, reason: 'refresh' }))
     }
+    if (route.name === 'module' && route.module === 'system-settings') {
+      tasks.push(loadSystemSettingsData({ signal: controller.signal, reason: 'refresh' }))
+    }
     if (route.name === 'module' && route.module === 'requests') {
       const request = beginManagedRequest(requestsAbortRef, controller.signal)
       setRequestsLoadState(getRefreshingLoadState(requestsLoadedRef.current))
@@ -4791,6 +4855,7 @@ function AdminDashboard(): JSX.Element {
     unboundTokenUsageSort ?? ADMIN_UNBOUND_TOKEN_USAGE_DEFAULT_SORT_FIELD
   const effectiveUnboundTokenUsageSortOrder =
     unboundTokenUsageSortOrder ?? ADMIN_UNBOUND_TOKEN_USAGE_DEFAULT_SORT_ORDER
+  const systemSettingsBlocking = isBlockingLoadState(systemSettingsLoadState)
   const forwardProxySettingsBlocking = isBlockingLoadState(forwardProxySettingsLoadState)
   const forwardProxyStatsBlocking = isBlockingLoadState(forwardProxyStatsLoadState)
   const activeModuleBlocking =
@@ -4798,6 +4863,7 @@ function AdminDashboard(): JSX.Element {
     || (route.name === 'module' && route.module === 'requests' && requestsBlocking)
     || (route.name === 'module' && route.module === 'jobs' && jobsBlocking)
     || (isUsersCollectionRoute || route.name === 'user') && usersBlocking
+    || (route.name === 'module' && route.module === 'system-settings' && systemSettingsBlocking)
     || (route.name === 'module' && route.module === 'proxy-settings'
       && (forwardProxySettingsBlocking || forwardProxyStatsBlocking))
     || (route.name === 'unbound-token-usage' && unboundTokenUsageBlocking)
@@ -5445,6 +5511,25 @@ function AdminDashboard(): JSX.Element {
       setRegistrationSettingsSaving(false)
     }
   }
+  const saveSystemSettings = useCallback(async (mcpSessionAffinityKeyCount: number) => {
+    setSystemSettingsSaving(true)
+    setSystemSettingsError(null)
+    try {
+      const nextSettings = await updateSystemSettings({ mcpSessionAffinityKeyCount })
+      setSystemSettings(nextSettings)
+      setSystemSettingsLoadState('ready')
+      setLastUpdated(new Date())
+      systemSettingsLoadedRef.current = true
+    } catch (err) {
+      console.error(err)
+      setSystemSettingsError(
+        err instanceof Error ? err.message : systemSettingsStrings.form.saveFailed,
+      )
+      throw err instanceof Error ? err : new Error(systemSettingsStrings.form.saveFailed)
+    } finally {
+      setSystemSettingsSaving(false)
+    }
+  }, [systemSettingsStrings.form.saveFailed])
   const refreshUsersList = async () => {
     const pagedUsers = await fetchAdminUsers(
       usersPage,
@@ -6175,6 +6260,7 @@ function AdminDashboard(): JSX.Element {
     { target: 'jobs', label: adminStrings.nav.jobs, icon: <Icon icon="mdi:calendar-clock-outline" width={18} height={18} /> },
     { target: 'users', label: adminStrings.nav.users, icon: <Icon icon="mdi:account-group-outline" width={18} height={18} /> },
     { target: 'alerts', label: adminStrings.nav.alerts, icon: <Icon icon="mdi:bell-ring-outline" width={18} height={18} /> },
+    { target: 'system-settings', label: adminStrings.nav.systemSettings, icon: <Icon icon="mdi:cog-outline" width={18} height={18} /> },
     { target: 'proxy-settings', label: adminStrings.nav.proxySettings, icon: <Icon icon="mdi:tune-variant" width={18} height={18} /> },
   ]
   const activeNavItem: AdminNavTarget =
@@ -8594,6 +8680,7 @@ function AdminDashboard(): JSX.Element {
   const showJobs = activeModule === 'jobs'
   const showUsers = activeModule === 'users'
   const showAlerts = activeModule === 'alerts'
+  const showSystemSettings = activeModule === 'system-settings'
   const showProxySettings = activeModule === 'proxy-settings'
   const trendBuckets = (() => {
     const windowSize = 8
@@ -8711,6 +8798,11 @@ function AdminDashboard(): JSX.Element {
         return {
           title: adminStrings.modules.alerts.title,
           description: adminStrings.modules.alerts.description,
+        }
+      case 'system-settings':
+        return {
+          title: systemSettingsStrings.title,
+          description: systemSettingsStrings.description,
         }
       case 'proxy-settings':
         return {
@@ -10697,6 +10789,17 @@ function AdminDashboard(): JSX.Element {
             adminStrings.modules.alerts.sections.thresholds,
             adminStrings.modules.alerts.sections.channels,
           ]}
+        />
+      )}
+
+      {showSystemSettings && (
+        <SystemSettingsModule
+          strings={systemSettingsStrings}
+          settings={systemSettings}
+          loadState={systemSettingsLoadState}
+          error={systemSettingsError}
+          saving={systemSettingsSaving}
+          onApply={saveSystemSettings}
         />
       )}
 

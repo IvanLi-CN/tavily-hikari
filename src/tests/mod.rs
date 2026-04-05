@@ -1024,6 +1024,7 @@ async fn user_tokens_share_persistent_primary_key_affinity_after_restart() {
         headers: HeaderMap::new(),
         body: Bytes::from_static(br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#),
         auth_token_id: Some(token_id.to_string()),
+        prefer_mcp_session_affinity: false,
         pinned_api_key_id: None,
     };
 
@@ -1145,6 +1146,7 @@ async fn token_primary_rebind_falls_back_to_exhausted_key_when_no_other_active_k
         headers: HeaderMap::new(),
         body: Bytes::from_static(br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#),
         auth_token_id: Some(token.id.clone()),
+        prefer_mcp_session_affinity: false,
         pinned_api_key_id: None,
     };
 
@@ -5918,6 +5920,7 @@ async fn proxy_request_quarantines_key_on_mcp_unauthorized() {
         headers: HeaderMap::new(),
         body: Bytes::from_static(br#"{"jsonrpc":"2.0","id":1,"method":"tools/call"}"#),
         auth_token_id: Some("tok1".to_string()),
+        prefer_mcp_session_affinity: false,
         pinned_api_key_id: None,
     };
 
@@ -5977,6 +5980,7 @@ async fn proxy_request_quarantines_key_on_mcp_error_body_without_http_status() {
         headers: HeaderMap::new(),
         body: Bytes::from_static(br#"{"jsonrpc":"2.0","id":1,"method":"tools/call"}"#),
         auth_token_id: Some("tok1".to_string()),
+        prefer_mcp_session_affinity: false,
         pinned_api_key_id: None,
     };
 

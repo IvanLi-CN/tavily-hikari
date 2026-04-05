@@ -1,5 +1,6 @@
 use crate::store::*;
 use crate::*;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug)]
 pub(crate) struct ApiKeyLease {
@@ -36,6 +37,7 @@ pub struct ProxyRequest {
     pub body: Bytes,
     pub auth_token_id: Option<String>,
     pub pinned_api_key_id: Option<String>,
+    pub prefer_mcp_session_affinity: bool,
 }
 
 /// 透传响应。
@@ -414,6 +416,12 @@ pub struct McpSessionBinding {
     pub expires_at: i64,
     pub revoked_at: Option<i64>,
     pub revoke_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemSettings {
+    pub mcp_session_affinity_key_count: i64,
 }
 
 /// 单条请求日志记录的关键信息。

@@ -201,6 +201,7 @@ interface AdminTranslationsShape {
     jobs: string
     users: string
     alerts: string
+    systemSettings: string
     proxySettings: string
   }
   dashboard: {
@@ -485,6 +486,24 @@ interface AdminTranslationsShape {
       oneHour: string
       oneDay: string
       sevenDays: string
+    }
+  }
+  systemSettings: {
+    title: string
+    description: string
+    form: {
+      title: string
+      description: string
+      countLabel: string
+      countHint: string
+      currentValue: string
+      applyScopeHint: string
+      invalidCount: string
+      saveFailed: string
+    }
+    actions: {
+      apply: string
+      applying: string
     }
   }
   users: {
@@ -1488,6 +1507,7 @@ export const translations: Record<Language, TranslationShape> = {
         jobs: 'Jobs',
         users: 'Users',
         alerts: 'Alerts',
+        systemSettings: 'System Settings',
         proxySettings: 'Proxy Settings',
       },
       dashboard: {
@@ -1771,6 +1791,24 @@ export const translations: Record<Language, TranslationShape> = {
           oneHour: '1h',
           oneDay: '1d',
           sevenDays: '7d',
+        },
+      },
+      systemSettings: {
+        title: 'System Settings',
+        description: 'Adjust system-level MCP session affinity behavior and apply it without restarting.',
+        form: {
+          title: 'MCP session affinity pool',
+          description: 'New MCP initialize requests pick from a stable per-user upstream key pool, then balance sessions inside that pool.',
+          countLabel: 'Affinity key count',
+          countHint: 'Each user stays sticky to up to this many upstream keys. A stable top-N ranking keeps pool changes minimal when the count or available keys change.',
+          currentValue: 'Current value: {count}',
+          applyScopeHint: 'Applies immediately to newly created MCP sessions only. Existing sessions keep their current upstream key.',
+          invalidCount: 'Enter an integer between 1 and 1000.',
+          saveFailed: 'Failed to save system settings.',
+        },
+        actions: {
+          apply: 'Apply settings',
+          applying: 'Applying…',
         },
       },
       users: {
@@ -2765,6 +2803,7 @@ export const translations: Record<Language, TranslationShape> = {
         jobs: '任务作业',
         users: '用户管理',
         alerts: '告警中心',
+        systemSettings: '系统设置',
         proxySettings: '代理设置',
       },
       dashboard: {
@@ -3048,6 +3087,24 @@ export const translations: Record<Language, TranslationShape> = {
           oneHour: '1 小时',
           oneDay: '1 天',
           sevenDays: '7 天',
+        },
+      },
+      systemSettings: {
+        title: '系统设置',
+        description: '调整系统级 MCP session 亲和策略，并且无需重启即可生效。',
+        form: {
+          title: 'MCP session 亲和池',
+          description: '新的 MCP initialize 请求会先命中每个用户稳定的上游 key 池，再在池内按活跃 session 数做均衡。',
+          countLabel: '亲和 key 数量',
+          countHint: '每个用户最多亲和这么多个上游 key。数量或可用 key 变化时，会通过稳定 top-N 排序尽量减少迁移。',
+          currentValue: '当前值：{count}',
+          applyScopeHint: '设置会立即作用于新创建的 MCP session；已有 session 会继续保持当前上游 key。',
+          invalidCount: '请输入 1 到 1000 之间的整数。',
+          saveFailed: '保存系统设置失败。',
+        },
+        actions: {
+          apply: '应用设置',
+          applying: '应用中…',
         },
       },
       users: {

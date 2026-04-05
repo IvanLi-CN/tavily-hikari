@@ -108,6 +108,7 @@ pub async fn serve(
         .route("/api/summary", get(fetch_summary))
         .route("/api/summary/windows", get(fetch_summary_windows))
         .route("/api/settings", get(get_settings))
+        .route("/api/settings/system", put(put_system_settings))
         .route("/api/settings/forward-proxy", put(put_forward_proxy_settings))
         .route(
             "/api/settings/forward-proxy/validate",
@@ -283,6 +284,7 @@ pub async fn serve(
     spawn_quota_sync_scheduler(state.clone());
     spawn_token_usage_rollup_scheduler(state.clone());
     spawn_auth_token_logs_gc_scheduler(state.clone());
+    spawn_mcp_sessions_gc_scheduler(state.clone());
     spawn_request_logs_gc_scheduler(state.clone());
     let _forward_proxy_geo_refresh_scheduler = spawn_forward_proxy_geo_refresh_scheduler(state.clone());
     spawn_forward_proxy_maintenance_scheduler(state.clone());

@@ -2002,8 +2002,13 @@ export interface ForwardProxySettings {
   nodes: ForwardProxyNode[]
 }
 
+export interface SystemSettings {
+  mcpSessionAffinityKeyCount: number
+}
+
 export interface ForwardProxySettingsEnvelope {
   forwardProxy?: ForwardProxySettings | null
+  systemSettings?: SystemSettings | null
 }
 
 export interface UpdateForwardProxySettingsPayload {
@@ -2014,6 +2019,10 @@ export interface UpdateForwardProxySettingsPayload {
   egressSocks5Enabled?: boolean
   egressSocks5Url?: string
   skipBootstrapProbe?: boolean
+}
+
+export interface UpdateSystemSettingsPayload {
+  mcpSessionAffinityKeyCount: number
 }
 
 export type ForwardProxyValidationKind = 'proxyUrl' | 'subscriptionUrl'
@@ -2084,9 +2093,20 @@ function createEmptyForwardProxySettings(): ForwardProxySettings {
   }
 }
 
+function createEmptySystemSettings(): SystemSettings {
+  return {
+    mcpSessionAffinityKeyCount: 5,
+  }
+}
+
 export async function fetchForwardProxySettings(signal?: AbortSignal): Promise<ForwardProxySettings> {
   const response = await requestJson<ForwardProxySettingsEnvelope>('/api/settings', { signal })
   return response.forwardProxy ?? createEmptyForwardProxySettings()
+}
+
+export async function fetchSystemSettings(signal?: AbortSignal): Promise<SystemSettings> {
+  const response = await requestJson<ForwardProxySettingsEnvelope>('/api/settings', { signal })
+  return response.systemSettings ?? createEmptySystemSettings()
 }
 
 export function updateForwardProxySettings(
@@ -2113,6 +2133,16 @@ export function updateForwardProxySettingsWithProgress(
     'save',
     onEvent,
   )
+}
+
+export function updateSystemSettings(
+  payload: UpdateSystemSettingsPayload,
+): Promise<SystemSettings> {
+  return requestJson('/api/settings/system', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
 }
 
 export function validateForwardProxyCandidate(

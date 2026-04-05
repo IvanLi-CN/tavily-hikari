@@ -27,6 +27,7 @@ const NAV_ITEMS: AdminNavItem[] = [
   { target: 'jobs', label: 'Jobs', icon: navIcon('mdi:calendar-clock-outline') },
   { target: 'users', label: 'Users', icon: navIcon('mdi:account-group-outline') },
   { target: 'alerts', label: 'Alerts', icon: navIcon('mdi:bell-ring-outline') },
+  { target: 'system-settings', label: 'System Settings', icon: navIcon('mdi:cog-outline') },
   { target: 'proxy-settings', label: 'Proxy Settings', icon: navIcon('mdi:tune-variant') },
 ]
 

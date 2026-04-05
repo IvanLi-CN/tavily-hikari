@@ -75,6 +75,7 @@ import {
 } from './dashboardTodayMetrics'
 import ForwardProxySettingsModule from './ForwardProxySettingsModule'
 import ModulePlaceholder from './ModulePlaceholder'
+import SystemSettingsModule from './SystemSettingsModule'
 import {
   forwardProxyStorySavedAt,
   forwardProxyStorySettings,
@@ -2611,6 +2612,7 @@ function buildNavItems(strings: AdminTranslations): AdminNavItem[] {
     { target: 'jobs', label: strings.nav.jobs, icon: <Icon icon="mdi:calendar-clock-outline" width={18} height={18} /> },
     { target: 'users', label: strings.nav.users, icon: <Icon icon="mdi:account-group-outline" width={18} height={18} /> },
     { target: 'alerts', label: strings.nav.alerts, icon: <Icon icon="mdi:bell-ring-outline" width={18} height={18} /> },
+    { target: 'system-settings', label: strings.nav.systemSettings, icon: <Icon icon="mdi:cog-outline" width={18} height={18} /> },
     { target: 'proxy-settings', label: strings.nav.proxySettings, icon: <Icon icon="mdi:tune-variant" width={18} height={18} /> },
   ]
 }
@@ -2665,6 +2667,11 @@ function AdminPageFrame({
         return {
           title: admin.modules.alerts.title,
           description: admin.modules.alerts.description,
+        }
+      case 'system-settings':
+        return {
+          title: admin.systemSettings.title,
+          description: admin.systemSettings.description,
         }
       case 'proxy-settings':
         return {
@@ -5547,6 +5554,23 @@ function ProxySettingsPageCanvas(): JSX.Element {
   )
 }
 
+function SystemSettingsPageCanvas(): JSX.Element {
+  const admin = useTranslate().admin
+
+  return (
+    <AdminPageFrame activeModule="system-settings">
+      <SystemSettingsModule
+        strings={admin.systemSettings}
+        settings={{ mcpSessionAffinityKeyCount: 5 }}
+        loadState="ready"
+        error={null}
+        saving={false}
+        onApply={() => {}}
+      />
+    </AdminPageFrame>
+  )
+}
+
 const meta = {
   title: 'Admin/Pages',
   tags: ['autodocs'],
@@ -5554,7 +5578,7 @@ const meta = {
     docs: {
       description: {
         component: [
-          'Route-level admin review surface covering dashboard, keys, tokens, users, jobs, and forward proxy settings.',
+          'Route-level admin review surface covering dashboard, keys, tokens, users, jobs, system settings, and forward proxy settings.',
           '',
           'Public docs: [Configuration & Access](../configuration-access.html) · [Deployment & Anonymity](../deployment-anonymity.html) · [Storybook Guide](../storybook-guide.html)',
         ].join('\n'),
@@ -5889,6 +5913,13 @@ export const UserDetail: Story = {
 
 export const Alerts: Story = {
   render: () => <AlertsPageCanvas />,
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+  },
+}
+
+export const SystemSettings: Story = {
+  render: () => <SystemSettingsPageCanvas />,
   parameters: {
     viewport: { defaultViewport: '1440-device-desktop' },
   },

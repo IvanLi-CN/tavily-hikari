@@ -444,8 +444,11 @@ pub const TOKEN_HOURLY_REQUEST_LIMIT: i64 = 500;
 // Keep a request_id -> key affinity for Tavily research result polling.
 // This avoids switching keys between POST /research and GET /research/{request_id}.
 const RESEARCH_REQUEST_AFFINITY_TTL_SECS: i64 = 24 * 60 * 60;
-const MCP_SESSION_IDLE_TTL_SECS: i64 = 24 * 60 * 60;
+const MCP_SESSION_RETENTION_SECS: i64 = 7 * 24 * 60 * 60;
 const MCP_PROXY_USER_AGENT: &str = "tavily-hikari-mcp-proxy/1.0";
+pub const MCP_SESSION_AFFINITY_KEY_COUNT_DEFAULT: i64 = 5;
+pub const MCP_SESSION_AFFINITY_KEY_COUNT_MIN: i64 = 1;
+pub const MCP_SESSION_AFFINITY_KEY_COUNT_MAX: i64 = 1_000;
 // Hard cap on the number of token→key affinity entries kept in memory to prevent
 // unbounded growth under churny traffic (many distinct tokens).
 const TOKEN_AFFINITY_MAX_ENTRIES: usize = 10_000;
@@ -504,6 +507,7 @@ const META_KEY_ACCOUNT_QUOTA_INHERITS_DEFAULTS_BACKFILL_V1: &str =
 const META_KEY_ACCOUNT_QUOTA_ZERO_BASE_CUTOVER_V1: &str = "account_quota_zero_base_cutover_v1";
 const META_KEY_FORCE_USER_RELOGIN_V1: &str = "force_user_relogin_v1";
 const META_KEY_ALLOW_REGISTRATION_V1: &str = "allow_registration_v1";
+const META_KEY_MCP_SESSION_AFFINITY_KEY_COUNT_V1: &str = "mcp_session_affinity_key_count_v1";
 const META_KEY_LINUXDO_SYSTEM_TAG_DEFAULTS_V1: &str = "linuxdo_system_tag_defaults_v1";
 const META_KEY_LINUXDO_SYSTEM_TAG_DEFAULTS_TUPLE_V1: &str = "linuxdo_system_tag_defaults_tuple_v1";
 const META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE: &str =
