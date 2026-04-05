@@ -5,6 +5,7 @@
   "packageManager": "bun@1.3.10",
   "scripts": {
     "test:tavily-http": "bun ./tests/e2e/tavily_http_smoke.ts",
+    "test:e2e:system-settings-browser": "bun ./tests/e2e/system_settings_browser_e2e.ts",
     "validate:no-node-runtime": "bash ./scripts/validate-no-node-runtime.sh"
   },
   "devDependencies": {
@@ -13,6 +14,7 @@
     "@modelcontextprotocol/inspector": "^0.17.2",
     "@tavily/core": "^0.5.13",
     "commitlint-plugin-function-rules": "^4.1.0",
-    "dprint": "^0.47.5"
+    "dprint": "^0.47.5",
+    "playwright-core": "^1.59.1"
   }
 }
