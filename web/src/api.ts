@@ -68,11 +68,21 @@ export interface ForwardProxyDashboardSummaryResponse {
   totalNodes: number
 }
 
-export interface DashboardSnapshotEvent {
+export type DashboardTokenCoverage = 'ok' | 'truncated' | 'error'
+
+export interface DashboardOverviewResponse {
   summary: Summary
   summaryWindows: SummaryWindowsResponse
   siteStatus: DashboardSiteStatusSnapshot
   forwardProxy: DashboardForwardProxySnapshot
+  exhaustedKeys: ApiKeyStats[]
+  recentLogs: RequestLog[]
+  recentJobs: JobLogView[]
+  disabledTokens: AuthToken[]
+  tokenCoverage: DashboardTokenCoverage
+}
+
+export interface DashboardSnapshotEvent extends DashboardOverviewResponse {
   keys: ApiKeyStats[]
   logs: RequestLog[]
 }
@@ -634,6 +644,10 @@ export function fetchSummary(signal?: AbortSignal): Promise<Summary> {
 
 export function fetchSummaryWindows(signal?: AbortSignal): Promise<SummaryWindowsResponse> {
   return requestJson('/api/summary/windows', { signal })
+}
+
+export function fetchDashboardOverview(signal?: AbortSignal): Promise<DashboardOverviewResponse> {
+  return requestJson('/api/dashboard/overview', { signal })
 }
 
 export function fetchPublicMetrics(todayWindow?: TodayWindowRange, signal?: AbortSignal): Promise<PublicMetrics> {

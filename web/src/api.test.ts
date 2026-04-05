@@ -9,6 +9,7 @@ import {
   fetchAdminUsers,
   fetchAdminUserTags,
   fetchApiKeys,
+  fetchDashboardOverview,
   fetchJobs,
   fetchKeyLogDetails,
   fetchPublicMetrics,
@@ -104,6 +105,57 @@ describe('admin user tag api helpers', () => {
     expect((fetchMock.mock.calls[4] as [string])[0]).toBe(
       '/api/user/tokens/a1b2?today_start=2026-04-03T00%3A00%3A00%2B08%3A00&today_end=2026-04-04T00%3A00%3A00%2B08%3A00',
     )
+  })
+
+  it('loads the dashboard overview from the dedicated aggregate endpoint', async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            summary: {
+              total_requests: 1,
+              success_count: 1,
+              error_count: 0,
+              quota_exhausted_count: 0,
+              active_keys: 1,
+              exhausted_keys: 0,
+              quarantined_keys: 0,
+              last_activity: null,
+              total_quota_limit: 10,
+              total_quota_remaining: 9,
+            },
+            summaryWindows: {
+              today: { total_requests: 1, success_count: 1, error_count: 0, quota_exhausted_count: 0, valuable_success_count: 0, valuable_failure_count: 0, other_success_count: 0, other_failure_count: 0, unknown_count: 0, upstream_exhausted_key_count: 0, new_keys: 0, new_quarantines: 0 },
+              yesterday: { total_requests: 0, success_count: 0, error_count: 0, quota_exhausted_count: 0, valuable_success_count: 0, valuable_failure_count: 0, other_success_count: 0, other_failure_count: 0, unknown_count: 0, upstream_exhausted_key_count: 0, new_keys: 0, new_quarantines: 0 },
+              month: { total_requests: 1, success_count: 1, error_count: 0, quota_exhausted_count: 0, valuable_success_count: 0, valuable_failure_count: 0, other_success_count: 0, other_failure_count: 0, unknown_count: 0, upstream_exhausted_key_count: 0, new_keys: 0, new_quarantines: 0 },
+            },
+            siteStatus: {
+              remainingQuota: 9,
+              totalQuotaLimit: 10,
+              activeKeys: 1,
+              quarantinedKeys: 0,
+              exhaustedKeys: 0,
+              availableProxyNodes: 1,
+              totalProxyNodes: 1,
+            },
+            forwardProxy: { availableNodes: 1, totalNodes: 1 },
+            exhaustedKeys: [],
+            recentLogs: [],
+            recentJobs: [],
+            disabledTokens: [],
+            tokenCoverage: 'ok',
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    )
+    globalThis.fetch = fetchMock as typeof fetch
+
+    const overview = await fetchDashboardOverview()
+
+    expect((fetchMock.mock.calls[0] as [string])[0]).toBe('/api/dashboard/overview')
+    expect(overview.siteStatus.activeKeys).toBe(1)
+    expect(overview.tokenCoverage).toBe('ok')
   })
 
   it('builds the public SSE url with token and explicit today windows', () => {

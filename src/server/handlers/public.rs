@@ -18,7 +18,7 @@ async fn fetch_summary(
         })
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct SummaryQuotaChargeView {
     local_estimated_credits: i64,
     upstream_actual_credits: i64,
@@ -27,7 +27,7 @@ struct SummaryQuotaChargeView {
     latest_sync_at: Option<i64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct SummaryWindowView {
     total_requests: i64,
     success_count: i64,
@@ -44,7 +44,7 @@ struct SummaryWindowView {
     quota_charge: SummaryQuotaChargeView,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct SummaryWindowsView {
     today: SummaryWindowView,
     yesterday: SummaryWindowView,
@@ -537,9 +537,15 @@ async fn get_public_logs(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
-#[derive(Debug, Serialize)]
+const DASHBOARD_EXHAUSTED_KEYS_LIMIT: usize = 5;
+const DASHBOARD_RECENT_LOGS_LIMIT: usize = 5;
+const DASHBOARD_RECENT_JOBS_LIMIT: usize = 5;
+const DASHBOARD_DISABLED_TOKENS_LIMIT: usize = 5;
+const DASHBOARD_DISABLED_TOKENS_QUERY_LIMIT: usize = DASHBOARD_DISABLED_TOKENS_LIMIT + 1;
+
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct DashboardSnapshot {
+struct DashboardOverviewPayload {
     summary: SummaryView,
     #[serde(rename = "summaryWindows")]
     summary_windows: SummaryWindowsView,
@@ -547,11 +553,28 @@ struct DashboardSnapshot {
     site_status: DashboardSiteStatusView,
     #[serde(rename = "forwardProxy")]
     forward_proxy: DashboardForwardProxyView,
+    #[serde(rename = "exhaustedKeys")]
+    exhausted_keys: Vec<ApiKeyView>,
+    #[serde(rename = "recentLogs")]
+    recent_logs: Vec<RequestLogView>,
+    #[serde(rename = "recentJobs")]
+    recent_jobs: Vec<JobLogView>,
+    #[serde(rename = "disabledTokens")]
+    disabled_tokens: Vec<AuthTokenView>,
+    #[serde(rename = "tokenCoverage")]
+    token_coverage: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DashboardSnapshot {
+    #[serde(flatten)]
+    overview: DashboardOverviewPayload,
     keys: Vec<ApiKeyView>,
     logs: Vec<RequestLogView>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DashboardSiteStatusView {
     remaining_quota: i64,
@@ -563,11 +586,28 @@ struct DashboardSiteStatusView {
     total_proxy_nodes: Option<i64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DashboardForwardProxyView {
     available_nodes: Option<i64>,
     total_nodes: Option<i64>,
+}
+
+async fn get_dashboard_overview(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<DashboardOverviewPayload>, StatusCode> {
+    if !is_admin_request(state.as_ref(), &headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    build_dashboard_overview_payload(&state)
+        .await
+        .map(Json)
+        .map_err(|err| {
+            eprintln!("dashboard overview error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
 }
 
 async fn sse_dashboard(
@@ -744,22 +784,40 @@ async fn sse_public(
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")))
 }
 
-async fn build_snapshot_event(state: &Arc<AppState>) -> Option<Event> {
-    let summary = state.proxy.summary().await.ok()?;
+async fn build_dashboard_overview_payload(
+    state: &Arc<AppState>,
+) -> Result<DashboardOverviewPayload, ProxyError> {
+    let summary = state.proxy.summary().await?;
     let tavily_hikari::SummaryWindows {
         today,
         yesterday,
         month,
-    } = state.proxy.summary_windows().await.ok()?;
-    let forward_proxy = state.proxy.get_forward_proxy_dashboard_summary().await.ok()?;
-    let keys = state.proxy.list_api_key_metrics().await.ok()?;
-    let logs = state
+    } = state.proxy.summary_windows().await?;
+    let forward_proxy = state.proxy.get_forward_proxy_dashboard_summary().await?;
+    let exhausted_keys = state
         .proxy
-        .recent_request_logs(DEFAULT_LOG_LIMIT)
-        .await
-        .ok()?;
+        .list_dashboard_exhausted_key_metrics(DASHBOARD_EXHAUSTED_KEYS_LIMIT)
+        .await?;
+    let recent_logs = state
+        .proxy
+        .recent_request_logs(DASHBOARD_RECENT_LOGS_LIMIT)
+        .await?;
+    let recent_jobs = state
+        .proxy
+        .list_recent_jobs(DASHBOARD_RECENT_JOBS_LIMIT)
+        .await?;
+    let mut disabled_tokens = state
+        .proxy
+        .list_dashboard_disabled_tokens(DASHBOARD_DISABLED_TOKENS_QUERY_LIMIT)
+        .await?;
+    let token_coverage = if disabled_tokens.len() > DASHBOARD_DISABLED_TOKENS_LIMIT {
+        disabled_tokens.truncate(DASHBOARD_DISABLED_TOKENS_LIMIT);
+        "truncated"
+    } else {
+        "ok"
+    };
 
-    let payload = DashboardSnapshot {
+    Ok(DashboardOverviewPayload {
         summary: summary.clone().into(),
         summary_windows: SummaryWindowsView {
             today: SummaryWindowView::from(today),
@@ -779,8 +837,23 @@ async fn build_snapshot_event(state: &Arc<AppState>) -> Option<Event> {
             available_nodes: Some(forward_proxy.available_nodes),
             total_nodes: Some(forward_proxy.total_nodes),
         },
-        keys: keys.into_iter().map(ApiKeyView::from_list).collect(),
-        logs: logs.into_iter().map(RequestLogView::from).collect(),
+        exhausted_keys: exhausted_keys.into_iter().map(ApiKeyView::from_list).collect(),
+        recent_logs: recent_logs
+            .into_iter()
+            .map(RequestLogView::from_summary_record)
+            .collect(),
+        recent_jobs: recent_jobs.into_iter().map(JobLogView::from).collect(),
+        disabled_tokens: disabled_tokens.into_iter().map(AuthTokenView::from).collect(),
+        token_coverage: token_coverage.to_string(),
+    })
+}
+
+async fn build_snapshot_event(state: &Arc<AppState>) -> Option<Event> {
+    let overview = build_dashboard_overview_payload(state).await.ok()?;
+    let payload = DashboardSnapshot {
+        keys: overview.exhausted_keys.clone(),
+        logs: overview.recent_logs.clone(),
+        overview,
     };
 
     let json = serde_json::to_string(&payload).ok()?;
@@ -801,8 +874,32 @@ async fn compute_signatures(
         .get_forward_proxy_dashboard_summary()
         .await
         .map_err(|_| ())?;
-    let logs = state.proxy.recent_request_logs(1).await.map_err(|_| ())?;
-    let latest_id = logs.first().map(|l| l.id);
+    let latest_id = state
+        .proxy
+        .latest_visible_request_log_id()
+        .await
+        .map_err(|_| ())?;
+    let exhausted_keys = state
+        .proxy
+        .list_dashboard_exhausted_key_ids(DASHBOARD_EXHAUSTED_KEYS_LIMIT)
+        .await
+        .map_err(|_| ())?;
+    let disabled_tokens = state
+        .proxy
+        .list_dashboard_disabled_token_ids(DASHBOARD_DISABLED_TOKENS_QUERY_LIMIT)
+        .await
+        .map_err(|_| ())?;
+    let recent_jobs = state
+        .proxy
+        .list_recent_job_signatures(DASHBOARD_RECENT_JOBS_LIMIT)
+        .await
+        .map_err(|_| ())?;
+    let disabled_token_ids = disabled_tokens
+        .iter()
+        .take(DASHBOARD_DISABLED_TOKENS_LIMIT)
+        .cloned()
+        .collect::<Vec<_>>();
+    let disabled_token_truncated = disabled_tokens.len() > DASHBOARD_DISABLED_TOKENS_LIMIT;
     let sig: Option<SummarySig> = Some(SummarySig {
         summary: [
             summary.total_requests,
@@ -870,6 +967,10 @@ async fn compute_signatures(
             month.quota_charge.latest_sync_at.unwrap_or_default(),
         ],
         proxy: Some((forward_proxy.available_nodes, forward_proxy.total_nodes)),
+        exhausted_keys,
+        disabled_tokens: disabled_token_ids,
+        disabled_tokens_truncated: disabled_token_truncated,
+        recent_jobs,
     });
     Ok((sig, latest_id))
 }
