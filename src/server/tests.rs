@@ -11540,6 +11540,140 @@ colo=LAX
     }
 
     #[tokio::test]
+    async fn admin_dashboard_sse_snapshot_refreshes_when_disabled_token_feed_breaks() {
+        let db_path = temp_db_path("admin-dashboard-snapshot-disabled-token-feed-error");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-admin-dashboard-disabled-token-feed-error".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let admin_password = "admin-dashboard-disabled-token-feed-password";
+        let admin_addr = spawn_builtin_keys_admin_server(proxy, admin_password).await;
+        let client = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build client");
+
+        let login_resp = client
+            .post(format!("http://{}/api/admin/login", admin_addr))
+            .json(&serde_json::json!({ "password": admin_password }))
+            .send()
+            .await
+            .expect("admin login");
+        assert_eq!(login_resp.status(), reqwest::StatusCode::OK);
+        let admin_cookie = find_cookie_pair(login_resp.headers(), BUILTIN_ADMIN_COOKIE_NAME)
+            .expect("admin session cookie");
+
+        let mut events_resp = client
+            .get(format!("http://{}/api/events", admin_addr))
+            .header(reqwest::header::COOKIE, admin_cookie)
+            .send()
+            .await
+            .expect("admin events request");
+        assert_eq!(events_resp.status(), reqwest::StatusCode::OK);
+
+        let mut first_text = String::new();
+        while !first_text.contains("\n\n") {
+            let chunk = events_resp
+                .chunk()
+                .await
+                .expect("read initial event chunk")
+                .expect("initial snapshot chunk exists");
+            first_text.push_str(std::str::from_utf8(&chunk).expect("initial snapshot chunk utf8"));
+        }
+
+        let initial_snapshot = first_text
+            .split("\n\n")
+            .find(|chunk| chunk.contains("event: snapshot"))
+            .expect("initial snapshot event");
+        let initial_data = initial_snapshot
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .expect("initial snapshot data");
+        let initial_json: serde_json::Value =
+            serde_json::from_str(initial_data).expect("initial snapshot payload json");
+        assert_eq!(
+            initial_json
+                .get("tokenCoverage")
+                .and_then(|value| value.as_str()),
+            Some("ok")
+        );
+
+        let options = SqliteConnectOptions::new()
+            .filename(&db_str)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open db pool");
+
+        sqlx::query("DROP TABLE auth_tokens")
+            .execute(&pool)
+            .await
+            .expect("drop auth_tokens");
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(25);
+        let mut buffer = String::new();
+        let mut refreshed_snapshot: Option<serde_json::Value> = None;
+        while tokio::time::Instant::now() < deadline {
+            let chunk = tokio::time::timeout(Duration::from_secs(10), events_resp.chunk())
+                .await
+                .expect("await refreshed event chunk in time")
+                .expect("read refreshed event chunk")
+                .expect("refreshed event chunk exists");
+            buffer.push_str(std::str::from_utf8(&chunk).expect("refreshed event chunk utf8"));
+            while let Some((event_chunk, rest)) = buffer.split_once("\n\n") {
+                let event_chunk = event_chunk.to_string();
+                buffer = rest.to_string();
+                if !event_chunk.contains("event: snapshot") {
+                    continue;
+                }
+                let Some(data) = event_chunk
+                    .lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                else {
+                    continue;
+                };
+                let payload: serde_json::Value =
+                    serde_json::from_str(data).expect("refreshed snapshot payload json");
+                if payload.get("tokenCoverage").and_then(|value| value.as_str()) == Some("error") {
+                    refreshed_snapshot = Some(payload);
+                    break;
+                }
+            }
+            if refreshed_snapshot.is_some() {
+                break;
+            }
+        }
+
+        let refreshed_snapshot = refreshed_snapshot.expect("token coverage snapshot refresh");
+        assert_eq!(
+            refreshed_snapshot
+                .get("tokenCoverage")
+                .and_then(|value| value.as_str()),
+            Some("error")
+        );
+        assert_eq!(
+            refreshed_snapshot
+                .get("disabledTokens")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(0)
+        );
+
+        drop(events_resp);
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn admin_user_management_lists_details_and_updates_quota() {
         let db_path = temp_db_path("admin-users");
         let db_str = db_path.to_string_lossy().to_string();

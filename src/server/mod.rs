@@ -43,6 +43,7 @@ struct SummarySig {
     proxy: Option<(i64, i64)>,
     exhausted_keys: Vec<String>,
     disabled_tokens: Vec<String>,
+    disabled_tokens_error: bool,
     disabled_tokens_truncated: bool,
     recent_jobs: Vec<(i64, String, Option<i64>)>,
 }

@@ -944,11 +944,14 @@ async fn compute_signatures(
         .list_dashboard_exhausted_key_ids(DASHBOARD_EXHAUSTED_KEYS_LIMIT)
         .await
         .unwrap_or_default();
-    let disabled_tokens = state
+    let (disabled_tokens, disabled_tokens_error) = match state
         .proxy
         .list_dashboard_disabled_token_ids(DASHBOARD_DISABLED_TOKENS_QUERY_LIMIT)
         .await
-        .unwrap_or_default();
+    {
+        Ok(disabled_tokens) => (disabled_tokens, false),
+        Err(_) => (Vec::new(), true),
+    };
     let recent_jobs = state
         .proxy
         .list_recent_job_signatures(DASHBOARD_RECENT_JOBS_LIMIT)
@@ -1029,6 +1032,7 @@ async fn compute_signatures(
         proxy: Some((forward_proxy.available_nodes, forward_proxy.total_nodes)),
         exhausted_keys,
         disabled_tokens: disabled_token_ids,
+        disabled_tokens_error,
         disabled_tokens_truncated: disabled_token_truncated,
         recent_jobs,
     });
