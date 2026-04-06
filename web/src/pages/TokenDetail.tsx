@@ -77,6 +77,22 @@ const emptyRequestLogsListPage: RequestLogsListPage = {
   hasNewer: false,
 }
 
+function createEmptyTokenLogsListPage(pageSize: number): RequestLogsListPage {
+  return {
+    ...emptyRequestLogsListPage,
+    pageSize,
+  }
+}
+
+function buildTokenLogsListQueryKey(
+  baseKey: string,
+  cursor: string | null,
+  direction: 'older' | 'newer',
+  perPage: number,
+): string {
+  return `${baseKey}:cursor=${cursor ?? ''}:direction=${direction}:perPage=${perPage}`
+}
+
 type Period = 'day' | 'week' | 'month'
 
 interface TokenDetailInfo {
@@ -590,6 +606,10 @@ export default function TokenDetail({
       summaryQueryBaseKey,
     ],
   )
+  const logsListQueryKey = useMemo(
+    () => buildTokenLogsListQueryKey(logsQueryBaseKey, logsCursor, logsDirection, perPage),
+    [logsCursor, logsDirection, logsQueryBaseKey, perPage],
+  )
   logsRequestContextRef.current = {
     tokenId: id,
     sinceIso,
@@ -856,20 +876,29 @@ export default function TokenDetail({
     logsAbortRef.current?.abort()
     const logsController = new AbortController()
     logsAbortRef.current = logsController
+    const requestedPerPage = perPageRef.current
     setLogsLoadState(getBlockingLoadState(logsQueryKeyRef.current != null))
     setLogs([])
+    setLogsPageInfo(createEmptyTokenLogsListPage(requestedPerPage))
     setError(null)
     const run = async () => {
       try {
-        const logsRes = await loadLogsPage(logsCursor, logsDirection, perPageRef.current, logsController.signal)
+        const logsRes = await loadLogsPage(logsCursor, logsDirection, requestedPerPage, logsController.signal)
         if (logsController.signal.aborted) return
         setLogs(logsRes.items)
         setLogsPageInfo(logsRes)
         setError(null)
         setLogsLoadState('ready')
-        logsQueryKeyRef.current = `${logsQueryBaseKey}:cursor=${logsCursor ?? ''}:direction=${logsDirection}:perPage=${logsRes.pageSize}`
+        logsQueryKeyRef.current = buildTokenLogsListQueryKey(
+          logsQueryBaseKey,
+          logsCursor,
+          logsDirection,
+          logsRes.pageSize,
+        )
       } catch (e) {
         if ((e as Error).name === 'AbortError') return
+        setLogs([])
+        setLogsPageInfo(createEmptyTokenLogsListPage(requestedPerPage))
         setError(e instanceof Error ? e.message : 'Failed to load request records')
         setLogsLoadState('error')
       }
@@ -878,7 +907,7 @@ export default function TokenDetail({
     return () => {
       logsController.abort()
     }
-  }, [loadLogsPage, logsCursor, logsDirection, logsQueryBaseKey])
+  }, [loadLogsPage, logsCursor, logsDirection, logsListQueryKey, logsQueryBaseKey])
 
   useEffect(() => {
     requestKindOptionsAbortRef.current?.abort()
@@ -925,16 +954,20 @@ export default function TokenDetail({
       logsAbortRef.current?.abort()
       const controller = new AbortController()
       logsAbortRef.current = controller
+      const requestedPerPage = perPageRef.current
       setLogsLoadState(getRefreshingLoadState(logsQueryKeyRef.current != null))
+      setLogsPageInfo(createEmptyTokenLogsListPage(requestedPerPage))
       try {
-        const data = await loadLogsPage(null, 'older', perPageRef.current, controller.signal)
+        const data = await loadLogsPage(null, 'older', requestedPerPage, controller.signal)
         if (controller.signal.aborted) return
         setLogs(data.items)
         setLogsPageInfo(data)
         setLogsLoadState('ready')
-        logsQueryKeyRef.current = `${logsQueryBaseKey}:cursor=:direction=older:perPage=${data.pageSize}`
+        logsQueryKeyRef.current = buildTokenLogsListQueryKey(logsQueryBaseKey, null, 'older', data.pageSize)
       } catch {
         if (!controller.signal.aborted) {
+          setLogs([])
+          setLogsPageInfo(createEmptyTokenLogsListPage(requestedPerPage))
           setLogsLoadState('error')
         }
         // ignore
@@ -995,7 +1028,7 @@ export default function TokenDetail({
     setLogsDirection('older')
   }
 
-  const changePerPage = async (nextPerPage: number) => {
+  const changePerPage = (nextPerPage: number) => {
     setPerPage(nextPerPage)
     setLogsCursor(null)
     setLogsDirection('older')
@@ -1517,4 +1550,9 @@ function UsageChart({
       )}
     </div>
   )
+}
+
+export const __testables = {
+  buildTokenLogsListQueryKey,
+  createEmptyTokenLogsListPage,
 }
