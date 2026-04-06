@@ -2331,6 +2331,7 @@ function AdminDashboard(): JSX.Element {
         if (overviewStale) {
           return
         }
+        setSummary(null)
         setDashboardSummaryWindows(null)
         setDashboardSiteStatusSnapshot(null)
         setDashboardTokens([])
@@ -3613,9 +3614,6 @@ function AdminDashboard(): JSX.Element {
         setSseFallbackActive(true)
       }
       es.addEventListener('degraded', () => {
-        if (!(routeRef.current.name === 'module' && routeRef.current.module === 'dashboard')) {
-          return
-        }
         setSseConnected(false)
         setSseFallbackActive(true)
         if (es) {
