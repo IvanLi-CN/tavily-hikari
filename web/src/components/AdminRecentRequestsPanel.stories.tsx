@@ -271,6 +271,122 @@ function LazyDetailsStateGallery(): JSX.Element {
   )
 }
 
+const alignmentStoryLogs: RequestLog[] = [
+  {
+    id: 8101,
+    key_id: 'bab3',
+    auth_token_id: 'cBtp',
+    method: 'POST',
+    path: '/mcp',
+    query: null,
+    http_status: 200,
+    mcp_status: 429,
+    business_credits: null,
+    request_kind_key: 'mcp:extract',
+    request_kind_label: 'MCP | extract',
+    request_kind_detail: null,
+    result_status: 'error',
+    created_at: 1_775_438_268,
+    error_message: 'Quota exhausted',
+    key_effect_code: 'none',
+    key_effect_summary: null,
+    request_body: null,
+    response_body: null,
+    forwarded_headers: ['x-request-id'],
+    dropped_headers: [],
+    operationalClass: 'upstream_error',
+    requestKindProtocolGroup: 'mcp',
+    requestKindBillingGroup: 'billable',
+  },
+  {
+    id: 8102,
+    key_id: 'EGsl',
+    auth_token_id: 'ZjvC',
+    method: 'POST',
+    path: '/mcp',
+    query: null,
+    http_status: 200,
+    mcp_status: 429,
+    business_credits: null,
+    request_kind_key: 'mcp:search',
+    request_kind_label: 'MCP | search',
+    request_kind_detail: null,
+    result_status: 'error',
+    created_at: 1_775_438_146,
+    error_message: 'Quota exhausted',
+    key_effect_code: 'none',
+    key_effect_summary: null,
+    request_body: null,
+    response_body: null,
+    forwarded_headers: ['x-request-id'],
+    dropped_headers: [],
+    operationalClass: 'upstream_error',
+    requestKindProtocolGroup: 'mcp',
+    requestKindBillingGroup: 'billable',
+  },
+]
+
+function IdentifierAlignmentShowcase(): JSX.Element {
+  const admin = useTranslate().admin
+  const { language } = useLanguage()
+
+  const facets = useMemo(
+    () => ({
+      results: buildFacetOptions(alignmentStoryLogs.map((log) => log.result_status)),
+      keyEffects: buildFacetOptions(alignmentStoryLogs.map((log) => log.key_effect_code ?? 'none')),
+      tokens: buildFacetOptions(alignmentStoryLogs.map((log) => log.auth_token_id)),
+      keys: buildFacetOptions(alignmentStoryLogs.map((log) => log.key_id)),
+    }),
+    [],
+  )
+
+  return (
+    <div style={{ maxWidth: 1480, margin: '0 auto', padding: 24 }}>
+      <AdminRecentRequestsPanel
+        variant="admin"
+        language={language}
+        strings={admin}
+        title="Identifier Alignment"
+        description="Stable desktop canvas for validating token and key identifiers sit visually centered within the row."
+        emptyLabel="No logs."
+        loadState="ready"
+        loadingLabel="Loading…"
+        logs={alignmentStoryLogs}
+        requestKindOptions={[
+          { key: 'mcp:extract', label: 'MCP | extract', protocol_group: 'mcp', billing_group: 'billable', count: 1 },
+          { key: 'mcp:search', label: 'MCP | search', protocol_group: 'mcp', billing_group: 'billable', count: 1 },
+        ]}
+        requestKindQuickBilling="all"
+        requestKindQuickProtocol="all"
+        selectedRequestKinds={[]}
+        onRequestKindQuickFiltersChange={() => undefined}
+        onToggleRequestKind={() => undefined}
+        onClearRequestKinds={() => undefined}
+        outcomeFilter={{ kind: 'result', value: 'error' }}
+        resultOptions={facets.results}
+        keyEffectOptions={facets.keyEffects}
+        onOutcomeFilterChange={() => undefined}
+        keyOptions={facets.keys}
+        selectedKeyId={null}
+        onKeyFilterChange={() => undefined}
+        showKeyColumn
+        showTokenColumn
+        page={1}
+        perPage={20}
+        total={alignmentStoryLogs.length}
+        onPreviousPage={() => undefined}
+        onNextPage={() => undefined}
+        onPerPageChange={() => undefined}
+        formatTime={(ts) => new Date((ts ?? 0) * 1000).toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US')}
+        formatTimeDetail={(ts) => new Date((ts ?? 0) * 1000).toISOString()}
+        onOpenKey={() => undefined}
+        onOpenToken={() => undefined}
+        loadLogBodies={() => Promise.resolve({ request_body: null, response_body: null })}
+      />
+    </div>
+  )
+}
+
 const meta = {
   title: 'Admin/Components/AdminRecentRequestsPanel',
   component: LazyDetailsStateGallery,
@@ -310,6 +426,31 @@ export const LazyDetailsGallery: Story = {
     ]) {
       if (!text.includes(expected)) {
         throw new Error(`Expected lazy detail gallery to contain: ${expected}`)
+      }
+    }
+  },
+}
+
+export const IdentifierAlignment: Story = {
+  render: () => <IdentifierAlignmentShowcase />,
+  globals: {
+    language: 'zh',
+    themeMode: 'dark',
+  },
+  parameters: {
+    viewport: { defaultViewport: '1440-device-desktop' },
+    docs: {
+      description: {
+        story: '用于稳定验收桌面表格中 Token / Key 标识链接的视觉垂直居中效果。',
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 150))
+    const text = canvasElement.ownerDocument.body.textContent ?? ''
+    for (const expected of ['bab3', 'cBtp', 'EGsl', 'ZjvC']) {
+      if (!text.includes(expected)) {
+        throw new Error(`Expected identifier alignment canvas to contain: ${expected}`)
       }
     }
   },

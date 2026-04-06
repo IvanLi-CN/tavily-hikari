@@ -4640,10 +4640,24 @@ table {
 
 .recent-requests-table .recent-requests-col--result .log-result-button,
 .recent-requests-table .recent-requests-col--key-effect .status-badge,
-.recent-requests-table .recent-requests-col--key .log-key-pill,
-.recent-requests-table .recent-requests-col--token .log-token-link {
+.recent-requests-table .recent-requests-col--key .recent-requests-entity-link,
+.recent-requests-table .recent-requests-col--token .recent-requests-entity-link {
   white-space: nowrap;
   display: inline-flex;
+  align-items: center;
+}
+
+.recent-requests-table .recent-requests-col--key .recent-requests-entity-link,
+.recent-requests-table .recent-requests-col--token .recent-requests-entity-link {
+  line-height: 1;
+  vertical-align: middle;
+}
+
+.recent-requests-table .recent-requests-col--key .recent-requests-entity-link code,
+.recent-requests-table .recent-requests-col--token .recent-requests-entity-link code {
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
 }
 
 /* token leaderboard styles consolidated near dedicated section below */
