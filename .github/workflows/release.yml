@@ -689,7 +689,7 @@ jobs:
     permissions:
       contents: write
       issues: write
-      pull-requests: read
+      pull-requests: write
     steps:
       - name: Create/Update GitHub Release
         uses: ncipollo/release-action@v1
