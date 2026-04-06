@@ -79,6 +79,7 @@ pub async fn serve(
         .route("/api/events", get(sse_dashboard))
         .route("/api/version", get(get_versions))
         .route("/api/profile", get(get_profile))
+        .route("/api/dashboard/overview", get(get_dashboard_overview))
         .route("/auth/linuxdo", get(get_linuxdo_auth).post(post_linuxdo_auth))
         .route("/auth/linuxdo/callback", get(get_linuxdo_callback))
         .route("/api/user/logout", post(post_user_logout))

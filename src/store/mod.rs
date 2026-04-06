@@ -6554,6 +6554,71 @@ impl KeyStore {
         Ok((items, total))
     }
 
+    pub(crate) async fn list_disabled_access_tokens(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<AuthToken>, ProxyError> {
+        let limit = limit.clamp(1, 100) as i64;
+        let rows = sqlx::query_as::<
+            _,
+            (
+                String,
+                i64,
+                Option<String>,
+                Option<String>,
+                i64,
+                i64,
+                Option<i64>,
+            ),
+        >(
+            r#"SELECT id, enabled, note, group_name, total_requests, created_at, last_used_at
+               FROM auth_tokens
+               WHERE deleted_at IS NULL AND enabled = 0
+               ORDER BY created_at DESC, id DESC
+               LIMIT ?"#,
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, enabled, note, group_name, total, created_at, last_used)| AuthToken {
+                    id,
+                    enabled: enabled == 1,
+                    note,
+                    group_name,
+                    total_requests: total,
+                    created_at,
+                    last_used_at: last_used,
+                    quota: None,
+                    quota_hourly_reset_at: None,
+                    quota_daily_reset_at: None,
+                    quota_monthly_reset_at: None,
+                },
+            )
+            .collect())
+    }
+
+    pub(crate) async fn list_disabled_access_token_ids(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<String>, ProxyError> {
+        let limit = limit.clamp(1, 100) as i64;
+        sqlx::query_scalar::<_, String>(
+            r#"SELECT id
+               FROM auth_tokens
+               WHERE deleted_at IS NULL AND enabled = 0
+               ORDER BY created_at DESC, id DESC
+               LIMIT ?"#,
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(ProxyError::from)
+    }
+
     pub(crate) async fn delete_access_token(&self, id: &str) -> Result<(), ProxyError> {
         let now = Utc::now().timestamp();
         sqlx::query("UPDATE auth_tokens SET enabled = 0, deleted_at = ? WHERE id = ?")
@@ -13476,6 +13541,53 @@ impl KeyStore {
             .map_err(ProxyError::from)
     }
 
+    pub(crate) async fn fetch_dashboard_exhausted_api_key_metrics(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<ApiKeyMetrics>, ProxyError> {
+        let limit = limit.clamp(1, 50) as i64;
+        let statuses = vec![STATUS_EXHAUSTED.to_string()];
+        let mut items_builder = QueryBuilder::<Sqlite>::new(Self::api_key_metrics_query(false));
+        Self::push_api_key_status_filters(&mut items_builder, &statuses);
+        items_builder.push(
+            " ORDER BY COALESCE(ak.last_used_at, 0) DESC, COALESCE(ak.status_changed_at, 0) DESC, ak.id ASC",
+        );
+        items_builder.push(" LIMIT ").push_bind(limit);
+        items_builder
+            .build()
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .map(Self::map_api_key_metrics_row)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(ProxyError::from)
+    }
+
+    pub(crate) async fn fetch_dashboard_exhausted_api_key_ids(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<String>, ProxyError> {
+        let limit = limit.clamp(1, 50) as i64;
+        sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT ak.id
+            FROM api_keys ak
+            LEFT JOIN api_key_quarantines aq
+              ON aq.key_id = ak.id AND aq.cleared_at IS NULL
+            WHERE ak.deleted_at IS NULL
+              AND aq.key_id IS NULL
+              AND ak.status = ?
+            ORDER BY COALESCE(ak.last_used_at, 0) DESC, COALESCE(ak.status_changed_at, 0) DESC, ak.id ASC
+            LIMIT ?
+            "#,
+        )
+        .bind(STATUS_EXHAUSTED)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(ProxyError::from)
+    }
+
     pub(crate) async fn fetch_api_key_metrics_page(
         &self,
         page: i64,
@@ -13700,6 +13812,25 @@ impl KeyStore {
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(records)
+    }
+
+    pub(crate) async fn fetch_latest_visible_request_log_id(
+        &self,
+    ) -> Result<Option<i64>, ProxyError> {
+        sqlx::query_scalar::<_, Option<i64>>(
+            r#"
+            SELECT id
+            FROM request_logs
+            WHERE visibility = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+        .fetch_optional(&self.pool)
+        .await
+        .map(|value| value.flatten())
+        .map_err(ProxyError::from)
     }
 
     pub(crate) async fn fetch_recent_logs_page(
@@ -14618,6 +14749,25 @@ impl KeyStore {
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(items)
+    }
+
+    pub(crate) async fn list_recent_job_signatures(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<(i64, String, Option<i64>)>, ProxyError> {
+        let limit = limit.clamp(1, 500) as i64;
+        sqlx::query_as::<_, (i64, String, Option<i64>)>(
+            r#"
+            SELECT id, status, finished_at
+            FROM scheduled_jobs
+            ORDER BY started_at DESC, id DESC
+            LIMIT ?
+            "#,
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(ProxyError::from)
     }
 
     pub(crate) async fn list_recent_jobs_paginated(

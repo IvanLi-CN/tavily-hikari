@@ -3813,6 +3813,7 @@ mod tests {
             .route("/api/admin/login", post(post_admin_login))
             .route("/api/admin/logout", post(post_admin_logout))
             .route("/api/events", get(sse_dashboard))
+            .route("/api/dashboard/overview", get(get_dashboard_overview))
             .route("/api/summary", get(fetch_summary))
             .route("/api/summary/windows", get(fetch_summary_windows))
             .route("/api/logs", get(list_logs))
@@ -8635,6 +8636,324 @@ colo=LAX
     }
 
     #[tokio::test]
+    async fn dashboard_overview_requires_admin_auth() {
+        let db_path = temp_db_path("dashboard-overview-auth");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-dashboard-overview-auth".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let admin_password = "dashboard-overview-admin-password";
+        let admin_addr = spawn_builtin_keys_admin_server(proxy, admin_password).await;
+        let client = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build client");
+
+        let public_resp = client
+            .get(format!("http://{}/api/dashboard/overview", admin_addr))
+            .send()
+            .await
+            .expect("public dashboard overview request");
+        assert_eq!(public_resp.status(), reqwest::StatusCode::FORBIDDEN);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn dashboard_overview_returns_lightweight_segments() {
+        let db_path = temp_db_path("dashboard-overview-lightweight");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-dashboard-overview-lightweight".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let key_id = proxy
+            .list_api_key_metrics()
+            .await
+            .expect("list api key metrics")
+            .into_iter()
+            .next()
+            .expect("seeded key exists")
+            .id;
+
+        for index in 0..6 {
+            let note = format!("disabled-token-{index}");
+            let created = proxy
+                .create_access_token(Some(&note))
+                .await
+                .expect("create access token");
+            proxy
+                .set_access_token_enabled(&created.id, false)
+                .await
+                .expect("disable access token");
+        }
+
+        let job_id = proxy
+            .scheduled_job_start("quota_sync/manual", Some(&key_id), 1)
+            .await
+            .expect("start job");
+        proxy
+            .scheduled_job_finish(job_id, "failed", Some("quota sync failed"))
+            .await
+            .expect("finish job");
+
+        let options = SqliteConnectOptions::new()
+            .filename(&db_str)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open db pool");
+
+        sqlx::query("UPDATE api_keys SET status = 'exhausted', status_changed_at = ? WHERE id = ?")
+            .bind(Utc::now().timestamp())
+            .bind(&key_id)
+            .execute(&pool)
+            .await
+            .expect("mark key exhausted");
+
+        let log_base = Utc::now().timestamp();
+        for (offset, result_status) in [
+            "success",
+            "error",
+            "success",
+            "quota_exhausted",
+            "success",
+            "success",
+            "error",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            sqlx::query(
+                r#"
+                INSERT INTO request_logs (
+                    api_key_id,
+                    auth_token_id,
+                    method,
+                    path,
+                    query,
+                    status_code,
+                    tavily_status_code,
+                    error_message,
+                    result_status,
+                    request_body,
+                    response_body,
+                    forwarded_headers,
+                    dropped_headers,
+                    created_at
+                ) VALUES (?, NULL, 'GET', '/api/tavily/search', NULL, 200, 200, NULL, ?, NULL, NULL, '[]', '[]', ?)
+                "#,
+            )
+            .bind(&key_id)
+            .bind(result_status)
+            .bind(log_base + offset as i64)
+            .execute(&pool)
+            .await
+            .expect("insert request log");
+        }
+
+        let admin_password = "dashboard-overview-lightweight-password";
+        let admin_addr = spawn_builtin_keys_admin_server(proxy, admin_password).await;
+        let client = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build client");
+
+        let login_resp = client
+            .post(format!("http://{}/api/admin/login", admin_addr))
+            .json(&serde_json::json!({ "password": admin_password }))
+            .send()
+            .await
+            .expect("admin login");
+        assert_eq!(login_resp.status(), reqwest::StatusCode::OK);
+        let admin_cookie = find_cookie_pair(login_resp.headers(), BUILTIN_ADMIN_COOKIE_NAME)
+            .expect("admin session cookie");
+
+        let resp = client
+            .get(format!("http://{}/api/dashboard/overview", admin_addr))
+            .header(reqwest::header::COOKIE, admin_cookie)
+            .send()
+            .await
+            .expect("dashboard overview request");
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+        let body: serde_json::Value = resp.json().await.expect("dashboard overview json");
+        assert!(body.get("summary").is_some(), "summary should exist");
+        assert!(
+            body.get("summaryWindows").is_some(),
+            "summary windows should exist"
+        );
+        assert!(body.get("siteStatus").is_some(), "site status should exist");
+        assert!(body.get("forwardProxy").is_some(), "forward proxy should exist");
+        assert!(body.get("trend").is_some(), "trend should exist");
+        assert!(body.get("exhaustedKeys").is_some(), "exhausted keys should exist");
+        assert!(body.get("recentLogs").is_some(), "recent logs should exist");
+        assert!(body.get("recentJobs").is_some(), "recent jobs should exist");
+        assert!(
+            body.get("disabledTokens").is_some(),
+            "disabled tokens should exist"
+        );
+        assert_eq!(
+            body.get("tokenCoverage").and_then(|value| value.as_str()),
+            Some("truncated")
+        );
+        assert!(body.get("keys").is_none(), "overview should not expose legacy keys alias");
+        assert!(body.get("logs").is_none(), "overview should not expose legacy logs alias");
+        assert_eq!(
+            body.pointer("/exhaustedKeys/0/id")
+                .and_then(|value| value.as_str()),
+            Some(key_id.as_str())
+        );
+        assert_eq!(
+            body.pointer("/recentJobs/0/status")
+                .and_then(|value| value.as_str()),
+            Some("failed")
+        );
+        assert_eq!(
+            body.get("recentLogs")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(5)
+        );
+        assert_eq!(
+            body.pointer("/trend/request")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(8)
+        );
+        assert_eq!(
+            body.pointer("/trend/error")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(8)
+        );
+        assert_eq!(
+            body.pointer("/trend/request")
+                .and_then(|value| value.as_array())
+                .map(|values| values.iter().filter_map(|value| value.as_i64()).sum::<i64>()),
+            Some(7)
+        );
+        assert_eq!(
+            body.pointer("/trend/error")
+                .and_then(|value| value.as_array())
+                .map(|values| values.iter().filter_map(|value| value.as_i64()).sum::<i64>()),
+            Some(3)
+        );
+        assert_eq!(
+            body.get("disabledTokens")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(5)
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn dashboard_overview_degrades_optional_feeds_without_failing_core_summary() {
+        let db_path = temp_db_path("dashboard-overview-optional-feed-degrade");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-dashboard-overview-optional-feed-degrade".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        proxy
+            .create_access_token(Some("disabled-feed"))
+            .await
+            .expect("create access token");
+
+        let options = SqliteConnectOptions::new()
+            .filename(&db_str)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open db pool");
+
+        sqlx::query("DROP TABLE scheduled_jobs")
+            .execute(&pool)
+            .await
+            .expect("drop scheduled_jobs");
+        sqlx::query("DROP TABLE auth_tokens")
+            .execute(&pool)
+            .await
+            .expect("drop auth_tokens");
+
+        let admin_password = "dashboard-overview-optional-feed-password";
+        let admin_addr = spawn_builtin_keys_admin_server(proxy, admin_password).await;
+        let client = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build client");
+
+        let login_resp = client
+            .post(format!("http://{}/api/admin/login", admin_addr))
+            .json(&serde_json::json!({ "password": admin_password }))
+            .send()
+            .await
+            .expect("admin login");
+        assert_eq!(login_resp.status(), reqwest::StatusCode::OK);
+        let admin_cookie = find_cookie_pair(login_resp.headers(), BUILTIN_ADMIN_COOKIE_NAME)
+            .expect("admin session cookie");
+
+        let resp = client
+            .get(format!("http://{}/api/dashboard/overview", admin_addr))
+            .header(reqwest::header::COOKIE, admin_cookie)
+            .send()
+            .await
+            .expect("dashboard overview request");
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+        let body: serde_json::Value = resp.json().await.expect("dashboard overview json");
+        assert!(body.get("summary").is_some(), "summary should still exist");
+        assert!(
+            body.get("summaryWindows").is_some(),
+            "summary windows should still exist"
+        );
+        assert!(body.get("siteStatus").is_some(), "site status should still exist");
+        assert_eq!(
+            body.get("recentJobs")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(0)
+        );
+        assert_eq!(
+            body.get("disabledTokens")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(0)
+        );
+        assert_eq!(
+            body.get("tokenCoverage").and_then(|value| value.as_str()),
+            Some("error")
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn summary_windows_returns_today_yesterday_and_month_buckets() {
         let db_path = temp_db_path("summary-windows-admin");
         let db_str = db_path.to_string_lossy().to_string();
@@ -10028,6 +10347,7 @@ colo=LAX
             snapshot_json.get("forwardProxy").is_some(),
             "forwardProxy should exist"
         );
+        assert!(snapshot_json.get("trend").is_some(), "trend should exist");
         assert_eq!(
             snapshot_json
                 .pointer("/summaryWindows/month/new_keys")
@@ -10080,6 +10400,76 @@ colo=LAX
                 .pointer("/forwardProxy/availableNodes")
                 .and_then(|value| value.as_i64()),
             Some(1)
+        );
+        assert!(
+            snapshot_json.get("exhaustedKeys").is_some(),
+            "snapshot should expose exhausted keys"
+        );
+        assert!(
+            snapshot_json.get("recentLogs").is_some(),
+            "snapshot should expose recent logs"
+        );
+        assert!(
+            snapshot_json.get("recentJobs").is_some(),
+            "snapshot should expose recent jobs"
+        );
+        assert!(
+            snapshot_json.get("disabledTokens").is_some(),
+            "snapshot should expose disabled tokens"
+        );
+        assert!(
+            snapshot_json.get("tokenCoverage").is_some(),
+            "snapshot should expose token coverage"
+        );
+        assert_eq!(
+            snapshot_json
+                .pointer("/trend/request")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(8)
+        );
+        assert_eq!(
+            snapshot_json
+                .pointer("/trend/error")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(8)
+        );
+        let exhausted_key_count = snapshot_json
+            .get("exhaustedKeys")
+            .and_then(|value| value.as_array())
+            .map(Vec::len)
+            .expect("exhausted keys array");
+        let legacy_key_count = snapshot_json
+            .get("keys")
+            .and_then(|value| value.as_array())
+            .map(Vec::len)
+            .expect("legacy keys array");
+        assert_eq!(
+            exhausted_key_count, legacy_key_count,
+            "legacy keys alias should mirror exhausted keys"
+        );
+        assert!(
+            legacy_key_count <= 5,
+            "snapshot should keep keys payload lightweight"
+        );
+        let recent_log_count = snapshot_json
+            .get("recentLogs")
+            .and_then(|value| value.as_array())
+            .map(Vec::len)
+            .expect("recent logs array");
+        let legacy_log_count = snapshot_json
+            .get("logs")
+            .and_then(|value| value.as_array())
+            .map(Vec::len)
+            .expect("legacy logs array");
+        assert_eq!(
+            recent_log_count, legacy_log_count,
+            "legacy logs alias should mirror recent logs"
+        );
+        assert!(
+            legacy_log_count <= 5,
+            "snapshot should keep logs payload lightweight"
         );
 
         drop(events_resp);
@@ -11143,6 +11533,140 @@ colo=LAX
                 .pointer("/siteStatus/totalQuotaLimit")
                 .and_then(|value| value.as_i64()),
             Some(2_000)
+        );
+
+        drop(events_resp);
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn admin_dashboard_sse_snapshot_refreshes_when_disabled_token_feed_breaks() {
+        let db_path = temp_db_path("admin-dashboard-snapshot-disabled-token-feed-error");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(
+            vec!["tvly-admin-dashboard-disabled-token-feed-error".to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let admin_password = "admin-dashboard-disabled-token-feed-password";
+        let admin_addr = spawn_builtin_keys_admin_server(proxy, admin_password).await;
+        let client = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build client");
+
+        let login_resp = client
+            .post(format!("http://{}/api/admin/login", admin_addr))
+            .json(&serde_json::json!({ "password": admin_password }))
+            .send()
+            .await
+            .expect("admin login");
+        assert_eq!(login_resp.status(), reqwest::StatusCode::OK);
+        let admin_cookie = find_cookie_pair(login_resp.headers(), BUILTIN_ADMIN_COOKIE_NAME)
+            .expect("admin session cookie");
+
+        let mut events_resp = client
+            .get(format!("http://{}/api/events", admin_addr))
+            .header(reqwest::header::COOKIE, admin_cookie)
+            .send()
+            .await
+            .expect("admin events request");
+        assert_eq!(events_resp.status(), reqwest::StatusCode::OK);
+
+        let mut first_text = String::new();
+        while !first_text.contains("\n\n") {
+            let chunk = events_resp
+                .chunk()
+                .await
+                .expect("read initial event chunk")
+                .expect("initial snapshot chunk exists");
+            first_text.push_str(std::str::from_utf8(&chunk).expect("initial snapshot chunk utf8"));
+        }
+
+        let initial_snapshot = first_text
+            .split("\n\n")
+            .find(|chunk| chunk.contains("event: snapshot"))
+            .expect("initial snapshot event");
+        let initial_data = initial_snapshot
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .expect("initial snapshot data");
+        let initial_json: serde_json::Value =
+            serde_json::from_str(initial_data).expect("initial snapshot payload json");
+        assert_eq!(
+            initial_json
+                .get("tokenCoverage")
+                .and_then(|value| value.as_str()),
+            Some("ok")
+        );
+
+        let options = SqliteConnectOptions::new()
+            .filename(&db_str)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open db pool");
+
+        sqlx::query("DROP TABLE auth_tokens")
+            .execute(&pool)
+            .await
+            .expect("drop auth_tokens");
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(25);
+        let mut buffer = String::new();
+        let mut refreshed_snapshot: Option<serde_json::Value> = None;
+        while tokio::time::Instant::now() < deadline {
+            let chunk = tokio::time::timeout(Duration::from_secs(10), events_resp.chunk())
+                .await
+                .expect("await refreshed event chunk in time")
+                .expect("read refreshed event chunk")
+                .expect("refreshed event chunk exists");
+            buffer.push_str(std::str::from_utf8(&chunk).expect("refreshed event chunk utf8"));
+            while let Some((event_chunk, rest)) = buffer.split_once("\n\n") {
+                let event_chunk = event_chunk.to_string();
+                buffer = rest.to_string();
+                if !event_chunk.contains("event: snapshot") {
+                    continue;
+                }
+                let Some(data) = event_chunk
+                    .lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                else {
+                    continue;
+                };
+                let payload: serde_json::Value =
+                    serde_json::from_str(data).expect("refreshed snapshot payload json");
+                if payload.get("tokenCoverage").and_then(|value| value.as_str()) == Some("error") {
+                    refreshed_snapshot = Some(payload);
+                    break;
+                }
+            }
+            if refreshed_snapshot.is_some() {
+                break;
+            }
+        }
+
+        let refreshed_snapshot = refreshed_snapshot.expect("token coverage snapshot refresh");
+        assert_eq!(
+            refreshed_snapshot
+                .get("tokenCoverage")
+                .and_then(|value| value.as_str()),
+            Some("error")
+        );
+        assert_eq!(
+            refreshed_snapshot
+                .get("disabledTokens")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(0)
         );
 
         drop(events_resp);

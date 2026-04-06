@@ -36,6 +36,61 @@ struct LoadedProxyAffinityState {
     has_explicit_empty_marker: bool,
 }
 
+#[derive(Clone, Debug)]
+struct CachedSummaryWindows {
+    generated_at: Instant,
+    value: SummaryWindows,
+}
+
+#[derive(Clone, Debug)]
+struct SummaryWindowsCacheState {
+    cached: Option<CachedSummaryWindows>,
+    loading: bool,
+    notify: Arc<tokio::sync::Notify>,
+}
+
+impl Default for SummaryWindowsCacheState {
+    fn default() -> Self {
+        Self {
+            cached: None,
+            loading: false,
+            notify: Arc::new(tokio::sync::Notify::new()),
+        }
+    }
+}
+
+struct SummaryWindowsLoadGuard {
+    state: Arc<Mutex<SummaryWindowsCacheState>>,
+    armed: bool,
+}
+
+impl SummaryWindowsLoadGuard {
+    fn new(state: Arc<Mutex<SummaryWindowsCacheState>>) -> Self {
+        Self { state, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for SummaryWindowsLoadGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+
+        let state = self.state.clone();
+        tokio::spawn(async move {
+            let mut cache = state.lock().await;
+            if cache.loading {
+                cache.loading = false;
+                cache.notify.notify_waiters();
+            }
+        });
+    }
+}
+
 /// 负责均衡 Tavily API key 并透传请求的代理。
 #[derive(Clone, Debug)]
 pub struct TavilyProxy {
@@ -55,6 +110,7 @@ pub struct TavilyProxy {
     token_request_limit: TokenRequestLimit,
     pub(crate) research_request_affinity: Arc<Mutex<TokenAffinityState>>,
     pub(crate) research_request_owner_affinity: Arc<Mutex<TokenAffinityState>>,
+    summary_windows_cache: Arc<Mutex<SummaryWindowsCacheState>>,
     // Fast in-process lock to collapse duplicate work within one instance. Cross-instance
     // serialization is provided by quota_subject_locks in SQLite.
     pub(crate) token_billing_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
@@ -521,6 +577,7 @@ impl TavilyProxy {
             research_request_owner_affinity: Arc::new(Mutex::new(TokenAffinityState::new(
                 RESEARCH_REQUEST_AFFINITY_TTL_SECS,
             ))),
+            summary_windows_cache: Arc::new(Mutex::new(SummaryWindowsCacheState::default())),
             token_billing_locks: Arc::new(Mutex::new(HashMap::new())),
             mcp_session_init_locks: Arc::new(Mutex::new(HashMap::new())),
             research_key_locks: Arc::new(Mutex::new(HashMap::new())),
@@ -4610,6 +4667,24 @@ impl TavilyProxy {
         self.key_store.fetch_api_key_metrics(false).await
     }
 
+    pub async fn list_dashboard_exhausted_key_metrics(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<ApiKeyMetrics>, ProxyError> {
+        self.key_store
+            .fetch_dashboard_exhausted_api_key_metrics(limit)
+            .await
+    }
+
+    pub async fn list_dashboard_exhausted_key_ids(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<String>, ProxyError> {
+        self.key_store
+            .fetch_dashboard_exhausted_api_key_ids(limit)
+            .await
+    }
+
     /// Admin: list API key metrics with pagination and optional filters.
     pub async fn list_api_key_metrics_paged(
         &self,
@@ -4639,6 +4714,10 @@ impl TavilyProxy {
         limit: usize,
     ) -> Result<Vec<RequestLogRecord>, ProxyError> {
         self.key_store.fetch_recent_logs(limit).await
+    }
+
+    pub async fn latest_visible_request_log_id(&self) -> Result<Option<i64>, ProxyError> {
+        self.key_store.fetch_latest_visible_request_log_id().await
     }
 
     /// Admin: recent request logs with simple pagination and optional result_status filter.
@@ -4831,6 +4910,22 @@ impl TavilyProxy {
         let mut tokens = self.key_store.list_access_tokens().await?;
         self.populate_token_quota(&mut tokens).await?;
         Ok(tokens)
+    }
+
+    pub async fn list_dashboard_disabled_tokens(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<AuthToken>, ProxyError> {
+        let mut tokens = self.key_store.list_disabled_access_tokens(limit).await?;
+        self.populate_token_quota(&mut tokens).await?;
+        Ok(tokens)
+    }
+
+    pub async fn list_dashboard_disabled_token_ids(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<String>, ProxyError> {
+        self.key_store.list_disabled_access_token_ids(limit).await
     }
 
     /// Admin: list tokens paginated.
@@ -6702,7 +6797,43 @@ impl TavilyProxy {
 
     /// Admin dashboard period summary windows based on server-local day/month boundaries.
     pub async fn summary_windows(&self) -> Result<SummaryWindows, ProxyError> {
-        self.summary_windows_at(Local::now()).await
+        const SUMMARY_WINDOWS_CACHE_TTL: Duration = Duration::from_secs(2);
+
+        loop {
+            let waiter = {
+                let mut cache = self.summary_windows_cache.lock().await;
+                if let Some(cached) = cache.cached.as_ref()
+                    && cached.generated_at.elapsed() < SUMMARY_WINDOWS_CACHE_TTL
+                {
+                    return Ok(cached.value.clone());
+                }
+                if cache.loading {
+                    Some(cache.notify.clone().notified_owned())
+                } else {
+                    cache.loading = true;
+                    None
+                }
+            };
+
+            if let Some(waiter) = waiter {
+                waiter.await;
+                continue;
+            }
+
+            let mut load_guard = SummaryWindowsLoadGuard::new(self.summary_windows_cache.clone());
+            let summary = self.summary_windows_at(Local::now()).await;
+            let mut cache = self.summary_windows_cache.lock().await;
+            cache.loading = false;
+            if let Ok(value) = summary.as_ref() {
+                cache.cached = Some(CachedSummaryWindows {
+                    generated_at: Instant::now(),
+                    value: value.clone(),
+                });
+            }
+            cache.notify.notify_waiters();
+            load_guard.disarm();
+            return summary;
+        }
     }
 
     pub(crate) async fn summary_windows_at(
@@ -7955,6 +8086,13 @@ impl TavilyProxy {
 
     pub async fn list_recent_jobs(&self, limit: usize) -> Result<Vec<JobLog>, ProxyError> {
         self.key_store.list_recent_jobs(limit).await
+    }
+
+    pub async fn list_recent_job_signatures(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<(i64, String, Option<i64>)>, ProxyError> {
+        self.key_store.list_recent_job_signatures(limit).await
     }
 
     pub async fn list_recent_jobs_paginated(
