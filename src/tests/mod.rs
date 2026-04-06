@@ -14128,7 +14128,7 @@ async fn mcp_session_init_backoff_store_extends_without_shortening_and_gc_cleans
     let active = proxy
         .key_store
         .list_active_api_key_transient_backoffs(
-            &[key_id.clone()],
+            std::slice::from_ref(&key_id),
             MCP_SESSION_INIT_BACKOFF_SCOPE,
             now + 3,
         )
