@@ -1,4 +1,4 @@
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ApiKeyQuarantineView {
     source: String,
@@ -9,7 +9,7 @@ struct ApiKeyQuarantineView {
     created_at: i64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct ApiKeyView {
     id: String,
     status: String,
@@ -188,7 +188,7 @@ struct StickyNodesView {
     nodes: Vec<StickyNodeView>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct RequestLogView {
     id: i64,
     key_id: Option<String>,
@@ -235,7 +235,7 @@ impl From<RequestLogBodiesRecord> for RequestLogBodiesView {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct JobLogView {
     id: i64,
@@ -249,7 +249,7 @@ struct JobLogView {
     finished_at: Option<i64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct SummaryView {
     total_requests: i64,
     success_count: i64,
@@ -271,7 +271,7 @@ struct PublicMetricsView {
 }
 
 // ---- Access Token views ----
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TokenOwnerView {
     user_id: String,
@@ -289,7 +289,7 @@ impl From<&tavily_hikari::AdminUserIdentity> for TokenOwnerView {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct AuthTokenView {
     id: String,
     enabled: bool,

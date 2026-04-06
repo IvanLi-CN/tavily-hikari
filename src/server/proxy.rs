@@ -1522,6 +1522,22 @@ impl ApiKeyView {
     }
 }
 
+impl From<JobLog> for JobLogView {
+    fn from(value: JobLog) -> Self {
+        Self {
+            id: value.id,
+            job_type: value.job_type,
+            key_id: value.key_id,
+            key_group: value.key_group,
+            status: value.status,
+            attempt: value.attempt,
+            message: value.message,
+            started_at: value.started_at,
+            finished_at: value.finished_at,
+        }
+    }
+}
+
 fn decode_body(bytes: &[u8]) -> Option<String> {
     if bytes.is_empty() {
         None

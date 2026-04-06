@@ -296,7 +296,7 @@ codex mcp list | grep tavily_hikari
 - **无 Node 验证**：可运行 `bun run validate:no-node-runtime`，确认在前置失败 `node` shim 的情况下，仓库关键构建与 hook 路径仍可通过。
 - **CI**：`.github/workflows/ci.yml` 负责 lint、测试、PR 构建与集成 smoke。
 - **Label Gate**：`.github/workflows/label-gate.yml` 强制 PR 必须且只能有 1 个 intent label（`type:*`）与 1 个 channel label（`channel:*`）。
-- **Release**：`.github/workflows/release.yml` 在 main CI 通过后触发，负责打 tag / 创建 Release / 推送 GHCR 镜像。
+- **Release**：`.github/workflows/release.yml` 在 main CI 通过后触发，负责打 tag / 创建 Release / 推送 GHCR 镜像，并回写对应 PR 的发布评论。
 
 ## 发版（PR Label）
 
@@ -305,7 +305,7 @@ codex mcp list | grep tavily_hikari
 - 每个 PR 必须且只能有 1 个 intent label：`type:patch` / `type:minor` / `type:major` / `type:docs` / `type:skip`。
 - 每个 PR 必须且只能有 1 个 channel label：`channel:stable` / `channel:rc`。
 - PR 合并到 `main` 且 CI 通过后：
-  - `type:patch|minor|major`：计算下一版本并发布 tag（稳定：`vX.Y.Z`；预发布：`vX.Y.Z-rc.<sha7>`），同时创建 GitHub Release 与推送 GHCR 镜像（稳定：`latest`、`vX.Y.Z`；预发布：仅 `vX.Y.Z-rc.<sha7>`，不推进 `latest`）。
+  - `type:patch|minor|major`：计算下一版本并发布 tag（稳定：`vX.Y.Z`；预发布：`vX.Y.Z-rc.<sha7>`），同时创建 GitHub Release、推送 GHCR 镜像（稳定：`latest`、`vX.Y.Z`；预发布：仅 `vX.Y.Z-rc.<sha7>`，不推进 `latest`），并用幂等评论把发布结果回写到对应 PR。
   - `type:docs|skip`：不发版（不打 tag / 不推镜像）。
 - 如果某个 commit 无法映射到“恰好一个 PR”，则会保守跳过发版（避免误发）。
 

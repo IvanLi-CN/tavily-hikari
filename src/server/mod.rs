@@ -41,12 +41,17 @@ struct SummarySig {
     yesterday: [i64; 15],
     month: [i64; 17],
     proxy: Option<(i64, i64)>,
+    exhausted_keys: Vec<String>,
+    disabled_tokens: Vec<String>,
+    disabled_tokens_error: bool,
+    disabled_tokens_truncated: bool,
+    recent_jobs: Vec<(i64, String, Option<i64>)>,
 }
 use std::time::{Duration, Instant};
 use tavily_hikari::{
     AdminUserIdentity, ApiKeyMetrics, ApiKeyStickyNode, ApiKeyStickyUser, ApiKeyUserUsageBucket,
     AuthToken, ForwardProxyHourlyBucketResponse, ForwardProxyStatsResponse,
-    ForwardProxyWeightHourlyBucketResponse, LogFacetOption, OAuthAccountProfile,
+    ForwardProxyWeightHourlyBucketResponse, JobLog, LogFacetOption, OAuthAccountProfile,
     PendingBillingSettleOutcome, ProxyError, ProxyRequest, ProxyResponse, ProxySummary,
     RequestLogBodiesRecord, RequestLogRecord, StickyCreditsWindow, TavilyProxy, TokenHourlyBucket,
     TokenHourlyRequestVerdict, TokenLogRecord, TokenQuotaVerdict, TokenRequestKindOption,

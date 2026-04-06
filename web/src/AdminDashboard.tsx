@@ -147,15 +147,16 @@ import {
   setKeyStatus,
   clearApiKeyQuarantine,
   fetchProfile,
-  fetchRequestLogs,
   fetchRequestLogDetails,
   fetchRequestLogsPage,
+  fetchDashboardOverview,
   fetchSummary,
-  fetchSummaryWindows,
   fetchVersion,
   type ApiKeyStats,
   type DashboardSnapshotEvent,
   type DashboardSiteStatusSnapshot,
+  type DashboardTokenCoverage,
+  type DashboardTrendBuckets,
   type Profile,
   type RequestLog,
   type RequestLogFacets,
@@ -209,12 +210,10 @@ import {
   type ForwardProxySettings,
   type SystemSettings,
   type ForwardProxyStatsResponse,
-  type ForwardProxyDashboardSummaryResponse,
   type ForwardProxyValidationKind,
   type SummaryWindowMetrics,
   type StickyNode,
   type StickyUserRow,
-  fetchForwardProxyDashboardSummary,
   type ForwardProxyProgressEvent,
   fetchForwardProxySettings,
   fetchSystemSettings,
@@ -245,8 +244,6 @@ import { finalizeForwardProxyRevalidate } from './admin/forwardProxyRevalidate'
 const REFRESH_INTERVAL_MS = 30_000
 const LOGS_PER_PAGE = 20
 const LOGS_MAX_PAGES = 10
-const DASHBOARD_RECENT_LOGS_PER_PAGE = 64
-const DASHBOARD_RECENT_JOBS_PER_PAGE = 20
 const DEFAULT_KEYS_PER_PAGE = 20
 const USERS_PER_PAGE = 20
 // Auto-collapse behavior for the API keys batch overlay (empty textarea only):
@@ -255,12 +252,10 @@ const KEYS_BATCH_CLOSE_ANIMATION_MS = 200
 const KEYS_BATCH_AUTO_COLLAPSE_TOTAL_MS = 500
 const KEYS_BATCH_AUTO_COLLAPSE_DELAY_MS = Math.max(0, KEYS_BATCH_AUTO_COLLAPSE_TOTAL_MS - KEYS_BATCH_CLOSE_ANIMATION_MS)
 const API_KEYS_IMPORT_CHUNK_SIZE = 1000
-const DASHBOARD_EXHAUSTED_KEYS_PAGE_SIZE = 5
-const DASHBOARD_TOKENS_PAGE_SIZE = 100
-const DASHBOARD_TOKENS_MAX_PAGES = 10
 const USER_TAG_DISPLAY_LIMIT = 3
 const MONTHLY_BROKEN_DRAWER_PAGE_SIZE = 100
 const NEW_USER_TAG_CARD_ID = '__new__'
+const DASHBOARD_TREND_WINDOW_SIZE = 8
 const ADMIN_USERS_DEFAULT_SORT_FIELD: AdminUsersSortField = 'lastLoginAt'
 const ADMIN_USERS_DEFAULT_SORT_ORDER: SortDirection = 'desc'
 const ADMIN_USERS_SORT_FIELDS: readonly AdminUsersSortField[] = [
@@ -280,6 +275,13 @@ const ADMIN_USERS_OVERVIEW_SORT_FIELDS = new Set<AdminUsersSortField>([
   'lastActivity',
   'lastLoginAt',
 ])
+
+function createEmptyDashboardTrend(): DashboardTrendBuckets {
+  return {
+    request: new Array(DASHBOARD_TREND_WINDOW_SIZE).fill(0),
+    error: new Array(DASHBOARD_TREND_WINDOW_SIZE).fill(0),
+  }
+}
 const ADMIN_UNBOUND_TOKEN_USAGE_DEFAULT_SORT_FIELD: AdminUnboundTokenUsageSortField = 'lastUsedAt'
 const ADMIN_UNBOUND_TOKEN_USAGE_DEFAULT_SORT_ORDER: SortDirection = 'desc'
 const ADMIN_UNBOUND_TOKEN_USAGE_SORT_FIELDS: readonly AdminUnboundTokenUsageSortField[] = [
@@ -312,12 +314,6 @@ type UserTagLike = Pick<AdminUserTagBinding, 'displayName' | 'icon' | 'systemKey
 }
 
 type DashboardSiteStatusState = DashboardSiteStatusSnapshot
-type DashboardTokenSnapshot =
-  | { kind: 'ok'; items: AuthToken[]; truncated: boolean }
-  | { kind: 'error' }
-type DashboardJobsSnapshot =
-  | { kind: 'ok'; data: Paginated<JobLogView> }
-  | { kind: 'error' }
 
 const EMPTY_USER_TAG_FORM: UserTagFormState = {
   tagId: null,
@@ -1436,7 +1432,8 @@ function AdminDashboard(): JSX.Element {
   const [keyRegionFacets, setKeyRegionFacets] = useState<Array<{ value: string; count: number }>>([])
   const [tokens, setTokens] = useState<AuthToken[]>([])
   const [dashboardTokens, setDashboardTokens] = useState<AuthToken[]>([])
-  const [dashboardTokenCoverage, setDashboardTokenCoverage] = useState<'ok' | 'truncated' | 'error'>('ok')
+  const [dashboardTokenCoverage, setDashboardTokenCoverage] = useState<DashboardTokenCoverage>('ok')
+  const [dashboardTrend, setDashboardTrend] = useState<DashboardTrendBuckets>(() => createEmptyDashboardTrend())
   const [dashboardOverviewLoaded, setDashboardOverviewLoaded] = useState(false)
   const [tokensPage, setTokensPage] = useState(1)
   const tokensPerPage = 10
@@ -1556,11 +1553,9 @@ function AdminDashboard(): JSX.Element {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const pollingTimerRef = useRef<number | null>(null)
-  const dashboardSignalsTimerRef = useRef<number | null>(null)
   const routeRef = useRef<AdminPathRoute>(route)
   const baseDataLoadedRef = useRef(false)
   const dashboardOverviewVersionRef = useRef(0)
-  const dashboardSignalsVersionRef = useRef(0)
   const unboundTokenUsageQueryKeyRef = useRef<string | null>(null)
   const requestsLoadedRef = useRef(false)
   const jobsLoadedRef = useRef(false)
@@ -1687,6 +1682,7 @@ function AdminDashboard(): JSX.Element {
   const [editingTokenNote, setEditingTokenNote] = useState('')
   const [savingTokenNote, setSavingTokenNote] = useState(false)
   const [sseConnected, setSseConnected] = useState(false)
+  const [sseFallbackActive, setSseFallbackActive] = useState(false)
   const [expandedJobs, setExpandedJobs] = useState<Set<number>>(() => new Set())
   // Batch dialog state
   const [batchDialogOpen, setBatchDialogOpen] = useState(false)
@@ -2116,79 +2112,6 @@ function AdminDashboard(): JSX.Element {
     [],
   )
 
-  const loadAllTokensForDashboard = useCallback(async (
-    signal?: AbortSignal,
-  ): Promise<{ items: AuthToken[]; truncated: boolean }> => {
-    const perPage = DASHBOARD_TOKENS_PAGE_SIZE
-    const maxPages = DASHBOARD_TOKENS_MAX_PAGES
-    let page = 1
-    let total = Number.POSITIVE_INFINITY
-    const items: AuthToken[] = []
-
-    while (page <= maxPages && items.length < total) {
-      const result = await fetchTokens(page, perPage, undefined, signal)
-      if (signal?.aborted) break
-      items.push(...result.items)
-      total = result.total
-      if (result.items.length < perPage) break
-      page += 1
-    }
-
-    const truncated = items.length < total
-    return { items, truncated }
-  }, [])
-
-  const loadExhaustedKeysForDashboard = useCallback(
-    async (signal?: AbortSignal): Promise<ApiKeyStats[]> => {
-      const result = await fetchApiKeys(
-        1,
-        DASHBOARD_EXHAUSTED_KEYS_PAGE_SIZE,
-        { statuses: ['exhausted'] },
-        signal,
-      )
-      return result.items
-    },
-    [],
-  )
-
-  const loadDashboardSignalsSnapshot = useCallback(
-    async (
-      signal?: AbortSignal,
-    ): Promise<{ tokenSnapshot: DashboardTokenSnapshot; jobsSnapshot: DashboardJobsSnapshot }> => {
-      const [tokenSnapshot, jobsSnapshot] = await Promise.all([
-        loadAllTokensForDashboard(signal)
-          .then((value) => ({ kind: 'ok' as const, ...value }))
-          .catch(() => ({ kind: 'error' as const })),
-        fetchJobs(1, DASHBOARD_RECENT_JOBS_PER_PAGE, 'all', signal)
-          .then((data) => ({ kind: 'ok' as const, data }))
-          .catch(() => ({ kind: 'error' as const })),
-      ])
-      return { tokenSnapshot, jobsSnapshot }
-    },
-    [loadAllTokensForDashboard],
-  )
-
-  const applyDashboardSignalsSnapshot = useCallback(
-    ({
-      tokenSnapshot,
-      jobsSnapshot,
-    }: {
-      tokenSnapshot: DashboardTokenSnapshot
-      jobsSnapshot: DashboardJobsSnapshot
-    }) => {
-      if (tokenSnapshot.kind === 'ok') {
-        setDashboardTokens(tokenSnapshot.items)
-        setDashboardTokenCoverage(tokenSnapshot.truncated ? 'truncated' : 'ok')
-      } else {
-        setDashboardTokenCoverage('error')
-      }
-      if (jobsSnapshot.kind === 'ok') {
-        setDashboardJobs(jobsSnapshot.data.items)
-      }
-    },
-    [],
-  )
-
   const handleCopySecret = useCallback(
     async (id: string, stateKey: string, anchorEl?: HTMLElement | null) => {
       setManualCopyBubble(null)
@@ -2266,6 +2189,46 @@ function AdminDashboard(): JSX.Element {
     [copyToClipboard, errorStrings.copyKey, manualCopyText, openManualCopyBubble, setError, updateCopyState],
   )
 
+  const loadShellData = useCallback(
+    async ({
+      signal,
+      reason = 'refresh',
+      showGlobalLoading = false,
+    }: {
+      signal?: AbortSignal
+      reason?: 'initial' | 'switch' | 'refresh'
+      showGlobalLoading?: boolean
+    } = {}) => {
+      const request = beginManagedRequest(baseDataAbortRef, signal)
+      try {
+        const [ver, profileData] = await Promise.all([
+          fetchVersion(request.signal).catch(() => null),
+          fetchProfile(request.signal).catch(() => null),
+        ])
+
+        if (request.signal.aborted) {
+          return
+        }
+
+        setProfile(profileData ?? null)
+        setVersion(ver ?? null)
+        setLastUpdated(new Date())
+        baseDataLoadedRef.current = true
+      } catch (err) {
+        if ((err as Error).name === 'AbortError') {
+          return
+        }
+        setError(err instanceof Error ? err.message : 'Unexpected error occurred')
+      } finally {
+        if (showGlobalLoading && !request.signal.aborted) {
+          setLoading(false)
+        }
+        request.cleanup()
+      }
+    },
+    [beginManagedRequest],
+  )
+
   const loadData = useCallback(
     async ({
       signal,
@@ -2341,107 +2304,26 @@ function AdminDashboard(): JSX.Element {
   const loadDashboardOverview = useCallback(
     async (signal?: AbortSignal) => {
       const requestVersion = ++dashboardOverviewVersionRef.current
-      const signalVersion = ++dashboardSignalsVersionRef.current
       try {
-        const dashboardWindowsRequest = fetchSummaryWindows(signal)
-          .then((data) => ({ kind: 'ok' as const, data }))
-          .catch((error: unknown) => ({
-            kind: 'error' as const,
-            status:
-              typeof error === 'object' && error && 'status' in error
-                ? (error as { status?: number }).status ?? null
-                : null,
-          }))
-        const dashboardSummaryRequest = fetchSummary(signal)
-          .then((data) => ({ kind: 'ok' as const, data }))
-          .catch((error: unknown) => ({
-            kind: 'error' as const,
-            status:
-              typeof error === 'object' && error && 'status' in error
-                ? (error as { status?: number }).status ?? null
-                : null,
-          }))
-        const dashboardForwardProxyRequest = fetchForwardProxyDashboardSummary(signal)
-          .then((data) => ({ kind: 'ok' as const, data }))
-          .catch((error: unknown) => ({
-            kind: 'error' as const,
-            status:
-              typeof error === 'object' && error && 'status' in error
-                ? (error as { status?: number }).status ?? null
-                : null,
-          }))
-        const [
-          dashboardSummaryWindowsResult,
-          dashboardSummarySnapshotResult,
-          dashboardForwardProxyResult,
-          dashboardSignalsSnapshot,
-          dashboardKeysData,
-          dashboardLogsData,
-        ] = await Promise.all([
-          dashboardWindowsRequest,
-          dashboardSummaryRequest,
-          dashboardForwardProxyRequest,
-          loadDashboardSignalsSnapshot(signal),
-          loadExhaustedKeysForDashboard(signal).catch(() => [] as ApiKeyStats[]),
-          fetchRequestLogs(1, DASHBOARD_RECENT_LOGS_PER_PAGE, undefined, signal).catch(
-            () =>
-              ({
-                items: [],
-                total: 0,
-                page: 1,
-                perPage: DASHBOARD_RECENT_LOGS_PER_PAGE,
-              }) as Paginated<RequestLog>,
-          ),
-        ])
+        const overview = await fetchDashboardOverview(signal)
 
         if (signal?.aborted) {
           return
         }
         const overviewStale = requestVersion !== dashboardOverviewVersionRef.current
-        const signalsStale = signalVersion !== dashboardSignalsVersionRef.current
-
-        const dashboardAuthExpired =
-          (dashboardSummaryWindowsResult.kind === 'error' &&
-            dashboardSummaryWindowsResult.status === 403) ||
-          (dashboardSummarySnapshotResult.kind === 'error' &&
-            dashboardSummarySnapshotResult.status === 403) ||
-          (dashboardForwardProxyResult.kind === 'error' &&
-            dashboardForwardProxyResult.status === 403)
-
-        const nextSummary =
-          !dashboardAuthExpired && dashboardSummarySnapshotResult.kind === 'ok'
-            ? dashboardSummarySnapshotResult.data
-            : null
-        const nextSummaryWindows =
-          !dashboardAuthExpired && dashboardSummaryWindowsResult.kind === 'ok'
-            ? dashboardSummaryWindowsResult.data
-            : null
-        const nextForwardProxySummary: ForwardProxyDashboardSummaryResponse | null =
-          !dashboardAuthExpired && dashboardForwardProxyResult.kind === 'ok'
-            ? dashboardForwardProxyResult.data
-            : null
         if (!overviewStale) {
-          setDashboardSummaryWindows(nextSummaryWindows)
-          setDashboardSiteStatusSnapshot(
-            nextSummary
-              ? {
-                  remainingQuota: nextSummary.total_quota_remaining,
-                  totalQuotaLimit: nextSummary.total_quota_limit,
-                  activeKeys: nextSummary.active_keys,
-                  quarantinedKeys: nextSummary.quarantined_keys,
-                  exhaustedKeys: nextSummary.exhausted_keys,
-                  availableProxyNodes: nextForwardProxySummary?.availableNodes ?? null,
-                  totalProxyNodes: nextForwardProxySummary?.totalNodes ?? null,
-                }
-              : null,
-          )
-        }
-        if (!signalsStale) {
-          applyDashboardSignalsSnapshot(dashboardSignalsSnapshot)
-        }
-        if (!overviewStale) {
-          setDashboardKeys(dashboardKeysData)
-          setDashboardLogs(dashboardLogsData.items)
+          setSummary(overview.summary)
+          setDashboardSummaryWindows(overview.summaryWindows)
+          setDashboardSiteStatusSnapshot(overview.siteStatus)
+          setDashboardTokens(overview.disabledTokens)
+          setDashboardTokenCoverage(overview.tokenCoverage)
+          setDashboardTrend(overview.trend)
+          setDashboardKeys(overview.exhaustedKeys)
+          setDashboardLogs(overview.recentLogs)
+          setDashboardJobs(overview.recentJobs)
+          setDashboardOverviewLoaded(true)
+          setLastUpdated(new Date())
+          setError(null)
         }
       } catch (err) {
         if ((err as Error).name === 'AbortError') {
@@ -2451,32 +2333,19 @@ function AdminDashboard(): JSX.Element {
         if (overviewStale) {
           return
         }
+        setSummary(null)
         setDashboardSummaryWindows(null)
         setDashboardSiteStatusSnapshot(null)
         setDashboardTokens([])
         setDashboardTokenCoverage('error')
+        setDashboardTrend(createEmptyDashboardTrend())
         setDashboardKeys([])
         setDashboardLogs([])
         setDashboardJobs([])
-      } finally {
-        if (!(signal?.aborted ?? false) && requestVersion === dashboardOverviewVersionRef.current) {
-          setDashboardOverviewLoaded(true)
-        }
+        setDashboardOverviewLoaded(true)
       }
     },
-    [applyDashboardSignalsSnapshot, loadDashboardSignalsSnapshot, loadExhaustedKeysForDashboard],
-  )
-
-  const refreshDashboardSignals = useCallback(
-    async (signal?: AbortSignal) => {
-      const requestVersion = ++dashboardSignalsVersionRef.current
-      const snapshot = await loadDashboardSignalsSnapshot(signal)
-      if (signal?.aborted || requestVersion !== dashboardSignalsVersionRef.current) {
-        return
-      }
-      applyDashboardSignalsSnapshot(snapshot)
-    },
-    [applyDashboardSignalsSnapshot, loadDashboardSignalsSnapshot],
+    [],
   )
 
   useEffect(() => {
@@ -2970,13 +2839,25 @@ function AdminDashboard(): JSX.Element {
     if (!baseDataLoadedRef.current) {
       setLoading(true)
     }
-    void loadData({
-      signal: controller.signal,
-      reason: baseDataLoadedRef.current ? 'switch' : 'initial',
-      showGlobalLoading: !baseDataLoadedRef.current,
-    })
+    const reason = baseDataLoadedRef.current ? 'switch' : 'initial'
+    if (route.name === 'module' && route.module === 'dashboard') {
+      void Promise.all([
+        loadShellData({ signal: controller.signal, reason }),
+        loadDashboardOverview(controller.signal),
+      ]).finally(() => {
+        if (!controller.signal.aborted) {
+          setLoading(false)
+        }
+      })
+    } else {
+      void loadData({
+        signal: controller.signal,
+        reason,
+        showGlobalLoading: !baseDataLoadedRef.current,
+      })
+    }
     return () => controller.abort()
-  }, [loadData])
+  }, [loadDashboardOverview, loadData, loadShellData, route])
 
   useLayoutEffect(() => {
     if (!(route.name === 'module' && route.module === 'dashboard')) {
@@ -2987,15 +2868,6 @@ function AdminDashboard(): JSX.Element {
     setDashboardSummaryWindows(null)
     setDashboardSiteStatusSnapshot(null)
   }, [route])
-
-  useEffect(() => {
-    if (!(route.name === 'module' && route.module === 'dashboard')) {
-      return
-    }
-    const controller = new AbortController()
-    void loadDashboardOverview(controller.signal)
-    return () => controller.abort()
-  }, [route, loadDashboardOverview])
 
   useEffect(() => {
     if (route.name !== 'unbound-token-usage') {
@@ -3655,7 +3527,7 @@ function AdminDashboard(): JSX.Element {
 
   // Automatic fallback polling when SSE is not connected
   useEffect(() => {
-    if (sseConnected) {
+    if (sseConnected || !sseFallbackActive) {
       if (pollingTimerRef.current != null) {
         window.clearInterval(pollingTimerRef.current)
         pollingTimerRef.current = null
@@ -3666,10 +3538,13 @@ function AdminDashboard(): JSX.Element {
     if (pollingTimerRef.current == null) {
       const refreshFallback = () => {
         const controller = new AbortController()
-        const tasks: Array<Promise<unknown>> = [loadData({ signal: controller.signal, reason: 'refresh' })]
-        if (route.name === 'module' && route.module === 'dashboard') {
-          tasks.push(loadDashboardOverview(controller.signal))
-        }
+        const tasks: Array<Promise<unknown>> =
+          route.name === 'module' && route.module === 'dashboard'
+            ? [
+                loadShellData({ signal: controller.signal, reason: 'refresh' }),
+                loadDashboardOverview(controller.signal),
+              ]
+            : [loadData({ signal: controller.signal, reason: 'refresh' })]
         if (route.name === 'unbound-token-usage') {
           tasks.push(loadUnboundTokenUsage({ signal: controller.signal, reason: 'refresh' }))
         }
@@ -3688,32 +3563,7 @@ function AdminDashboard(): JSX.Element {
         pollingTimerRef.current = null
       }
     }
-  }, [sseConnected, loadData, loadDashboardOverview, loadUnboundTokenUsage, route])
-
-  useEffect(() => {
-    if (!(route.name === 'module' && route.module === 'dashboard') || !sseConnected) {
-      if (dashboardSignalsTimerRef.current != null) {
-        window.clearInterval(dashboardSignalsTimerRef.current)
-        dashboardSignalsTimerRef.current = null
-      }
-      return
-    }
-
-    if (dashboardSignalsTimerRef.current == null) {
-      dashboardSignalsTimerRef.current = window.setInterval(() => {
-        const controller = new AbortController()
-        void refreshDashboardSignals(controller.signal)
-          .finally(() => controller.abort())
-      }, REFRESH_INTERVAL_MS) as unknown as number
-    }
-
-    return () => {
-      if (dashboardSignalsTimerRef.current != null) {
-        window.clearInterval(dashboardSignalsTimerRef.current)
-        dashboardSignalsTimerRef.current = null
-      }
-    }
-  }, [refreshDashboardSignals, route, sseConnected])
+  }, [sseConnected, sseFallbackActive, loadData, loadDashboardOverview, loadShellData, loadUnboundTokenUsage, route])
 
   // Detect whether the collapsed token groups row overflows horizontally.
   // If everything fits in a single line, we hide the "more" toggle button.
@@ -3756,16 +3606,18 @@ function AdminDashboard(): JSX.Element {
         es = null
       }
       es = new EventSource('/api/events')
-      es.onopen = () => { setSseConnected(true) }
+      es.onopen = () => {
+        setSseConnected(true)
+        setSseFallbackActive(false)
+      }
       es.onerror = () => {
         // Trigger fallback polling; attempt reconnect automatically
         setSseConnected(false)
+        setSseFallbackActive(true)
       }
       es.addEventListener('degraded', () => {
-        if (!(routeRef.current.name === 'module' && routeRef.current.module === 'dashboard')) {
-          return
-        }
         setSseConnected(false)
+        setSseFallbackActive(true)
         if (es) {
           try { es.close() } catch {}
           es = null
@@ -3780,15 +3632,15 @@ function AdminDashboard(): JSX.Element {
           if (routeRef.current.name === 'module' && routeRef.current.module === 'dashboard') {
             dashboardOverviewVersionRef.current += 1
             setDashboardSummaryWindows(data.summaryWindows)
-            setDashboardSiteStatusSnapshot({
-              ...data.siteStatus,
-              availableProxyNodes: data.siteStatus.availableProxyNodes,
-              totalProxyNodes: data.siteStatus.totalProxyNodes,
-            })
+            setDashboardSiteStatusSnapshot(data.siteStatus)
+            setDashboardTokens(data.disabledTokens)
+            setDashboardTokenCoverage(data.tokenCoverage)
+            setDashboardTrend(data.trend)
+            setDashboardKeys(data.exhaustedKeys)
+            setDashboardLogs(data.recentLogs)
+            setDashboardJobs(data.recentJobs)
             setDashboardOverviewLoaded(true)
           }
-          setDashboardKeys(data.keys)
-          setDashboardLogs(data.logs)
           setLastUpdated(new Date())
           setError(null)
           setLoading(false)
@@ -3808,6 +3660,7 @@ function AdminDashboard(): JSX.Element {
         try { es.close() } catch {}
       }
       setSseConnected(false)
+      setSseFallbackActive(false)
     }
   }, [])
 
@@ -4147,7 +4000,13 @@ function AdminDashboard(): JSX.Element {
       clearKeySelection()
       setKeysBulkFeedback(null)
     }
-    const tasks: Array<Promise<unknown>> = [loadData({ signal: controller.signal, reason: 'refresh', showGlobalLoading: true })]
+    const tasks: Array<Promise<unknown>> =
+      route.name === 'module' && route.module === 'dashboard'
+        ? [
+            loadShellData({ signal: controller.signal, reason: 'refresh' }),
+            loadDashboardOverview(controller.signal),
+          ]
+        : [loadData({ signal: controller.signal, reason: 'refresh', showGlobalLoading: true })]
     if (route.name === 'unbound-token-usage') {
       tasks.push(loadUnboundTokenUsage({ signal: controller.signal, reason: 'refresh' }))
     }
@@ -4303,10 +4162,12 @@ function AdminDashboard(): JSX.Element {
           }),
       )
     }
-    if (route.name === 'module' && route.module === 'dashboard') {
-      tasks.push(loadDashboardOverview(controller.signal))
-    }
-    void Promise.all(tasks).finally(() => controller.abort())
+    void Promise.all(tasks).finally(() => {
+      if (!controller.signal.aborted) {
+        setLoading(false)
+      }
+      controller.abort()
+    })
   }
 
   const todayMetrics = useMemo(() => {
@@ -8856,30 +8717,6 @@ function AdminDashboard(): JSX.Element {
   const showAlerts = activeModule === 'alerts'
   const showSystemSettings = activeModule === 'system-settings'
   const showProxySettings = activeModule === 'proxy-settings'
-  const trendBuckets = (() => {
-    const windowSize = 8
-    const sorted = [...dashboardLogs]
-      .filter((log) => typeof log.created_at === 'number' && Number.isFinite(log.created_at))
-      .sort((a, b) => a.created_at - b.created_at)
-      .slice(-64)
-    if (sorted.length === 0) {
-      return { request: new Array(windowSize).fill(0), error: new Array(windowSize).fill(0) }
-    }
-    const minTime = sorted[0].created_at
-    const maxTime = sorted[sorted.length - 1].created_at
-    const span = Math.max(1, maxTime - minTime + 1)
-    const request = new Array<number>(windowSize).fill(0)
-    const error = new Array<number>(windowSize).fill(0)
-    for (const item of sorted) {
-      const ratio = (item.created_at - minTime) / span
-      const index = Math.min(windowSize - 1, Math.max(0, Math.floor(ratio * windowSize)))
-      request[index] += 1
-      if (item.result_status === 'error' || item.result_status === 'quota_exhausted') {
-        error[index] += 1
-      }
-    }
-    return { request, error }
-  })()
   const headerUpdatedTime = lastUpdated ? timeOnlyFormatter.format(lastUpdated) : null
 
   const moduleDesktopUtility = (
@@ -9140,7 +8977,7 @@ function AdminDashboard(): JSX.Element {
           monthMetrics={monthMetrics}
           monthQuotaCharge={monthQuotaCharge}
           statusMetrics={statusMetrics}
-          trend={trendBuckets}
+          trend={dashboardTrend}
           tokenCoverage={dashboardTokenCoverage}
           tokens={dashboardTokens}
           keys={dashboardKeys}
