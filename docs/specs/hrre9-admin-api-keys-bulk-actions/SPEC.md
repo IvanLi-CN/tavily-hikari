@@ -1,104 +1,133 @@
-# Admin API Keys 批量维护动作与状态无关手动同步（#hrre9）
+# Admin API Keys 批量维护动作与同步额度实时进度气泡（#hrre9）
 
 ## 状态
 
 - Status: 已实现
 - Created: 2026-04-04
-- Last: 2026-04-05
 
 ## 背景 / 问题陈述
 
-- `/admin/keys` 目前只有逐条操作，批量清理异常 key、批量解除隔离或批量刷新额度都需要重复点击，实际维护成本高。
-- 现有“同步额度”入口只覆盖单 key，且本次需求要求管理员手动同步不再受本地 key 状态约束。
-- 额度同步一旦上游失败，不能把错误结果写回当前额度快照，否则会污染后续判断与展示。
+- `/admin/keys` 已支持当前页批量动作，但工具条在执行时缺少足够明确的动作语义与工作反馈。
+- “同步额度”是最耗时的批量动作，单靠按钮 disabled 无法让管理员判断系统是否仍在推进、当前推进到哪里、哪些 key 已成功或失败。
+- 上游 usage 失败仍然不能污染现有额度快照；新增实时反馈必须建立在真实服务端进度之上，而不是前端伪造百分比。
 
 ## 目标 / 非目标
 
 ### Goals
 
-- 在 `/admin/keys` 新增“当前页勾选”批量操作：删除、解除隔离、同步额度。
-- 让管理员手动同步入口（列表批量同步 + 详情页单 key 同步）对 `active` / `disabled` / `exhausted` / `quarantined` 一视同仁，都允许发起。
-- 保证同步失败不写入错误额度数据，同时保持现有上游失败分类、错误返回与 quarantine 副作用不变。
-- 补齐 Storybook、浏览器视觉证据、测试与 PR 收敛所需 spec 合同。
+- 为 `/admin/keys` 批量工具条三个动作补齐左侧语义图标，并在执行中只让当前动作按钮显示 spinning loader。
+- 为批量“同步额度”提供真实流式进度气泡，固定分成 `准备请求` → `逐 key 同步` → `刷新列表` 三段。
+- 让 `POST /api/keys/bulk-actions` 在 `action=sync_usage` 时支持基于 `Accept: text/event-stream` 的 SSE content negotiation，同时保留现有 JSON fallback。
+- 保持既有 summary banner、列表刷新、清空选择、失败不落坏数据等行为不回退。
+- 补齐 Storybook 入口、测试、浏览器验收与视觉证据，收口到 latest PR `merge-ready`。
 
 ### Non-goals
 
-- 不支持“全选当前筛选结果”或跨页批量操作。
-- 不新增列表单条“同步额度”按钮。
-- 不放开后台热/冷 quota sync scheduler 对 `quarantined` / `exhausted` key 的筛选。
-- 不修改上游 usage 失败时的 quarantine / audit 语义。
+- 不给“解除隔离 / 批量移除”新增实时进度气泡。
+- 不新增独立 job queue、轮询接口或跨页批量协议。
+- 不改变单 key 手动同步、批量删除、批量解除隔离的业务语义。
 
 ## 范围（Scope）
 
 ### In scope
 
+- `src/server/handlers/admin_resources.rs`
+  - `sync_usage` 批量动作的 SSE 事件流与 JSON fallback。
+- `src/server/tests.rs`
+  - 批量同步 mixed outcome 与 SSE 合同测试。
+- `web/src/AdminDashboard.tsx`
+  - 批量工具条图标、active spinner、同步额度实时进度气泡接线。
+- `web/src/api.ts`
+  - 专用 bulk sync SSE helper。
+- `web/src/admin/apiKeyBulkSyncProgress.ts`
+  - 前端流式状态 reducer / helpers。
+- `web/src/admin/ApiKeyBulkSyncProgressBubble.tsx`
+  - 进度气泡 UI。
+- `web/src/admin/AdminPages.stories.tsx`
+  - 批量工具条选中态与同步进行中气泡稳定证明。
+- `web/src/admin/*.test.ts`
+  - story exports 与 reducer 行为覆盖。
 - `docs/specs/hrre9-admin-api-keys-bulk-actions/**`
-  - 新 spec、HTTP contract 与视觉证据。
-- `src/server/handlers/admin_resources.rs` / `src/server/serve.rs`
-  - 新增 admin 批量维护接口。
-- `src/tavily_proxy/mod.rs` / `src/store/mod.rs`
-  - 复用删除、解除隔离、同步额度原语，并为批量同步提供失败不落坏数据的保证。
-- `src/server/tests.rs` / `src/tests/mod.rs`
-  - 后端 mixed-status/mixed-result 覆盖。
-- `web/src/AdminDashboard.tsx` / `web/src/api.ts` / `web/src/i18n.tsx`
-  - 当前页勾选、批量工具条、批量确认/执行、详情页同步回归。
-- Storybook stories / browser validation
-  - API Keys 列表选中态与详情页非 active 同步态。
+  - 更新合同、规格与视觉证据。
 
 ### Out of scope
 
-- API Keys 列表新增排序、搜索或跨页批量协议。
-- 现有 key 导入、校验对话框和分页 URL 契约的结构性重做。
-- 非管理员侧页面与用户控制台。
+- 批量删除 / 解除隔离的流式进度展示。
+- 跨页选择、筛选协议、分页 URL 契约变更。
+- 后台自动调度、详情页交互重做。
 
 ## 需求（Requirements）
 
 ### MUST
 
-- 桌面表格与移动卡片都支持“当前页勾选”与“全选当前页”。
-- 批量操作仅对当前页已勾选 key 生效；翻页、改筛选、改 `perPage`、刷新后必须清空选择。
-- 新增 `POST /api/keys/bulk-actions`，支持 `delete` / `clear_quarantine` / `sync_usage`。
-- 管理员手动同步不得因本地 key 状态而拒绝发起。
-- 同步失败不得写入 `api_keys.quota_limit`、`api_keys.quota_remaining`、`api_keys.quota_synced_at`，也不得写 `api_key_quota_sync_samples`。
+- 三个批量按钮默认都有左侧图标：
+  - 同步额度 = `mdi:refresh`
+  - 解除隔离 = `mdi:shield-check-outline`
+  - 批量移除 = `mdi:trash-can-outline`
+- 任一动作执行中时，只有当前动作按钮把左图标替换为 `mdi:loading` 并旋转；其他按钮只禁用、不旋转。
+- 点击“同步额度”后必须立刻在按钮锚点下方展示进度气泡。
+- 进度气泡只能展示真实状态，不得伪造百分比；至少持续显示：
+  - 当前阶段
+  - `current/total`
+  - `success/skipped/failed`
+  - 最近完成 key 的结果文本
+- `POST /api/keys/bulk-actions` 在 `action=sync_usage` 且 `Accept` 包含 `text/event-stream` 时必须返回可解析 SSE，事件至少覆盖：
+  - `phase(prepare_request)`
+  - `item`（每个 key 一条）
+  - `phase(refresh_ui)`
+  - `complete` 或 `error`
+- `delete` / `clear_quarantine` 保持 JSON-only，原有响应结构不变。
+- 批量同步失败不得写入 `api_keys.quota_limit`、`api_keys.quota_remaining`、`api_keys.quota_synced_at`，也不得写 `api_key_quota_sync_samples`。
 
 ### SHOULD
 
-- 批量操作响应提供 summary + per-key 结果，前端据此反馈部分成功/失败。
-- 解除隔离对 no-op 项返回 `skipped`，而不是整批失败。
-- 列表操作完成后统一刷新当前 keys 页并清空选择。
-
-### COULD
-
-- 在前端展示简短的批量执行结果摘要。
+- `complete.payload` 与 JSON 路径的 `summary/results` 语义等价。
+- 终态气泡在请求结束后继续保留，直到用户主动 dismiss、再次触发同步或选择上下文被重置。
+- Storybook 至少提供“选中工具条”和“同步进行中气泡”两个稳定入口。
 
 ## 功能与行为规格（Functional/Behavior Spec）
 
-### Core flows
+### Toolbar icons and active state
 
-- API Keys 列表新增选择列；桌面表头支持全选/取消全选当前页，移动卡片每项提供独立勾选。
-- 当当前页存在选中项时，列表头部显示批量工具条，提供：
-  - 删除：二次确认后执行。
-  - 解除隔离：直接执行。
-  - 同步额度：直接执行。
-- 批量执行期间锁定对应按钮，避免重复提交。
-- 列表批量同步与详情页单 key 同步共用相同的“手动同步”语义：只受“当前请求进行中”约束，不受 key 本地状态约束。
-- 批量执行后，前端刷新当前 keys 页、清空选择，并展示 summary 级反馈。
+- 当当前页存在选中项时，列表头部显示批量工具条。
+- 三个按钮都显示左图标；文案保持不变。
+- `bulkKeyActionInFlight` 只驱动当前动作按钮的 spinner，避免多个按钮同时表现为“正在工作”。
+
+### Bulk sync progress bubble
+
+- 触发“同步额度”后立即打开锚点气泡。
+- 气泡固定呈现三步：
+  - `prepare_request`
+  - `sync_usage`
+  - `refresh_ui`
+- `sync_usage` 阶段通过服务端 `item` 事件实时累积：
+  - 已处理数量
+  - 成功 / 跳过 / 失败计数
+  - 最近一个 key 的 `success / skipped / failed` 与详情
+- 流结束后，前端仍沿用现有收口：刷新当前 keys 页、清空选择、展示 summary banner。
+- 只有在上述收口动作完成后，`refresh_ui` 步骤才进入完成态。
+
+### SSE contract behavior
+
+- `sync_usage` 的 SSE 流按选中 key 的归一化顺序发送事件。
+- 单个 key 的上游失败通过 `item.status = failed` 表达，不升级为整个流失败。
+- 只有编码/流式发送本身失败时才会发送终态 `error` 事件。
+- 如果客户端未请求 SSE，仍然返回原始 JSON 聚合结果。
 
 ### Edge cases / errors
 
-- 批量 `clear_quarantine` 遇到非隔离 key 时返回 `skipped`。
-- 批量 `delete` 对已 soft-delete 的 key 若仍被请求，允许按幂等思路返回 `success` 或 `skipped`，但不得破坏既有 undelete 语义。
-- 批量 `sync_usage` 某些 key 上游失败时，其余 key 继续执行；失败项只回报错误，不写坏数据。
-- 详情页单 key 同步上游失败时，仍允许既有 quarantine/audit 副作用继续发生，但额度快照不得被污染。
+- 翻页、切换筛选、切换 `perPage`、重新进入模块后，选择态被清空，同时关闭并重置进度气泡。
+- 如果流在 `complete` 前失败，气泡停在错误态，并保留已累积的真实计数。
+- 如果流成功但列表刷新失败，气泡将错误定位到 `refresh_ui`，而不会伪装成同步成功。
 
 ## 接口契约（Interfaces & Contracts）
 
 ### 接口清单（Inventory）
 
-| 接口（Name）                    | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc）   | 负责人（Owner） | 使用方（Consumers） | 备注（Notes）                  |
-| ------------------------------- | ------------ | ------------- | -------------- | -------------------------- | --------------- | ------------------- | ------------------------------ |
-| `POST /api/keys/bulk-actions`   | HTTP API     | internal      | New            | `./contracts/http-apis.md` | backend         | admin web           | API Keys 列表批量维护动作      |
-| `POST /api/keys/:id/sync-usage` | HTTP API     | internal      | Modify         | `./contracts/http-apis.md` | backend         | admin web           | 语义补强：本地状态无关手动同步 |
+| 接口（Name）                    | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc）   | 负责人（Owner） | 使用方（Consumers） | 备注（Notes）                         |
+| ------------------------------- | ------------ | ------------- | -------------- | -------------------------- | --------------- | ------------------- | ------------------------------------- |
+| `POST /api/keys/bulk-actions`   | HTTP API     | internal      | Modify         | `./contracts/http-apis.md` | backend         | admin web           | `sync_usage` 新增 SSE 协商与进度事件  |
+| `POST /api/keys/:id/sync-usage` | HTTP API     | internal      | Existing       | `./contracts/http-apis.md` | backend         | admin web           | 单 key 手动同步语义保持状态无关与安全 |
 
 ### 契约文档（按 Kind 拆分）
 
@@ -106,118 +135,116 @@
 
 ## 验收标准（Acceptance Criteria）
 
-- Given `/admin/keys` 当前页存在多条 key
-  When 勾选部分或全选当前页
-  Then 桌面与移动端显示一致的选中数量，且翻页、改 `perPage`、改任一筛选、手动刷新后选择立即清空。
+- Given `/admin/keys` 当前页存在已选 key
+  When 工具条显示
+  Then “同步额度 / 解除隔离 / 批量移除”都带左侧语义图标。
 
-- Given 选中的 key 混合了 `active`、`disabled`、`exhausted`、`quarantined`
-  When 执行批量同步额度
-  Then 所有选中 key 都会发起同步请求；本地状态不会让任一 key 在前端或后端被预先拒绝。
+- Given 任一批量动作正在执行
+  When 查看工具条
+  Then 只有当前动作按钮显示 spinning loader，其余按钮保持禁用但不旋转。
 
-- Given 某些批量同步请求上游返回 `401` / `403` / `5xx`
-  When 批量操作结束
-  Then 成功项更新额度，失败项返回 `failed`；失败项不得更新 `quota_limit / quota_remaining / quota_synced_at`，也不得写 quota sync sample。
+- Given 管理员点击“同步额度”
+  When 请求刚发出
+  Then 进度气泡立即在按钮锚点下方出现，并显示 `准备请求` 阶段与 `0/total`。
 
-- Given 选中的 key 中只有一部分处于隔离中
-  When 执行批量解除隔离
-  Then 已隔离项成功解除，非隔离项以 `skipped` 回报，整批不因 no-op 项失败。
+- Given 选中的 key 正在逐个同步
+  When 服务端持续发送 `item` 事件
+  Then 气泡实时更新 `current/total`、`success/skipped/failed` 累计值与最近完成 key 的结果文案。
 
-- Given 批量删除完成
-  When 列表刷新
-  Then 已删除 key 从当前列表消失，重新添加同 secret 仍保持既有 undelete 语义。
+- Given `sync_usage` 请求携带 `Accept: text/event-stream`
+  When 服务器返回成功
+  Then 返回的 SSE 事件顺序至少满足 `phase(prepare_request)` → `item*` → `phase(refresh_ui)` → `complete`，且 `complete.payload` 与 JSON 结果等价。
+
+- Given 某个 key 的上游 usage 请求失败
+  When 批量同步结束
+  Then 该 key 在 `item` / `results` 中标记为 `failed`，同时它的 quota snapshot 与 quota sync sample 不被错误数据污染。
+
+- Given 流式同步完成但用户尚未 dismiss 气泡
+  When 不切换选择上下文
+  Then 终态气泡继续保留，直到点外部区域、再次触发同步或上下文重置。
 
 - Given Storybook 与浏览器验收已完成
   When 进入 PR 收敛
-  Then spec 的 `## Visual Evidence` 已包含列表批量操作与详情页同步的最终图片，且图片已在对话中回传给主人。
-
-## 实现前置条件（Definition of Ready / Preconditions）
-
-- 目标/非目标、范围、状态无关手动同步边界已冻结。
-- 批量接口请求/响应合同已定稿。
-- “其他地方”已明确仅覆盖管理员手动同步入口，不扩到后台自动调度。
-- UI 证据来源明确为 Storybook + 浏览器真实页面。
+  Then spec 的 `## Visual Evidence` 含有“选中工具条”和“同步进行中气泡”的最终图片。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
 
 ### Testing
 
-- Unit tests: 前端选择/批量 helper 相关测试（如新增 helper）。
-- Integration tests: `POST /api/keys/bulk-actions`、单 key 手动同步失败不落坏数据、mixed-status 批量同步/解除隔离/删除。
-- E2E tests (if applicable): 浏览器验证 `/admin/keys` 选中与批量动作、`/admin/keys/:id` 非 active 同步。
+- Rust integration tests
+  - `POST /api/keys/bulk-actions` mixed-status JSON path
+  - `POST /api/keys/bulk-actions` `sync_usage` SSE 事件流顺序与终态 payload
+- Frontend tests
+  - bulk sync progress reducer/helper
+  - Storybook story exports 与同步气泡静态文案证明
 
-### UI / Storybook (if applicable)
+### UI / Storybook
 
-- Stories to add/update: API Keys 列表选中/批量工具条、KeyDetails 非 active 同步态。
-- Docs pages / state galleries to add/update: 复用现有 stories/docs 能力，为本次状态提供稳定入口。
-- `play` / interaction coverage to add/update: 至少覆盖批量工具条显隐或详情页同步按钮状态。
-- Visual regression baseline changes (if any): none。
+- Stories to add/update
+  - API Keys 列表选中工具条
+  - API Keys 列表同步进行中气泡
+- Visual evidence source
+  - 优先 Storybook 稳定画面
+  - 再补真实 `/admin/keys` 浏览器复核
 
 ### Quality checks
 
 - `cargo test`
+- `cargo clippy -- -D warnings`
 - `cd web && bun test`
 - `cd web && bun run build`
+- `cd web && bun run build-storybook`
 
 ## 文档更新（Docs to Update）
 
-- `docs/specs/README.md`: 新增 spec 索引并在实现推进时同步状态。
-- `docs/specs/hrre9-admin-api-keys-bulk-actions/SPEC.md`: 维护里程碑、验证记录与视觉证据。
+- `docs/specs/hrre9-admin-api-keys-bulk-actions/contracts/http-apis.md`
+- `docs/specs/hrre9-admin-api-keys-bulk-actions/SPEC.md`
 
 ## 计划资产（Plan assets）
 
 - Directory: `docs/specs/hrre9-admin-api-keys-bulk-actions/assets/`
 - In-plan references: `![...](./assets/<file>.png)`
-- Visual evidence source: maintain `## Visual Evidence` in this spec when owner-facing or PR-facing screenshots are needed.
+- Visual evidence source: Storybook canvas + browser validation
 
 ## Visual Evidence
 
 - Storybook覆盖=通过
 - 视觉证据目标源=storybook_canvas
 - 视觉证据=存在
-- 空白裁剪=已裁剪（移动端列表图因边界不稳定保留原图；桌面最终证据保留完整 xl 原图）
+- 空白裁剪=已裁剪（真实 `/admin/keys` 浏览器复核图因边界不均匀保留原始外边距）
 - 聊天回图=已展示
 - 证据落盘=已落盘
-- 证据绑定sha=9a922f0989bcd6a1b9132491287fa25b6ac86896
+- 证据绑定sha=28db1ea99d44198e41e654724c676ae05dbe47b1
 
-### API Keys 列表（桌面）
+### Storybook：选中工具条
 
-![API Keys 列表桌面批量勾选与工具条](./assets/keys-bulk-selected-desktop.png)
+- source_type: `storybook_canvas`; target_program: `mock-only`; capture_scope: `element`; story_id_or_title: `Admin/Pages/Keys Selected`; state: `selected toolbar`; evidence_note: 验证三个批量按钮默认都带左图标，且选中工具条在稳定列表态下可读。
 
-### API Keys 列表（移动）
+![Storybook 选中工具条与批量按钮图标](./assets/keys-bulk-selected-toolbar-story.png)
 
-![API Keys 列表移动端当前页勾选](./assets/keys-bulk-selected-mobile.png)
+### Storybook：同步进行中气泡
 
-### KeyDetails 手动同步
+- source_type: `storybook_canvas`; target_program: `mock-only`; capture_scope: `element`; story_id_or_title: `Admin/Pages/Keys Sync Usage In Progress`; state: `streaming progress bubble`; evidence_note: 验证同步额度按钮 spinner、三段式进度气泡、累计成功/跳过/失败计数与最近结果文案。
 
-![隔离/非 active 密钥详情页仍可同步额度](./assets/key-detail-sync-status-agnostic.png)
+![Storybook 同步额度进行中气泡](./assets/keys-sync-progress-bubble-story.png)
 
-## 资产晋升（Asset promotion）
+### 浏览器复核：真实 `/admin/keys`
 
-None
+- source_type: `mock_ui`; target_program: `mock-only`; capture_scope: `browser-viewport`; state: `live admin keys sync in progress`; evidence_note: 使用本地 mock upstream 复核真实 `/admin/keys` 页面中的锚点气泡定位、按钮 spinner 与当前页已选 key 收口行为。
 
-## 实现里程碑（Milestones / Delivery checklist）
-
-- [x] M1: 新增 spec、HTTP contract 与索引项
-- [x] M2: 后端批量维护接口与同步安全约束落地
-- [x] M3: 前端列表选择、批量工具条、详情页同步回归落地
-- [x] M4: 测试、Storybook/浏览器证据与 PR 收敛完成
+![真实 admin keys 页面中的同步额度进度气泡](./assets/keys-sync-progress-real-page.png)
 
 ## 方案概述（Approach, high-level）
 
-- 复用已有逐条 delete / clear quarantine / sync usage 原语，由新批量接口负责逐 key 调度、结果聚合与部分成功表达。
-- 前端选择状态只绑定当前页渲染结果，不引入跨页状态机，确保与现有分页 URL 契约兼容。
-- 手动同步的状态无关语义只在管理员手动入口生效，避免扩大到后台 scheduler。
+- 后端在既有批量同步实现之上增加同端点 SSE 协商，避免拆出新的 polling/job API。
+- 前端将 `sync_usage` 与其它 bulk action 分流：删除/解除隔离继续走原 helper，实时同步走专用 SSE helper + reducer。
+- 进度气泡只消费服务端真实事件，不在客户端伪造额外阶段或百分比。
 
-## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
+## 风险 / 假设（Risks, Assumptions）
 
-- 风险：列表桌面/移动端需要共享同一份选择状态，若实现分叉，容易出现选中计数不一致。
-- 风险：批量同步若直接复用现有手动同步逻辑，需要确认 job 记录与失败聚合不会引入额外噪音。
-- 假设：批量删除允许保持 soft-delete 幂等语义，不需要额外区分“已删除”错误。
-
-## 变更记录（Change log）
-
-- 2026-04-04: 初始化 spec，冻结批量维护动作、状态无关手动同步与失败不落坏数据范围。
-- 2026-04-04: 完成后端批量动作接口、前端当前页勾选/批量工具条、Storybook 入口与视觉证据落盘。
+- 风险：流式终态与前端列表刷新存在双阶段收口，若状态机处理不当，容易把“同步完成、刷新失败”错误地展示成完全成功。
+- 风险：按钮 spinner 与工具条 disabled 逻辑若没有精确绑定当前 action，容易出现多个动作同时显示 working。
+- 假设：仅“同步额度”需要实时进度气泡；其它 bulk action 只补图标与 active spinner。
 
 ## 参考（References）
 

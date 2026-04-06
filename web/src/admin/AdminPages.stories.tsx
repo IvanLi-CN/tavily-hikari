@@ -6,6 +6,7 @@ import { ArrowDown, ArrowUp, ArrowUpDown, ChartColumnIncreasing } from 'lucide-r
 import { Fragment, type ReactNode, useEffect, useLayoutEffect, useMemo, useState } from 'react'
 
 import type {
+  ApiKeyBulkAction,
   AdminUnboundTokenUsageSortField,
   AdminUnboundTokenUsageSummary,
   AdminUserDetail,
@@ -73,9 +74,11 @@ import {
   createDashboardMonthMetrics,
   createDashboardTodayMetrics,
 } from './dashboardTodayMetrics'
+import { ApiKeyBulkSyncProgressBubble } from './ApiKeyBulkSyncProgressBubble'
 import ForwardProxySettingsModule from './ForwardProxySettingsModule'
 import ModulePlaceholder from './ModulePlaceholder'
 import SystemSettingsModule from './SystemSettingsModule'
+import type { ApiKeyBulkSyncProgressState } from './apiKeyBulkSyncProgress'
 import {
   forwardProxyStorySavedAt,
   forwardProxyStorySettings,
@@ -476,6 +479,43 @@ const MOCK_KEYS_WITH_QUARANTINE: ApiKeyStats[] = [
     },
   },
 ]
+
+const STORY_BULK_SYNC_PROGRESS: ApiKeyBulkSyncProgressState = {
+  steps: [
+    {
+      key: 'prepare_request',
+      status: 'done',
+      detail: 'Queued 6 key(s) for manual quota sync',
+    },
+    {
+      key: 'sync_usage',
+      status: 'running',
+      detail: 'Tavily usage request failed with 401: {"error":"unauthorized"}',
+    },
+    {
+      key: 'refresh_ui',
+      status: 'pending',
+      detail: null,
+    },
+  ],
+  summary: {
+    requested: 6,
+    succeeded: 3,
+    skipped: 1,
+    failed: 1,
+  },
+  current: 5,
+  total: 6,
+  lastResult: {
+    keyId: 'Qn8R',
+    status: 'failed',
+    detail: 'Tavily usage request failed with 401: {"error":"unauthorized"}',
+  },
+  message: 'Streaming live key-by-key results from the current request.',
+  response: null,
+  completed: false,
+  error: null,
+}
 
 const MOCK_REQUESTS: RequestLog[] = [
   {
@@ -3065,10 +3105,14 @@ function KeysPageCanvas({
   initialRegistrationIp = '',
   initialRegions = [],
   initialSelectedIds = [],
+  bulkActionInFlight = null,
+  bulkSyncProgress = null,
 }: {
   initialRegistrationIp?: string
   initialRegions?: string[]
   initialSelectedIds?: string[]
+  bulkActionInFlight?: ApiKeyBulkAction | null
+  bulkSyncProgress?: ApiKeyBulkSyncProgressState | null
 } = {}): JSX.Element {
   const admin = useTranslate().admin
   const keyStrings = admin.keys
@@ -3341,17 +3385,53 @@ function KeysPageCanvas({
             </Button>
           </div>
           <div style={keysBulkActionsStyle}>
-            <Button type="button" variant="outline" size="sm">
-              {keyStrings.bulkActions.syncUsage}
+            <Button type="button" variant="outline" size="sm" disabled={bulkActionInFlight != null}>
+              <Icon
+                icon={bulkActionInFlight === 'sync_usage' ? 'mdi:loading' : 'mdi:refresh'}
+                width={16}
+                height={16}
+                aria-hidden="true"
+                className={bulkActionInFlight === 'sync_usage' ? 'animate-spin' : undefined}
+              />
+              {bulkActionInFlight === 'sync_usage'
+                ? keyStrings.bulkActions.running
+                : keyStrings.bulkActions.syncUsage}
             </Button>
-            <Button type="button" variant="outline" size="sm">
-              {keyStrings.bulkActions.clearQuarantine}
+            <Button type="button" variant="outline" size="sm" disabled={bulkActionInFlight != null}>
+              <Icon
+                icon={bulkActionInFlight === 'clear_quarantine' ? 'mdi:loading' : 'mdi:shield-check-outline'}
+                width={16}
+                height={16}
+                aria-hidden="true"
+                className={bulkActionInFlight === 'clear_quarantine' ? 'animate-spin' : undefined}
+              />
+              {bulkActionInFlight === 'clear_quarantine'
+                ? keyStrings.bulkActions.running
+                : keyStrings.bulkActions.clearQuarantine}
             </Button>
-            <Button type="button" variant="warning" size="sm">
-              {keyStrings.bulkActions.delete}
+            <Button type="button" variant="warning" size="sm" disabled={bulkActionInFlight != null}>
+              <Icon
+                icon={bulkActionInFlight === 'delete' ? 'mdi:loading' : 'mdi:trash-can-outline'}
+                width={16}
+                height={16}
+                aria-hidden="true"
+                className={bulkActionInFlight === 'delete' ? 'animate-spin' : undefined}
+              />
+              {bulkActionInFlight === 'delete'
+                ? keyStrings.bulkActions.running
+                : keyStrings.bulkActions.delete}
             </Button>
           </div>
         </div>
+        {bulkSyncProgress ? (
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: -8, marginBottom: 16 }}>
+            <ApiKeyBulkSyncProgressBubble
+              strings={keyStrings.bulkSyncProgress}
+              progress={bulkSyncProgress}
+              style={{ width: 'min(26rem, 100%)' }}
+            />
+          </div>
+        ) : null}
 
         <div className="table-wrapper jobs-table-wrapper">
           <table className="jobs-table api-keys-table api-keys-table--admin">
@@ -5660,6 +5740,19 @@ export const Keys: Story = {
 
 export const KeysSelected: Story = {
   render: () => <KeysPageCanvas initialSelectedIds={['MZli', 'c7Pk']} />,
+  parameters: {
+    viewport: { defaultViewport: '1280-breakpoint-tailwind-xl' },
+  },
+}
+
+export const KeysSyncUsageInProgress: Story = {
+  render: () => (
+    <KeysPageCanvas
+      initialSelectedIds={['MZli', 'c7Pk', 'Qn8R', 'asR8', 'U2vK', 'J1nW']}
+      bulkActionInFlight="sync_usage"
+      bulkSyncProgress={STORY_BULK_SYNC_PROGRESS}
+    />
+  ),
   parameters: {
     viewport: { defaultViewport: '1280-breakpoint-tailwind-xl' },
   },

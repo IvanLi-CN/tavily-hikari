@@ -1017,6 +1017,36 @@ interface AdminTranslationsShape {
       running: string
       summary: string
     }
+    bulkSyncProgress: {
+      title: string
+      running: string
+      finished: string
+      refreshingList: string
+      steps: {
+        prepareRequest: string
+        syncUsage: string
+        refreshUi: string
+      }
+      status: {
+        waiting: string
+        running: string
+        done: string
+        failed: string
+      }
+      counters: {
+        progress: string
+        success: string
+        skipped: string
+        failed: string
+      }
+      lastResultLabel: string
+      result: {
+        success: string
+        skipped: string
+        failed: string
+        noDetail: string
+      }
+    }
     quarantine: {
       badge: string
       sourcePrefix: string
@@ -2328,6 +2358,36 @@ export const translations: Record<Language, TranslationShape> = {
           running: 'Running…',
           summary: '{action}: {succeeded} succeeded, {skipped} skipped, {failed} failed (requested {requested})',
         },
+        bulkSyncProgress: {
+          title: 'Sync usage progress',
+          running: 'Streaming live key-by-key results from the current request.',
+          finished: 'Manual sync finished. Review the latest result below.',
+          refreshingList: 'Refreshing the current keys list with the latest quota snapshot…',
+          steps: {
+            prepareRequest: 'Prepare request',
+            syncUsage: 'Sync selected keys',
+            refreshUi: 'Refresh current list',
+          },
+          status: {
+            waiting: 'Waiting…',
+            running: 'Running…',
+            done: 'Done',
+            failed: 'Failed',
+          },
+          counters: {
+            progress: '{current}/{total} processed',
+            success: 'Success {count}',
+            skipped: 'Skipped {count}',
+            failed: 'Failed {count}',
+          },
+          lastResultLabel: 'Latest key result',
+          result: {
+            success: 'Success',
+            skipped: 'Skipped',
+            failed: 'Failed',
+            noDetail: 'No additional detail from the server.',
+          },
+        },
         quarantine: {
           badge: 'Quarantined',
           sourcePrefix: 'Source: {source}',
@@ -3624,6 +3684,36 @@ export const translations: Record<Language, TranslationShape> = {
           delete: '批量移除',
           running: '执行中…',
           summary: '{action}：成功 {succeeded}，跳过 {skipped}，失败 {failed}（共 {requested} 项）',
+        },
+        bulkSyncProgress: {
+          title: '同步额度进度',
+          running: '正在按真实执行顺序回传每个密钥的同步结果。',
+          finished: '手动同步已完成，可以查看下面的最新结果。',
+          refreshingList: '正在刷新当前密钥列表，带回最新额度快照…',
+          steps: {
+            prepareRequest: '准备请求',
+            syncUsage: '逐个同步密钥',
+            refreshUi: '刷新当前列表',
+          },
+          status: {
+            waiting: '等待中…',
+            running: '进行中…',
+            done: '已完成',
+            failed: '失败',
+          },
+          counters: {
+            progress: '已处理 {current}/{total}',
+            success: '成功 {count}',
+            skipped: '跳过 {count}',
+            failed: '失败 {count}',
+          },
+          lastResultLabel: '最近结果',
+          result: {
+            success: '成功',
+            skipped: '跳过',
+            failed: '失败',
+            noDetail: '服务端没有返回额外说明。',
+          },
         },
         quarantine: {
           badge: '隔离中',

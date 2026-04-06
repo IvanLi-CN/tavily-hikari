@@ -53,6 +53,7 @@ import { ArrowDown, ArrowUp, ArrowUpDown, ChartColumnIncreasing } from 'lucide-r
 import AdminShell, { AdminShellSidebarUtility, type AdminNavItem, type AdminNavTarget } from './admin/AdminShell'
 import AdminOverlayHost from './admin/AdminOverlayHost'
 import DashboardOverview, { type DashboardQuotaChargeCardData } from './admin/DashboardOverview'
+import { AnchoredApiKeyBulkSyncProgressBubble } from './admin/ApiKeyBulkSyncProgressBubble'
 import {
   createDashboardMonthMetrics,
   createDashboardTodayMetrics,
@@ -72,6 +73,18 @@ import {
   isBlockingLoadState,
   isRefreshingLoadState,
 } from './admin/queryLoadState'
+import {
+  createApiKeyBulkSyncProgressState,
+  markApiKeyBulkSyncRefreshDone,
+  markApiKeyBulkSyncRefreshError,
+  markApiKeyBulkSyncRefreshRunning,
+  type ApiKeyBulkSyncProgressState,
+  updateApiKeyBulkSyncProgressState,
+} from './admin/apiKeyBulkSyncProgress'
+import {
+  createApiKeyBulkSyncBubblePinnedPosition,
+  type ApiKeyBulkSyncBubblePinnedPosition,
+} from './admin/apiKeyBulkSyncBubblePosition'
 import {
   buildQuotaSliderTrack,
   clampQuotaSliderStageIndex,
@@ -120,6 +133,7 @@ import {
 import {
   fetchApiKeys,
   applyApiKeyBulkAction,
+  syncApiKeyBulkUsageWithProgress,
   type ApiKeyBulkAction,
   fetchApiKeySecret,
   addApiKeysBatch,
@@ -1660,7 +1674,12 @@ function AdminDashboard(): JSX.Element {
   const [selectedKeyIds, setSelectedKeyIds] = useState<Set<string>>(() => new Set())
   const [bulkKeyActionInFlight, setBulkKeyActionInFlight] = useState<ApiKeyBulkAction | null>(null)
   const [keysBulkFeedback, setKeysBulkFeedback] = useState<{ kind: 'success' | 'error'; message: string } | null>(null)
+  const [bulkSyncProgress, setBulkSyncProgress] = useState<ApiKeyBulkSyncProgressState | null>(null)
+  const [bulkSyncBubbleVisible, setBulkSyncBubbleVisible] = useState(false)
+  const [bulkSyncBubblePinnedPosition, setBulkSyncBubblePinnedPosition] =
+    useState<ApiKeyBulkSyncBubblePinnedPosition | null>(null)
   const keysSelectAllRef = useRef<HTMLInputElement | null>(null)
+  const bulkSyncButtonRef = useRef<HTMLButtonElement | null>(null)
   const [pendingTokenDeleteId, setPendingTokenDeleteId] = useState<string | null>(null)
   const [editingTokenId, setEditingTokenId] = useState<string | null>(null)
   const [editingTokenNote, setEditingTokenNote] = useState('')
@@ -4595,6 +4614,9 @@ function AdminDashboard(): JSX.Element {
   useEffect(() => {
     setSelectedKeyIds(new Set())
     setKeysBulkFeedback(null)
+    setBulkSyncProgress(null)
+    setBulkSyncBubbleVisible(false)
+    setBulkSyncBubblePinnedPosition(null)
   }, [keysSelectionQueryKey])
 
   const selectedKeyRegionLabels = useMemo(
@@ -6078,6 +6100,18 @@ function AdminDashboard(): JSX.Element {
     setSelectedKeyIds(new Set())
   }, [])
 
+  const dismissBulkSyncBubble = useCallback(() => {
+    setBulkSyncBubbleVisible(false)
+    setBulkSyncBubblePinnedPosition(null)
+  }, [])
+
+  const captureBulkSyncBubblePinnedPosition = useCallback((): ApiKeyBulkSyncBubblePinnedPosition | null => {
+    const rect = bulkSyncButtonRef.current?.getBoundingClientRect()
+    if (!rect || typeof window === 'undefined') return null
+
+    return createApiKeyBulkSyncBubblePinnedPosition(rect, window.innerWidth)
+  }, [])
+
   const toggleSelectedKey = useCallback((id: string) => {
     if (!id) return
     setSelectedKeyIds((previous) => {
@@ -6132,6 +6166,7 @@ function AdminDashboard(): JSX.Element {
   const runBulkKeyAction = useCallback(
     async (action: ApiKeyBulkAction) => {
       if (selectedVisibleKeyIds.length === 0 || bulkKeyActionInFlight) return
+      if (action === 'sync_usage') return
       setBulkKeyActionInFlight(action)
       setKeysBulkFeedback(null)
       setError(null)
@@ -6170,6 +6205,88 @@ function AdminDashboard(): JSX.Element {
       selectedVisibleKeyIds,
     ],
   )
+
+  const runBulkSyncUsage = useCallback(async () => {
+    if (selectedVisibleKeyIds.length === 0 || bulkKeyActionInFlight) return
+
+    const initialProgress = createApiKeyBulkSyncProgressState(selectedVisibleKeyIds.length)
+    setBulkKeyActionInFlight('sync_usage')
+    setKeysBulkFeedback(null)
+    setError(null)
+    setBulkSyncProgress(initialProgress)
+    setBulkSyncBubbleVisible(true)
+    setBulkSyncBubblePinnedPosition(null)
+
+    try {
+      const response = await syncApiKeyBulkUsageWithProgress(selectedVisibleKeyIds, (event) => {
+        setBulkSyncProgress((current) =>
+          updateApiKeyBulkSyncProgressState(
+            current ?? createApiKeyBulkSyncProgressState(selectedVisibleKeyIds.length),
+            event,
+          ),
+        )
+      })
+
+      setBulkSyncProgress((current) =>
+        markApiKeyBulkSyncRefreshRunning(
+          current ?? createApiKeyBulkSyncProgressState(selectedVisibleKeyIds.length),
+          keyStrings.bulkSyncProgress.refreshingList,
+        ),
+      )
+
+      await refreshBaseData({ includeKeys: true })
+      setBulkSyncBubblePinnedPosition(captureBulkSyncBubblePinnedPosition())
+      clearKeySelection()
+
+      setBulkSyncProgress((current) =>
+        markApiKeyBulkSyncRefreshDone(
+          current ?? createApiKeyBulkSyncProgressState(selectedVisibleKeyIds.length),
+          response,
+        ),
+      )
+      setKeysBulkFeedback({
+        kind: response.summary.failed > 0 ? 'error' : 'success',
+        message: formatBulkActionSummary('sync_usage', response.summary),
+      })
+    } catch (err) {
+      console.error(err)
+      const message = err instanceof Error ? err.message : errorStrings.syncUsage
+      setBulkSyncProgress((current) => {
+        if (!current) {
+          return updateApiKeyBulkSyncProgressState(
+            createApiKeyBulkSyncProgressState(selectedVisibleKeyIds.length),
+            { type: 'error', message, phaseKey: 'prepare_request' },
+          )
+        }
+        if (current.response) {
+          return markApiKeyBulkSyncRefreshError(current, message)
+        }
+        if (current.completed) {
+          return current
+        }
+        return updateApiKeyBulkSyncProgressState(current, {
+          type: 'error',
+          message,
+          phaseKey: current.current > 0 ? 'sync_usage' : 'prepare_request',
+        })
+      })
+      setKeysBulkFeedback({
+        kind: 'error',
+        message,
+      })
+    } finally {
+      setBulkKeyActionInFlight(null)
+    }
+  }, [
+    bulkKeyActionInFlight,
+    captureBulkSyncBubblePinnedPosition,
+    clearKeySelection,
+    errorStrings.syncUsage,
+    formatBulkActionSummary,
+    keyStrings.bulkSyncProgress.refreshingList,
+    refreshBaseData,
+    selectedVisibleKeyIds,
+  ])
 
   const confirmBulkDelete = async () => {
     if (selectedVisibleKeyIds.length === 0) return
@@ -9658,12 +9775,20 @@ function AdminDashboard(): JSX.Element {
               </div>
               <div style={keysBulkActionsStyle}>
                 <Button
+                  ref={bulkSyncButtonRef}
                   type="button"
                   variant="outline"
                   size="sm"
-                  onClick={() => void runBulkKeyAction('sync_usage')}
+                  onClick={() => void runBulkSyncUsage()}
                   disabled={selectedVisibleKeyCount === 0 || bulkKeyActionInFlight != null}
                 >
+                  <Icon
+                    icon={bulkKeyActionInFlight === 'sync_usage' ? 'mdi:loading' : 'mdi:refresh'}
+                    width={16}
+                    height={16}
+                    aria-hidden="true"
+                    className={bulkKeyActionInFlight === 'sync_usage' ? 'animate-spin' : undefined}
+                  />
                   {bulkKeyActionInFlight === 'sync_usage'
                     ? keyStrings.bulkActions.running
                     : keyStrings.bulkActions.syncUsage}
@@ -9675,6 +9800,13 @@ function AdminDashboard(): JSX.Element {
                   onClick={() => void runBulkKeyAction('clear_quarantine')}
                   disabled={selectedVisibleKeyCount === 0 || bulkKeyActionInFlight != null}
                 >
+                  <Icon
+                    icon={bulkKeyActionInFlight === 'clear_quarantine' ? 'mdi:loading' : 'mdi:shield-check-outline'}
+                    width={16}
+                    height={16}
+                    aria-hidden="true"
+                    className={bulkKeyActionInFlight === 'clear_quarantine' ? 'animate-spin' : undefined}
+                  />
                   {bulkKeyActionInFlight === 'clear_quarantine'
                     ? keyStrings.bulkActions.running
                     : keyStrings.bulkActions.clearQuarantine}
@@ -9686,12 +9818,28 @@ function AdminDashboard(): JSX.Element {
                   onClick={() => setPendingBulkDelete(true)}
                   disabled={selectedVisibleKeyCount === 0 || bulkKeyActionInFlight != null}
                 >
+                  <Icon
+                    icon={bulkKeyActionInFlight === 'delete' ? 'mdi:loading' : 'mdi:trash-can-outline'}
+                    width={16}
+                    height={16}
+                    aria-hidden="true"
+                    className={bulkKeyActionInFlight === 'delete' ? 'animate-spin' : undefined}
+                  />
                   {bulkKeyActionInFlight === 'delete'
                     ? keyStrings.bulkActions.running
                     : keyStrings.bulkActions.delete}
                 </Button>
               </div>
             </div>
+          ) : null}
+          {bulkSyncProgress && bulkSyncBubbleVisible ? (
+            <AnchoredApiKeyBulkSyncProgressBubble
+              anchorEl={bulkSyncButtonRef.current}
+              fallbackPosition={bulkSyncBubblePinnedPosition}
+              strings={keyStrings.bulkSyncProgress}
+              progress={bulkSyncProgress}
+              onDismiss={dismissBulkSyncBubble}
+            />
           ) : null}
           {keysBulkFeedback ? (
             <div

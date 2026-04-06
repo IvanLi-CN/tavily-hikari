@@ -239,7 +239,7 @@ struct BulkApiKeyActionRequest {
     key_ids: Vec<String>,
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 struct BulkApiKeyActionSummary {
     requested: u64,
     succeeded: u64,
@@ -247,7 +247,7 @@ struct BulkApiKeyActionSummary {
     failed: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct BulkApiKeyActionResult {
     key_id: String,
     status: String,
@@ -255,10 +255,47 @@ struct BulkApiKeyActionResult {
     detail: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct BulkApiKeyActionResponse {
     summary: BulkApiKeyActionSummary,
     results: Vec<BulkApiKeyActionResult>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum BulkApiKeySyncProgressEvent {
+    Phase {
+        #[serde(rename = "phaseKey")]
+        phase_key: &'static str,
+        label: &'static str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        current: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        total: Option<u64>,
+    },
+    Item {
+        #[serde(rename = "keyId")]
+        key_id: String,
+        status: String,
+        current: u64,
+        total: u64,
+        summary: BulkApiKeyActionSummary,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+    },
+    Complete {
+        payload: BulkApiKeyActionResponse,
+    },
+    Error {
+        message: String,
+        #[serde(rename = "phaseKey")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        phase_key: Option<&'static str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -701,6 +738,8 @@ fn request_accepts_event_stream(headers: &HeaderMap) -> bool {
         .is_some_and(|accept| {
             accept
                 .split(',')
+                .map(str::trim)
+                .filter_map(|item| item.split(';').next())
                 .map(str::trim)
                 .any(|item| item.eq_ignore_ascii_case("text/event-stream"))
         })
@@ -1801,6 +1840,154 @@ async fn post_api_key_bulk_actions(
             "detail": format!("key_ids exceeds limit (max {})", API_KEYS_BATCH_LIMIT),
         }));
         return Ok((StatusCode::BAD_REQUEST, body).into_response());
+    }
+
+    if matches!(action, BulkApiKeyActionKind::SyncUsage) && request_accepts_event_stream(&headers) {
+        let state = state.clone();
+        let total = normalized_ids.len() as u64;
+        let stream = stream! {
+            let prepare = BulkApiKeySyncProgressEvent::Phase {
+                phase_key: "prepare_request",
+                label: "Preparing request",
+                detail: Some(format!("Queued {total} key(s) for manual quota sync")),
+                current: Some(0),
+                total: Some(total),
+            };
+            match serde_json::to_string(&prepare) {
+                Ok(json) => yield Ok::<Event, axum::http::Error>(Event::default().data(json)),
+                Err(err) => {
+                    let fallback = BulkApiKeySyncProgressEvent::Error {
+                        message: "failed to encode bulk sync prepare event".to_string(),
+                        phase_key: Some("prepare_request"),
+                        detail: Some(err.to_string()),
+                    };
+                    if let Ok(json) = serde_json::to_string(&fallback) {
+                        yield Ok::<Event, axum::http::Error>(Event::default().data(json));
+                    }
+                    return;
+                }
+            }
+
+            let sync_phase = BulkApiKeySyncProgressEvent::Phase {
+                phase_key: "sync_usage",
+                label: "Syncing selected keys",
+                detail: Some("Waiting for each manual quota sync result as keys finish".to_string()),
+                current: Some(0),
+                total: Some(total),
+            };
+            match serde_json::to_string(&sync_phase) {
+                Ok(json) => yield Ok::<Event, axum::http::Error>(Event::default().data(json)),
+                Err(err) => {
+                    let fallback = BulkApiKeySyncProgressEvent::Error {
+                        message: "failed to encode bulk sync phase event".to_string(),
+                        phase_key: Some("sync_usage"),
+                        detail: Some(err.to_string()),
+                    };
+                    if let Ok(json) = serde_json::to_string(&fallback) {
+                        yield Ok::<Event, axum::http::Error>(Event::default().data(json));
+                    }
+                    return;
+                }
+            }
+
+            let mut summary = BulkApiKeyActionSummary {
+                requested: total,
+                ..Default::default()
+            };
+            let mut results = Vec::with_capacity(total as usize);
+
+            for (index, key_id) in normalized_ids.into_iter().enumerate() {
+                let result = match run_manual_key_quota_sync(state.as_ref(), &key_id).await {
+                    Ok(()) => BulkApiKeyActionResult {
+                        key_id,
+                        status: "success".to_string(),
+                        detail: None,
+                    },
+                    Err(err) => BulkApiKeyActionResult {
+                        key_id,
+                        status: "failed".to_string(),
+                        detail: Some(err.detail),
+                    },
+                };
+
+                match result.status.as_str() {
+                    "success" => summary.succeeded += 1,
+                    "skipped" => summary.skipped += 1,
+                    _ => summary.failed += 1,
+                }
+
+                results.push(result.clone());
+
+                let item_event = BulkApiKeySyncProgressEvent::Item {
+                    key_id: result.key_id.clone(),
+                    status: result.status.clone(),
+                    current: index as u64 + 1,
+                    total,
+                    summary: summary.clone(),
+                    detail: result.detail.clone(),
+                };
+
+                match serde_json::to_string(&item_event) {
+                    Ok(json) => yield Ok::<Event, axum::http::Error>(Event::default().data(json)),
+                    Err(err) => {
+                        let fallback = BulkApiKeySyncProgressEvent::Error {
+                            message: "failed to encode bulk sync item event".to_string(),
+                            phase_key: Some("sync_usage"),
+                            detail: Some(err.to_string()),
+                        };
+                        if let Ok(json) = serde_json::to_string(&fallback) {
+                            yield Ok::<Event, axum::http::Error>(Event::default().data(json));
+                        }
+                        return;
+                    }
+                }
+            }
+
+            let refresh_phase = BulkApiKeySyncProgressEvent::Phase {
+                phase_key: "refresh_ui",
+                label: "Refreshing list",
+                detail: Some("Server-side sync finished; refresh the admin keys list now".to_string()),
+                current: Some(total),
+                total: Some(total),
+            };
+            match serde_json::to_string(&refresh_phase) {
+                Ok(json) => yield Ok::<Event, axum::http::Error>(Event::default().data(json)),
+                Err(err) => {
+                    let fallback = BulkApiKeySyncProgressEvent::Error {
+                        message: "failed to encode bulk sync refresh event".to_string(),
+                        phase_key: Some("refresh_ui"),
+                        detail: Some(err.to_string()),
+                    };
+                    if let Ok(json) = serde_json::to_string(&fallback) {
+                        yield Ok::<Event, axum::http::Error>(Event::default().data(json));
+                    }
+                    return;
+                }
+            }
+
+            let complete = BulkApiKeySyncProgressEvent::Complete {
+                payload: BulkApiKeyActionResponse { summary, results },
+            };
+            match serde_json::to_string(&complete) {
+                Ok(json) => yield Ok::<Event, axum::http::Error>(Event::default().data(json)),
+                Err(err) => {
+                    let fallback = BulkApiKeySyncProgressEvent::Error {
+                        message: "failed to encode bulk sync completion event".to_string(),
+                        phase_key: Some("refresh_ui"),
+                        detail: Some(err.to_string()),
+                    };
+                    if let Ok(json) = serde_json::to_string(&fallback) {
+                        yield Ok::<Event, axum::http::Error>(Event::default().data(json));
+                    }
+                }
+            }
+        };
+
+        return Ok(
+            Sse::new(stream)
+                .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text(""))
+                .into_response(),
+        );
     }
 
     let maintenance_actor = if matches!(action, BulkApiKeyActionKind::ClearQuarantine) {
