@@ -2319,6 +2319,7 @@ function AdminDashboard(): JSX.Element {
           setDashboardKeys(overview.exhaustedKeys)
           setDashboardLogs(overview.recentLogs)
           setDashboardJobs(overview.recentJobs)
+          setDashboardOverviewLoaded(true)
           setLastUpdated(new Date())
           setError(null)
         }
@@ -2338,10 +2339,7 @@ function AdminDashboard(): JSX.Element {
         setDashboardKeys([])
         setDashboardLogs([])
         setDashboardJobs([])
-      } finally {
-        if (!(signal?.aborted ?? false) && requestVersion === dashboardOverviewVersionRef.current) {
-          setDashboardOverviewLoaded(true)
-        }
+        setDashboardOverviewLoaded(true)
       }
     },
     [],

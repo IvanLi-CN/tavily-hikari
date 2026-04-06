@@ -59,6 +59,38 @@ impl Default for SummaryWindowsCacheState {
     }
 }
 
+struct SummaryWindowsLoadGuard {
+    state: Arc<Mutex<SummaryWindowsCacheState>>,
+    armed: bool,
+}
+
+impl SummaryWindowsLoadGuard {
+    fn new(state: Arc<Mutex<SummaryWindowsCacheState>>) -> Self {
+        Self { state, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for SummaryWindowsLoadGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+
+        let state = self.state.clone();
+        tokio::spawn(async move {
+            let mut cache = state.lock().await;
+            if cache.loading {
+                cache.loading = false;
+                cache.notify.notify_waiters();
+            }
+        });
+    }
+}
+
 /// 负责均衡 Tavily API key 并透传请求的代理。
 #[derive(Clone, Debug)]
 pub struct TavilyProxy {
@@ -6788,6 +6820,7 @@ impl TavilyProxy {
                 continue;
             }
 
+            let mut load_guard = SummaryWindowsLoadGuard::new(self.summary_windows_cache.clone());
             let summary = self.summary_windows_at(Local::now()).await;
             let mut cache = self.summary_windows_cache.lock().await;
             cache.loading = false;
@@ -6798,6 +6831,7 @@ impl TavilyProxy {
                 });
             }
             cache.notify.notify_waiters();
+            load_guard.disarm();
             return summary;
         }
     }
