@@ -71,10 +71,11 @@
 
 ## 风险 / 假设
 
-- 假设：GitHub `issues: write` 足以对 PR issue thread 执行评论创建与更新。
-- 风险：如果仓库把 `GITHUB_TOKEN` 权限进一步收窄到 workflow 级别之外，评论步骤仍可能只产出 warning；但这不应回滚已发布的 release 资产。
+- 验证结果：GitHub `issues: write` 单独不足以让 `workflow_run` 的 release job 对 PR thread 回写评论；`github-release` job 还需要 `pull-requests: write`。
+- 风险：如果仓库把 `GITHUB_TOKEN` 权限进一步收窄到 job 级别之外，评论步骤仍可能只产出 warning；但这不应回滚已发布的 release 资产。
 
 ## 进展记录
 
 - 2026-04-06: 确认根因不是发布失败，而是 `release.yml` 从未实现 PR 评论步骤，且 workflow 权限只有 `issues: read`。
 - 2026-04-06: 参考 `codex-vibe-monitor` 的 marker comment upsert 方案，为 `github-release` job 增加幂等 PR 发布评论逻辑，并同步 release 文档。
+- 2026-04-06: 首次上线后通过真实 release 验证发现 `issues: write` 仍会对 PR thread 返回 403；补充 `pull-requests: write` 作为最终闭环修复。
