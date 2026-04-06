@@ -29,11 +29,14 @@ import {
   probeMcpToolsList,
   fetchUserDashboard,
   fetchUserTokenDetail,
+  buildUserTokenEventsUrl,
   fetchUserTokenLogs,
   fetchUserTokenSecret,
   fetchUserTokens,
+  parseUserTokenEventSnapshot,
   type Profile,
   type PublicTokenLog,
+  type UserTokenEventSnapshot,
   type UserDashboard,
   type UserTokenSummary,
   type VersionInfo,
@@ -915,6 +918,14 @@ function formatTemplate(
   )
 }
 
+type DetailLogsLiveState = 'idle' | 'connecting' | 'live' | 'reconnecting'
+
+function detailLogsLiveTone(state: DetailLogsLiveState): StatusTone {
+  if (state === 'live') return 'success'
+  if (state === 'reconnecting') return 'warning'
+  return 'neutral'
+}
+
 export default function UserConsole(): JSX.Element {
   const language = useLanguage().language
   const publicStrings = useTranslate().public
@@ -929,6 +940,7 @@ export default function UserConsole(): JSX.Element {
   const [route, setRoute] = useState<ConsoleRoute>(() => parseUserConsoleHash(window.location.hash || ''))
   const [detail, setDetail] = useState<UserTokenSummary | null>(null)
   const [detailLogs, setDetailLogs] = useState<PublicTokenLog[]>([])
+  const [detailLogsLiveState, setDetailLogsLiveState] = useState<DetailLogsLiveState>('idle')
   const [loading, setLoading] = useState(true)
   const [detailLoading, setDetailLoading] = useState(false)
   const [todayWindow, setTodayWindow] = useState(() => createBrowserTodayWindow())
@@ -965,6 +977,7 @@ export default function UserConsole(): JSX.Element {
   const probeRunIdRef = useRef(0)
   const tokenSecretRunIdRef = useRef(0)
   const guideTokenRunIdRef = useRef(0)
+  const detailEventsRef = useRef<EventSource | null>(null)
   const pageRef = useRef<HTMLElement>(null)
   const dashboardSectionRef = useRef<HTMLElement | null>(null)
   const tokensSectionRef = useRef<HTMLElement | null>(null)
@@ -1083,6 +1096,53 @@ export default function UserConsole(): JSX.Element {
       .finally(() => setDetailLoading(false))
     return () => controller.abort()
   }, [consoleAvailability, route, text.errors.detail, todayWindow])
+
+  useEffect(() => {
+    detailEventsRef.current?.close()
+    detailEventsRef.current = null
+
+    if (consoleAvailability !== 'enabled' || route.name !== 'token' || typeof EventSource === 'undefined') {
+      setDetailLogsLiveState('idle')
+      return
+    }
+
+    const url = buildUserTokenEventsUrl(route.id, todayWindow)
+    const source = new EventSource(url)
+    detailEventsRef.current = source
+    setDetailLogsLiveState('connecting')
+
+    const handleSnapshot = (event: MessageEvent<string>) => {
+      try {
+        const snapshot: UserTokenEventSnapshot = parseUserTokenEventSnapshot(event.data)
+        setDetail(snapshot.token)
+        setDetailLogs(snapshot.logs)
+        setDetailLoading(false)
+        setError(null)
+        setDetailLogsLiveState('live')
+      } catch (err) {
+        console.error('failed to parse user token SSE snapshot', err)
+      }
+    }
+    const handleOpen = () => setDetailLogsLiveState('live')
+    const handleError = () => {
+      setDetailLogsLiveState((current) => (current === 'idle' ? 'connecting' : 'reconnecting'))
+    }
+
+    source.addEventListener('snapshot', handleSnapshot as EventListener)
+    source.addEventListener('ping', handleOpen as EventListener)
+    source.onopen = handleOpen
+    source.onerror = handleError
+
+    return () => {
+      source.removeEventListener('snapshot', handleSnapshot as EventListener)
+      source.removeEventListener('ping', handleOpen as EventListener)
+      source.close()
+      if (detailEventsRef.current === source) {
+        detailEventsRef.current = null
+      }
+      setDetailLogsLiveState('idle')
+    }
+  }, [consoleAvailability, route, todayWindow])
 
   useEffect(() => {
     probeRunIdRef.current += 1
@@ -2298,7 +2358,12 @@ export default function UserConsole(): JSX.Element {
 
           <section className="surface panel user-console-detail-panel">
             <div className="panel-header">
-              <h2>{text.detail.logs}</h2>
+              <div className="user-console-detail-header">
+                <h2>{text.detail.logs}</h2>
+                <StatusBadge tone={detailLogsLiveTone(detailLogsLiveState)}>
+                  {text.detail.live[detailLogsLiveState]}
+                </StatusBadge>
+              </div>
             </div>
             <div className="table-wrapper user-console-md-up">
               {detailLogs.length === 0 ? (
@@ -2897,6 +2962,12 @@ const EN = {
       researchStatus: 'status={status}',
     },
     logs: 'Recent Requests (20)',
+    live: {
+      idle: 'Idle',
+      connecting: 'Connecting',
+      live: 'Live',
+      reconnecting: 'Reconnecting',
+    },
     emptyLogs: 'No recent requests.',
     guideTitle: 'Client Setup',
     guideDescription: 'Use the same MCP configuration as the public homepage.',
@@ -3060,6 +3131,12 @@ const ZH = {
       researchStatus: '状态={status}',
     },
     logs: '近期请求（20 条）',
+    live: {
+      idle: '未连接',
+      connecting: '连接中',
+      live: '实时连接',
+      reconnecting: '重连中',
+    },
     emptyLogs: '暂无请求记录。',
     guideTitle: '客户端接入',
     guideDescription: '沿用首页的 MCP 配置方式即可接入。',

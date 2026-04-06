@@ -1530,6 +1530,9 @@ impl KeyStore {
                 user_id TEXT,
                 protocol_version TEXT,
                 last_event_id TEXT,
+                rate_limited_until INTEGER,
+                last_rate_limited_at INTEGER,
+                last_rate_limit_reason TEXT,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 expires_at INTEGER NOT NULL,
@@ -1562,6 +1565,31 @@ impl KeyStore {
         )
         .execute(&self.pool)
         .await?;
+
+        if !self
+            .table_column_exists("mcp_sessions", "rate_limited_until")
+            .await?
+        {
+            sqlx::query("ALTER TABLE mcp_sessions ADD COLUMN rate_limited_until INTEGER")
+                .execute(&self.pool)
+                .await?;
+        }
+        if !self
+            .table_column_exists("mcp_sessions", "last_rate_limited_at")
+            .await?
+        {
+            sqlx::query("ALTER TABLE mcp_sessions ADD COLUMN last_rate_limited_at INTEGER")
+                .execute(&self.pool)
+                .await?;
+        }
+        if !self
+            .table_column_exists("mcp_sessions", "last_rate_limit_reason")
+            .await?
+        {
+            sqlx::query("ALTER TABLE mcp_sessions ADD COLUMN last_rate_limit_reason TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
 
         sqlx::query(
             r#"
@@ -7698,13 +7726,16 @@ impl KeyStore {
                 user_id,
                 protocol_version,
                 last_event_id,
+                rate_limited_until,
+                last_rate_limited_at,
+                last_rate_limit_reason,
                 created_at,
                 updated_at,
                 expires_at,
                 revoked_at,
                 revoke_reason
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(proxy_session_id) DO UPDATE SET
                 upstream_session_id = excluded.upstream_session_id,
                 upstream_key_id = excluded.upstream_key_id,
@@ -7712,6 +7743,9 @@ impl KeyStore {
                 user_id = excluded.user_id,
                 protocol_version = excluded.protocol_version,
                 last_event_id = excluded.last_event_id,
+                rate_limited_until = excluded.rate_limited_until,
+                last_rate_limited_at = excluded.last_rate_limited_at,
+                last_rate_limit_reason = excluded.last_rate_limit_reason,
                 updated_at = excluded.updated_at,
                 expires_at = excluded.expires_at,
                 revoked_at = excluded.revoked_at,
@@ -7725,6 +7759,9 @@ impl KeyStore {
         .bind(binding.user_id.as_deref())
         .bind(binding.protocol_version.as_deref())
         .bind(binding.last_event_id.as_deref())
+        .bind(binding.rate_limited_until)
+        .bind(binding.last_rate_limited_at)
+        .bind(binding.last_rate_limit_reason.as_deref())
         .bind(binding.created_at)
         .bind(binding.updated_at)
         .bind(binding.expires_at)
@@ -7750,6 +7787,9 @@ impl KeyStore {
                 Option<String>,
                 Option<String>,
                 Option<String>,
+                Option<i64>,
+                Option<i64>,
+                Option<String>,
                 i64,
                 i64,
                 i64,
@@ -7766,6 +7806,9 @@ impl KeyStore {
                 user_id,
                 protocol_version,
                 last_event_id,
+                rate_limited_until,
+                last_rate_limited_at,
+                last_rate_limit_reason,
                 created_at,
                 updated_at,
                 expires_at,
@@ -7792,6 +7835,9 @@ impl KeyStore {
                 user_id,
                 protocol_version,
                 last_event_id,
+                rate_limited_until,
+                last_rate_limited_at,
+                last_rate_limit_reason,
                 created_at,
                 updated_at,
                 expires_at,
@@ -7805,6 +7851,9 @@ impl KeyStore {
                 user_id,
                 protocol_version,
                 last_event_id,
+                rate_limited_until,
+                last_rate_limited_at,
+                last_rate_limit_reason,
                 created_at,
                 updated_at,
                 expires_at,
@@ -7836,6 +7885,63 @@ impl KeyStore {
         )
         .bind(protocol_version)
         .bind(last_event_id)
+        .bind(now)
+        .bind(expires_at)
+        .bind(proxy_session_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn mark_mcp_session_rate_limited(
+        &self,
+        proxy_session_id: &str,
+        rate_limited_until: i64,
+        reason: Option<&str>,
+        now: i64,
+        expires_at: i64,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            UPDATE mcp_sessions
+            SET
+                rate_limited_until = ?,
+                last_rate_limited_at = ?,
+                last_rate_limit_reason = ?,
+                updated_at = ?,
+                expires_at = ?
+            WHERE proxy_session_id = ?
+              AND revoked_at IS NULL
+            "#,
+        )
+        .bind(rate_limited_until)
+        .bind(now)
+        .bind(reason)
+        .bind(now)
+        .bind(expires_at)
+        .bind(proxy_session_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn clear_mcp_session_rate_limit(
+        &self,
+        proxy_session_id: &str,
+        now: i64,
+        expires_at: i64,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            UPDATE mcp_sessions
+            SET
+                rate_limited_until = NULL,
+                updated_at = ?,
+                expires_at = ?
+            WHERE proxy_session_id = ?
+              AND revoked_at IS NULL
+            "#,
+        )
         .bind(now)
         .bind(expires_at)
         .bind(proxy_session_id)
@@ -8206,6 +8312,37 @@ impl KeyStore {
         Ok(rows.into_iter().collect())
     }
 
+    pub(crate) async fn list_recent_rate_limited_request_counts_for_keys(
+        &self,
+        key_ids: &[String],
+        since: i64,
+    ) -> Result<HashMap<String, i64>, ProxyError> {
+        if key_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut builder = QueryBuilder::<Sqlite>::new(
+            "SELECT api_key_id, COUNT(*) AS request_count FROM request_logs WHERE created_at >= ",
+        );
+        builder.push_bind(since);
+        builder.push(" AND failure_kind = ");
+        builder.push_bind(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429);
+        builder.push(" AND api_key_id IN (");
+        {
+            let mut separated = builder.separated(", ");
+            for key_id in key_ids {
+                separated.push_bind(key_id);
+            }
+        }
+        builder.push(") GROUP BY api_key_id");
+
+        let rows = builder
+            .build_query_as::<(String, i64)>()
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().collect())
+    }
+
     pub(crate) async fn list_api_key_last_used_at(
         &self,
         key_ids: &[String],
@@ -8264,6 +8401,28 @@ impl KeyStore {
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected() as i64)
+    }
+
+    pub(crate) async fn set_request_log_key_effect_if_none(
+        &self,
+        request_log_id: i64,
+        key_effect_code: &str,
+        key_effect_summary: Option<&str>,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            UPDATE request_logs
+            SET key_effect_code = ?, key_effect_summary = ?
+            WHERE id = ? AND key_effect_code = ?
+            "#,
+        )
+        .bind(key_effect_code)
+        .bind(key_effect_summary)
+        .bind(request_log_id)
+        .bind(KEY_EFFECT_NONE)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     pub(crate) async fn list_api_key_binding_counts_for_users(

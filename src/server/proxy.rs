@@ -31,6 +31,12 @@ struct TokenSnapshot {
     logs: Vec<TokenLogView>,
 }
 
+const MCP_SESSION_RETRY_AFTER_DEFAULT_SECS: i64 = 60;
+const MCP_SESSION_RETRY_AFTER_MAX_SECS: i64 = 300;
+const FAILURE_KIND_UPSTREAM_RATE_LIMITED_429_CODE: &str = "upstream_rate_limited_429";
+const KEY_EFFECT_MCP_SESSION_RETRY_WAITED_CODE: &str = "mcp_session_retry_waited";
+const KEY_EFFECT_MCP_SESSION_RETRY_SCHEDULED_CODE: &str = "mcp_session_retry_scheduled";
+
 async fn sse_token(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -100,6 +106,147 @@ async fn build_token_snapshot_event(state: &Arc<AppState>, id: &str) -> Option<E
     };
     let json = serde_json::to_string(&payload).ok()?;
     Some(Event::default().event("snapshot").data(json))
+}
+
+fn mcp_session_retry_after_secs(headers: &HeaderMap, now_ts: i64) -> i64 {
+    headers
+        .get("retry-after")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            if let Ok(seconds) = trimmed.parse::<i64>() {
+                return Some(seconds.max(0));
+            }
+            let parsed = httpdate::parse_http_date(trimmed).ok()?;
+            let now_secs = now_ts.max(0) as u64;
+            let now = std::time::UNIX_EPOCH.checked_add(Duration::from_secs(now_secs))?;
+            match parsed.duration_since(now) {
+                Ok(delta) => Some(delta.as_secs().min(i64::MAX as u64) as i64),
+                Err(_) => Some(0),
+            }
+        })
+        .unwrap_or(MCP_SESSION_RETRY_AFTER_DEFAULT_SECS)
+        .clamp(0, MCP_SESSION_RETRY_AFTER_MAX_SECS)
+}
+
+async fn wait_for_mcp_session_retry_window(
+    state: &Arc<AppState>,
+    proxy_session_id: &str,
+) -> Result<bool, ProxyError> {
+    let mut waited = false;
+    loop {
+        let Some(session) = state.proxy.get_active_mcp_session(proxy_session_id).await? else {
+            return Err(ProxyError::PinnedMcpSessionUnavailable);
+        };
+        let now = Utc::now().timestamp();
+        let Some(rate_limited_until) = session.rate_limited_until else {
+            return Ok(waited);
+        };
+        if rate_limited_until <= now {
+            return Ok(waited);
+        }
+
+        waited = true;
+        let wait_secs = (rate_limited_until - now).max(0) as u64;
+        tokio::time::sleep(Duration::from_secs(wait_secs)).await;
+    }
+}
+
+async fn annotate_request_log_key_effect_if_none(
+    state: &Arc<AppState>,
+    request_log_id: Option<i64>,
+    key_effect_code: &str,
+    key_effect_summary: Option<&str>,
+) {
+    if let Some(request_log_id) = request_log_id {
+        let _ = state
+            .proxy
+            .annotate_request_log_key_effect_if_none(
+                request_log_id,
+                key_effect_code,
+                key_effect_summary,
+            )
+            .await;
+    }
+}
+
+async fn proxy_mcp_follow_up_with_retry(
+    state: &Arc<AppState>,
+    proxy_session_id: &str,
+    proxy_request: ProxyRequest,
+) -> Result<ProxyResponse, ProxyError> {
+    let waited_before_send = wait_for_mcp_session_retry_window(state, proxy_session_id).await?;
+    let first_response = state.proxy.proxy_request(proxy_request.clone()).await?;
+    let first_analysis = analyze_mcp_attempt(first_response.status, &first_response.body);
+    let first_rate_limited = first_analysis.failure_kind.as_deref()
+        == Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429_CODE);
+
+    if !first_rate_limited {
+        if waited_before_send {
+            annotate_request_log_key_effect_if_none(
+                state,
+                first_response.request_log_id,
+                KEY_EFFECT_MCP_SESSION_RETRY_WAITED_CODE,
+                Some("This MCP session request waited for Retry-After before sending upstream"),
+            )
+            .await;
+        }
+        let _ = state.proxy.clear_mcp_session_rate_limit(proxy_session_id).await;
+        return Ok(first_response);
+    }
+
+    let now = Utc::now().timestamp();
+    let retry_after_secs = mcp_session_retry_after_secs(&first_response.headers, now);
+    let rate_limited_until = now + retry_after_secs;
+    state
+        .proxy
+        .mark_mcp_session_rate_limited(
+            proxy_session_id,
+            rate_limited_until,
+            first_analysis.failure_kind.as_deref(),
+        )
+        .await?;
+    annotate_request_log_key_effect_if_none(
+        state,
+        first_response.request_log_id,
+        KEY_EFFECT_MCP_SESSION_RETRY_SCHEDULED_CODE,
+        Some("This MCP session request hit upstream 429 and was retried once after Retry-After"),
+    )
+    .await;
+
+    tokio::time::sleep(Duration::from_secs(retry_after_secs.max(0) as u64)).await;
+
+    let retry_response = state.proxy.proxy_request(proxy_request).await?;
+    annotate_request_log_key_effect_if_none(
+        state,
+        retry_response.request_log_id,
+        KEY_EFFECT_MCP_SESSION_RETRY_WAITED_CODE,
+        Some("This MCP session request was retried after waiting for Retry-After"),
+    )
+    .await;
+
+    let retry_analysis = analyze_mcp_attempt(retry_response.status, &retry_response.body);
+    if retry_analysis.failure_kind.as_deref() == Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429_CODE)
+    {
+        let now = Utc::now().timestamp();
+        let retry_after_secs = mcp_session_retry_after_secs(&retry_response.headers, now);
+        let rate_limited_until = now + retry_after_secs;
+        state
+            .proxy
+            .mark_mcp_session_rate_limited(
+                proxy_session_id,
+                rate_limited_until,
+                retry_analysis.failure_kind.as_deref(),
+            )
+            .await?;
+    } else {
+        let _ = state.proxy.clear_mcp_session_rate_limit(proxy_session_id).await;
+    }
+
+    Ok(retry_response)
 }
 
 fn extract_token_from_query(raw_query: Option<&str>) -> (Option<String>, Option<String>) {
@@ -446,6 +593,24 @@ async fn proxy_handler(
         } else {
             None
         }
+    } else {
+        None
+    };
+    let mcp_session_request_guard = if let Some(proxy_session_id) = incoming_proxy_session_id.as_deref()
+    {
+        let guard = state
+            .proxy
+            .lock_mcp_session_request(proxy_session_id)
+            .await
+            .map_err(|err| {
+                eprintln!("mcp session request lock failed: {err}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        guard.ensure_live().map_err(|err| {
+            eprintln!("mcp session request lock lost before upstream follow-up: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+        Some(guard)
     } else {
         None
     };
@@ -988,7 +1153,18 @@ async fn proxy_handler(
             None
         };
 
-    let proxy_result = state.proxy.proxy_request(proxy_request).await;
+    if let Some(guard) = mcp_session_request_guard.as_ref() {
+        guard.ensure_live().map_err(|err| {
+            eprintln!("mcp session request lock lost before upstream send: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    }
+
+    let proxy_result = if let Some(proxy_session_id) = incoming_proxy_session_id.as_deref() {
+        proxy_mcp_follow_up_with_retry(&state, proxy_session_id, proxy_request).await
+    } else {
+        state.proxy.proxy_request(proxy_request).await
+    };
 
     match proxy_result {
         Ok(mut resp) => {

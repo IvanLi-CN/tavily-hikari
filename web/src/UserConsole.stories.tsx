@@ -36,6 +36,10 @@ interface UserConsoleStoryState {
   tokenListMode: 'single' | 'multiple' | 'empty'
 }
 
+type MockEventSourceShape = EventSource & {
+  dispatchEvent: (event: Event) => boolean
+}
+
 const TOKEN_DETAIL_HASH = '#/tokens/a1b2'
 const guideProofLabels = [
   { id: 'codex', label: 'Codex CLI' },
@@ -173,6 +177,8 @@ const versionSample = {
   backend: '0.2.0-dev',
   frontend: '0.2.0-dev',
 }
+
+const activeEventSources = new Set<MockEventSourceShape>()
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -479,6 +485,99 @@ function installClipboardFailureMock(): () => void {
   }
 }
 
+function installEventSourceMock(): () => void {
+  const OriginalEventSource = window.EventSource
+
+  class MockEventSource {
+    static CONNECTING = 0
+    static OPEN = 1
+    static CLOSED = 2
+
+    public readonly url: string
+    public readonly withCredentials = false
+    public readyState = MockEventSource.OPEN
+    public onopen: ((this: EventSource, ev: Event) => unknown) | null = null
+    public onerror: ((this: EventSource, ev: Event) => unknown) | null = null
+    public onmessage: ((this: EventSource, ev: MessageEvent) => unknown) | null = null
+
+    private listeners = new Map<string, Set<EventListenerOrEventListenerObject>>()
+
+    constructor(url: string) {
+      this.url = url
+      activeEventSources.add(this as unknown as MockEventSourceShape)
+      window.setTimeout(() => {
+        this.onopen?.call(this as unknown as EventSource, new Event('open'))
+      }, 0)
+    }
+
+    addEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
+      if (!this.listeners.has(type)) {
+        this.listeners.set(type, new Set())
+      }
+      this.listeners.get(type)?.add(listener)
+    }
+
+    removeEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
+      this.listeners.get(type)?.delete(listener)
+    }
+
+    dispatchEvent(event: Event): boolean {
+      const bucket = this.listeners.get(event.type)
+      if (!bucket) return true
+      bucket.forEach((listener) => {
+        if (typeof listener === 'function') {
+          listener.call(this, event)
+        } else {
+          listener.handleEvent(event)
+        }
+      })
+      return true
+    }
+
+    close(): void {
+      this.readyState = MockEventSource.CLOSED
+      activeEventSources.delete(this as unknown as MockEventSourceShape)
+    }
+  }
+
+  ;(window as Window & { EventSource: typeof EventSource }).EventSource =
+    MockEventSource as unknown as typeof EventSource
+
+  return () => {
+    window.EventSource = OriginalEventSource
+  }
+}
+
+function emitUserTokenSnapshot(): void {
+  const event = new MessageEvent('snapshot', {
+    data: JSON.stringify({
+      token: {
+        ...tokenDetailSample,
+        hourlyAnyUsed: tokenDetailSample.hourlyAnyUsed + 3,
+        quotaHourlyUsed: tokenDetailSample.quotaHourlyUsed + 2,
+        quotaDailyUsed: tokenDetailSample.quotaDailyUsed + 6,
+      },
+      logs: [
+        {
+          id: 104,
+          method: 'POST',
+          path: '/mcp',
+          query: null,
+          httpStatus: 200,
+          mcpStatus: 200,
+          resultStatus: 'success',
+          errorMessage: null,
+          createdAt: 1_762_386_780,
+        },
+        ...tokenLogsSample,
+      ],
+    }),
+  })
+  activeEventSources.forEach((source) => {
+    source.dispatchEvent(event)
+  })
+}
+
 function UserConsoleStory(
   args: UserConsoleStoryArgs & {
     copyRecoveryMode?: CopyRecoveryMode
@@ -496,12 +595,14 @@ function UserConsoleStory(
   useLayoutEffect(() => {
     const previousHash = window.location.hash
     const cleanupFetch = installUserConsoleFetchMock(storyState)
+    const cleanupEventSource = installEventSourceMock()
     const cleanupClipboard = copyRecoveryMode === 'none' ? null : installClipboardFailureMock()
     window.location.hash = storyState.routeHash
     setReady(true)
 
     return () => {
       cleanupFetch()
+      cleanupEventSource()
       cleanupClipboard?.()
       window.location.hash = previousHash
       setReady(false)
@@ -537,6 +638,14 @@ function UserConsoleStory(
     }, guideRevealMode === 'landing-guide' ? 200 : 120)
     return () => window.clearTimeout(timer)
   }, [guideRevealMode, ready])
+
+  useEffect(() => {
+    if (!ready || storyState.routeHash !== TOKEN_DETAIL_HASH) return
+    const timer = window.setTimeout(() => {
+      emitUserTokenSnapshot()
+    }, 500)
+    return () => window.clearTimeout(timer)
+  }, [ready, storyState.routeHash])
 
   if (!ready) {
     return <div style={{ minHeight: '100vh' }} />
@@ -725,6 +834,16 @@ export const ConsoleHomeGuideTokenRevealed: Story = {
 
 export const TokenDetailOverview: Story = {
   name: 'Token Detail Overview',
+  args: {
+    consoleView: 'Token Detail',
+    isAdmin: false,
+    landingFocus: 'Overview Focus',
+    tokenDetailPreview: 'Overview',
+  },
+}
+
+export const TokenDetailLiveLogs: Story = {
+  name: 'Token Detail Live Logs',
   args: {
     consoleView: 'Token Detail',
     isAdmin: false,

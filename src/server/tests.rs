@@ -837,6 +837,257 @@ mod tests {
         tavily_api_key: Option<String>,
     }
 
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct RetryAfterSessionCall {
+        method: String,
+        upstream_session_id_header: Option<String>,
+        tavily_api_key: String,
+    }
+
+    async fn spawn_mock_mcp_upstream_for_session_retry_after_once(
+        expected_api_key: String,
+        retry_after_secs: i64,
+    ) -> (SocketAddr, Arc<Mutex<Vec<RetryAfterSessionCall>>>) {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let tools_list_attempts = Arc::new(Mutex::new(HashMap::<String, usize>::new()));
+        let app = Router::new().route(
+            "/mcp",
+            any({
+                let calls = calls.clone();
+                let tools_list_attempts = tools_list_attempts.clone();
+                move |headers: HeaderMap,
+                      Query(params): Query<HashMap<String, String>>,
+                      Json(body): Json<Value>| {
+                    let calls = calls.clone();
+                    let tools_list_attempts = tools_list_attempts.clone();
+                    let expected_api_key = expected_api_key.clone();
+                    async move {
+                        let received = params.get("tavilyApiKey").cloned();
+                        assert_eq!(
+                            received.as_deref(),
+                            Some(expected_api_key.as_str()),
+                            "missing or incorrect tavilyApiKey"
+                        );
+
+                        let method = body
+                            .get("method")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        let upstream_session_id_header = headers
+                            .get("mcp-session-id")
+                            .and_then(|value| value.to_str().ok())
+                            .map(str::to_string);
+
+                        calls.lock().expect("retry-after calls lock poisoned").push(
+                            RetryAfterSessionCall {
+                                method: method.clone(),
+                                upstream_session_id_header: upstream_session_id_header.clone(),
+                                tavily_api_key: expected_api_key.clone(),
+                            },
+                        );
+
+                        match method.as_str() {
+                            "initialize" => Response::builder()
+                                .status(StatusCode::OK)
+                                .header(CONTENT_TYPE, "application/json")
+                                .header("mcp-session-id", "upstream-session-123")
+                                .body(Body::from(
+                                    serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": body.get("id").cloned().unwrap_or_else(|| serde_json::json!(1)),
+                                        "result": {
+                                            "protocolVersion": "2025-03-26",
+                                            "serverInfo": { "name": "mock-mcp", "version": "1.0.0" },
+                                            "capabilities": {}
+                                        }
+                                    })
+                                    .to_string(),
+                                ))
+                                .expect("build initialize response"),
+                            "notifications/initialized" => Response::builder()
+                                .status(StatusCode::ACCEPTED)
+                                .body(Body::empty())
+                                .expect("build notifications/initialized response"),
+                            "tools/list" => {
+                                let session_key = upstream_session_id_header
+                                    .clone()
+                                    .unwrap_or_else(|| "missing-upstream-session".to_string());
+                                let attempt = {
+                                    let mut attempts = tools_list_attempts
+                                        .lock()
+                                        .expect("tools/list attempts lock poisoned");
+                                    let entry = attempts.entry(session_key).or_insert(0);
+                                    *entry += 1;
+                                    *entry
+                                };
+                                if attempt == 1 {
+                                    Response::builder()
+                                        .status(StatusCode::TOO_MANY_REQUESTS)
+                                        .header(CONTENT_TYPE, "application/json")
+                                        .header("retry-after", retry_after_secs.to_string())
+                                        .body(Body::from(
+                                            serde_json::json!({
+                                                "jsonrpc": "2.0",
+                                                "id": body.get("id").cloned().unwrap_or_else(|| serde_json::json!(1)),
+                                                "error": {
+                                                    "code": 429,
+                                                    "message": "Your request has been blocked due to excessive requests."
+                                                }
+                                            })
+                                            .to_string(),
+                                        ))
+                                        .expect("build retry-after response")
+                                } else {
+                                    Response::builder()
+                                        .status(StatusCode::OK)
+                                        .header(CONTENT_TYPE, "application/json")
+                                        .body(Body::from(
+                                            serde_json::json!({
+                                                "jsonrpc": "2.0",
+                                                "id": body.get("id").cloned().unwrap_or_else(|| serde_json::json!(1)),
+                                                "result": {
+                                                    "tools": [
+                                                        { "name": "tavily_search", "description": "mock tool" }
+                                                    ]
+                                                }
+                                            })
+                                            .to_string(),
+                                        ))
+                                        .expect("build tools/list success response")
+                                }
+                            }
+                            other => (
+                                StatusCode::BAD_REQUEST,
+                                Body::from(format!("unexpected MCP method: {other}")),
+                            )
+                                .into_response(),
+                        }
+                    }
+                }
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+        (addr, calls)
+    }
+
+    async fn spawn_mock_mcp_upstream_for_serialized_session_requests(
+        expected_api_key: String,
+        tools_list_delay: Duration,
+    ) -> (SocketAddr, Arc<AtomicUsize>) {
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let max_in_flight = Arc::new(AtomicUsize::new(0));
+        let app = Router::new().route(
+            "/mcp",
+            any({
+                let in_flight = in_flight.clone();
+                let max_in_flight = max_in_flight.clone();
+                move |Query(params): Query<HashMap<String, String>>, Json(body): Json<Value>| {
+                    let expected_api_key = expected_api_key.clone();
+                    let in_flight = in_flight.clone();
+                    let max_in_flight = max_in_flight.clone();
+                    async move {
+                        let received = params.get("tavilyApiKey").cloned();
+                        assert_eq!(
+                            received.as_deref(),
+                            Some(expected_api_key.as_str()),
+                            "missing or incorrect tavilyApiKey"
+                        );
+
+                        let method = body
+                            .get("method")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or_default();
+
+                        match method {
+                            "initialize" => Response::builder()
+                                .status(StatusCode::OK)
+                                .header(CONTENT_TYPE, "application/json")
+                                .header("mcp-session-id", "upstream-session-serialize")
+                                .body(Body::from(
+                                    serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": body.get("id").cloned().unwrap_or_else(|| serde_json::json!(1)),
+                                        "result": {
+                                            "protocolVersion": "2025-03-26",
+                                            "serverInfo": { "name": "mock-mcp", "version": "1.0.0" },
+                                            "capabilities": {}
+                                        }
+                                    })
+                                    .to_string(),
+                                ))
+                                .expect("build initialize response"),
+                            "notifications/initialized" => Response::builder()
+                                .status(StatusCode::ACCEPTED)
+                                .body(Body::empty())
+                                .expect("build notifications/initialized response"),
+                            "tools/list" => {
+                                let current = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                                loop {
+                                    let observed = max_in_flight.load(Ordering::SeqCst);
+                                    if current <= observed {
+                                        break;
+                                    }
+                                    if max_in_flight
+                                        .compare_exchange(
+                                            observed,
+                                            current,
+                                            Ordering::SeqCst,
+                                            Ordering::SeqCst,
+                                        )
+                                        .is_ok()
+                                    {
+                                        break;
+                                    }
+                                }
+                                tokio::time::sleep(tools_list_delay).await;
+                                in_flight.fetch_sub(1, Ordering::SeqCst);
+
+                                Response::builder()
+                                    .status(StatusCode::OK)
+                                    .header(CONTENT_TYPE, "application/json")
+                                    .body(Body::from(
+                                        serde_json::json!({
+                                            "jsonrpc": "2.0",
+                                            "id": body.get("id").cloned().unwrap_or_else(|| serde_json::json!(1)),
+                                            "result": {
+                                                "tools": [
+                                                    { "name": "tavily_search", "description": "mock tool" }
+                                                ]
+                                            }
+                                        })
+                                        .to_string(),
+                                    ))
+                                    .expect("build tools/list response")
+                            }
+                            other => (
+                                StatusCode::BAD_REQUEST,
+                                Body::from(format!("unexpected MCP method: {other}")),
+                            )
+                                .into_response(),
+                        }
+                    }
+                }
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+        (addr, max_in_flight)
+    }
+
     async fn spawn_mock_mcp_upstream_for_tavily_search_empty_body(
         expected_api_key: String,
     ) -> (SocketAddr, Arc<AtomicUsize>) {
@@ -3881,6 +4132,7 @@ mod tests {
             .route("/api/user/tokens/:id", get(get_user_token_detail))
             .route("/api/user/tokens/:id/secret", get(get_user_token_secret))
             .route("/api/user/tokens/:id/logs", get(get_user_token_logs))
+            .route("/api/user/tokens/:id/events", get(sse_user_token))
             .with_state(state);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -6929,6 +7181,179 @@ colo=LAX
             .await
             .expect("unauth dashboard request");
         assert_eq!(unauth_dashboard.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn user_token_events_stream_snapshot_and_enforce_owner_scope() {
+        let db_path = temp_db_path("linuxdo-user-token-events");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        let owner = proxy
+            .upsert_oauth_account(&OAuthAccountProfile {
+                provider: "linuxdo".to_string(),
+                provider_user_id: "linuxdo-owner-1".to_string(),
+                username: Some("owner".to_string()),
+                name: Some("Owner".to_string()),
+                avatar_template: None,
+                active: true,
+                trust_level: Some(2),
+                raw_payload_json: None,
+            })
+            .await
+            .expect("upsert owner");
+        let outsider = proxy
+            .upsert_oauth_account(&OAuthAccountProfile {
+                provider: "linuxdo".to_string(),
+                provider_user_id: "linuxdo-outsider-1".to_string(),
+                username: Some("outsider".to_string()),
+                name: Some("Outsider".to_string()),
+                avatar_template: None,
+                active: true,
+                trust_level: Some(1),
+                raw_payload_json: None,
+            })
+            .await
+            .expect("upsert outsider");
+
+        let bound_token = proxy
+            .ensure_user_token_binding(&owner.user_id, Some("linuxdo:owner"))
+            .await
+            .expect("ensure owner token binding");
+        let owner_session = proxy
+            .create_user_session(&owner, 3600)
+            .await
+            .expect("create owner session");
+        let outsider_session = proxy
+            .create_user_session(&outsider, 3600)
+            .await
+            .expect("create outsider session");
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        sqlx::query(
+            r#"
+            INSERT INTO auth_token_logs (
+                token_id,
+                method,
+                path,
+                query,
+                http_status,
+                mcp_status,
+                result_status,
+                error_message,
+                created_at
+            ) VALUES (?, 'POST', '/mcp', 'q=health', 200, 200, 'success', NULL, ?)
+            "#,
+        )
+        .bind(&bound_token.id)
+        .bind(Utc::now().timestamp())
+        .execute(&pool)
+        .await
+        .expect("insert first auth token log");
+
+        let addr = spawn_user_oauth_server(proxy).await;
+        let client = Client::new();
+        let owner_cookie = format!("{USER_SESSION_COOKIE_NAME}={}", owner_session.token);
+        let outsider_cookie = format!("{USER_SESSION_COOKIE_NAME}={}", outsider_session.token);
+        let events_url = format!("http://{}/api/user/tokens/{}/events", addr, bound_token.id);
+
+        let anonymous = client
+            .get(&events_url)
+            .send()
+            .await
+            .expect("anonymous events request");
+        assert_eq!(anonymous.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+        let outsider_resp = client
+            .get(&events_url)
+            .header(reqwest::header::COOKIE, outsider_cookie)
+            .send()
+            .await
+            .expect("outsider events request");
+        assert_eq!(outsider_resp.status(), reqwest::StatusCode::NOT_FOUND);
+
+        let mut response = client
+            .get(&events_url)
+            .header(reqwest::header::COOKIE, owner_cookie)
+            .send()
+            .await
+            .expect("owner events request");
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        assert!(content_type.contains("text/event-stream"));
+
+        let first_snapshot_chunk = read_sse_event_until(
+            &mut response,
+            |chunk| chunk.contains("event: snapshot"),
+            "owner token events initial snapshot",
+        )
+        .await;
+        let first_snapshot_data = first_snapshot_chunk
+            .lines()
+            .filter_map(|line| line.strip_prefix("data:"))
+            .map(str::trim)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let first_snapshot: serde_json::Value = serde_json::from_str(&first_snapshot_data)
+            .expect("decode first user token snapshot");
+        assert_eq!(
+            first_snapshot["token"]["tokenId"].as_str(),
+            Some(bound_token.id.as_str())
+        );
+        assert_eq!(
+            first_snapshot["logs"].as_array().map(Vec::len),
+            Some(1),
+            "initial snapshot should include the current recent logs",
+        );
+
+        sqlx::query(
+            r#"
+            INSERT INTO auth_token_logs (
+                token_id,
+                method,
+                path,
+                query,
+                http_status,
+                mcp_status,
+                result_status,
+                error_message,
+                created_at
+            ) VALUES (?, 'POST', '/api/tavily/search', 'q=live', 200, 200, 'success', NULL, ?)
+            "#,
+        )
+        .bind(&bound_token.id)
+        .bind(Utc::now().timestamp() + 1)
+        .execute(&pool)
+        .await
+        .expect("insert second auth token log");
+
+        let refreshed_snapshot_chunk = read_sse_event_until(
+            &mut response,
+            |chunk| chunk.contains("event: snapshot"),
+            "owner token events refreshed snapshot",
+        )
+        .await;
+        let refreshed_snapshot_data = refreshed_snapshot_chunk
+            .lines()
+            .filter_map(|line| line.strip_prefix("data:"))
+            .map(str::trim)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let refreshed_snapshot: serde_json::Value = serde_json::from_str(&refreshed_snapshot_data)
+            .expect("decode refreshed user token snapshot");
+        assert_eq!(
+            refreshed_snapshot["logs"].as_array().map(Vec::len),
+            Some(2),
+            "refreshed snapshot should include the new token log",
+        );
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -21352,6 +21777,246 @@ colo=LAX
         .await
         .expect("remaining mcp sessions");
         assert_eq!(remaining, vec!["session-active".to_string()]);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_follow_up_retries_once_after_retry_after_and_keeps_session_pinned() {
+        let db_path = temp_db_path("mcp-follow-up-retry-after");
+        let db_str = db_path.to_string_lossy().to_string();
+        let expected_api_key = "tvly-mcp-follow-up-retry-after";
+        let (upstream_addr, calls) =
+            spawn_mock_mcp_upstream_for_session_retry_after_once(
+                expected_api_key.to_string(),
+                1,
+            )
+            .await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy =
+            TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
+        let access_token = proxy
+            .create_access_token(Some("mcp-follow-up-retry-after"))
+            .await
+            .expect("create access token");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), upstream.clone()).await;
+        let url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, access_token.token
+        );
+        let client = Client::new();
+
+        let initialize = client
+            .post(&url)
+            .header("accept", "application/json, text/event-stream")
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "init-retry",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {},
+                    "clientInfo": { "name": "browser-probe", "version": "0.1.0" }
+                }
+            }))
+            .send()
+            .await
+            .expect("initialize request");
+        assert!(initialize.status().is_success());
+        let proxy_session_id = initialize
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("initialize response should expose mcp-session-id")
+            .to_string();
+
+        let initialized = client
+            .post(&url)
+            .header("accept", "application/json, text/event-stream")
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .header("mcp-session-id", proxy_session_id.as_str())
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized"
+            }))
+            .send()
+            .await
+            .expect("notifications/initialized request");
+        assert_eq!(initialized.status(), StatusCode::ACCEPTED);
+
+        let tools_list = client
+            .post(&url)
+            .header("accept", "application/json, text/event-stream")
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .header("mcp-session-id", proxy_session_id.as_str())
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "tools-retry",
+                "method": "tools/list"
+            }))
+            .send()
+            .await
+            .expect("tools/list request");
+        assert_eq!(tools_list.status(), StatusCode::OK);
+        let tools_list_body: serde_json::Value = tools_list
+            .json()
+            .await
+            .expect("decode tools/list response");
+        assert_eq!(
+            tools_list_body["result"]["tools"].as_array().map(Vec::len),
+            Some(1),
+            "follow-up request should succeed after one Retry-After retry",
+        );
+
+        let recorded = calls.lock().expect("retry-after calls lock poisoned").clone();
+        let tools_list_calls = recorded
+            .iter()
+            .filter(|call| call.method == "tools/list")
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(tools_list_calls.len(), 2);
+        assert!(
+            tools_list_calls.iter().all(|call| {
+                call.upstream_session_id_header.as_deref() == Some("upstream-session-123")
+                    && call.tavily_api_key == expected_api_key
+            }),
+            "retry should stay on the same pinned upstream session and key",
+        );
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let (rate_limited_until, last_rate_limited_at, last_rate_limit_reason): (
+            Option<i64>,
+            Option<i64>,
+            Option<String>,
+        ) = sqlx::query_as(
+            r#"
+            SELECT rate_limited_until, last_rate_limited_at, last_rate_limit_reason
+            FROM mcp_sessions
+            WHERE proxy_session_id = ?
+            LIMIT 1
+            "#,
+        )
+        .bind(&proxy_session_id)
+        .fetch_one(&pool)
+        .await
+        .expect("fetch mcp session rate limit state");
+        assert_eq!(rate_limited_until, None);
+        assert!(last_rate_limited_at.is_some());
+        assert_eq!(
+            last_rate_limit_reason.as_deref(),
+            Some("upstream_rate_limited_429")
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_follow_up_requests_are_serialized_per_proxy_session() {
+        let db_path = temp_db_path("mcp-follow-up-serialized");
+        let db_str = db_path.to_string_lossy().to_string();
+        let expected_api_key = "tvly-mcp-follow-up-serialized";
+        let (upstream_addr, max_in_flight) =
+            spawn_mock_mcp_upstream_for_serialized_session_requests(
+                expected_api_key.to_string(),
+                Duration::from_millis(120),
+            )
+            .await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy =
+            TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
+        let access_token = proxy
+            .create_access_token(Some("mcp-follow-up-serialized"))
+            .await
+            .expect("create access token");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), upstream.clone()).await;
+        let url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, access_token.token
+        );
+        let client = Client::new();
+
+        let initialize = client
+            .post(&url)
+            .header("accept", "application/json, text/event-stream")
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "init-serialize",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {},
+                    "clientInfo": { "name": "browser-probe", "version": "0.1.0" }
+                }
+            }))
+            .send()
+            .await
+            .expect("initialize request");
+        assert!(initialize.status().is_success());
+        let proxy_session_id = initialize
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("initialize response should expose mcp-session-id")
+            .to_string();
+
+        let initialized = client
+            .post(&url)
+            .header("accept", "application/json, text/event-stream")
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .header("mcp-session-id", proxy_session_id.as_str())
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized"
+            }))
+            .send()
+            .await
+            .expect("notifications/initialized request");
+        assert_eq!(initialized.status(), StatusCode::ACCEPTED);
+
+        let send_tools_list = |id: &'static str| {
+            client
+                .post(&url)
+                .header("accept", "application/json, text/event-stream")
+                .header("content-type", "application/json")
+                .header("mcp-protocol-version", "2025-03-26")
+                .header("mcp-session-id", proxy_session_id.as_str())
+                .json(&serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": "tools/list"
+                }))
+                .send()
+        };
+
+        let (first, second) = tokio::join!(send_tools_list("tools-serialize-1"), send_tools_list("tools-serialize-2"));
+        assert_eq!(
+            first.expect("first serialized tools/list").status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            second.expect("second serialized tools/list").status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            max_in_flight.load(Ordering::SeqCst),
+            1,
+            "same proxy session should never send concurrent follow-up requests upstream",
+        );
 
         let _ = std::fs::remove_file(db_path);
     }
