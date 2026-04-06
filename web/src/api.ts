@@ -706,7 +706,7 @@ export type ApiKeyBulkSyncProgressPhaseKey = 'prepare_request' | 'sync_usage' | 
 export type ApiKeyBulkSyncProgressEvent =
   | {
       type: 'phase'
-      phaseKey: Exclude<ApiKeyBulkSyncProgressPhaseKey, 'sync_usage'>
+      phaseKey: ApiKeyBulkSyncProgressPhaseKey
       label: string
       current?: number | null
       total?: number | null

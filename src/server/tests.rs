@@ -5056,12 +5056,16 @@ mod tests {
             .collect();
 
         assert!(
-            events.len() >= 5,
-            "expected prepare + 3 item events + completion, got: {events:?}"
+            events.len() >= 6,
+            "expected prepare + sync phase + 3 item events + completion, got: {events:?}"
         );
         assert_eq!(events[0]["type"].as_str(), Some("phase"));
         assert_eq!(events[0]["phaseKey"].as_str(), Some("prepare_request"));
         assert_eq!(events[0]["total"].as_u64(), Some(3));
+        assert_eq!(events[1]["type"].as_str(), Some("phase"));
+        assert_eq!(events[1]["phaseKey"].as_str(), Some("sync_usage"));
+        assert_eq!(events[1]["current"].as_u64(), Some(0));
+        assert_eq!(events[1]["total"].as_u64(), Some(3));
 
         let item_events: Vec<&serde_json::Value> = events
             .iter()

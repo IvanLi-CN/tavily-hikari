@@ -128,6 +128,22 @@ export function updateApiKeyBulkSyncProgressState(
       }
     }
 
+    if (event.phaseKey === 'sync_usage') {
+      return {
+        ...current,
+        steps: updateStep(
+          markPrepareDone(current.steps),
+          'sync_usage',
+          'running',
+          event.detail ?? null,
+        ),
+        current: event.current ?? current.current,
+        total: event.total ?? current.total,
+        message: event.detail ?? event.label,
+        error: null,
+      }
+    }
+
     return {
       ...current,
       steps: updateStep(

@@ -1868,6 +1868,28 @@ async fn post_api_key_bulk_actions(
                 }
             }
 
+            let sync_phase = BulkApiKeySyncProgressEvent::Phase {
+                phase_key: "sync_usage",
+                label: "Syncing selected keys",
+                detail: Some("Waiting for each manual quota sync result as keys finish".to_string()),
+                current: Some(0),
+                total: Some(total),
+            };
+            match serde_json::to_string(&sync_phase) {
+                Ok(json) => yield Ok::<Event, axum::http::Error>(Event::default().data(json)),
+                Err(err) => {
+                    let fallback = BulkApiKeySyncProgressEvent::Error {
+                        message: "failed to encode bulk sync phase event".to_string(),
+                        phase_key: Some("sync_usage"),
+                        detail: Some(err.to_string()),
+                    };
+                    if let Ok(json) = serde_json::to_string(&fallback) {
+                        yield Ok::<Event, axum::http::Error>(Event::default().data(json));
+                    }
+                    return;
+                }
+            }
+
             let mut summary = BulkApiKeyActionSummary {
                 requested: total,
                 ..Default::default()

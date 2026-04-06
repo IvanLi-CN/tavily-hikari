@@ -82,6 +82,10 @@ import {
   updateApiKeyBulkSyncProgressState,
 } from './admin/apiKeyBulkSyncProgress'
 import {
+  createApiKeyBulkSyncBubblePinnedPosition,
+  type ApiKeyBulkSyncBubblePinnedPosition,
+} from './admin/apiKeyBulkSyncBubblePosition'
+import {
   buildQuotaSliderTrack,
   clampQuotaSliderStageIndex,
   createQuotaSliderSeed,
@@ -312,11 +316,6 @@ type DashboardTokenSnapshot =
 type DashboardJobsSnapshot =
   | { kind: 'ok'; data: Paginated<JobLogView> }
   | { kind: 'error' }
-
-type FloatingBubblePinnedPosition = {
-  top: number
-  left: number
-}
 
 const EMPTY_USER_TAG_FORM: UserTagFormState = {
   tagId: null,
@@ -1678,7 +1677,7 @@ function AdminDashboard(): JSX.Element {
   const [bulkSyncProgress, setBulkSyncProgress] = useState<ApiKeyBulkSyncProgressState | null>(null)
   const [bulkSyncBubbleVisible, setBulkSyncBubbleVisible] = useState(false)
   const [bulkSyncBubblePinnedPosition, setBulkSyncBubblePinnedPosition] =
-    useState<FloatingBubblePinnedPosition | null>(null)
+    useState<ApiKeyBulkSyncBubblePinnedPosition | null>(null)
   const keysSelectAllRef = useRef<HTMLInputElement | null>(null)
   const bulkSyncButtonRef = useRef<HTMLButtonElement | null>(null)
   const [pendingTokenDeleteId, setPendingTokenDeleteId] = useState<string | null>(null)
@@ -6106,18 +6105,11 @@ function AdminDashboard(): JSX.Element {
     setBulkSyncBubblePinnedPosition(null)
   }, [])
 
-  const captureBulkSyncBubblePinnedPosition = useCallback((): FloatingBubblePinnedPosition | null => {
+  const captureBulkSyncBubblePinnedPosition = useCallback((): ApiKeyBulkSyncBubblePinnedPosition | null => {
     const rect = bulkSyncButtonRef.current?.getBoundingClientRect()
     if (!rect || typeof window === 'undefined') return null
 
-    const viewportPadding = 12
-    return {
-      top: Math.max(viewportPadding, rect.bottom + 10),
-      left: Math.min(
-        window.innerWidth - viewportPadding,
-        Math.max(viewportPadding, rect.left + rect.width / 2),
-      ),
-    }
+    return createApiKeyBulkSyncBubblePinnedPosition(rect, window.innerWidth)
   }, [])
 
   const toggleSelectedKey = useCallback((id: string) => {

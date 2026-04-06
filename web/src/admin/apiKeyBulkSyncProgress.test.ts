@@ -23,6 +23,19 @@ describe('apiKeyBulkSyncProgress', () => {
     expect(state.steps[0]).toMatchObject({ status: 'running' })
 
     state = updateApiKeyBulkSyncProgressState(state, {
+      type: 'phase',
+      phaseKey: 'sync_usage',
+      label: 'Syncing selected keys',
+      current: 0,
+      total: 3,
+      detail: 'Waiting for each manual quota sync result as keys finish',
+    })
+    expect(state.steps[0]).toMatchObject({ status: 'done' })
+    expect(state.steps[1]).toMatchObject({ status: 'running' })
+    expect(state.current).toBe(0)
+    expect(state.total).toBe(3)
+
+    state = updateApiKeyBulkSyncProgressState(state, {
       type: 'item',
       keyId: 'key-a',
       status: 'success',
