@@ -213,7 +213,7 @@
   target_program: `mock-only`
   capture_scope: `browser-viewport`
   sensitive_exclusion: `N/A`
-  submission_gate: `pending-owner-approval`
+  submission_gate: `approved`
   state: `key and token identifier alignment`
   evidence_note: 验证共享 recent requests 桌面表格中的 `Key` / `Token` 标识链接在行高中视觉垂直居中，不再出现 `Key` 列文本偏上的观感。
   image:
