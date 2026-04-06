@@ -11634,6 +11634,18 @@ export function KeyDetails({
     setLogsDirection('older')
   }, [])
 
+  const handleKeyLogPeriodChange = useCallback((value: string) => {
+    setPeriod(value as 'day' | 'week' | 'month')
+    setLogsCursor(null)
+    setLogsDirection('older')
+  }, [])
+
+  const handleKeyLogStartDateChange = useCallback((value: string) => {
+    setStartDate(value)
+    setLogsCursor(null)
+    setLogsDirection('older')
+  }, [])
+
   const loadKeyLogBodies = useCallback(
     (log: RequestLog, signal: AbortSignal) => fetchKeyLogDetails(id, log.id, signal),
     [id],
@@ -11934,7 +11946,7 @@ export function KeyDetails({
             <p className="panel-description">{keyDetailsStrings.usageDescription}</p>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <Select value={period} onValueChange={(value) => setPeriod(value as 'day' | 'week' | 'month')} disabled={detailBlocking}>
+            <Select value={period} onValueChange={handleKeyLogPeriodChange} disabled={detailBlocking}>
               <SelectTrigger className="w-[132px]" aria-label={keyDetailsStrings.usageTitle} disabled={detailBlocking}>
                 <SelectValue />
               </SelectTrigger>
@@ -11948,7 +11960,7 @@ export function KeyDetails({
               type="date"
               name="key-usage-start-date"
               value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
+              onChange={(e) => handleKeyLogStartDateChange(e.target.value)}
               className="w-[176px]"
               disabled={detailBlocking}
             />

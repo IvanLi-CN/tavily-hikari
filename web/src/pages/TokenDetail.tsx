@@ -644,6 +644,8 @@ export default function TokenDetail({
 
   const handleStartChange = (nextPeriod: Period, value: string) => {
     applyStartInput(value, nextPeriod)
+    setLogsCursor(null)
+    setLogsDirection('older')
   }
 
   useEffect(() => {
@@ -1319,7 +1321,17 @@ export default function TokenDetail({
           <div className="token-period-controls" role="group" aria-label="Period filter">
             <div className="token-period-control">
               <label htmlFor={periodSelectId}>Period</label>
-              <Select value={period} onValueChange={(value) => { const next = value as Period; setPeriod(next); applyStartInput('', next) }} disabled={filterControlsDisabled}>
+              <Select
+                value={period}
+                onValueChange={(value) => {
+                  const next = value as Period
+                  setPeriod(next)
+                  applyStartInput('', next)
+                  setLogsCursor(null)
+                  setLogsDirection('older')
+                }}
+                disabled={filterControlsDisabled}
+              >
                 <SelectTrigger id={periodSelectId} disabled={filterControlsDisabled}>
                   <SelectValue />
                 </SelectTrigger>
