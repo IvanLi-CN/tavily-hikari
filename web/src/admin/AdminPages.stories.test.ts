@@ -15,6 +15,7 @@ describe('AdminPages Storybook proofs', () => {
 
     expect(adminPageStories.KeysSelected).toMatchObject({})
     expect(adminPageStories.KeysSyncUsageInProgress).toMatchObject({})
+    expect(adminPageStories.KeysSelectionRetainedAfterSync).toMatchObject({})
   })
 
   it('renders the sync-progress story with the progress bubble copy', () => {
@@ -31,5 +32,21 @@ describe('AdminPages Storybook proofs', () => {
     expect(markup).toContain('同步额度进度')
     expect(markup).toContain('已处理 5/6')
     expect(markup).toContain('最近结果')
+  })
+
+  it('renders the retained-selection story with completion feedback', () => {
+    const renderStory = adminPageStories.KeysSelectionRetainedAfterSync.render as (() => JSX.Element) | undefined
+    expect(renderStory).toBeDefined()
+
+    const markup = renderToStaticMarkup(
+      createElement(
+        LanguageProvider,
+        { initialLanguage: 'zh' },
+        createElement(ThemeProvider, null, createElement(renderStory!)),
+      ),
+    )
+
+    expect(markup).toContain('同步额度完成：列表已刷新，仍在当前页中的 2 个密钥继续保持勾选。')
+    expect(markup).toContain('已选 2 项')
   })
 })

@@ -79,6 +79,7 @@ import ForwardProxySettingsModule from './ForwardProxySettingsModule'
 import ModulePlaceholder from './ModulePlaceholder'
 import SystemSettingsModule from './SystemSettingsModule'
 import type { ApiKeyBulkSyncProgressState } from './apiKeyBulkSyncProgress'
+import { retainVisibleApiKeySelection } from './apiKeySelection'
 import {
   forwardProxyStorySavedAt,
   forwardProxyStorySettings,
@@ -3107,12 +3108,14 @@ function KeysPageCanvas({
   initialSelectedIds = [],
   bulkActionInFlight = null,
   bulkSyncProgress = null,
+  bulkFeedback = null,
 }: {
   initialRegistrationIp?: string
   initialRegions?: string[]
   initialSelectedIds?: string[]
   bulkActionInFlight?: ApiKeyBulkAction | null
   bulkSyncProgress?: ApiKeyBulkSyncProgressState | null
+  bulkFeedback?: { kind: 'success' | 'error'; message: string } | null
 } = {}): JSX.Element {
   const admin = useTranslate().admin
   const keyStrings = admin.keys
@@ -3430,6 +3433,15 @@ function KeysPageCanvas({
               progress={bulkSyncProgress}
               style={{ width: 'min(26rem, 100%)' }}
             />
+          </div>
+        ) : null}
+        {bulkFeedback ? (
+          <div
+            className={bulkFeedback.kind === 'error' ? 'alert alert-error' : 'alert alert-warning'}
+            role={bulkFeedback.kind === 'error' ? 'alert' : 'status'}
+            style={{ marginBottom: 16 }}
+          >
+            {bulkFeedback.message}
           </div>
         ) : null}
 
@@ -5751,6 +5763,21 @@ export const KeysSyncUsageInProgress: Story = {
       initialSelectedIds={['MZli', 'c7Pk', 'Qn8R', 'asR8', 'U2vK', 'J1nW']}
       bulkActionInFlight="sync_usage"
       bulkSyncProgress={STORY_BULK_SYNC_PROGRESS}
+    />
+  ),
+  parameters: {
+    viewport: { defaultViewport: '1280-breakpoint-tailwind-xl' },
+  },
+}
+
+export const KeysSelectionRetainedAfterSync: Story = {
+  render: () => (
+    <KeysPageCanvas
+      initialSelectedIds={retainVisibleApiKeySelection(['MZli', 'c7Pk', 'Qn8R', 'asR8'], ['MZli', 'c7Pk'])}
+      bulkFeedback={{
+        kind: 'success',
+        message: '同步额度完成：列表已刷新，仍在当前页中的 2 个密钥继续保持勾选。',
+      }}
     />
   ),
   parameters: {

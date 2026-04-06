@@ -18,7 +18,7 @@
 - 为 `/admin/keys` 批量工具条三个动作补齐左侧语义图标，并在执行中只让当前动作按钮显示 spinning loader。
 - 为批量“同步额度”提供真实流式进度气泡，固定分成 `准备请求` → `逐 key 同步` → `刷新列表` 三段。
 - 让 `POST /api/keys/bulk-actions` 在 `action=sync_usage` 时支持基于 `Accept: text/event-stream` 的 SSE content negotiation，同时保留现有 JSON fallback。
-- 保持既有 summary banner、列表刷新、清空选择、失败不落坏数据等行为不回退。
+- 保持既有 summary banner、列表刷新、失败不落坏数据等行为不回退；批量动作完成后只移除已不在当前列表中的已选项。
 - 补齐 Storybook 入口、测试、浏览器验收与视觉证据，收口到 latest PR `merge-ready`。
 
 ### Non-goals
@@ -92,6 +92,7 @@
 - 当当前页存在选中项时，列表头部显示批量工具条。
 - 三个按钮都显示左图标；文案保持不变。
 - `bulkKeyActionInFlight` 只驱动当前动作按钮的 spinner，避免多个按钮同时表现为“正在工作”。
+- 任一批量动作成功刷新当前页后，仍出现在当前列表中的已选 key 继续保持勾选；已不在当前列表中的 key 自动移出选择集。
 
 ### Bulk sync progress bubble
 
@@ -104,7 +105,7 @@
   - 已处理数量
   - 成功 / 跳过 / 失败计数
   - 最近一个 key 的 `success / skipped / failed` 与详情
-- 流结束后，前端仍沿用现有收口：刷新当前 keys 页、清空选择、展示 summary banner。
+- 流结束后，前端仍沿用现有收口：刷新当前 keys 页、展示 summary banner，并仅保留刷新后当前列表仍存在的已选 key。
 - 只有在上述收口动作完成后，`refresh_ui` 步骤才进入完成态。
 
 ### SSE contract behavior
@@ -117,6 +118,7 @@
 ### Edge cases / errors
 
 - 翻页、切换筛选、切换 `perPage`、重新进入模块后，选择态被清空，同时关闭并重置进度气泡。
+- 手动刷新继续沿用现有语义：清空选择并重置批量反馈，不启用“保留勾选”。
 - 如果流在 `complete` 前失败，气泡停在错误态，并保留已累积的真实计数。
 - 如果流成功但列表刷新失败，气泡将错误定位到 `refresh_ui`，而不会伪装成同步成功。
 
@@ -163,9 +165,13 @@
   When 不切换选择上下文
   Then 终态气泡继续保留，直到点外部区域、再次触发同步或上下文重置。
 
+- Given 当前页已有多项被勾选
+  When 任一批量动作成功并刷新列表
+  Then 仍留在当前列表中的项继续保持勾选，已消失的项自动从选择集中移除。
+
 - Given Storybook 与浏览器验收已完成
   When 进入 PR 收敛
-  Then spec 的 `## Visual Evidence` 含有“选中工具条”和“同步进行中气泡”的最终图片。
+  Then spec 的 `## Visual Evidence` 含有“选中工具条”、“同步进行中气泡”和“批量动作完成后保留勾选”的最终图片。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
 
@@ -175,14 +181,16 @@
   - `POST /api/keys/bulk-actions` mixed-status JSON path
   - `POST /api/keys/bulk-actions` `sync_usage` SSE 事件流顺序与终态 payload
 - Frontend tests
+  - bulk key selection retention helper
   - bulk sync progress reducer/helper
-  - Storybook story exports 与同步气泡静态文案证明
+  - Storybook story exports 与同步气泡 / 保留勾选完成态静态文案证明
 
 ### UI / Storybook
 
 - Stories to add/update
   - API Keys 列表选中工具条
   - API Keys 列表同步进行中气泡
+  - API Keys 列表批量动作完成后的保留勾选态
 - Visual evidence source
   - 优先 Storybook 稳定画面
   - 再补真实 `/admin/keys` 浏览器复核
@@ -233,6 +241,18 @@
 - source_type: `mock_ui`; target_program: `mock-only`; capture_scope: `browser-viewport`; state: `live admin keys sync in progress`; evidence_note: 使用本地 mock upstream 复核真实 `/admin/keys` 页面中的锚点气泡定位、按钮 spinner 与当前页已选 key 收口行为。
 
 ![真实 admin keys 页面中的同步额度进度气泡](./assets/keys-sync-progress-real-page.png)
+
+### Storybook：批量动作完成后保留勾选
+
+- source_type: `storybook_canvas`; target_program: `mock-only`; capture_scope: `element`; story_id_or_title: `Admin/Pages/Keys Selection Retained After Sync`; state: `bulk action completion`; evidence_note: 验证批量动作刷新完成后，仍存在于当前列表中的 key 会继续保持勾选，并与批量反馈 banner 同屏展示。
+
+![Storybook 批量动作完成后的保留勾选态](./assets/keys-selection-retained-story.png)
+
+### 浏览器复核：真实 `/admin/keys` 保留勾选
+
+- source_type: `mock_ui`; target_program: `mock-only`; capture_scope: `browser-viewport`; state: `live admin keys retained selection after bulk sync`; evidence_note: 使用本地 mock upstream 复核真实 `/admin/keys` 页面中批量同步完成后的反馈 banner、勾选计数与仍在当前列表中的已选 key 保持勾选。
+
+![真实 admin keys 页面中的保留勾选态](./assets/keys-selection-retained-real-page.png)
 
 ## 方案概述（Approach, high-level）
 
