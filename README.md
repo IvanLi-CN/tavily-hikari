@@ -289,7 +289,7 @@ codex mcp list | grep tavily_hikari
 - Hooks: run `lefthook install` to enable automatic `cargo fmt`, `cargo clippy`, `bunx --bun dprint fmt`, and `bunx --bun commitlint --edit` on every commit.
 - No-node proof: run `bun run validate:no-node-runtime` to verify the repo build/hook paths still pass when a failing `node` shim is prepended to `PATH`.
 - CI: `.github/workflows/ci.yml` runs lint/tests/build.
-- Release: `.github/workflows/release.yml` runs after main CI succeeds and publishes tags, GitHub Releases, and GHCR images.
+- Release: `.github/workflows/release.yml` runs after main CI succeeds and publishes tags, GitHub Releases, GHCR images, and an upserted PR release comment.
 
 ## Release (PR labels)
 
@@ -299,6 +299,7 @@ Releases are label-driven:
 - Every PR must have exactly one channel label: `channel:stable` or `channel:rc`.
 - When a PR is merged into `main` and CI passes, the release workflow computes the next stable semver (`X.Y.Z`) and publishes:
   - Git tag + GitHub Release
+  - A marker-based PR comment linking the published release/version
   - GHCR image tags:
     - stable (`channel:stable`): `latest`, `vX.Y.Z`
     - prerelease (`channel:rc`): `vX.Y.Z-rc.<sha7>` (no `latest`)
