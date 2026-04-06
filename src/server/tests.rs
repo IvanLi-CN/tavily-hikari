@@ -73,6 +73,38 @@ mod tests {
             .unwrap_or_else(|| panic!("missing api key row for {api_key}"))
     }
 
+    async fn read_sse_event_until(
+        response: &mut reqwest::Response,
+        predicate: impl Fn(&str) -> bool,
+        chunk_context: &str,
+    ) -> String {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+        let mut buffer = String::new();
+
+        while tokio::time::Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let chunk = tokio::time::timeout(remaining, response.chunk())
+                .await
+                .unwrap_or_else(|_| panic!("timed out waiting for {chunk_context}"))
+                .unwrap_or_else(|err| panic!("failed reading {chunk_context}: {err}"))
+                .unwrap_or_else(|| panic!("missing chunk for {chunk_context}"));
+            buffer.push_str(
+                std::str::from_utf8(&chunk)
+                    .unwrap_or_else(|_| panic!("invalid utf8 while reading {chunk_context}")),
+            );
+
+            while let Some((event_chunk, rest)) = buffer.split_once("\n\n") {
+                let event_chunk = event_chunk.to_string();
+                buffer = rest.to_string();
+                if predicate(&event_chunk) {
+                    return event_chunk;
+                }
+            }
+        }
+
+        panic!("timed out waiting for matching SSE event: {chunk_context}");
+    }
+
     async fn fetch_key_quota_snapshot(
         pool: &sqlx::SqlitePool,
         key_id: &str,
@@ -9973,20 +10005,12 @@ colo=LAX
             .expect("admin events request");
         assert_eq!(events_resp.status(), reqwest::StatusCode::OK);
 
-        let mut first_text = String::new();
-        while !first_text.contains("\n\n") {
-            let chunk = events_resp
-                .chunk()
-                .await
-                .expect("read event chunk")
-                .expect("snapshot chunk exists");
-            first_text.push_str(std::str::from_utf8(&chunk).expect("snapshot chunk utf8"));
-        }
-
-        let snapshot_event = first_text
-            .split("\n\n")
-            .find(|chunk| chunk.contains("event: snapshot"))
-            .expect("snapshot event");
+        let snapshot_event = read_sse_event_until(
+            &mut events_resp,
+            |chunk| chunk.contains("event: snapshot"),
+            "admin snapshot event",
+        )
+        .await;
         let snapshot_line = snapshot_event
             .lines()
             .find_map(|line| line.strip_prefix("data: "))
@@ -11026,20 +11050,12 @@ colo=LAX
             .expect("admin events request");
         assert_eq!(events_resp.status(), reqwest::StatusCode::OK);
 
-        let mut first_text = String::new();
-        while !first_text.contains("\n\n") {
-            let chunk = events_resp
-                .chunk()
-                .await
-                .expect("read initial event chunk")
-                .expect("initial snapshot chunk exists");
-            first_text.push_str(std::str::from_utf8(&chunk).expect("initial snapshot chunk utf8"));
-        }
-
-        let initial_snapshot = first_text
-            .split("\n\n")
-            .find(|chunk| chunk.contains("event: snapshot"))
-            .expect("initial snapshot event");
+        let initial_snapshot = read_sse_event_until(
+            &mut events_resp,
+            |chunk| chunk.contains("event: snapshot"),
+            "initial admin snapshot event",
+        )
+        .await;
         let initial_data = initial_snapshot
             .lines()
             .find_map(|line| line.strip_prefix("data: "))
@@ -12982,27 +12998,12 @@ colo=LAX
             .await
             .expect("events request");
         assert_eq!(events_resp.status(), reqwest::StatusCode::OK);
-        let mut first_text = String::new();
-        while !first_text.contains(
-            "
-
-",
-        ) {
-            let chunk = events_resp
-                .chunk()
-                .await
-                .expect("read event chunk")
-                .expect("snapshot chunk exists");
-            first_text.push_str(std::str::from_utf8(&chunk).expect("snapshot chunk utf8"));
-        }
-        let snapshot_event = first_text
-            .split(
-                "
-
-",
-            )
-            .find(|chunk| chunk.contains("data: "))
-            .expect("snapshot event");
+        let snapshot_event = read_sse_event_until(
+            &mut events_resp,
+            |chunk| chunk.contains("data: "),
+            "token snapshot event",
+        )
+        .await;
         let snapshot_line = snapshot_event
             .lines()
             .find_map(|line| line.strip_prefix("data: "))

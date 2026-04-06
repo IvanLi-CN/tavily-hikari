@@ -4,7 +4,7 @@
 
 - Status: 已完成
 - Created: 2026-03-27
-- Last: 2026-03-28
+- Last: 2026-04-06
 
 ## 背景 / 问题陈述
 
@@ -92,7 +92,18 @@
 - 客户端 follow-up 请求带回 `proxy_session_id` 时：
   - 代理必须先反查本地 session，再把 header 改写为 upstream session id，且强制请求走 session 绑定 key。
   - 若当前 token 不是该 session 的 owner，代理本地拒绝。
-  - 若 session 已失效、已过期或 key 已换绑，代理返回“需重连”的本地错误，不向上游继续透传旧 session。
+- 若 session 已失效、已过期或 key 已换绑，代理返回“需重连”的本地错误，不向上游继续透传旧 session。
+
+### MCP initialize 热 key 规避
+
+- `initialize` 为新 session 选 upstream key 时，必须继续先落在 stable top-N affinity pool 内，不允许越池漂移。
+- affinity pool 内排序必须优先避开处于 MCP-init cooldown 的 key；若全部候选都在 cooldown，仍需选择“最不差”的 key，而不是拒绝建 session。
+- affinity pool 内的次级排序必须综合最近 `60s` 的共享 billable 请求压力、同 subject 的活跃 MCP session 数，以及 `last_used_at` 的 LRU 信号。
+- 任意上游请求命中 `upstream_rate_limited_429` 后，系统必须把对应 key 记入 MCP-init cooldown，仅影响未来新建 session，不得迁移或打断已存在 session。
+- request/token logs 必须能区分：
+  - `mcp_session_init_backoff_set`
+  - `mcp_session_init_cooldown_avoided`
+  - `mcp_session_init_pressure_avoided`
 
 ### MCP header privacy
 
@@ -137,6 +148,9 @@
 - Given 某 MCP session 已固定到一把 upstream key
   When 该 key 仅变为 `exhausted` 且未被禁用 / 隔离 / 删除
   Then 代理必须继续沿用同一把 key，而不是强制断开该 session。
+- Given 某 upstream key 刚返回 `429 excessive requests`
+  When 同一 subject 随后再创建新的 MCP session
+  Then 代理必须优先把新 session 放到 affinity pool 内更冷的 key 上，同时旧 session 继续 pin 在原 key。
 - Given `/mcp` 请求带 `accept-language`、`sec-ch-ua`、`origin`、`referer`
   When 请求经代理转发
   Then 上游收不到这些头，且收到的是统一代理 `user-agent`。
@@ -193,6 +207,7 @@ None
 - 2026-03-27: 创建 PR #189，进入快车道 PR 收敛 / stable patch / 101 rollout 阶段。
 - 2026-03-27: PR #189 合并到 `main`，stable release `v0.29.8` 成功发布，GHCR immutable digest 为 `sha256:11bbafd8d51e9d5836c0c9fe984146ed27decf36f42c71b110d2493b5862d5ed`。
 - 2026-03-28: 101 完成 `/home/ivan/srv/ai/docker-compose.yml` 与 `/home/ivan/srv/ai/tavily-hikari.md` 的 digest / 部署卡同步，并记录维护说明 `/home/ivan/srv/maintenance/2026-03-28-ops-ai-tavily-hikari-v0.29.8-affinity-privacy-sync.md`；容器、内网与外网版本检查均通过。
+- 2026-04-06: 为 MCP 新建 session 的池内排序补上 429 cooldown、最近 60 秒共享压力、同 subject 活跃 session 数与 LRU 组合选路，并新增真实二进制 E2E 覆盖“旧 session 继续 pin，新 session 规避热 key”。
 
 ## 参考（References）
 

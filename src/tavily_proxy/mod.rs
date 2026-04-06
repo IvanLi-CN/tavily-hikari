@@ -274,6 +274,22 @@ pub(crate) const FORWARD_PROXY_TRACE_URL: &str = "http://cloudflare.com/cdn-cgi/
 pub(crate) const FORWARD_PROXY_TRACE_TIMEOUT_MS: u64 = 900;
 pub(crate) const FORWARD_PROXY_GEO_NEGATIVE_RETRY_COOLDOWN_SECS: i64 = 15 * 60;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct McpSessionInitCandidate {
+    pub(crate) key_id: String,
+    pub(crate) stable_rank_index: usize,
+    pub(crate) cooldown_until: Option<i64>,
+    pub(crate) recent_billable_request_count: i64,
+    pub(crate) active_session_count: i64,
+    pub(crate) last_used_at: i64,
+}
+
+#[derive(Debug)]
+pub(crate) struct McpSessionInitSelection {
+    pub(crate) lease: ApiKeyLease,
+    pub(crate) key_effect: KeyEffect,
+}
+
 fn default_forward_proxy_trace_url() -> Url {
     std::env::var("FORWARD_PROXY_TRACE_URL")
         .ok()
@@ -303,6 +319,108 @@ impl TavilyProxy {
         format!(
             "mcp-init:{}",
             Self::mcp_session_affinity_subject(user_id, token_id)
+        )
+    }
+
+    pub(crate) fn parse_retry_after_secs_value(value: &str, now_ts: i64) -> Option<i64> {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        if let Ok(seconds) = trimmed.parse::<i64>() {
+            return Some(seconds.max(0));
+        }
+
+        let parsed = httpdate::parse_http_date(trimmed).ok()?;
+        let now_secs = now_ts.max(0) as u64;
+        let now = std::time::UNIX_EPOCH.checked_add(Duration::from_secs(now_secs))?;
+        match parsed.duration_since(now) {
+            Ok(delta) => Some(delta.as_secs().min(i64::MAX as u64) as i64),
+            Err(_) => Some(0),
+        }
+    }
+
+    fn parse_retry_after_secs(headers: &HeaderMap, now_ts: i64) -> Option<i64> {
+        headers
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| Self::parse_retry_after_secs_value(value, now_ts))
+    }
+
+    pub(crate) fn mcp_session_init_retry_after_secs(headers: &HeaderMap, now_ts: i64) -> i64 {
+        Self::parse_retry_after_secs(headers, now_ts)
+            .unwrap_or(MCP_SESSION_INIT_BACKOFF_DEFAULT_SECS)
+            .clamp(
+                MCP_SESSION_INIT_BACKOFF_MIN_SECS,
+                MCP_SESSION_INIT_BACKOFF_MAX_SECS,
+            )
+    }
+
+    pub(crate) fn order_mcp_session_init_candidates(candidates: &mut [McpSessionInitCandidate]) {
+        candidates.sort_by(|left, right| {
+            left.cooldown_until
+                .is_some()
+                .cmp(&right.cooldown_until.is_some())
+                .then_with(|| {
+                    left.cooldown_until
+                        .unwrap_or_default()
+                        .cmp(&right.cooldown_until.unwrap_or_default())
+                })
+                .then_with(|| {
+                    left.recent_billable_request_count
+                        .cmp(&right.recent_billable_request_count)
+                })
+                .then_with(|| left.active_session_count.cmp(&right.active_session_count))
+                .then_with(|| left.last_used_at.cmp(&right.last_used_at))
+                .then_with(|| left.stable_rank_index.cmp(&right.stable_rank_index))
+                .then_with(|| left.key_id.cmp(&right.key_id))
+        });
+    }
+
+    pub(crate) fn mcp_session_init_selection_effect(
+        ordered: &[McpSessionInitCandidate],
+    ) -> KeyEffect {
+        let Some(selected) = ordered.first() else {
+            return KeyEffect::none();
+        };
+        if selected.stable_rank_index == 0 {
+            return KeyEffect::none();
+        }
+        let Some(stable_front) = ordered
+            .iter()
+            .find(|candidate| candidate.stable_rank_index == 0)
+        else {
+            return KeyEffect::none();
+        };
+
+        if stable_front.cooldown_until.is_some()
+            && (selected.cooldown_until.is_none()
+                || selected.cooldown_until < stable_front.cooldown_until)
+        {
+            return KeyEffect::new(
+                KEY_EFFECT_MCP_SESSION_INIT_COOLDOWN_AVOIDED,
+                "MCP initialize skipped a cooled key inside the affinity pool",
+            );
+        }
+
+        if selected.recent_billable_request_count < stable_front.recent_billable_request_count
+            || selected.active_session_count < stable_front.active_session_count
+            || selected.last_used_at < stable_front.last_used_at
+        {
+            return KeyEffect::new(
+                KEY_EFFECT_MCP_SESSION_INIT_PRESSURE_AVOIDED,
+                "MCP initialize skipped a hotter key inside the affinity pool",
+            );
+        }
+
+        KeyEffect::none()
+    }
+
+    fn mcp_session_init_backoff_effect() -> KeyEffect {
+        KeyEffect::new(
+            KEY_EFFECT_MCP_SESSION_INIT_BACKOFF_SET,
+            "The system temporarily cooled this key for future MCP session placement",
         )
     }
 
@@ -3218,12 +3336,89 @@ impl TavilyProxy {
         Ok(candidates)
     }
 
+    async fn build_mcp_session_init_candidates(
+        &self,
+        token_id: &str,
+        user_id: Option<&str>,
+        ranked: &[String],
+        now: i64,
+    ) -> Result<Vec<McpSessionInitCandidate>, ProxyError> {
+        let cooldowns = self
+            .key_store
+            .list_active_api_key_transient_backoffs(ranked, MCP_SESSION_INIT_BACKOFF_SCOPE, now)
+            .await?;
+        let recent_counts = self
+            .key_store
+            .list_recent_billable_request_counts_for_keys(
+                ranked,
+                now - MCP_SESSION_INIT_RECENT_PRESSURE_WINDOW_SECS,
+            )
+            .await?;
+        let active_counts = if let Some(user_id) = user_id {
+            self.key_store
+                .list_active_mcp_session_counts_for_user(user_id, ranked, now)
+                .await?
+        } else {
+            self.key_store
+                .list_active_mcp_session_counts_for_token(token_id, ranked, now)
+                .await?
+        };
+        let last_used_at = self.key_store.list_api_key_last_used_at(ranked).await?;
+
+        let mut candidates = ranked
+            .iter()
+            .enumerate()
+            .map(|(stable_rank_index, key_id)| McpSessionInitCandidate {
+                key_id: key_id.clone(),
+                stable_rank_index,
+                cooldown_until: cooldowns.get(key_id).map(|state| state.cooldown_until),
+                recent_billable_request_count: recent_counts.get(key_id).copied().unwrap_or(0),
+                active_session_count: active_counts.get(key_id).copied().unwrap_or(0),
+                last_used_at: last_used_at.get(key_id).copied().unwrap_or(0),
+            })
+            .collect::<Vec<_>>();
+        Self::order_mcp_session_init_candidates(&mut candidates);
+        Ok(candidates)
+    }
+
+    async fn maybe_arm_mcp_session_init_backoff(
+        &self,
+        key_id: &str,
+        headers: &HeaderMap,
+        analysis: &AttemptAnalysis,
+    ) -> Result<bool, ProxyError> {
+        if analysis.failure_kind.as_deref() != Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429) {
+            return Ok(false);
+        }
+
+        let now = Utc::now().timestamp();
+        let retry_after_secs = Self::mcp_session_init_retry_after_secs(headers, now);
+        let cooldown_until = now + retry_after_secs;
+
+        Ok(self
+            .key_store
+            .arm_api_key_transient_backoff(ApiKeyTransientBackoffArm {
+                key_id,
+                scope: MCP_SESSION_INIT_BACKOFF_SCOPE,
+                cooldown_until,
+                retry_after_secs,
+                reason_code: Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429),
+                source_request_log_id: None,
+                now,
+            })
+            .await?
+            .is_some())
+    }
+
     pub(crate) async fn acquire_key_for_mcp_session_init(
         &self,
         auth_token_id: Option<&str>,
-    ) -> Result<ApiKeyLease, ProxyError> {
+    ) -> Result<McpSessionInitSelection, ProxyError> {
         let Some(token_id) = auth_token_id else {
-            return self.key_store.acquire_key().await;
+            return Ok(McpSessionInitSelection {
+                lease: self.key_store.acquire_key().await?,
+                key_effect: KeyEffect::none(),
+            });
         };
 
         let user_id = self.key_store.find_user_id_by_token(token_id).await?;
@@ -3236,32 +3431,21 @@ impl TavilyProxy {
             )
             .await?;
         let now = Utc::now().timestamp();
-        let counts = if let Some(user_id) = user_id.as_deref() {
-            self.key_store
-                .list_active_mcp_session_counts_for_user(user_id, &ranked, now)
-                .await?
-        } else {
-            self.key_store
-                .list_active_mcp_session_counts_for_token(token_id, &ranked, now)
-                .await?
-        };
+        let ordered = self
+            .build_mcp_session_init_candidates(token_id, user_id.as_deref(), &ranked, now)
+            .await?;
+        let preferred_key_id = ordered.first().map(|candidate| candidate.key_id.clone());
+        let preferred_effect = Self::mcp_session_init_selection_effect(&ordered);
 
-        let mut ordered = ranked
-            .iter()
-            .enumerate()
-            .map(|(index, key_id)| {
-                (
-                    counts.get(key_id).copied().unwrap_or(0),
-                    index,
-                    key_id.clone(),
-                )
-            })
-            .collect::<Vec<_>>();
-        ordered.sort();
-
-        for (_, _, key_id) in ordered {
+        for candidate in ordered {
+            let key_id = candidate.key_id.clone();
             if let Some(lease) = self.key_store.try_acquire_specific_key(&key_id).await? {
-                return Ok(lease);
+                let key_effect = if preferred_key_id.as_deref() == Some(key_id.as_str()) {
+                    preferred_effect.clone()
+                } else {
+                    KeyEffect::none()
+                };
+                return Ok(McpSessionInitSelection { lease, key_effect });
             }
         }
 
@@ -3655,14 +3839,18 @@ impl TavilyProxy {
 
     /// 将请求透传到 Tavily upstream 并记录日志。
     pub async fn proxy_request(&self, request: ProxyRequest) -> Result<ProxyResponse, ProxyError> {
+        let mut mcp_session_init_effect = KeyEffect::none();
         let lease = if let Some(key_id) = request.pinned_api_key_id.as_deref() {
             let Some(lease) = self.key_store.try_acquire_specific_key(key_id).await? else {
                 return Err(ProxyError::PinnedMcpSessionUnavailable);
             };
             lease
         } else if request.prefer_mcp_session_affinity {
-            self.acquire_key_for_mcp_session_init(request.auth_token_id.as_deref())
-                .await?
+            let selection = self
+                .acquire_key_for_mcp_session_init(request.auth_token_id.as_deref())
+                .await?;
+            mcp_session_init_effect = selection.key_effect;
+            selection.lease
         } else {
             self.acquire_key_for(request.auth_token_id.as_deref())
                 .await?
@@ -3725,6 +3913,17 @@ impl TavilyProxy {
                         request.auth_token_id.as_deref(),
                     )
                     .await?;
+                let armed_mcp_init_backoff = self
+                    .maybe_arm_mcp_session_init_backoff(&lease.id, &headers, &outcome)
+                    .await?;
+                let mut key_effect = key_effect;
+                if key_effect.code == KEY_EFFECT_NONE {
+                    if armed_mcp_init_backoff {
+                        key_effect = Self::mcp_session_init_backoff_effect();
+                    } else if mcp_session_init_effect.code != KEY_EFFECT_NONE {
+                        key_effect = mcp_session_init_effect.clone();
+                    }
+                }
 
                 let request_log_id = self
                     .key_store
@@ -3747,6 +3946,16 @@ impl TavilyProxy {
                         dropped_headers: &sanitized_headers.dropped,
                     })
                     .await?;
+                if armed_mcp_init_backoff {
+                    self.key_store
+                        .set_api_key_transient_backoff_request_log_id(
+                            &lease.id,
+                            MCP_SESSION_INIT_BACKOFF_SCOPE,
+                            request_log_id,
+                            Utc::now().timestamp(),
+                        )
+                        .await?;
+                }
 
                 Ok(ProxyResponse {
                     status,
@@ -3901,6 +4110,13 @@ impl TavilyProxy {
                 let key_effect = self
                     .reconcile_key_health(&lease, display_path, &analysis, auth_token_id)
                     .await?;
+                let armed_mcp_init_backoff = self
+                    .maybe_arm_mcp_session_init_backoff(&lease.id, &headers, &analysis)
+                    .await?;
+                let mut key_effect = key_effect;
+                if key_effect.code == KEY_EFFECT_NONE && armed_mcp_init_backoff {
+                    key_effect = Self::mcp_session_init_backoff_effect();
+                }
 
                 let request_log_id = self
                     .key_store
@@ -3923,6 +4139,16 @@ impl TavilyProxy {
                         dropped_headers: &sanitized_headers.dropped,
                     })
                     .await?;
+                if armed_mcp_init_backoff {
+                    self.key_store
+                        .set_api_key_transient_backoff_request_log_id(
+                            &lease.id,
+                            MCP_SESSION_INIT_BACKOFF_SCOPE,
+                            request_log_id,
+                            Utc::now().timestamp(),
+                        )
+                        .await?;
+                }
                 analysis.key_effect = key_effect.clone();
 
                 Ok((
@@ -4087,6 +4313,13 @@ impl TavilyProxy {
                 let key_effect = self
                     .reconcile_key_health(&lease, display_path, &analysis, auth_token_id)
                     .await?;
+                let armed_mcp_init_backoff = self
+                    .maybe_arm_mcp_session_init_backoff(&lease.id, &headers, &analysis)
+                    .await?;
+                let mut key_effect = key_effect;
+                if key_effect.code == KEY_EFFECT_NONE && armed_mcp_init_backoff {
+                    key_effect = Self::mcp_session_init_backoff_effect();
+                }
 
                 let request_log_id = self
                     .key_store
@@ -4109,6 +4342,16 @@ impl TavilyProxy {
                         dropped_headers: &sanitized_headers.dropped,
                     })
                     .await?;
+                if armed_mcp_init_backoff {
+                    self.key_store
+                        .set_api_key_transient_backoff_request_log_id(
+                            &lease.id,
+                            MCP_SESSION_INIT_BACKOFF_SCOPE,
+                            request_log_id,
+                            Utc::now().timestamp(),
+                        )
+                        .await?;
+                }
                 analysis.key_effect = key_effect.clone();
 
                 let after_usage = match self
@@ -4256,6 +4499,13 @@ impl TavilyProxy {
                 let key_effect = self
                     .reconcile_key_health(&lease, display_path, &analysis, auth_token_id)
                     .await?;
+                let armed_mcp_init_backoff = self
+                    .maybe_arm_mcp_session_init_backoff(&lease.id, &headers, &analysis)
+                    .await?;
+                let mut key_effect = key_effect;
+                if key_effect.code == KEY_EFFECT_NONE && armed_mcp_init_backoff {
+                    key_effect = Self::mcp_session_init_backoff_effect();
+                }
 
                 let request_log_id = self
                     .key_store
@@ -4278,6 +4528,16 @@ impl TavilyProxy {
                         dropped_headers: &sanitized_headers.dropped,
                     })
                     .await?;
+                if armed_mcp_init_backoff {
+                    self.key_store
+                        .set_api_key_transient_backoff_request_log_id(
+                            &lease.id,
+                            MCP_SESSION_INIT_BACKOFF_SCOPE,
+                            request_log_id,
+                            Utc::now().timestamp(),
+                        )
+                        .await?;
+                }
                 analysis.key_effect = key_effect.clone();
 
                 Ok((
@@ -7661,6 +7921,12 @@ impl TavilyProxy {
         let now = Utc::now().timestamp();
         self.key_store
             .delete_stale_mcp_sessions(now, now - MCP_SESSION_RETENTION_SECS)
+            .await
+    }
+
+    pub async fn gc_mcp_session_init_backoffs(&self) -> Result<i64, ProxyError> {
+        self.key_store
+            .delete_expired_api_key_transient_backoffs(Utc::now().timestamp())
             .await
     }
 

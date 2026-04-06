@@ -9,6 +9,7 @@ use axum::{
     http::StatusCode,
     routing::{any, get, post},
 };
+use sha2::{Digest, Sha256};
 use sqlx::Connection;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -13868,6 +13869,411 @@ async fn usage_error_quarantine_appends_audit_record() {
     .await
     .expect("fetch maintenance operations");
     assert_eq!(op_codes, vec![MAINTENANCE_OP_AUTO_QUARANTINE.to_string()]);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+async fn fetch_all_api_key_ids(pool: &SqlitePool) -> Vec<String> {
+    sqlx::query_scalar("SELECT id FROM api_keys ORDER BY id ASC")
+        .fetch_all(pool)
+        .await
+        .expect("fetch api key ids")
+}
+
+fn rank_mcp_affinity_key_ids(
+    subject: &str,
+    mut key_ids: Vec<String>,
+    desired_count: usize,
+) -> Vec<String> {
+    key_ids.sort_by(|left, right| {
+        let mut left_digest = Sha256::new();
+        left_digest.update(subject.as_bytes());
+        left_digest.update(b":");
+        left_digest.update(left.as_bytes());
+        let left_score: [u8; 32] = left_digest.finalize().into();
+
+        let mut right_digest = Sha256::new();
+        right_digest.update(subject.as_bytes());
+        right_digest.update(b":");
+        right_digest.update(right.as_bytes());
+        let right_score: [u8; 32] = right_digest.finalize().into();
+
+        right_score.cmp(&left_score).then_with(|| left.cmp(right))
+    });
+    key_ids.truncate(desired_count.max(1).min(key_ids.len()));
+    key_ids
+}
+
+#[test]
+fn mcp_session_init_retry_after_secs_supports_seconds_dates_defaults_and_clamp() {
+    let now = 1_700_000_000_i64;
+    let mut headers = reqwest::header::HeaderMap::new();
+
+    assert_eq!(
+        TavilyProxy::mcp_session_init_retry_after_secs(&headers, now),
+        60
+    );
+
+    headers.insert(
+        "retry-after",
+        reqwest::header::HeaderValue::from_static("15"),
+    );
+    assert_eq!(
+        TavilyProxy::mcp_session_init_retry_after_secs(&headers, now),
+        30
+    );
+
+    headers.insert(
+        "retry-after",
+        reqwest::header::HeaderValue::from_static("600"),
+    );
+    assert_eq!(
+        TavilyProxy::mcp_session_init_retry_after_secs(&headers, now),
+        300
+    );
+
+    let future = httpdate::fmt_http_date(
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs((now + 90) as u64),
+    );
+    headers.insert(
+        "retry-after",
+        reqwest::header::HeaderValue::from_str(&future).expect("future retry-after header"),
+    );
+    assert_eq!(
+        TavilyProxy::mcp_session_init_retry_after_secs(&headers, now),
+        90
+    );
+
+    let past = httpdate::fmt_http_date(
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs((now - 5) as u64),
+    );
+    headers.insert(
+        "retry-after",
+        reqwest::header::HeaderValue::from_str(&past).expect("past retry-after header"),
+    );
+    assert_eq!(
+        TavilyProxy::mcp_session_init_retry_after_secs(&headers, now),
+        30
+    );
+
+    headers.insert(
+        "retry-after",
+        reqwest::header::HeaderValue::from_static("not-a-number"),
+    );
+    assert_eq!(
+        TavilyProxy::mcp_session_init_retry_after_secs(&headers, now),
+        60
+    );
+}
+
+#[test]
+fn mcp_session_init_candidate_order_prefers_cooldown_then_pressure_then_lru() {
+    let mut candidates = vec![
+        McpSessionInitCandidate {
+            key_id: "stable-0".to_string(),
+            stable_rank_index: 0,
+            cooldown_until: Some(200),
+            recent_billable_request_count: 0,
+            active_session_count: 0,
+            last_used_at: 100,
+        },
+        McpSessionInitCandidate {
+            key_id: "stable-1".to_string(),
+            stable_rank_index: 1,
+            cooldown_until: None,
+            recent_billable_request_count: 5,
+            active_session_count: 2,
+            last_used_at: 80,
+        },
+        McpSessionInitCandidate {
+            key_id: "stable-2".to_string(),
+            stable_rank_index: 2,
+            cooldown_until: None,
+            recent_billable_request_count: 2,
+            active_session_count: 1,
+            last_used_at: 60,
+        },
+        McpSessionInitCandidate {
+            key_id: "stable-3".to_string(),
+            stable_rank_index: 3,
+            cooldown_until: None,
+            recent_billable_request_count: 2,
+            active_session_count: 1,
+            last_used_at: 10,
+        },
+    ];
+
+    TavilyProxy::order_mcp_session_init_candidates(&mut candidates);
+
+    assert_eq!(
+        candidates
+            .iter()
+            .map(|candidate| candidate.key_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["stable-3", "stable-2", "stable-1", "stable-0"]
+    );
+    assert_eq!(
+        TavilyProxy::mcp_session_init_selection_effect(&candidates).code,
+        KEY_EFFECT_MCP_SESSION_INIT_COOLDOWN_AVOIDED,
+    );
+}
+
+#[test]
+fn mcp_session_init_candidate_order_uses_stable_rank_as_last_tiebreaker() {
+    let mut candidates = vec![
+        McpSessionInitCandidate {
+            key_id: "rank-1".to_string(),
+            stable_rank_index: 1,
+            cooldown_until: None,
+            recent_billable_request_count: 3,
+            active_session_count: 1,
+            last_used_at: 10,
+        },
+        McpSessionInitCandidate {
+            key_id: "rank-0".to_string(),
+            stable_rank_index: 0,
+            cooldown_until: None,
+            recent_billable_request_count: 3,
+            active_session_count: 1,
+            last_used_at: 10,
+        },
+    ];
+
+    TavilyProxy::order_mcp_session_init_candidates(&mut candidates);
+
+    assert_eq!(
+        candidates
+            .iter()
+            .map(|candidate| candidate.key_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["rank-0", "rank-1"]
+    );
+}
+
+#[tokio::test]
+async fn mcp_session_init_backoff_store_extends_without_shortening_and_gc_cleans_expired_rows() {
+    let db_path = temp_db_path("mcp-init-backoff-store");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-mcp-init-backoff-store".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let key_id: String = sqlx::query_scalar("SELECT id FROM api_keys LIMIT 1")
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("fetch key id");
+    let now = Utc::now().timestamp();
+
+    let first = proxy
+        .key_store
+        .arm_api_key_transient_backoff(ApiKeyTransientBackoffArm {
+            key_id: &key_id,
+            scope: MCP_SESSION_INIT_BACKOFF_SCOPE,
+            cooldown_until: now + 60,
+            retry_after_secs: 60,
+            reason_code: Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429),
+            source_request_log_id: None,
+            now,
+        })
+        .await
+        .expect("arm first cooldown");
+    assert_eq!(
+        first,
+        Some(ApiKeyTransientBackoffState {
+            cooldown_until: now + 60,
+            retry_after_secs: 60,
+        })
+    );
+
+    let shorter = proxy
+        .key_store
+        .arm_api_key_transient_backoff(ApiKeyTransientBackoffArm {
+            key_id: &key_id,
+            scope: MCP_SESSION_INIT_BACKOFF_SCOPE,
+            cooldown_until: now + 30,
+            retry_after_secs: 30,
+            reason_code: Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429),
+            source_request_log_id: None,
+            now: now + 1,
+        })
+        .await
+        .expect("arm shorter cooldown");
+    assert_eq!(shorter, None);
+
+    let longer = proxy
+        .key_store
+        .arm_api_key_transient_backoff(ApiKeyTransientBackoffArm {
+            key_id: &key_id,
+            scope: MCP_SESSION_INIT_BACKOFF_SCOPE,
+            cooldown_until: now + 120,
+            retry_after_secs: 120,
+            reason_code: Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429),
+            source_request_log_id: None,
+            now: now + 2,
+        })
+        .await
+        .expect("arm longer cooldown");
+    assert_eq!(
+        longer,
+        Some(ApiKeyTransientBackoffState {
+            cooldown_until: now + 120,
+            retry_after_secs: 120,
+        })
+    );
+
+    let active = proxy
+        .key_store
+        .list_active_api_key_transient_backoffs(
+            &[key_id.clone()],
+            MCP_SESSION_INIT_BACKOFF_SCOPE,
+            now + 3,
+        )
+        .await
+        .expect("list active cooldowns");
+    assert_eq!(
+        active.get(&key_id),
+        Some(&ApiKeyTransientBackoffState {
+            cooldown_until: now + 120,
+            retry_after_secs: 120,
+        })
+    );
+
+    let deleted = proxy
+        .key_store
+        .delete_expired_api_key_transient_backoffs(now + 121)
+        .await
+        .expect("gc cooldowns");
+    assert_eq!(deleted, 1);
+
+    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM api_key_transient_backoffs")
+        .fetch_one(&proxy.key_store.pool)
+        .await
+        .expect("count cooldown rows");
+    assert_eq!(remaining, 0);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn http_key_selection_ignores_mcp_session_init_backoff() {
+    let db_path = temp_db_path("http-selection-ignore-mcp-backoff");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec![
+            "tvly-http-selection-ignore-a".to_string(),
+            "tvly-http-selection-ignore-b".to_string(),
+        ],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let token = proxy
+        .create_access_token(Some("http-selection-ignore-mcp-backoff"))
+        .await
+        .expect("create token");
+    let key_ids = fetch_all_api_key_ids(&proxy.key_store.pool).await;
+    let primary_key_id = key_ids[0].clone();
+    let now = Utc::now().timestamp();
+
+    proxy
+        .key_store
+        .set_token_primary_api_key_affinity(&token.id, None, &primary_key_id)
+        .await
+        .expect("set token primary affinity");
+    proxy
+        .key_store
+        .arm_api_key_transient_backoff(ApiKeyTransientBackoffArm {
+            key_id: &primary_key_id,
+            scope: MCP_SESSION_INIT_BACKOFF_SCOPE,
+            cooldown_until: now + 120,
+            retry_after_secs: 120,
+            reason_code: Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429),
+            source_request_log_id: None,
+            now,
+        })
+        .await
+        .expect("arm mcp init backoff");
+
+    let lease = proxy
+        .acquire_key_for(Some(&token.id))
+        .await
+        .expect("acquire http key");
+    assert_eq!(lease.id, primary_key_id);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn mcp_session_init_uses_least_bad_key_even_when_every_pool_candidate_is_cooled() {
+    let db_path = temp_db_path("mcp-init-all-hot");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec![
+            "tvly-mcp-init-all-hot-a".to_string(),
+            "tvly-mcp-init-all-hot-b".to_string(),
+            "tvly-mcp-init-all-hot-c".to_string(),
+        ],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    proxy
+        .set_mcp_session_affinity_key_count(2)
+        .await
+        .expect("set affinity count");
+    let token = proxy
+        .create_access_token(Some("mcp-init-all-hot"))
+        .await
+        .expect("create token");
+
+    let key_ids = fetch_all_api_key_ids(&proxy.key_store.pool).await;
+    let ranked = rank_mcp_affinity_key_ids(&format!("token:{}", token.id), key_ids, 2);
+    let hotter_key_id = ranked[0].clone();
+    let less_hot_key_id = ranked[1].clone();
+    let now = Utc::now().timestamp();
+
+    proxy
+        .key_store
+        .arm_api_key_transient_backoff(ApiKeyTransientBackoffArm {
+            key_id: &hotter_key_id,
+            scope: MCP_SESSION_INIT_BACKOFF_SCOPE,
+            cooldown_until: now + 180,
+            retry_after_secs: 180,
+            reason_code: Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429),
+            source_request_log_id: None,
+            now,
+        })
+        .await
+        .expect("arm hotter cooldown");
+    proxy
+        .key_store
+        .arm_api_key_transient_backoff(ApiKeyTransientBackoffArm {
+            key_id: &less_hot_key_id,
+            scope: MCP_SESSION_INIT_BACKOFF_SCOPE,
+            cooldown_until: now + 90,
+            retry_after_secs: 90,
+            reason_code: Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429),
+            source_request_log_id: None,
+            now,
+        })
+        .await
+        .expect("arm less-hot cooldown");
+
+    let selection = proxy
+        .acquire_key_for_mcp_session_init(Some(&token.id))
+        .await
+        .expect("acquire mcp session init key");
+    assert_eq!(selection.lease.id, less_hot_key_id);
+    assert_eq!(
+        selection.key_effect.code,
+        KEY_EFFECT_MCP_SESSION_INIT_COOLDOWN_AVOIDED,
+    );
 
     let _ = std::fs::remove_file(db_path);
 }

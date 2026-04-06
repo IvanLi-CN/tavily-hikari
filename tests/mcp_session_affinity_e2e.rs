@@ -270,6 +270,164 @@ impl MockMcpUpstream {
 
         Self { addr, calls }
     }
+
+    async fn spawn_with_hot_key_rate_limit(
+        allowed_api_keys: Vec<String>,
+        hot_key: Arc<Mutex<Option<String>>>,
+        retry_after_secs: i64,
+    ) -> Self {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let session_seq = Arc::new(AtomicUsize::new(1));
+        let app = Router::new().route(
+            "/mcp",
+            any({
+                let calls = calls.clone();
+                let session_seq = session_seq.clone();
+                move |headers: HeaderMap,
+                      Query(params): Query<HashMap<String, String>>,
+                      Json(body): Json<Value>| {
+                    let calls = calls.clone();
+                    let session_seq = session_seq.clone();
+                    let allowed_api_keys = allowed_api_keys.clone();
+                    let hot_key = hot_key.clone();
+                    async move {
+                        let upstream_api_key = params
+                            .get("tavilyApiKey")
+                            .cloned()
+                            .expect("missing tavilyApiKey");
+                        assert!(
+                            allowed_api_keys.iter().any(|allowed| allowed == &upstream_api_key),
+                            "unexpected upstream key {upstream_api_key}"
+                        );
+
+                        let method = body
+                            .get("method")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        let upstream_session_id_header = headers
+                            .get("mcp-session-id")
+                            .and_then(|value| value.to_str().ok())
+                            .map(str::to_string);
+                        let issued_upstream_session_id = if method == "initialize" {
+                            Some(format!(
+                                "upstream-session-{}",
+                                session_seq.fetch_add(1, Ordering::SeqCst)
+                            ))
+                        } else {
+                            None
+                        };
+
+                        calls
+                            .lock()
+                            .expect("mock mcp calls lock poisoned")
+                            .push(MockMcpCall {
+                                method: method.clone(),
+                                upstream_api_key: upstream_api_key.clone(),
+                                upstream_session_id_header: upstream_session_id_header.clone(),
+                                issued_upstream_session_id: issued_upstream_session_id.clone(),
+                            });
+
+                        match method.as_str() {
+                            "initialize" => Response::builder()
+                                .status(StatusCode::OK)
+                                .header("content-type", "application/json")
+                                .header(
+                                    "mcp-session-id",
+                                    issued_upstream_session_id
+                                        .as_deref()
+                                        .expect("initialize must issue session id"),
+                                )
+                                .body(Body::from(
+                                    json!({
+                                        "jsonrpc": "2.0",
+                                        "id": body.get("id").cloned().unwrap_or_else(|| json!(1)),
+                                        "result": {
+                                            "protocolVersion": "2025-03-26",
+                                            "serverInfo": { "name": "mock-mcp", "version": "1.0.0" },
+                                            "capabilities": {}
+                                        }
+                                    })
+                                    .to_string(),
+                                ))
+                                .expect("build initialize response"),
+                            "notifications/initialized" => Response::builder()
+                                .status(StatusCode::ACCEPTED)
+                                .body(Body::empty())
+                                .expect("build initialized response"),
+                            "tools/list"
+                                if hot_key
+                                    .lock()
+                                    .expect("hot key lock poisoned")
+                                    .as_deref()
+                                    == Some(upstream_api_key.as_str()) =>
+                            {
+                                Response::builder()
+                                .status(StatusCode::TOO_MANY_REQUESTS)
+                                .header("content-type", "application/json")
+                                .header("retry-after", retry_after_secs.to_string())
+                                .body(Body::from(
+                                    json!({
+                                        "jsonrpc": "2.0",
+                                        "id": body.get("id").cloned().unwrap_or_else(|| json!(1)),
+                                        "error": {
+                                            "code": 429,
+                                            "message": "Your request has been blocked due to excessive requests."
+                                        }
+                                    })
+                                    .to_string(),
+                                ))
+                                .expect("build rate-limited response")
+                            }
+                            "tools/list" => Response::builder()
+                                .status(StatusCode::OK)
+                                .header("content-type", "application/json")
+                                .body(Body::from(
+                                    json!({
+                                        "jsonrpc": "2.0",
+                                        "id": body.get("id").cloned().unwrap_or_else(|| json!(1)),
+                                        "result": {
+                                            "tools": [
+                                                { "name": "tavily_search", "description": "mock tool" }
+                                            ]
+                                        }
+                                    })
+                                    .to_string(),
+                                ))
+                                .expect("build tools/list response"),
+                            other => Response::builder()
+                                .status(StatusCode::OK)
+                                .header("content-type", "application/json")
+                                .body(Body::from(
+                                    json!({
+                                        "jsonrpc": "2.0",
+                                        "id": body.get("id").cloned().unwrap_or_else(|| json!(1)),
+                                        "result": {
+                                            "echoMethod": other,
+                                            "status": 200
+                                        }
+                                    })
+                                    .to_string(),
+                                ))
+                                .expect("build generic response"),
+                        }
+                    }
+                }
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock mcp upstream");
+        let addr = listener.local_addr().expect("mock mcp upstream addr");
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .expect("serve mock mcp upstream");
+        });
+
+        Self { addr, calls }
+    }
 }
 
 async fn create_test_token(base_url: &str) -> String {
@@ -399,6 +557,20 @@ async fn notify_initialized(base_url: &str, token: &str, session: &McpSessionIni
 }
 
 async fn list_tools(base_url: &str, token: &str, session: &McpSessionInit) -> Value {
+    list_tools_raw(base_url, token, session)
+        .await
+        .error_for_status()
+        .expect("tools/list status")
+        .json::<Value>()
+        .await
+        .expect("decode tools/list payload")
+}
+
+async fn list_tools_raw(
+    base_url: &str,
+    token: &str,
+    session: &McpSessionInit,
+) -> reqwest::Response {
     Client::new()
         .post(format!("{base_url}/mcp?tavilyApiKey={token}"))
         .header("accept", "application/json, text/event-stream")
@@ -413,11 +585,6 @@ async fn list_tools(base_url: &str, token: &str, session: &McpSessionInit) -> Va
         .send()
         .await
         .expect("tools/list request")
-        .error_for_status()
-        .expect("tools/list status")
-        .json::<Value>()
-        .await
-        .expect("decode tools/list payload")
 }
 
 #[derive(Debug, Clone)]
@@ -882,5 +1049,155 @@ async fn mcp_session_affinity_prefers_user_subject_over_individual_token_subject
             .iter()
             .any(|secret| !token2_top2_secrets.contains(secret)),
         "token2 sessions should prove the scheduler is using the user subject, not token:{token2_id}"
+    );
+}
+
+#[tokio::test]
+async fn mcp_session_init_avoids_rate_limited_key_for_new_sessions_without_moving_existing_session()
+{
+    let upstream_keys = vec![
+        "tvly-e2e-429-a".to_string(),
+        "tvly-e2e-429-b".to_string(),
+        "tvly-e2e-429-c".to_string(),
+    ];
+    let db_path = temp_db_path("mcp-session-init-backoff-e2e");
+    let port = reserve_local_port();
+    let hot_key = Arc::new(Mutex::new(None));
+    let upstream =
+        MockMcpUpstream::spawn_with_hot_key_rate_limit(upstream_keys.clone(), hot_key.clone(), 120)
+            .await;
+    let upstream_url = format!("http://{}/mcp", upstream.addr);
+    let usage_base = format!("http://{}", upstream.addr);
+    let _backend =
+        spawn_backend_process(&upstream_keys, &upstream_url, &usage_base, port, &db_path);
+    wait_for_health(port).await;
+
+    let key_records = fetch_api_key_records(&db_path).await;
+    let base_url = format!("http://127.0.0.1:{port}");
+    let token = create_test_token(&base_url).await;
+    let updated = put_affinity_count(&base_url, 2).await;
+    assert_eq!(updated["mcpSessionAffinityKeyCount"].as_i64(), Some(2));
+
+    let expected_top2_ids = rank_top_key_ids(
+        &format!("token:{}", token_id_from_secret(&token)),
+        &key_records,
+        2,
+    );
+    let hot_key_id = expected_top2_ids[0].clone();
+    let cool_key_id = expected_top2_ids[1].clone();
+    let hot_key_secret = secret_for_key_id(&key_records, &hot_key_id);
+    let cool_key_secret = secret_for_key_id(&key_records, &cool_key_id);
+    *hot_key.lock().expect("set hot key lock poisoned") = Some(hot_key_secret.clone());
+
+    let session_hot = initialize_mcp_session(&base_url, &token, "hot").await;
+    notify_initialized(&base_url, &token, &session_hot).await;
+    let hot_row = fetch_mcp_session_record(&db_path, &session_hot.proxy_session_id).await;
+    assert_eq!(hot_row.upstream_key_id, hot_key_id);
+
+    let first_rate_limited = list_tools_raw(&base_url, &token, &session_hot).await;
+    let first_status = first_rate_limited.status();
+    let first_body = first_rate_limited
+        .text()
+        .await
+        .expect("read first 429 body");
+    assert_eq!(first_status, reqwest::StatusCode::TOO_MANY_REQUESTS);
+    assert!(
+        first_body.contains("excessive requests"),
+        "expected upstream 429 body, got {first_body}"
+    );
+
+    let pool = connect_sqlite_test_pool(&db_path).await;
+    let (request_key_effect, request_failure_kind): (String, String) = sqlx::query_as(
+        r#"
+        SELECT key_effect_code, failure_kind
+        FROM request_logs
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("fetch 429 request log");
+    assert_eq!(request_failure_kind, "upstream_rate_limited_429");
+    assert_eq!(request_key_effect, "mcp_session_init_backoff_set");
+
+    let (cooldown_until, retry_after_secs): (i64, i64) = sqlx::query_as(
+        r#"
+        SELECT cooldown_until, retry_after_secs
+        FROM api_key_transient_backoffs
+        WHERE key_id = ? AND scope = 'mcp_session_init'
+        LIMIT 1
+        "#,
+    )
+    .bind(&hot_key_id)
+    .fetch_one(&pool)
+    .await
+    .expect("fetch hot key cooldown row");
+    assert!(cooldown_until > Utc::now().timestamp());
+    assert_eq!(retry_after_secs, 120);
+
+    let session_cool = initialize_mcp_session(&base_url, &token, "cool").await;
+
+    let (initialize_api_key_id, initialize_key_effect): (String, String) = sqlx::query_as(
+        r#"
+        SELECT api_key_id, key_effect_code
+        FROM request_logs
+        WHERE request_kind_key = 'mcp:initialize'
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("fetch initialize log");
+    assert_eq!(initialize_api_key_id, cool_key_id);
+    assert_eq!(initialize_key_effect, "mcp_session_init_cooldown_avoided");
+
+    notify_initialized(&base_url, &token, &session_cool).await;
+    let cool_row = fetch_mcp_session_record(&db_path, &session_cool.proxy_session_id).await;
+    assert_eq!(cool_row.upstream_key_id, cool_key_id);
+
+    let cool_tools = list_tools(&base_url, &token, &session_cool).await;
+    assert_eq!(
+        cool_tools["result"]["tools"].as_array().map(Vec::len),
+        Some(1),
+        "cool session should succeed on the alternate key"
+    );
+
+    let second_rate_limited = list_tools_raw(&base_url, &token, &session_hot).await;
+    assert_eq!(
+        second_rate_limited.status(),
+        reqwest::StatusCode::TOO_MANY_REQUESTS
+    );
+
+    let recorded = upstream
+        .calls
+        .lock()
+        .expect("mock calls lock poisoned")
+        .clone();
+    let hot_session_calls = recorded
+        .iter()
+        .filter(|call| {
+            call.upstream_session_id_header.as_deref() == Some(hot_row.upstream_session_id.as_str())
+                && call.method == "tools/list"
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        hot_session_calls.len(),
+        2,
+        "existing hot session should keep using the same upstream session"
+    );
+    assert!(
+        hot_session_calls
+            .iter()
+            .all(|call| call.upstream_api_key == hot_key_secret),
+        "existing hot session must stay pinned to the original upstream key"
+    );
+    assert!(
+        recorded.iter().any(|call| {
+            call.method == "initialize" && call.upstream_api_key == cool_key_secret
+        }),
+        "new initialize should switch to the cooled pool peer"
     );
 }

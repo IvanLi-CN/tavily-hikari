@@ -29,3 +29,4 @@ futures-util = "0.3"
 rust-mcp-schema = "0.7.5"
 argon2 = { version = "0.5", features = ["std"] }
 libc = "0.2"
+httpdate = "1"

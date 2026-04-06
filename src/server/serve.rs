@@ -285,6 +285,7 @@ pub async fn serve(
     spawn_token_usage_rollup_scheduler(state.clone());
     spawn_auth_token_logs_gc_scheduler(state.clone());
     spawn_mcp_sessions_gc_scheduler(state.clone());
+    spawn_mcp_session_init_backoffs_gc_scheduler(state.clone());
     spawn_request_logs_gc_scheduler(state.clone());
     let _forward_proxy_geo_refresh_scheduler = spawn_forward_proxy_geo_refresh_scheduler(state.clone());
     spawn_forward_proxy_maintenance_scheduler(state.clone());

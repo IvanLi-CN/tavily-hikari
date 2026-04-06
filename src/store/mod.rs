@@ -139,6 +139,23 @@ struct QuotaChargeAccumulator {
     latest_sync_at: Option<i64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ApiKeyTransientBackoffState {
+    pub(crate) cooldown_until: i64,
+    pub(crate) retry_after_secs: i64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ApiKeyTransientBackoffArm<'a> {
+    pub(crate) key_id: &'a str,
+    pub(crate) scope: &'a str,
+    pub(crate) cooldown_until: i64,
+    pub(crate) retry_after_secs: i64,
+    pub(crate) reason_code: Option<&'a str>,
+    pub(crate) source_request_log_id: Option<i64>,
+    pub(crate) now: i64,
+}
+
 const REQUEST_LOGS_REBUILT_SCHEMA_SQL: &str = r#"
 CREATE TABLE request_logs_new (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1164,6 +1181,8 @@ impl KeyStore {
         )
         .execute(&self.pool)
         .await?;
+
+        self.ensure_api_key_transient_backoffs_schema().await?;
 
         // API key usage rollups (for statistics that must not depend on request_logs retention).
         sqlx::query(
@@ -6237,6 +6256,43 @@ impl KeyStore {
         Ok(())
     }
 
+    async fn ensure_api_key_transient_backoffs_schema(&self) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS api_key_transient_backoffs (
+                key_id TEXT NOT NULL,
+                scope TEXT NOT NULL,
+                cooldown_until INTEGER NOT NULL,
+                retry_after_secs INTEGER NOT NULL,
+                reason_code TEXT,
+                source_request_log_id INTEGER,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (key_id, scope),
+                FOREIGN KEY (key_id) REFERENCES api_keys(id),
+                FOREIGN KEY (source_request_log_id) REFERENCES request_logs(id)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_api_key_transient_backoffs_scope_cooldown
+               ON api_key_transient_backoffs(scope, cooldown_until)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_api_key_transient_backoffs_key_scope
+               ON api_key_transient_backoffs(key_id, scope)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
     pub(crate) async fn get_research_request_affinity(
         &self,
         request_id: &str,
@@ -7878,6 +7934,238 @@ impl KeyStore {
             .await
     }
 
+    pub(crate) async fn list_active_api_key_transient_backoffs(
+        &self,
+        key_ids: &[String],
+        scope: &str,
+        now: i64,
+    ) -> Result<HashMap<String, ApiKeyTransientBackoffState>, ProxyError> {
+        if key_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut builder = QueryBuilder::<Sqlite>::new(
+            "SELECT key_id, cooldown_until, retry_after_secs FROM api_key_transient_backoffs \
+             WHERE scope = ",
+        );
+        builder.push_bind(scope);
+        builder.push(" AND cooldown_until > ");
+        builder.push_bind(now);
+        builder.push(" AND key_id IN (");
+        {
+            let mut separated = builder.separated(", ");
+            for key_id in key_ids {
+                separated.push_bind(key_id);
+            }
+        }
+        builder.push(")");
+
+        let rows = builder
+            .build_query_as::<(String, i64, i64)>()
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(key_id, cooldown_until, retry_after_secs)| {
+                (
+                    key_id,
+                    ApiKeyTransientBackoffState {
+                        cooldown_until,
+                        retry_after_secs,
+                    },
+                )
+            })
+            .collect())
+    }
+
+    pub(crate) async fn arm_api_key_transient_backoff(
+        &self,
+        arm: ApiKeyTransientBackoffArm<'_>,
+    ) -> Result<Option<ApiKeyTransientBackoffState>, ProxyError> {
+        let previous_cooldown = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT cooldown_until
+            FROM api_key_transient_backoffs
+            WHERE key_id = ? AND scope = ?
+            LIMIT 1
+            "#,
+        )
+        .bind(arm.key_id)
+        .bind(arm.scope)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO api_key_transient_backoffs (
+                key_id,
+                scope,
+                cooldown_until,
+                retry_after_secs,
+                reason_code,
+                source_request_log_id,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(key_id, scope) DO UPDATE SET
+                cooldown_until = MAX(api_key_transient_backoffs.cooldown_until, excluded.cooldown_until),
+                retry_after_secs = CASE
+                    WHEN excluded.cooldown_until >= api_key_transient_backoffs.cooldown_until
+                        THEN excluded.retry_after_secs
+                    ELSE api_key_transient_backoffs.retry_after_secs
+                END,
+                reason_code = COALESCE(excluded.reason_code, api_key_transient_backoffs.reason_code),
+                source_request_log_id = COALESCE(
+                    excluded.source_request_log_id,
+                    api_key_transient_backoffs.source_request_log_id
+                ),
+                updated_at = CASE
+                    WHEN excluded.cooldown_until >= api_key_transient_backoffs.cooldown_until
+                        THEN excluded.updated_at
+                    ELSE api_key_transient_backoffs.updated_at
+                END
+            "#,
+        )
+        .bind(arm.key_id)
+        .bind(arm.scope)
+        .bind(arm.cooldown_until)
+        .bind(arm.retry_after_secs)
+        .bind(arm.reason_code)
+        .bind(arm.source_request_log_id)
+        .bind(arm.now)
+        .bind(arm.now)
+        .execute(&self.pool)
+        .await?;
+
+        let current = sqlx::query_as::<_, (i64, i64)>(
+            r#"
+            SELECT cooldown_until, retry_after_secs
+            FROM api_key_transient_backoffs
+            WHERE key_id = ? AND scope = ?
+            LIMIT 1
+            "#,
+        )
+        .bind(arm.key_id)
+        .bind(arm.scope)
+        .fetch_one(&self.pool)
+        .await?;
+
+        if previous_cooldown.is_some_and(|previous| previous >= current.0) {
+            return Ok(None);
+        }
+
+        Ok(Some(ApiKeyTransientBackoffState {
+            cooldown_until: current.0,
+            retry_after_secs: current.1,
+        }))
+    }
+
+    pub(crate) async fn set_api_key_transient_backoff_request_log_id(
+        &self,
+        key_id: &str,
+        scope: &str,
+        request_log_id: i64,
+        now: i64,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            UPDATE api_key_transient_backoffs
+            SET source_request_log_id = ?, updated_at = ?
+            WHERE key_id = ? AND scope = ?
+            "#,
+        )
+        .bind(request_log_id)
+        .bind(now)
+        .bind(key_id)
+        .bind(scope)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn list_recent_billable_request_counts_for_keys(
+        &self,
+        key_ids: &[String],
+        since: i64,
+    ) -> Result<HashMap<String, i64>, ProxyError> {
+        if key_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let stored_request_kind_sql = "request_kind_key";
+        let legacy_request_kind_predicate_sql =
+            legacy_request_kind_stored_predicate_sql(stored_request_kind_sql);
+        let legacy_request_kind_sql =
+            request_log_request_kind_key_sql("path", "request_body", "request_kind_key");
+        let effective_request_kind_sql = format!(
+            "CASE WHEN {legacy_request_kind_predicate_sql} THEN {legacy_request_kind_sql} ELSE {stored_request_kind_sql} END"
+        );
+        let stored_counts_business_quota_sql =
+            request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body");
+        let legacy_counts_business_quota_sql =
+            request_log_counts_business_quota_sql(&legacy_request_kind_sql, "request_body");
+        let effective_counts_business_quota_sql = format!(
+            "CASE WHEN {legacy_request_kind_predicate_sql} THEN {legacy_counts_business_quota_sql} ELSE {stored_counts_business_quota_sql} END"
+        );
+        let effective_non_billable_mcp_sql =
+            token_request_kind_non_billable_mcp_sql(&effective_request_kind_sql);
+
+        let mut builder = QueryBuilder::<Sqlite>::new(
+            "
+            SELECT api_key_id, COUNT(*) AS request_count
+            FROM request_logs
+            WHERE created_at >= "
+                .to_string(),
+        );
+        builder.push_bind(since);
+        builder.push(" AND api_key_id IN (");
+        {
+            let mut separated = builder.separated(", ");
+            for key_id in key_ids {
+                separated.push_bind(key_id);
+            }
+        }
+        builder.push(")");
+        builder.push(format!(
+            " AND (({effective_request_kind_sql}) LIKE 'api:%' \
+                OR (({effective_request_kind_sql}) LIKE 'mcp:%' AND NOT {effective_non_billable_mcp_sql}))"
+        ));
+        builder.push(format!(" AND ({effective_counts_business_quota_sql}) = 1"));
+        builder.push(" GROUP BY api_key_id");
+
+        let rows = builder
+            .build_query_as::<(String, i64)>()
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().collect())
+    }
+
+    pub(crate) async fn list_api_key_last_used_at(
+        &self,
+        key_ids: &[String],
+    ) -> Result<HashMap<String, i64>, ProxyError> {
+        if key_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut builder =
+            QueryBuilder::<Sqlite>::new("SELECT id, last_used_at FROM api_keys WHERE id IN (");
+        {
+            let mut separated = builder.separated(", ");
+            for key_id in key_ids {
+                separated.push_bind(key_id);
+            }
+        }
+        builder.push(")");
+
+        let rows = builder
+            .build_query_as::<(String, i64)>()
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().collect())
+    }
+
     pub(crate) async fn delete_stale_mcp_sessions(
         &self,
         now: i64,
@@ -7892,6 +8180,22 @@ impl KeyStore {
         )
         .bind(now)
         .bind(revoked_retention_threshold)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() as i64)
+    }
+
+    pub(crate) async fn delete_expired_api_key_transient_backoffs(
+        &self,
+        now: i64,
+    ) -> Result<i64, ProxyError> {
+        let result = sqlx::query(
+            r#"
+            DELETE FROM api_key_transient_backoffs
+            WHERE cooldown_until <= ?
+            "#,
+        )
+        .bind(now)
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected() as i64)

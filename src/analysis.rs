@@ -1734,7 +1734,7 @@ pub fn operational_class_for_request_log(
     )
 }
 
-fn token_request_kind_non_billable_mcp_sql(expr: &str) -> String {
+pub(crate) fn token_request_kind_non_billable_mcp_sql(expr: &str) -> String {
     let normalized = format!("LOWER(TRIM(COALESCE({expr}, '')))");
     format!(
         "({normalized} IN ('mcp:initialize', 'mcp:ping', 'mcp:tools/list', 'mcp:session-delete-unsupported', 'mcp:unsupported-path', 'mcp:unknown-payload', 'mcp:unknown-method', 'mcp:third-party-tool') OR {normalized} LIKE 'mcp:resources/%' OR {normalized} LIKE 'mcp:prompts/%' OR {normalized} LIKE 'mcp:notifications/%')"
