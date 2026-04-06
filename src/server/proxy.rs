@@ -1558,20 +1558,8 @@ impl RequestLogView {
     }
 
     fn from_request_record(record: RequestLogRecord, include_bodies: bool) -> Self {
-        let request_kind_protocol_group =
-            token_request_kind_protocol_group(&record.request_kind_key).to_string();
-        let operational_class = operational_class_for_request_log(
-            &record.request_kind_key,
-            Some(&record.request_body),
-            &record.result_status,
-            record.failure_kind.as_deref(),
-        );
         let result_status =
             display_result_status_for_request_kind(&record.request_kind_key, &record.result_status);
-        let request_kind_billing_group = token_request_kind_billing_group_for_request_log(
-            &record.request_kind_key,
-            Some(&record.request_body),
-        );
         Self {
             id: record.id,
             key_id: record.key_id,
@@ -1599,9 +1587,9 @@ impl RequestLogView {
                 .flatten(),
             forwarded_headers: record.forwarded_headers,
             dropped_headers: record.dropped_headers,
-            operational_class: operational_class.to_string(),
-            request_kind_protocol_group,
-            request_kind_billing_group: request_kind_billing_group.to_string(),
+            operational_class: record.operational_class,
+            request_kind_protocol_group: record.request_kind_protocol_group,
+            request_kind_billing_group: record.request_kind_billing_group,
         }
     }
 

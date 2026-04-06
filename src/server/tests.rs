@@ -7894,10 +7894,13 @@ colo=LAX
                 request_kind_key: "mcp:session-delete-unsupported".to_string(),
                 request_kind_label: "MCP | session delete unsupported".to_string(),
                 request_kind_detail: None,
+                request_kind_protocol_group: "mcp".to_string(),
+                request_kind_billing_group: "non_billable".to_string(),
                 result_status: "error".to_string(),
                 failure_kind: Some("mcp_method_405".to_string()),
                 key_effect_code: "none".to_string(),
                 key_effect_summary: Some("No automatic status change".to_string()),
+                operational_class: "neutral".to_string(),
                 request_body: Vec::new(),
                 response_body: br#"{"jsonrpc":"2.0","id":"server-error","error":{"code":-32600,"message":"Method Not Allowed: Session termination not supported"}}"#.to_vec(),
                 created_at: 1_700_000_003,
@@ -9846,6 +9849,28 @@ colo=LAX
         .execute(&pool)
         .await
         .expect("insert request logs");
+
+        let proxy_page = proxy
+            .request_logs_list(
+                &[],
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                RequestLogsCursorDirection::Older,
+                20,
+            )
+            .await
+            .expect("proxy cursor logs");
+        assert!(
+            proxy_page
+                .items
+                .iter()
+                .all(|item| item.request_body.is_empty() && item.response_body.is_empty()),
+            "cursor list records should not carry request/response blobs"
+        );
 
         let admin_password = "admin-logs-cursor-catalog-password";
         let admin_addr = spawn_builtin_keys_admin_server(proxy, admin_password).await;

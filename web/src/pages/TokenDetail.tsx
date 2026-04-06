@@ -735,6 +735,33 @@ export default function TokenDetail({
     },
     [],
   )
+  const refreshLogsCatalog = useCallback(
+    (opts?: { preserveOnError?: boolean }) => {
+      requestKindOptionsAbortRef.current?.abort()
+      const controller = new AbortController()
+      requestKindOptionsAbortRef.current = controller
+      const catalogPlan = buildRequestLogsCatalogPlan({
+        sinceIso,
+        untilIso,
+      })
+      fetchTokenLogsCatalog(id, catalogPlan.query, controller.signal)
+        .then((catalog) => {
+          if (controller.signal.aborted) return
+          setLogsCatalog(catalog)
+          setRequestKindOptions(catalog.requestKindOptions)
+          setLogFacets(catalog.facets)
+        })
+        .catch((e) => {
+          if ((e as Error).name === 'AbortError' || controller.signal.aborted) return
+          if (opts?.preserveOnError) return
+          setLogsCatalog(null)
+          setRequestKindOptions([])
+          setLogFacets(emptyRequestLogFacets)
+        })
+      return controller
+    },
+    [id, sinceIso, untilIso],
+  )
   const loadTokenLogBodies = useCallback(
     (log: RequestLog, signal: AbortSignal) => fetchTokenLogDetails(id, log.id, signal),
     [id],
@@ -910,34 +937,9 @@ export default function TokenDetail({
   }, [loadLogsPage, logsCursor, logsDirection, logsListQueryKey, logsQueryBaseKey])
 
   useEffect(() => {
-    requestKindOptionsAbortRef.current?.abort()
-    const controller = new AbortController()
-    requestKindOptionsAbortRef.current = controller
-    const catalogPlan = buildRequestLogsCatalogPlan({
-      sinceIso,
-      untilIso,
-    })
-    const run = async () => {
-      try {
-        const catalog = await fetchTokenLogsCatalog(id, catalogPlan.query, controller.signal)
-        if (controller.signal.aborted) return
-        setLogsCatalog(catalog)
-        setRequestKindOptions(catalog.requestKindOptions)
-        setLogFacets(catalog.facets)
-      } catch (e) {
-        if ((e as Error).name === 'AbortError') return
-        setLogsCatalog(null)
-        setRequestKindOptions([])
-        setLogFacets(emptyRequestLogFacets)
-      }
-    }
-    void run()
+    const controller = refreshLogsCatalog()
     return () => controller.abort()
-  }, [
-    id,
-    sinceIso,
-    untilIso,
-  ])
+  }, [refreshLogsCatalog])
 
   // SSE for live updates (refresh first page upon snapshot)
   useEffect(() => {
@@ -988,6 +990,7 @@ export default function TokenDetail({
         }
         void refreshDetail()
         void refreshLogs()
+        refreshLogsCatalog({ preserveOnError: true })
         void loadQuickStats()
         refreshQuickUsage()
         refreshSnapshotUsage()
@@ -1008,6 +1011,7 @@ export default function TokenDetail({
     period,
     refreshQuickUsage,
     refreshSnapshotUsage,
+    refreshLogsCatalog,
     sinceIso,
     untilIso,
   ])

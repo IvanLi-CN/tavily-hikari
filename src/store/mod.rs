@@ -14236,6 +14236,32 @@ impl KeyStore {
             stored_request_kind_label.clone(),
             stored_request_kind_detail.clone(),
         );
+        let result_status: String = row.try_get("result_status")?;
+        let failure_kind: Option<String> = row.try_get("failure_kind")?;
+        let request_kind_protocol_group =
+            match row.try_get::<Option<String>, _>("request_kind_protocol_group") {
+                Ok(Some(value)) => value,
+                _ => token_request_kind_protocol_group(&request_kind.key).to_string(),
+            };
+        let request_kind_billing_group =
+            match row.try_get::<Option<String>, _>("request_kind_billing_group") {
+                Ok(Some(value)) => value,
+                _ => token_request_kind_billing_group_for_request_log(
+                    &request_kind.key,
+                    request_body.as_deref(),
+                )
+                .to_string(),
+            };
+        let operational_class = match row.try_get::<Option<String>, _>("operational_class") {
+            Ok(Some(value)) => value,
+            _ => operational_class_for_request_log(
+                &request_kind.key,
+                request_body.as_deref(),
+                result_status.as_str(),
+                failure_kind.as_deref(),
+            )
+            .to_string(),
+        };
 
         Ok(RequestLogRecord {
             id: row.try_get("id")?,
@@ -14251,10 +14277,13 @@ impl KeyStore {
             request_kind_key: request_kind.key,
             request_kind_label: request_kind.label,
             request_kind_detail: request_kind.detail,
-            result_status: row.try_get("result_status")?,
-            failure_kind: row.try_get("failure_kind")?,
+            request_kind_protocol_group,
+            request_kind_billing_group,
+            result_status,
+            failure_kind,
             key_effect_code: row.try_get("key_effect_code")?,
             key_effect_summary: row.try_get("key_effect_summary")?,
+            operational_class,
             request_body: request_body.unwrap_or_default(),
             response_body: response_body.unwrap_or_default(),
             created_at: row.try_get("created_at")?,
@@ -14979,6 +15008,11 @@ impl KeyStore {
             legacy_request_kind_stored_predicate_sql(stored_request_kind_sql);
         let legacy_request_kind_sql =
             request_log_request_kind_key_sql("path", "request_body", "request_kind_key");
+        let effective_request_kind_sql = format!(
+            "CASE WHEN {legacy_request_kind_predicate_sql} THEN {legacy_request_kind_sql} ELSE {stored_request_kind_sql} END"
+        );
+        let effective_request_kind_label_sql =
+            canonical_request_kind_label_sql(&effective_request_kind_sql);
         let stored_counts_business_quota_sql =
             request_log_counts_business_quota_sql(stored_request_kind_sql, "request_body");
         let stored_operational_class_case_sql = request_log_operational_class_case_sql(
@@ -14999,8 +15033,35 @@ impl KeyStore {
             result_bucket_case_sql(&stored_operational_class_case_sql, "result_status");
         let legacy_result_bucket_sql =
             result_bucket_case_sql(&legacy_operational_class_case_sql, "result_status");
+        let effective_counts_business_quota_sql = format!(
+            "CASE WHEN {legacy_request_kind_predicate_sql} THEN {legacy_counts_business_quota_sql} ELSE {stored_counts_business_quota_sql} END"
+        );
+        let effective_non_billable_mcp_sql =
+            token_request_kind_non_billable_mcp_sql(&effective_request_kind_sql);
+        let effective_request_kind_protocol_group_sql = format!(
+            "CASE WHEN LOWER(TRIM(COALESCE({effective_request_kind_sql}, ''))) LIKE 'mcp:%' THEN 'mcp' ELSE 'api' END"
+        );
+        let effective_request_kind_billing_group_sql = format!(
+            "
+            CASE
+                WHEN LOWER(TRIM(COALESCE({effective_request_kind_sql}, ''))) IN (
+                    'api:research-result',
+                    'api:usage',
+                    'api:unknown-path'
+                ) THEN 'non_billable'
+                WHEN LOWER(TRIM(COALESCE({effective_request_kind_sql}, ''))) = 'mcp:batch'
+                    AND {effective_counts_business_quota_sql} = 0
+                    THEN 'non_billable'
+                WHEN {effective_non_billable_mcp_sql} THEN 'non_billable'
+                ELSE 'billable'
+            END
+            "
+        );
+        let effective_operational_class_sql = format!(
+            "CASE WHEN {legacy_request_kind_predicate_sql} THEN {legacy_operational_class_case_sql} ELSE {stored_operational_class_case_sql} END"
+        );
 
-        let mut items_query = QueryBuilder::<Sqlite>::new(
+        let mut items_query = QueryBuilder::<Sqlite>::new(format!(
             r#"
             SELECT
                 id,
@@ -15013,22 +15074,24 @@ impl KeyStore {
                 tavily_status_code,
                 error_message,
                 result_status,
-                request_kind_key,
-                request_kind_label,
+                {effective_request_kind_sql} AS request_kind_key,
+                {effective_request_kind_label_sql} AS request_kind_label,
                 request_kind_detail,
                 business_credits,
                 failure_kind,
                 key_effect_code,
                 key_effect_summary,
-                request_body,
+                NULL AS request_body,
                 NULL AS response_body,
                 forwarded_headers,
                 dropped_headers,
+                {effective_operational_class_sql} AS operational_class,
+                {effective_request_kind_protocol_group_sql} AS request_kind_protocol_group,
+                {effective_request_kind_billing_group_sql} AS request_kind_billing_group,
                 created_at
             FROM request_logs
             "#
-            .to_string(),
-        );
+        ));
         let has_where = Self::push_request_logs_scope(&mut items_query, scoped_key_id, since);
         Self::push_request_logs_filters(
             &mut items_query,
