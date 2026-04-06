@@ -870,7 +870,11 @@ export default function AdminRecentRequestsPanel({
                     {showTokenColumn ? (
                       <TableCell className="recent-requests-col recent-requests-col--token">
                         {tokenId ? (
-                          <button type="button" className="link-button log-token-link request-entity-button" onClick={() => onOpenToken?.(tokenId)}>
+                          <button
+                            type="button"
+                            className="link-button log-token-link recent-requests-entity-link request-entity-button"
+                            onClick={() => onOpenToken?.(tokenId)}
+                          >
                             <code>{tokenId}</code>
                           </button>
                         ) : (
@@ -883,7 +887,7 @@ export default function AdminRecentRequestsPanel({
                         {keyId ? (
                           <button
                             type="button"
-                            className="link-button log-token-link log-key-link request-entity-button"
+                            className="link-button log-token-link log-key-link recent-requests-entity-link request-entity-button"
                             onClick={() => onOpenKey?.(keyId)}
                           >
                             <code>{keyId}</code>
