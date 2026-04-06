@@ -6776,7 +6776,7 @@ impl TavilyProxy {
                     return Ok(cached.value.clone());
                 }
                 if cache.loading {
-                    Some(cache.notify.clone())
+                    Some(cache.notify.clone().notified_owned())
                 } else {
                     cache.loading = true;
                     None
@@ -6784,7 +6784,7 @@ impl TavilyProxy {
             };
 
             if let Some(waiter) = waiter {
-                waiter.notified().await;
+                waiter.await;
                 continue;
             }
 
