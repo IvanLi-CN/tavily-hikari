@@ -518,7 +518,7 @@ function extractErrorMessage(response: Response, fallbackBody?: string): Error &
   return err
 }
 
-function parseForwardProxySseChunk(chunk: string): ForwardProxyProgressEvent | null {
+function parseJsonSseChunk<T>(chunk: string): T | null {
   const trimmed = chunk.trim()
   if (!trimmed) return null
   const data = trimmed
@@ -527,7 +527,11 @@ function parseForwardProxySseChunk(chunk: string): ForwardProxyProgressEvent | n
     .map((line) => line.slice('data:'.length).trim())
     .join('\n')
   if (!data) return null
-  return JSON.parse(data) as ForwardProxyProgressEvent
+  return JSON.parse(data) as T
+}
+
+function parseForwardProxySseChunk(chunk: string): ForwardProxyProgressEvent | null {
+  return parseJsonSseChunk<ForwardProxyProgressEvent>(chunk)
 }
 
 async function requestForwardProxyProgress<T>(
@@ -697,6 +701,37 @@ export interface ApiKeyBulkActionResponse {
   results: ApiKeyBulkActionResult[]
 }
 
+export type ApiKeyBulkSyncProgressPhaseKey = 'prepare_request' | 'sync_usage' | 'refresh_ui'
+
+export type ApiKeyBulkSyncProgressEvent =
+  | {
+      type: 'phase'
+      phaseKey: Exclude<ApiKeyBulkSyncProgressPhaseKey, 'sync_usage'>
+      label: string
+      current?: number | null
+      total?: number | null
+      detail?: string | null
+    }
+  | {
+      type: 'item'
+      keyId: string
+      status: ApiKeyBulkActionResult['status']
+      current: number
+      total: number
+      summary: ApiKeyBulkActionSummary
+      detail?: string | null
+    }
+  | {
+      type: 'complete'
+      payload: ApiKeyBulkActionResponse
+    }
+  | {
+      type: 'error'
+      message: string
+      phaseKey?: ApiKeyBulkSyncProgressPhaseKey | null
+      detail?: string | null
+    }
+
 export function fetchApiKeys(
   page = 1,
   perPage = 20,
@@ -778,6 +813,100 @@ export async function applyApiKeyBulkAction(
     throw new Error((message ? `${message}` : 'Failed to apply bulk key action') + statusPart)
   }
   return (await res.json()) as ApiKeyBulkActionResponse
+}
+
+export async function syncApiKeyBulkUsageWithProgress(
+  keyIds: string[],
+  onEvent?: (event: ApiKeyBulkSyncProgressEvent) => void,
+): Promise<ApiKeyBulkActionResponse> {
+  const headers = new Headers({ 'Content-Type': 'application/json' })
+  headers.set('Accept', 'text/event-stream, application/json')
+
+  const response = await fetch('/api/keys/bulk-actions', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      action: 'sync_usage',
+      key_ids: keyIds,
+    }),
+  })
+
+  const contentType = response.headers.get('Content-Type') ?? ''
+  if (!response.ok && !contentType.includes('text/event-stream')) {
+    let message = ''
+    try {
+      const data = await response.json()
+      message = (data?.detail as string) ?? (data?.error as string) ?? ''
+    } catch {
+      message = await response.text().catch(() => '')
+    }
+    const statusPart = ` (HTTP ${response.status})`
+    throw new Error((message ? `${message}` : 'Failed to sync key usage') + statusPart)
+  }
+
+  if (!contentType.includes('text/event-stream')) {
+    const payload = (await response.json()) as ApiKeyBulkActionResponse
+    onEvent?.({ type: 'complete', payload })
+    return payload
+  }
+
+  if (!response.ok) {
+    const message = await response.text().catch(() => response.statusText)
+    throw extractErrorMessage(response, message)
+  }
+
+  const reader = response.body?.getReader()
+  if (!reader) {
+    throw new Error('Bulk sync progress stream body is unavailable')
+  }
+
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let completePayload: ApiKeyBulkActionResponse | null = null
+
+  while (true) {
+    const { done, value } = await reader.read()
+    buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done })
+
+    let boundaryIndex = buffer.search(/\r?\n\r?\n/)
+    while (boundaryIndex >= 0) {
+      const chunk = buffer.slice(0, boundaryIndex)
+      buffer = buffer.slice(boundaryIndex + (buffer[boundaryIndex] === '\r' ? 4 : 2))
+      const event = parseJsonSseChunk<ApiKeyBulkSyncProgressEvent>(chunk)
+      if (event) {
+        onEvent?.(event)
+        if (event.type === 'complete') {
+          completePayload = event.payload
+        }
+        if (event.type === 'error') {
+          throw new Error(event.detail || event.message || 'Bulk sync progress stream failed')
+        }
+      }
+      boundaryIndex = buffer.search(/\r?\n\r?\n/)
+    }
+
+    if (done) {
+      const trailingEvent = parseJsonSseChunk<ApiKeyBulkSyncProgressEvent>(buffer)
+      if (trailingEvent) {
+        onEvent?.(trailingEvent)
+        if (trailingEvent.type === 'complete') {
+          completePayload = trailingEvent.payload
+        }
+        if (trailingEvent.type === 'error') {
+          throw new Error(
+            trailingEvent.detail || trailingEvent.message || 'Bulk sync progress stream failed',
+          )
+        }
+      }
+      break
+    }
+  }
+
+  if (completePayload == null) {
+    throw new Error('Bulk sync progress stream ended before completion')
+  }
+
+  return completePayload
 }
 
 export interface JobLogView {

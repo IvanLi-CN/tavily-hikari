@@ -4976,6 +4976,135 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn api_keys_bulk_actions_sync_usage_streams_progress_events() {
+        let db_path = temp_db_path("keys-bulk-actions-sync-usage-sse");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let proxy = TavilyProxy::with_endpoint(
+            vec![
+                "tvly-ok-active".to_string(),
+                "tvly-ok-disabled".to_string(),
+                "tvly-unauth".to_string(),
+            ],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let rows = fetch_api_key_rows(&pool).await;
+        let ok_a_id = find_api_key_id(&rows, "tvly-ok-active");
+        let ok_b_id = find_api_key_id(&rows, "tvly-ok-disabled");
+        let failing_id = find_api_key_id(&rows, "tvly-unauth");
+
+        let usage_addr = spawn_usage_mock_server().await;
+        let usage_base = format!("http://{usage_addr}");
+        let forward_auth = ForwardAuthConfig::new(
+            Some(HeaderName::from_static("x-forward-user")),
+            Some("admin".to_string()),
+            None,
+            None,
+        );
+        let addr =
+            spawn_keys_admin_server_with_usage_base(proxy, forward_auth, false, usage_base).await;
+
+        let client = Client::new();
+        let response = client
+            .post(format!("http://{}/api/keys/bulk-actions", addr))
+            .header(reqwest::header::ACCEPT, "text/event-stream; charset=utf-8")
+            .header("x-forward-user", "admin")
+            .json(&serde_json::json!({
+                "action": "sync_usage",
+                "key_ids": [ok_a_id, ok_b_id, failing_id]
+            }))
+            .send()
+            .await
+            .expect("bulk sync sse request succeeds");
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            content_type.contains("text/event-stream"),
+            "expected event stream response, got {content_type}"
+        );
+
+        let body = response.text().await.expect("read sse body");
+        let normalized_body = body.replace("\r\n", "\n");
+        let events: Vec<serde_json::Value> = normalized_body
+            .split("\n\n")
+            .filter_map(|chunk| {
+                let data = chunk
+                    .lines()
+                    .filter_map(|line| line.strip_prefix("data:"))
+                    .map(str::trim)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if data.is_empty() {
+                    None
+                } else {
+                    Some(
+                        serde_json::from_str::<serde_json::Value>(&data)
+                            .expect("decode bulk sync sse event"),
+                    )
+                }
+            })
+            .collect();
+
+        assert!(
+            events.len() >= 5,
+            "expected prepare + 3 item events + completion, got: {events:?}"
+        );
+        assert_eq!(events[0]["type"].as_str(), Some("phase"));
+        assert_eq!(events[0]["phaseKey"].as_str(), Some("prepare_request"));
+        assert_eq!(events[0]["total"].as_u64(), Some(3));
+
+        let item_events: Vec<&serde_json::Value> = events
+            .iter()
+            .filter(|event| event["type"].as_str() == Some("item"))
+            .collect();
+        assert_eq!(item_events.len(), 3, "expected one item event per key");
+        assert_eq!(item_events[0]["current"].as_u64(), Some(1));
+        assert_eq!(item_events[2]["current"].as_u64(), Some(3));
+        assert_eq!(item_events[2]["summary"]["failed"].as_u64(), Some(1));
+
+        let refresh_event = events
+            .iter()
+            .find(|event| event["type"].as_str() == Some("phase") && event["phaseKey"].as_str() == Some("refresh_ui"))
+            .expect("refresh_ui phase event");
+        assert_eq!(refresh_event["current"].as_u64(), Some(3));
+
+        let complete = events
+            .iter()
+            .find(|event| event["type"].as_str() == Some("complete"))
+            .expect("complete event");
+        assert_eq!(
+            complete["payload"]["summary"]["requested"].as_u64(),
+            Some(3)
+        );
+        assert_eq!(
+            complete["payload"]["summary"]["succeeded"].as_u64(),
+            Some(2)
+        );
+        assert_eq!(
+            complete["payload"]["summary"]["failed"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            complete["payload"]["results"]
+                .as_array()
+                .map(|items| items.len()),
+            Some(3)
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn api_keys_validate_reports_ok_exhausted_and_duplicates() {
         let db_path = temp_db_path("keys-validate-ok-exhausted");
         let db_str = db_path.to_string_lossy().to_string();
