@@ -145,6 +145,24 @@ describe('admin user tag api helpers', () => {
               totalProxyNodes: 1,
             },
             forwardProxy: { availableNodes: 1, totalNodes: 1 },
+            hourlyRequestWindow: {
+              bucketSeconds: 3600,
+              visibleBuckets: 25,
+              retainedBuckets: 49,
+              buckets: Array.from({ length: 49 }, (_, index) => ({
+                bucketStart: 1_775_534_400 + index * 3600,
+                secondarySuccess: 0,
+                primarySuccess: index === 48 ? 1 : 0,
+                secondaryFailure: 0,
+                primaryFailure429: 0,
+                primaryFailureOther: 0,
+                unknown: 0,
+                mcpNonBillable: 0,
+                mcpBillable: 0,
+                apiNonBillable: 0,
+                apiBillable: index === 48 ? 1 : 0,
+              })),
+            },
             trend: { request: [1, 0, 0, 0, 0, 0, 0, 0], error: [0, 0, 0, 0, 0, 0, 0, 0] },
             exhaustedKeys: [],
             recentLogs: [],
@@ -163,6 +181,7 @@ describe('admin user tag api helpers', () => {
     expect((fetchMock.mock.calls[0] as [string])[0]).toBe('/api/dashboard/overview')
     expect(overview.siteStatus.activeKeys).toBe(1)
     expect(overview.trend.request).toHaveLength(8)
+    expect(overview.hourlyRequestWindow.buckets).toHaveLength(49)
     expect(overview.tokenCoverage).toBe('ok')
   })
 

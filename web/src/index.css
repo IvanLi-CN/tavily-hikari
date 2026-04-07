@@ -982,30 +982,124 @@ body.not-found-page-body,
   margin-top: 0;
 }
 
-.dashboard-trend-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
+:root {
+  --dashboard-chart-result-secondary-success: 153 62% 53%;
+  --dashboard-chart-result-primary-success: 160 84% 39%;
+  --dashboard-chart-result-secondary-failure: 39 94% 55%;
+  --dashboard-chart-result-primary-failure-429: 24 96% 53%;
+  --dashboard-chart-result-primary-failure-other: 0 84% 60%;
+  --dashboard-chart-result-unknown: 219 18% 62%;
+  --dashboard-chart-type-mcp-non-billable: 193 72% 58%;
+  --dashboard-chart-type-mcp-billable: 195 86% 48%;
+  --dashboard-chart-type-api-non-billable: 214 82% 67%;
+  --dashboard-chart-type-api-billable: 214 88% 56%;
+  --dashboard-chart-grid: 215 16% 78% / 0.18;
+  --dashboard-chart-zero-line: 215 16% 70% / 0.3;
+  --dashboard-chart-tick: 221 22% 38%;
 }
 
-.dashboard-trend-card {
-  border: 1px solid hsl(var(--border) / 0.7);
-  border-radius: 12px;
-  padding: 12px;
-  background: hsl(var(--card) / 0.82);
-  color: hsl(var(--primary));
+.dark {
+  --dashboard-chart-result-secondary-success: 156 72% 63%;
+  --dashboard-chart-result-primary-success: 160 84% 48%;
+  --dashboard-chart-result-secondary-failure: 42 100% 66%;
+  --dashboard-chart-result-primary-failure-429: 25 96% 62%;
+  --dashboard-chart-result-primary-failure-other: 358 92% 71%;
+  --dashboard-chart-result-unknown: 217 19% 68%;
+  --dashboard-chart-type-mcp-non-billable: 198 86% 72%;
+  --dashboard-chart-type-mcp-billable: 191 88% 62%;
+  --dashboard-chart-type-api-non-billable: 210 92% 78%;
+  --dashboard-chart-type-api-billable: 210 94% 68%;
+  --dashboard-chart-grid: 216 18% 46% / 0.18;
+  --dashboard-chart-zero-line: 216 18% 58% / 0.34;
+  --dashboard-chart-tick: 210 24% 84%;
 }
 
-.dashboard-trend-card header {
+.dashboard-trend-header {
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.dashboard-trend-meta {
+  margin-left: auto;
+  font-size: 0.82rem;
+  color: hsl(var(--muted-foreground));
+  white-space: nowrap;
+}
+
+.dashboard-trend-segmented {
+  margin-top: 2px;
+}
+
+.dashboard-chart-toolbar {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.dashboard-chart-toolbar-label {
+  padding-top: 8px;
+  font-size: 0.84rem;
   font-weight: 600;
-  margin-bottom: 8px;
+  color: hsl(var(--muted-foreground));
+  white-space: nowrap;
+}
+
+.dashboard-chart-series-list {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.dashboard-chart-series-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 999px;
+  border: 1px solid hsl(var(--border) / 0.78);
+  background: hsl(var(--card) / 0.84);
+  padding: 0.46rem 0.8rem;
+  font-size: 0.82rem;
+  color: hsl(var(--muted-foreground));
+  transition: border-color 160ms ease, background-color 160ms ease, color 160ms ease, transform 160ms ease;
+}
+
+.dashboard-chart-series-chip:hover {
+  border-color: hsl(var(--primary) / 0.28);
   color: hsl(var(--foreground));
 }
 
-.dashboard-sparkline {
-  width: 100%;
-  height: 70px;
-  color: hsl(var(--primary));
+.dashboard-chart-series-chip.is-active {
+  border-color: hsl(var(--primary) / 0.34);
+  background: hsl(var(--primary) / 0.1);
+  color: hsl(var(--foreground));
+}
+
+.dashboard-chart-series-chip:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+.dashboard-chart-series-chip-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+  box-shadow: 0 0 0 1px hsl(var(--background) / 0.44);
+}
+
+.dashboard-chart-shell {
+  margin-top: 14px;
+  border: 1px solid hsl(var(--border) / 0.72);
+  border-radius: 14px;
+  background: hsl(var(--card) / 0.82);
+  padding: 12px;
+}
+
+.dashboard-chart-canvas {
+  height: 380px;
 }
 
 .dashboard-risk-list {
@@ -1145,9 +1239,25 @@ body.not-found-page-body,
     backdrop-filter: blur(1.5px);
   }
 
-  .dashboard-trend-grid,
   .dashboard-actions-grid {
     grid-template-columns: 1fr;
+  }
+
+  .dashboard-trend-meta {
+    margin-left: 0;
+  }
+
+  .dashboard-chart-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .dashboard-chart-toolbar-label {
+    padding-top: 0;
+  }
+
+  .dashboard-chart-canvas {
+    height: 320px;
   }
 }
 

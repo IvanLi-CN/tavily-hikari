@@ -76,6 +76,7 @@ import {
   createDashboardMonthMetrics,
   createDashboardTodayMetrics,
 } from './dashboardTodayMetrics'
+import { buildDashboardHourlyRequestWindowFixture } from './dashboardHourlyCharts'
 import { ApiKeyBulkSyncProgressBubble } from './ApiKeyBulkSyncProgressBubble'
 import ForwardProxySettingsModule from './ForwardProxySettingsModule'
 import ModulePlaceholder from './ModulePlaceholder'
@@ -110,6 +111,21 @@ const ADMIN_USERS_DEFAULT_SORT_FIELD: AdminUsersSortField = 'lastLoginAt'
 const ADMIN_USERS_DEFAULT_SORT_ORDER: SortDirection = 'desc'
 const ADMIN_UNBOUND_TOKEN_USAGE_DEFAULT_SORT_FIELD: AdminUnboundTokenUsageSortField = 'lastUsedAt'
 const ADMIN_UNBOUND_TOKEN_USAGE_DEFAULT_SORT_ORDER: SortDirection = 'desc'
+
+const defaultDashboardHourlyRequestWindow = buildDashboardHourlyRequestWindowFixture({
+  mapBucket: ({ index, bucket }) => ({
+    secondarySuccess: (index % 4) + 1,
+    primarySuccess: bucket.primarySuccess + (index % 2),
+    secondaryFailure: index % 3,
+    primaryFailure429: index % 7 === 0 ? 2 : bucket.primaryFailure429,
+    primaryFailureOther: index % 5 === 0 ? 1 : bucket.primaryFailureOther,
+    unknown: index % 13 === 0 ? 1 : 0,
+    mcpNonBillable: index % 2,
+    mcpBillable: (index % 4) + 3,
+    apiNonBillable: index % 3,
+    apiBillable: (index % 5) + 4,
+  }),
+})
 
 function formatKeyGroupName(group: string | null | undefined, ungroupedLabel: string): string {
   const normalized = group?.trim() ?? ''
@@ -3008,10 +3024,7 @@ function DashboardPageCanvas(): JSX.Element {
         todayMetrics={todayMetrics}
         monthMetrics={monthMetrics}
         statusMetrics={statusMetrics}
-        trend={{
-          request: [86, 94, 101, 112, 97, 121, 133, 126],
-          error: [3, 5, 4, 8, 7, 6, 9, 5],
-        }}
+        hourlyRequestWindow={defaultDashboardHourlyRequestWindow}
         tokenCoverage="truncated"
         tokens={MOCK_TOKENS}
         keys={MOCK_KEYS}

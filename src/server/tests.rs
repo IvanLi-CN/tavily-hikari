@@ -9235,6 +9235,7 @@ colo=LAX
         assert!(body.get("siteStatus").is_some(), "site status should exist");
         assert!(body.get("forwardProxy").is_some(), "forward proxy should exist");
         assert!(body.get("trend").is_some(), "trend should exist");
+        assert!(body.get("hourlyRequestWindow").is_some(), "hourly request window should exist");
         assert!(body.get("exhaustedKeys").is_some(), "exhausted keys should exist");
         assert!(body.get("recentLogs").is_some(), "recent logs should exist");
         assert!(body.get("recentJobs").is_some(), "recent jobs should exist");
@@ -9252,6 +9253,16 @@ colo=LAX
             body.pointer("/exhaustedKeys/0/id")
                 .and_then(|value| value.as_str()),
             Some(key_id.as_str())
+        );
+        assert_eq!(
+            body.pointer("/hourlyRequestWindow/visibleBuckets")
+                .and_then(|value| value.as_i64()),
+            Some(25)
+        );
+        assert_eq!(
+            body.pointer("/hourlyRequestWindow/retainedBuckets")
+                .and_then(|value| value.as_i64()),
+            Some(49)
         );
         assert_eq!(
             body.pointer("/recentJobs/0/status")
@@ -9368,6 +9379,7 @@ colo=LAX
             "summary windows should still exist"
         );
         assert!(body.get("siteStatus").is_some(), "site status should still exist");
+        assert!(body.get("hourlyRequestWindow").is_some(), "hourly request window should still exist");
         assert_eq!(
             body.get("recentJobs")
                 .and_then(|value| value.as_array())
@@ -11442,6 +11454,7 @@ colo=LAX
             "forwardProxy should exist"
         );
         assert!(snapshot_json.get("trend").is_some(), "trend should exist");
+        assert!(snapshot_json.get("hourlyRequestWindow").is_some(), "hourly request window should exist");
         assert_eq!(
             snapshot_json
                 .pointer("/summaryWindows/month/new_keys")
@@ -11528,6 +11541,13 @@ colo=LAX
                 .and_then(|value| value.as_array())
                 .map(Vec::len),
             Some(8)
+        );
+        assert_eq!(
+            snapshot_json
+                .pointer("/hourlyRequestWindow/buckets")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(49)
         );
         let exhausted_key_count = snapshot_json
             .get("exhaustedKeys")

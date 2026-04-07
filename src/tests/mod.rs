@@ -6599,6 +6599,78 @@ async fn insert_summary_window_logs_with_visibility(
     }
 }
 
+#[derive(Clone)]
+struct DashboardHourlyLogSeed<'a> {
+    created_at: i64,
+    path: &'a str,
+    request_kind_key: &'a str,
+    request_kind_label: &'a str,
+    result_status: &'a str,
+    failure_kind: Option<&'a str>,
+    request_body: Option<&'a [u8]>,
+    visibility: &'a str,
+}
+
+async fn insert_dashboard_hourly_log(
+    proxy: &TavilyProxy,
+    key_id: &str,
+    seed: DashboardHourlyLogSeed<'_>,
+) {
+    let status_code = match seed.result_status {
+        OUTCOME_SUCCESS => 200,
+        OUTCOME_QUOTA_EXHAUSTED => 429,
+        _ => 500,
+    };
+    let tavily_status_code = if seed.failure_kind == Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429)
+        || seed.result_status == OUTCOME_QUOTA_EXHAUSTED
+    {
+        Some(429)
+    } else if seed.result_status == OUTCOME_SUCCESS {
+        Some(200)
+    } else {
+        Some(500)
+    };
+
+    sqlx::query(
+        r#"
+        INSERT INTO request_logs (
+            api_key_id,
+            auth_token_id,
+            method,
+            path,
+            query,
+            status_code,
+            tavily_status_code,
+            error_message,
+            result_status,
+            request_kind_key,
+            request_kind_label,
+            request_body,
+            response_body,
+            forwarded_headers,
+            dropped_headers,
+            visibility,
+            failure_kind,
+            created_at
+        ) VALUES (?, NULL, 'POST', ?, NULL, ?, ?, NULL, ?, ?, ?, ?, NULL, '[]', '[]', ?, ?, ?)
+        "#,
+    )
+    .bind(key_id)
+    .bind(seed.path)
+    .bind(status_code)
+    .bind(tavily_status_code)
+    .bind(seed.result_status)
+    .bind(seed.request_kind_key)
+    .bind(seed.request_kind_label)
+    .bind(seed.request_body)
+    .bind(seed.visibility)
+    .bind(seed.failure_kind)
+    .bind(seed.created_at)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert dashboard hourly log");
+}
+
 async fn insert_summary_window_charged_logs(
     proxy: &TavilyProxy,
     key_id: &str,
@@ -7634,6 +7706,287 @@ async fn summary_windows_return_zero_for_empty_yesterday_bucket() {
             ..SummaryWindowMetrics::default()
         }
     );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn dashboard_hourly_request_window_returns_49_complete_utc_hours_with_zero_fill() {
+    let db_path = temp_db_path("dashboard-hourly-request-window");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-dashboard-hourly-window".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let key_id = proxy
+        .list_api_key_metrics()
+        .await
+        .expect("list key metrics")
+        .into_iter()
+        .next()
+        .expect("seeded key")
+        .id;
+
+    let current_hour_start = Utc
+        .with_ymd_and_hms(2026, 4, 7, 12, 0, 0)
+        .single()
+        .expect("valid utc hour")
+        .timestamp();
+    let visible_bucket_start = current_hour_start - 3600;
+    let previous_day_same_hour_start = visible_bucket_start - 24 * 3600;
+
+    insert_dashboard_hourly_log(
+        &proxy,
+        &key_id,
+        DashboardHourlyLogSeed {
+            created_at: visible_bucket_start + 60,
+            path: "/mcp",
+            request_kind_key: "mcp:tools/list",
+            request_kind_label: "MCP | tools/list",
+            result_status: OUTCOME_SUCCESS,
+            failure_kind: None,
+            request_body: None,
+            visibility: REQUEST_LOG_VISIBILITY_VISIBLE,
+        },
+    )
+    .await;
+    insert_dashboard_hourly_log(
+        &proxy,
+        &key_id,
+        DashboardHourlyLogSeed {
+            created_at: visible_bucket_start + 120,
+            path: "/api/tavily/search",
+            request_kind_key: "api:search",
+            request_kind_label: "API | search",
+            result_status: OUTCOME_SUCCESS,
+            failure_kind: None,
+            request_body: None,
+            visibility: REQUEST_LOG_VISIBILITY_VISIBLE,
+        },
+    )
+    .await;
+    insert_dashboard_hourly_log(
+        &proxy,
+        &key_id,
+        DashboardHourlyLogSeed {
+            created_at: visible_bucket_start + 180,
+            path: "/mcp",
+            request_kind_key: "mcp:notifications/initialized",
+            request_kind_label: "MCP | notifications/initialized",
+            result_status: OUTCOME_ERROR,
+            failure_kind: None,
+            request_body: None,
+            visibility: REQUEST_LOG_VISIBILITY_VISIBLE,
+        },
+    )
+    .await;
+    insert_dashboard_hourly_log(
+        &proxy,
+        &key_id,
+        DashboardHourlyLogSeed {
+            created_at: visible_bucket_start + 240,
+            path: "/mcp",
+            request_kind_key: "mcp:search",
+            request_kind_label: "MCP | search",
+            result_status: OUTCOME_ERROR,
+            failure_kind: Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429),
+            request_body: None,
+            visibility: REQUEST_LOG_VISIBILITY_VISIBLE,
+        },
+    )
+    .await;
+    insert_dashboard_hourly_log(
+        &proxy,
+        &key_id,
+        DashboardHourlyLogSeed {
+            created_at: visible_bucket_start + 300,
+            path: "/api/tavily/extract",
+            request_kind_key: "api:extract",
+            request_kind_label: "API | extract",
+            result_status: OUTCOME_ERROR,
+            failure_kind: None,
+            request_body: None,
+            visibility: REQUEST_LOG_VISIBILITY_VISIBLE,
+        },
+    )
+    .await;
+    insert_dashboard_hourly_log(
+        &proxy,
+        &key_id,
+        DashboardHourlyLogSeed {
+            created_at: visible_bucket_start + 360,
+            path: "/api/tavily/usage",
+            request_kind_key: "api:usage",
+            request_kind_label: "API | usage",
+            result_status: OUTCOME_SUCCESS,
+            failure_kind: None,
+            request_body: None,
+            visibility: REQUEST_LOG_VISIBILITY_VISIBLE,
+        },
+    )
+    .await;
+    insert_dashboard_hourly_log(
+        &proxy,
+        &key_id,
+        DashboardHourlyLogSeed {
+            created_at: visible_bucket_start + 420,
+            path: "/api/tavily/unknown",
+            request_kind_key: "api:unknown-path",
+            request_kind_label: "API | unknown path",
+            result_status: OUTCOME_SUCCESS,
+            failure_kind: None,
+            request_body: None,
+            visibility: REQUEST_LOG_VISIBILITY_VISIBLE,
+        },
+    )
+    .await;
+    insert_dashboard_hourly_log(
+        &proxy,
+        &key_id,
+        DashboardHourlyLogSeed {
+            created_at: previous_day_same_hour_start + 60,
+            path: "/api/tavily/search",
+            request_kind_key: "api:search",
+            request_kind_label: "API | search",
+            result_status: OUTCOME_SUCCESS,
+            failure_kind: None,
+            request_body: None,
+            visibility: REQUEST_LOG_VISIBILITY_VISIBLE,
+        },
+    )
+    .await;
+    insert_dashboard_hourly_log(
+        &proxy,
+        &key_id,
+        DashboardHourlyLogSeed {
+            created_at: current_hour_start + 30,
+            path: "/api/tavily/search",
+            request_kind_key: "api:search",
+            request_kind_label: "API | search",
+            result_status: OUTCOME_SUCCESS,
+            failure_kind: None,
+            request_body: None,
+            visibility: REQUEST_LOG_VISIBILITY_VISIBLE,
+        },
+    )
+    .await;
+
+    let window = proxy
+        .dashboard_hourly_request_window_at(
+            Utc.timestamp_opt(current_hour_start + 600, 0)
+                .single()
+                .expect("window evaluation time"),
+        )
+        .await
+        .expect("hourly request window");
+
+    assert_eq!(window.bucket_seconds, 3600);
+    assert_eq!(window.visible_buckets, 25);
+    assert_eq!(window.retained_buckets, 49);
+    assert_eq!(window.buckets.len(), 49);
+    assert_eq!(
+        window.buckets.first().map(|bucket| bucket.bucket_start),
+        Some(current_hour_start - 49 * 3600)
+    );
+    assert_eq!(
+        window.buckets.last().map(|bucket| bucket.bucket_start),
+        Some(visible_bucket_start)
+    );
+
+    let zero_bucket = window
+        .buckets
+        .iter()
+        .find(|bucket| bucket.bucket_start == visible_bucket_start - 3600)
+        .expect("zero-filled bucket");
+    assert_eq!(zero_bucket.primary_success, 0);
+    assert_eq!(zero_bucket.api_billable, 0);
+
+    let latest_bucket = window
+        .buckets
+        .iter()
+        .find(|bucket| bucket.bucket_start == visible_bucket_start)
+        .expect("latest completed bucket");
+    assert_eq!(latest_bucket.secondary_success, 2);
+    assert_eq!(latest_bucket.primary_success, 1);
+    assert_eq!(latest_bucket.secondary_failure, 1);
+    assert_eq!(latest_bucket.primary_failure_429, 1);
+    assert_eq!(latest_bucket.primary_failure_other, 1);
+    assert_eq!(latest_bucket.unknown, 1);
+    assert_eq!(latest_bucket.mcp_non_billable, 2);
+    assert_eq!(latest_bucket.mcp_billable, 1);
+    assert_eq!(latest_bucket.api_non_billable, 2);
+    assert_eq!(latest_bucket.api_billable, 2);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn dashboard_hourly_request_window_classifies_non_billable_mcp_batch_from_body() {
+    let db_path = temp_db_path("dashboard-hourly-batch-classification");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-dashboard-hourly-batch".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let key_id = proxy
+        .list_api_key_metrics()
+        .await
+        .expect("list key metrics")
+        .into_iter()
+        .next()
+        .expect("seeded key")
+        .id;
+
+    let current_hour_start = Utc
+        .with_ymd_and_hms(2026, 4, 7, 12, 0, 0)
+        .single()
+        .expect("valid utc hour")
+        .timestamp();
+    let visible_bucket_start = current_hour_start - 3600;
+
+    insert_dashboard_hourly_log(
+        &proxy,
+        &key_id,
+        DashboardHourlyLogSeed {
+            created_at: visible_bucket_start + 60,
+            path: "/mcp",
+            request_kind_key: "mcp:batch",
+            request_kind_label: "MCP | batch",
+            result_status: OUTCOME_SUCCESS,
+            failure_kind: None,
+            request_body: Some(br#"[{"jsonrpc":"2.0","id":1,"method":"tools/list"}]"#),
+            visibility: REQUEST_LOG_VISIBILITY_VISIBLE,
+        },
+    )
+    .await;
+
+    let window = proxy
+        .dashboard_hourly_request_window_at(
+            Utc.timestamp_opt(current_hour_start + 120, 0)
+                .single()
+                .expect("window evaluation time"),
+        )
+        .await
+        .expect("hourly request window");
+
+    let latest_bucket = window
+        .buckets
+        .iter()
+        .find(|bucket| bucket.bucket_start == visible_bucket_start)
+        .expect("latest completed bucket");
+    assert_eq!(latest_bucket.secondary_success, 1);
+    assert_eq!(latest_bucket.mcp_non_billable, 1);
+    assert_eq!(latest_bucket.mcp_billable, 0);
 
     let _ = std::fs::remove_file(db_path);
 }

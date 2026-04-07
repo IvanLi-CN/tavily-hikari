@@ -242,6 +242,25 @@ interface AdminTranslationsShape {
     trendsDescription: string
     requestTrend: string
     errorTrend: string
+    chartModeResults: string
+    chartModeTypes: string
+    chartModeResultsDelta: string
+    chartModeTypesDelta: string
+    chartVisibleSeries: string
+    chartDeltaSeries: string
+    chartSelectionAll: string
+    chartEmpty: string
+    chartUtcWindow: string
+    chartResultSecondarySuccess: string
+    chartResultPrimarySuccess: string
+    chartResultSecondaryFailure: string
+    chartResultPrimaryFailure429: string
+    chartResultPrimaryFailureOther: string
+    chartResultUnknown: string
+    chartTypeMcpNonBillable: string
+    chartTypeMcpBillable: string
+    chartTypeApiNonBillable: string
+    chartTypeApiBillable: string
     riskTitle: string
     riskDescription: string
     riskEmpty: string
@@ -1584,9 +1603,28 @@ export const translations: Record<Language, TranslationShape> = {
         unknownTag: 'Unknown',
         upstreamExhaustedLabel: 'Upstream Keys Exhausted',
         trendsTitle: 'Traffic Trends',
-        trendsDescription: 'Recent request and error changes from latest logs.',
+        trendsDescription: 'Hourly request composition for the latest 25 completed UTC hours.',
         requestTrend: 'Request volume',
         errorTrend: 'Error volume',
+        chartModeResults: 'Results',
+        chartModeTypes: 'Types',
+        chartModeResultsDelta: 'Δ Results',
+        chartModeTypesDelta: 'Δ Types',
+        chartVisibleSeries: 'Visible series',
+        chartDeltaSeries: 'Compared series',
+        chartSelectionAll: 'All',
+        chartEmpty: 'No visible chart series for the current selection.',
+        chartUtcWindow: 'UTC · Last {count} full hours',
+        chartResultSecondarySuccess: 'Secondary success',
+        chartResultPrimarySuccess: 'Primary success',
+        chartResultSecondaryFailure: 'Secondary failure',
+        chartResultPrimaryFailure429: 'Primary failure · 429',
+        chartResultPrimaryFailureOther: 'Primary failure · other',
+        chartResultUnknown: 'Unknown',
+        chartTypeMcpNonBillable: 'MCP non-billable',
+        chartTypeMcpBillable: 'MCP billable',
+        chartTypeApiNonBillable: 'API non-billable',
+        chartTypeApiBillable: 'API billable',
         riskTitle: 'Risk Watchlist',
         riskDescription: 'Items that may require operator action soon.',
         riskEmpty: 'No active risk signals detected.',
@@ -2919,9 +2957,28 @@ export const translations: Record<Language, TranslationShape> = {
         unknownTag: '未知',
         upstreamExhaustedLabel: '上游 Key 耗尽',
         trendsTitle: '流量趋势',
-        trendsDescription: '基于最新请求日志的请求量与错误变化。',
+        trendsDescription: '按 UTC 整点查看最近 25 个完整小时的请求构成。',
         requestTrend: '请求量趋势',
         errorTrend: '错误量趋势',
+        chartModeResults: '调用结果',
+        chartModeTypes: '调用类型',
+        chartModeResultsDelta: '较昨日 · 调用结果',
+        chartModeTypesDelta: '较昨日 · 调用类型',
+        chartVisibleSeries: '显示系列',
+        chartDeltaSeries: '对比系列',
+        chartSelectionAll: '全部',
+        chartEmpty: '当前选择下没有可显示的图表系列。',
+        chartUtcWindow: 'UTC · 最近 {count} 个完整小时',
+        chartResultSecondarySuccess: '次要成功',
+        chartResultPrimarySuccess: '主要成功',
+        chartResultSecondaryFailure: '次要失败',
+        chartResultPrimaryFailure429: '主要失败 · 429',
+        chartResultPrimaryFailureOther: '主要失败 · 其他',
+        chartResultUnknown: '未知',
+        chartTypeMcpNonBillable: 'MCP 非计费',
+        chartTypeMcpBillable: 'MCP 计费',
+        chartTypeApiNonBillable: 'API 非计费',
+        chartTypeApiBillable: 'API 计费',
         riskTitle: '风险看板',
         riskDescription: '即将需要处理的异常项。',
         riskEmpty: '当前未发现明显风险信号。',

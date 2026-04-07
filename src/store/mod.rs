@@ -17007,6 +17007,157 @@ impl KeyStore {
         })
     }
 
+    pub(crate) async fn fetch_dashboard_hourly_request_window(
+        &self,
+        current_hour_start: i64,
+        bucket_seconds: i64,
+        visible_buckets: i64,
+        retained_buckets: i64,
+    ) -> Result<DashboardHourlyRequestWindow, ProxyError> {
+        if bucket_seconds <= 0 || visible_buckets <= 0 || retained_buckets <= 0 {
+            return Ok(DashboardHourlyRequestWindow {
+                bucket_seconds,
+                visible_buckets,
+                retained_buckets,
+                buckets: Vec::new(),
+            });
+        }
+
+        let series_start =
+            current_hour_start.saturating_sub(bucket_seconds.saturating_mul(retained_buckets));
+        let request_kind_sql =
+            request_log_request_kind_key_sql("path", "request_body", "request_kind_key");
+        let request_value_bucket_case_sql =
+            request_value_bucket_sql(&request_kind_sql, "request_body");
+        let counts_business_quota_sql =
+            request_log_counts_business_quota_sql(&request_kind_sql, "request_body");
+        let request_kind_protocol_group_sql = format!(
+            "CASE WHEN LOWER(TRIM(COALESCE({request_kind_sql}, ''))) LIKE 'mcp:%' THEN 'mcp' ELSE 'api' END"
+        );
+        let request_kind_non_billable_mcp_sql =
+            token_request_kind_non_billable_mcp_sql(&request_kind_sql);
+        let request_kind_billing_group_sql = format!(
+            "
+            CASE
+                WHEN LOWER(TRIM(COALESCE({request_kind_sql}, ''))) IN (
+                    'api:research-result',
+                    'api:usage',
+                    'api:unknown-path'
+                ) THEN 'non_billable'
+                WHEN LOWER(TRIM(COALESCE({request_kind_sql}, ''))) = 'mcp:batch'
+                    AND {counts_business_quota_sql} = 0
+                    THEN 'non_billable'
+                WHEN {request_kind_non_billable_mcp_sql} THEN 'non_billable'
+                ELSE 'billable'
+            END
+            "
+        );
+        let query = format!(
+            r#"
+            WITH RECURSIVE hour_series(bucket_start) AS (
+                SELECT ? AS bucket_start
+                UNION ALL
+                SELECT bucket_start + ?
+                FROM hour_series
+                WHERE bucket_start + ? < ?
+            ),
+            scoped_logs AS (
+                SELECT
+                    (created_at / ?) * ? AS bucket_start,
+                    result_status,
+                    COALESCE(failure_kind, '') AS failure_kind,
+                    ({request_value_bucket_case_sql}) AS request_value_bucket,
+                    {request_kind_protocol_group_sql} AS request_kind_protocol_group,
+                    {request_kind_billing_group_sql} AS request_kind_billing_group
+                FROM request_logs
+                WHERE visibility = ?
+                  AND created_at >= ?
+                  AND created_at < ?
+            ),
+            aggregated AS (
+                SELECT
+                    bucket_start,
+                    COALESCE(SUM(CASE WHEN request_value_bucket = 'other' AND result_status = ? THEN 1 ELSE 0 END), 0) AS secondary_success,
+                    COALESCE(SUM(CASE WHEN request_value_bucket = 'valuable' AND result_status = ? THEN 1 ELSE 0 END), 0) AS primary_success,
+                    COALESCE(SUM(CASE WHEN request_value_bucket = 'other' AND result_status IN (?, ?) THEN 1 ELSE 0 END), 0) AS secondary_failure,
+                    COALESCE(SUM(CASE WHEN request_value_bucket = 'valuable' AND result_status IN (?, ?) AND failure_kind = ? THEN 1 ELSE 0 END), 0) AS primary_failure_429,
+                    COALESCE(SUM(CASE WHEN request_value_bucket = 'valuable' AND result_status IN (?, ?) AND failure_kind <> ? THEN 1 ELSE 0 END), 0) AS primary_failure_other,
+                    COALESCE(SUM(CASE WHEN request_value_bucket = 'unknown' THEN 1 ELSE 0 END), 0) AS unknown_count,
+                    COALESCE(SUM(CASE WHEN request_kind_protocol_group = 'mcp' AND request_kind_billing_group = 'non_billable' THEN 1 ELSE 0 END), 0) AS mcp_non_billable,
+                    COALESCE(SUM(CASE WHEN request_kind_protocol_group = 'mcp' AND request_kind_billing_group = 'billable' THEN 1 ELSE 0 END), 0) AS mcp_billable,
+                    COALESCE(SUM(CASE WHEN request_kind_protocol_group = 'api' AND request_kind_billing_group = 'non_billable' THEN 1 ELSE 0 END), 0) AS api_non_billable,
+                    COALESCE(SUM(CASE WHEN request_kind_protocol_group = 'api' AND request_kind_billing_group = 'billable' THEN 1 ELSE 0 END), 0) AS api_billable
+                FROM scoped_logs
+                GROUP BY bucket_start
+            )
+            SELECT
+                hour_series.bucket_start,
+                COALESCE(aggregated.secondary_success, 0) AS secondary_success,
+                COALESCE(aggregated.primary_success, 0) AS primary_success,
+                COALESCE(aggregated.secondary_failure, 0) AS secondary_failure,
+                COALESCE(aggregated.primary_failure_429, 0) AS primary_failure_429,
+                COALESCE(aggregated.primary_failure_other, 0) AS primary_failure_other,
+                COALESCE(aggregated.unknown_count, 0) AS unknown_count,
+                COALESCE(aggregated.mcp_non_billable, 0) AS mcp_non_billable,
+                COALESCE(aggregated.mcp_billable, 0) AS mcp_billable,
+                COALESCE(aggregated.api_non_billable, 0) AS api_non_billable,
+                COALESCE(aggregated.api_billable, 0) AS api_billable
+            FROM hour_series
+            LEFT JOIN aggregated ON aggregated.bucket_start = hour_series.bucket_start
+            ORDER BY hour_series.bucket_start ASC
+            "#,
+        );
+
+        let rows = sqlx::query(&query)
+            .bind(series_start)
+            .bind(bucket_seconds)
+            .bind(bucket_seconds)
+            .bind(current_hour_start)
+            .bind(bucket_seconds)
+            .bind(bucket_seconds)
+            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+            .bind(series_start)
+            .bind(current_hour_start)
+            .bind(OUTCOME_SUCCESS)
+            .bind(OUTCOME_SUCCESS)
+            .bind(OUTCOME_ERROR)
+            .bind(OUTCOME_QUOTA_EXHAUSTED)
+            .bind(OUTCOME_ERROR)
+            .bind(OUTCOME_QUOTA_EXHAUSTED)
+            .bind(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429)
+            .bind(OUTCOME_ERROR)
+            .bind(OUTCOME_QUOTA_EXHAUSTED)
+            .bind(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429)
+            .fetch_all(&self.pool)
+            .await?;
+
+        let buckets = rows
+            .into_iter()
+            .map(|row| {
+                Ok(DashboardHourlyRequestBucket {
+                    bucket_start: row.try_get("bucket_start")?,
+                    secondary_success: row.try_get("secondary_success")?,
+                    primary_success: row.try_get("primary_success")?,
+                    secondary_failure: row.try_get("secondary_failure")?,
+                    primary_failure_429: row.try_get("primary_failure_429")?,
+                    primary_failure_other: row.try_get("primary_failure_other")?,
+                    unknown: row.try_get("unknown_count")?,
+                    mcp_non_billable: row.try_get("mcp_non_billable")?,
+                    mcp_billable: row.try_get("mcp_billable")?,
+                    api_non_billable: row.try_get("api_non_billable")?,
+                    api_billable: row.try_get("api_billable")?,
+                })
+            })
+            .collect::<Result<Vec<_>, sqlx::Error>>()?;
+
+        Ok(DashboardHourlyRequestWindow {
+            bucket_seconds,
+            visible_buckets,
+            retained_buckets,
+            buckets,
+        })
+    }
+
     pub(crate) async fn fetch_success_breakdown(
         &self,
         month_since: i64,
