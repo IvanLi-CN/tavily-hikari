@@ -29,11 +29,14 @@ import {
   probeMcpToolsList,
   fetchUserDashboard,
   fetchUserTokenDetail,
+  buildUserTokenEventsUrl,
   fetchUserTokenLogs,
   fetchUserTokenSecret,
   fetchUserTokens,
+  parseUserTokenEventSnapshot,
   type Profile,
   type PublicTokenLog,
+  type UserTokenEventSnapshot,
   type UserDashboard,
   type UserTokenSummary,
   type VersionInfo,
@@ -50,6 +53,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from './components/ui/dropdown-menu'
+import { Tooltip, TooltipContent, TooltipTrigger } from './components/ui/tooltip'
 import { useLanguage, useTranslate, type Language } from './i18n'
 import { copyText, isCopyIntentKey, selectAllReadonlyText, shouldPrewarmSecretCopy } from './lib/clipboard'
 import {
@@ -86,6 +90,7 @@ const BASE_MCP_PROBE_STEP_COUNT = 4
 
 type GuideLanguage = 'toml' | 'json' | 'bash'
 type GuideKey = 'codex' | 'claude' | 'vscode' | 'claudeDesktop' | 'cursor' | 'windsurf' | 'cherryStudio' | 'other'
+type DetailLogsPushIssueCode = 'unsupported' | 'reconnecting' | 'closed'
 
 interface GuideReference {
   label: string
@@ -112,6 +117,27 @@ interface GuideContent {
 interface ManualCopyBubbleState {
   anchorEl: HTMLElement | null
   value: string
+}
+
+interface DetailLogsPushStatusText {
+  ariaLabel: string
+  browserUnsupported: string
+  reconnecting: string
+  closed: string
+}
+
+function resolveDetailLogsPushIssueMessage(
+  issue: DetailLogsPushIssueCode,
+  text: DetailLogsPushStatusText,
+): string {
+  switch (issue) {
+    case 'unsupported':
+      return text.browserUnsupported
+    case 'reconnecting':
+      return text.reconnecting
+    case 'closed':
+      return text.closed
+  }
 }
 
 const GUIDE_KEY_ORDER: GuideKey[] = [
@@ -929,6 +955,7 @@ export default function UserConsole(): JSX.Element {
   const [route, setRoute] = useState<ConsoleRoute>(() => parseUserConsoleHash(window.location.hash || ''))
   const [detail, setDetail] = useState<UserTokenSummary | null>(null)
   const [detailLogs, setDetailLogs] = useState<PublicTokenLog[]>([])
+  const [detailLogsPushIssue, setDetailLogsPushIssue] = useState<DetailLogsPushIssueCode | null>(null)
   const [loading, setLoading] = useState(true)
   const [detailLoading, setDetailLoading] = useState(false)
   const [todayWindow, setTodayWindow] = useState(() => createBrowserTodayWindow())
@@ -965,6 +992,7 @@ export default function UserConsole(): JSX.Element {
   const probeRunIdRef = useRef(0)
   const tokenSecretRunIdRef = useRef(0)
   const guideTokenRunIdRef = useRef(0)
+  const detailEventsRef = useRef<EventSource | null>(null)
   const pageRef = useRef<HTMLElement>(null)
   const dashboardSectionRef = useRef<HTMLElement | null>(null)
   const tokensSectionRef = useRef<HTMLElement | null>(null)
@@ -1083,6 +1111,64 @@ export default function UserConsole(): JSX.Element {
       .finally(() => setDetailLoading(false))
     return () => controller.abort()
   }, [consoleAvailability, route, text.errors.detail, todayWindow])
+
+  useEffect(() => {
+    detailEventsRef.current?.close()
+    detailEventsRef.current = null
+    setDetailLogsPushIssue(null)
+
+    if (consoleAvailability !== 'enabled' || route.name !== 'token' || typeof EventSource === 'undefined') {
+      if (consoleAvailability === 'enabled' && route.name === 'token' && typeof EventSource === 'undefined') {
+        setDetailLogsPushIssue('unsupported')
+      }
+      return
+    }
+
+    const url = buildUserTokenEventsUrl(route.id, todayWindow)
+    const source = new EventSource(url)
+    detailEventsRef.current = source
+
+    const handleSnapshot = (event: MessageEvent<string>) => {
+      try {
+        const snapshot: UserTokenEventSnapshot = parseUserTokenEventSnapshot(event.data)
+        setDetail(snapshot.token)
+        setDetailLogs(snapshot.logs)
+        setDetailLoading(false)
+        setError(null)
+        setDetailLogsPushIssue(null)
+      } catch (err) {
+        console.error('failed to parse user token SSE snapshot', err)
+      }
+    }
+
+    const handleOpen = () => {
+      setDetailLogsPushIssue(null)
+    }
+
+    const handleError = () => {
+      const eventSourceCtor = window.EventSource
+      const closedState = typeof eventSourceCtor === 'function' ? eventSourceCtor.CLOSED : 2
+      if (source.readyState === closedState) {
+        setDetailLogsPushIssue('closed')
+        return
+      }
+      setDetailLogsPushIssue('reconnecting')
+    }
+
+    source.addEventListener('snapshot', handleSnapshot as EventListener)
+    source.addEventListener('open', handleOpen as EventListener)
+    source.onerror = handleError
+
+    return () => {
+      source.removeEventListener('snapshot', handleSnapshot as EventListener)
+      source.removeEventListener('open', handleOpen as EventListener)
+      source.close()
+      source.onerror = null
+      if (detailEventsRef.current === source) {
+        detailEventsRef.current = null
+      }
+    }
+  }, [consoleAvailability, route, todayWindow])
 
   useEffect(() => {
     probeRunIdRef.current += 1
@@ -2299,6 +2385,26 @@ export default function UserConsole(): JSX.Element {
           <section className="surface panel user-console-detail-panel">
             <div className="panel-header">
               <h2>{text.detail.logs}</h2>
+              <div className="user-console-push-status-slot">
+                {detailLogsPushIssue ? (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        className="user-console-push-status-trigger"
+                        aria-label={text.detail.pushStatus.ariaLabel}
+                      >
+                        <Icon icon="mdi:alert-circle-outline" width={18} height={18} aria-hidden="true" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" align="end" className="max-w-[min(20rem,calc(100vw-2rem))]">
+                      {resolveDetailLogsPushIssueMessage(detailLogsPushIssue, text.detail.pushStatus)}
+                    </TooltipContent>
+                  </Tooltip>
+                ) : (
+                  <span className="user-console-push-status-spacer" aria-hidden="true" />
+                )}
+              </div>
             </div>
             <div className="table-wrapper user-console-md-up">
               {detailLogs.length === 0 ? (
@@ -2418,6 +2524,7 @@ export const __testables = {
   isBillableMcpProbeTool,
   isIdentifierLikePropertyName,
   nextRunningMcpProbeModel,
+  resolveDetailLogsPushIssueMessage,
   resolveGuideSamples,
   resolveGuideRevealContextKey,
   resolveGuideToken,
@@ -2897,6 +3004,14 @@ const EN = {
       researchStatus: 'status={status}',
     },
     logs: 'Recent Requests (20)',
+    pushStatus: {
+      ariaLabel: 'Real-time request log push status',
+      browserUnsupported:
+        'Real-time request log push is unavailable because this browser does not support server-sent events.',
+      reconnecting:
+        'Real-time request log push is reconnecting. Recent request updates may lag until the stream resumes.',
+      closed: 'Real-time request log push connection is unavailable. Refresh the page or try again later.',
+    },
     emptyLogs: 'No recent requests.',
     guideTitle: 'Client Setup',
     guideDescription: 'Use the same MCP configuration as the public homepage.',
@@ -3060,6 +3175,12 @@ const ZH = {
       researchStatus: '状态={status}',
     },
     logs: '近期请求（20 条）',
+    pushStatus: {
+      ariaLabel: '实时请求日志推送状态',
+      browserUnsupported: '当前浏览器不支持服务器推送事件，实时请求日志推送不可用。',
+      reconnecting: '实时请求日志推送正在重连，恢复前最近请求列表可能会有延迟。',
+      closed: '实时请求日志推送连接当前不可用，请刷新页面或稍后再试。',
+    },
     emptyLogs: '暂无请求记录。',
     guideTitle: '客户端接入',
     guideDescription: '沿用首页的 MCP 配置方式即可接入。',

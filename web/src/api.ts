@@ -150,6 +150,16 @@ interface ServerPublicTokenLog {
   createdAt: number
 }
 
+interface ServerUserTokenEventSnapshot {
+  token: UserTokenSummary
+  logs: ServerPublicTokenLog[]
+}
+
+export interface UserTokenEventSnapshot {
+  token: UserTokenSummary
+  logs: PublicTokenLog[]
+}
+
 export interface ApiKeyQuarantine {
   source: string
   reasonCode: string
@@ -1249,6 +1259,14 @@ export function fetchUserTokenSecret(id: string, signal?: AbortSignal): Promise<
   return requestJson(`/api/user/tokens/${encoded}/secret`, { signal })
 }
 
+export function buildUserTokenEventsUrl(id: string, todayWindow?: TodayWindowRange): string {
+  const encoded = encodeURIComponent(id)
+  const params = new URLSearchParams()
+  appendTodayWindowRange(params, todayWindow)
+  const query = params.toString()
+  return `/api/user/tokens/${encoded}/events${query ? `?${query}` : ''}`
+}
+
 export async function fetchUserTokenLogs(id: string, limit = 20, signal?: AbortSignal): Promise<PublicTokenLog[]> {
   const encoded = encodeURIComponent(id)
   const params = new URLSearchParams({ limit: String(limit) })
@@ -1265,6 +1283,24 @@ export async function fetchUserTokenLogs(id: string, limit = 20, signal?: AbortS
     error_message: it.errorMessage,
     created_at: it.createdAt,
   }))
+}
+
+export function parseUserTokenEventSnapshot(raw: string): UserTokenEventSnapshot {
+  const snapshot = JSON.parse(raw) as ServerUserTokenEventSnapshot
+  return {
+    token: snapshot.token,
+    logs: snapshot.logs.map((it) => ({
+      id: it.id,
+      method: it.method,
+      path: it.path,
+      query: it.query,
+      http_status: it.httpStatus,
+      mcp_status: it.mcpStatus,
+      result_status: it.resultStatus,
+      error_message: it.errorMessage,
+      created_at: it.createdAt,
+    })),
+  }
 }
 
 export interface ProbeMcpResponse {

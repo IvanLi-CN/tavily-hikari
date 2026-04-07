@@ -13973,6 +13973,7 @@ fn mcp_session_init_candidate_order_prefers_cooldown_then_pressure_then_lru() {
             key_id: "stable-0".to_string(),
             stable_rank_index: 0,
             cooldown_until: Some(200),
+            recent_rate_limited_count: 0,
             recent_billable_request_count: 0,
             active_session_count: 0,
             last_used_at: 100,
@@ -13981,6 +13982,7 @@ fn mcp_session_init_candidate_order_prefers_cooldown_then_pressure_then_lru() {
             key_id: "stable-1".to_string(),
             stable_rank_index: 1,
             cooldown_until: None,
+            recent_rate_limited_count: 0,
             recent_billable_request_count: 5,
             active_session_count: 2,
             last_used_at: 80,
@@ -13989,6 +13991,7 @@ fn mcp_session_init_candidate_order_prefers_cooldown_then_pressure_then_lru() {
             key_id: "stable-2".to_string(),
             stable_rank_index: 2,
             cooldown_until: None,
+            recent_rate_limited_count: 0,
             recent_billable_request_count: 2,
             active_session_count: 1,
             last_used_at: 60,
@@ -13997,6 +14000,7 @@ fn mcp_session_init_candidate_order_prefers_cooldown_then_pressure_then_lru() {
             key_id: "stable-3".to_string(),
             stable_rank_index: 3,
             cooldown_until: None,
+            recent_rate_limited_count: 0,
             recent_billable_request_count: 2,
             active_session_count: 1,
             last_used_at: 10,
@@ -14025,6 +14029,7 @@ fn mcp_session_init_candidate_order_uses_stable_rank_as_last_tiebreaker() {
             key_id: "rank-1".to_string(),
             stable_rank_index: 1,
             cooldown_until: None,
+            recent_rate_limited_count: 0,
             recent_billable_request_count: 3,
             active_session_count: 1,
             last_used_at: 10,
@@ -14033,6 +14038,7 @@ fn mcp_session_init_candidate_order_uses_stable_rank_as_last_tiebreaker() {
             key_id: "rank-0".to_string(),
             stable_rank_index: 0,
             cooldown_until: None,
+            recent_rate_limited_count: 0,
             recent_billable_request_count: 3,
             active_session_count: 1,
             last_used_at: 10,
@@ -14047,6 +14053,44 @@ fn mcp_session_init_candidate_order_uses_stable_rank_as_last_tiebreaker() {
             .map(|candidate| candidate.key_id.as_str())
             .collect::<Vec<_>>(),
         vec!["rank-0", "rank-1"]
+    );
+}
+
+#[test]
+fn mcp_session_init_candidate_order_prefers_lower_recent_rate_limit_heat_before_pressure() {
+    let mut candidates = vec![
+        McpSessionInitCandidate {
+            key_id: "cooler".to_string(),
+            stable_rank_index: 1,
+            cooldown_until: None,
+            recent_rate_limited_count: 0,
+            recent_billable_request_count: 9,
+            active_session_count: 4,
+            last_used_at: 80,
+        },
+        McpSessionInitCandidate {
+            key_id: "hotter".to_string(),
+            stable_rank_index: 0,
+            cooldown_until: None,
+            recent_rate_limited_count: 2,
+            recent_billable_request_count: 1,
+            active_session_count: 0,
+            last_used_at: 1,
+        },
+    ];
+
+    TavilyProxy::order_mcp_session_init_candidates(&mut candidates);
+
+    assert_eq!(
+        candidates
+            .iter()
+            .map(|candidate| candidate.key_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["cooler", "hotter"]
+    );
+    assert_eq!(
+        TavilyProxy::mcp_session_init_selection_effect(&candidates).code,
+        KEY_EFFECT_MCP_SESSION_INIT_RATE_LIMIT_AVOIDED,
     );
 }
 

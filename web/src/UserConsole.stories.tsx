@@ -16,6 +16,7 @@ type ConsoleView = 'Console Home' | 'Token Detail'
 type LandingFocus = 'Overview Focus' | 'Token Focus'
 type TokenListState = 'Single Token' | 'Multiple Tokens' | 'Empty'
 type TokenDetailPreview = 'Overview' | 'Token Revealed'
+type PushStatusPreview = 'Live' | 'Reconnecting' | 'Unsupported'
 
 type CopyRecoveryMode = 'none' | 'list-manual-bubble' | 'detail-inline'
 type GuideRevealMode = 'none' | 'landing-guide' | 'detail-guide'
@@ -27,6 +28,8 @@ interface UserConsoleStoryArgs {
   tokenListState: TokenListState
   tokenDetailPreview: TokenDetailPreview
   routeHashOverride?: string
+  pushStatusPreview?: PushStatusPreview
+  pushStatusBubbleOpen?: boolean
 }
 
 interface UserConsoleStoryState {
@@ -34,6 +37,10 @@ interface UserConsoleStoryState {
   isAdmin: boolean
   routeHash: string
   tokenListMode: 'single' | 'multiple' | 'empty'
+}
+
+type MockEventSourceShape = EventSource & {
+  dispatchEvent: (event: Event) => boolean
 }
 
 const TOKEN_DETAIL_HASH = '#/tokens/a1b2'
@@ -173,6 +180,8 @@ const versionSample = {
   backend: '0.2.0-dev',
   frontend: '0.2.0-dev',
 }
+
+const activeEventSources = new Set<MockEventSourceShape>()
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -479,6 +488,111 @@ function installClipboardFailureMock(): () => void {
   }
 }
 
+function installEventSourceMock(mode: PushStatusPreview): () => void {
+  const OriginalEventSource = window.EventSource
+
+  if (mode === 'Unsupported') {
+    ;(window as Window & { EventSource?: typeof EventSource }).EventSource = undefined
+    return () => {
+      window.EventSource = OriginalEventSource
+    }
+  }
+
+  class MockEventSource {
+    static CONNECTING = 0
+    static OPEN = 1
+    static CLOSED = 2
+
+    public readonly url: string
+    public readonly withCredentials = false
+    public readyState = MockEventSource.OPEN
+    public onopen: ((this: EventSource, ev: Event) => unknown) | null = null
+    public onerror: ((this: EventSource, ev: Event) => unknown) | null = null
+    public onmessage: ((this: EventSource, ev: MessageEvent) => unknown) | null = null
+
+    private listeners = new Map<string, Set<EventListenerOrEventListenerObject>>()
+
+    constructor(url: string) {
+      this.url = url
+      activeEventSources.add(this as unknown as MockEventSourceShape)
+      window.setTimeout(() => {
+        if (mode === 'Reconnecting') {
+          this.readyState = MockEventSource.CONNECTING
+          this.onerror?.call(this as unknown as EventSource, new Event('error'))
+          return
+        }
+        this.onopen?.call(this as unknown as EventSource, new Event('open'))
+      }, 0)
+    }
+
+    addEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
+      if (!this.listeners.has(type)) {
+        this.listeners.set(type, new Set())
+      }
+      this.listeners.get(type)?.add(listener)
+    }
+
+    removeEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
+      this.listeners.get(type)?.delete(listener)
+    }
+
+    dispatchEvent(event: Event): boolean {
+      const bucket = this.listeners.get(event.type)
+      if (!bucket) return true
+      bucket.forEach((listener) => {
+        if (typeof listener === 'function') {
+          listener.call(this, event)
+        } else {
+          listener.handleEvent(event)
+        }
+      })
+      return true
+    }
+
+    close(): void {
+      this.readyState = MockEventSource.CLOSED
+      activeEventSources.delete(this as unknown as MockEventSourceShape)
+    }
+  }
+
+  ;(window as Window & { EventSource: typeof EventSource }).EventSource =
+    MockEventSource as unknown as typeof EventSource
+
+  return () => {
+    window.EventSource = OriginalEventSource
+  }
+}
+
+function emitUserTokenSnapshot(): void {
+  const event = new MessageEvent('snapshot', {
+    data: JSON.stringify({
+      token: {
+        ...tokenDetailSample,
+        hourlyAnyUsed: tokenDetailSample.hourlyAnyUsed + 3,
+        quotaHourlyUsed: tokenDetailSample.quotaHourlyUsed + 2,
+        quotaDailyUsed: tokenDetailSample.quotaDailyUsed + 6,
+      },
+      logs: [
+        {
+          id: 104,
+          method: 'POST',
+          path: '/mcp',
+          query: null,
+          httpStatus: 200,
+          mcpStatus: 200,
+          resultStatus: 'success',
+          errorMessage: null,
+          createdAt: 1_762_386_780,
+        },
+        ...tokenLogsSample,
+      ],
+    }),
+  })
+  activeEventSources.forEach((source) => {
+    source.dispatchEvent(event)
+  })
+}
+
 function UserConsoleStory(
   args: UserConsoleStoryArgs & {
     copyRecoveryMode?: CopyRecoveryMode
@@ -492,21 +606,25 @@ function UserConsoleStory(
   )
   const copyRecoveryMode = args.copyRecoveryMode ?? 'none'
   const guideRevealMode = args.guideRevealMode ?? 'none'
+  const pushStatusPreview = args.pushStatusPreview ?? 'Live'
+  const pushStatusBubbleOpen = args.pushStatusBubbleOpen ?? false
 
   useLayoutEffect(() => {
     const previousHash = window.location.hash
     const cleanupFetch = installUserConsoleFetchMock(storyState)
+    const cleanupEventSource = installEventSourceMock(pushStatusPreview)
     const cleanupClipboard = copyRecoveryMode === 'none' ? null : installClipboardFailureMock()
     window.location.hash = storyState.routeHash
     setReady(true)
 
     return () => {
       cleanupFetch()
+      cleanupEventSource()
       cleanupClipboard?.()
       window.location.hash = previousHash
       setReady(false)
     }
-  }, [copyRecoveryMode, storyState.isAdmin, storyState.routeHash, storyState.tokenListMode])
+  }, [copyRecoveryMode, pushStatusPreview, storyState.isAdmin, storyState.routeHash, storyState.tokenListMode])
 
   useEffect(() => {
     if (!ready || !storyState.autoRevealToken) return
@@ -538,6 +656,23 @@ function UserConsoleStory(
     return () => window.clearTimeout(timer)
   }, [guideRevealMode, ready])
 
+  useEffect(() => {
+    if (!ready || storyState.routeHash !== TOKEN_DETAIL_HASH || pushStatusPreview !== 'Live') return
+    const timer = window.setTimeout(() => {
+      emitUserTokenSnapshot()
+    }, 500)
+    return () => window.clearTimeout(timer)
+  }, [pushStatusPreview, ready, storyState.routeHash])
+
+  useEffect(() => {
+    if (!ready || !pushStatusBubbleOpen || storyState.routeHash !== TOKEN_DETAIL_HASH) return
+    const timer = window.setTimeout(() => {
+      const trigger = document.querySelector<HTMLButtonElement>('.user-console-push-status-trigger')
+      trigger?.focus()
+    }, 220)
+    return () => window.clearTimeout(timer)
+  }, [pushStatusBubbleOpen, ready, storyState.routeHash])
+
   if (!ready) {
     return <div style={{ minHeight: '100vh' }} />
   }
@@ -548,6 +683,8 @@ function UserConsoleStory(
     storyState.tokenListMode,
     storyState.autoRevealToken ? 'revealed' : 'hidden',
     guideRevealMode,
+    pushStatusPreview,
+    pushStatusBubbleOpen ? 'push-open' : 'push-closed',
   ].join(':')
 
   return <UserConsole key={storyKey} />
@@ -611,6 +748,14 @@ const meta = {
       if: { arg: 'consoleView', eq: 'Token Detail' },
     },
     routeHashOverride: {
+      table: { disable: true },
+      control: false,
+    },
+    pushStatusPreview: {
+      table: { disable: true },
+      control: false,
+    },
+    pushStatusBubbleOpen: {
       table: { disable: true },
       control: false,
     },
@@ -730,6 +875,28 @@ export const TokenDetailOverview: Story = {
     isAdmin: false,
     landingFocus: 'Overview Focus',
     tokenDetailPreview: 'Overview',
+  },
+}
+
+export const TokenDetailLiveLogs: Story = {
+  name: 'Token Detail Live Logs',
+  args: {
+    consoleView: 'Token Detail',
+    isAdmin: false,
+    landingFocus: 'Overview Focus',
+    tokenDetailPreview: 'Overview',
+  },
+}
+
+export const TokenDetailPushWarning: Story = {
+  name: 'Token Detail Push Warning',
+  args: {
+    consoleView: 'Token Detail',
+    isAdmin: false,
+    landingFocus: 'Overview Focus',
+    tokenDetailPreview: 'Overview',
+    pushStatusPreview: 'Reconnecting',
+    pushStatusBubbleOpen: true,
   },
 }
 

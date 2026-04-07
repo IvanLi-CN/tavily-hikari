@@ -1064,7 +1064,7 @@ async fn mcp_session_init_avoids_rate_limited_key_for_new_sessions_without_movin
     let port = reserve_local_port();
     let hot_key = Arc::new(Mutex::new(None));
     let upstream =
-        MockMcpUpstream::spawn_with_hot_key_rate_limit(upstream_keys.clone(), hot_key.clone(), 120)
+        MockMcpUpstream::spawn_with_hot_key_rate_limit(upstream_keys.clone(), hot_key.clone(), 1)
             .await;
     let upstream_url = format!("http://{}/mcp", upstream.addr);
     let usage_base = format!("http://{}", upstream.addr);
@@ -1134,7 +1134,7 @@ async fn mcp_session_init_avoids_rate_limited_key_for_new_sessions_without_movin
     .await
     .expect("fetch hot key cooldown row");
     assert!(cooldown_until > Utc::now().timestamp());
-    assert_eq!(retry_after_secs, 120);
+    assert_eq!(retry_after_secs, 30);
 
     let session_cool = initialize_mcp_session(&base_url, &token, "cool").await;
 
@@ -1185,8 +1185,8 @@ async fn mcp_session_init_avoids_rate_limited_key_for_new_sessions_without_movin
         .collect::<Vec<_>>();
     assert_eq!(
         hot_session_calls.len(),
-        2,
-        "existing hot session should keep using the same upstream session"
+        4,
+        "existing hot session should keep using the same upstream session across retry-after retries"
     );
     assert!(
         hot_session_calls

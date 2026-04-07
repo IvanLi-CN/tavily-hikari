@@ -440,6 +440,12 @@ struct UserTodayWindowQuery {
     today_end: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+struct UserTokenSnapshot {
+    token: UserTokenSummaryView,
+    logs: Vec<PublicTokenLogView>,
+}
+
 fn parse_user_today_window_query(
     query: &UserTodayWindowQuery,
 ) -> Result<Option<tavily_hikari::TimeRangeUtc>, (StatusCode, String)> {
@@ -505,6 +511,126 @@ fn user_token_quota_values(token: &AuthToken) -> (i64, i64, i64, i64, i64, i64) 
             0,
             effective_token_monthly_limit(),
         ))
+}
+
+async fn build_user_token_detail_view(
+    state: &Arc<AppState>,
+    user_id: &str,
+    token_id: &str,
+    daily_window: Option<tavily_hikari::TimeRangeUtc>,
+) -> Result<UserTokenSummaryView, (StatusCode, String)> {
+    let tokens = state
+        .proxy
+        .list_user_tokens(user_id)
+        .await
+        .map_err(|err| {
+            eprintln!("get user token detail list error: {err}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "failed to load token".to_string())
+        })?;
+    let Some(token) = tokens.into_iter().find(|token| token.id == token_id) else {
+        return Err((StatusCode::NOT_FOUND, "not found".to_string()));
+    };
+    let (monthly_success, daily_success, daily_failure) = state
+        .proxy
+        .token_success_breakdown(&token.id, daily_window)
+        .await
+        .map_err(|err| {
+            eprintln!("get user token detail breakdown error: {err}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to load token metrics".to_string(),
+            )
+        })?;
+    let hourly_any = state
+        .proxy
+        .token_hourly_any_snapshot(std::slice::from_ref(&token.id))
+        .await
+        .map_err(|err| {
+            eprintln!("get user token detail hourly snapshot error: {err}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to load token hourly limits".to_string(),
+            )
+        })?;
+    let (hourly_any_used, hourly_any_limit) = hourly_any
+        .get(&token.id)
+        .map(|snapshot| (snapshot.hourly_used, snapshot.hourly_limit))
+        .unwrap_or((0, effective_token_hourly_request_limit()));
+    let (
+        quota_hourly_used,
+        quota_hourly_limit,
+        quota_daily_used,
+        quota_daily_limit,
+        quota_monthly_used,
+        quota_monthly_limit,
+    ) = user_token_quota_values(&token);
+
+    Ok(UserTokenSummaryView {
+        token_id: token.id,
+        enabled: token.enabled,
+        note: token.note,
+        last_used_at: token.last_used_at,
+        hourly_any_used,
+        hourly_any_limit,
+        quota_hourly_used,
+        quota_hourly_limit,
+        quota_daily_used,
+        quota_daily_limit,
+        quota_monthly_used,
+        quota_monthly_limit,
+        daily_success,
+        daily_failure,
+        monthly_success,
+    })
+}
+
+async fn build_user_token_logs_view(
+    state: &Arc<AppState>,
+    token_id: &str,
+    limit: usize,
+    language: UiLanguage,
+) -> Result<Vec<PublicTokenLogView>, StatusCode> {
+    let items = state
+        .proxy
+        .token_recent_logs(token_id, limit.clamp(1, 20), None)
+        .await
+        .map_err(|err| {
+            eprintln!("get user token logs error: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    Ok(items
+        .into_iter()
+        .map(|record| PublicTokenLogView::from_record(record, language))
+        .map(|mut view| {
+            if let Some(err) = view.error_message.as_ref() {
+                view.error_message = Some(redact_sensitive(err));
+            }
+            view.path = redact_sensitive(&view.path);
+            if let Some(query) = view.query.as_ref() {
+                view.query = Some(redact_sensitive(query));
+            }
+            view
+        })
+        .collect())
+}
+
+async fn build_user_token_snapshot_event(
+    state: &Arc<AppState>,
+    user_id: &str,
+    token_id: &str,
+    daily_window: Option<tavily_hikari::TimeRangeUtc>,
+    language: UiLanguage,
+) -> Option<(Event, Option<i64>)> {
+    let token = build_user_token_detail_view(state, user_id, token_id, daily_window)
+        .await
+        .ok()?;
+    let logs = build_user_token_logs_view(state, token_id, 20, language)
+        .await
+        .ok()?;
+    let latest_log_id = logs.first().map(|log| log.id);
+    let payload = UserTokenSnapshot { token, logs };
+    let json = serde_json::to_string(&payload).ok()?;
+    Some((Event::default().event("snapshot").data(json), latest_log_id))
 }
 
 async fn get_user_tokens(
@@ -613,68 +739,9 @@ async fn get_user_token_detail(
     if !owned {
         return Err((StatusCode::NOT_FOUND, "not found".to_string()));
     }
-    let tokens = state
-        .proxy
-        .list_user_tokens(&user_session.user.user_id)
-        .await
-        .map_err(|err| {
-            eprintln!("get user token detail list error: {err}");
-            (StatusCode::INTERNAL_SERVER_ERROR, "failed to load token".to_string())
-        })?;
-    let Some(token) = tokens.into_iter().find(|t| t.id == id) else {
-        return Err((StatusCode::NOT_FOUND, "not found".to_string()));
-    };
-    let (monthly_success, daily_success, daily_failure) = state
-        .proxy
-        .token_success_breakdown(&token.id, daily_window)
-        .await
-        .map_err(|err| {
-            eprintln!("get user token detail breakdown error: {err}");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to load token metrics".to_string(),
-            )
-        })?;
-    let hourly_any = state
-        .proxy
-        .token_hourly_any_snapshot(std::slice::from_ref(&token.id))
-        .await
-        .map_err(|err| {
-            eprintln!("get user token detail hourly snapshot error: {err}");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to load token hourly limits".to_string(),
-            )
-        })?;
-    let (hourly_any_used, hourly_any_limit) = hourly_any
-        .get(&token.id)
-        .map(|v| (v.hourly_used, v.hourly_limit))
-        .unwrap_or((0, effective_token_hourly_request_limit()));
-    let (
-        quota_hourly_used,
-        quota_hourly_limit,
-        quota_daily_used,
-        quota_daily_limit,
-        quota_monthly_used,
-        quota_monthly_limit,
-    ) = user_token_quota_values(&token);
-    Ok(Json(UserTokenSummaryView {
-        token_id: token.id,
-        enabled: token.enabled,
-        note: token.note,
-        last_used_at: token.last_used_at,
-        hourly_any_used,
-        hourly_any_limit,
-        quota_hourly_used,
-        quota_hourly_limit,
-        quota_daily_used,
-        quota_daily_limit,
-        quota_monthly_used,
-        quota_monthly_limit,
-        daily_success,
-        daily_failure,
-        monthly_success,
-    }))
+    let detail =
+        build_user_token_detail_view(&state, &user_session.user.user_id, &id, daily_window).await?;
+    Ok(Json(detail))
 }
 
 async fn get_user_token_secret(
@@ -725,29 +792,63 @@ async fn get_user_token_logs(
     if !owned {
         return Err(StatusCode::NOT_FOUND);
     }
-    let limit = q.limit.unwrap_or(20).clamp(1, 20);
     let language = ui_language_from_headers(&headers);
-    let items = state
+    let limit = q.limit.unwrap_or(20);
+    let logs = build_user_token_logs_view(&state, &id, limit, language).await?;
+    Ok(Json(logs))
+}
+
+async fn sse_user_token(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(query): Query<UserTodayWindowQuery>,
+) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, axum::http::Error>>>, StatusCode> {
+    if !state.linuxdo_oauth.is_enabled_and_configured() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let Some(user_session) = resolve_user_session(state.as_ref(), &headers).await else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+    let owned = state
         .proxy
-        .token_recent_logs(&id, limit, None)
+        .is_user_token_bound(&user_session.user.user_id, &id)
         .await
         .map_err(|err| {
-            eprintln!("get user token logs error: {err}");
+            eprintln!("get user token events ownership error: {err}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
-    let mapped = items
-        .into_iter()
-        .map(|record| PublicTokenLogView::from_record(record, language))
-        .map(|mut v| {
-            if let Some(err) = v.error_message.as_ref() {
-                v.error_message = Some(redact_sensitive(err));
+    if !owned {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    let daily_window = parse_user_today_window_query(&query).map_err(|(status, _)| status)?;
+    let user_id = user_session.user.user_id.clone();
+    let language = ui_language_from_headers(&headers);
+    let state = state.clone();
+    let stream = stream! {
+        let mut last_log_id: Option<i64> = None;
+        if let Some((event, latest_log_id)) =
+            build_user_token_snapshot_event(&state, &user_id, &id, daily_window, language).await
+        {
+            last_log_id = latest_log_id;
+            yield Ok(event);
+        }
+        loop {
+            match build_user_token_snapshot_event(&state, &user_id, &id, daily_window, language).await {
+                Some((event, latest_log_id)) if latest_log_id != last_log_id => {
+                    last_log_id = latest_log_id;
+                    yield Ok(event);
+                }
+                Some(_) => {
+                    yield Ok(Event::default().event("ping").data("{}"));
+                }
+                None => {
+                    yield Ok(Event::default().event("ping").data("{}"));
+                }
             }
-            v.path = redact_sensitive(&v.path);
-            if let Some(query) = v.query.as_ref() {
-                v.query = Some(redact_sensitive(query));
-            }
-            v
-        })
-        .collect::<Vec<_>>();
-    Ok(Json(mapped))
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    };
+    Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")))
 }

@@ -115,6 +115,7 @@ pub struct TavilyProxy {
     // serialization is provided by quota_subject_locks in SQLite.
     pub(crate) token_billing_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
     pub(crate) mcp_session_init_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
+    pub(crate) mcp_session_request_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
     pub(crate) research_key_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
 }
 
@@ -276,6 +277,18 @@ impl McpSessionInitGuard {
     }
 }
 
+#[derive(Debug)]
+pub struct McpSessionRequestGuard {
+    _local: tokio::sync::OwnedMutexGuard<()>,
+    _subject_lock: QuotaSubjectLockGuard,
+}
+
+impl McpSessionRequestGuard {
+    pub fn ensure_live(&self) -> Result<(), ProxyError> {
+        self._subject_lock.ensure_live()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PendingBillingSettleOutcome {
     Charged,
@@ -335,6 +348,7 @@ pub(crate) struct McpSessionInitCandidate {
     pub(crate) key_id: String,
     pub(crate) stable_rank_index: usize,
     pub(crate) cooldown_until: Option<i64>,
+    pub(crate) recent_rate_limited_count: i64,
     pub(crate) recent_billable_request_count: i64,
     pub(crate) active_session_count: i64,
     pub(crate) last_used_at: i64,
@@ -376,6 +390,10 @@ impl TavilyProxy {
             "mcp-init:{}",
             Self::mcp_session_affinity_subject(user_id, token_id)
         )
+    }
+
+    fn mcp_session_request_lock_subject(proxy_session_id: &str) -> String {
+        format!("mcp-session:{proxy_session_id}")
     }
 
     pub(crate) fn parse_retry_after_secs_value(value: &str, now_ts: i64) -> Option<i64> {
@@ -424,6 +442,10 @@ impl TavilyProxy {
                         .cmp(&right.cooldown_until.unwrap_or_default())
                 })
                 .then_with(|| {
+                    left.recent_rate_limited_count
+                        .cmp(&right.recent_rate_limited_count)
+                })
+                .then_with(|| {
                     left.recent_billable_request_count
                         .cmp(&right.recent_billable_request_count)
                 })
@@ -457,6 +479,13 @@ impl TavilyProxy {
             return KeyEffect::new(
                 KEY_EFFECT_MCP_SESSION_INIT_COOLDOWN_AVOIDED,
                 "MCP initialize skipped a cooled key inside the affinity pool",
+            );
+        }
+
+        if selected.recent_rate_limited_count < stable_front.recent_rate_limited_count {
+            return KeyEffect::new(
+                KEY_EFFECT_MCP_SESSION_INIT_RATE_LIMIT_AVOIDED,
+                "MCP initialize skipped a recently rate-limited key inside the affinity pool",
             );
         }
 
@@ -580,6 +609,7 @@ impl TavilyProxy {
             summary_windows_cache: Arc::new(Mutex::new(SummaryWindowsCacheState::default())),
             token_billing_locks: Arc::new(Mutex::new(HashMap::new())),
             mcp_session_init_locks: Arc::new(Mutex::new(HashMap::new())),
+            mcp_session_request_locks: Arc::new(Mutex::new(HashMap::new())),
             research_key_locks: Arc::new(Mutex::new(HashMap::new())),
         };
         proxy.initialize_forward_proxy_runtime().await?;
@@ -3260,6 +3290,40 @@ impl TavilyProxy {
         }))
     }
 
+    pub async fn lock_mcp_session_request(
+        &self,
+        proxy_session_id: &str,
+    ) -> Result<McpSessionRequestGuard, ProxyError> {
+        let subject = Self::mcp_session_request_lock_subject(proxy_session_id);
+        let lock = {
+            let mut locks = self.mcp_session_request_locks.lock().await;
+            if locks.len() > 4096 {
+                locks.retain(|_, lock| lock.strong_count() > 0);
+            }
+
+            if let Some(existing) = locks.get(&subject).and_then(|lock| lock.upgrade()) {
+                existing
+            } else {
+                let lock = Arc::new(Mutex::new(()));
+                locks.insert(subject.clone(), Arc::downgrade(&lock));
+                lock
+            }
+        };
+        let local_guard = lock.lock_owned().await;
+        let lease = self
+            .key_store
+            .acquire_quota_subject_lock(
+                &subject,
+                Duration::from_secs(QUOTA_SUBJECT_LOCK_TTL_SECS),
+                Duration::from_secs(QUOTA_SUBJECT_LOCK_ACQUIRE_TIMEOUT_SECS),
+            )
+            .await?;
+        Ok(McpSessionRequestGuard {
+            _local: local_guard,
+            _subject_lock: QuotaSubjectLockGuard::new(self.key_store.clone(), lease),
+        })
+    }
+
     /// Serialize quota/billing work per effective quota subject across both the local process
     /// and any other instances sharing the same SQLite database.
     pub async fn lock_token_billing(
@@ -3404,6 +3468,13 @@ impl TavilyProxy {
             .key_store
             .list_active_api_key_transient_backoffs(ranked, MCP_SESSION_INIT_BACKOFF_SCOPE, now)
             .await?;
+        let recent_rate_limited_counts = self
+            .key_store
+            .list_recent_rate_limited_request_counts_for_keys(
+                ranked,
+                now - MCP_SESSION_INIT_RECENT_PRESSURE_WINDOW_SECS,
+            )
+            .await?;
         let recent_counts = self
             .key_store
             .list_recent_billable_request_counts_for_keys(
@@ -3429,6 +3500,10 @@ impl TavilyProxy {
                 key_id: key_id.clone(),
                 stable_rank_index,
                 cooldown_until: cooldowns.get(key_id).map(|state| state.cooldown_until),
+                recent_rate_limited_count: recent_rate_limited_counts
+                    .get(key_id)
+                    .copied()
+                    .unwrap_or(0),
                 recent_billable_request_count: recent_counts.get(key_id).copied().unwrap_or(0),
                 active_session_count: active_counts.get(key_id).copied().unwrap_or(0),
                 last_used_at: last_used_at.get(key_id).copied().unwrap_or(0),
@@ -6939,6 +7014,9 @@ impl TavilyProxy {
                 user_id: user_id.map(str::to_string),
                 protocol_version: protocol_version.map(str::to_string),
                 last_event_id: last_event_id.map(str::to_string),
+                rate_limited_until: None,
+                last_rate_limited_at: None,
+                last_rate_limit_reason: None,
                 created_at: now,
                 updated_at: now,
                 expires_at: now + MCP_SESSION_RETENTION_SECS,
@@ -6982,6 +7060,45 @@ impl TavilyProxy {
                 now,
                 now + MCP_SESSION_RETENTION_SECS,
             )
+            .await
+    }
+
+    pub async fn mark_mcp_session_rate_limited(
+        &self,
+        proxy_session_id: &str,
+        rate_limited_until: i64,
+        reason: Option<&str>,
+    ) -> Result<(), ProxyError> {
+        let now = Utc::now().timestamp();
+        self.key_store
+            .mark_mcp_session_rate_limited(
+                proxy_session_id,
+                rate_limited_until,
+                reason,
+                now,
+                now + MCP_SESSION_RETENTION_SECS,
+            )
+            .await
+    }
+
+    pub async fn clear_mcp_session_rate_limit(
+        &self,
+        proxy_session_id: &str,
+    ) -> Result<(), ProxyError> {
+        let now = Utc::now().timestamp();
+        self.key_store
+            .clear_mcp_session_rate_limit(proxy_session_id, now, now + MCP_SESSION_RETENTION_SECS)
+            .await
+    }
+
+    pub async fn annotate_request_log_key_effect_if_none(
+        &self,
+        request_log_id: i64,
+        key_effect_code: &str,
+        key_effect_summary: Option<&str>,
+    ) -> Result<(), ProxyError> {
+        self.key_store
+            .set_request_log_key_effect_if_none(request_log_id, key_effect_code, key_effect_summary)
             .await
     }
 
