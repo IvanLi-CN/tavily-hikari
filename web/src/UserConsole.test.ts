@@ -60,6 +60,19 @@ function createMcpProbeContext(overrides: Partial<Parameters<NonNullable<ReturnT
 }
 
 describe('UserConsole landing guide helpers', () => {
+  it('maps request-log push issues to the expected bubble copy', () => {
+    const copy = {
+      ariaLabel: 'status',
+      browserUnsupported: 'unsupported',
+      reconnecting: 'reconnecting',
+      closed: 'closed',
+    }
+
+    expect(__testables.resolveDetailLogsPushIssueMessage('unsupported', copy)).toBe('unsupported')
+    expect(__testables.resolveDetailLogsPushIssueMessage('reconnecting', copy)).toBe('reconnecting')
+    expect(__testables.resolveDetailLogsPushIssueMessage('closed', copy)).toBe('closed')
+  })
+
   it('shows the landing guide only when exactly one token is visible on the merged landing page', () => {
     expect(__testables.shouldRenderLandingGuide({ name: 'landing', section: 'dashboard' }, 1)).toBe(true)
     expect(__testables.shouldRenderLandingGuide({ name: 'landing', section: 'tokens' }, 1)).toBe(true)

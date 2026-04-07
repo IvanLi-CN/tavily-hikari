@@ -77,7 +77,7 @@ On `/console#/tokens/:id`:
 
 - open `EventSource` against `/api/user/tokens/:id/events`
 - refresh token detail metrics and recent request rows from `snapshot`
-- show a lightweight live connection badge
+- show a warning icon with a problem bubble when live push is unavailable
 - keep MCP probe requests on the normal `/mcp` flow with no special treatment
 
 ## Validation
@@ -94,6 +94,13 @@ On `/console#/tokens/:id`:
 - source_type: `storybook_canvas`
   story_id_or_title: `User Console/UserConsole · Token Detail Live Logs`
   state: `live logs connected`
-  evidence_note: verifies `/console#/tokens/:id` renders the live SSE badge and the request list updates from streamed snapshots.
+  evidence_note: verifies `/console#/tokens/:id` keeps the request list updating from streamed snapshots without adding a persistent visible status badge.
 
 ![User token live logs](./assets/user-console-live-logs-full.png)
+
+- source_type: `storybook_canvas`
+  story_id_or_title: `User Console/UserConsole · Token Detail Push Warning`
+  state: `push unavailable warning bubble`
+  evidence_note: verifies the recent-requests header shows only a warning icon when push is unavailable and the bubble explains the exact problem.
+
+![User token push warning bubble](./assets/user-console-push-warning.png)

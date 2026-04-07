@@ -6463,6 +6463,48 @@ tbody tr:hover {
   color: hsl(var(--foreground));
 }
 
+.user-console-push-status-slot {
+  display: flex;
+  min-width: 1.75rem;
+  min-height: 1.75rem;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.user-console-push-status-trigger {
+  display: inline-flex;
+  width: 1.75rem;
+  height: 1.75rem;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: hsl(var(--warning));
+  cursor: help;
+  transition:
+    color 160ms ease,
+    background-color 160ms ease,
+    opacity 160ms ease;
+}
+
+.user-console-push-status-trigger:hover,
+.user-console-push-status-trigger:focus-visible {
+  background: hsl(var(--warning) / 0.12);
+  color: hsl(var(--warning) / 0.96);
+  outline: none;
+}
+
+.user-console-push-status-trigger:focus-visible {
+  box-shadow: 0 0 0 2px hsl(var(--warning) / 0.22);
+}
+
+.user-console-push-status-spacer {
+  display: block;
+  width: 1.75rem;
+  height: 1.75rem;
+}
+
 .user-console-log-meta {
   color: hsl(var(--muted-foreground));
   font-size: 0.8rem;

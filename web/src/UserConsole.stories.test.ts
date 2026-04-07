@@ -94,6 +94,17 @@ describe('UserConsole Storybook acceptance controls', () => {
       name: 'Token Detail Overview',
       args: { consoleView: 'Token Detail', isAdmin: false, landingFocus: 'Overview Focus', tokenDetailPreview: 'Overview' },
     })
+    expect(userConsoleStories.TokenDetailPushWarning).toMatchObject({
+      name: 'Token Detail Push Warning',
+      args: {
+        consoleView: 'Token Detail',
+        isAdmin: false,
+        landingFocus: 'Overview Focus',
+        tokenDetailPreview: 'Overview',
+        pushStatusPreview: 'Reconnecting',
+        pushStatusBubbleOpen: true,
+      },
+    })
     expect(userConsoleStories.TokenRevealed).toMatchObject({
       name: 'Token Revealed',
       args: { consoleView: 'Token Detail', isAdmin: false, tokenDetailPreview: 'Token Revealed' },
