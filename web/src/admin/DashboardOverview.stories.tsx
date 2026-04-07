@@ -5,6 +5,7 @@ import {
   createDashboardMonthMetrics,
   createDashboardTodayMetrics,
 } from './dashboardTodayMetrics'
+import { buildDashboardHourlyRequestWindowFixture } from './dashboardHourlyCharts'
 
 const storyNumberFormatter = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 0,
@@ -66,9 +67,28 @@ const strings = {
   otherTag: 'Other',
   unknownTag: 'Unknown',
   trendsTitle: 'Traffic Trends',
-  trendsDescription: 'Recent request and error changes from latest logs.',
+  trendsDescription: 'Hourly request composition for the latest 25 completed UTC hours.',
   requestTrend: 'Request volume',
   errorTrend: 'Error volume',
+  chartModeResults: 'Results',
+  chartModeTypes: 'Types',
+  chartModeResultsDelta: 'Δ Results',
+  chartModeTypesDelta: 'Δ Types',
+  chartVisibleSeries: 'Visible series',
+  chartDeltaSeries: 'Compared series',
+  chartSelectionAll: 'All',
+  chartEmpty: 'No visible chart series for the current selection.',
+  chartUtcWindow: 'UTC · Last {count} full hours',
+  chartResultSecondarySuccess: 'Secondary success',
+  chartResultPrimarySuccess: 'Primary success',
+  chartResultSecondaryFailure: 'Secondary failure',
+  chartResultPrimaryFailure429: 'Primary failure · 429',
+  chartResultPrimaryFailureOther: 'Primary failure · other',
+  chartResultUnknown: 'Unknown',
+  chartTypeMcpNonBillable: 'MCP non-billable',
+  chartTypeMcpBillable: 'MCP billable',
+  chartTypeApiNonBillable: 'API non-billable',
+  chartTypeApiBillable: 'API billable',
   riskTitle: 'Risk Watchlist',
   riskDescription: 'Items that may require operator action soon.',
   riskEmpty: 'No active risk signals detected.',
@@ -198,6 +218,21 @@ const monthQuotaCharge: DashboardQuotaChargeCardData = {
   freshness: 'Latest sync · 2 minutes ago · 14:28',
 }
 
+const defaultHourlyRequestWindow = buildDashboardHourlyRequestWindowFixture({
+  mapBucket: ({ index, bucket }) => ({
+    secondarySuccess: (index % 5) + 2,
+    primarySuccess: bucket.primarySuccess + (index % 3),
+    secondaryFailure: index % 4,
+    primaryFailure429: index % 8 === 0 ? 2 : bucket.primaryFailure429,
+    primaryFailureOther: index % 6 === 0 ? 2 : bucket.primaryFailureOther,
+    unknown: index % 11 === 0 ? 1 : 0,
+    mcpNonBillable: index % 3,
+    mcpBillable: (index % 5) + 3,
+    apiNonBillable: index % 2,
+    apiBillable: (index % 6) + 4,
+  }),
+})
+
 const statusMetrics = [
   { id: 'remaining', label: 'Remaining', value: '49,482', subtitle: 'Current snapshot · 88.4%' },
   { id: 'keys', label: 'Active Keys', value: '57', subtitle: 'Current snapshot' },
@@ -232,9 +267,28 @@ const zhStrings = {
   otherTag: '次要',
   unknownTag: '未知',
   trendsTitle: '流量趋势',
-  trendsDescription: '根据近期请求观察流量和错误变化。',
+  trendsDescription: '按 UTC 整点查看最近 25 个完整小时的请求构成。',
   requestTrend: '请求量',
   errorTrend: '错误量',
+  chartModeResults: '调用结果',
+  chartModeTypes: '调用类型',
+  chartModeResultsDelta: '较昨日 · 调用结果',
+  chartModeTypesDelta: '较昨日 · 调用类型',
+  chartVisibleSeries: '显示系列',
+  chartDeltaSeries: '对比系列',
+  chartSelectionAll: '全部',
+  chartEmpty: '当前选择下没有可显示的图表系列。',
+  chartUtcWindow: 'UTC · 最近 {count} 个完整小时',
+  chartResultSecondarySuccess: '次要成功',
+  chartResultPrimarySuccess: '主要成功',
+  chartResultSecondaryFailure: '次要失败',
+  chartResultPrimaryFailure429: '主要失败 · 429',
+  chartResultPrimaryFailureOther: '主要失败 · 其他',
+  chartResultUnknown: '未知',
+  chartTypeMcpNonBillable: 'MCP 非计费',
+  chartTypeMcpBillable: 'MCP 计费',
+  chartTypeApiNonBillable: 'API 非计费',
+  chartTypeApiBillable: 'API 计费',
   riskTitle: '风险观察',
   riskDescription: '优先查看需要运维动作的项目。',
   riskEmpty: '当前没有需要处理的风险信号。',
@@ -405,10 +459,7 @@ export const Default: Story = {
     monthMetrics,
     monthQuotaCharge,
     statusMetrics,
-    trend: {
-      request: [4, 7, 8, 5, 9, 11, 12, 10],
-      error: [1, 1, 2, 1, 2, 3, 2, 1],
-    },
+    hourlyRequestWindow: defaultHourlyRequestWindow,
     tokenCoverage: 'ok',
     tokens: [
       {
@@ -635,6 +686,36 @@ export const ZeroBaseline: Story = {
         throw new Error(`Expected dashboard overview zero-baseline story to contain: ${expected}`)
       }
     }
+  },
+}
+
+export const TypesMode: Story = {
+  args: {
+    ...Default.args,
+    initialChartMode: 'types',
+  },
+}
+
+export const ResultsDeltaMode: Story = {
+  args: {
+    ...Default.args,
+    initialChartMode: 'resultsDelta',
+    initialResultDeltaSeries: 'all',
+  },
+}
+
+export const TypesDeltaMode: Story = {
+  args: {
+    ...Default.args,
+    initialChartMode: 'typesDelta',
+    initialTypeDeltaSeries: 'all',
+  },
+}
+
+export const HiddenSeriesEmpty: Story = {
+  args: {
+    ...Default.args,
+    initialVisibleResultSeries: [],
   },
 }
 

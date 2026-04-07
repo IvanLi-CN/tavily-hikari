@@ -572,6 +572,31 @@ pub struct SummaryWindows {
     pub month: SummaryWindowMetrics,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardHourlyRequestBucket {
+    pub bucket_start: i64,
+    pub secondary_success: i64,
+    pub primary_success: i64,
+    pub secondary_failure: i64,
+    pub primary_failure_429: i64,
+    pub primary_failure_other: i64,
+    pub unknown: i64,
+    pub mcp_non_billable: i64,
+    pub mcp_billable: i64,
+    pub api_non_billable: i64,
+    pub api_billable: i64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardHourlyRequestWindow {
+    pub bucket_seconds: i64,
+    pub visible_buckets: i64,
+    pub retained_buckets: i64,
+    pub buckets: Vec<DashboardHourlyRequestBucket>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ForwardProxyDashboardSummary {
     pub available_nodes: i64,

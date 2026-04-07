@@ -43,6 +43,12 @@ struct CachedSummaryWindows {
 }
 
 #[derive(Clone, Debug)]
+struct CachedDashboardHourlyRequestWindow {
+    generated_at: Instant,
+    value: DashboardHourlyRequestWindow,
+}
+
+#[derive(Clone, Debug)]
 struct SummaryWindowsCacheState {
     cached: Option<CachedSummaryWindows>,
     loading: bool,
@@ -50,6 +56,23 @@ struct SummaryWindowsCacheState {
 }
 
 impl Default for SummaryWindowsCacheState {
+    fn default() -> Self {
+        Self {
+            cached: None,
+            loading: false,
+            notify: Arc::new(tokio::sync::Notify::new()),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct DashboardHourlyRequestWindowCacheState {
+    cached: Option<CachedDashboardHourlyRequestWindow>,
+    loading: bool,
+    notify: Arc<tokio::sync::Notify>,
+}
+
+impl Default for DashboardHourlyRequestWindowCacheState {
     fn default() -> Self {
         Self {
             cached: None,
@@ -91,6 +114,38 @@ impl Drop for SummaryWindowsLoadGuard {
     }
 }
 
+struct DashboardHourlyRequestWindowLoadGuard {
+    state: Arc<Mutex<DashboardHourlyRequestWindowCacheState>>,
+    armed: bool,
+}
+
+impl DashboardHourlyRequestWindowLoadGuard {
+    fn new(state: Arc<Mutex<DashboardHourlyRequestWindowCacheState>>) -> Self {
+        Self { state, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for DashboardHourlyRequestWindowLoadGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+
+        let state = self.state.clone();
+        tokio::spawn(async move {
+            let mut cache = state.lock().await;
+            if cache.loading {
+                cache.loading = false;
+                cache.notify.notify_waiters();
+            }
+        });
+    }
+}
+
 /// 负责均衡 Tavily API key 并透传请求的代理。
 #[derive(Clone, Debug)]
 pub struct TavilyProxy {
@@ -111,6 +166,7 @@ pub struct TavilyProxy {
     pub(crate) research_request_affinity: Arc<Mutex<TokenAffinityState>>,
     pub(crate) research_request_owner_affinity: Arc<Mutex<TokenAffinityState>>,
     summary_windows_cache: Arc<Mutex<SummaryWindowsCacheState>>,
+    dashboard_hourly_request_window_cache: Arc<Mutex<DashboardHourlyRequestWindowCacheState>>,
     // Fast in-process lock to collapse duplicate work within one instance. Cross-instance
     // serialization is provided by quota_subject_locks in SQLite.
     pub(crate) token_billing_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
@@ -607,6 +663,9 @@ impl TavilyProxy {
                 RESEARCH_REQUEST_AFFINITY_TTL_SECS,
             ))),
             summary_windows_cache: Arc::new(Mutex::new(SummaryWindowsCacheState::default())),
+            dashboard_hourly_request_window_cache: Arc::new(Mutex::new(
+                DashboardHourlyRequestWindowCacheState::default(),
+            )),
             token_billing_locks: Arc::new(Mutex::new(HashMap::new())),
             mcp_session_init_locks: Arc::new(Mutex::new(HashMap::new())),
             mcp_session_request_locks: Arc::new(Mutex::new(HashMap::new())),
@@ -7098,6 +7157,73 @@ impl TavilyProxy {
             load_guard.disarm();
             return summary;
         }
+    }
+
+    pub async fn dashboard_hourly_request_window(
+        &self,
+    ) -> Result<DashboardHourlyRequestWindow, ProxyError> {
+        const DASHBOARD_HOURLY_REQUEST_WINDOW_CACHE_TTL: Duration = Duration::from_secs(2);
+
+        loop {
+            let waiter = {
+                let mut cache = self.dashboard_hourly_request_window_cache.lock().await;
+                if let Some(cached) = cache.cached.as_ref()
+                    && cached.generated_at.elapsed() < DASHBOARD_HOURLY_REQUEST_WINDOW_CACHE_TTL
+                {
+                    return Ok(cached.value.clone());
+                }
+                if cache.loading {
+                    Some(cache.notify.clone().notified_owned())
+                } else {
+                    cache.loading = true;
+                    None
+                }
+            };
+
+            if let Some(waiter) = waiter {
+                waiter.await;
+                continue;
+            }
+
+            let mut load_guard = DashboardHourlyRequestWindowLoadGuard::new(
+                self.dashboard_hourly_request_window_cache.clone(),
+            );
+            let window = self.dashboard_hourly_request_window_at(Utc::now()).await;
+            let mut cache = self.dashboard_hourly_request_window_cache.lock().await;
+            cache.loading = false;
+            if let Ok(value) = window.as_ref() {
+                cache.cached = Some(CachedDashboardHourlyRequestWindow {
+                    generated_at: Instant::now(),
+                    value: value.clone(),
+                });
+            }
+            cache.notify.notify_waiters();
+            load_guard.disarm();
+            return window;
+        }
+    }
+
+    pub(crate) async fn dashboard_hourly_request_window_at(
+        &self,
+        now: chrono::DateTime<Utc>,
+    ) -> Result<DashboardHourlyRequestWindow, ProxyError> {
+        const DASHBOARD_HOURLY_BUCKET_SECS: i64 = 3600;
+        const DASHBOARD_HOURLY_VISIBLE_BUCKETS: i64 = 25;
+        const DASHBOARD_HOURLY_RETAINED_BUCKETS: i64 = 49;
+
+        let current_hour_start = now
+            .timestamp()
+            .div_euclid(DASHBOARD_HOURLY_BUCKET_SECS)
+            .saturating_mul(DASHBOARD_HOURLY_BUCKET_SECS);
+
+        self.key_store
+            .fetch_dashboard_hourly_request_window(
+                current_hour_start,
+                DASHBOARD_HOURLY_BUCKET_SECS,
+                DASHBOARD_HOURLY_VISIBLE_BUCKETS,
+                DASHBOARD_HOURLY_RETAINED_BUCKETS,
+            )
+            .await
     }
 
     pub(crate) async fn summary_windows_at(

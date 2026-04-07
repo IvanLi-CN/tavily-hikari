@@ -162,6 +162,7 @@ import {
   fetchVersion,
   type ApiKeyStats,
   type DashboardSnapshotEvent,
+  type DashboardHourlyRequestWindow,
   type DashboardSiteStatusSnapshot,
   type DashboardTokenCoverage,
   type DashboardTrendBuckets,
@@ -292,6 +293,15 @@ function createEmptyDashboardTrend(): DashboardTrendBuckets {
   return {
     request: new Array(DASHBOARD_TREND_WINDOW_SIZE).fill(0),
     error: new Array(DASHBOARD_TREND_WINDOW_SIZE).fill(0),
+  }
+}
+
+function createEmptyDashboardHourlyRequestWindow(): DashboardHourlyRequestWindow {
+  return {
+    bucketSeconds: 3600,
+    visibleBuckets: 25,
+    retainedBuckets: 49,
+    buckets: [],
   }
 }
 const ADMIN_UNBOUND_TOKEN_USAGE_DEFAULT_SORT_FIELD: AdminUnboundTokenUsageSortField = 'lastUsedAt'
@@ -1455,6 +1465,9 @@ function AdminDashboard(): JSX.Element {
   const [dashboardTokens, setDashboardTokens] = useState<AuthToken[]>([])
   const [dashboardTokenCoverage, setDashboardTokenCoverage] = useState<DashboardTokenCoverage>('ok')
   const [dashboardTrend, setDashboardTrend] = useState<DashboardTrendBuckets>(() => createEmptyDashboardTrend())
+  const [dashboardHourlyRequestWindow, setDashboardHourlyRequestWindow] = useState<DashboardHourlyRequestWindow>(
+    () => createEmptyDashboardHourlyRequestWindow(),
+  )
   const [dashboardOverviewLoaded, setDashboardOverviewLoaded] = useState(false)
   const [tokensPage, setTokensPage] = useState(1)
   const tokensPerPage = 10
@@ -2348,6 +2361,7 @@ function AdminDashboard(): JSX.Element {
           setDashboardTokens(overview.disabledTokens)
           setDashboardTokenCoverage(overview.tokenCoverage)
           setDashboardTrend(overview.trend)
+          setDashboardHourlyRequestWindow(overview.hourlyRequestWindow)
           setDashboardKeys(overview.exhaustedKeys)
           setDashboardLogs(overview.recentLogs)
           setDashboardJobs(overview.recentJobs)
@@ -2369,6 +2383,7 @@ function AdminDashboard(): JSX.Element {
         setDashboardTokens([])
         setDashboardTokenCoverage('error')
         setDashboardTrend(createEmptyDashboardTrend())
+        setDashboardHourlyRequestWindow(createEmptyDashboardHourlyRequestWindow())
         setDashboardKeys([])
         setDashboardLogs([])
         setDashboardJobs([])
@@ -3710,6 +3725,7 @@ function AdminDashboard(): JSX.Element {
             setDashboardTokens(data.disabledTokens)
             setDashboardTokenCoverage(data.tokenCoverage)
             setDashboardTrend(data.trend)
+            setDashboardHourlyRequestWindow(data.hourlyRequestWindow)
             setDashboardKeys(data.exhaustedKeys)
             setDashboardLogs(data.recentLogs)
             setDashboardJobs(data.recentJobs)
@@ -9078,7 +9094,7 @@ function AdminDashboard(): JSX.Element {
           monthMetrics={monthMetrics}
           monthQuotaCharge={monthQuotaCharge}
           statusMetrics={statusMetrics}
-          trend={dashboardTrend}
+          hourlyRequestWindow={dashboardHourlyRequestWindow}
           tokenCoverage={dashboardTokenCoverage}
           tokens={dashboardTokens}
           keys={dashboardKeys}

@@ -51,6 +51,58 @@ struct SummaryWindowsView {
     month: SummaryWindowView,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DashboardHourlyRequestBucketView {
+    bucket_start: i64,
+    secondary_success: i64,
+    primary_success: i64,
+    secondary_failure: i64,
+    primary_failure_429: i64,
+    primary_failure_other: i64,
+    unknown: i64,
+    mcp_non_billable: i64,
+    mcp_billable: i64,
+    api_non_billable: i64,
+    api_billable: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DashboardHourlyRequestWindowView {
+    bucket_seconds: i64,
+    visible_buckets: i64,
+    retained_buckets: i64,
+    buckets: Vec<DashboardHourlyRequestBucketView>,
+}
+
+impl From<tavily_hikari::DashboardHourlyRequestWindow> for DashboardHourlyRequestWindowView {
+    fn from(window: tavily_hikari::DashboardHourlyRequestWindow) -> Self {
+        Self {
+            bucket_seconds: window.bucket_seconds,
+            visible_buckets: window.visible_buckets,
+            retained_buckets: window.retained_buckets,
+            buckets: window
+                .buckets
+                .into_iter()
+                .map(|bucket| DashboardHourlyRequestBucketView {
+                    bucket_start: bucket.bucket_start,
+                    secondary_success: bucket.secondary_success,
+                    primary_success: bucket.primary_success,
+                    secondary_failure: bucket.secondary_failure,
+                    primary_failure_429: bucket.primary_failure_429,
+                    primary_failure_other: bucket.primary_failure_other,
+                    unknown: bucket.unknown,
+                    mcp_non_billable: bucket.mcp_non_billable,
+                    mcp_billable: bucket.mcp_billable,
+                    api_non_billable: bucket.api_non_billable,
+                    api_billable: bucket.api_billable,
+                })
+                .collect(),
+        }
+    }
+}
+
 async fn fetch_summary_windows(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -557,6 +609,8 @@ struct DashboardOverviewPayload {
     summary: SummaryView,
     #[serde(rename = "summaryWindows")]
     summary_windows: SummaryWindowsView,
+    #[serde(rename = "hourlyRequestWindow")]
+    hourly_request_window: DashboardHourlyRequestWindowView,
     #[serde(rename = "siteStatus")]
     site_status: DashboardSiteStatusView,
     #[serde(rename = "forwardProxy")]
@@ -836,6 +890,7 @@ async fn build_dashboard_overview_payload(
         yesterday,
         month,
     } = state.proxy.summary_windows().await?;
+    let hourly_request_window = state.proxy.dashboard_hourly_request_window().await?;
     let forward_proxy = state.proxy.get_forward_proxy_dashboard_summary().await?;
     let exhausted_keys = state
         .proxy
@@ -886,6 +941,7 @@ async fn build_dashboard_overview_payload(
             yesterday: SummaryWindowView::from(yesterday),
             month: SummaryWindowView::from(month),
         },
+        hourly_request_window: DashboardHourlyRequestWindowView::from(hourly_request_window),
         site_status: DashboardSiteStatusView {
             remaining_quota: summary.total_quota_remaining,
             total_quota_limit: summary.total_quota_limit,
@@ -923,6 +979,7 @@ async fn build_snapshot_event(state: &Arc<AppState>) -> Option<Event> {
 async fn compute_signatures(
     state: &Arc<AppState>,
 ) -> Result<(Option<SummarySig>, Option<i64>), ()> {
+    const DASHBOARD_HOURLY_BUCKET_SECS: i64 = 3600;
     let summary = state.proxy.summary().await.map_err(|_| ())?;
     let tavily_hikari::SummaryWindows {
         today,
@@ -957,6 +1014,10 @@ async fn compute_signatures(
         .list_recent_job_signatures(DASHBOARD_RECENT_JOBS_LIMIT)
         .await
         .unwrap_or_default();
+    let hourly_window_anchor = Utc::now()
+        .timestamp()
+        .div_euclid(DASHBOARD_HOURLY_BUCKET_SECS)
+        .saturating_mul(DASHBOARD_HOURLY_BUCKET_SECS);
     let disabled_token_ids = disabled_tokens
         .iter()
         .take(DASHBOARD_DISABLED_TOKENS_LIMIT)
@@ -1035,6 +1096,7 @@ async fn compute_signatures(
         disabled_tokens_error,
         disabled_tokens_truncated: disabled_token_truncated,
         recent_jobs,
+        hourly_window_anchor,
     });
     Ok((sig, latest_id))
 }

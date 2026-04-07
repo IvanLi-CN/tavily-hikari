@@ -75,9 +75,31 @@ export interface DashboardTrendBuckets {
   error: number[]
 }
 
+export interface DashboardHourlyRequestBucket {
+  bucketStart: number
+  secondarySuccess: number
+  primarySuccess: number
+  secondaryFailure: number
+  primaryFailure429: number
+  primaryFailureOther: number
+  unknown: number
+  mcpNonBillable: number
+  mcpBillable: number
+  apiNonBillable: number
+  apiBillable: number
+}
+
+export interface DashboardHourlyRequestWindow {
+  bucketSeconds: number
+  visibleBuckets: number
+  retainedBuckets: number
+  buckets: DashboardHourlyRequestBucket[]
+}
+
 export interface DashboardOverviewResponse {
   summary: Summary
   summaryWindows: SummaryWindowsResponse
+  hourlyRequestWindow: DashboardHourlyRequestWindow
   siteStatus: DashboardSiteStatusSnapshot
   forwardProxy: DashboardForwardProxySnapshot
   trend: DashboardTrendBuckets
