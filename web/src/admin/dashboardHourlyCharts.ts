@@ -35,19 +35,117 @@ export const DASHBOARD_TYPE_SERIES_ORDER = [
 ] as const satisfies ReadonlyArray<DashboardTypeSeriesId>
 
 export const DEFAULT_VISIBLE_RESULT_SERIES = [
-  'secondarySuccess',
-  'primarySuccess',
-  'secondaryFailure',
-  'primaryFailure429',
-  'primaryFailureOther',
+  ...DASHBOARD_RESULT_SERIES_ORDER,
 ] as const satisfies ReadonlyArray<DashboardResultSeriesId>
 
 export const DEFAULT_VISIBLE_TYPE_SERIES = [
-  'mcpNonBillable',
-  'mcpBillable',
-  'apiNonBillable',
-  'apiBillable',
+  ...DASHBOARD_TYPE_SERIES_ORDER,
 ] as const satisfies ReadonlyArray<DashboardTypeSeriesId>
+
+export interface DashboardHourlyChartPreferences {
+  chartMode: DashboardHourlyChartMode
+  visibleResultSeries: DashboardResultSeriesId[]
+  visibleTypeSeries: DashboardTypeSeriesId[]
+  resultDeltaSeries: DashboardDeltaSelection<DashboardResultSeriesId>
+  typeDeltaSeries: DashboardDeltaSelection<DashboardTypeSeriesId>
+}
+
+export interface DashboardHourlyChartPreferencesInput {
+  chartMode?: DashboardHourlyChartMode
+  visibleResultSeries?: ReadonlyArray<DashboardResultSeriesId>
+  visibleTypeSeries?: ReadonlyArray<DashboardTypeSeriesId>
+  resultDeltaSeries?: DashboardDeltaSelection<DashboardResultSeriesId>
+  typeDeltaSeries?: DashboardDeltaSelection<DashboardTypeSeriesId>
+}
+
+function normalizeSeriesSelection<T extends string>(
+  value: unknown,
+  allowed: ReadonlyArray<T>,
+  fallback: ReadonlyArray<T>,
+): T[] {
+  if (!Array.isArray(value)) return [...fallback]
+  const seen = new Set<T>()
+  const normalized: T[] = []
+  for (const item of value) {
+    if (typeof item !== 'string') continue
+    if (!allowed.includes(item as T)) continue
+    const typed = item as T
+    if (seen.has(typed)) continue
+    seen.add(typed)
+    normalized.push(typed)
+  }
+  return normalized
+}
+
+function normalizeDeltaSelection<T extends string>(
+  value: unknown,
+  allowed: ReadonlyArray<T>,
+  fallback: DashboardDeltaSelection<T>,
+): DashboardDeltaSelection<T> {
+  if (value === 'all') return 'all'
+  if (typeof value === 'string' && allowed.includes(value as T)) {
+    return value as T
+  }
+  return fallback
+}
+
+export function createDashboardHourlyChartPreferences(
+  overrides: DashboardHourlyChartPreferencesInput = {},
+): DashboardHourlyChartPreferences {
+  return {
+    chartMode:
+      overrides.chartMode === 'results'
+        || overrides.chartMode === 'types'
+        || overrides.chartMode === 'resultsDelta'
+        || overrides.chartMode === 'typesDelta'
+        ? overrides.chartMode
+        : 'results',
+    visibleResultSeries: normalizeSeriesSelection(
+      overrides.visibleResultSeries,
+      DASHBOARD_RESULT_SERIES_ORDER,
+      DEFAULT_VISIBLE_RESULT_SERIES,
+    ),
+    visibleTypeSeries: normalizeSeriesSelection(
+      overrides.visibleTypeSeries,
+      DASHBOARD_TYPE_SERIES_ORDER,
+      DEFAULT_VISIBLE_TYPE_SERIES,
+    ),
+    resultDeltaSeries: normalizeDeltaSelection(
+      overrides.resultDeltaSeries,
+      DASHBOARD_RESULT_SERIES_ORDER,
+      'all',
+    ),
+    typeDeltaSeries: normalizeDeltaSelection(
+      overrides.typeDeltaSeries,
+      DASHBOARD_TYPE_SERIES_ORDER,
+      'all',
+    ),
+  }
+}
+
+export function readDashboardHourlyChartPreferences(
+  storage: Pick<Storage, 'getItem'> | null | undefined,
+  key: string | null | undefined,
+): DashboardHourlyChartPreferences | null {
+  if (storage == null || !key) return null
+  const raw = storage.getItem(key)
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw) as Partial<DashboardHourlyChartPreferences>
+    return createDashboardHourlyChartPreferences(parsed)
+  } catch {
+    return null
+  }
+}
+
+export function writeDashboardHourlyChartPreferences(
+  storage: Pick<Storage, 'setItem'> | null | undefined,
+  key: string | null | undefined,
+  value: DashboardHourlyChartPreferences,
+): void {
+  if (storage == null || !key) return
+  storage.setItem(key, JSON.stringify(value))
+}
 
 const bucketLabelDayFormatter = new Intl.DateTimeFormat('en-US', {
   timeZone: 'UTC',

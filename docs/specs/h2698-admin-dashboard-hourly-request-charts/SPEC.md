@@ -89,10 +89,11 @@
 
 - `Traffic Trends` 外层 panel、标题区与整体 dashboard 排布保持不变，只替换内部内容。
 - 图表默认显示：
-  - 结果图：`次要成功 → 主要成功 → 次要失败 → 主要失败·429 → 主要失败·其他`
+  - 结果图：`次要成功 → 主要成功 → 次要失败 → 主要失败·429 → 主要失败·其他 → unknown`
   - 类型图：`MCP 非计费 → MCP 计费 → API 非计费 → API 计费`
-- `unknown` 结果系列默认隐藏，但可在图例控制中手动显示。
+- 前两个绝对图默认全选全部 series。
 - 前两个图使用多选显示/隐藏；后两个 delta 图使用单选，并额外提供 `全部`。
+- 前端需要记忆上次选中的图表模式与 series 组合，并在下次重新打开管理台时恢复。
 - API / MCP 配色必须复用请求记录界面的语义色族；结果图复用 success / warning / destructive / neutral 语义，不新造一套与现有 UI 脱节的颜色体系。
 
 ## 验收标准
@@ -101,6 +102,7 @@
 - `/api/dashboard/overview` 与 `/api/events` snapshot 都包含 `hourlyRequestWindow`，且 dashboard 切到该路由后可实时刷新。
 - 小时桶严格按 UTC 整点封口，不包含当前未封口小时。
 - 结果图与类型图的默认堆叠顺序、默认可见系列、delta 行为与本 spec 一致。
+- 管理台重新打开后，会恢复上一次选中的图表模式与 series 显示状态。
 - 当所有可见系列被隐藏时，图表区域显示明确 empty state，而不是坏图或空白画布。
 - Storybook 覆盖 4 个图表模式、toggle 行为与空数据场景，并提供最终视觉证据。
 
@@ -123,7 +125,7 @@
 - source_type: storybook_canvas
   story_id_or_title: `admin-components-dashboardoverview--default`
   state: `results`
-  evidence_note: 验证绝对“调用结果”图以结果分类为堆叠顺序展示最近 25 个完整 UTC 小时，并保留多选系列切换。
+  evidence_note: 验证绝对“调用结果”图默认全选全部结果 series，并以结果分类为堆叠顺序展示最近 25 个完整 UTC 小时。
   image:
   ![管理员仪表盘小时图表：调用结果](./assets/dashboard-hourly-results.png)
 

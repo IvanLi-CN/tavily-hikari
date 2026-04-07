@@ -21,4 +21,10 @@ describe('DashboardOverview Storybook coverage', () => {
     expect(markup).toContain('No visible chart series for the current selection.')
     expect(markup).toContain('Traffic Trends')
   })
+
+  it('keeps the absolute charts on all-series defaults in the primary stories', () => {
+    expect(dashboardStories.Default.args?.initialVisibleResultSeries).toBeUndefined()
+    expect(dashboardStories.Default.args?.initialVisibleTypeSeries).toBeUndefined()
+    expect(dashboardStories.TypesDeltaMode.args?.initialTypeDeltaSeries).toBe('all')
+  })
 })

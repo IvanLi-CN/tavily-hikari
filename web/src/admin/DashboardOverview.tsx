@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import type {
   ApiKeyStats,
@@ -28,13 +28,17 @@ import {
   DASHBOARD_TYPE_SERIES_ORDER,
   DEFAULT_VISIBLE_RESULT_SERIES,
   DEFAULT_VISIBLE_TYPE_SERIES,
+  createDashboardHourlyChartPreferences,
   formatHourlyBucketLabel,
   getResultSeriesValue,
   getTypeSeriesValue,
   getVisibleHourlyBuckets,
+  readDashboardHourlyChartPreferences,
   toggleSeriesSelection,
+  writeDashboardHourlyChartPreferences,
   type DashboardDeltaSelection,
   type DashboardHourlyChartMode,
+  type DashboardHourlyChartPreferences,
   type DashboardResultSeriesId,
   type DashboardTypeSeriesId,
 } from './dashboardHourlyCharts'
@@ -146,6 +150,7 @@ interface DashboardOverviewProps {
   initialVisibleTypeSeries?: ReadonlyArray<DashboardTypeSeriesId>
   initialResultDeltaSeries?: DashboardDeltaSelection<DashboardResultSeriesId>
   initialTypeDeltaSeries?: DashboardDeltaSelection<DashboardTypeSeriesId>
+  chartPersistenceKey?: string | null
 }
 
 interface DashboardChartPalette {
@@ -312,6 +317,7 @@ function DashboardTrendPanel({
   initialVisibleTypeSeries = DEFAULT_VISIBLE_TYPE_SERIES,
   initialResultDeltaSeries = 'all',
   initialTypeDeltaSeries = 'all',
+  chartPersistenceKey = null,
 }: {
   strings: DashboardOverviewStrings
   overviewReady: boolean
@@ -321,12 +327,50 @@ function DashboardTrendPanel({
   initialVisibleTypeSeries?: ReadonlyArray<DashboardTypeSeriesId>
   initialResultDeltaSeries?: DashboardDeltaSelection<DashboardResultSeriesId>
   initialTypeDeltaSeries?: DashboardDeltaSelection<DashboardTypeSeriesId>
+  chartPersistenceKey?: string | null
 }): JSX.Element {
-  const [chartMode, setChartMode] = useState<DashboardHourlyChartMode>(initialChartMode)
-  const [visibleResultSeries, setVisibleResultSeries] = useState<DashboardResultSeriesId[]>([...initialVisibleResultSeries])
-  const [visibleTypeSeries, setVisibleTypeSeries] = useState<DashboardTypeSeriesId[]>([...initialVisibleTypeSeries])
-  const [resultDeltaSeries, setResultDeltaSeries] = useState<DashboardDeltaSelection<DashboardResultSeriesId>>(initialResultDeltaSeries)
-  const [typeDeltaSeries, setTypeDeltaSeries] = useState<DashboardDeltaSelection<DashboardTypeSeriesId>>(initialTypeDeltaSeries)
+  const initialPreferences = useMemo<DashboardHourlyChartPreferences>(() => {
+    const fallback = createDashboardHourlyChartPreferences({
+      chartMode: initialChartMode,
+      visibleResultSeries: initialVisibleResultSeries,
+      visibleTypeSeries: initialVisibleTypeSeries,
+      resultDeltaSeries: initialResultDeltaSeries,
+      typeDeltaSeries: initialTypeDeltaSeries,
+    })
+    if (typeof window === 'undefined') return fallback
+    return readDashboardHourlyChartPreferences(window.localStorage, chartPersistenceKey) ?? fallback
+  }, [
+    chartPersistenceKey,
+    initialChartMode,
+    initialResultDeltaSeries,
+    initialTypeDeltaSeries,
+    initialVisibleResultSeries,
+    initialVisibleTypeSeries,
+  ])
+
+  const [chartMode, setChartMode] = useState<DashboardHourlyChartMode>(initialPreferences.chartMode)
+  const [visibleResultSeries, setVisibleResultSeries] = useState<DashboardResultSeriesId[]>(initialPreferences.visibleResultSeries)
+  const [visibleTypeSeries, setVisibleTypeSeries] = useState<DashboardTypeSeriesId[]>(initialPreferences.visibleTypeSeries)
+  const [resultDeltaSeries, setResultDeltaSeries] = useState<DashboardDeltaSelection<DashboardResultSeriesId>>(initialPreferences.resultDeltaSeries)
+  const [typeDeltaSeries, setTypeDeltaSeries] = useState<DashboardDeltaSelection<DashboardTypeSeriesId>>(initialPreferences.typeDeltaSeries)
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    writeDashboardHourlyChartPreferences(window.localStorage, chartPersistenceKey, {
+      chartMode,
+      visibleResultSeries,
+      visibleTypeSeries,
+      resultDeltaSeries,
+      typeDeltaSeries,
+    })
+  }, [
+    chartMode,
+    chartPersistenceKey,
+    resultDeltaSeries,
+    typeDeltaSeries,
+    visibleResultSeries,
+    visibleTypeSeries,
+  ])
 
   const palette = readDashboardChartPalette()
   const visibleBuckets = useMemo(() => getVisibleHourlyBuckets(hourlyRequestWindow), [hourlyRequestWindow])
@@ -600,6 +644,7 @@ export default function DashboardOverview({
   initialVisibleTypeSeries,
   initialResultDeltaSeries,
   initialTypeDeltaSeries,
+  chartPersistenceKey,
 }: DashboardOverviewProps): JSX.Element {
   const disabledTokens = tokens.filter((item) => !item.enabled).slice(0, 5)
   const exhaustedKeys = keys.filter((item) => item.status === 'exhausted').slice(0, 5)
@@ -758,6 +803,7 @@ export default function DashboardOverview({
         initialVisibleTypeSeries={initialVisibleTypeSeries}
         initialResultDeltaSeries={initialResultDeltaSeries}
         initialTypeDeltaSeries={initialTypeDeltaSeries}
+        chartPersistenceKey={chartPersistenceKey}
       />
 
       <section className="surface panel">

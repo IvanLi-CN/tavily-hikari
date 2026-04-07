@@ -257,6 +257,7 @@ const REFRESH_INTERVAL_MS = 30_000
 const LOGS_PER_PAGE = 20
 const DASHBOARD_RECENT_LOGS_PER_PAGE = 64
 const DASHBOARD_RECENT_JOBS_PER_PAGE = 20
+const DASHBOARD_HOURLY_CHART_PERSISTENCE_KEY = 'admin.dashboard.hourly-request-charts.v1'
 const DEFAULT_KEYS_PER_PAGE = 20
 const USERS_PER_PAGE = 20
 // Auto-collapse behavior for the API keys batch overlay (empty textarea only):
@@ -9095,6 +9096,7 @@ function AdminDashboard(): JSX.Element {
           monthQuotaCharge={monthQuotaCharge}
           statusMetrics={statusMetrics}
           hourlyRequestWindow={dashboardHourlyRequestWindow}
+          chartPersistenceKey={DASHBOARD_HOURLY_CHART_PERSISTENCE_KEY}
           tokenCoverage={dashboardTokenCoverage}
           tokens={dashboardTokens}
           keys={dashboardKeys}

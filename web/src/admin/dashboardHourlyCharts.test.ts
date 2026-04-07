@@ -4,9 +4,14 @@ import {
   buildDashboardHourlyRequestWindowFixture,
   buildDeltaSeriesValues,
   buildHourlyBucketLookup,
+  createDashboardHourlyChartPreferences,
   createEmptyDashboardHourlyRequestWindow,
+  DASHBOARD_RESULT_SERIES_ORDER,
+  DASHBOARD_TYPE_SERIES_ORDER,
   getVisibleHourlyBuckets,
+  readDashboardHourlyChartPreferences,
   toggleSeriesSelection,
+  writeDashboardHourlyChartPreferences,
 } from './dashboardHourlyCharts'
 
 describe('dashboardHourlyCharts helpers', () => {
@@ -55,6 +60,42 @@ describe('dashboardHourlyCharts helpers', () => {
       visibleBuckets: 25,
       retainedBuckets: 49,
       buckets: [],
+    })
+  })
+
+  it('defaults both absolute charts to all visible series', () => {
+    const preferences = createDashboardHourlyChartPreferences()
+
+    expect(preferences.visibleResultSeries).toEqual([...DASHBOARD_RESULT_SERIES_ORDER])
+    expect(preferences.visibleTypeSeries).toEqual([...DASHBOARD_TYPE_SERIES_ORDER])
+  })
+
+  it('round-trips persisted chart preferences and preserves explicit empty absolute selections', () => {
+    const storage = new Map<string, string>()
+    const storageApi = {
+      getItem(key: string) {
+        return storage.get(key) ?? null
+      },
+      setItem(key: string, value: string) {
+        storage.set(key, value)
+      },
+    }
+    const key = 'admin.dashboard.hourly-request-charts.v1'
+
+    writeDashboardHourlyChartPreferences(storageApi, key, {
+      chartMode: 'results',
+      visibleResultSeries: [],
+      visibleTypeSeries: ['apiBillable'],
+      resultDeltaSeries: 'primaryFailure429',
+      typeDeltaSeries: 'all',
+    })
+
+    expect(readDashboardHourlyChartPreferences(storageApi, key)).toEqual({
+      chartMode: 'results',
+      visibleResultSeries: [],
+      visibleTypeSeries: ['apiBillable'],
+      resultDeltaSeries: 'primaryFailure429',
+      typeDeltaSeries: 'all',
     })
   })
 })
