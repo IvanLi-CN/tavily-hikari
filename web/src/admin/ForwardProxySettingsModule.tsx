@@ -1,4 +1,3 @@
-import { Icon } from '@iconify/react'
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Badge } from '../components/ui/badge'
@@ -18,6 +17,7 @@ import { Switch } from '../components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table'
 import { Textarea } from '../components/ui/textarea'
 import AdminLoadingRegion from '../components/AdminLoadingRegion'
+import { Icon } from '../lib/icons'
 import { useAnchoredFloatingLayer } from '../lib/useAnchoredFloatingLayer'
 import type {
   ForwardProxyActivityBucket,

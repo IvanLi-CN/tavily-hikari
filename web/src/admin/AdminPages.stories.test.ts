@@ -70,4 +70,22 @@ describe('AdminPages Storybook proofs', () => {
     expect(markup).not.toContain('200 条')
     expect(markup).not.toContain('10 页')
   })
+
+  it('renders the system settings page story with a bundled navigation icon', () => {
+    const renderStory = adminPageStories.SystemSettings.render as (() => JSX.Element) | undefined
+    expect(renderStory).toBeDefined()
+
+    const markup = renderToStaticMarkup(
+      createElement(
+        LanguageProvider,
+        { initialLanguage: 'zh' },
+        createElement(ThemeProvider, null, createElement(TooltipProvider, null, createElement(renderStory!))),
+      ),
+    )
+
+    expect(markup).toContain('系统设置')
+    expect(markup).toContain('admin-nav-item-active')
+    expect(markup).toContain('admin-nav-item-icon')
+    expect(markup).toContain('<svg')
+  })
 })

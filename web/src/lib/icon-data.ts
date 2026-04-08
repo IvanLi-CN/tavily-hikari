@@ -12,6 +12,11 @@ export const BUNDLED_ICONS: Record<string, IconifyIcon> = {
     "width": 24,
     "height": 24
   },
+  "mdi:alert-circle": {
+    "body": "<path fill=\"currentColor\" d=\"M13 13h-2V7h2m0 10h-2v-2h2M12 2A10 10 0 0 0 2 12a10 10 0 0 0 10 10a10 10 0 0 0 10-10A10 10 0 0 0 12 2\"/>",
+    "width": 24,
+    "height": 24
+  },
   "mdi:alert-circle-outline": {
     "body": "<path fill=\"currentColor\" d=\"M11 15h2v2h-2zm0-8h2v6h-2zm1-5C6.47 2 2 6.5 2 12a10 10 0 0 0 10 10a10 10 0 0 0 10-10A10 10 0 0 0 12 2m0 18a8 8 0 0 1-8-8a8 8 0 0 1 8-8a8 8 0 0 1 8 8a8 8 0 0 1-8 8\"/>",
     "width": 24,
@@ -52,6 +57,11 @@ export const BUNDLED_ICONS: Record<string, IconifyIcon> = {
     "width": 24,
     "height": 24
   },
+  "mdi:check-circle": {
+    "body": "<path fill=\"currentColor\" d=\"M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10s10-4.5 10-10S17.5 2 12 2m-2 15l-5-5l1.41-1.41L10 14.17l7.59-7.59L19 8z\"/>",
+    "width": 24,
+    "height": 24
+  },
   "mdi:check-circle-outline": {
     "body": "<path fill=\"currentColor\" d=\"M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10s10-4.5 10-10S17.5 2 12 2m0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8s8 3.59 8 8s-3.59 8-8 8m4.59-12.42L10 14.17l-2.59-2.58L6 13l4 4l8-8z\"/>",
     "width": 24,
@@ -64,6 +74,11 @@ export const BUNDLED_ICONS: Record<string, IconifyIcon> = {
   },
   "mdi:chevron-up": {
     "body": "<path fill=\"currentColor\" d=\"M7.41 15.41L12 10.83l4.59 4.58L18 14l-6-6l-6 6z\"/>",
+    "width": 24,
+    "height": 24
+  },
+  "mdi:circle-outline": {
+    "body": "<path fill=\"currentColor\" d=\"M12 20a8 8 0 0 1-8-8a8 8 0 0 1 8-8a8 8 0 0 1 8 8a8 8 0 0 1-8 8m0-18A10 10 0 0 0 2 12a10 10 0 0 0 10 10a10 10 0 0 0 10-10A10 10 0 0 0 12 2\"/>",
     "width": 24,
     "height": 24
   },
@@ -84,6 +99,11 @@ export const BUNDLED_ICONS: Record<string, IconifyIcon> = {
   },
   "mdi:content-copy": {
     "body": "<path fill=\"currentColor\" d=\"M19 21H8V7h11m0-2H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2m-3-4H4a2 2 0 0 0-2 2v14h2V3h12z\"/>",
+    "width": 24,
+    "height": 24
+  },
+  "mdi:cog-outline": {
+    "body": "<path fill=\"currentColor\" d=\"M12 8a4 4 0 0 1 4 4a4 4 0 0 1-4 4a4 4 0 0 1-4-4a4 4 0 0 1 4-4m0 2a2 2 0 0 0-2 2a2 2 0 0 0 2 2a2 2 0 0 0 2-2a2 2 0 0 0-2-2m-2 12c-.25 0-.46-.18-.5-.42l-.37-2.65c-.63-.25-1.17-.59-1.69-.99l-2.49 1.01c-.22.08-.49 0-.61-.22l-2-3.46a.493.493 0 0 1 .12-.64l2.11-1.66L4.5 12l.07-1l-2.11-1.63a.493.493 0 0 1-.12-.64l2-3.46c.12-.22.39-.31.61-.22l2.49 1c.52-.39 1.06-.73 1.69-.98l.37-2.65c.04-.24.25-.42.5-.42h4c.25 0 .46.18.5.42l.37 2.65c.63.25 1.17.59 1.69.98l2.49-1c.22-.09.49 0 .61.22l2 3.46c.13.22.07.49-.12.64L19.43 11l.07 1l-.07 1l2.11 1.63c.19.15.25.42.12.64l-2 3.46c-.12.22-.39.31-.61.22l-2.49-1c-.52.39-1.06.73-1.69.98l-.37 2.65c-.04.24-.25.42-.5.42zm1.25-18l-.37 2.61c-1.2.25-2.26.89-3.03 1.78L5.44 7.35l-.75 1.3L6.8 10.2a5.55 5.55 0 0 0 0 3.6l-2.12 1.56l.75 1.3l2.43-1.04c.77.88 1.82 1.52 3.01 1.76l.37 2.62h1.52l.37-2.61c1.19-.25 2.24-.89 3.01-1.77l2.43 1.04l.75-1.3l-2.12-1.55c.4-1.17.4-2.44 0-3.61l2.11-1.55l-.75-1.3l-2.41 1.04a5.42 5.42 0 0 0-3.03-1.77L12.75 4z\"/>",
     "width": 24,
     "height": 24
   },
@@ -157,8 +177,18 @@ export const BUNDLED_ICONS: Record<string, IconifyIcon> = {
     "width": 24,
     "height": 24
   },
+  "mdi:lock-outline": {
+    "body": "<path fill=\"currentColor\" d=\"M12 17a2 2 0 0 1-2-2c0-1.11.89-2 2-2a2 2 0 0 1 2 2a2 2 0 0 1-2 2m6 3V10H6v10zm0-12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V10c0-1.11.89-2 2-2h1V6a5 5 0 0 1 5-5a5 5 0 0 1 5 5v2zm-6-5a3 3 0 0 0-3 3v2h6V6a3 3 0 0 0-3-3\"/>",
+    "width": 24,
+    "height": 24
+  },
   "mdi:loading": {
     "body": "<path fill=\"currentColor\" d=\"M12 4V2A10 10 0 0 0 2 12h2a8 8 0 0 1 8-8\"/>",
+    "width": 24,
+    "height": 24
+  },
+  "mdi:map-marker-radius-outline": {
+    "body": "<path fill=\"currentColor\" d=\"M12 4c2.2 0 4 1.8 4 4c0 2.1-2.1 5.5-4 7.9c-1.9-2.5-4-5.8-4-7.9c0-2.2 1.8-4 4-4m0-2C8.7 2 6 4.7 6 8c0 4.5 6 11 6 11s6-6.6 6-11c0-3.3-2.7-6-6-6m0 4c-1.1 0-2 .9-2 2s.9 2 2 2s2-.9 2-2s-.9-2-2-2m8 13c0 2.2-3.6 4-8 4s-8-1.8-8-4c0-1.3 1.2-2.4 3.1-3.2l.6.9c-1 .5-1.7 1.1-1.7 1.8c0 1.4 2.7 2.5 6 2.5s6-1.1 6-2.5c0-.7-.7-1.3-1.8-1.8l.6-.9c2 .8 3.2 1.9 3.2 3.2\"/>",
     "width": 24,
     "height": 24
   },
@@ -169,6 +199,11 @@ export const BUNDLED_ICONS: Record<string, IconifyIcon> = {
   },
   "mdi:monitor-dashboard": {
     "body": "<path fill=\"currentColor\" d=\"M21 16V4H3v12zm0-14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-7v2h2v2H8v-2h2v-2H3a2 2 0 0 1-2-2V4c0-1.11.89-2 2-2zM5 6h9v5H5zm10 0h4v2h-4zm4 3v5h-4V9zM5 12h4v2H5zm5 0h4v2h-4z\"/>",
+    "width": 24,
+    "height": 24
+  },
+  "mdi:minus-circle-outline": {
+    "body": "<path fill=\"currentColor\" d=\"M12 20c-4.41 0-8-3.59-8-8s3.59-8 8-8s8 3.59 8 8s-3.59 8-8 8m0-18A10 10 0 0 0 2 12a10 10 0 0 0 10 10a10 10 0 0 0 10-10A10 10 0 0 0 12 2M7 13h10v-2H7\"/>",
     "width": 24,
     "height": 24
   },

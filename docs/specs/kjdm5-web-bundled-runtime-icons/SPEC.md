@@ -2,9 +2,9 @@
 
 ## 状态
 
-- Status: 部分完成（4/5）
+- Status: 已实现（待审查）
 - Created: 2026-03-15
-- Last: 2026-03-15
+- Last: 2026-04-08
 
 ## 背景 / 问题陈述
 
@@ -151,11 +151,13 @@ None
 - PR visual evidence source: maintain `## Visual Evidence (PR)` in this spec when PR screenshots are needed.
 - If an asset must be used in impl (runtime/test/official docs), list it in `资产晋升（Asset promotion）` and promote it to a stable project path during implementation.
 
-## Visual Evidence (PR)
+## Visual Evidence
 
-- Chrome DevTools 本地验收（未新增截图资产）：
-  - `http://127.0.0.1:30001/admin` 与 `http://127.0.0.1:30001/console` 首屏完成渲染，网络面板仅包含本地静态资源、API 与字体请求，无 `api.iconify.design`。
-  - `http://127.0.0.1:30002/index.html` 与 `http://127.0.0.1:30002/login.html` 通过静态预览验证图标渲染，网络面板同样无 Iconify 外链。
+- 2026-04-08：`Admin/Pages` → `System Settings` Storybook canvas（`admin-pages--system-settings`）
+  - source_type: `storybook_canvas`
+  - story_id_or_title: `admin-pages--system-settings`
+  - evidence_note: 证明管理端侧栏里的「系统设置」入口已经恢复本地 bundle 的齿轮 SVG，不再出现空白占位。
+  - ![Admin 系统设置导航图标修复](./assets/system-settings-nav-icon.png)
 
 ## 资产晋升（Asset promotion）
 
@@ -187,6 +189,9 @@ None
 - 2026-03-15: 完成共享图标注册层、导入路径收口与 PublicHome/UserConsole 外链图标替换。
 - 2026-03-15: 通过 `cd web && bun test`、`cd web && bun run build` 与浏览器网络面板复核，确认构建产物和运行时页面均无 Iconify 外链请求。
 - 2026-03-15: PR #135 全部 checks 通过，补齐 `mdi:tray-arrow-down` 离线清单与覆盖测试后，review-loop 收敛完成。
+- 2026-04-08: follow-up 修复 `mdi:cog-outline` 漏登记，并补齐 `mdi:alert-circle`、`mdi:check-circle`、`mdi:circle-outline`、`mdi:lock-outline`、`mdi:map-marker-radius-outline`、`mdi:minus-circle-outline` 的本地 bundle。
+- 2026-04-08: 将 Forward Proxy 相关模块残留的 `@iconify/react` 入口切回共享离线 `Icon`，重新确认 `cd web && bun run build` 与 `cd web && bun run build-storybook` 产物均不包含 `api.iconify.design`。
+- 2026-04-08: 为 `Admin/Pages` 的 `System Settings` Storybook 页面补充侧栏图标显式断言，并新增本地视觉证据资产 `system-settings-nav-icon.png`。
 
 ## 参考（References）
 

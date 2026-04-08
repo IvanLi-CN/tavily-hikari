@@ -6145,6 +6145,20 @@ export const SystemSettings: Story = {
   parameters: {
     viewport: { defaultViewport: '1440-device-desktop' },
   },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 80))
+    const activeNavItem = canvasElement.ownerDocument.querySelector<HTMLElement>('.admin-nav-item-active')
+    if (!activeNavItem) {
+      throw new Error('Expected system settings page to mark the matching nav item as active.')
+    }
+    if (!activeNavItem.textContent?.includes('系统设置')) {
+      throw new Error('Expected active nav item to remain on system settings.')
+    }
+    const navIcon = activeNavItem.querySelector<SVGElement>('.admin-nav-item-icon svg')
+    if (!navIcon) {
+      throw new Error('Expected system settings nav item to render its bundled SVG icon.')
+    }
+  },
 }
 
 export const ProxySettings: Story = {

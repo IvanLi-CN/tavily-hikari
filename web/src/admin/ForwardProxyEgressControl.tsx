@@ -1,9 +1,9 @@
-import { Icon } from '@iconify/react'
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 
 import type { AdminTranslations } from '../i18n'
 import { useAnchoredFloatingLayer } from '../lib/useAnchoredFloatingLayer'
+import { Icon } from '../lib/icons'
 import { Input } from '../components/ui/input'
 import { Switch } from '../components/ui/switch'
 import type { ForwardProxyDialogProgressState } from './forwardProxyDialogProgress'

@@ -1,7 +1,7 @@
-import { Icon } from '@iconify/react'
 import type { CSSProperties } from 'react'
 
 import type { AdminTranslations } from '../i18n'
+import { Icon } from '../lib/icons'
 import type { ForwardProxyDialogProgressState } from './forwardProxyDialogProgress'
 
 interface ForwardProxyProgressBubbleProps {
