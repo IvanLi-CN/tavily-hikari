@@ -13,11 +13,81 @@ struct LinuxDoCallbackQuery {
 #[derive(Debug, Deserialize)]
 struct LinuxDoTokenResponse {
     access_token: String,
+    #[serde(default)]
+    refresh_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct LinuxDoAuthForm {
     token: Option<String>,
+}
+
+#[derive(Debug)]
+enum LinuxDoSyncError {
+    Transport {
+        stage: &'static str,
+        source: reqwest::Error,
+    },
+    UpstreamStatus {
+        stage: &'static str,
+        status: reqwest::StatusCode,
+        body: String,
+    },
+    Parse {
+        stage: &'static str,
+        detail: String,
+    },
+    InvalidPayload(&'static str),
+    ProviderUserIdMismatch {
+        expected: String,
+        actual: String,
+    },
+    Crypto(String),
+    Storage(String),
+}
+
+impl LinuxDoSyncError {
+    fn status_code(&self) -> StatusCode {
+        match self {
+            Self::Transport { source, .. } => map_oauth_upstream_transport_error(source),
+            Self::UpstreamStatus { status, .. } => map_oauth_upstream_status(*status),
+            Self::Parse { .. }
+            | Self::InvalidPayload(_)
+            | Self::ProviderUserIdMismatch { .. }
+            | Self::Crypto(_)
+            | Self::Storage(_) => StatusCode::BAD_GATEWAY,
+        }
+    }
+}
+
+impl std::fmt::Display for LinuxDoSyncError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Transport { stage, source } => write!(f, "{stage} transport error: {source}"),
+            Self::UpstreamStatus {
+                stage,
+                status,
+                body,
+            } => write!(f, "{stage} upstream status {status}: {body}"),
+            Self::Parse { stage, detail } => write!(f, "{stage} parse error: {detail}"),
+            Self::InvalidPayload(detail) => write!(f, "invalid LinuxDo payload: {detail}"),
+            Self::ProviderUserIdMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "linuxdo provider_user_id mismatch: expected {expected}, got {actual}"
+                )
+            }
+            Self::Crypto(detail) => write!(f, "linuxdo refresh-token crypto error: {detail}"),
+            Self::Storage(detail) => write!(f, "linuxdo refresh-token storage error: {detail}"),
+        }
+    }
+}
+
+fn trim_to_option(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn json_value_to_string(value: &Value) -> Option<String> {
@@ -40,6 +110,298 @@ fn parse_full_token_id(token: &str) -> Option<String> {
         return None;
     }
     Some(id.to_string())
+}
+
+async fn request_linuxdo_token(
+    client: &reqwest::Client,
+    cfg: &LinuxDoOAuthOptions,
+    form: &[(&str, &str)],
+) -> Result<LinuxDoTokenResponse, LinuxDoSyncError> {
+    let token_resp = client
+        .post(&cfg.token_url)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .form(form)
+        .send()
+        .await
+        .map_err(|source| LinuxDoSyncError::Transport {
+            stage: "token",
+            source,
+        })?;
+    if !token_resp.status().is_success() {
+        let status = token_resp.status();
+        let body = token_resp.text().await.unwrap_or_default();
+        return Err(LinuxDoSyncError::UpstreamStatus {
+            stage: "token",
+            status,
+            body,
+        });
+    }
+
+    let token_payload: LinuxDoTokenResponse =
+        token_resp
+            .json()
+            .await
+            .map_err(|err| LinuxDoSyncError::Parse {
+                stage: "token",
+                detail: err.to_string(),
+            })?;
+    let access_token = token_payload.access_token.trim().to_string();
+    if access_token.is_empty() {
+        return Err(LinuxDoSyncError::InvalidPayload(
+            "token response missing access_token",
+        ));
+    }
+
+    Ok(LinuxDoTokenResponse {
+        access_token,
+        refresh_token: trim_to_option(token_payload.refresh_token.as_deref()),
+    })
+}
+
+async fn exchange_linuxdo_authorization_code(
+    client: &reqwest::Client,
+    cfg: &LinuxDoOAuthOptions,
+    code: &str,
+) -> Result<LinuxDoTokenResponse, LinuxDoSyncError> {
+    request_linuxdo_token(
+        client,
+        cfg,
+        &[
+            ("client_id", cfg.client_id.as_deref().unwrap_or_default()),
+            (
+                "client_secret",
+                cfg.client_secret.as_deref().unwrap_or_default(),
+            ),
+            ("code", code),
+            (
+                "redirect_uri",
+                cfg.redirect_url.as_deref().unwrap_or_default(),
+            ),
+            ("grant_type", "authorization_code"),
+        ],
+    )
+    .await
+}
+
+async fn exchange_linuxdo_refresh_token(
+    client: &reqwest::Client,
+    cfg: &LinuxDoOAuthOptions,
+    refresh_token: &str,
+) -> Result<LinuxDoTokenResponse, LinuxDoSyncError> {
+    request_linuxdo_token(
+        client,
+        cfg,
+        &[
+            ("client_id", cfg.client_id.as_deref().unwrap_or_default()),
+            (
+                "client_secret",
+                cfg.client_secret.as_deref().unwrap_or_default(),
+            ),
+            ("refresh_token", refresh_token),
+            ("grant_type", "refresh_token"),
+        ],
+    )
+    .await
+}
+
+async fn fetch_linuxdo_user_json(
+    client: &reqwest::Client,
+    cfg: &LinuxDoOAuthOptions,
+    access_token: &str,
+) -> Result<Value, LinuxDoSyncError> {
+    let user_resp = client
+        .get(&cfg.userinfo_url)
+        .bearer_auth(access_token)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .send()
+        .await
+        .map_err(|source| LinuxDoSyncError::Transport {
+            stage: "userinfo",
+            source,
+        })?;
+    if !user_resp.status().is_success() {
+        let status = user_resp.status();
+        let body = user_resp.text().await.unwrap_or_default();
+        return Err(LinuxDoSyncError::UpstreamStatus {
+            stage: "userinfo",
+            status,
+            body,
+        });
+    }
+
+    user_resp
+        .json()
+        .await
+        .map_err(|err| LinuxDoSyncError::Parse {
+            stage: "userinfo",
+            detail: err.to_string(),
+        })
+}
+
+fn linuxdo_profile_from_user_json(user_json: Value) -> Result<OAuthAccountProfile, LinuxDoSyncError> {
+    let provider_user_id = user_json
+        .get("id")
+        .and_then(json_value_to_string)
+        .filter(|value| !value.is_empty())
+        .ok_or(LinuxDoSyncError::InvalidPayload(
+            "userinfo response missing id",
+        ))?;
+    let username = trim_to_option(user_json.get("username").and_then(|value| value.as_str()));
+    let name = trim_to_option(user_json.get("name").and_then(|value| value.as_str()));
+    let avatar_template =
+        trim_to_option(user_json.get("avatar_template").and_then(|value| value.as_str()));
+    let active = user_json
+        .get("active")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(true);
+    let trust_level = user_json.get("trust_level").and_then(|value| value.as_i64());
+    let raw_payload_json = serde_json::to_string(&user_json).ok();
+
+    Ok(OAuthAccountProfile {
+        provider: "linuxdo".to_string(),
+        provider_user_id,
+        username,
+        name,
+        avatar_template,
+        active,
+        trust_level,
+        raw_payload_json,
+    })
+}
+
+async fn fetch_linuxdo_profile_with_access_token(
+    client: &reqwest::Client,
+    cfg: &LinuxDoOAuthOptions,
+    access_token: &str,
+) -> Result<OAuthAccountProfile, LinuxDoSyncError> {
+    let user_json = fetch_linuxdo_user_json(client, cfg, access_token).await?;
+    linuxdo_profile_from_user_json(user_json)
+}
+
+async fn fetch_linuxdo_profile_from_authorization_code(
+    client: &reqwest::Client,
+    cfg: &LinuxDoOAuthOptions,
+    code: &str,
+) -> Result<(OAuthAccountProfile, LinuxDoTokenResponse), LinuxDoSyncError> {
+    let token_payload = exchange_linuxdo_authorization_code(client, cfg, code).await?;
+    let profile =
+        fetch_linuxdo_profile_with_access_token(client, cfg, &token_payload.access_token).await?;
+    Ok((profile, token_payload))
+}
+
+async fn fetch_linuxdo_profile_from_refresh_token(
+    client: &reqwest::Client,
+    cfg: &LinuxDoOAuthOptions,
+    refresh_token: &str,
+) -> Result<(OAuthAccountProfile, LinuxDoTokenResponse), LinuxDoSyncError> {
+    let token_payload = exchange_linuxdo_refresh_token(client, cfg, refresh_token).await?;
+    let profile =
+        fetch_linuxdo_profile_with_access_token(client, cfg, &token_payload.access_token).await?;
+    Ok((profile, token_payload))
+}
+
+fn encrypt_linuxdo_refresh_token(
+    cfg: &LinuxDoOAuthOptions,
+    refresh_token: &str,
+) -> Result<Option<(String, String)>, LinuxDoSyncError> {
+    use base64::Engine as _;
+    use rand::RngCore as _;
+    use ring::aead::{Aad, CHACHA20_POLY1305, LessSafeKey, Nonce, UnboundKey};
+
+    let Some(key_bytes) = cfg.refresh_token_crypt_key() else {
+        return Ok(None);
+    };
+    let refresh_token = refresh_token.trim();
+    if refresh_token.is_empty() {
+        return Ok(None);
+    }
+
+    let unbound_key = UnboundKey::new(&CHACHA20_POLY1305, key_bytes).map_err(|_| {
+        LinuxDoSyncError::Crypto("invalid refresh-token crypt key length".to_string())
+    })?;
+    let key = LessSafeKey::new(unbound_key);
+    let mut nonce_bytes = [0u8; 12];
+    rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
+
+    let mut in_out = refresh_token.as_bytes().to_vec();
+    key.seal_in_place_append_tag(
+        Nonce::assume_unique_for_key(nonce_bytes),
+        Aad::empty(),
+        &mut in_out,
+    )
+    .map_err(|_| LinuxDoSyncError::Crypto("failed to encrypt refresh token".to_string()))?;
+
+    Ok(Some((
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(in_out),
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(nonce_bytes),
+    )))
+}
+
+fn decrypt_linuxdo_refresh_token(
+    cfg: &LinuxDoOAuthOptions,
+    refresh_token_ciphertext: &str,
+    refresh_token_nonce: &str,
+) -> Result<String, LinuxDoSyncError> {
+    use base64::Engine as _;
+    use ring::aead::{Aad, CHACHA20_POLY1305, LessSafeKey, Nonce, UnboundKey};
+
+    let Some(key_bytes) = cfg.refresh_token_crypt_key() else {
+        return Err(LinuxDoSyncError::Crypto(
+            "missing refresh-token crypt key".to_string(),
+        ));
+    };
+    let ciphertext = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(refresh_token_ciphertext)
+        .map_err(|err| LinuxDoSyncError::Crypto(format!("invalid ciphertext: {err}")))?;
+    let nonce = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(refresh_token_nonce)
+        .map_err(|err| LinuxDoSyncError::Crypto(format!("invalid nonce: {err}")))?;
+    if nonce.len() != 12 {
+        return Err(LinuxDoSyncError::Crypto(
+            "refresh-token nonce must be 12 bytes".to_string(),
+        ));
+    }
+
+    let unbound_key = UnboundKey::new(&CHACHA20_POLY1305, key_bytes).map_err(|_| {
+        LinuxDoSyncError::Crypto("invalid refresh-token crypt key length".to_string())
+    })?;
+    let key = LessSafeKey::new(unbound_key);
+
+    let mut nonce_bytes = [0u8; 12];
+    nonce_bytes.copy_from_slice(&nonce);
+    let mut in_out = ciphertext;
+    let plaintext = key
+        .open_in_place(
+            Nonce::assume_unique_for_key(nonce_bytes),
+            Aad::empty(),
+            &mut in_out,
+        )
+        .map_err(|_| LinuxDoSyncError::Crypto("failed to decrypt refresh token".to_string()))?;
+
+    String::from_utf8(plaintext.to_vec())
+        .map_err(|err| LinuxDoSyncError::Crypto(format!("refresh token is not valid UTF-8: {err}")))
+}
+
+async fn persist_linuxdo_refresh_token_best_effort(
+    state: &AppState,
+    provider_user_id: &str,
+    refresh_token: Option<&str>,
+) -> Result<bool, LinuxDoSyncError> {
+    let Some(refresh_token) = trim_to_option(refresh_token).filter(|value| !value.is_empty()) else {
+        return Ok(false);
+    };
+    let Some((ciphertext, nonce)) =
+        encrypt_linuxdo_refresh_token(&state.linuxdo_oauth, &refresh_token)?
+    else {
+        return Ok(false);
+    };
+
+    state
+        .proxy
+        .set_oauth_account_refresh_token("linuxdo", provider_user_id, &ciphertext, &nonce)
+        .await
+        .map_err(|err| LinuxDoSyncError::Storage(err.to_string()))?;
+    Ok(true)
 }
 
 async fn start_linuxdo_auth(
@@ -179,69 +541,13 @@ async fn get_linuxdo_callback(
     let preferred_token_id = state_payload.bind_token_id;
 
     let client = reqwest::Client::new();
-    let token_resp = client
-        .post(&cfg.token_url)
-        .header(reqwest::header::ACCEPT, "application/json")
-        .form(&[
-            ("client_id", cfg.client_id.as_deref().unwrap_or_default()),
-            (
-                "client_secret",
-                cfg.client_secret.as_deref().unwrap_or_default(),
-            ),
-            ("code", code),
-            (
-                "redirect_uri",
-                cfg.redirect_url.as_deref().unwrap_or_default(),
-            ),
-            ("grant_type", "authorization_code"),
-        ])
-        .send()
+    let (profile, token_payload) = fetch_linuxdo_profile_from_authorization_code(&client, cfg, code)
         .await
         .map_err(|err| {
-            eprintln!("linuxdo token request error: {err}");
-            map_oauth_upstream_transport_error(&err)
+            eprintln!("linuxdo callback oauth flow error: {err}");
+            err.status_code()
         })?;
-    if !token_resp.status().is_success() {
-        let status = token_resp.status();
-        let body = token_resp.text().await.unwrap_or_default();
-        eprintln!("linuxdo token response status={} body={}", status, body);
-        return Err(map_oauth_upstream_status(status));
-    }
-    let token_payload: LinuxDoTokenResponse = token_resp.json().await.map_err(|err| {
-        eprintln!("linuxdo token parse error: {err}");
-        StatusCode::BAD_GATEWAY
-    })?;
-    let access_token = token_payload.access_token.trim().to_string();
-    if access_token.is_empty() {
-        return Err(StatusCode::BAD_GATEWAY);
-    }
-
-    let user_resp = client
-        .get(&cfg.userinfo_url)
-        .bearer_auth(&access_token)
-        .header(reqwest::header::ACCEPT, "application/json")
-        .send()
-        .await
-        .map_err(|err| {
-            eprintln!("linuxdo userinfo request error: {err}");
-            map_oauth_upstream_transport_error(&err)
-        })?;
-    if !user_resp.status().is_success() {
-        let status = user_resp.status();
-        let body = user_resp.text().await.unwrap_or_default();
-        eprintln!("linuxdo userinfo response status={} body={}", status, body);
-        return Err(map_oauth_upstream_status(status));
-    }
-    let user_json: Value = user_resp.json().await.map_err(|err| {
-        eprintln!("linuxdo userinfo parse error: {err}");
-        StatusCode::BAD_GATEWAY
-    })?;
-
-    let provider_user_id = user_json
-        .get("id")
-        .and_then(json_value_to_string)
-        .filter(|v| !v.is_empty())
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let provider_user_id = profile.provider_user_id.clone();
     let allow_registration = state.proxy.allow_registration().await.map_err(|err| {
         eprintln!("read allow registration during linuxdo callback error: {err}");
         StatusCode::INTERNAL_SERVER_ERROR
@@ -264,41 +570,7 @@ async fn get_linuxdo_callback(
             return Ok(response);
         }
     }
-    let username = user_json
-        .get("username")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(str::to_string);
-    let name = user_json
-        .get("name")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(str::to_string);
-    let avatar_template = user_json
-        .get("avatar_template")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(str::to_string);
-    let active = user_json
-        .get("active")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(true);
-    let trust_level = user_json.get("trust_level").and_then(|v| v.as_i64());
-    let raw_payload_json = serde_json::to_string(&user_json).ok();
-
-    let profile = OAuthAccountProfile {
-        provider: "linuxdo".to_string(),
-        provider_user_id: provider_user_id.clone(),
-        username: username.clone(),
-        name: name.clone(),
-        avatar_template,
-        active,
-        trust_level,
-        raw_payload_json,
-    };
+    let username = profile.username.clone();
 
     let user = state
         .proxy
@@ -308,6 +580,43 @@ async fn get_linuxdo_callback(
             eprintln!("upsert linuxdo oauth account error: {err}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
+    let sync_attempted_at = Utc::now().timestamp();
+    if let Err(err) = persist_linuxdo_refresh_token_best_effort(
+        state.as_ref(),
+        &provider_user_id,
+        token_payload.refresh_token.as_deref(),
+    )
+    .await
+    {
+        eprintln!("persist linuxdo refresh token error: {err}");
+        if let Err(mark_err) = state
+            .proxy
+            .record_oauth_account_profile_sync_failure(
+                "linuxdo",
+                &provider_user_id,
+                sync_attempted_at,
+                &err.to_string(),
+            )
+            .await
+        {
+            eprintln!("record linuxdo callback sync failure error: {mark_err}");
+        }
+    } else if let Err(err) = state
+        .proxy
+        .record_oauth_account_profile_sync_success("linuxdo", &provider_user_id, sync_attempted_at)
+        .await
+    {
+        eprintln!("record linuxdo callback sync success error: {err}");
+    }
+    if !profile.active {
+        let clear_binding_cookie = oauth_login_binding_clear_cookie(use_secure_cookie)?;
+        let mut response =
+            (StatusCode::FORBIDDEN, "linuxdo account is inactive").into_response();
+        response
+            .headers_mut()
+            .append(SET_COOKIE, clear_binding_cookie);
+        return Ok(response);
+    }
 
     let note = format!(
         "linuxdo:{}",

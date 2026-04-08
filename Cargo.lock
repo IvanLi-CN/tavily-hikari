@@ -2201,6 +2201,7 @@ dependencies = [
  "nanoid",
  "rand",
  "reqwest",
+ "ring",
  "rust-mcp-schema",
  "serde",
  "serde_json",

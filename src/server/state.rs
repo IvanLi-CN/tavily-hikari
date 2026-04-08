@@ -37,6 +37,9 @@ pub struct LinuxDoOAuthOptions {
     pub userinfo_url: String,
     pub scope: String,
     pub redirect_url: Option<String>,
+    pub refresh_token_crypt_key: Option<[u8; 32]>,
+    pub user_sync_enabled: bool,
+    pub user_sync_at: (u32, u32),
     pub session_max_age_secs: i64,
     pub login_state_ttl_secs: i64,
 }
@@ -53,6 +56,9 @@ impl LinuxDoOAuthOptions {
             userinfo_url: "https://connect.linux.do/api/user".to_string(),
             scope: "user".to_string(),
             redirect_url: None,
+            refresh_token_crypt_key: None,
+            user_sync_enabled: true,
+            user_sync_at: (6, 20),
             session_max_age_secs: 60 * 60 * 24 * 14,
             login_state_ttl_secs: 600,
         }
@@ -75,6 +81,22 @@ impl LinuxDoOAuthOptions {
                 .as_deref()
                 .map(str::trim)
                 .is_some_and(|v| !v.is_empty())
+    }
+
+    fn has_refresh_token_crypt_key(&self) -> bool {
+        self.refresh_token_crypt_key.is_some()
+    }
+
+    fn refresh_token_crypt_key(&self) -> Option<&[u8; 32]> {
+        self.refresh_token_crypt_key.as_ref()
+    }
+
+    fn is_user_sync_scheduler_enabled(&self) -> bool {
+        self.user_sync_enabled && self.is_enabled_and_configured()
+    }
+
+    fn user_sync_time(&self) -> (u32, u32) {
+        self.user_sync_at
     }
 }
 

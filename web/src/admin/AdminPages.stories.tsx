@@ -17,6 +17,7 @@ import type {
   AdminUserTokenSummary,
   ApiKeyStats,
   AuthToken,
+  JobGroup,
   JobLogView,
   MonthlyBrokenKeyDetail,
   RequestLog,
@@ -35,7 +36,6 @@ import { AdminSidebarUtilityCard, AdminSidebarUtilityStack } from '../components
 import LanguageSwitcher from '../components/LanguageSwitcher'
 import { StatusBadge, type StatusTone } from '../components/StatusBadge'
 import ThemeToggle from '../components/ThemeToggle'
-import SegmentedTabs from '../components/ui/SegmentedTabs'
 import { Button } from '../components/ui/button'
 import {
   Drawer,
@@ -47,6 +47,8 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '../components/ui/dropdown-menu'
@@ -76,6 +78,12 @@ import {
   createDashboardMonthMetrics,
   createDashboardTodayMetrics,
 } from './dashboardTodayMetrics'
+import {
+  buildAdminJobFilterOptions,
+  countAdminJobGroups,
+  jobMatchesGroup,
+  summarizeAdminJobFilter,
+} from './jobFilters'
 import { buildDashboardHourlyRequestWindowFixture } from './dashboardHourlyCharts'
 import { ApiKeyBulkSyncProgressBubble } from './ApiKeyBulkSyncProgressBubble'
 import ForwardProxySettingsModule from './ForwardProxySettingsModule'
@@ -848,6 +856,17 @@ function buildStoryRequestLogsList(
 }
 
 const MOCK_JOBS: JobLogView[] = [
+  {
+    id: 612,
+    job_type: 'linuxdo_user_status_sync',
+    key_id: null,
+    key_group: null,
+    status: 'error',
+    attempt: 1,
+    message: 'attempted=18 success=17 skipped=0 failure=1 first_failure=hhf0517: token upstream status 400: {"error":"invalid_grant"}',
+    started_at: now - 30,
+    finished_at: now - 12,
+  },
   {
     id: 611,
     job_type: 'forward_proxy_geo_refresh',
@@ -3942,7 +3961,18 @@ function JobsPageCanvas(): JSX.Element {
   const admin = useTranslate().admin
   const jobsStrings = admin.jobs
   const keyStrings = admin.keys
+  const [jobFilter, setJobFilter] = useState<JobGroup>('all')
   const [expandedJobs, setExpandedJobs] = useState<Set<number>>(() => new Set([608]))
+  const jobGroupCounts = useMemo(() => countAdminJobGroups(MOCK_JOBS), [])
+  const jobFilterOptions = useMemo(
+    () => buildAdminJobFilterOptions(jobsStrings, jobGroupCounts),
+    [jobGroupCounts, jobsStrings],
+  )
+  const jobFilterSummary = useMemo(() => summarizeAdminJobFilter(jobFilter, jobsStrings), [jobFilter, jobsStrings])
+  const visibleJobs = useMemo(
+    () => MOCK_JOBS.filter((job) => jobMatchesGroup(job.job_type, jobFilter)),
+    [jobFilter],
+  )
 
   const toggleJob = (id: number) => {
     setExpandedJobs((prev) => {
@@ -3965,18 +3995,36 @@ function JobsPageCanvas(): JSX.Element {
             <p className="panel-description">{jobsStrings.description}</p>
           </div>
           <div className="panel-actions">
-            <SegmentedTabs<'all' | 'quota' | 'usage' | 'logs' | 'geo'>
-              value="all"
-              onChange={() => {}}
-              options={[
-                { value: 'all', label: jobsStrings.filters.all },
-                { value: 'quota', label: jobsStrings.filters.quota },
-                { value: 'usage', label: jobsStrings.filters.usage },
-                { value: 'logs', label: jobsStrings.filters.logs },
-                { value: 'geo', label: jobsStrings.filters.geo },
-              ]}
-              ariaLabel={jobsStrings.title}
-            />
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  aria-label={jobFilterSummary}
+                  data-testid="storybook-jobs-filter-trigger"
+                >
+                  <Icon icon="mdi:filter-outline" width={16} height={16} aria-hidden="true" />
+                  <span style={{ whiteSpace: 'nowrap' }}>{jobFilterSummary}</span>
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-80">
+                <DropdownMenuLabel>{jobsStrings.table.type}</DropdownMenuLabel>
+                <DropdownMenuRadioGroup
+                  value={jobFilter}
+                  onValueChange={(value) => setJobFilter(value as JobGroup)}
+                >
+                  {jobFilterOptions.map((option) => (
+                    <DropdownMenuRadioItem key={option.value} value={option.value} className="cursor-pointer gap-3 pr-3">
+                      <span>{option.label}</span>
+                      <span className="ml-auto text-xs font-mono tabular-nums opacity-70">
+                        {formatNumber(option.count)}
+                      </span>
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
 
@@ -3994,7 +4042,7 @@ function JobsPageCanvas(): JSX.Element {
               </tr>
             </thead>
             <tbody>
-              {MOCK_JOBS.map((job) => {
+              {visibleJobs.map((job) => {
                 const expanded = expandedJobs.has(job.id)
                 const hasMessage = Boolean(job.message?.trim())
                 const jobTypeText = jobsStrings.types?.[job.job_type] ?? job.job_type
@@ -4083,6 +4131,13 @@ function JobsPageCanvas(): JSX.Element {
                   </Fragment>
                 )
               })}
+              {visibleJobs.length === 0 ? (
+                <tr>
+                  <td colSpan={7}>
+                    <div className="empty-state alert">{jobsStrings.empty.none}</div>
+                  </td>
+                </tr>
+              ) : null}
             </tbody>
           </table>
         </div>
@@ -5935,6 +5990,25 @@ export const Jobs: Story = {
   render: () => <JobsPageCanvas />,
   parameters: {
     viewport: { defaultViewport: '1440-device-desktop' },
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 80))
+    const root = canvasElement.ownerDocument
+    const trigger = root.querySelector<HTMLButtonElement>('[data-testid="storybook-jobs-filter-trigger"]')
+    if (!trigger) {
+      throw new Error('Expected jobs filter trigger to render for jobs story.')
+    }
+    trigger.click()
+    await new Promise((resolve) => window.setTimeout(resolve, 80))
+    const linuxdoOption = Array.from(root.querySelectorAll<HTMLElement>('[role="menuitemradio"]')).find(
+      (item) => item.textContent?.includes('LinuxDo'),
+    )
+    if (!linuxdoOption) {
+      throw new Error('Expected LinuxDo filter option to render inside the jobs filter menu.')
+    }
+    if (!linuxdoOption.textContent?.includes('1')) {
+      throw new Error('Expected LinuxDo filter option to render its group count inside the jobs filter menu.')
+    }
   },
 }
 

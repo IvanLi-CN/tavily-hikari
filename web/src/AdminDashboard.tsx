@@ -36,11 +36,12 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from './components/ui/dropdown-menu'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './components/ui/select'
-import SegmentedTabs from './components/ui/SegmentedTabs'
 import { Card } from './components/ui/card'
 import { Badge } from './components/ui/badge'
 import { Switch } from './components/ui/switch'
@@ -58,6 +59,11 @@ import {
   createDashboardMonthMetrics,
   createDashboardTodayMetrics,
 } from './admin/dashboardTodayMetrics'
+import {
+  buildAdminJobFilterOptions,
+  emptyAdminJobGroupCounts,
+  summarizeAdminJobFilter,
+} from './admin/jobFilters'
 import { fetchAllMonthlyBrokenKeyItems } from './admin/fetchAllMonthlyBrokenKeyItems'
 import ForwardProxySettingsModule, {
   type ForwardProxyDraft,
@@ -189,6 +195,8 @@ import {
   fetchKeyStickyNodes,
   fetchKeyStickyUsers,
   type KeySummary,
+  type JobGroup,
+  type JobGroupCounts,
   type JobLogView,
   fetchApiKeyDetail,
   syncApiKeyUsage,
@@ -1520,10 +1528,11 @@ function AdminDashboard(): JSX.Element {
   const [monthlyBrokenDrawerError, setMonthlyBrokenDrawerError] = useState<string | null>(null)
   const [jobs, setJobs] = useState<JobLogView[]>([])
   const [dashboardJobs, setDashboardJobs] = useState<JobLogView[]>([])
-  const [jobFilter, setJobFilter] = useState<'all' | 'quota' | 'usage' | 'logs' | 'geo'>('all')
+  const [jobFilter, setJobFilter] = useState<JobGroup>('all')
   const [jobsPage, setJobsPage] = useState(1)
   const jobsPerPage = 10
   const [jobsTotal, setJobsTotal] = useState(0)
+  const [jobsGroupCounts, setJobsGroupCounts] = useState<JobGroupCounts>(() => emptyAdminJobGroupCounts())
   const [jobsLoadState, setJobsLoadState] = useState<QueryLoadState>('initial_loading')
   const [jobsError, setJobsError] = useState<string | null>(null)
   const [users, setUsers] = useState<AdminUserSummary[]>([])
@@ -3214,6 +3223,7 @@ function AdminDashboard(): JSX.Element {
         if (!request.signal.aborted) {
           setJobs(result.items)
           setJobsTotal(result.total)
+          setJobsGroupCounts(result.groupCounts)
           setJobsLoadState('ready')
           jobsLoadedRef.current = true
         }
@@ -3222,6 +3232,7 @@ function AdminDashboard(): JSX.Element {
         if (!request.signal.aborted) {
           setJobs([])
           setJobsTotal(0)
+          setJobsGroupCounts(emptyAdminJobGroupCounts())
           setJobsError(loadingStateStrings.error)
           setJobsLoadState('error')
         }
@@ -4171,10 +4182,12 @@ function AdminDashboard(): JSX.Element {
           if (request.signal.aborted) return
           setJobs(result.items)
           setJobsTotal(result.total)
+          setJobsGroupCounts(result.groupCounts)
           setJobsLoadState('ready')
         }).catch((err) => {
           if (request.signal.aborted) return
           console.error(err)
+          setJobsGroupCounts(emptyAdminJobGroupCounts())
           setJobsError(err instanceof Error ? err.message : loadingStateStrings.error)
           setJobsLoadState('error')
         }).finally(() => {
@@ -4650,6 +4663,21 @@ function AdminDashboard(): JSX.Element {
       ),
     [keyStrings.filters.region, keyStrings.filters.selectedSuffix, keyStrings.groups.all, selectedKeyRegionLabels],
   )
+
+  const jobFilterOptions = useMemo(
+    () => buildAdminJobFilterOptions(jobsStrings, jobsGroupCounts),
+    [jobsGroupCounts, jobsStrings],
+  )
+
+  const jobFilterSummary = useMemo(
+    () => summarizeAdminJobFilter(jobFilter, jobsStrings),
+    [jobFilter, jobsStrings],
+  )
+
+  const handleJobFilterChange = useCallback((value: JobGroup) => {
+    setJobFilter(value)
+    setJobsPage(1)
+  }, [])
 
   const keysBatchFirstLine = useMemo(() => {
     return newKeysText.split(/\r?\n/)[0] ?? ''
@@ -10355,19 +10383,36 @@ function AdminDashboard(): JSX.Element {
             <p className="panel-description">{jobsStrings.description}</p>
           </div>
           <div className="panel-actions">
-            <SegmentedTabs<'all' | 'quota' | 'usage' | 'logs' | 'geo'>
-              value={jobFilter}
-              onChange={setJobFilter}
-              options={[
-                { value: 'all', label: jobsStrings.filters.all },
-                { value: 'quota', label: jobsStrings.filters.quota },
-                { value: 'usage', label: jobsStrings.filters.usage },
-                { value: 'logs', label: jobsStrings.filters.logs },
-                { value: 'geo', label: jobsStrings.filters.geo },
-              ]}
-              ariaLabel={jobsStrings.title}
-              disabled={jobsBlocking}
-            />
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  aria-label={jobFilterSummary}
+                  disabled={jobsBlocking}
+                >
+                  <Icon icon="mdi:filter-outline" width={16} height={16} aria-hidden="true" />
+                  <span style={{ whiteSpace: 'nowrap' }}>{jobFilterSummary}</span>
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-80">
+                <DropdownMenuLabel>{jobsStrings.table.type}</DropdownMenuLabel>
+                <DropdownMenuRadioGroup
+                  value={jobFilter}
+                  onValueChange={(value) => handleJobFilterChange(value as JobGroup)}
+                >
+                  {jobFilterOptions.map((option) => (
+                    <DropdownMenuRadioItem key={option.value} value={option.value} className="cursor-pointer gap-3 pr-3">
+                      <span>{option.label}</span>
+                      <span className="ml-auto text-xs font-mono tabular-nums opacity-70">
+                        {formatNumber(option.count)}
+                      </span>
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
         <AdminTableShell

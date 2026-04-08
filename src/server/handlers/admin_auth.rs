@@ -13,6 +13,18 @@ struct PaginatedJobsView {
     total: i64,
     page: usize,
     per_page: usize,
+    group_counts: JobGroupCountsView,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JobGroupCountsView {
+    all: i64,
+    quota: i64,
+    usage: i64,
+    logs: i64,
+    geo: i64,
+    linuxdo: i64,
 }
 
 async fn list_jobs(
@@ -31,7 +43,7 @@ async fn list_jobs(
         .proxy
         .list_recent_jobs_paginated(group, page, per_page)
         .await
-        .map(|(items, total)| {
+        .map(|(items, total, group_counts)| {
             let view_items = items
                 .into_iter()
                 .map(|j| JobLogView {
@@ -51,6 +63,14 @@ async fn list_jobs(
                 total,
                 page,
                 per_page,
+                group_counts: JobGroupCountsView {
+                    all: group_counts.all,
+                    quota: group_counts.quota,
+                    usage: group_counts.usage,
+                    logs: group_counts.logs,
+                    geo: group_counts.geo,
+                    linuxdo: group_counts.linuxdo,
+                },
             })
         })
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)

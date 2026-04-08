@@ -66,6 +66,15 @@ pub async fn serve(
             .as_deref()
             .unwrap_or("<none>")
     );
+    let (linuxdo_user_sync_hour, linuxdo_user_sync_minute) = state.linuxdo_oauth.user_sync_time();
+    println!(
+        "LinuxDo user sync: scheduler_enabled={} oauth_ready={} refresh_token_key={} at={:02}:{:02}",
+        state.linuxdo_oauth.is_user_sync_scheduler_enabled(),
+        state.linuxdo_oauth.is_enabled_and_configured(),
+        state.linuxdo_oauth.has_refresh_token_crypt_key(),
+        linuxdo_user_sync_hour,
+        linuxdo_user_sync_minute,
+    );
 
     let mut router = Router::new()
         .route("/health", get(health_check))
@@ -295,6 +304,9 @@ pub async fn serve(
     spawn_mcp_sessions_gc_scheduler(state.clone());
     spawn_mcp_session_init_backoffs_gc_scheduler(state.clone());
     spawn_request_logs_gc_scheduler(state.clone());
+    if state.linuxdo_oauth.is_user_sync_scheduler_enabled() {
+        spawn_linuxdo_user_status_sync_scheduler(state.clone());
+    }
     let _forward_proxy_geo_refresh_scheduler = spawn_forward_proxy_geo_refresh_scheduler(state.clone());
     spawn_forward_proxy_maintenance_scheduler(state.clone());
 

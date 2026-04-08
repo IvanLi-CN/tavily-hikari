@@ -89,33 +89,36 @@ The stock [`docker-compose.yml`](docker-compose.yml) exposes port 8787 and mount
 
 ## CLI Flags & Environment Variables
 
-| Flag / Env                                                                | Description                                                                                                          |
-| ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `--keys` / `TAVILY_API_KEYS`                                              | Optional helper for bootstrapping or local experiments. In production, prefer the admin API/UI to manage keys.       |
-| `--upstream` / `TAVILY_UPSTREAM`                                          | Tavily MCP upstream endpoint (default `https://mcp.tavily.com/mcp`); path-prefixed reverse-proxy URLs are supported. |
-| `--bind` / `PROXY_BIND`                                                   | Listen address (default `127.0.0.1`).                                                                                |
-| `--port` / `PROXY_PORT`                                                   | Listen port (default `8787`).                                                                                        |
-| `--db-path` / `PROXY_DB_PATH`                                             | SQLite file path (default `tavily_proxy.db`).                                                                        |
-| `--static-dir` / `WEB_STATIC_DIR`                                         | Directory for static assets; auto-detected if `web/dist` exists.                                                     |
-| `--forward-auth-header` / `FORWARD_AUTH_HEADER`                           | Request header that carries the authenticated user identity (e.g., `Remote-Email`).                                  |
-| `--forward-auth-admin-value` / `FORWARD_AUTH_ADMIN_VALUE`                 | Header value that grants admin privileges; leave empty to disable.                                                   |
-| `--forward-auth-nickname-header` / `FORWARD_AUTH_NICKNAME_HEADER`         | Optional header for displaying a friendly name in the UI (e.g., `Remote-Name`).                                      |
-| `--admin-mode-name` / `ADMIN_MODE_NAME`                                   | Override nickname when ForwardAuth headers are missing.                                                              |
-| `--admin-auth-forward-enabled` / `ADMIN_AUTH_FORWARD_ENABLED`             | Boolean switch to enable ForwardAuth checks (default `true`).                                                        |
-| `--admin-auth-builtin-enabled` / `ADMIN_AUTH_BUILTIN_ENABLED`             | Boolean switch to enable built-in admin login (cookie session) (default `false`).                                    |
-| `--admin-auth-builtin-password-hash` / `ADMIN_AUTH_BUILTIN_PASSWORD_HASH` | Built-in admin password hash (PHC string, recommended).                                                              |
-| `--admin-auth-builtin-password` / `ADMIN_AUTH_BUILTIN_PASSWORD`           | Built-in admin password (deprecated; prefer password hash).                                                          |
-| `--dev-open-admin` / `DEV_OPEN_ADMIN`                                     | Boolean flag to bypass admin checks in local/dev setups (default `false`).                                           |
-| `--linuxdo-oauth-enabled` / `LINUXDO_OAUTH_ENABLED`                       | Enable Linux DO Connect OAuth2 login for end users (default `false`).                                                |
-| `--linuxdo-oauth-client-id` / `LINUXDO_OAUTH_CLIENT_ID`                   | Linux DO OAuth2 client ID (`connect.linux.do` app).                                                                  |
-| `--linuxdo-oauth-client-secret` / `LINUXDO_OAUTH_CLIENT_SECRET`           | Linux DO OAuth2 client secret.                                                                                       |
-| `--linuxdo-oauth-authorize-url` / `LINUXDO_OAUTH_AUTHORIZE_URL`           | OAuth2 authorize endpoint (default `https://connect.linux.do/oauth2/authorize`).                                     |
-| `--linuxdo-oauth-token-url` / `LINUXDO_OAUTH_TOKEN_URL`                   | OAuth2 token endpoint (default `https://connect.linux.do/oauth2/token`).                                             |
-| `--linuxdo-oauth-userinfo-url` / `LINUXDO_OAUTH_USERINFO_URL`             | OAuth2 user profile endpoint (default `https://connect.linux.do/api/user`).                                          |
-| `--linuxdo-oauth-scope` / `LINUXDO_OAUTH_SCOPE`                           | OAuth scope (default `user`).                                                                                        |
-| `--linuxdo-oauth-redirect-url` / `LINUXDO_OAUTH_REDIRECT_URL`             | Callback URL on this service (for example `https://tavily.ivanli.cc/auth/linuxdo/callback`).                         |
-| `--user-session-max-age-secs` / `USER_SESSION_MAX_AGE_SECS`               | End-user login cookie max age in seconds (default `1209600`, 14 days).                                               |
-| `--oauth-login-state-ttl-secs` / `OAUTH_LOGIN_STATE_TTL_SECS`             | One-time OAuth state token TTL in seconds (default `600`).                                                           |
+| Flag / Env                                                                          | Description                                                                                                          |
+| ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `--keys` / `TAVILY_API_KEYS`                                                        | Optional helper for bootstrapping or local experiments. In production, prefer the admin API/UI to manage keys.       |
+| `--upstream` / `TAVILY_UPSTREAM`                                                    | Tavily MCP upstream endpoint (default `https://mcp.tavily.com/mcp`); path-prefixed reverse-proxy URLs are supported. |
+| `--bind` / `PROXY_BIND`                                                             | Listen address (default `127.0.0.1`).                                                                                |
+| `--port` / `PROXY_PORT`                                                             | Listen port (default `8787`).                                                                                        |
+| `--db-path` / `PROXY_DB_PATH`                                                       | SQLite file path (default `tavily_proxy.db`).                                                                        |
+| `--static-dir` / `WEB_STATIC_DIR`                                                   | Directory for static assets; auto-detected if `web/dist` exists.                                                     |
+| `--forward-auth-header` / `FORWARD_AUTH_HEADER`                                     | Request header that carries the authenticated user identity (e.g., `Remote-Email`).                                  |
+| `--forward-auth-admin-value` / `FORWARD_AUTH_ADMIN_VALUE`                           | Header value that grants admin privileges; leave empty to disable.                                                   |
+| `--forward-auth-nickname-header` / `FORWARD_AUTH_NICKNAME_HEADER`                   | Optional header for displaying a friendly name in the UI (e.g., `Remote-Name`).                                      |
+| `--admin-mode-name` / `ADMIN_MODE_NAME`                                             | Override nickname when ForwardAuth headers are missing.                                                              |
+| `--admin-auth-forward-enabled` / `ADMIN_AUTH_FORWARD_ENABLED`                       | Boolean switch to enable ForwardAuth checks (default `true`).                                                        |
+| `--admin-auth-builtin-enabled` / `ADMIN_AUTH_BUILTIN_ENABLED`                       | Boolean switch to enable built-in admin login (cookie session) (default `false`).                                    |
+| `--admin-auth-builtin-password-hash` / `ADMIN_AUTH_BUILTIN_PASSWORD_HASH`           | Built-in admin password hash (PHC string, recommended).                                                              |
+| `--admin-auth-builtin-password` / `ADMIN_AUTH_BUILTIN_PASSWORD`                     | Built-in admin password (deprecated; prefer password hash).                                                          |
+| `--dev-open-admin` / `DEV_OPEN_ADMIN`                                               | Boolean flag to bypass admin checks in local/dev setups (default `false`).                                           |
+| `--linuxdo-oauth-enabled` / `LINUXDO_OAUTH_ENABLED`                                 | Enable Linux DO Connect OAuth2 login for end users (default `false`).                                                |
+| `--linuxdo-oauth-client-id` / `LINUXDO_OAUTH_CLIENT_ID`                             | Linux DO OAuth2 client ID (`connect.linux.do` app).                                                                  |
+| `--linuxdo-oauth-client-secret` / `LINUXDO_OAUTH_CLIENT_SECRET`                     | Linux DO OAuth2 client secret.                                                                                       |
+| `--linuxdo-oauth-authorize-url` / `LINUXDO_OAUTH_AUTHORIZE_URL`                     | OAuth2 authorize endpoint (default `https://connect.linux.do/oauth2/authorize`).                                     |
+| `--linuxdo-oauth-token-url` / `LINUXDO_OAUTH_TOKEN_URL`                             | OAuth2 token endpoint (default `https://connect.linux.do/oauth2/token`).                                             |
+| `--linuxdo-oauth-userinfo-url` / `LINUXDO_OAUTH_USERINFO_URL`                       | OAuth2 user profile endpoint (default `https://connect.linux.do/api/user`).                                          |
+| `--linuxdo-oauth-scope` / `LINUXDO_OAUTH_SCOPE`                                     | OAuth scope (default `user`).                                                                                        |
+| `--linuxdo-oauth-redirect-url` / `LINUXDO_OAUTH_REDIRECT_URL`                       | Callback URL on this service (for example `https://tavily.ivanli.cc/auth/linuxdo/callback`).                         |
+| `--linuxdo-oauth-refresh-token-crypt-key` / `LINUXDO_OAUTH_REFRESH_TOKEN_CRYPT_KEY` | Encrypts persisted LinuxDo refresh tokens (32 raw bytes or base64/base64url encoded 32-byte key).                    |
+| `--linuxdo-oauth-user-sync-enabled` / `LINUXDO_OAUTH_USER_SYNC_ENABLED`             | Enable the daily LinuxDo offline user sync scheduler (default `true`).                                               |
+| `--linuxdo-oauth-user-sync-at` / `LINUXDO_OAUTH_USER_SYNC_AT`                       | Daily LinuxDo offline sync time in server local time, format `HH:mm` (default `06:20`).                              |
+| `--user-session-max-age-secs` / `USER_SESSION_MAX_AGE_SECS`                         | End-user login cookie max age in seconds (default `1209600`, 14 days).                                               |
+| `--oauth-login-state-ttl-secs` / `OAUTH_LOGIN_STATE_TTL_SECS`                       | One-time OAuth state token TTL in seconds (default `600`).                                                           |
 
 If `--keys`/`TAVILY_API_KEYS` is supplied, the database sync logic adds or revives keys listed there and soft deletes the rest. Otherwise, the admin workflow fully controls key state.
 
@@ -208,6 +211,9 @@ export LINUXDO_OAUTH_ENABLED=true
 export LINUXDO_OAUTH_CLIENT_ID='<your-linuxdo-client-id>'
 export LINUXDO_OAUTH_CLIENT_SECRET='<your-linuxdo-client-secret>'
 export LINUXDO_OAUTH_REDIRECT_URL='https://tavily.ivanli.cc/auth/linuxdo/callback'
+export LINUXDO_OAUTH_REFRESH_TOKEN_CRYPT_KEY='<32-byte-secret-or-base64>'
+export LINUXDO_OAUTH_USER_SYNC_ENABLED=true
+export LINUXDO_OAUTH_USER_SYNC_AT='06:20'
 ```
 
 - Homepage behavior:
@@ -221,6 +227,13 @@ export LINUXDO_OAUTH_REDIRECT_URL='https://tavily.ivanli.cc/auth/linuxdo/callbac
   - New user accounts no longer receive built-in base quota on first login.
   - Effective quota for new accounts comes from system/user tags only.
   - A newly created account without any quota-granting tags stays at `0/0/0/0` until an admin assigns tags or sets a custom base quota.
+- Offline profile sync:
+  - After a successful LinuxDo login, Hikari stores the latest non-empty `refresh_token` in encrypted form.
+  - The server runs a daily offline sync at `06:20` in the server's local time by default; the scheduler refreshes each eligible LinuxDo profile and rebinds the matching `linuxdo_l*` system tag.
+  - `LINUXDO_OAUTH_REFRESH_TOKEN_CRYPT_KEY` accepts either exactly 32 raw bytes or a base64/base64url string that decodes to 32 bytes.
+  - If the crypt key is missing or invalid, login still works, but refresh-token persistence and the daily LinuxDo sync become no-op.
+  - Existing LinuxDo accounts that were created before refresh tokens started being stored are not picked up automatically; those users need to sign in once again to join the daily sync.
+  - Sync failures such as `invalid_grant`, transport errors, or userinfo mismatches keep the previous trust level, existing user session, and current `linuxdo_l*` tag until the next successful refresh or a user re-login.
 - New endpoints:
   - `GET /auth/linuxdo`
   - `GET /auth/linuxdo/callback`

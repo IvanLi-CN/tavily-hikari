@@ -3,7 +3,7 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::Router;
-    use axum::extract::{Json, Query, State};
+    use axum::extract::{Form, Json, Query, State};
     use axum::http::{HeaderMap, Method, Uri};
     use axum::response::{IntoResponse, Response};
     use axum::routing::{any, get, patch, post};
@@ -65,6 +65,37 @@ mod tests {
             .fetch_all(pool)
             .await
             .expect("fetch api key rows")
+    }
+
+    async fn fetch_user_last_login_at(pool: &sqlx::SqlitePool, user_id: &str) -> Option<i64> {
+        sqlx::query_scalar("SELECT last_login_at FROM users WHERE id = ? LIMIT 1")
+            .bind(user_id)
+            .fetch_one(pool)
+            .await
+            .expect("fetch user last_login_at")
+    }
+
+    async fn fetch_user_active(pool: &sqlx::SqlitePool, user_id: &str) -> i64 {
+        sqlx::query_scalar("SELECT active FROM users WHERE id = ? LIMIT 1")
+            .bind(user_id)
+            .fetch_one(pool)
+            .await
+            .expect("fetch user active")
+    }
+
+    async fn install_refresh_token_write_failure_trigger(pool: &sqlx::SqlitePool) {
+        sqlx::query(
+            r#"
+            CREATE TRIGGER fail_oauth_refresh_token_persist
+            BEFORE UPDATE OF refresh_token_ciphertext, refresh_token_nonce ON oauth_accounts
+            BEGIN
+                SELECT RAISE(FAIL, 'refresh token persistence failed');
+            END
+            "#,
+        )
+        .execute(pool)
+        .await
+        .expect("install refresh token failure trigger");
     }
 
     fn find_api_key_id(rows: &[(String, String)], api_key: &str) -> String {
@@ -4104,6 +4135,9 @@ mod tests {
             userinfo_url: "https://connect.linux.do/api/user".to_string(),
             scope: "user".to_string(),
             redirect_url: Some("http://127.0.0.1/auth/linuxdo/callback".to_string()),
+            refresh_token_crypt_key: Some(*b"0123456789abcdef0123456789abcdef"),
+            user_sync_enabled: true,
+            user_sync_at: (6, 20),
             session_max_age_secs: 3600,
             login_state_ttl_secs: 600,
         }
@@ -4154,6 +4188,26 @@ mod tests {
 
     async fn spawn_user_oauth_server(proxy: TavilyProxy) -> SocketAddr {
         spawn_user_oauth_server_with_options(proxy, linuxdo_oauth_options_for_test()).await
+    }
+
+    #[test]
+    fn linuxdo_user_sync_scheduler_requires_oauth_configuration() {
+        assert!(
+            !LinuxDoOAuthOptions::disabled().is_user_sync_scheduler_enabled(),
+            "disabled LinuxDo OAuth should not enqueue daily sync jobs"
+        );
+
+        let mut missing_redirect = linuxdo_oauth_options_for_test();
+        missing_redirect.redirect_url = None;
+        assert!(
+            !missing_redirect.is_user_sync_scheduler_enabled(),
+            "incomplete LinuxDo OAuth config should not enqueue daily sync jobs"
+        );
+
+        let mut configured = linuxdo_oauth_options_for_test();
+        assert!(configured.is_user_sync_scheduler_enabled());
+        configured.user_sync_enabled = false;
+        assert!(!configured.is_user_sync_scheduler_enabled());
     }
 
     async fn spawn_admin_users_server(proxy: TavilyProxy, dev_open_admin: bool) -> SocketAddr {
@@ -4478,7 +4532,6 @@ mod tests {
         username: &str,
         display_name: &str,
     ) -> SocketAddr {
-        let access_token = "mock-linuxdo-access-token".to_string();
         let profile = json!({
             "id": provider_user_id,
             "username": username,
@@ -4486,19 +4539,71 @@ mod tests {
             "active": true,
             "trust_level": 3
         });
+        spawn_linuxdo_oauth_mock_server_with_behavior(LinuxDoOauthMockBehavior {
+            authorization_access_token: "mock-linuxdo-access-token".to_string(),
+            authorization_refresh_token: Some("mock-linuxdo-refresh-token".to_string()),
+            authorization_profile: profile.clone(),
+            refresh_access_token: "mock-linuxdo-refresh-access-token".to_string(),
+            refresh_refresh_token: Some("mock-linuxdo-refresh-token-rotated".to_string()),
+            refresh_profile: profile,
+            refresh_error: None,
+        })
+        .await
+    }
 
+    #[derive(Clone)]
+    struct LinuxDoOauthMockBehavior {
+        authorization_access_token: String,
+        authorization_refresh_token: Option<String>,
+        authorization_profile: Value,
+        refresh_access_token: String,
+        refresh_refresh_token: Option<String>,
+        refresh_profile: Value,
+        refresh_error: Option<(StatusCode, Value)>,
+    }
+
+    async fn spawn_linuxdo_oauth_mock_server_with_behavior(
+        behavior: LinuxDoOauthMockBehavior,
+    ) -> SocketAddr {
         let app = Router::new()
             .route(
                 "/oauth2/token",
                 post({
-                    let access_token = access_token.clone();
-                    move || {
-                        let access_token = access_token.clone();
+                    let behavior = behavior.clone();
+                    move |Form(form): Form<HashMap<String, String>>| {
+                        let behavior = behavior.clone();
                         async move {
-                            (
-                                StatusCode::OK,
-                                Json(json!({ "access_token": access_token })),
-                            )
+                            match form.get("grant_type").map(String::as_str) {
+                                Some("authorization_code") => {
+                                    let mut payload = json!({
+                                        "access_token": behavior.authorization_access_token,
+                                    });
+                                    if let Some(refresh_token) =
+                                        behavior.authorization_refresh_token.as_deref()
+                                    {
+                                        payload["refresh_token"] = json!(refresh_token);
+                                    }
+                                    (StatusCode::OK, Json(payload))
+                                }
+                                Some("refresh_token") => {
+                                    if let Some((status, payload)) = behavior.refresh_error.clone() {
+                                        return (status, Json(payload));
+                                    }
+                                    let mut payload = json!({
+                                        "access_token": behavior.refresh_access_token,
+                                    });
+                                    if let Some(refresh_token) =
+                                        behavior.refresh_refresh_token.as_deref()
+                                    {
+                                        payload["refresh_token"] = json!(refresh_token);
+                                    }
+                                    (StatusCode::OK, Json(payload))
+                                }
+                                _ => (
+                                    StatusCode::BAD_REQUEST,
+                                    Json(json!({ "error": "unsupported_grant_type" })),
+                                ),
+                            }
                         }
                     }
                 }),
@@ -4506,23 +4611,27 @@ mod tests {
             .route(
                 "/api/user",
                 get({
-                    let access_token = access_token.clone();
-                    let profile = profile.clone();
+                    let behavior = behavior.clone();
                     move |headers: HeaderMap| {
-                        let access_token = access_token.clone();
-                        let profile = profile.clone();
+                        let behavior = behavior.clone();
                         async move {
                             let authorization = headers
                                 .get(axum::http::header::AUTHORIZATION)
                                 .and_then(|value| value.to_str().ok());
-                            let expected = format!("Bearer {access_token}");
-                            if authorization != Some(expected.as_str()) {
-                                return (
-                                    StatusCode::UNAUTHORIZED,
-                                    Json(json!({ "error": "invalid_token" })),
-                                );
+                            let auth_expected =
+                                format!("Bearer {}", behavior.authorization_access_token);
+                            let refresh_expected =
+                                format!("Bearer {}", behavior.refresh_access_token);
+                            if authorization == Some(auth_expected.as_str()) {
+                                return (StatusCode::OK, Json(behavior.authorization_profile));
                             }
-                            (StatusCode::OK, Json(profile))
+                            if authorization == Some(refresh_expected.as_str()) {
+                                return (StatusCode::OK, Json(behavior.refresh_profile));
+                            }
+                            (
+                                StatusCode::UNAUTHORIZED,
+                                Json(json!({ "error": "invalid_token" })),
+                            )
                         }
                     }
                 }),
@@ -4552,6 +4661,67 @@ mod tests {
             .map(str::to_string)
     }
 
+    async fn fetch_linuxdo_oauth_account_snapshot(
+        pool: &sqlx::SqlitePool,
+        provider_user_id: &str,
+    ) -> (
+        Option<String>,
+        Option<String>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<String>,
+    ) {
+        sqlx::query_as(
+            r#"SELECT
+                    refresh_token_ciphertext,
+                    refresh_token_nonce,
+                    trust_level,
+                    last_profile_sync_attempt_at,
+                    last_profile_sync_success_at,
+                    last_profile_sync_error
+               FROM oauth_accounts
+               WHERE provider = 'linuxdo' AND provider_user_id = ?
+               LIMIT 1"#,
+        )
+        .bind(provider_user_id)
+        .fetch_one(pool)
+        .await
+        .expect("fetch linuxdo oauth account snapshot")
+    }
+
+    async fn latest_scheduled_job(
+        pool: &sqlx::SqlitePool,
+    ) -> (String, String, Option<String>) {
+        sqlx::query_as(
+            r#"SELECT job_type, status, message
+               FROM scheduled_jobs
+               ORDER BY id DESC
+               LIMIT 1"#,
+        )
+        .fetch_one(pool)
+        .await
+        .expect("fetch latest scheduled job")
+    }
+
+    async fn fetch_linuxdo_system_tag_keys(
+        pool: &sqlx::SqlitePool,
+        user_id: &str,
+    ) -> Vec<String> {
+        sqlx::query_scalar(
+            r#"SELECT ut.system_key
+               FROM user_tag_bindings ub
+               JOIN user_tags ut ON ut.id = ub.tag_id
+               WHERE ub.user_id = ?
+                 AND ut.system_key LIKE 'linuxdo_l%'
+               ORDER BY ut.system_key ASC"#,
+        )
+        .bind(user_id)
+        .fetch_all(pool)
+        .await
+        .expect("fetch linuxdo system tag keys")
+    }
+
     async fn login_builtin_admin_cookie(admin_addr: SocketAddr, password: &str) -> (Client, String) {
         let client = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -4569,6 +4739,845 @@ mod tests {
             .expect("admin session cookie");
 
         (client, admin_cookie)
+    }
+
+    #[test]
+    fn linuxdo_refresh_token_crypto_round_trip() {
+        let cfg = linuxdo_oauth_options_for_test();
+        let refresh_token = "linuxdo-refresh-token-round-trip";
+
+        let (ciphertext, nonce) = encrypt_linuxdo_refresh_token(&cfg, refresh_token)
+            .expect("encrypt refresh token")
+            .expect("encrypted payload");
+        assert!(!ciphertext.is_empty());
+        assert!(!nonce.is_empty());
+
+        let decrypted =
+            decrypt_linuxdo_refresh_token(&cfg, &ciphertext, &nonce).expect("decrypt refresh token");
+        assert_eq!(decrypted, refresh_token);
+    }
+
+    #[test]
+    fn linuxdo_user_sync_scheduler_uses_next_future_local_window() {
+        use chrono::Timelike as _;
+
+        let today = Local::now().date_naive();
+        let before_naive = today
+            .and_hms_opt(5, 0, 0)
+            .expect("valid local test time before");
+        let before_now = match Local.from_local_datetime(&before_naive) {
+            chrono::LocalResult::Single(dt) => dt,
+            chrono::LocalResult::Ambiguous(dt, _) => dt,
+            chrono::LocalResult::None => Local::now(),
+        };
+        let before_next = next_local_daily_run_after(before_now, 6, 20);
+        assert_eq!(before_next.date_naive(), today);
+        assert_eq!(before_next.hour(), 6);
+        assert_eq!(before_next.minute(), 20);
+        assert!(duration_until_next_local_daily_run(before_now, 6, 20) > Duration::from_secs(0));
+
+        let after_naive = today
+            .and_hms_opt(7, 0, 0)
+            .expect("valid local test time after");
+        let after_now = match Local.from_local_datetime(&after_naive) {
+            chrono::LocalResult::Single(dt) => dt,
+            chrono::LocalResult::Ambiguous(dt, _) => dt,
+            chrono::LocalResult::None => Local::now(),
+        };
+        let expected_tomorrow = today.succ_opt().unwrap_or_else(|| {
+            today
+                .checked_add_days(chrono::Days::new(1))
+                .expect("next day")
+        });
+        let after_next = next_local_daily_run_after(after_now, 6, 20);
+        assert_eq!(after_next.date_naive(), expected_tomorrow);
+        assert_eq!(after_next.hour(), 6);
+        assert_eq!(after_next.minute(), 20);
+    }
+
+    #[tokio::test]
+    async fn linuxdo_callback_persists_refresh_token_and_sync_metadata() {
+        let db_path = temp_db_path("linuxdo-callback-persists-refresh-token");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        let oauth_upstream = spawn_linuxdo_oauth_mock_server_with_behavior(LinuxDoOauthMockBehavior {
+            authorization_access_token: "callback-access-token".to_string(),
+            authorization_refresh_token: Some("callback-refresh-token".to_string()),
+            authorization_profile: json!({
+                "id": "linuxdo-callback-user",
+                "username": "linuxdo_callback_user",
+                "name": "LinuxDO Callback User",
+                "active": true,
+                "trust_level": 2
+            }),
+            refresh_access_token: "unused-refresh-access-token".to_string(),
+            refresh_refresh_token: Some("unused-rotated-refresh-token".to_string()),
+            refresh_profile: json!({
+                "id": "linuxdo-callback-user",
+                "username": "linuxdo_callback_user",
+                "name": "LinuxDO Callback User",
+                "active": true,
+                "trust_level": 2
+            }),
+            refresh_error: None,
+        })
+        .await;
+        let mut oauth_options = linuxdo_oauth_options_for_test();
+        oauth_options.authorize_url = format!("http://{oauth_upstream}/oauth2/authorize");
+        oauth_options.token_url = format!("http://{oauth_upstream}/oauth2/token");
+        oauth_options.userinfo_url = format!("http://{oauth_upstream}/api/user");
+
+        let addr = spawn_user_oauth_server_with_options(proxy, oauth_options.clone()).await;
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build no-redirect client");
+
+        let auth_resp = client
+            .get(format!("http://{addr}/auth/linuxdo"))
+            .send()
+            .await
+            .expect("start linuxdo auth");
+        assert_eq!(auth_resp.status(), reqwest::StatusCode::SEE_OTHER);
+        let location = auth_resp
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .expect("auth redirect location");
+        let state = reqwest::Url::parse(location)
+            .expect("parse redirect url")
+            .query_pairs()
+            .find_map(|(k, v)| (k == "state").then(|| v.into_owned()))
+            .expect("oauth state");
+        let binding_cookie = find_cookie_pair(auth_resp.headers(), OAUTH_LOGIN_BINDING_COOKIE_NAME)
+            .expect("oauth binding cookie");
+
+        let callback_resp = client
+            .get(format!(
+                "http://{addr}/auth/linuxdo/callback?code=test-code&state={state}"
+            ))
+            .header(reqwest::header::COOKIE, binding_cookie)
+            .send()
+            .await
+            .expect("oauth callback");
+        assert_eq!(
+            callback_resp.status(),
+            reqwest::StatusCode::TEMPORARY_REDIRECT
+        );
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let (ciphertext, nonce, trust_level, attempted_at, success_at, sync_error) =
+            fetch_linuxdo_oauth_account_snapshot(&pool, "linuxdo-callback-user").await;
+        assert_eq!(trust_level, Some(2));
+        assert!(attempted_at.is_some());
+        assert!(success_at.is_some());
+        assert_eq!(sync_error, None);
+        let decrypted = decrypt_linuxdo_refresh_token(
+            &oauth_options,
+            ciphertext.as_deref().expect("stored ciphertext"),
+            nonce.as_deref().expect("stored nonce"),
+        )
+        .expect("decrypt stored refresh token");
+        assert_eq!(decrypted, "callback-refresh-token");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn linuxdo_callback_rejects_inactive_users_before_creating_session() {
+        let db_path = temp_db_path("linuxdo-callback-inactive-user");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        let oauth_upstream = spawn_linuxdo_oauth_mock_server_with_behavior(LinuxDoOauthMockBehavior {
+            authorization_access_token: "callback-access-token".to_string(),
+            authorization_refresh_token: Some("callback-refresh-token".to_string()),
+            authorization_profile: json!({
+                "id": "linuxdo-inactive-callback-user",
+                "username": "linuxdo_inactive_callback_user",
+                "name": "LinuxDO Inactive Callback User",
+                "active": false,
+                "trust_level": 2
+            }),
+            refresh_access_token: "unused-refresh-access-token".to_string(),
+            refresh_refresh_token: Some("unused-rotated-refresh-token".to_string()),
+            refresh_profile: json!({
+                "id": "linuxdo-inactive-callback-user",
+                "username": "linuxdo_inactive_callback_user",
+                "name": "LinuxDO Inactive Callback User",
+                "active": false,
+                "trust_level": 2
+            }),
+            refresh_error: None,
+        })
+        .await;
+        let mut oauth_options = linuxdo_oauth_options_for_test();
+        oauth_options.authorize_url = format!("http://{oauth_upstream}/oauth2/authorize");
+        oauth_options.token_url = format!("http://{oauth_upstream}/oauth2/token");
+        oauth_options.userinfo_url = format!("http://{oauth_upstream}/api/user");
+
+        let addr = spawn_user_oauth_server_with_options(proxy, oauth_options.clone()).await;
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build no-redirect client");
+
+        let auth_resp = client
+            .get(format!("http://{addr}/auth/linuxdo"))
+            .send()
+            .await
+            .expect("start linuxdo auth");
+        assert_eq!(auth_resp.status(), reqwest::StatusCode::SEE_OTHER);
+        let location = auth_resp
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .expect("auth redirect location");
+        let state = reqwest::Url::parse(location)
+            .expect("parse redirect url")
+            .query_pairs()
+            .find_map(|(k, v)| (k == "state").then(|| v.into_owned()))
+            .expect("oauth state");
+        let binding_cookie = find_cookie_pair(auth_resp.headers(), OAUTH_LOGIN_BINDING_COOKIE_NAME)
+            .expect("oauth binding cookie");
+
+        let callback_resp = client
+            .get(format!(
+                "http://{addr}/auth/linuxdo/callback?code=test-code&state={state}"
+            ))
+            .header(reqwest::header::COOKIE, binding_cookie)
+            .send()
+            .await
+            .expect("oauth callback");
+        assert_eq!(callback_resp.status(), reqwest::StatusCode::FORBIDDEN);
+        assert!(
+            callback_resp
+                .headers()
+                .get_all(reqwest::header::SET_COOKIE)
+                .iter()
+                .filter_map(|value| value.to_str().ok())
+                .any(|value| value.starts_with(&format!("{OAUTH_LOGIN_BINDING_COOKIE_NAME}="))),
+            "inactive callbacks should still clear the OAuth binding cookie"
+        );
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let (_, _, trust_level, attempted_at, success_at, sync_error) =
+            fetch_linuxdo_oauth_account_snapshot(&pool, "linuxdo-inactive-callback-user").await;
+        assert_eq!(trust_level, Some(2));
+        assert!(attempted_at.is_some());
+        assert!(success_at.is_some());
+        assert_eq!(sync_error, None);
+        let user_id: String = sqlx::query_scalar(
+            "SELECT user_id FROM oauth_accounts WHERE provider = 'linuxdo' AND provider_user_id = ? LIMIT 1",
+        )
+        .bind("linuxdo-inactive-callback-user")
+        .fetch_one(&pool)
+        .await
+        .expect("fetch inactive callback user id");
+        assert_eq!(
+            fetch_user_active(&pool, &user_id).await,
+            0,
+            "seeded inactive LinuxDo profile should remain inactive locally"
+        );
+        let session_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM user_sessions")
+            .fetch_one(&pool)
+            .await
+            .expect("count user sessions");
+        assert_eq!(session_count, 0);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn linuxdo_callback_records_sync_failure_when_refresh_token_persistence_fails() {
+        let db_path = temp_db_path("linuxdo-callback-refresh-token-persist-error");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        install_refresh_token_write_failure_trigger(&pool).await;
+
+        let oauth_upstream = spawn_linuxdo_oauth_mock_server_with_behavior(LinuxDoOauthMockBehavior {
+            authorization_access_token: "callback-access-token".to_string(),
+            authorization_refresh_token: Some("callback-refresh-token".to_string()),
+            authorization_profile: json!({
+                "id": "linuxdo-callback-error-user",
+                "username": "linuxdo_callback_error_user",
+                "name": "LinuxDO Callback Error User",
+                "active": true,
+                "trust_level": 2
+            }),
+            refresh_access_token: "unused-refresh-access-token".to_string(),
+            refresh_refresh_token: Some("unused-rotated-refresh-token".to_string()),
+            refresh_profile: json!({
+                "id": "linuxdo-callback-error-user",
+                "username": "linuxdo_callback_error_user",
+                "name": "LinuxDO Callback Error User",
+                "active": true,
+                "trust_level": 2
+            }),
+            refresh_error: None,
+        })
+        .await;
+        let mut oauth_options = linuxdo_oauth_options_for_test();
+        oauth_options.authorize_url = format!("http://{oauth_upstream}/oauth2/authorize");
+        oauth_options.token_url = format!("http://{oauth_upstream}/oauth2/token");
+        oauth_options.userinfo_url = format!("http://{oauth_upstream}/api/user");
+
+        let addr = spawn_user_oauth_server_with_options(proxy, oauth_options).await;
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build no-redirect client");
+
+        let auth_resp = client
+            .get(format!("http://{addr}/auth/linuxdo"))
+            .send()
+            .await
+            .expect("start linuxdo auth");
+        assert_eq!(auth_resp.status(), reqwest::StatusCode::SEE_OTHER);
+        let location = auth_resp
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .expect("auth redirect location");
+        let state = reqwest::Url::parse(location)
+            .expect("parse redirect url")
+            .query_pairs()
+            .find_map(|(k, v)| (k == "state").then(|| v.into_owned()))
+            .expect("oauth state");
+        let binding_cookie = find_cookie_pair(auth_resp.headers(), OAUTH_LOGIN_BINDING_COOKIE_NAME)
+            .expect("oauth binding cookie");
+
+        let callback_resp = client
+            .get(format!(
+                "http://{addr}/auth/linuxdo/callback?code=test-code&state={state}"
+            ))
+            .header(reqwest::header::COOKIE, binding_cookie)
+            .send()
+            .await
+            .expect("oauth callback");
+        assert_eq!(
+            callback_resp.status(),
+            reqwest::StatusCode::TEMPORARY_REDIRECT
+        );
+
+        let (ciphertext, nonce, trust_level, attempted_at, success_at, sync_error) =
+            fetch_linuxdo_oauth_account_snapshot(&pool, "linuxdo-callback-error-user").await;
+        assert_eq!(ciphertext, None);
+        assert_eq!(nonce, None);
+        assert_eq!(trust_level, Some(2));
+        assert!(attempted_at.is_some());
+        assert_eq!(success_at, None);
+        let sync_error = sync_error.expect("sync error recorded");
+        assert!(sync_error.contains("refresh-token storage error"));
+        assert!(sync_error.contains("refresh token persistence failed"));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn linuxdo_user_sync_job_refreshes_trust_level_and_keeps_old_refresh_token_when_provider_does_not_rotate_it(
+    ) {
+        let db_path = temp_db_path("linuxdo-user-sync-success");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        let user = proxy
+            .upsert_oauth_account(&OAuthAccountProfile {
+                provider: "linuxdo".to_string(),
+                provider_user_id: "linuxdo-sync-user".to_string(),
+                username: Some("linuxdo_sync".to_string()),
+                name: Some("LinuxDO Sync".to_string()),
+                avatar_template: None,
+                active: true,
+                trust_level: Some(1),
+                raw_payload_json: None,
+            })
+            .await
+            .expect("seed oauth account");
+        let (ciphertext, nonce) = encrypt_linuxdo_refresh_token(
+            &linuxdo_oauth_options_for_test(),
+            "seed-refresh-token",
+        )
+        .expect("encrypt refresh token")
+        .expect("encrypted refresh token");
+        proxy
+            .set_oauth_account_refresh_token("linuxdo", "linuxdo-sync-user", &ciphertext, &nonce)
+            .await
+            .expect("persist refresh token");
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let original_last_login_at = 1_700_000_123i64;
+        sqlx::query("UPDATE users SET last_login_at = ? WHERE id = ?")
+            .bind(original_last_login_at)
+            .bind(&user.user_id)
+            .execute(&pool)
+            .await
+            .expect("set fixed last_login_at");
+
+        let oauth_upstream = spawn_linuxdo_oauth_mock_server_with_behavior(LinuxDoOauthMockBehavior {
+            authorization_access_token: "unused-auth-access-token".to_string(),
+            authorization_refresh_token: Some("unused-auth-refresh-token".to_string()),
+            authorization_profile: json!({
+                "id": "linuxdo-sync-user",
+                "username": "linuxdo_sync",
+                "name": "LinuxDO Sync",
+                "active": true,
+                "trust_level": 1
+            }),
+            refresh_access_token: "sync-refresh-access-token".to_string(),
+            refresh_refresh_token: None,
+            refresh_profile: json!({
+                "id": "linuxdo-sync-user",
+                "username": "linuxdo_sync",
+                "name": "LinuxDO Sync Updated",
+                "active": true,
+                "trust_level": 4
+            }),
+            refresh_error: None,
+        })
+        .await;
+        let mut oauth_options = linuxdo_oauth_options_for_test();
+        oauth_options.token_url = format!("http://{oauth_upstream}/oauth2/token");
+        oauth_options.userinfo_url = format!("http://{oauth_upstream}/api/user");
+
+        let state = Arc::new(AppState {
+            proxy: proxy.clone(),
+            static_dir: None,
+            forward_auth: ForwardAuthConfig::new(None, None, None, None),
+            forward_auth_enabled: false,
+            builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            linuxdo_oauth: oauth_options,
+            dev_open_admin: false,
+            usage_base: "http://127.0.0.1:58088".to_string(),
+            api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        });
+
+        run_linuxdo_user_status_sync_job(state.clone()).await;
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let (new_ciphertext, new_nonce, trust_level, attempted_at, success_at, sync_error) =
+            fetch_linuxdo_oauth_account_snapshot(&pool, "linuxdo-sync-user").await;
+        assert_eq!(trust_level, Some(4));
+        assert_eq!(new_ciphertext.as_deref(), Some(ciphertext.as_str()));
+        assert_eq!(new_nonce.as_deref(), Some(nonce.as_str()));
+        assert_eq!(
+            fetch_user_last_login_at(&pool, &user.user_id).await,
+            Some(original_last_login_at)
+        );
+        assert!(attempted_at.is_some());
+        assert!(success_at.is_some());
+        assert_eq!(sync_error, None);
+        assert_eq!(
+            fetch_linuxdo_system_tag_keys(&pool, &user.user_id).await,
+            vec!["linuxdo_l4".to_string()]
+        );
+        let latest_job = latest_scheduled_job(&pool).await;
+        assert_eq!(latest_job.0, LINUXDO_USER_STATUS_SYNC_JOB_TYPE);
+        assert_eq!(latest_job.1, "success");
+        let latest_job_message = latest_job.2.expect("scheduled job message");
+        assert!(latest_job_message.contains("attempted=1"));
+        assert!(latest_job_message.contains("success=1"));
+        assert!(latest_job_message.contains("failure=0"));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn linuxdo_user_sync_job_rejects_existing_browser_sessions_for_deactivated_users() {
+        let db_path = temp_db_path("linuxdo-user-sync-deactivate-session");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        let user = proxy
+            .upsert_oauth_account(&OAuthAccountProfile {
+                provider: "linuxdo".to_string(),
+                provider_user_id: "linuxdo-deactivated-user".to_string(),
+                username: Some("linuxdo_deactivated".to_string()),
+                name: Some("LinuxDO Deactivated".to_string()),
+                avatar_template: None,
+                active: true,
+                trust_level: Some(2),
+                raw_payload_json: None,
+            })
+            .await
+            .expect("seed oauth account");
+        let session = proxy
+            .create_user_session(&user, 3600)
+            .await
+            .expect("create user session");
+        let bound_token = proxy
+            .ensure_user_token_binding(&user.user_id, Some("linuxdo:linuxdo_deactivated"))
+            .await
+            .expect("create bound access token");
+        assert!(
+            proxy
+                .validate_access_token(&bound_token.token)
+                .await
+                .expect("validate active bound token"),
+            "active LinuxDo users should keep their bound API token before sync deactivation"
+        );
+        let (ciphertext, nonce) = encrypt_linuxdo_refresh_token(
+            &linuxdo_oauth_options_for_test(),
+            "seed-refresh-token",
+        )
+        .expect("encrypt refresh token")
+        .expect("encrypted refresh token");
+        proxy
+            .set_oauth_account_refresh_token(
+                "linuxdo",
+                "linuxdo-deactivated-user",
+                &ciphertext,
+                &nonce,
+            )
+            .await
+            .expect("persist refresh token");
+
+        let oauth_upstream = spawn_linuxdo_oauth_mock_server_with_behavior(LinuxDoOauthMockBehavior {
+            authorization_access_token: "unused-auth-access-token".to_string(),
+            authorization_refresh_token: Some("unused-auth-refresh-token".to_string()),
+            authorization_profile: json!({
+                "id": "linuxdo-deactivated-user",
+                "username": "linuxdo_deactivated",
+                "name": "LinuxDO Deactivated",
+                "active": true,
+                "trust_level": 2
+            }),
+            refresh_access_token: "sync-refresh-access-token".to_string(),
+            refresh_refresh_token: None,
+            refresh_profile: json!({
+                "id": "linuxdo-deactivated-user",
+                "username": "linuxdo_deactivated",
+                "name": "LinuxDO Deactivated",
+                "active": false,
+                "trust_level": 2
+            }),
+            refresh_error: None,
+        })
+        .await;
+        let mut oauth_options = linuxdo_oauth_options_for_test();
+        oauth_options.token_url = format!("http://{oauth_upstream}/oauth2/token");
+        oauth_options.userinfo_url = format!("http://{oauth_upstream}/api/user");
+
+        let state = Arc::new(AppState {
+            proxy: proxy.clone(),
+            static_dir: None,
+            forward_auth: ForwardAuthConfig::new(None, None, None, None),
+            forward_auth_enabled: false,
+            builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            linuxdo_oauth: oauth_options,
+            dev_open_admin: false,
+            usage_base: "http://127.0.0.1:58088".to_string(),
+            api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        });
+
+        run_linuxdo_user_status_sync_job(state.clone()).await;
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        assert_eq!(fetch_user_active(&pool, &user.user_id).await, 0);
+        assert!(
+            proxy
+                .get_user_session(&session.token)
+                .await
+                .expect("lookup user session")
+                .is_none(),
+            "inactive LinuxDo users should no longer resolve an authenticated browser session"
+        );
+        assert!(
+            !proxy
+                .validate_access_token(&bound_token.token)
+                .await
+                .expect("validate inactive bound token"),
+            "inactive LinuxDo users should no longer authenticate with previously bound API tokens"
+        );
+        let latest_job = latest_scheduled_job(&pool).await;
+        assert_eq!(latest_job.0, LINUXDO_USER_STATUS_SYNC_JOB_TYPE);
+        assert_eq!(latest_job.1, "success");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn linuxdo_user_sync_job_records_invalid_grant_and_preserves_existing_trust_level() {
+        let db_path = temp_db_path("linuxdo-user-sync-invalid-grant");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        let user = proxy
+            .upsert_oauth_account(&OAuthAccountProfile {
+                provider: "linuxdo".to_string(),
+                provider_user_id: "linuxdo-invalid-grant-user".to_string(),
+                username: Some("linuxdo_invalid".to_string()),
+                name: Some("LinuxDO Invalid".to_string()),
+                avatar_template: None,
+                active: true,
+                trust_level: Some(2),
+                raw_payload_json: None,
+            })
+            .await
+            .expect("seed oauth account");
+        let (ciphertext, nonce) = encrypt_linuxdo_refresh_token(
+            &linuxdo_oauth_options_for_test(),
+            "invalid-grant-refresh-token",
+        )
+        .expect("encrypt refresh token")
+        .expect("encrypted refresh token");
+        proxy
+            .set_oauth_account_refresh_token(
+                "linuxdo",
+                "linuxdo-invalid-grant-user",
+                &ciphertext,
+                &nonce,
+            )
+            .await
+            .expect("persist refresh token");
+
+        let oauth_upstream = spawn_linuxdo_oauth_mock_server_with_behavior(LinuxDoOauthMockBehavior {
+            authorization_access_token: "unused-auth-access-token".to_string(),
+            authorization_refresh_token: Some("unused-auth-refresh-token".to_string()),
+            authorization_profile: json!({
+                "id": "linuxdo-invalid-grant-user",
+                "username": "linuxdo_invalid",
+                "name": "LinuxDO Invalid",
+                "active": true,
+                "trust_level": 2
+            }),
+            refresh_access_token: "unused-refresh-access-token".to_string(),
+            refresh_refresh_token: None,
+            refresh_profile: json!({
+                "id": "linuxdo-invalid-grant-user",
+                "username": "linuxdo_invalid",
+                "name": "LinuxDO Invalid Updated",
+                "active": true,
+                "trust_level": 4
+            }),
+            refresh_error: Some((StatusCode::BAD_REQUEST, json!({ "error": "invalid_grant" }))),
+        })
+        .await;
+        let mut oauth_options = linuxdo_oauth_options_for_test();
+        oauth_options.token_url = format!("http://{oauth_upstream}/oauth2/token");
+        oauth_options.userinfo_url = format!("http://{oauth_upstream}/api/user");
+
+        let state = Arc::new(AppState {
+            proxy: proxy.clone(),
+            static_dir: None,
+            forward_auth: ForwardAuthConfig::new(None, None, None, None),
+            forward_auth_enabled: false,
+            builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            linuxdo_oauth: oauth_options,
+            dev_open_admin: false,
+            usage_base: "http://127.0.0.1:58088".to_string(),
+            api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        });
+
+        run_linuxdo_user_status_sync_job(state.clone()).await;
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let (_, _, trust_level, attempted_at, success_at, sync_error) =
+            fetch_linuxdo_oauth_account_snapshot(&pool, "linuxdo-invalid-grant-user").await;
+        assert_eq!(trust_level, Some(2));
+        assert!(attempted_at.is_some());
+        assert_eq!(success_at, None);
+        let sync_error = sync_error.expect("sync error recorded");
+        assert!(sync_error.contains("invalid_grant"));
+        assert_eq!(
+            fetch_linuxdo_system_tag_keys(&pool, &user.user_id).await,
+            vec!["linuxdo_l2".to_string()]
+        );
+        let latest_job = latest_scheduled_job(&pool).await;
+        assert_eq!(latest_job.0, LINUXDO_USER_STATUS_SYNC_JOB_TYPE);
+        assert_eq!(latest_job.1, "error");
+        let latest_job_message = latest_job.2.expect("scheduled job message");
+        assert!(latest_job_message.contains("attempted=1"));
+        assert!(latest_job_message.contains("success=0"));
+        assert!(latest_job_message.contains("failure=1"));
+        assert!(latest_job_message.contains("first_failure="));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn linuxdo_user_sync_job_marks_run_error_when_rotated_refresh_token_persist_fails() {
+        let db_path = temp_db_path("linuxdo-user-sync-rotated-refresh-token-persist-error");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+        let user = proxy
+            .upsert_oauth_account(&OAuthAccountProfile {
+                provider: "linuxdo".to_string(),
+                provider_user_id: "linuxdo-rotated-refresh-error-user".to_string(),
+                username: Some("linuxdo_rotated_error".to_string()),
+                name: Some("LinuxDO Rotated Error".to_string()),
+                avatar_template: None,
+                active: true,
+                trust_level: Some(1),
+                raw_payload_json: None,
+            })
+            .await
+            .expect("seed oauth account");
+        let session = proxy
+            .create_user_session(&user, 3600)
+            .await
+            .expect("create user session");
+        let bound_token = proxy
+            .ensure_user_token_binding(&user.user_id, Some("linuxdo:linuxdo_rotated_error"))
+            .await
+            .expect("create bound access token");
+        assert!(
+            proxy
+                .validate_access_token(&bound_token.token)
+                .await
+                .expect("validate active bound token"),
+            "active LinuxDo users should keep their bound API token before sync deactivation"
+        );
+        let (ciphertext, nonce) = encrypt_linuxdo_refresh_token(
+            &linuxdo_oauth_options_for_test(),
+            "seed-refresh-token",
+        )
+        .expect("encrypt refresh token")
+        .expect("encrypted refresh token");
+        proxy
+            .set_oauth_account_refresh_token(
+                "linuxdo",
+                "linuxdo-rotated-refresh-error-user",
+                &ciphertext,
+                &nonce,
+            )
+            .await
+            .expect("persist refresh token");
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        install_refresh_token_write_failure_trigger(&pool).await;
+
+        let oauth_upstream = spawn_linuxdo_oauth_mock_server_with_behavior(LinuxDoOauthMockBehavior {
+            authorization_access_token: "unused-auth-access-token".to_string(),
+            authorization_refresh_token: Some("unused-auth-refresh-token".to_string()),
+            authorization_profile: json!({
+                "id": "linuxdo-rotated-refresh-error-user",
+                "username": "linuxdo_rotated_error",
+                "name": "LinuxDO Rotated Error",
+                "active": true,
+                "trust_level": 1
+            }),
+            refresh_access_token: "sync-refresh-access-token".to_string(),
+            refresh_refresh_token: Some("rotated-refresh-token".to_string()),
+            refresh_profile: json!({
+                "id": "linuxdo-rotated-refresh-error-user",
+                "username": "linuxdo_rotated_error",
+                "name": "LinuxDO Rotated Error Updated",
+                "active": false,
+                "trust_level": 4
+            }),
+            refresh_error: None,
+        })
+        .await;
+        let mut oauth_options = linuxdo_oauth_options_for_test();
+        oauth_options.token_url = format!("http://{oauth_upstream}/oauth2/token");
+        oauth_options.userinfo_url = format!("http://{oauth_upstream}/api/user");
+
+        let state = Arc::new(AppState {
+            proxy: proxy.clone(),
+            static_dir: None,
+            forward_auth: ForwardAuthConfig::new(None, None, None, None),
+            forward_auth_enabled: false,
+            builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            linuxdo_oauth: oauth_options,
+            dev_open_admin: false,
+            usage_base: "http://127.0.0.1:58088".to_string(),
+            api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        });
+
+        run_linuxdo_user_status_sync_job(state.clone()).await;
+
+        let (new_ciphertext, new_nonce, trust_level, attempted_at, success_at, sync_error) =
+            fetch_linuxdo_oauth_account_snapshot(&pool, "linuxdo-rotated-refresh-error-user")
+                .await;
+        assert_eq!(trust_level, Some(1));
+        assert_eq!(new_ciphertext.as_deref(), Some(ciphertext.as_str()));
+        assert_eq!(new_nonce.as_deref(), Some(nonce.as_str()));
+        assert_eq!(fetch_user_active(&pool, &user.user_id).await, 0);
+        assert!(
+            proxy
+                .get_user_session(&session.token)
+                .await
+                .expect("lookup user session")
+                .is_none(),
+            "failed rotated-token persistence should still deactivate sessions when LinuxDo marks the user inactive"
+        );
+        assert!(
+            !proxy
+                .validate_access_token(&bound_token.token)
+                .await
+                .expect("validate inactive bound token"),
+            "failed rotated-token persistence should still deactivate bound API tokens when LinuxDo marks the user inactive"
+        );
+        assert!(attempted_at.is_some());
+        assert_eq!(success_at, None);
+        let sync_error = sync_error.expect("sync error recorded");
+        assert!(sync_error.contains("upsert oauth account error"));
+        assert!(sync_error.contains("refresh token persistence failed"));
+        assert_eq!(
+            fetch_linuxdo_system_tag_keys(&pool, &user.user_id).await,
+            vec!["linuxdo_l1".to_string()]
+        );
+        let latest_job = latest_scheduled_job(&pool).await;
+        assert_eq!(latest_job.0, LINUXDO_USER_STATUS_SYNC_JOB_TYPE);
+        assert_eq!(latest_job.1, "error");
+        let latest_job_message = latest_job.2.expect("scheduled job message");
+        assert!(latest_job_message.contains("attempted=1"));
+        assert!(latest_job_message.contains("success=0"));
+        assert!(latest_job_message.contains("failure=1"));
+        assert!(latest_job_message.contains("first_failure="));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn linuxdo_user_sync_job_noops_without_refresh_token_crypt_key() {
+        let db_path = temp_db_path("linuxdo-user-sync-no-key");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy created");
+
+        let mut oauth_options = linuxdo_oauth_options_for_test();
+        oauth_options.refresh_token_crypt_key = None;
+        let state = Arc::new(AppState {
+            proxy,
+            static_dir: None,
+            forward_auth: ForwardAuthConfig::new(None, None, None, None),
+            forward_auth_enabled: false,
+            builtin_admin: BuiltinAdminAuth::new(false, None, None),
+            linuxdo_oauth: oauth_options,
+            dev_open_admin: false,
+            usage_base: "http://127.0.0.1:58088".to_string(),
+            api_key_ip_geo_origin: "https://api.country.is".to_string(),
+        });
+
+        run_linuxdo_user_status_sync_job(state.clone()).await;
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let latest_job = latest_scheduled_job(&pool).await;
+        assert_eq!(latest_job.0, LINUXDO_USER_STATUS_SYNC_JOB_TYPE);
+        assert_eq!(latest_job.1, "success");
+        assert_eq!(
+            latest_job.2.as_deref(),
+            Some(
+                "attempted=0 success=0 skipped=0 failure=0 reason=missing_refresh_token_crypt_key"
+            )
+        );
+
+        let _ = std::fs::remove_file(db_path);
     }
 
     #[tokio::test]

@@ -5386,6 +5386,30 @@ impl TavilyProxy {
         self.key_store.upsert_oauth_account(profile).await
     }
 
+    /// Refresh third-party OAuth profile without mutating the user's real last_login_at timestamp.
+    pub async fn refresh_oauth_account_profile(
+        &self,
+        profile: &OAuthAccountProfile,
+    ) -> Result<UserIdentity, ProxyError> {
+        self.key_store.refresh_oauth_account_profile(profile).await
+    }
+
+    /// Refresh third-party OAuth profile and atomically rotate the persisted refresh token.
+    pub async fn refresh_oauth_account_profile_with_refresh_token(
+        &self,
+        profile: &OAuthAccountProfile,
+        refresh_token_ciphertext: &str,
+        refresh_token_nonce: &str,
+    ) -> Result<UserIdentity, ProxyError> {
+        self.key_store
+            .refresh_oauth_account_profile_with_refresh_token(
+                profile,
+                refresh_token_ciphertext,
+                refresh_token_nonce,
+            )
+            .await
+    }
+
     /// Check whether a third-party account already exists locally.
     pub async fn oauth_account_exists(
         &self,
@@ -5394,6 +5418,73 @@ impl TavilyProxy {
     ) -> Result<bool, ProxyError> {
         self.key_store
             .oauth_account_exists(provider, provider_user_id)
+            .await
+    }
+
+    /// Persist encrypted refresh token material for an OAuth account.
+    pub async fn set_oauth_account_refresh_token(
+        &self,
+        provider: &str,
+        provider_user_id: &str,
+        refresh_token_ciphertext: &str,
+        refresh_token_nonce: &str,
+    ) -> Result<(), ProxyError> {
+        self.key_store
+            .set_oauth_account_refresh_token(
+                provider,
+                provider_user_id,
+                refresh_token_ciphertext,
+                refresh_token_nonce,
+            )
+            .await
+    }
+
+    /// Update whether a local user can authenticate.
+    pub async fn set_user_active_status(
+        &self,
+        user_id: &str,
+        active: bool,
+    ) -> Result<(), ProxyError> {
+        self.key_store.set_user_active_status(user_id, active).await
+    }
+
+    /// List OAuth accounts that can be refreshed offline.
+    pub async fn list_oauth_accounts_with_refresh_token(
+        &self,
+        provider: &str,
+    ) -> Result<Vec<OAuthAccountRefreshTokenRecord>, ProxyError> {
+        self.key_store
+            .list_oauth_accounts_with_refresh_token(provider)
+            .await
+    }
+
+    /// Record a successful profile sync attempt for an OAuth account.
+    pub async fn record_oauth_account_profile_sync_success(
+        &self,
+        provider: &str,
+        provider_user_id: &str,
+        attempted_at: i64,
+    ) -> Result<(), ProxyError> {
+        self.key_store
+            .record_oauth_account_profile_sync_success(provider, provider_user_id, attempted_at)
+            .await
+    }
+
+    /// Record a failed profile sync attempt for an OAuth account.
+    pub async fn record_oauth_account_profile_sync_failure(
+        &self,
+        provider: &str,
+        provider_user_id: &str,
+        attempted_at: i64,
+        error: &str,
+    ) -> Result<(), ProxyError> {
+        self.key_store
+            .record_oauth_account_profile_sync_failure(
+                provider,
+                provider_user_id,
+                attempted_at,
+                error,
+            )
             .await
     }
 
@@ -8532,7 +8623,7 @@ impl TavilyProxy {
         group: &str,
         page: usize,
         per_page: usize,
-    ) -> Result<(Vec<JobLog>, i64), ProxyError> {
+    ) -> Result<(Vec<JobLog>, i64, JobGroupCounts), ProxyError> {
         self.key_store
             .list_recent_jobs_paginated(group, page, per_page)
             .await

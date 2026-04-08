@@ -507,6 +507,7 @@ export const Default: Story = {
       { id: 2, key_id: 'MZli', auth_token_id: '9vsN', method: 'POST', path: '/mcp', query: null, http_status: 429, mcp_status: -1, result_status: 'quota_exhausted', created_at: 2, error_message: 'quota', request_body: null, response_body: null, forwarded_headers: [], dropped_headers: [], operationalClass: 'quota_exhausted', requestKindProtocolGroup: 'mcp', requestKindBillingGroup: 'billable' },
     ],
     jobs: [
+      { id: 4, job_type: 'linuxdo_user_status_sync', key_id: null, key_group: null, status: 'error', attempt: 1, message: 'attempted=18 success=17 skipped=0 failure=1 first_failure=hhf0517: token upstream status 400: {\"error\":\"invalid_grant\"}', started_at: 7, finished_at: 8 },
       { id: 3, job_type: 'forward_proxy_geo_refresh', key_id: null, key_group: null, status: 'success', attempt: 1, message: 'refreshed_candidates=9', started_at: 5, finished_at: 6 },
       { id: 1, job_type: 'quota_sync', key_id: 'MZli', key_group: 'ops', status: 'error', attempt: 2, message: 'rate limit', started_at: 1, finished_at: 2 },
       { id: 2, job_type: 'quota_sync', key_id: 'MZli', key_group: 'ops', status: 'success', attempt: 1, message: null, started_at: 3, finished_at: 4 },
@@ -558,6 +559,7 @@ export const QuarantineState: Story = {
       { id: 1, key_id: 'Qn8R', auth_token_id: '9vsN', method: 'POST', path: '/mcp', query: null, http_status: 401, mcp_status: -1, result_status: 'error', created_at: 1, error_message: 'account deactivated', request_body: null, response_body: null, forwarded_headers: [], dropped_headers: [], operationalClass: 'upstream_error', requestKindProtocolGroup: 'mcp', requestKindBillingGroup: 'billable' },
     ],
     jobs: [
+      { id: 3, job_type: 'linuxdo_user_status_sync', key_id: null, key_group: null, status: 'success', attempt: 1, message: 'attempted=4 success=4 skipped=0 failure=0', started_at: 5, finished_at: 6 },
       { id: 2, job_type: 'forward_proxy_geo_refresh', key_id: null, key_group: null, status: 'success', attempt: 1, message: 'refreshed_candidates=4', started_at: 3, finished_at: 4 },
       { id: 1, job_type: 'quota_sync', key_id: 'Qn8R', key_group: 'ops', status: 'error', attempt: 1, message: 'account deactivated', started_at: 1, finished_at: 2 },
     ],

@@ -1101,6 +1101,7 @@ interface AdminTranslationsShape {
       usage: string
       logs: string
       geo: string
+      linuxdo: string
     }
     empty: {
       loading: string
@@ -2538,6 +2539,7 @@ export const translations: Record<Language, TranslationShape> = {
           usage: 'Usage rollups',
           logs: 'Clean access logs',
           geo: 'Node IP/GEO refresh',
+          linuxdo: 'LinuxDo user sync',
         },
         empty: {
           loading: 'Loading jobs…',
@@ -2566,6 +2568,7 @@ export const translations: Record<Language, TranslationShape> = {
           request_logs_gc: 'Log cleanup',
           log_cleanup: 'Log cleanup',
           forward_proxy_geo_refresh: 'Node IP/GEO refresh',
+          linuxdo_user_status_sync: 'LinuxDo user sync',
         },
       },
       statuses: {
@@ -3892,6 +3895,7 @@ export const translations: Record<Language, TranslationShape> = {
           usage: '用量聚合',
           logs: '清理日志',
           geo: '节点 IP/GEO 刷新',
+          linuxdo: 'LinuxDo 用户同步',
         },
         empty: {
           loading: '正在加载任务…',
@@ -3920,6 +3924,7 @@ export const translations: Record<Language, TranslationShape> = {
           request_logs_gc: '日志清理',
           log_cleanup: '日志清理',
           forward_proxy_geo_refresh: '节点 IP/GEO 刷新',
+          linuxdo_user_status_sync: 'LinuxDo 用户同步',
         },
       },
       statuses: {

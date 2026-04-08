@@ -12984,13 +12984,22 @@ async fn list_recent_jobs_paginated_includes_key_group() {
         .expect("finish ungrouped job");
 
     let cleanup_job_id = proxy
-        .scheduled_job_start("auth_token_logs_gc", None, 1)
+        .scheduled_job_start("log_cleanup", None, 1)
         .await
         .expect("start cleanup job");
     proxy
         .scheduled_job_finish(cleanup_job_id, "success", Some("pruned=10"))
         .await
         .expect("finish cleanup job");
+
+    let usage_job_id = proxy
+        .scheduled_job_start("usage_aggregation", Some(&grouped_key_id), 1)
+        .await
+        .expect("start usage job");
+    proxy
+        .scheduled_job_finish(usage_job_id, "success", Some("aggregated_days=2"))
+        .await
+        .expect("finish usage job");
 
     let geo_job_id = proxy
         .scheduled_job_start("forward_proxy_geo_refresh", None, 1)
@@ -13001,12 +13010,36 @@ async fn list_recent_jobs_paginated_includes_key_group() {
         .await
         .expect("finish geo job");
 
-    let (items, total) = proxy
+    let linuxdo_job_id = proxy
+        .scheduled_job_start("linuxdo_user_status_sync", None, 1)
+        .await
+        .expect("start linuxdo job");
+    proxy
+        .scheduled_job_finish(
+            linuxdo_job_id,
+            "error",
+            Some("attempted=8 success=7 failure=1"),
+        )
+        .await
+        .expect("finish linuxdo job");
+
+    let (items, total, group_counts) = proxy
         .list_recent_jobs_paginated("all", 1, 10)
         .await
         .expect("list jobs");
 
-    assert_eq!(total, 4);
+    assert_eq!(total, 6);
+    assert_eq!(
+        group_counts,
+        JobGroupCounts {
+            all: 6,
+            quota: 2,
+            usage: 1,
+            logs: 1,
+            geo: 1,
+            linuxdo: 1,
+        }
+    );
 
     let grouped_job = items
         .iter()
@@ -13022,7 +13055,7 @@ async fn list_recent_jobs_paginated_includes_key_group() {
 
     let cleanup_job = items
         .iter()
-        .find(|item| item.job_type == "auth_token_logs_gc")
+        .find(|item| item.job_type == "log_cleanup")
         .expect("cleanup job present");
     assert_eq!(cleanup_job.key_group, None);
 
@@ -13033,13 +13066,33 @@ async fn list_recent_jobs_paginated_includes_key_group() {
     assert_eq!(geo_job.key_id, None);
     assert_eq!(geo_job.key_group, None);
 
-    let (geo_items, geo_total) = proxy
+    let (usage_items, usage_total, usage_counts) = proxy
+        .list_recent_jobs_paginated("usage", 1, 10)
+        .await
+        .expect("list usage jobs");
+    assert_eq!(usage_total, 1);
+    assert_eq!(usage_items.len(), 1);
+    assert_eq!(usage_items[0].job_type, "usage_aggregation");
+    assert_eq!(usage_counts.usage, 1);
+
+    let (geo_items, geo_total, geo_counts) = proxy
         .list_recent_jobs_paginated("geo", 1, 10)
         .await
         .expect("list geo jobs");
     assert_eq!(geo_total, 1);
     assert_eq!(geo_items.len(), 1);
     assert_eq!(geo_items[0].job_type, "forward_proxy_geo_refresh");
+    assert_eq!(geo_counts.geo, 1);
+
+    let (linuxdo_items, linuxdo_total, linuxdo_counts) = proxy
+        .list_recent_jobs_paginated("linuxdo", 1, 10)
+        .await
+        .expect("list linuxdo jobs");
+    assert_eq!(linuxdo_total, 1);
+    assert_eq!(linuxdo_items.len(), 1);
+    assert_eq!(linuxdo_items[0].job_type, "linuxdo_user_status_sync");
+    assert_eq!(linuxdo_items[0].key_id, None);
+    assert_eq!(linuxdo_counts.linuxdo, 1);
 
     let _ = std::fs::remove_file(db_path);
 }

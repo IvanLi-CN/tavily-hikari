@@ -1330,6 +1330,11 @@ impl KeyStore {
                 active INTEGER NOT NULL DEFAULT 1,
                 trust_level INTEGER,
                 raw_payload TEXT,
+                refresh_token_ciphertext TEXT,
+                refresh_token_nonce TEXT,
+                last_profile_sync_attempt_at INTEGER,
+                last_profile_sync_success_at INTEGER,
+                last_profile_sync_error TEXT,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 UNIQUE(provider, provider_user_id),
@@ -1345,6 +1350,51 @@ impl KeyStore {
         )
         .execute(&self.pool)
         .await?;
+
+        if !self
+            .table_column_exists("oauth_accounts", "refresh_token_ciphertext")
+            .await?
+        {
+            sqlx::query("ALTER TABLE oauth_accounts ADD COLUMN refresh_token_ciphertext TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
+        if !self
+            .table_column_exists("oauth_accounts", "refresh_token_nonce")
+            .await?
+        {
+            sqlx::query("ALTER TABLE oauth_accounts ADD COLUMN refresh_token_nonce TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
+        if !self
+            .table_column_exists("oauth_accounts", "last_profile_sync_attempt_at")
+            .await?
+        {
+            sqlx::query(
+                "ALTER TABLE oauth_accounts ADD COLUMN last_profile_sync_attempt_at INTEGER",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
+        if !self
+            .table_column_exists("oauth_accounts", "last_profile_sync_success_at")
+            .await?
+        {
+            sqlx::query(
+                "ALTER TABLE oauth_accounts ADD COLUMN last_profile_sync_success_at INTEGER",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
+        if !self
+            .table_column_exists("oauth_accounts", "last_profile_sync_error")
+            .await?
+        {
+            sqlx::query("ALTER TABLE oauth_accounts ADD COLUMN last_profile_sync_error TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
 
         sqlx::query(
             r#"
@@ -6415,14 +6465,19 @@ impl KeyStore {
         // and once when we actually record the attempt). Only return whether the
         // token exists and is enabled.
         let row = sqlx::query_as::<_, (i64, i64)>(
-            "SELECT COUNT(1) as cnt, enabled FROM auth_tokens WHERE id = ? AND secret = ? AND deleted_at IS NULL LIMIT 1",
+            r#"SELECT t.enabled, COALESCE(u.active, 1) AS user_active
+               FROM auth_tokens t
+               LEFT JOIN user_token_bindings b ON b.token_id = t.id
+               LEFT JOIN users u ON u.id = b.user_id
+               WHERE t.id = ? AND t.secret = ? AND t.deleted_at IS NULL
+               LIMIT 1"#,
         )
         .bind(id)
         .bind(secret)
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(matches!(row, Some((cnt, enabled)) if cnt > 0 && enabled == 1))
+        Ok(matches!(row, Some((enabled, user_active)) if enabled == 1 && user_active == 1))
     }
 
     pub(crate) async fn create_access_token(
@@ -10738,9 +10793,11 @@ impl KeyStore {
         }))
     }
 
-    pub(crate) async fn upsert_oauth_account(
+    async fn upsert_oauth_account_with_options(
         &self,
         profile: &OAuthAccountProfile,
+        touch_last_login_at: bool,
+        refresh_token_update: Option<(&str, &str)>,
     ) -> Result<UserIdentity, ProxyError> {
         let display_name = profile
             .name
@@ -10888,37 +10945,82 @@ impl KeyStore {
                 }
             };
 
-            sqlx::query(
-                r#"UPDATE users
-                   SET display_name = ?, username = ?, avatar_template = ?, active = ?, updated_at = ?, last_login_at = ?
-                   WHERE id = ?"#,
-            )
-            .bind(display_name.clone())
-            .bind(username.clone())
-            .bind(avatar.clone())
-            .bind(active)
-            .bind(now)
-            .bind(now)
-            .bind(&user_id)
-            .execute(&mut *tx)
-            .await?;
+            if touch_last_login_at {
+                sqlx::query(
+                    r#"UPDATE users
+                       SET display_name = ?, username = ?, avatar_template = ?, active = ?, updated_at = ?, last_login_at = ?
+                       WHERE id = ?"#,
+                )
+                .bind(display_name.clone())
+                .bind(username.clone())
+                .bind(avatar.clone())
+                .bind(active)
+                .bind(now)
+                .bind(now)
+                .bind(&user_id)
+                .execute(&mut *tx)
+                .await?;
+            } else {
+                sqlx::query(
+                    r#"UPDATE users
+                       SET display_name = ?, username = ?, avatar_template = ?, active = ?, updated_at = ?
+                       WHERE id = ?"#,
+                )
+                .bind(display_name.clone())
+                .bind(username.clone())
+                .bind(avatar.clone())
+                .bind(active)
+                .bind(now)
+                .bind(&user_id)
+                .execute(&mut *tx)
+                .await?;
+            }
 
-            sqlx::query(
-                r#"UPDATE oauth_accounts
-                   SET username = ?, name = ?, avatar_template = ?, active = ?, trust_level = ?, raw_payload = ?, updated_at = ?
-                   WHERE provider = ? AND provider_user_id = ?"#,
-            )
-            .bind(username.clone())
-            .bind(display_name.clone())
-            .bind(avatar.clone())
-            .bind(active)
-            .bind(profile.trust_level)
-            .bind(profile.raw_payload_json.clone())
-            .bind(now)
-            .bind(&profile.provider)
-            .bind(&profile.provider_user_id)
-            .execute(&mut *tx)
-            .await?;
+            if let Some((refresh_token_ciphertext, refresh_token_nonce)) = refresh_token_update {
+                sqlx::query(
+                    r#"UPDATE oauth_accounts
+                       SET username = ?,
+                           name = ?,
+                           avatar_template = ?,
+                           active = ?,
+                           trust_level = ?,
+                           raw_payload = ?,
+                           refresh_token_ciphertext = ?,
+                           refresh_token_nonce = ?,
+                           updated_at = ?
+                       WHERE provider = ? AND provider_user_id = ?"#,
+                )
+                .bind(username.clone())
+                .bind(display_name.clone())
+                .bind(avatar.clone())
+                .bind(active)
+                .bind(profile.trust_level)
+                .bind(profile.raw_payload_json.clone())
+                .bind(refresh_token_ciphertext)
+                .bind(refresh_token_nonce)
+                .bind(now)
+                .bind(&profile.provider)
+                .bind(&profile.provider_user_id)
+                .execute(&mut *tx)
+                .await?;
+            } else {
+                sqlx::query(
+                    r#"UPDATE oauth_accounts
+                       SET username = ?, name = ?, avatar_template = ?, active = ?, trust_level = ?, raw_payload = ?, updated_at = ?
+                       WHERE provider = ? AND provider_user_id = ?"#,
+                )
+                .bind(username.clone())
+                .bind(display_name.clone())
+                .bind(avatar.clone())
+                .bind(active)
+                .bind(profile.trust_level)
+                .bind(profile.raw_payload_json.clone())
+                .bind(now)
+                .bind(&profile.provider)
+                .bind(&profile.provider_user_id)
+                .execute(&mut *tx)
+                .await?;
+            }
 
             tx.commit().await?;
             if profile.provider == "linuxdo" {
@@ -10940,6 +11042,36 @@ impl KeyStore {
         ))
     }
 
+    pub(crate) async fn upsert_oauth_account(
+        &self,
+        profile: &OAuthAccountProfile,
+    ) -> Result<UserIdentity, ProxyError> {
+        self.upsert_oauth_account_with_options(profile, true, None)
+            .await
+    }
+
+    pub(crate) async fn refresh_oauth_account_profile(
+        &self,
+        profile: &OAuthAccountProfile,
+    ) -> Result<UserIdentity, ProxyError> {
+        self.upsert_oauth_account_with_options(profile, false, None)
+            .await
+    }
+
+    pub(crate) async fn refresh_oauth_account_profile_with_refresh_token(
+        &self,
+        profile: &OAuthAccountProfile,
+        refresh_token_ciphertext: &str,
+        refresh_token_nonce: &str,
+    ) -> Result<UserIdentity, ProxyError> {
+        self.upsert_oauth_account_with_options(
+            profile,
+            false,
+            Some((refresh_token_ciphertext, refresh_token_nonce)),
+        )
+        .await
+    }
+
     pub(crate) async fn oauth_account_exists(
         &self,
         provider: &str,
@@ -10956,6 +11088,131 @@ impl KeyStore {
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.is_some())
+    }
+
+    pub(crate) async fn set_oauth_account_refresh_token(
+        &self,
+        provider: &str,
+        provider_user_id: &str,
+        refresh_token_ciphertext: &str,
+        refresh_token_nonce: &str,
+    ) -> Result<(), ProxyError> {
+        let now = Utc::now().timestamp();
+        sqlx::query(
+            r#"UPDATE oauth_accounts
+               SET refresh_token_ciphertext = ?, refresh_token_nonce = ?, updated_at = ?
+               WHERE provider = ? AND provider_user_id = ?"#,
+        )
+        .bind(refresh_token_ciphertext)
+        .bind(refresh_token_nonce)
+        .bind(now)
+        .bind(provider)
+        .bind(provider_user_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn set_user_active_status(
+        &self,
+        user_id: &str,
+        active: bool,
+    ) -> Result<(), ProxyError> {
+        let now = Utc::now().timestamp();
+        sqlx::query(
+            r#"UPDATE users
+               SET active = ?, updated_at = ?
+               WHERE id = ?"#,
+        )
+        .bind(if active { 1 } else { 0 })
+        .bind(now)
+        .bind(user_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn list_oauth_accounts_with_refresh_token(
+        &self,
+        provider: &str,
+    ) -> Result<Vec<OAuthAccountRefreshTokenRecord>, ProxyError> {
+        let rows = sqlx::query(
+            r#"SELECT
+                    provider,
+                    provider_user_id,
+                    user_id,
+                    username,
+                    name,
+                    refresh_token_ciphertext,
+                    refresh_token_nonce
+               FROM oauth_accounts
+               WHERE provider = ?
+                 AND COALESCE(refresh_token_ciphertext, '') != ''
+                 AND COALESCE(refresh_token_nonce, '') != ''
+               ORDER BY id ASC"#,
+        )
+        .bind(provider)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| {
+                Ok(OAuthAccountRefreshTokenRecord {
+                    provider: row.try_get("provider")?,
+                    provider_user_id: row.try_get("provider_user_id")?,
+                    user_id: row.try_get("user_id")?,
+                    username: row.try_get("username")?,
+                    name: row.try_get("name")?,
+                    refresh_token_ciphertext: row.try_get("refresh_token_ciphertext")?,
+                    refresh_token_nonce: row.try_get("refresh_token_nonce")?,
+                })
+            })
+            .collect::<Result<Vec<_>, sqlx::Error>>()
+            .map_err(ProxyError::Database)
+    }
+
+    pub(crate) async fn record_oauth_account_profile_sync_success(
+        &self,
+        provider: &str,
+        provider_user_id: &str,
+        attempted_at: i64,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"UPDATE oauth_accounts
+               SET last_profile_sync_attempt_at = ?,
+                   last_profile_sync_success_at = ?,
+                   last_profile_sync_error = NULL
+               WHERE provider = ? AND provider_user_id = ?"#,
+        )
+        .bind(attempted_at)
+        .bind(attempted_at)
+        .bind(provider)
+        .bind(provider_user_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn record_oauth_account_profile_sync_failure(
+        &self,
+        provider: &str,
+        provider_user_id: &str,
+        attempted_at: i64,
+        error: &str,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"UPDATE oauth_accounts
+               SET last_profile_sync_attempt_at = ?,
+                   last_profile_sync_error = ?
+               WHERE provider = ? AND provider_user_id = ?"#,
+        )
+        .bind(attempted_at)
+        .bind(error.trim())
+        .bind(provider)
+        .bind(provider_user_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     pub(crate) async fn ensure_user_token_binding(
@@ -11315,7 +11572,7 @@ impl KeyStore {
                FROM user_sessions s
                JOIN users u ON u.id = s.user_id
                LEFT JOIN oauth_accounts oa ON oa.user_id = u.id AND oa.provider = s.provider
-               WHERE s.token = ? AND s.revoked_at IS NULL AND s.expires_at > ?
+               WHERE s.token = ? AND s.revoked_at IS NULL AND s.expires_at > ? AND u.active = 1
                LIMIT 1"#,
         )
         .bind(token)
@@ -15927,35 +16184,19 @@ impl KeyStore {
         group: &str,
         page: usize,
         per_page: usize,
-    ) -> Result<(Vec<JobLog>, i64), ProxyError> {
+    ) -> Result<(Vec<JobLog>, i64, JobGroupCounts), ProxyError> {
         let page = page.max(1);
         let per_page = per_page.clamp(1, 100) as i64;
         let offset = ((page - 1) as i64).saturating_mul(per_page);
 
-        let where_clause = match group {
-            "quota" => {
-                "WHERE j.job_type = 'quota_sync' OR j.job_type = 'quota_sync/manual' OR j.job_type = 'quota_sync/hot'"
-            }
-            "usage" => "WHERE j.job_type = 'token_usage_rollup'",
-            "logs" => "WHERE j.job_type = 'auth_token_logs_gc' OR j.job_type = 'request_logs_gc'",
-            "geo" => "WHERE j.job_type = 'forward_proxy_geo_refresh'",
-            _ => "",
-        };
-
-        let count_where_clause = match group {
-            "quota" => {
-                "WHERE job_type = 'quota_sync' OR job_type = 'quota_sync/manual' OR job_type = 'quota_sync/hot'"
-            }
-            "usage" => "WHERE job_type = 'token_usage_rollup'",
-            "logs" => "WHERE job_type = 'auth_token_logs_gc' OR job_type = 'request_logs_gc'",
-            "geo" => "WHERE job_type = 'forward_proxy_geo_refresh'",
-            _ => "",
-        };
+        let where_clause = Self::scheduled_job_group_filter_clause(group, "j.job_type");
+        let count_where_clause = Self::scheduled_job_group_filter_clause(group, "job_type");
 
         let count_query = format!("SELECT COUNT(*) FROM scheduled_jobs {}", count_where_clause);
         let total: i64 = sqlx::query_scalar(&count_query)
             .fetch_one(&self.pool)
             .await?;
+        let group_counts = self.fetch_recent_job_group_counts().await?;
 
         let select_query = format!(
             r#"
@@ -16001,7 +16242,49 @@ impl KeyStore {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        Ok((items, total))
+        Ok((items, total, group_counts))
+    }
+
+    fn scheduled_job_group_filter_clause(group: &str, column: &str) -> String {
+        let condition = match group {
+            "quota" => format!(
+                "{column} = 'quota_sync' OR {column} = 'quota_sync/manual' OR {column} = 'quota_sync/hot'"
+            ),
+            "usage" => format!("{column} = 'token_usage_rollup' OR {column} = 'usage_aggregation'"),
+            "logs" => format!(
+                "{column} = 'auth_token_logs_gc' OR {column} = 'request_logs_gc' OR {column} = 'log_cleanup'"
+            ),
+            "geo" => format!("{column} = 'forward_proxy_geo_refresh'"),
+            "linuxdo" => format!("{column} = 'linuxdo_user_status_sync'"),
+            _ => return String::new(),
+        };
+        format!("WHERE {condition}")
+    }
+
+    async fn fetch_recent_job_group_counts(&self) -> Result<JobGroupCounts, ProxyError> {
+        let row = sqlx::query(
+            r#"
+            SELECT
+                COUNT(*) AS all_count,
+                COALESCE(SUM(CASE WHEN job_type = 'quota_sync' OR job_type = 'quota_sync/manual' OR job_type = 'quota_sync/hot' THEN 1 ELSE 0 END), 0) AS quota_count,
+                COALESCE(SUM(CASE WHEN job_type = 'token_usage_rollup' OR job_type = 'usage_aggregation' THEN 1 ELSE 0 END), 0) AS usage_count,
+                COALESCE(SUM(CASE WHEN job_type = 'auth_token_logs_gc' OR job_type = 'request_logs_gc' OR job_type = 'log_cleanup' THEN 1 ELSE 0 END), 0) AS logs_count,
+                COALESCE(SUM(CASE WHEN job_type = 'forward_proxy_geo_refresh' THEN 1 ELSE 0 END), 0) AS geo_count,
+                COALESCE(SUM(CASE WHEN job_type = 'linuxdo_user_status_sync' THEN 1 ELSE 0 END), 0) AS linuxdo_count
+            FROM scheduled_jobs
+            "#,
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(JobGroupCounts {
+            all: row.try_get("all_count")?,
+            quota: row.try_get("quota_count")?,
+            usage: row.try_get("usage_count")?,
+            logs: row.try_get("logs_count")?,
+            geo: row.try_get("geo_count")?,
+            linuxdo: row.try_get("linuxdo_count")?,
+        })
     }
 
     pub(crate) async fn get_meta_string(&self, key: &str) -> Result<Option<String>, ProxyError> {

@@ -95,33 +95,36 @@ curl -X POST http://127.0.0.1:8787/api/keys \
 
 ## CLI / 环境变量
 
-| Flag / Env                                                                | 说明                                                                                                                         |
-| ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `--keys` / `TAVILY_API_KEYS`                                              | Tavily API key 列表（可选），支持逗号分隔或多次传参，仅用于一次性导入或开发场景；生产环境推荐通过管理员 API/前端控制台录入。 |
-| `--upstream` / `TAVILY_UPSTREAM`                                          | Tavily MCP 上游端点，默认 `https://mcp.tavily.com/mcp`；支持带 path prefix 的反代 URL。                                      |
-| `--bind` / `PROXY_BIND`                                                   | 监听地址，默认 `127.0.0.1`。                                                                                                 |
-| `--port` / `PROXY_PORT`                                                   | 监听端口，默认 `8787`。建议开发期使用高位端口（如 `58087`）。                                                                |
-| `--db-path` / `PROXY_DB_PATH`                                             | SQLite 文件路径，默认 `tavily_proxy.db`。                                                                                    |
-| `--static-dir` / `WEB_STATIC_DIR`                                         | Web 静态目录，若缺省且存在 `web/dist` 会自动挂载。                                                                           |
-| `--forward-auth-header` / `FORWARD_AUTH_HEADER`                           | 指定 ForwardAuth 注入的“用户标识”请求头（如 `Remote-Email`）。                                                               |
-| `--forward-auth-admin-value` / `FORWARD_AUTH_ADMIN_VALUE`                 | 匹配到该值时视为管理员，可访问 `/api/keys/*` 接口。                                                                          |
-| `--forward-auth-nickname-header` / `FORWARD_AUTH_NICKNAME_HEADER`         | 可选，提供 UI 展示的昵称头（如 `Remote-Name`）。                                                                             |
-| `--admin-mode-name` / `ADMIN_MODE_NAME`                                   | 当缺少昵称头时用于覆盖前端显示的管理员名称。                                                                                 |
-| `--admin-auth-forward-enabled` / `ADMIN_AUTH_FORWARD_ENABLED`             | 是否启用 ForwardAuth 管理员校验（默认 `true`）。                                                                             |
-| `--admin-auth-builtin-enabled` / `ADMIN_AUTH_BUILTIN_ENABLED`             | 是否启用内置管理员登录（cookie 会话）（默认 `false`）。                                                                      |
-| `--admin-auth-builtin-password-hash` / `ADMIN_AUTH_BUILTIN_PASSWORD_HASH` | 内置管理员口令哈希（PHC 字符串，推荐）。                                                                                     |
-| `--admin-auth-builtin-password` / `ADMIN_AUTH_BUILTIN_PASSWORD`           | 内置管理员登录口令（不推荐，优先使用口令哈希）。                                                                             |
-| `--dev-open-admin` / `DEV_OPEN_ADMIN`                                     | 仅限本地调试的开关，跳过管理员校验（默认 `false`）。                                                                         |
-| `--linuxdo-oauth-enabled` / `LINUXDO_OAUTH_ENABLED`                       | 是否启用 Linux DO Connect OAuth2 用户登录（默认 `false`）。                                                                  |
-| `--linuxdo-oauth-client-id` / `LINUXDO_OAUTH_CLIENT_ID`                   | Linux DO OAuth2 客户端 ID（`connect.linux.do` 应用）。                                                                       |
-| `--linuxdo-oauth-client-secret` / `LINUXDO_OAUTH_CLIENT_SECRET`           | Linux DO OAuth2 客户端密钥。                                                                                                 |
-| `--linuxdo-oauth-authorize-url` / `LINUXDO_OAUTH_AUTHORIZE_URL`           | OAuth2 授权端点（默认 `https://connect.linux.do/oauth2/authorize`）。                                                        |
-| `--linuxdo-oauth-token-url` / `LINUXDO_OAUTH_TOKEN_URL`                   | OAuth2 换 token 端点（默认 `https://connect.linux.do/oauth2/token`）。                                                       |
-| `--linuxdo-oauth-userinfo-url` / `LINUXDO_OAUTH_USERINFO_URL`             | OAuth2 用户信息端点（默认 `https://connect.linux.do/api/user`）。                                                            |
-| `--linuxdo-oauth-scope` / `LINUXDO_OAUTH_SCOPE`                           | OAuth scope（默认 `user`）。                                                                                                 |
-| `--linuxdo-oauth-redirect-url` / `LINUXDO_OAUTH_REDIRECT_URL`             | 本服务回调地址（例如 `https://tavily.ivanli.cc/auth/linuxdo/callback`）。                                                    |
-| `--user-session-max-age-secs` / `USER_SESSION_MAX_AGE_SECS`               | 用户登录会话 cookie 的有效期（秒，默认 `1209600`，即 14 天）。                                                               |
-| `--oauth-login-state-ttl-secs` / `OAUTH_LOGIN_STATE_TTL_SECS`             | OAuth 一次性 state 的有效期（秒，默认 `600`）。                                                                              |
+| Flag / Env                                                                          | 说明                                                                                                                         |
+| ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `--keys` / `TAVILY_API_KEYS`                                                        | Tavily API key 列表（可选），支持逗号分隔或多次传参，仅用于一次性导入或开发场景；生产环境推荐通过管理员 API/前端控制台录入。 |
+| `--upstream` / `TAVILY_UPSTREAM`                                                    | Tavily MCP 上游端点，默认 `https://mcp.tavily.com/mcp`；支持带 path prefix 的反代 URL。                                      |
+| `--bind` / `PROXY_BIND`                                                             | 监听地址，默认 `127.0.0.1`。                                                                                                 |
+| `--port` / `PROXY_PORT`                                                             | 监听端口，默认 `8787`。建议开发期使用高位端口（如 `58087`）。                                                                |
+| `--db-path` / `PROXY_DB_PATH`                                                       | SQLite 文件路径，默认 `tavily_proxy.db`。                                                                                    |
+| `--static-dir` / `WEB_STATIC_DIR`                                                   | Web 静态目录，若缺省且存在 `web/dist` 会自动挂载。                                                                           |
+| `--forward-auth-header` / `FORWARD_AUTH_HEADER`                                     | 指定 ForwardAuth 注入的“用户标识”请求头（如 `Remote-Email`）。                                                               |
+| `--forward-auth-admin-value` / `FORWARD_AUTH_ADMIN_VALUE`                           | 匹配到该值时视为管理员，可访问 `/api/keys/*` 接口。                                                                          |
+| `--forward-auth-nickname-header` / `FORWARD_AUTH_NICKNAME_HEADER`                   | 可选，提供 UI 展示的昵称头（如 `Remote-Name`）。                                                                             |
+| `--admin-mode-name` / `ADMIN_MODE_NAME`                                             | 当缺少昵称头时用于覆盖前端显示的管理员名称。                                                                                 |
+| `--admin-auth-forward-enabled` / `ADMIN_AUTH_FORWARD_ENABLED`                       | 是否启用 ForwardAuth 管理员校验（默认 `true`）。                                                                             |
+| `--admin-auth-builtin-enabled` / `ADMIN_AUTH_BUILTIN_ENABLED`                       | 是否启用内置管理员登录（cookie 会话）（默认 `false`）。                                                                      |
+| `--admin-auth-builtin-password-hash` / `ADMIN_AUTH_BUILTIN_PASSWORD_HASH`           | 内置管理员口令哈希（PHC 字符串，推荐）。                                                                                     |
+| `--admin-auth-builtin-password` / `ADMIN_AUTH_BUILTIN_PASSWORD`                     | 内置管理员登录口令（不推荐，优先使用口令哈希）。                                                                             |
+| `--dev-open-admin` / `DEV_OPEN_ADMIN`                                               | 仅限本地调试的开关，跳过管理员校验（默认 `false`）。                                                                         |
+| `--linuxdo-oauth-enabled` / `LINUXDO_OAUTH_ENABLED`                                 | 是否启用 Linux DO Connect OAuth2 用户登录（默认 `false`）。                                                                  |
+| `--linuxdo-oauth-client-id` / `LINUXDO_OAUTH_CLIENT_ID`                             | Linux DO OAuth2 客户端 ID（`connect.linux.do` 应用）。                                                                       |
+| `--linuxdo-oauth-client-secret` / `LINUXDO_OAUTH_CLIENT_SECRET`                     | Linux DO OAuth2 客户端密钥。                                                                                                 |
+| `--linuxdo-oauth-authorize-url` / `LINUXDO_OAUTH_AUTHORIZE_URL`                     | OAuth2 授权端点（默认 `https://connect.linux.do/oauth2/authorize`）。                                                        |
+| `--linuxdo-oauth-token-url` / `LINUXDO_OAUTH_TOKEN_URL`                             | OAuth2 换 token 端点（默认 `https://connect.linux.do/oauth2/token`）。                                                       |
+| `--linuxdo-oauth-userinfo-url` / `LINUXDO_OAUTH_USERINFO_URL`                       | OAuth2 用户信息端点（默认 `https://connect.linux.do/api/user`）。                                                            |
+| `--linuxdo-oauth-scope` / `LINUXDO_OAUTH_SCOPE`                                     | OAuth scope（默认 `user`）。                                                                                                 |
+| `--linuxdo-oauth-redirect-url` / `LINUXDO_OAUTH_REDIRECT_URL`                       | 本服务回调地址（例如 `https://tavily.ivanli.cc/auth/linuxdo/callback`）。                                                    |
+| `--linuxdo-oauth-refresh-token-crypt-key` / `LINUXDO_OAUTH_REFRESH_TOKEN_CRYPT_KEY` | 用于加密落库 LinuxDo refresh token（32 字节原文，或可解码为 32 字节的 base64/base64url）。                                   |
+| `--linuxdo-oauth-user-sync-enabled` / `LINUXDO_OAUTH_USER_SYNC_ENABLED`             | 是否启用 LinuxDo 离线每日用户同步调度器（默认 `true`）。                                                                     |
+| `--linuxdo-oauth-user-sync-at` / `LINUXDO_OAUTH_USER_SYNC_AT`                       | LinuxDo 离线每日同步时间，按服务器本地时区解释，格式固定 `HH:mm`（默认 `06:20`）。                                           |
+| `--user-session-max-age-secs` / `USER_SESSION_MAX_AGE_SECS`                         | 用户登录会话 cookie 的有效期（秒，默认 `1209600`，即 14 天）。                                                               |
+| `--oauth-login-state-ttl-secs` / `OAUTH_LOGIN_STATE_TTL_SECS`                       | OAuth 一次性 state 的有效期（秒，默认 `600`）。                                                                              |
 
 首次运行会自动建表。若在 CLI/环境变量里显式传入 `--keys` 或 `TAVILY_API_KEYS`，会同步 `api_keys` 表：**在列表中**的 Key 会被新增或恢复为 `active`；**不在列表中**的 Key 会被标记为 `deleted`。默认推荐通过管理员 API/前端控制台维护 Key 集合。
 
@@ -214,6 +217,9 @@ export LINUXDO_OAUTH_ENABLED=true
 export LINUXDO_OAUTH_CLIENT_ID='<你的-linuxdo-client-id>'
 export LINUXDO_OAUTH_CLIENT_SECRET='<你的-linuxdo-client-secret>'
 export LINUXDO_OAUTH_REDIRECT_URL='https://tavily.ivanli.cc/auth/linuxdo/callback'
+export LINUXDO_OAUTH_REFRESH_TOKEN_CRYPT_KEY='<32字节密钥或base64>'
+export LINUXDO_OAUTH_USER_SYNC_ENABLED=true
+export LINUXDO_OAUTH_USER_SYNC_AT='06:20'
 ```
 
 - 首页行为：
@@ -227,6 +233,13 @@ export LINUXDO_OAUTH_REDIRECT_URL='https://tavily.ivanli.cc/auth/linuxdo/callbac
   - 新用户首次登录时不再自动获得内置基础额度。
   - 新账户的有效额度只来自系统标签或用户标签。
   - 若新建账户没有任何发放额度的标签，则会保持 `0/0/0/0`，直到管理员补充标签或手动设置基础额度。
+- 离线资料同步：
+  - LinuxDo 登录成功后，Hikari 会把最新的非空 `refresh_token` 以密文形式持久化。
+  - 服务默认每天按服务器本地时区 `06:20` 执行一次离线同步，为所有已有 refresh token 的 LinuxDo 账号刷新资料，并复用现有逻辑重绑唯一的 `linuxdo_l*` 系统标签。
+  - `LINUXDO_OAUTH_REFRESH_TOKEN_CRYPT_KEY` 支持两种形式：恰好 32 字节的原始文本，或能解码成 32 字节的 base64/base64url 字符串。
+  - 若加密密钥缺失或无效，用户登录流程不受影响，但 refresh token 落库与 LinuxDo 每日同步会进入 no-op。
+  - 旧账号如果是在 refresh token 落库前创建的，不会被自动补齐；这类用户需要重新登录一次，之后才会纳入每日同步。
+  - 若同步时遇到 `invalid_grant`、网络错误或 userinfo 不匹配，系统会保留旧等级、旧会话与当前 `linuxdo_l*` 标签，等待下次成功同步或用户重新登录。
 - 新增接口：
   - `GET /auth/linuxdo`
   - `GET /auth/linuxdo/callback`

@@ -1073,7 +1073,29 @@ interface ServerJobLogView {
   finishedAt: number | null
 }
 
-export type JobGroup = 'all' | 'quota' | 'usage' | 'logs' | 'geo'
+export type JobGroup = 'all' | 'quota' | 'usage' | 'logs' | 'geo' | 'linuxdo'
+
+export interface JobGroupCounts {
+  all: number
+  quota: number
+  usage: number
+  logs: number
+  geo: number
+  linuxdo: number
+}
+
+interface ServerJobGroupCounts {
+  all: number
+  quota: number
+  usage: number
+  logs: number
+  geo: number
+  linuxdo: number
+}
+
+export interface PaginatedJobs extends Paginated<JobLogView> {
+  groupCounts: JobGroupCounts
+}
 
 export interface Profile {
   displayName: string | null
@@ -2017,7 +2039,7 @@ export function fetchJobs(
   perPage = 10,
   group: JobGroup = 'all',
   signal?: AbortSignal,
-): Promise<Paginated<JobLogView>> {
+): Promise<PaginatedJobs> {
   const params = new URLSearchParams({
     page: String(page),
     per_page: String(perPage),
@@ -2025,10 +2047,21 @@ export function fetchJobs(
   if (group !== 'all') {
     params.set('group', group)
   }
-  return requestJson<Paginated<ServerJobLogView>>(`/api/jobs?${params.toString()}`, { signal }).then((data) => ({
+  return requestJson<Paginated<ServerJobLogView> & { groupCounts: ServerJobGroupCounts }>(
+    `/api/jobs?${params.toString()}`,
+    { signal },
+  ).then((data) => ({
     total: data.total,
     page: data.page,
     perPage: data.perPage,
+    groupCounts: {
+      all: data.groupCounts.all,
+      quota: data.groupCounts.quota,
+      usage: data.groupCounts.usage,
+      logs: data.groupCounts.logs,
+      geo: data.groupCounts.geo,
+      linuxdo: data.groupCounts.linuxdo,
+    },
     items: data.items.map((item) => ({
       id: item.id,
       job_type: item.jobType,

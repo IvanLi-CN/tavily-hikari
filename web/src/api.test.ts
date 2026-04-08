@@ -546,6 +546,14 @@ describe('admin user tag api helpers', () => {
             total: 1,
             page: 1,
             perPage: 10,
+            groupCounts: {
+              all: 4,
+              quota: 1,
+              usage: 1,
+              logs: 1,
+              geo: 0,
+              linuxdo: 1,
+            },
           }),
           { status: 200, headers: { 'Content-Type': 'application/json' } },
         ),
@@ -557,6 +565,14 @@ describe('admin user tag api helpers', () => {
 
     expect(jobs.page).toBe(1)
     expect(jobs.perPage).toBe(10)
+    expect(jobs.groupCounts).toEqual({
+      all: 4,
+      quota: 1,
+      usage: 1,
+      logs: 1,
+      geo: 0,
+      linuxdo: 1,
+    })
     expect(jobs.items[0]).toEqual({
       id: 37696,
       job_type: 'quota_sync',
@@ -579,6 +595,14 @@ describe('admin user tag api helpers', () => {
             total: 0,
             page: 1,
             perPage: 10,
+            groupCounts: {
+              all: 0,
+              quota: 0,
+              usage: 0,
+              logs: 0,
+              geo: 0,
+              linuxdo: 0,
+            },
           }),
           { status: 200, headers: { 'Content-Type': 'application/json' } },
         ),

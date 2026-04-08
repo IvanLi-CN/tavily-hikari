@@ -146,6 +146,22 @@ struct Cli {
     #[arg(long, env = "LINUXDO_OAUTH_REDIRECT_URL")]
     linuxdo_oauth_redirect_url: Option<String>,
 
+    /// Encryption key used to persist LinuxDo refresh tokens (32 raw bytes or base64/base64url).
+    #[arg(
+        long,
+        env = "LINUXDO_OAUTH_REFRESH_TOKEN_CRYPT_KEY",
+        hide_env_values = true
+    )]
+    linuxdo_oauth_refresh_token_crypt_key: Option<String>,
+
+    /// Enable/disable the daily LinuxDo user profile sync scheduler.
+    #[arg(long, env = "LINUXDO_OAUTH_USER_SYNC_ENABLED", default_value_t = true)]
+    linuxdo_oauth_user_sync_enabled: bool,
+
+    /// Daily LinuxDo user profile sync time in server local time (`HH:mm`).
+    #[arg(long, env = "LINUXDO_OAUTH_USER_SYNC_AT", default_value = "06:20")]
+    linuxdo_oauth_user_sync_at: String,
+
     /// Max age for persisted user session cookie.
     #[arg(long, env = "USER_SESSION_MAX_AGE_SECS", default_value_t = 60 * 60 * 24 * 14)]
     user_session_max_age_secs: i64,
@@ -264,6 +280,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             scope.to_string()
         }
     };
+    let linuxdo_oauth_refresh_token_crypt_key = match parse_linuxdo_refresh_token_crypt_key(
+        cli.linuxdo_oauth_refresh_token_crypt_key,
+    ) {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!(
+                "warning: {err}; LinuxDo refresh-token persistence and daily user sync will stay disabled"
+            );
+            None
+        }
+    };
+    let linuxdo_oauth_user_sync_at =
+        parse_hhmm(&cli.linuxdo_oauth_user_sync_at).ok_or_else(|| {
+            format!(
+                "LINUXDO_OAUTH_USER_SYNC_AT must use HH:mm format, got '{}'",
+                cli.linuxdo_oauth_user_sync_at
+            )
+        })?;
 
     if cli.linuxdo_oauth_enabled
         && (linuxdo_oauth_client_id.is_none()
@@ -285,6 +319,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         userinfo_url: cli.linuxdo_oauth_userinfo_url.trim().to_string(),
         scope: linuxdo_oauth_scope,
         redirect_url: linuxdo_oauth_redirect_url,
+        refresh_token_crypt_key: linuxdo_oauth_refresh_token_crypt_key,
+        user_sync_enabled: cli.linuxdo_oauth_user_sync_enabled,
+        user_sync_at: linuxdo_oauth_user_sync_at,
         session_max_age_secs: cli.user_session_max_age_secs.max(60),
         login_state_ttl_secs: cli.oauth_login_state_ttl_secs.max(60),
     };
@@ -325,5 +362,101 @@ fn parse_header_name(
     match raw.parse::<axum::http::HeaderName>() {
         Ok(parsed) => Ok(Some(parsed)),
         Err(err) => Err(format!("invalid header name for {field}: {err}").into()),
+    }
+}
+
+fn parse_hhmm(raw: &str) -> Option<(u32, u32)> {
+    let trimmed = raw.trim();
+    let mut parts = trimmed.split(':');
+    let hour = parts.next()?;
+    let minute = parts.next()?;
+    if parts.next().is_some() || hour.len() != 2 || minute.len() != 2 {
+        return None;
+    }
+    let hour = hour.parse::<u32>().ok()?;
+    let minute = minute.parse::<u32>().ok()?;
+    (hour <= 23 && minute <= 59).then_some((hour, minute))
+}
+
+fn parse_linuxdo_refresh_token_crypt_key(
+    value: Option<String>,
+) -> Result<Option<[u8; 32]>, String> {
+    fn decode_32_bytes(raw: &str) -> Option<[u8; 32]> {
+        use base64::Engine as _;
+        use base64::engine::general_purpose::{
+            STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD,
+        };
+
+        for engine in [STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD] {
+            if let Ok(decoded) = engine.decode(raw)
+                && decoded.len() == 32
+            {
+                let mut key = [0u8; 32];
+                key.copy_from_slice(&decoded);
+                return Some(key);
+            }
+        }
+        None
+    }
+
+    let Some(raw) = value
+        .map(|it| it.trim().to_owned())
+        .filter(|it| !it.is_empty())
+    else {
+        return Ok(None);
+    };
+
+    if raw.len() == 32 {
+        let mut key = [0u8; 32];
+        key.copy_from_slice(raw.as_bytes());
+        return Ok(Some(key));
+    }
+
+    decode_32_bytes(&raw).map(Some).ok_or_else(|| {
+        "LINUXDO_OAUTH_REFRESH_TOKEN_CRYPT_KEY must be 32 raw bytes or decode to 32 bytes from base64/base64url".to_string()
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_hhmm_accepts_strict_two_digit_format() {
+        assert_eq!(parse_hhmm("06:20"), Some((6, 20)));
+        assert_eq!(parse_hhmm("23:59"), Some((23, 59)));
+        assert_eq!(parse_hhmm("6:20"), None);
+        assert_eq!(parse_hhmm("24:00"), None);
+        assert_eq!(parse_hhmm("06:60"), None);
+    }
+
+    #[test]
+    fn parse_linuxdo_refresh_token_crypt_key_accepts_raw_and_base64_inputs() {
+        use base64::Engine as _;
+
+        let raw = "0123456789abcdef0123456789abcdef".to_string();
+        let parsed = parse_linuxdo_refresh_token_crypt_key(Some(raw.clone()))
+            .expect("parse raw key")
+            .expect("raw key");
+        assert_eq!(parsed, *b"0123456789abcdef0123456789abcdef");
+
+        let base64_key = base64::engine::general_purpose::STANDARD.encode(raw.as_bytes());
+        let parsed = parse_linuxdo_refresh_token_crypt_key(Some(base64_key))
+            .expect("parse base64 key")
+            .expect("decoded base64 key");
+        assert_eq!(parsed, *b"0123456789abcdef0123456789abcdef");
+
+        let url_safe_key = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw.as_bytes());
+        let parsed = parse_linuxdo_refresh_token_crypt_key(Some(url_safe_key))
+            .expect("parse base64url key")
+            .expect("decoded base64url key");
+        assert_eq!(parsed, *b"0123456789abcdef0123456789abcdef");
+    }
+
+    #[test]
+    fn parse_linuxdo_refresh_token_crypt_key_rejects_invalid_lengths() {
+        let err = parse_linuxdo_refresh_token_crypt_key(Some("short-key".to_string()))
+            .expect_err("invalid key should be rejected");
+        assert!(err.contains("decode to 32 bytes"));
     }
 }

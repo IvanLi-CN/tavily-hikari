@@ -624,6 +624,16 @@ pub struct JobLog {
     pub finished_at: Option<i64>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct JobGroupCounts {
+    pub all: i64,
+    pub quota: i64,
+    pub usage: i64,
+    pub logs: i64,
+    pub geo: i64,
+    pub linuxdo: i64,
+}
+
 pub(crate) fn random_string(alphabet: &[u8], len: usize) -> String {
     let mut s = String::with_capacity(len);
     let mut rng = rand::thread_rng();
@@ -861,6 +871,18 @@ pub struct OAuthAccountProfile {
     pub active: bool,
     pub trust_level: Option<i64>,
     pub raw_payload_json: Option<String>,
+}
+
+/// OAuth account record that is eligible for refresh-token based profile sync.
+#[derive(Debug, Clone)]
+pub struct OAuthAccountRefreshTokenRecord {
+    pub provider: String,
+    pub provider_user_id: String,
+    pub user_id: String,
+    pub username: Option<String>,
+    pub name: Option<String>,
+    pub refresh_token_ciphertext: String,
+    pub refresh_token_nonce: String,
 }
 
 /// Local user identity resolved from oauth_accounts/users.
