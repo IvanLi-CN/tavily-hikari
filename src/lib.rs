@@ -359,6 +359,15 @@ const KEY_EFFECT_MCP_SESSION_INIT_BACKOFF_SET: &str = "mcp_session_init_backoff_
 const KEY_EFFECT_MCP_SESSION_INIT_COOLDOWN_AVOIDED: &str = "mcp_session_init_cooldown_avoided";
 const KEY_EFFECT_MCP_SESSION_INIT_RATE_LIMIT_AVOIDED: &str = "mcp_session_init_rate_limit_avoided";
 const KEY_EFFECT_MCP_SESSION_INIT_PRESSURE_AVOIDED: &str = "mcp_session_init_pressure_avoided";
+const KEY_EFFECT_HTTP_PROJECT_AFFINITY_REUSED: &str = "http_project_affinity_reused";
+const KEY_EFFECT_HTTP_PROJECT_AFFINITY_BOUND: &str = "http_project_affinity_bound";
+const KEY_EFFECT_HTTP_PROJECT_AFFINITY_REBOUND: &str = "http_project_affinity_rebound";
+const KEY_EFFECT_HTTP_PROJECT_AFFINITY_COOLDOWN_AVOIDED: &str =
+    "http_project_affinity_cooldown_avoided";
+const KEY_EFFECT_HTTP_PROJECT_AFFINITY_RATE_LIMIT_AVOIDED: &str =
+    "http_project_affinity_rate_limit_avoided";
+const KEY_EFFECT_HTTP_PROJECT_AFFINITY_PRESSURE_AVOIDED: &str =
+    "http_project_affinity_pressure_avoided";
 const MAINTENANCE_SOURCE_SYSTEM: &str = "system";
 const MAINTENANCE_SOURCE_ADMIN: &str = "admin";
 const MAINTENANCE_OP_AUTO_QUARANTINE: &str = "auto_quarantine";
@@ -380,10 +389,12 @@ const DEV_OPEN_ADMIN_TOKEN_NOTE: &str = "[system] dev-open-admin placeholder";
 pub const USER_MONTHLY_BROKEN_LIMIT_DEFAULT: i64 = 5;
 pub const UNBOUND_TOKEN_MONTHLY_BROKEN_LIMIT_DEFAULT: i64 = 2;
 const MCP_SESSION_INIT_BACKOFF_SCOPE: &str = "mcp_session_init";
+const HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE: &str = "http_project_affinity";
 const MCP_SESSION_INIT_BACKOFF_DEFAULT_SECS: i64 = 60;
 const MCP_SESSION_INIT_BACKOFF_MIN_SECS: i64 = 30;
 const MCP_SESSION_INIT_BACKOFF_MAX_SECS: i64 = 300;
 const MCP_SESSION_INIT_RECENT_PRESSURE_WINDOW_SECS: i64 = 60;
+const HTTP_PROJECT_AFFINITY_RECENT_PRESSURE_WINDOW_SECS: i64 = 60;
 const BROKEN_KEY_SUBJECT_USER: &str = "user";
 const BROKEN_KEY_SUBJECT_TOKEN: &str = "token";
 const BROKEN_KEY_SOURCE_AUTO: &str = "auto";

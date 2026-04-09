@@ -403,6 +403,20 @@ pub(crate) struct TokenPrimaryApiKeyAffinity {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HttpProjectAffinityBinding {
+    pub owner_subject: String,
+    pub project_id_hash: String,
+    pub api_key_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HttpProjectAffinityContext {
+    pub owner_subject: String,
+    pub project_id_hash: String,
+    pub affinity_subject: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpSessionBinding {
     pub proxy_session_id: String,
     pub upstream_session_id: String,

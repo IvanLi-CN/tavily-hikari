@@ -7,6 +7,7 @@ use crate::*;
 use axum::{
     Json, Router,
     http::StatusCode,
+    response::IntoResponse,
     routing::{any, get, post},
 };
 use sha2::{Digest, Sha256};
@@ -5692,6 +5693,7 @@ async fn proxy_http_search_marks_key_exhausted_on_quota_status() {
         .proxy_http_search(
             &usage_base,
             Some("tok1"),
+            None,
             &Method::POST,
             "/api/tavily/search",
             options,
@@ -5782,6 +5784,7 @@ async fn proxy_http_json_endpoint_injects_bearer_auth_when_enabled() {
             &usage_base,
             "/search",
             Some("tok1"),
+            None,
             &Method::POST,
             "/api/tavily/search",
             options,
@@ -5838,6 +5841,7 @@ async fn proxy_http_json_endpoint_quarantines_key_on_401_deactivated() {
         .proxy_http_search(
             &usage_base,
             Some("tok1"),
+            None,
             &Method::POST,
             "/api/tavily/search",
             options,
@@ -8422,6 +8426,7 @@ async fn research_usage_probe_401_quarantines_key() {
         .proxy_http_research_with_usage_diff(
             &usage_base,
             Some("tok1"),
+            None,
             &Method::POST,
             "/api/tavily/research",
             options,
@@ -8572,6 +8577,7 @@ async fn proxy_http_json_endpoint_does_not_inject_bearer_auth_when_disabled() {
             &usage_base,
             "/search",
             Some("tok1"),
+            None,
             &Method::POST,
             "/api/tavily/search",
             options,
@@ -14311,6 +14317,16 @@ fn rank_mcp_affinity_key_ids(
     key_ids
 }
 
+fn sha256_hex(value: &str) -> String {
+    let digest: [u8; 32] = Sha256::digest(value.as_bytes()).into();
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(&mut hex, "{byte:02x}");
+    }
+    hex
+}
+
 #[test]
 fn mcp_session_init_retry_after_secs_supports_seconds_dates_defaults_and_clamp() {
     let now = 1_700_000_000_i64;
@@ -14501,6 +14517,562 @@ fn mcp_session_init_candidate_order_prefers_lower_recent_rate_limit_heat_before_
     );
 }
 
+#[test]
+fn http_project_affinity_candidate_order_prefers_cooldown_then_rate_limit_then_pressure_then_lru() {
+    let mut candidates = vec![
+        HttpProjectAffinityCandidate {
+            key_id: "stable-0".to_string(),
+            stable_rank_index: 0,
+            cooldown_until: Some(200),
+            recent_rate_limited_count: 0,
+            recent_billable_request_count: 0,
+            last_used_at: 100,
+        },
+        HttpProjectAffinityCandidate {
+            key_id: "stable-1".to_string(),
+            stable_rank_index: 1,
+            cooldown_until: None,
+            recent_rate_limited_count: 1,
+            recent_billable_request_count: 1,
+            last_used_at: 30,
+        },
+        HttpProjectAffinityCandidate {
+            key_id: "stable-2".to_string(),
+            stable_rank_index: 2,
+            cooldown_until: None,
+            recent_rate_limited_count: 0,
+            recent_billable_request_count: 5,
+            last_used_at: 10,
+        },
+        HttpProjectAffinityCandidate {
+            key_id: "stable-3".to_string(),
+            stable_rank_index: 3,
+            cooldown_until: None,
+            recent_rate_limited_count: 0,
+            recent_billable_request_count: 1,
+            last_used_at: 5,
+        },
+    ];
+
+    TavilyProxy::order_http_project_affinity_candidates(&mut candidates);
+
+    assert_eq!(
+        candidates
+            .iter()
+            .map(|candidate| candidate.key_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["stable-3", "stable-2", "stable-1", "stable-0"]
+    );
+    assert_eq!(
+        TavilyProxy::http_project_affinity_selection_effect(&candidates).code,
+        KEY_EFFECT_HTTP_PROJECT_AFFINITY_COOLDOWN_AVOIDED,
+    );
+}
+
+#[tokio::test]
+async fn http_project_affinity_reuses_existing_binding_for_same_project() {
+    let db_path = temp_db_path("http-project-affinity-reuse");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec![
+            "tvly-http-project-affinity-reuse-a".to_string(),
+            "tvly-http-project-affinity-reuse-b".to_string(),
+        ],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let token = proxy
+        .create_access_token(Some("http-project-affinity-reuse"))
+        .await
+        .expect("create token");
+
+    let first = proxy
+        .acquire_key_for_http_project(Some(&token.id), Some("project-alpha"))
+        .await
+        .expect("select project key")
+        .expect("project affinity selection");
+    assert!(
+        matches!(
+            first.key_effect.code.as_str(),
+            KEY_EFFECT_HTTP_PROJECT_AFFINITY_BOUND
+                | KEY_EFFECT_HTTP_PROJECT_AFFINITY_COOLDOWN_AVOIDED
+                | KEY_EFFECT_HTTP_PROJECT_AFFINITY_RATE_LIMIT_AVOIDED
+                | KEY_EFFECT_HTTP_PROJECT_AFFINITY_PRESSURE_AVOIDED
+        ),
+        "first selection should establish the binding or explain why a hotter key was avoided",
+    );
+
+    let second = proxy
+        .acquire_key_for_http_project(Some(&token.id), Some("project-alpha"))
+        .await
+        .expect("reselect project key")
+        .expect("project affinity selection");
+    assert_eq!(second.lease.id, first.lease.id);
+    assert_eq!(
+        second.key_effect.code,
+        KEY_EFFECT_HTTP_PROJECT_AFFINITY_REUSED,
+    );
+
+    let binding = proxy
+        .key_store
+        .get_http_project_api_key_affinity(
+            &format!("token:{}", token.id),
+            &sha256_hex("project-alpha"),
+        )
+        .await
+        .expect("load persisted binding")
+        .expect("binding should exist");
+    assert_eq!(binding.api_key_id, first.lease.id);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn http_project_affinity_separates_distinct_projects_for_same_owner() {
+    let db_path = temp_db_path("http-project-affinity-distinct-projects");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec![
+            "tvly-http-project-distinct-a".to_string(),
+            "tvly-http-project-distinct-b".to_string(),
+            "tvly-http-project-distinct-c".to_string(),
+        ],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    proxy
+        .set_mcp_session_affinity_key_count(2)
+        .await
+        .expect("set stable pool size");
+    let token = proxy
+        .create_access_token(Some("http-project-distinct-projects"))
+        .await
+        .expect("create token");
+
+    let first = proxy
+        .acquire_key_for_http_project(Some(&token.id), Some("project-alpha"))
+        .await
+        .expect("select alpha key")
+        .expect("alpha selection");
+    let second = proxy
+        .acquire_key_for_http_project(Some(&token.id), Some("project-beta"))
+        .await
+        .expect("select beta key")
+        .expect("beta selection");
+
+    let alpha = proxy
+        .key_store
+        .get_http_project_api_key_affinity(
+            &format!("token:{}", token.id),
+            &sha256_hex("project-alpha"),
+        )
+        .await
+        .expect("load alpha binding")
+        .expect("alpha binding");
+    let beta = proxy
+        .key_store
+        .get_http_project_api_key_affinity(
+            &format!("token:{}", token.id),
+            &sha256_hex("project-beta"),
+        )
+        .await
+        .expect("load beta binding")
+        .expect("beta binding");
+    assert_eq!(alpha.api_key_id, first.lease.id);
+    assert_eq!(beta.api_key_id, second.lease.id);
+    assert_ne!(alpha.project_id_hash, beta.project_id_hash);
+
+    let row_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM http_project_api_key_affinity WHERE owner_subject = ?",
+    )
+    .bind(format!("token:{}", token.id))
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("count project bindings");
+    assert_eq!(row_count, 2);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn http_project_affinity_same_project_isolated_by_different_users() {
+    let db_path = temp_db_path("http-project-affinity-user-isolation");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec![
+            "tvly-http-project-user-isolation-a".to_string(),
+            "tvly-http-project-user-isolation-b".to_string(),
+        ],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let first_token = proxy
+        .create_access_token(Some("http-project-user-isolation-a"))
+        .await
+        .expect("create first token");
+    let second_token = proxy
+        .create_access_token(Some("http-project-user-isolation-b"))
+        .await
+        .expect("create second token");
+    let now = Utc::now().timestamp();
+
+    sqlx::query(
+        "INSERT INTO users (id, display_name, username, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind("user-project-a")
+    .bind("User Project A")
+    .bind("user-project-a")
+    .bind(now)
+    .bind(now)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert first user");
+    sqlx::query(
+        "INSERT INTO users (id, display_name, username, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind("user-project-b")
+    .bind("User Project B")
+    .bind("user-project-b")
+    .bind(now)
+    .bind(now)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert second user");
+    sqlx::query(
+        "INSERT INTO user_token_bindings (user_id, token_id, created_at, updated_at) VALUES (?, ?, ?, ?)",
+    )
+    .bind("user-project-a")
+    .bind(&first_token.id)
+    .bind(now)
+    .bind(now)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("bind first token");
+    sqlx::query(
+        "INSERT INTO user_token_bindings (user_id, token_id, created_at, updated_at) VALUES (?, ?, ?, ?)",
+    )
+    .bind("user-project-b")
+    .bind(&second_token.id)
+    .bind(now)
+    .bind(now)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("bind second token");
+    proxy
+        .key_store
+        .cache_token_binding(&first_token.id, Some("user-project-a"))
+        .await;
+    proxy
+        .key_store
+        .cache_token_binding(&second_token.id, Some("user-project-b"))
+        .await;
+
+    proxy
+        .acquire_key_for_http_project(Some(&first_token.id), Some("shared-project"))
+        .await
+        .expect("select first user project key")
+        .expect("first user project selection");
+    proxy
+        .acquire_key_for_http_project(Some(&second_token.id), Some("shared-project"))
+        .await
+        .expect("select second user project key")
+        .expect("second user project selection");
+
+    let rows = sqlx::query_as::<_, (String, String)>(
+        r#"SELECT owner_subject, project_id_hash
+           FROM http_project_api_key_affinity
+           WHERE project_id_hash = ?
+           ORDER BY owner_subject ASC"#,
+    )
+    .bind(sha256_hex("shared-project"))
+    .fetch_all(&proxy.key_store.pool)
+    .await
+    .expect("fetch project rows");
+
+    assert_eq!(
+        rows,
+        vec![
+            (
+                "user:user-project-a".to_string(),
+                sha256_hex("shared-project"),
+            ),
+            (
+                "user:user-project-b".to_string(),
+                sha256_hex("shared-project"),
+            ),
+        ]
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn http_project_affinity_rebinds_after_cooldown() {
+    let db_path = temp_db_path("http-project-affinity-cooldown-rebind");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec![
+            "tvly-http-project-cooldown-a".to_string(),
+            "tvly-http-project-cooldown-b".to_string(),
+            "tvly-http-project-cooldown-c".to_string(),
+        ],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    proxy
+        .set_mcp_session_affinity_key_count(2)
+        .await
+        .expect("set stable pool size");
+    let token = proxy
+        .create_access_token(Some("http-project-cooldown-rebind"))
+        .await
+        .expect("create token");
+    let project_hash = sha256_hex("project-cooldown");
+    let subject = format!("token:{}:project:{}", token.id, project_hash);
+    let ranked = rank_mcp_affinity_key_ids(
+        &subject,
+        fetch_all_api_key_ids(&proxy.key_store.pool).await,
+        2,
+    );
+    let hotter_key_id = ranked[0].clone();
+    let cooler_key_id = ranked[1].clone();
+    let now = Utc::now().timestamp();
+
+    proxy
+        .key_store
+        .set_http_project_api_key_affinity(
+            &format!("token:{}", token.id),
+            &project_hash,
+            &hotter_key_id,
+        )
+        .await
+        .expect("seed project binding");
+    proxy
+        .key_store
+        .arm_api_key_transient_backoff(ApiKeyTransientBackoffArm {
+            key_id: &hotter_key_id,
+            scope: HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE,
+            cooldown_until: now + 120,
+            retry_after_secs: 120,
+            reason_code: Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429),
+            source_request_log_id: None,
+            now,
+        })
+        .await
+        .expect("arm project cooldown");
+
+    let selection = proxy
+        .acquire_key_for_http_project(Some(&token.id), Some("project-cooldown"))
+        .await
+        .expect("select project key after cooldown")
+        .expect("project affinity selection");
+    assert_eq!(selection.lease.id, cooler_key_id);
+    assert_eq!(
+        selection.key_effect.code,
+        KEY_EFFECT_HTTP_PROJECT_AFFINITY_COOLDOWN_AVOIDED,
+    );
+
+    let rebound = proxy
+        .key_store
+        .get_http_project_api_key_affinity(&format!("token:{}", token.id), &project_hash)
+        .await
+        .expect("load rebound binding")
+        .expect("rebound binding should exist");
+    assert_eq!(rebound.api_key_id, cooler_key_id);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn http_project_affinity_arms_backoff_on_429_and_avoids_hot_key_on_next_request() {
+    let db_path = temp_db_path("http-project-affinity-arm-backoff");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec![
+            "tvly-http-project-arm-backoff-a".to_string(),
+            "tvly-http-project-arm-backoff-b".to_string(),
+        ],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    proxy
+        .set_mcp_session_affinity_key_count(2)
+        .await
+        .expect("set stable pool size");
+    let token = proxy
+        .create_access_token(Some("http-project-arm-backoff"))
+        .await
+        .expect("create token");
+    let project_id = "project-arm-backoff";
+    let project_hash = sha256_hex(project_id);
+    let subject = format!("token:{}:project:{}", token.id, project_hash);
+    let ranked = rank_mcp_affinity_key_ids(
+        &subject,
+        fetch_all_api_key_ids(&proxy.key_store.pool).await,
+        2,
+    );
+    let hotter_key_id = ranked[0].clone();
+    let cooler_key_id = ranked[1].clone();
+    let key_rows =
+        sqlx::query_as::<_, (String, String)>("SELECT id, api_key FROM api_keys ORDER BY id ASC")
+            .fetch_all(&proxy.key_store.pool)
+            .await
+            .expect("fetch key rows");
+    let hotter_secret = key_rows
+        .iter()
+        .find(|(id, _)| id == &hotter_key_id)
+        .map(|(_, secret)| secret.clone())
+        .expect("hotter key secret");
+    let cooler_secret = key_rows
+        .iter()
+        .find(|(id, _)| id == &cooler_key_id)
+        .map(|(_, secret)| secret.clone())
+        .expect("cooler key secret");
+
+    proxy
+        .key_store
+        .set_http_project_api_key_affinity(
+            &format!("token:{}", token.id),
+            &project_hash,
+            &hotter_key_id,
+        )
+        .await
+        .expect("seed project binding");
+
+    let app = Router::new().route(
+        "/search",
+        post(move |headers: HeaderMap, Json(body): Json<Value>| {
+            let hotter_secret = hotter_secret.clone();
+            let cooler_secret = cooler_secret.clone();
+            async move {
+                let api_key = body
+                    .get("api_key")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let auth = headers
+                    .get(axum::http::header::AUTHORIZATION)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.strip_prefix("Bearer "))
+                    .unwrap_or("")
+                    .to_string();
+                assert_eq!(api_key, auth);
+
+                if api_key == hotter_secret {
+                    let mut response_headers = HeaderMap::new();
+                    response_headers.insert("retry-after", HeaderValue::from_static("90"));
+                    (
+                        StatusCode::TOO_MANY_REQUESTS,
+                        response_headers,
+                        Json(serde_json::json!({
+                            "detail": { "error": "Too many requests" }
+                        })),
+                    )
+                        .into_response()
+                } else {
+                    assert_eq!(api_key, cooler_secret);
+                    (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "status": 200,
+                            "results": [],
+                        })),
+                    )
+                        .into_response()
+                }
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
+    });
+
+    let usage_base = format!("http://{}", addr);
+    let mut headers = HeaderMap::new();
+    headers.insert("content-type", HeaderValue::from_static("application/json"));
+    headers.insert("x-project-id", HeaderValue::from_static(project_id));
+    let options = serde_json::json!({ "query": "project backoff" });
+
+    let (first_resp, first_analysis) = proxy
+        .proxy_http_json_endpoint(
+            &usage_base,
+            "/search",
+            Some(&token.id),
+            Some(project_id),
+            &Method::POST,
+            "/api/tavily/search",
+            options.clone(),
+            &headers,
+            true,
+        )
+        .await
+        .expect("first project request should complete");
+    assert_eq!(first_resp.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        first_analysis.failure_kind.as_deref(),
+        Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429),
+    );
+
+    let cooldown = proxy
+        .key_store
+        .list_active_api_key_transient_backoffs(
+            std::slice::from_ref(&hotter_key_id),
+            HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE,
+            Utc::now().timestamp(),
+        )
+        .await
+        .expect("load project cooldowns");
+    assert!(cooldown.contains_key(&hotter_key_id));
+
+    let (second_resp, second_analysis) = proxy
+        .proxy_http_json_endpoint(
+            &usage_base,
+            "/search",
+            Some(&token.id),
+            Some(project_id),
+            &Method::POST,
+            "/api/tavily/search",
+            options,
+            &headers,
+            true,
+        )
+        .await
+        .expect("second project request should complete");
+    assert_eq!(second_resp.status, StatusCode::OK);
+    assert_eq!(
+        second_resp.api_key_id.as_deref(),
+        Some(cooler_key_id.as_str())
+    );
+    assert_eq!(
+        second_analysis.key_effect.code,
+        KEY_EFFECT_HTTP_PROJECT_AFFINITY_COOLDOWN_AVOIDED,
+    );
+
+    let rebound = proxy
+        .key_store
+        .get_http_project_api_key_affinity(&format!("token:{}", token.id), &project_hash)
+        .await
+        .expect("load rebound binding")
+        .expect("binding should exist");
+    assert_eq!(rebound.api_key_id, cooler_key_id);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
 #[tokio::test]
 async fn mcp_session_init_backoff_store_extends_without_shortening_and_gc_cleans_expired_rows() {
     let db_path = temp_db_path("mcp-init-backoff-store");
@@ -14655,6 +15227,225 @@ async fn http_key_selection_ignores_mcp_session_init_backoff() {
         .await
         .expect("acquire http key");
     assert_eq!(lease.id, primary_key_id);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn http_429_without_project_affinity_still_arms_mcp_session_init_backoff() {
+    let db_path = temp_db_path("http-no-project-arms-mcp-init-backoff");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec![
+            "tvly-http-no-project-backoff-a".to_string(),
+            "tvly-http-no-project-backoff-b".to_string(),
+        ],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let token = proxy
+        .create_access_token(Some("http-no-project-backoff"))
+        .await
+        .expect("create token");
+    let key_rows =
+        sqlx::query_as::<_, (String, String)>("SELECT id, api_key FROM api_keys ORDER BY id ASC")
+            .fetch_all(&proxy.key_store.pool)
+            .await
+            .expect("fetch key rows");
+    let primary_key_id = key_rows[0].0.clone();
+    let primary_secret = key_rows[0].1.clone();
+    proxy
+        .key_store
+        .set_token_primary_api_key_affinity(&token.id, None, &primary_key_id)
+        .await
+        .expect("set token primary affinity");
+
+    let app = Router::new().route(
+        "/search",
+        post(move |headers: HeaderMap, Json(body): Json<Value>| {
+            let primary_secret = primary_secret.clone();
+            async move {
+                let api_key = body
+                    .get("api_key")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let auth = headers
+                    .get(axum::http::header::AUTHORIZATION)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.strip_prefix("Bearer "))
+                    .unwrap_or("")
+                    .to_string();
+                assert_eq!(api_key, auth);
+                assert_eq!(api_key, primary_secret);
+
+                let mut response_headers = HeaderMap::new();
+                response_headers.insert("retry-after", HeaderValue::from_static("45"));
+                (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    response_headers,
+                    Json(serde_json::json!({
+                        "detail": { "error": "Too many requests" }
+                    })),
+                )
+                    .into_response()
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
+    });
+
+    let usage_base = format!("http://{}", addr);
+    let mut headers = HeaderMap::new();
+    headers.insert("content-type", HeaderValue::from_static("application/json"));
+    let options = serde_json::json!({ "query": "legacy mcp init backoff" });
+
+    let (resp, analysis) = proxy
+        .proxy_http_json_endpoint(
+            &usage_base,
+            "/search",
+            Some(&token.id),
+            None,
+            &Method::POST,
+            "/api/tavily/search",
+            options,
+            &headers,
+            true,
+        )
+        .await
+        .expect("http request should complete");
+    assert_eq!(resp.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        analysis.failure_kind.as_deref(),
+        Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429),
+    );
+    assert_eq!(
+        analysis.key_effect.code,
+        KEY_EFFECT_MCP_SESSION_INIT_BACKOFF_SET,
+    );
+
+    let cooldown = proxy
+        .key_store
+        .list_active_api_key_transient_backoffs(
+            std::slice::from_ref(&primary_key_id),
+            MCP_SESSION_INIT_BACKOFF_SCOPE,
+            Utc::now().timestamp(),
+        )
+        .await
+        .expect("load legacy mcp-init cooldowns");
+    assert!(cooldown.contains_key(&primary_key_id));
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn research_result_get_429_still_arms_mcp_session_init_backoff() {
+    let db_path = temp_db_path("research-result-get-mcp-init-backoff");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec![
+            "tvly-research-result-backoff-a".to_string(),
+            "tvly-research-result-backoff-b".to_string(),
+        ],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let token = proxy
+        .create_access_token(Some("research-result-backoff"))
+        .await
+        .expect("create token");
+    let request_id = "req-result-backoff";
+    let key_rows =
+        sqlx::query_as::<_, (String, String)>("SELECT id, api_key FROM api_keys ORDER BY id ASC")
+            .fetch_all(&proxy.key_store.pool)
+            .await
+            .expect("fetch key rows");
+    let affinity_key_id = key_rows[0].0.clone();
+    let affinity_secret = key_rows[0].1.clone();
+    proxy
+        .record_research_request_affinity(request_id, &affinity_key_id, &token.id)
+        .await
+        .expect("record research affinity");
+
+    let upstream_path = format!("/research/{request_id}");
+    let app = Router::new().route(
+        &upstream_path,
+        get(move |headers: HeaderMap| {
+            let affinity_secret = affinity_secret.clone();
+            async move {
+                let auth = headers
+                    .get(axum::http::header::AUTHORIZATION)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.strip_prefix("Bearer "))
+                    .unwrap_or("")
+                    .to_string();
+                assert_eq!(auth, affinity_secret);
+
+                let mut response_headers = HeaderMap::new();
+                response_headers.insert("retry-after", HeaderValue::from_static("30"));
+                (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    response_headers,
+                    Json(serde_json::json!({
+                        "detail": { "error": "Too many requests" }
+                    })),
+                )
+                    .into_response()
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
+    });
+
+    let usage_base = format!("http://{}", addr);
+    let headers = HeaderMap::new();
+    let (resp, analysis) = proxy
+        .proxy_http_get_endpoint(
+            &usage_base,
+            &upstream_path,
+            Some(&token.id),
+            &Method::GET,
+            &format!("/api/tavily/research/{request_id}"),
+            &headers,
+            true,
+        )
+        .await
+        .expect("research result request should complete");
+    assert_eq!(resp.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        analysis.failure_kind.as_deref(),
+        Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429),
+    );
+    assert_eq!(
+        analysis.key_effect.code,
+        KEY_EFFECT_MCP_SESSION_INIT_BACKOFF_SET,
+    );
+
+    let backoff_row = sqlx::query_as::<_, (Option<i64>,)>(
+        r#"SELECT source_request_log_id
+           FROM api_key_transient_backoffs
+           WHERE key_id = ? AND scope = ?"#,
+    )
+    .bind(&affinity_key_id)
+    .bind(MCP_SESSION_INIT_BACKOFF_SCOPE)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("load research result backoff row");
+    assert_eq!(backoff_row.0, resp.request_log_id);
 
     let _ = std::fs::remove_file(db_path);
 }
