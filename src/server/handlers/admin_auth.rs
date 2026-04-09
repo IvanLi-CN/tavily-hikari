@@ -289,7 +289,7 @@ fn resolve_linuxdo_avatar_url(cfg: &LinuxDoOAuthOptions, avatar_template: Option
         return Some(template);
     }
 
-    let base = reqwest::Url::parse(&cfg.userinfo_url).ok()?;
+    let base = reqwest::Url::parse(&cfg.authorize_url).ok()?;
     if template.starts_with("//") {
         return Some(format!("{}:{}", base.scheme(), template));
     }

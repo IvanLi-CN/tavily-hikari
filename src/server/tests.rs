@@ -8189,7 +8189,11 @@ colo=LAX
             .await
             .expect("create user session");
 
-        let addr = spawn_user_oauth_server(proxy).await;
+        let mut oauth_options = linuxdo_oauth_options_for_test();
+        oauth_options.authorize_url = "https://connect.linux.do/forum/oauth2/authorize".to_string();
+        oauth_options.userinfo_url = "http://discourse.internal:3000/api/user".to_string();
+
+        let addr = spawn_user_oauth_server_with_options(proxy, oauth_options).await;
         let client = Client::new();
 
         let profile_url = format!("http://{}/api/profile", addr);
@@ -8235,8 +8239,7 @@ colo=LAX
         assert_eq!(
             logged_in_profile.get("userAvatarUrl"),
             Some(&serde_json::Value::String(
-                "https://connect.linux.do/user_avatar/connect.linux.do/linuxdo_alice/96/1_2.png"
-                    .to_string(),
+                "https://connect.linux.do/user_avatar/connect.linux.do/linuxdo_alice/96/1_2.png".to_string(),
             ))
         );
 
