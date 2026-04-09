@@ -124,6 +124,7 @@
   - 仅影响未来项目亲和的新请求，不影响既有 MCP session 绑定，也不对当前 HTTP 请求自动重试
 - 当 HTTP 请求未启用项目亲和（缺失/空白 `X-Project-ID` 等）且收到 upstream `429` 时：
   - 必须保留当前既有 `mcp_session_init` backoff 写入语义，避免普通 HTTP 流量的 rate-limit 信号回归丢失
+- `GET /api/tavily/research/:request_id` 作为非项目亲和路径的一部分，也必须继续保留既有 `mcp_session_init` cooldown 写入与 request-log 关联语义
 - request log 需要继续通过 `source_request_log_id` 关联该 backoff 行，便于审计。
 
 ### Request log key effects
@@ -213,6 +214,7 @@ None
 - 2026-04-10: 新建 spec，锁定 owner-scoped `X-Project-ID` 项目亲和、独立 HTTP backoff scope、request-id 优先级与 request log key effects。
 - 2026-04-10: PR #227 收口为 merge-ready，补齐 full-target clippy 修复、项目亲和回归覆盖与 PR release labels。
 - 2026-04-10: review follow-up 补充无项目亲和 HTTP `429` 继续写入既有 `mcp_session_init` cooldown，避免默认 HTTP 路径回归。
+- 2026-04-10: review follow-up 补充 research result GET `429` 继续写入既有 `mcp_session_init` cooldown 与 request-log 关联，避免轮询路径回归。
 
 ## 参考（References）
 

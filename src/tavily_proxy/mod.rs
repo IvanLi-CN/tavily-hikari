@@ -5137,6 +5137,13 @@ impl TavilyProxy {
                 let key_effect = self
                     .reconcile_key_health(&lease, display_path, &analysis, auth_token_id)
                     .await?;
+                let armed_mcp_init_backoff = self
+                    .maybe_arm_mcp_session_init_backoff(&lease.id, &headers, &analysis)
+                    .await?;
+                let mut key_effect = key_effect;
+                if key_effect.code == KEY_EFFECT_NONE && armed_mcp_init_backoff {
+                    key_effect = Self::mcp_session_init_backoff_effect();
+                }
 
                 let request_log_id = self
                     .key_store
@@ -5159,6 +5166,16 @@ impl TavilyProxy {
                         dropped_headers: &sanitized_headers.dropped,
                     })
                     .await?;
+                if armed_mcp_init_backoff {
+                    self.key_store
+                        .set_api_key_transient_backoff_request_log_id(
+                            &lease.id,
+                            MCP_SESSION_INIT_BACKOFF_SCOPE,
+                            request_log_id,
+                            Utc::now().timestamp(),
+                        )
+                        .await?;
+                }
                 analysis.key_effect = key_effect.clone();
 
                 Ok((

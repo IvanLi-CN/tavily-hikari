@@ -15346,6 +15346,111 @@ async fn http_429_without_project_affinity_still_arms_mcp_session_init_backoff()
 }
 
 #[tokio::test]
+async fn research_result_get_429_still_arms_mcp_session_init_backoff() {
+    let db_path = temp_db_path("research-result-get-mcp-init-backoff");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec![
+            "tvly-research-result-backoff-a".to_string(),
+            "tvly-research-result-backoff-b".to_string(),
+        ],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let token = proxy
+        .create_access_token(Some("research-result-backoff"))
+        .await
+        .expect("create token");
+    let request_id = "req-result-backoff";
+    let key_rows =
+        sqlx::query_as::<_, (String, String)>("SELECT id, api_key FROM api_keys ORDER BY id ASC")
+            .fetch_all(&proxy.key_store.pool)
+            .await
+            .expect("fetch key rows");
+    let affinity_key_id = key_rows[0].0.clone();
+    let affinity_secret = key_rows[0].1.clone();
+    proxy
+        .record_research_request_affinity(request_id, &affinity_key_id, &token.id)
+        .await
+        .expect("record research affinity");
+
+    let upstream_path = format!("/research/{request_id}");
+    let app = Router::new().route(
+        &upstream_path,
+        get(move |headers: HeaderMap| {
+            let affinity_secret = affinity_secret.clone();
+            async move {
+                let auth = headers
+                    .get(axum::http::header::AUTHORIZATION)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.strip_prefix("Bearer "))
+                    .unwrap_or("")
+                    .to_string();
+                assert_eq!(auth, affinity_secret);
+
+                let mut response_headers = HeaderMap::new();
+                response_headers.insert("retry-after", HeaderValue::from_static("30"));
+                (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    response_headers,
+                    Json(serde_json::json!({
+                        "detail": { "error": "Too many requests" }
+                    })),
+                )
+                    .into_response()
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
+    });
+
+    let usage_base = format!("http://{}", addr);
+    let headers = HeaderMap::new();
+    let (resp, analysis) = proxy
+        .proxy_http_get_endpoint(
+            &usage_base,
+            &upstream_path,
+            Some(&token.id),
+            &Method::GET,
+            &format!("/api/tavily/research/{request_id}"),
+            &headers,
+            true,
+        )
+        .await
+        .expect("research result request should complete");
+    assert_eq!(resp.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        analysis.failure_kind.as_deref(),
+        Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429),
+    );
+    assert_eq!(
+        analysis.key_effect.code,
+        KEY_EFFECT_MCP_SESSION_INIT_BACKOFF_SET,
+    );
+
+    let backoff_row = sqlx::query_as::<_, (Option<i64>,)>(
+        r#"SELECT source_request_log_id
+           FROM api_key_transient_backoffs
+           WHERE key_id = ? AND scope = ?"#,
+    )
+    .bind(&affinity_key_id)
+    .bind(MCP_SESSION_INIT_BACKOFF_SCOPE)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("load research result backoff row");
+    assert_eq!(backoff_row.0, resp.request_log_id);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn mcp_session_init_uses_least_bad_key_even_when_every_pool_candidate_is_cooled() {
     let db_path = temp_db_path("mcp-init-all-hot");
     let db_str = db_path.to_string_lossy().to_string();
