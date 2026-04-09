@@ -325,6 +325,10 @@ function installUserConsoleFetchMock(state: UserConsoleStoryState): () => void {
       return jsonResponse(versionSample)
     }
 
+    if (url.pathname === '/api/user/logout') {
+      return new Response(null, { status: 204 })
+    }
+
     if (url.pathname === '/api/user/tokens') {
       return jsonResponse(tokenList)
     }
@@ -693,6 +697,7 @@ function UserConsoleStory(
 const meta = {
   title: 'User Console/UserConsole',
   excludeStories: ['__testables'],
+  tags: ['autodocs'],
   parameters: {
     controls: { expanded: true },
     docs: {
@@ -773,6 +778,20 @@ export const ConsoleHome: Story = {
     isAdmin: false,
     landingFocus: 'Overview Focus',
   },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 120))
+
+    for (const selector of [
+      '.user-console-header',
+      '.user-console-header-card',
+      '.user-console-logout-button',
+      '.user-console-landing-stack',
+    ]) {
+      if (canvasElement.querySelector(selector) == null) {
+        throw new Error(`Expected ConsoleHome to render ${selector}`)
+      }
+    }
+  },
 }
 
 export const ConsoleHomeRoot: Story = {
@@ -803,6 +822,19 @@ export const ConsoleHomeAdminMobile: Story = {
   },
   parameters: {
     viewport: { defaultViewport: '0390-device-iphone-14' },
+  },
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.setTimeout(resolve, 120))
+
+    for (const selector of [
+      '.user-console-header',
+      '.user-console-admin-entry',
+      '.user-console-logout-button',
+    ]) {
+      if (canvasElement.querySelector(selector) == null) {
+        throw new Error(`Expected ConsoleHomeAdminMobile to render ${selector}`)
+      }
+    }
   },
 }
 

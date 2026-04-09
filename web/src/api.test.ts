@@ -24,6 +24,7 @@ import {
   fetchTokenLogDetails,
   fetchTokenLogsList,
   fetchUserDashboard,
+  postUserLogout,
   fetchUserTokenDetail,
   fetchUserTokens,
   millisecondsUntilNextBrowserDayBoundary,
@@ -111,6 +112,35 @@ describe('admin user tag api helpers', () => {
     expect((fetchMock.mock.calls[4] as [string])[0]).toBe(
       '/api/user/tokens/a1b2?today_start=2026-04-03T00%3A00%3A00%2B08%3A00&today_end=2026-04-04T00%3A00%3A00%2B08%3A00',
     )
+  })
+
+  it('treats user logout 204 and 401 as successful sign-out responses', async () => {
+    let status = 204
+    const fetchMock = mock((_input: RequestInfo | URL) => {
+      const response = new Response(null, { status })
+      status = 401
+      return Promise.resolve(response)
+    })
+    globalThis.fetch = fetchMock as typeof fetch
+
+    await expect(postUserLogout()).resolves.toBeUndefined()
+    await expect(postUserLogout()).resolves.toBeUndefined()
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect((fetchMock.mock.calls[0] as [string])[0]).toBe('/api/user/logout')
+    expect((fetchMock.mock.calls[1] as [string])[0]).toBe('/api/user/logout')
+  })
+
+  it('surfaces logout request failures for the caller to render', async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(new Response('upstream unavailable', { status: 503 })),
+    )
+    globalThis.fetch = fetchMock as typeof fetch
+
+    await expect(postUserLogout()).rejects.toMatchObject({
+      message: 'upstream unavailable',
+      status: 503,
+    })
   })
 
   it('loads the dashboard overview from the dedicated aggregate endpoint', async () => {

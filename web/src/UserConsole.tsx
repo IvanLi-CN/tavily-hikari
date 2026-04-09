@@ -10,6 +10,7 @@ import ConnectivityChecksPanel, {
 } from './components/ConnectivityChecksPanel'
 import TokenSecretField, { type TokenSecretCopyState } from './components/TokenSecretField'
 import ManualCopyBubble from './components/ManualCopyBubble'
+import UserConsoleHeader from './components/UserConsoleHeader'
 
 import {
   createBrowserTodayWindow,
@@ -33,6 +34,7 @@ import {
   fetchUserTokenLogs,
   fetchUserTokenSecret,
   fetchUserTokens,
+  postUserLogout,
   parseUserTokenEventSnapshot,
   type Profile,
   type PublicTokenLog,
@@ -41,10 +43,8 @@ import {
   type UserTokenSummary,
   type VersionInfo,
 } from './api'
-import LanguageSwitcher from './components/LanguageSwitcher'
 import RollingNumber from './components/RollingNumber'
 import { StatusBadge, type StatusTone } from './components/StatusBadge'
-import ThemeToggle from './components/ThemeToggle'
 import UserConsoleFooter from './components/UserConsoleFooter'
 import { Button } from './components/ui/button'
 import {
@@ -252,6 +252,30 @@ function statusTone(status: string): StatusTone {
   if (status === 'error') return 'error'
   if (status === 'quota_exhausted') return 'warning'
   return 'neutral'
+}
+
+type UserConsoleViewKey = 'dashboard' | 'tokens' | 'tokenDetail'
+
+function resolveUserConsoleView(route: ConsoleRoute): UserConsoleViewKey {
+  if (route.name === 'token') return 'tokenDetail'
+  if (route.section === 'tokens') return 'tokens'
+  return 'dashboard'
+}
+
+function resolveUserConsoleIdentityName(profile: Profile | null): string | null {
+  const primary = profile?.userDisplayName?.trim()
+  if (primary) return primary
+  const fallback = profile?.displayName?.trim()
+  if (fallback) return fallback
+  return null
+}
+
+function resolveUserConsoleProviderLabel(
+  provider: Profile['userProvider'] | undefined,
+  providers: { linuxdo: string },
+): string | null {
+  if (provider === 'linuxdo') return providers.linuxdo
+  return null
 }
 
 function formatTimestamp(ts: number): string {
@@ -967,6 +991,7 @@ export default function UserConsole(): JSX.Element {
     return () => window.clearTimeout(timer)
   }, [todayWindow.todayEnd])
   const [error, setError] = useState<string | null>(null)
+  const [isLoggingOut, setIsLoggingOut] = useState(false)
   const [copyState, setCopyState] = useState<Record<string, TokenSecretCopyState>>({})
   const [tokenSecretTokenId, setTokenSecretTokenId] = useState<string | null>(null)
   const [tokenSecretVisible, setTokenSecretVisible] = useState(false)
@@ -1194,6 +1219,30 @@ export default function UserConsole(): JSX.Element {
     tokenSecretRequestAbortRef.current.clear()
     tokenSecretRequestRef.current.clear()
   }, [])
+
+  const handleLogout = useCallback(async () => {
+    if (isLoggingOut || profile?.userLoggedIn !== true) return
+    setIsLoggingOut(true)
+    setError(null)
+    detailEventsRef.current?.close()
+    detailEventsRef.current = null
+    setDetailLogsPushIssue(null)
+    setProbeBubble(null)
+    setManualCopyBubble(null)
+    abortAllPendingTokenSecretRequests()
+
+    try {
+      await postUserLogout()
+      window.location.assign('/')
+      return
+    } catch (err) {
+      setError(formatTemplate(text.header.logoutFailed, {
+        message: getProbeErrorMessage(err),
+      }))
+    } finally {
+      setIsLoggingOut(false)
+    }
+  }, [abortAllPendingTokenSecretRequests, isLoggingOut, profile?.userLoggedIn, text.header.logoutFailed])
 
   useEffect(() => {
     tokenSecretRunIdRef.current += 1
@@ -1511,13 +1560,25 @@ export default function UserConsole(): JSX.Element {
     text.detail.guideToken.revealFailed,
   ])
 
-  const subtitle = useMemo(() => {
-    const user = profile?.userDisplayName?.trim()
-    if (user && user.length > 0) {
-      return `${text.subtitle} · ${user}`
-    }
-    return text.subtitle
-  }, [profile?.userDisplayName, text.subtitle])
+  const subtitle = text.subtitle
+  const currentView = useMemo(() => resolveUserConsoleView(route), [route])
+  const currentViewTitle = text.header.views[currentView]
+  const currentViewDescription = currentView === 'dashboard'
+    ? text.dashboard.description
+    : currentView === 'tokens'
+      ? text.tokens.description
+      : text.detail.subtitle
+  const sessionDisplayName = useMemo(() => {
+    const name = resolveUserConsoleIdentityName(profile)
+    if (name) return name
+    if (profile?.userLoggedIn === true) return text.header.unknownUser
+    if (profile?.isAdmin) return text.header.adminLabel
+    return null
+  }, [profile, text.header.adminLabel, text.header.unknownUser])
+  const sessionProviderLabel = useMemo(
+    () => resolveUserConsoleProviderLabel(profile?.userProvider, text.header.providers),
+    [profile?.userProvider, text.header.providers],
+  )
 
   const guideToken = guideTokenVisible ? guideTokenValue ?? maskedGuideToken : maskedGuideToken
 
@@ -1542,6 +1603,7 @@ export default function UserConsole(): JSX.Element {
   const anyProbeRunning = mcpProbe.state === 'running' || apiProbe.state === 'running'
   const adminHref = getUserConsoleAdminHref(profile)
   const consoleUnavailable = consoleAvailability === 'disabled'
+  const logoutVisible = profile?.userLoggedIn === true
   const showTokenListLoading = loading && tokens.length === 0
   const showEmptyTokens = !loading && tokens.length === 0
   const showLandingGuide = shouldRenderLandingGuide(route, tokens.length)
@@ -1996,30 +2058,26 @@ export default function UserConsole(): JSX.Element {
         isCompactLayout ? ' is-compact-layout' : ''
       }`}
     >
-      <section className="surface app-header admin-panel-header">
-        <div className="admin-panel-header-main">
-          <h1>{text.title}</h1>
-          <p className="admin-panel-header-subtitle">{subtitle}</p>
-        </div>
-        <div className="admin-panel-header-side">
-          <div className="admin-panel-header-tools">
-            <div className="admin-language-switcher">
-              <ThemeToggle />
-              <LanguageSwitcher />
-            </div>
-          </div>
-          {adminHref && (
-            <div className="admin-panel-header-actions">
-              <Button asChild variant="outline" size="sm" className="user-console-admin-entry">
-                <a href={adminHref}>
-                  <Icon icon="mdi:crown-outline" width={16} height={16} aria-hidden="true" />
-                  <span>{publicStrings.adminButton}</span>
-                </a>
-              </Button>
-            </div>
-          )}
-        </div>
-      </section>
+      <UserConsoleHeader
+        title={text.title}
+        subtitle={subtitle}
+        eyebrow={text.header.eyebrow}
+        currentViewLabel={text.header.currentView}
+        currentViewTitle={currentViewTitle}
+        currentViewDescription={currentViewDescription}
+        sessionLabel={text.header.session}
+        sessionDisplayName={sessionDisplayName}
+        sessionProviderLabel={sessionProviderLabel}
+        adminLabel={text.header.adminLabel}
+        isAdmin={profile?.isAdmin === true}
+        adminHref={adminHref}
+        adminActionLabel={publicStrings.adminButton}
+        logoutVisible={logoutVisible}
+        isLoggingOut={isLoggingOut}
+        logoutLabel={text.header.logout}
+        loggingOutLabel={text.header.loggingOut}
+        onLogout={handleLogout}
+      />
 
       {consoleUnavailable && (
         <section className="surface panel access-panel">
@@ -2529,6 +2587,9 @@ export const __testables = {
   resolveGuideRevealContextKey,
   resolveGuideToken,
   resolveGuideTokenId,
+  resolveUserConsoleIdentityName,
+  resolveUserConsoleProviderLabel,
+  resolveUserConsoleView,
   shouldRenderLandingGuide,
 }
 
@@ -2874,6 +2935,24 @@ function resolveGuideSamples(content: GuideContent): GuideSample[] {
 const EN = {
   title: 'User Console',
   subtitle: 'Your account dashboard and token management',
+  header: {
+    eyebrow: 'User Workspace',
+    currentView: 'Current View',
+    session: 'Signed in as',
+    adminLabel: 'Admin',
+    logout: 'Sign out',
+    loggingOut: 'Signing out…',
+    logoutFailed: 'Failed to sign out: {message}',
+    unknownUser: 'Connected user',
+    views: {
+      dashboard: 'Account Overview',
+      tokens: 'Token List',
+      tokenDetail: 'Token Detail',
+    },
+    providers: {
+      linuxdo: 'LinuxDo',
+    },
+  },
   dashboard: {
     usage: 'Account Usage Overview',
     description: 'Track account-level throughput, failures, and quota windows without switching pages.',
@@ -3045,6 +3124,24 @@ const EN = {
 const ZH = {
   title: '用户控制台',
   subtitle: '账户仪表盘与 Token 管理',
+  header: {
+    eyebrow: '用户工作区',
+    currentView: '当前视图',
+    session: '当前身份',
+    adminLabel: '管理员',
+    logout: '退出登录',
+    loggingOut: '退出中…',
+    logoutFailed: '退出登录失败：{message}',
+    unknownUser: '已连接用户',
+    views: {
+      dashboard: '账户概览',
+      tokens: 'Token 列表',
+      tokenDetail: 'Token 详情',
+    },
+    providers: {
+      linuxdo: 'LinuxDo',
+    },
+  },
   dashboard: {
     usage: '账户用量概览',
     description: '在同一页集中查看账户级成功率、失败量与各配额窗口。',

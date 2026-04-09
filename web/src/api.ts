@@ -1327,6 +1327,24 @@ export function fetchUserToken(signal?: AbortSignal): Promise<UserTokenResponse>
   return requestJson('/api/user/token', { signal })
 }
 
+export async function postUserLogout(signal?: AbortSignal): Promise<void> {
+  const response = await fetch('/api/user/logout', {
+    method: 'POST',
+    signal,
+  })
+  if (response.status === 204 || response.status === 401) {
+    return
+  }
+  if (!response.ok) {
+    const message = await response.text().catch(() => response.statusText)
+    const err = new Error(message || `Request failed with status ${response.status}`) as Error & {
+      status?: number
+    }
+    err.status = response.status
+    throw err
+  }
+}
+
 export interface UserDashboard {
   hourlyAnyUsed: number
   hourlyAnyLimit: number

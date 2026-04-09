@@ -60,6 +60,34 @@ function createMcpProbeContext(overrides: Partial<Parameters<NonNullable<ReturnT
 }
 
 describe('UserConsole landing guide helpers', () => {
+  it('derives header view, identity, and provider labels from the active session state', () => {
+    expect(__testables.resolveUserConsoleView({ name: 'landing', section: 'dashboard' })).toBe('dashboard')
+    expect(__testables.resolveUserConsoleView({ name: 'landing', section: 'tokens' })).toBe('tokens')
+    expect(__testables.resolveUserConsoleView({ name: 'token', id: 'a1b2' })).toBe('tokenDetail')
+
+    expect(__testables.resolveUserConsoleIdentityName({
+      displayName: 'ops-admin',
+      isAdmin: true,
+      forwardAuthEnabled: true,
+      builtinAuthEnabled: true,
+      allowRegistration: true,
+      userLoggedIn: true,
+      userProvider: 'linuxdo',
+      userDisplayName: 'Ivan',
+    })).toBe('Ivan')
+
+    expect(__testables.resolveUserConsoleIdentityName({
+      displayName: 'dev-mode',
+      isAdmin: true,
+      forwardAuthEnabled: true,
+      builtinAuthEnabled: true,
+      allowRegistration: true,
+    })).toBe('dev-mode')
+
+    expect(__testables.resolveUserConsoleProviderLabel('linuxdo', { linuxdo: 'LinuxDo' })).toBe('LinuxDo')
+    expect(__testables.resolveUserConsoleProviderLabel(null, { linuxdo: 'LinuxDo' })).toBeNull()
+  })
+
   it('maps request-log push issues to the expected bubble copy', () => {
     const copy = {
       ariaLabel: 'status',
