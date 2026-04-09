@@ -15232,6 +15232,120 @@ async fn http_key_selection_ignores_mcp_session_init_backoff() {
 }
 
 #[tokio::test]
+async fn http_429_without_project_affinity_still_arms_mcp_session_init_backoff() {
+    let db_path = temp_db_path("http-no-project-arms-mcp-init-backoff");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(
+        vec![
+            "tvly-http-no-project-backoff-a".to_string(),
+            "tvly-http-no-project-backoff-b".to_string(),
+        ],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+    let token = proxy
+        .create_access_token(Some("http-no-project-backoff"))
+        .await
+        .expect("create token");
+    let key_rows =
+        sqlx::query_as::<_, (String, String)>("SELECT id, api_key FROM api_keys ORDER BY id ASC")
+            .fetch_all(&proxy.key_store.pool)
+            .await
+            .expect("fetch key rows");
+    let primary_key_id = key_rows[0].0.clone();
+    let primary_secret = key_rows[0].1.clone();
+    proxy
+        .key_store
+        .set_token_primary_api_key_affinity(&token.id, None, &primary_key_id)
+        .await
+        .expect("set token primary affinity");
+
+    let app = Router::new().route(
+        "/search",
+        post(move |headers: HeaderMap, Json(body): Json<Value>| {
+            let primary_secret = primary_secret.clone();
+            async move {
+                let api_key = body
+                    .get("api_key")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let auth = headers
+                    .get(axum::http::header::AUTHORIZATION)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.strip_prefix("Bearer "))
+                    .unwrap_or("")
+                    .to_string();
+                assert_eq!(api_key, auth);
+                assert_eq!(api_key, primary_secret);
+
+                let mut response_headers = HeaderMap::new();
+                response_headers.insert("retry-after", HeaderValue::from_static("45"));
+                (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    response_headers,
+                    Json(serde_json::json!({
+                        "detail": { "error": "Too many requests" }
+                    })),
+                )
+                    .into_response()
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .unwrap();
+    });
+
+    let usage_base = format!("http://{}", addr);
+    let mut headers = HeaderMap::new();
+    headers.insert("content-type", HeaderValue::from_static("application/json"));
+    let options = serde_json::json!({ "query": "legacy mcp init backoff" });
+
+    let (resp, analysis) = proxy
+        .proxy_http_json_endpoint(
+            &usage_base,
+            "/search",
+            Some(&token.id),
+            None,
+            &Method::POST,
+            "/api/tavily/search",
+            options,
+            &headers,
+            true,
+        )
+        .await
+        .expect("http request should complete");
+    assert_eq!(resp.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        analysis.failure_kind.as_deref(),
+        Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429),
+    );
+    assert_eq!(
+        analysis.key_effect.code,
+        KEY_EFFECT_MCP_SESSION_INIT_BACKOFF_SET,
+    );
+
+    let cooldown = proxy
+        .key_store
+        .list_active_api_key_transient_backoffs(
+            std::slice::from_ref(&primary_key_id),
+            MCP_SESSION_INIT_BACKOFF_SCOPE,
+            Utc::now().timestamp(),
+        )
+        .await
+        .expect("load legacy mcp-init cooldowns");
+    assert!(cooldown.contains_key(&primary_key_id));
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn mcp_session_init_uses_least_bad_key_even_when_every_pool_candidate_is_cooled() {
     let db_path = temp_db_path("mcp-init-all-hot");
     let db_str = db_path.to_string_lossy().to_string();

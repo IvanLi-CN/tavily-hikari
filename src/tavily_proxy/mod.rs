@@ -4689,10 +4689,19 @@ impl TavilyProxy {
                         http_project_affinity.as_ref(),
                     )
                     .await?;
+                let armed_mcp_init_backoff = if http_project_affinity.is_none() {
+                    self.maybe_arm_mcp_session_init_backoff(&lease.id, &headers, &analysis)
+                        .await?
+                } else {
+                    false
+                };
                 let mut key_effect = key_effect;
-                if key_effect.code == KEY_EFFECT_NONE && http_project_effect.code != KEY_EFFECT_NONE
-                {
-                    key_effect = http_project_effect.clone();
+                if key_effect.code == KEY_EFFECT_NONE {
+                    if armed_mcp_init_backoff {
+                        key_effect = Self::mcp_session_init_backoff_effect();
+                    } else if http_project_effect.code != KEY_EFFECT_NONE {
+                        key_effect = http_project_effect.clone();
+                    }
                 }
 
                 let request_log_id = self
@@ -4721,6 +4730,16 @@ impl TavilyProxy {
                         .set_api_key_transient_backoff_request_log_id(
                             &lease.id,
                             HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE,
+                            request_log_id,
+                            Utc::now().timestamp(),
+                        )
+                        .await?;
+                }
+                if armed_mcp_init_backoff {
+                    self.key_store
+                        .set_api_key_transient_backoff_request_log_id(
+                            &lease.id,
+                            MCP_SESSION_INIT_BACKOFF_SCOPE,
                             request_log_id,
                             Utc::now().timestamp(),
                         )
@@ -4915,10 +4934,19 @@ impl TavilyProxy {
                         http_project_affinity.as_ref(),
                     )
                     .await?;
+                let armed_mcp_init_backoff = if http_project_affinity.is_none() {
+                    self.maybe_arm_mcp_session_init_backoff(&lease.id, &headers, &analysis)
+                        .await?
+                } else {
+                    false
+                };
                 let mut key_effect = key_effect;
-                if key_effect.code == KEY_EFFECT_NONE && http_project_effect.code != KEY_EFFECT_NONE
-                {
-                    key_effect = http_project_effect.clone();
+                if key_effect.code == KEY_EFFECT_NONE {
+                    if armed_mcp_init_backoff {
+                        key_effect = Self::mcp_session_init_backoff_effect();
+                    } else if http_project_effect.code != KEY_EFFECT_NONE {
+                        key_effect = http_project_effect.clone();
+                    }
                 }
 
                 let request_log_id = self
@@ -4947,6 +4975,16 @@ impl TavilyProxy {
                         .set_api_key_transient_backoff_request_log_id(
                             &lease.id,
                             HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE,
+                            request_log_id,
+                            Utc::now().timestamp(),
+                        )
+                        .await?;
+                }
+                if armed_mcp_init_backoff {
+                    self.key_store
+                        .set_api_key_transient_backoff_request_log_id(
+                            &lease.id,
+                            MCP_SESSION_INIT_BACKOFF_SCOPE,
                             request_log_id,
                             Utc::now().timestamp(),
                         )
