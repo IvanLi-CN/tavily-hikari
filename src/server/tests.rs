@@ -2817,8 +2817,10 @@ mod tests {
         addr
     }
 
+    type SeenUpstreamIdentity = Arc<Mutex<Vec<(String, Option<String>)>>>;
+
     async fn spawn_http_search_mock_recording_upstream_identity(
-        seen: Arc<Mutex<Vec<(String, Option<String>)>>>,
+        seen: SeenUpstreamIdentity,
     ) -> SocketAddr {
         let app = Router::new().route(
             "/search",
@@ -17402,11 +17404,13 @@ colo=LAX
         let body: serde_json::Value = resp.json().await.expect("parse json body");
         assert_eq!(body.get("status").and_then(|v| v.as_i64()), Some(200));
 
-        let seen = seen.lock().expect("seen lock should not be poisoned");
+        let seen = {
+            let seen = seen.lock().expect("seen lock should not be poisoned");
+            seen.clone()
+        };
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0].0, expected_api_key);
         assert_eq!(seen[0].1.as_deref(), Some(project_id));
-        drop(seen);
 
         let key_effect_code: String = sqlx::query_scalar(
             "SELECT key_effect_code FROM request_logs ORDER BY id DESC LIMIT 1",
