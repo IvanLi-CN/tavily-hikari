@@ -2304,7 +2304,7 @@ body.not-found-page-body,
 }
 
 .user-console-header {
-  align-items: flex-start;
+  display: grid;
   gap: clamp(16px, 2.8vw, 30px);
   padding: 22px 24px;
   overflow: hidden;
@@ -2317,12 +2317,18 @@ body.not-found-page-body,
     0 18px 40px hsl(171 72% 24% / 0.08);
 }
 
+.user-console-header-top {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px clamp(18px, 3vw, 28px);
+  align-items: flex-start;
+}
+
 .user-console-header-main {
   display: grid;
   gap: 16px;
   min-width: 0;
   align-content: start;
-  flex: 1 1 620px;
 }
 
 .user-console-header-eyebrow-row {
@@ -2375,6 +2381,7 @@ body.not-found-page-body,
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
+  width: 100%;
 }
 
 .user-console-header-summary-grid.is-single-card {
@@ -2444,22 +2451,21 @@ body.not-found-page-body,
   color: hsl(var(--warning));
 }
 
-.user-console-header-side {
-  display: grid;
-  justify-items: end;
-  align-content: start;
-  gap: 12px;
-  min-width: min(100%, 320px);
-  flex: 0 1 320px;
-}
-
 .user-console-header-tools,
 .user-console-header-actions {
   display: flex;
   flex-wrap: wrap;
-  justify-content: flex-end;
   gap: 8px;
   width: 100%;
+}
+
+.user-console-header-tools {
+  justify-content: flex-end;
+  align-self: flex-start;
+}
+
+.user-console-header-actions {
+  justify-content: flex-end;
 }
 
 .user-console-header .theme-toggle-trigger,
@@ -7834,21 +7840,18 @@ tbody .log-details-row:hover {
     padding: 16px 16px;
   }
 
-  .user-console-header-main,
-  .user-console-header-side {
+  .user-console-header-top {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+
+  .user-console-header-main {
     width: 100%;
     min-width: 0;
-    flex: 0 1 auto;
   }
 
   .user-console-header-summary-grid {
     grid-template-columns: minmax(0, 1fr);
-  }
-
-  .user-console-header-side {
-    justify-items: stretch;
-    align-content: start;
-    gap: 10px;
   }
 
   .user-console-header-tools,
