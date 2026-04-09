@@ -95,6 +95,15 @@ fn non_empty_str(value: &Value) -> Option<&str> {
     value.as_str().map(str::trim).filter(|value| !value.is_empty())
 }
 
+fn extract_http_project_id(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("x-project-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 fn chunked_credits(items: usize, chunk_size: usize, credits_per_chunk: i64) -> i64 {
     if items == 0 || credits_per_chunk <= 0 {
         return 0;
@@ -616,6 +625,8 @@ async fn proxy_tavily_http_endpoint(
     }
 
     let token_id_for_logs = auth_token_id.clone();
+    let http_project_id =
+        (!using_dev_open_admin_fallback).then(|| extract_http_project_id(&parts.headers)).flatten();
     let expected_search_credits = (config.upstream_path == "/search").then(|| {
         // Search billing is predictable based on `search_depth`.
         tavily_search_expected_credits(&options)
@@ -781,6 +792,7 @@ async fn proxy_tavily_http_endpoint(
             .proxy_http_research_with_usage_diff(
                 &state.usage_base,
                 auth_token_id.as_deref(),
+                http_project_id.as_deref(),
                 &method,
                 &path,
                 options,
@@ -995,6 +1007,7 @@ async fn proxy_tavily_http_endpoint(
                 .proxy_http_search(
                     &state.usage_base,
                     auth_token_id.as_deref(),
+                    http_project_id.as_deref(),
                     &method,
                     &path,
                     options,
@@ -1009,6 +1022,7 @@ async fn proxy_tavily_http_endpoint(
                     &state.usage_base,
                     config.upstream_path,
                     auth_token_id.as_deref(),
+                    http_project_id.as_deref(),
                     &method,
                     &path,
                     options,

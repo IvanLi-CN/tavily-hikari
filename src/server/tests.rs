@@ -32,6 +32,16 @@ mod tests {
         std::env::temp_dir().join(file)
     }
 
+    fn sha256_hex(value: &str) -> String {
+        let digest: [u8; 32] = Sha256::digest(value.as_bytes()).into();
+        let mut hex = String::with_capacity(digest.len() * 2);
+        for byte in digest {
+            use std::fmt::Write as _;
+            let _ = write!(&mut hex, "{byte:02x}");
+        }
+        hex
+    }
+
     async fn connect_sqlite_test_pool(db_str: &str) -> sqlx::SqlitePool {
         let options = SqliteConnectOptions::new()
             .filename(db_str)
@@ -2790,6 +2800,62 @@ mod tests {
                             Json(serde_json::json!({
                                 "status": 200,
                                 "results": [],
+                            })),
+                        )
+                    }
+                }
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+        addr
+    }
+
+    async fn spawn_http_search_mock_recording_upstream_identity(
+        seen: Arc<Mutex<Vec<(String, Option<String>)>>>,
+    ) -> SocketAddr {
+        let app = Router::new().route(
+            "/search",
+            post({
+                move |headers: HeaderMap, Json(body): Json<Value>| {
+                    let seen = seen.clone();
+                    async move {
+                        let api_key = body
+                            .get("api_key")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let authorization = headers
+                            .get(axum::http::header::AUTHORIZATION)
+                            .and_then(|v| v.to_str().ok())
+                            .and_then(|v| v.strip_prefix("Bearer "))
+                            .unwrap_or("")
+                            .to_string();
+                        assert_eq!(
+                            api_key, authorization,
+                            "upstream JSON/body api_key and Authorization should match",
+                        );
+
+                        let project_id = headers
+                            .get("x-project-id")
+                            .and_then(|value| value.to_str().ok())
+                            .map(|value| value.to_string());
+                        seen.lock()
+                            .expect("upstream identity lock should not be poisoned")
+                            .push((api_key, project_id));
+
+                        (
+                            StatusCode::OK,
+                            Json(serde_json::json!({
+                                "status": 200,
+                                "results": [],
+                                "usage": { "credits": 1 },
                             })),
                         )
                     }
@@ -5651,6 +5717,108 @@ mod tests {
 
         let body: serde_json::Value = resp.json().await.expect("parse json body");
         assert_eq!(body.get("status").and_then(|v| v.as_i64()), Some(200));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn tavily_http_search_dev_open_admin_fallback_ignores_project_affinity_binding() {
+        let db_path = temp_db_path("http-search-dev-open-admin-project-disabled");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let project_id = "dev-open-admin-project";
+        let seen = Arc::new(Mutex::new(Vec::<(String, Option<String>)>::new()));
+        let upstream_addr = spawn_http_search_mock_recording_upstream_identity(seen.clone()).await;
+        let usage_base = format!("http://{}", upstream_addr);
+
+        let proxy = TavilyProxy::with_endpoint(
+            vec![
+                "tvly-http-search-dev-project-a".to_string(),
+                "tvly-http-search-dev-project-b".to_string(),
+            ],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+        let pool = connect_sqlite_test_pool(&db_str).await;
+
+        let key_rows = sqlx::query_as::<_, (String, String)>(
+            "SELECT id, api_key FROM api_keys ORDER BY api_key ASC",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("fetch key rows");
+        let primary_key = key_rows[0].clone();
+        let project_key = key_rows[1].clone();
+
+        let now = Utc::now().timestamp();
+        sqlx::query(
+            r#"
+            INSERT INTO token_primary_api_key_affinity (
+                token_id,
+                user_id,
+                api_key_id,
+                created_at,
+                updated_at
+            )
+            VALUES (?, NULL, ?, ?, ?)
+            ON CONFLICT(token_id) DO UPDATE SET
+                user_id = excluded.user_id,
+                api_key_id = excluded.api_key_id,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind("dev")
+        .bind(&primary_key.0)
+        .bind(now)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .expect("seed dev primary affinity");
+        sqlx::query(
+            r#"
+            INSERT INTO http_project_api_key_affinity (
+                owner_subject,
+                project_id_hash,
+                api_key_id,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(owner_subject, project_id_hash) DO UPDATE SET
+                api_key_id = excluded.api_key_id,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind("token:dev")
+        .bind(sha256_hex(project_id))
+        .bind(&project_key.0)
+        .bind(now)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .expect("seed dev project affinity");
+
+        let proxy_addr = spawn_proxy_server_with_dev(proxy, usage_base, true).await;
+
+        let client = Client::new();
+        let resp = client
+            .post(format!("http://{}/api/tavily/search", proxy_addr))
+            .header("X-Project-ID", project_id)
+            .json(&serde_json::json!({ "query": "dev project affinity should be ignored" }))
+            .send()
+            .await
+            .expect("request to proxy succeeds");
+
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        let body: serde_json::Value = resp.json().await.expect("parse json body");
+        assert_eq!(body.get("status").and_then(|value| value.as_i64()), Some(200));
+
+        let seen = seen.lock().expect("seen lock should not be poisoned");
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].0, primary_key.1);
+        assert_eq!(seen[0].1.as_deref(), Some(project_id));
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -17193,6 +17361,65 @@ colo=LAX
     }
 
     #[tokio::test]
+    async fn tavily_http_search_forwards_raw_x_project_id_and_logs_project_affinity_effect() {
+        let db_path = temp_db_path("http-search-project-header-forward");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let seen = Arc::new(Mutex::new(Vec::<(String, Option<String>)>::new()));
+        let upstream_addr = spawn_http_search_mock_recording_upstream_identity(seen.clone()).await;
+        let usage_base = format!("http://{}", upstream_addr);
+
+        let expected_api_key = "tvly-http-search-project-header";
+        let proxy = TavilyProxy::with_endpoint(
+            vec![expected_api_key.to_string()],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+        let pool = connect_sqlite_test_pool(&db_str).await;
+
+        let access_token = proxy
+            .create_access_token(Some("http-search-project-header"))
+            .await
+            .expect("create token");
+        let proxy_addr = spawn_proxy_server(proxy.clone(), usage_base).await;
+
+        let client = Client::new();
+        let project_id = "project-header-forwarded";
+        let resp = client
+            .post(format!("http://{}/api/tavily/search", proxy_addr))
+            .header("Authorization", format!("Bearer {}", access_token.token))
+            .header("X-Project-ID", project_id)
+            .json(&serde_json::json!({
+                "query": "project header forward"
+            }))
+            .send()
+            .await
+            .expect("request to proxy succeeds");
+
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        let body: serde_json::Value = resp.json().await.expect("parse json body");
+        assert_eq!(body.get("status").and_then(|v| v.as_i64()), Some(200));
+
+        let seen = seen.lock().expect("seen lock should not be poisoned");
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].0, expected_api_key);
+        assert_eq!(seen[0].1.as_deref(), Some(project_id));
+        drop(seen);
+
+        let key_effect_code: String = sqlx::query_scalar(
+            "SELECT key_effect_code FROM request_logs ORDER BY id DESC LIMIT 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load project-affinity key effect");
+        assert_eq!(key_effect_code, "http_project_affinity_bound");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn tavily_http_usage_returns_daily_and_monthly_counts() {
         let db_path = temp_db_path("http-usage-view");
         let db_str = db_path.to_string_lossy().to_string();
@@ -18429,6 +18656,126 @@ colo=LAX
         assert_eq!(
             result_body.get("status").and_then(|v| v.as_str()),
             Some("pending")
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn tavily_http_research_result_prefers_request_id_affinity_over_project_affinity() {
+        let db_path = temp_db_path("http-research-result-request-id-priority");
+        let db_str = db_path.to_string_lossy().to_string();
+        let project_id = "research-priority-project";
+
+        let _hourly_business_guard = EnvVarGuard::set("TOKEN_HOURLY_LIMIT", "1000");
+
+        let proxy = TavilyProxy::with_endpoint(
+            vec![
+                "tvly-http-research-priority-a".to_string(),
+                "tvly-http-research-priority-b".to_string(),
+            ],
+            DEFAULT_UPSTREAM,
+            &db_str,
+        )
+        .await
+        .expect("proxy created");
+        let pool = connect_sqlite_test_pool(&db_str).await;
+
+        let access_token = proxy
+            .create_access_token(Some("http-research-request-id-priority"))
+            .await
+            .expect("create token");
+
+        let upstream_addr = spawn_http_research_mock_requiring_same_key_for_result().await;
+        let usage_base = format!("http://{}", upstream_addr);
+        let proxy_addr = spawn_proxy_server(proxy.clone(), usage_base).await;
+
+        let client = Client::new();
+        let create_resp = client
+            .post(format!("http://{}/api/tavily/research", proxy_addr))
+            .header("X-Project-ID", project_id)
+            .json(&serde_json::json!({
+                "api_key": access_token.token,
+                "input": "request-id-priority",
+                "model": "mini"
+            }))
+            .send()
+            .await
+            .expect("research create succeeds");
+        assert_eq!(create_resp.status(), StatusCode::OK);
+        let create_body: Value = create_resp
+            .json()
+            .await
+            .expect("parse research create response");
+        let request_id = create_body
+            .get("request_id")
+            .and_then(|v| v.as_str())
+            .expect("request_id should exist")
+            .to_string();
+
+        let request_key_id: String = sqlx::query_scalar(
+            "SELECT key_id FROM research_requests WHERE request_id = ? LIMIT 1",
+        )
+        .bind(&request_id)
+        .fetch_one(&pool)
+        .await
+        .expect("load research request affinity");
+        let other_key_id: String = sqlx::query_scalar(
+            "SELECT id FROM api_keys WHERE id != ? ORDER BY id ASC LIMIT 1",
+        )
+        .bind(&request_key_id)
+        .fetch_one(&pool)
+        .await
+        .expect("load alternate key id");
+
+        let now = Utc::now().timestamp();
+        sqlx::query(
+            r#"
+            INSERT INTO http_project_api_key_affinity (
+                owner_subject,
+                project_id_hash,
+                api_key_id,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(owner_subject, project_id_hash) DO UPDATE SET
+                api_key_id = excluded.api_key_id,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(format!("token:{}", access_token.id))
+        .bind(sha256_hex(project_id))
+        .bind(&other_key_id)
+        .bind(now)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .expect("overwrite project affinity to conflicting key");
+
+        let result_resp = client
+            .get(format!(
+                "http://{}/api/tavily/research/{}",
+                proxy_addr, request_id
+            ))
+            .header("Authorization", format!("Bearer {}", access_token.token))
+            .header("X-Project-ID", project_id)
+            .send()
+            .await
+            .expect("research result succeeds");
+        assert_eq!(
+            result_resp.status(),
+            StatusCode::OK,
+            "request_id affinity should beat the conflicting project binding",
+        );
+
+        let result_body: Value = result_resp
+            .json()
+            .await
+            .expect("parse research result response");
+        assert_eq!(
+            result_body.get("request_id").and_then(|v| v.as_str()),
+            Some(request_id.as_str())
         );
 
         let _ = std::fs::remove_file(db_path);

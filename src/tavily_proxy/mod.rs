@@ -416,6 +416,22 @@ pub(crate) struct McpSessionInitSelection {
     pub(crate) key_effect: KeyEffect,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HttpProjectAffinityCandidate {
+    pub(crate) key_id: String,
+    pub(crate) stable_rank_index: usize,
+    pub(crate) cooldown_until: Option<i64>,
+    pub(crate) recent_rate_limited_count: i64,
+    pub(crate) recent_billable_request_count: i64,
+    pub(crate) last_used_at: i64,
+}
+
+#[derive(Debug)]
+pub(crate) struct HttpProjectAffinitySelection {
+    pub(crate) lease: ApiKeyLease,
+    pub(crate) key_effect: KeyEffect,
+}
+
 fn default_forward_proxy_trace_url() -> Url {
     std::env::var("FORWARD_PROXY_TRACE_URL")
         .ok()
@@ -426,6 +442,24 @@ fn default_forward_proxy_trace_url() -> Url {
 }
 
 impl TavilyProxy {
+    fn affinity_subject_score(subject: &str, key_id: &str) -> [u8; 32] {
+        let mut digest = Sha256::new();
+        digest.update(subject.as_bytes());
+        digest.update(b":");
+        digest.update(key_id.as_bytes());
+        digest.finalize().into()
+    }
+
+    fn sha256_hex(value: &str) -> String {
+        let digest: [u8; 32] = Sha256::digest(value.as_bytes()).into();
+        let mut hex = String::with_capacity(digest.len() * 2);
+        for byte in digest {
+            use std::fmt::Write as _;
+            let _ = write!(&mut hex, "{byte:02x}");
+        }
+        hex
+    }
+
     fn mcp_session_affinity_subject(user_id: Option<&str>, token_id: &str) -> String {
         match user_id {
             Some(user_id) => format!("user:{user_id}"),
@@ -434,11 +468,32 @@ impl TavilyProxy {
     }
 
     fn mcp_session_affinity_score(subject: &str, key_id: &str) -> [u8; 32] {
-        let mut digest = Sha256::new();
-        digest.update(subject.as_bytes());
-        digest.update(b":");
-        digest.update(key_id.as_bytes());
-        digest.finalize().into()
+        Self::affinity_subject_score(subject, key_id)
+    }
+
+    fn http_project_affinity_subject(owner_subject: &str, project_id_hash: &str) -> String {
+        format!("{owner_subject}:project:{project_id_hash}")
+    }
+
+    fn http_project_affinity_reused_effect() -> KeyEffect {
+        KeyEffect::new(
+            KEY_EFFECT_HTTP_PROJECT_AFFINITY_REUSED,
+            "HTTP project affinity reused the existing upstream key binding",
+        )
+    }
+
+    fn http_project_affinity_bound_effect() -> KeyEffect {
+        KeyEffect::new(
+            KEY_EFFECT_HTTP_PROJECT_AFFINITY_BOUND,
+            "HTTP project affinity created a new upstream key binding",
+        )
+    }
+
+    fn http_project_affinity_rebound_effect() -> KeyEffect {
+        KeyEffect::new(
+            KEY_EFFECT_HTTP_PROJECT_AFFINITY_REBOUND,
+            "HTTP project affinity rebound the project onto a different upstream key",
+        )
     }
 
     fn mcp_session_init_lock_subject(user_id: Option<&str>, token_id: &str) -> String {
@@ -552,6 +607,77 @@ impl TavilyProxy {
             return KeyEffect::new(
                 KEY_EFFECT_MCP_SESSION_INIT_PRESSURE_AVOIDED,
                 "MCP initialize skipped a hotter key inside the affinity pool",
+            );
+        }
+
+        KeyEffect::none()
+    }
+
+    pub(crate) fn order_http_project_affinity_candidates(
+        candidates: &mut [HttpProjectAffinityCandidate],
+    ) {
+        candidates.sort_by(|left, right| {
+            left.cooldown_until
+                .is_some()
+                .cmp(&right.cooldown_until.is_some())
+                .then_with(|| {
+                    left.cooldown_until
+                        .unwrap_or_default()
+                        .cmp(&right.cooldown_until.unwrap_or_default())
+                })
+                .then_with(|| {
+                    left.recent_rate_limited_count
+                        .cmp(&right.recent_rate_limited_count)
+                })
+                .then_with(|| {
+                    left.recent_billable_request_count
+                        .cmp(&right.recent_billable_request_count)
+                })
+                .then_with(|| left.last_used_at.cmp(&right.last_used_at))
+                .then_with(|| left.stable_rank_index.cmp(&right.stable_rank_index))
+                .then_with(|| left.key_id.cmp(&right.key_id))
+        });
+    }
+
+    pub(crate) fn http_project_affinity_selection_effect(
+        ordered: &[HttpProjectAffinityCandidate],
+    ) -> KeyEffect {
+        let Some(selected) = ordered.first() else {
+            return KeyEffect::none();
+        };
+        if selected.stable_rank_index == 0 {
+            return KeyEffect::none();
+        }
+        let Some(stable_front) = ordered
+            .iter()
+            .find(|candidate| candidate.stable_rank_index == 0)
+        else {
+            return KeyEffect::none();
+        };
+
+        if stable_front.cooldown_until.is_some()
+            && (selected.cooldown_until.is_none()
+                || selected.cooldown_until < stable_front.cooldown_until)
+        {
+            return KeyEffect::new(
+                KEY_EFFECT_HTTP_PROJECT_AFFINITY_COOLDOWN_AVOIDED,
+                "HTTP project affinity skipped a cooled key inside the project pool",
+            );
+        }
+
+        if selected.recent_rate_limited_count < stable_front.recent_rate_limited_count {
+            return KeyEffect::new(
+                KEY_EFFECT_HTTP_PROJECT_AFFINITY_RATE_LIMIT_AVOIDED,
+                "HTTP project affinity skipped a recently rate-limited key inside the project pool",
+            );
+        }
+
+        if selected.recent_billable_request_count < stable_front.recent_billable_request_count
+            || selected.last_used_at < stable_front.last_used_at
+        {
+            return KeyEffect::new(
+                KEY_EFFECT_HTTP_PROJECT_AFFINITY_PRESSURE_AVOIDED,
+                "HTTP project affinity skipped a hotter key inside the project pool",
             );
         }
 
@@ -3643,6 +3769,243 @@ impl TavilyProxy {
         Err(ProxyError::NoAvailableKeys)
     }
 
+    async fn resolve_http_project_affinity_context(
+        &self,
+        auth_token_id: Option<&str>,
+        project_id: Option<&str>,
+    ) -> Result<Option<HttpProjectAffinityContext>, ProxyError> {
+        let Some(project_id) = project_id.map(str::trim).filter(|value| !value.is_empty()) else {
+            return Ok(None);
+        };
+        let Some(token_id) = auth_token_id else {
+            return Ok(None);
+        };
+
+        let user_id = self.key_store.find_user_id_by_token(token_id).await?;
+        let owner_subject = match user_id.as_deref() {
+            Some(user_id) => format!("user:{user_id}"),
+            None => format!("token:{token_id}"),
+        };
+        let project_id_hash = Self::sha256_hex(project_id);
+        Ok(Some(HttpProjectAffinityContext {
+            affinity_subject: Self::http_project_affinity_subject(&owner_subject, &project_id_hash),
+            owner_subject,
+            project_id_hash,
+        }))
+    }
+
+    async fn rank_http_project_affinity_candidate_keys(
+        &self,
+        affinity_subject: &str,
+        desired_count: i64,
+    ) -> Result<Vec<String>, ProxyError> {
+        let mut candidates = self.key_store.list_mcp_session_candidate_key_ids().await?;
+        if candidates.is_empty() {
+            return Err(ProxyError::NoAvailableKeys);
+        }
+
+        candidates.sort_by(|left, right| {
+            Self::affinity_subject_score(affinity_subject, right)
+                .cmp(&Self::affinity_subject_score(affinity_subject, left))
+                .then_with(|| left.cmp(right))
+        });
+        candidates.truncate(desired_count.clamp(1, candidates.len() as i64).max(1) as usize);
+        Ok(candidates)
+    }
+
+    async fn build_http_project_affinity_candidates(
+        &self,
+        ranked: &[String],
+        now: i64,
+    ) -> Result<Vec<HttpProjectAffinityCandidate>, ProxyError> {
+        let cooldowns = self
+            .key_store
+            .list_active_api_key_transient_backoffs(
+                ranked,
+                HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE,
+                now,
+            )
+            .await?;
+        let recent_rate_limited_counts = self
+            .key_store
+            .list_recent_rate_limited_request_counts_for_keys(
+                ranked,
+                now - HTTP_PROJECT_AFFINITY_RECENT_PRESSURE_WINDOW_SECS,
+            )
+            .await?;
+        let recent_billable_counts = self
+            .key_store
+            .list_recent_billable_request_counts_for_keys(
+                ranked,
+                now - HTTP_PROJECT_AFFINITY_RECENT_PRESSURE_WINDOW_SECS,
+            )
+            .await?;
+        let last_used_at = self.key_store.list_api_key_last_used_at(ranked).await?;
+
+        let mut candidates = ranked
+            .iter()
+            .enumerate()
+            .map(|(stable_rank_index, key_id)| HttpProjectAffinityCandidate {
+                key_id: key_id.clone(),
+                stable_rank_index,
+                cooldown_until: cooldowns.get(key_id).map(|state| state.cooldown_until),
+                recent_rate_limited_count: recent_rate_limited_counts
+                    .get(key_id)
+                    .copied()
+                    .unwrap_or(0),
+                recent_billable_request_count: recent_billable_counts
+                    .get(key_id)
+                    .copied()
+                    .unwrap_or(0),
+                last_used_at: last_used_at.get(key_id).copied().unwrap_or(0),
+            })
+            .collect::<Vec<_>>();
+        Self::order_http_project_affinity_candidates(&mut candidates);
+        Ok(candidates)
+    }
+
+    async fn maybe_arm_http_project_affinity_backoff(
+        &self,
+        key_id: &str,
+        headers: &HeaderMap,
+        analysis: &AttemptAnalysis,
+        project_affinity: Option<&HttpProjectAffinityContext>,
+    ) -> Result<bool, ProxyError> {
+        if project_affinity.is_none()
+            || analysis.failure_kind.as_deref() != Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429)
+        {
+            return Ok(false);
+        }
+
+        let now = Utc::now().timestamp();
+        let retry_after_secs = Self::mcp_session_init_retry_after_secs(headers, now);
+        let cooldown_until = now + retry_after_secs;
+
+        Ok(self
+            .key_store
+            .arm_api_key_transient_backoff(ApiKeyTransientBackoffArm {
+                key_id,
+                scope: HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE,
+                cooldown_until,
+                retry_after_secs,
+                reason_code: Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429),
+                source_request_log_id: None,
+                now,
+            })
+            .await?
+            .is_some())
+    }
+
+    pub(crate) async fn acquire_key_for_http_project(
+        &self,
+        auth_token_id: Option<&str>,
+        project_id: Option<&str>,
+    ) -> Result<Option<HttpProjectAffinitySelection>, ProxyError> {
+        let Some(context) = self
+            .resolve_http_project_affinity_context(auth_token_id, project_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+
+        let existing_binding = self
+            .key_store
+            .get_http_project_api_key_affinity(&context.owner_subject, &context.project_id_hash)
+            .await?;
+        let existing_key_id = existing_binding
+            .as_ref()
+            .map(|binding| binding.api_key_id.clone());
+        let now = Utc::now().timestamp();
+
+        if let Some(existing_key_id) = existing_key_id.as_deref() {
+            let backoff = self
+                .key_store
+                .list_active_api_key_transient_backoffs(
+                    &[existing_key_id.to_string()],
+                    HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE,
+                    now,
+                )
+                .await?;
+            let is_cooled = backoff.contains_key(existing_key_id);
+            if !is_cooled
+                && let Some(lease) = self
+                    .key_store
+                    .try_acquire_specific_key(existing_key_id)
+                    .await?
+            {
+                return Ok(Some(HttpProjectAffinitySelection {
+                    lease,
+                    key_effect: Self::http_project_affinity_reused_effect(),
+                }));
+            }
+        }
+
+        let desired_count = self
+            .key_store
+            .get_system_settings()
+            .await?
+            .mcp_session_affinity_key_count;
+        let ranked = self
+            .rank_http_project_affinity_candidate_keys(&context.affinity_subject, desired_count)
+            .await?;
+        let ordered = self
+            .build_http_project_affinity_candidates(&ranked, now)
+            .await?;
+        let selection_effect = Self::http_project_affinity_selection_effect(&ordered);
+        let existing_key_cooled = existing_key_id.as_ref().is_some_and(|key_id| {
+            ordered
+                .iter()
+                .find(|candidate| candidate.key_id == *key_id)
+                .and_then(|candidate| candidate.cooldown_until)
+                .is_some()
+        });
+
+        for candidate in ordered {
+            let key_id = candidate.key_id.clone();
+            if let Some(lease) = self.key_store.try_acquire_specific_key(&key_id).await? {
+                self.key_store
+                    .set_http_project_api_key_affinity(
+                        &context.owner_subject,
+                        &context.project_id_hash,
+                        &lease.id,
+                    )
+                    .await?;
+
+                let key_effect = match existing_key_id.as_deref() {
+                    None => {
+                        if selection_effect.code != KEY_EFFECT_NONE {
+                            selection_effect.clone()
+                        } else {
+                            Self::http_project_affinity_bound_effect()
+                        }
+                    }
+                    Some(existing_key_id) if existing_key_id == lease.id => {
+                        if existing_key_cooled && selection_effect.code != KEY_EFFECT_NONE {
+                            selection_effect.clone()
+                        } else {
+                            KeyEffect::none()
+                        }
+                    }
+                    Some(_) if existing_key_cooled => {
+                        if selection_effect.code != KEY_EFFECT_NONE {
+                            selection_effect.clone()
+                        } else {
+                            KeyEffect::new(
+                                KEY_EFFECT_HTTP_PROJECT_AFFINITY_COOLDOWN_AVOIDED,
+                                "HTTP project affinity skipped a cooled bound key",
+                            )
+                        }
+                    }
+                    Some(_) => Self::http_project_affinity_rebound_effect(),
+                };
+
+                return Ok(Some(HttpProjectAffinitySelection { lease, key_effect }));
+            }
+        }
+
+        Err(ProxyError::NoAvailableKeys)
+    }
+
     pub(crate) async fn acquire_key_for(
         &self,
         auth_token_id: Option<&str>,
@@ -4200,13 +4563,30 @@ impl TavilyProxy {
         usage_base: &str,
         upstream_path: &str,
         auth_token_id: Option<&str>,
+        http_project_id: Option<&str>,
         method: &Method,
         display_path: &str,
         options: Value,
         original_headers: &HeaderMap,
         inject_upstream_bearer_auth: bool,
     ) -> Result<(ProxyResponse, AttemptAnalysis), ProxyError> {
-        let lease = self.acquire_key_for(auth_token_id).await?;
+        let http_project_affinity = self
+            .resolve_http_project_affinity_context(auth_token_id, http_project_id)
+            .await?;
+        let mut http_project_effect = KeyEffect::none();
+        let lease = if http_project_affinity.is_some() {
+            if let Some(selection) = self
+                .acquire_key_for_http_project(auth_token_id, http_project_id)
+                .await?
+            {
+                http_project_effect = selection.key_effect;
+                selection.lease
+            } else {
+                self.acquire_key_for(auth_token_id).await?
+            }
+        } else {
+            self.acquire_key_for(auth_token_id).await?
+        };
 
         let base = Url::parse(usage_base).map_err(|source| ProxyError::InvalidEndpoint {
             endpoint: usage_base.to_owned(),
@@ -4301,12 +4681,18 @@ impl TavilyProxy {
                 let key_effect = self
                     .reconcile_key_health(&lease, display_path, &analysis, auth_token_id)
                     .await?;
-                let armed_mcp_init_backoff = self
-                    .maybe_arm_mcp_session_init_backoff(&lease.id, &headers, &analysis)
+                let armed_http_project_backoff = self
+                    .maybe_arm_http_project_affinity_backoff(
+                        &lease.id,
+                        &headers,
+                        &analysis,
+                        http_project_affinity.as_ref(),
+                    )
                     .await?;
                 let mut key_effect = key_effect;
-                if key_effect.code == KEY_EFFECT_NONE && armed_mcp_init_backoff {
-                    key_effect = Self::mcp_session_init_backoff_effect();
+                if key_effect.code == KEY_EFFECT_NONE && http_project_effect.code != KEY_EFFECT_NONE
+                {
+                    key_effect = http_project_effect.clone();
                 }
 
                 let request_log_id = self
@@ -4330,11 +4716,11 @@ impl TavilyProxy {
                         dropped_headers: &sanitized_headers.dropped,
                     })
                     .await?;
-                if armed_mcp_init_backoff {
+                if armed_http_project_backoff {
                     self.key_store
                         .set_api_key_transient_backoff_request_log_id(
                             &lease.id,
-                            MCP_SESSION_INIT_BACKOFF_SCOPE,
+                            HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE,
                             request_log_id,
                             Utc::now().timestamp(),
                         )
@@ -4394,13 +4780,30 @@ impl TavilyProxy {
         &self,
         usage_base: &str,
         auth_token_id: Option<&str>,
+        http_project_id: Option<&str>,
         method: &Method,
         display_path: &str,
         options: Value,
         original_headers: &HeaderMap,
         inject_upstream_bearer_auth: bool,
     ) -> Result<(ProxyResponse, AttemptAnalysis, Option<i64>), ProxyError> {
-        let lease = self.acquire_key_for(auth_token_id).await?;
+        let http_project_affinity = self
+            .resolve_http_project_affinity_context(auth_token_id, http_project_id)
+            .await?;
+        let mut http_project_effect = KeyEffect::none();
+        let lease = if http_project_affinity.is_some() {
+            if let Some(selection) = self
+                .acquire_key_for_http_project(auth_token_id, http_project_id)
+                .await?
+            {
+                http_project_effect = selection.key_effect;
+                selection.lease
+            } else {
+                self.acquire_key_for(auth_token_id).await?
+            }
+        } else {
+            self.acquire_key_for(auth_token_id).await?
+        };
         // Research billing uses /usage diff of a key-scoped counter; protect it from concurrent
         // research calls sharing the same upstream key, otherwise deltas can be misattributed.
         let _key_guard = self.lock_research_key_usage(&lease.id).await?;
@@ -4504,12 +4907,18 @@ impl TavilyProxy {
                 let key_effect = self
                     .reconcile_key_health(&lease, display_path, &analysis, auth_token_id)
                     .await?;
-                let armed_mcp_init_backoff = self
-                    .maybe_arm_mcp_session_init_backoff(&lease.id, &headers, &analysis)
+                let armed_http_project_backoff = self
+                    .maybe_arm_http_project_affinity_backoff(
+                        &lease.id,
+                        &headers,
+                        &analysis,
+                        http_project_affinity.as_ref(),
+                    )
                     .await?;
                 let mut key_effect = key_effect;
-                if key_effect.code == KEY_EFFECT_NONE && armed_mcp_init_backoff {
-                    key_effect = Self::mcp_session_init_backoff_effect();
+                if key_effect.code == KEY_EFFECT_NONE && http_project_effect.code != KEY_EFFECT_NONE
+                {
+                    key_effect = http_project_effect.clone();
                 }
 
                 let request_log_id = self
@@ -4533,11 +4942,11 @@ impl TavilyProxy {
                         dropped_headers: &sanitized_headers.dropped,
                     })
                     .await?;
-                if armed_mcp_init_backoff {
+                if armed_http_project_backoff {
                     self.key_store
                         .set_api_key_transient_backoff_request_log_id(
                             &lease.id,
-                            MCP_SESSION_INIT_BACKOFF_SCOPE,
+                            HTTP_PROJECT_AFFINITY_BACKOFF_SCOPE,
                             request_log_id,
                             Utc::now().timestamp(),
                         )
@@ -4690,13 +5099,6 @@ impl TavilyProxy {
                 let key_effect = self
                     .reconcile_key_health(&lease, display_path, &analysis, auth_token_id)
                     .await?;
-                let armed_mcp_init_backoff = self
-                    .maybe_arm_mcp_session_init_backoff(&lease.id, &headers, &analysis)
-                    .await?;
-                let mut key_effect = key_effect;
-                if key_effect.code == KEY_EFFECT_NONE && armed_mcp_init_backoff {
-                    key_effect = Self::mcp_session_init_backoff_effect();
-                }
 
                 let request_log_id = self
                     .key_store
@@ -4719,16 +5121,6 @@ impl TavilyProxy {
                         dropped_headers: &sanitized_headers.dropped,
                     })
                     .await?;
-                if armed_mcp_init_backoff {
-                    self.key_store
-                        .set_api_key_transient_backoff_request_log_id(
-                            &lease.id,
-                            MCP_SESSION_INIT_BACKOFF_SCOPE,
-                            request_log_id,
-                            Utc::now().timestamp(),
-                        )
-                        .await?;
-                }
                 analysis.key_effect = key_effect.clone();
 
                 Ok((
@@ -4774,10 +5166,12 @@ impl TavilyProxy {
 
     /// Proxy a Tavily HTTP `/search` call via the usage base URL, performing key rotation
     /// and recording request logs with sensitive fields redacted.
+    #[allow(clippy::too_many_arguments)]
     pub async fn proxy_http_search(
         &self,
         usage_base: &str,
         auth_token_id: Option<&str>,
+        http_project_id: Option<&str>,
         method: &Method,
         display_path: &str,
         options: Value,
@@ -4787,6 +5181,7 @@ impl TavilyProxy {
             usage_base,
             "/search",
             auth_token_id,
+            http_project_id,
             method,
             display_path,
             options,

@@ -1599,6 +1599,29 @@ impl KeyStore {
 
         sqlx::query(
             r#"
+            CREATE TABLE IF NOT EXISTS http_project_api_key_affinity (
+                owner_subject TEXT NOT NULL,
+                project_id_hash TEXT NOT NULL,
+                api_key_id TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (owner_subject, project_id_hash),
+                FOREIGN KEY (api_key_id) REFERENCES api_keys(id)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_http_project_api_key_affinity_key
+               ON http_project_api_key_affinity(api_key_id, updated_at DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
             CREATE TABLE IF NOT EXISTS mcp_sessions (
                 proxy_session_id TEXT PRIMARY KEY,
                 upstream_session_id TEXT NOT NULL,
@@ -7818,6 +7841,63 @@ impl KeyStore {
         )
         .bind(token_id)
         .bind(user_id)
+        .bind(api_key_id)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn get_http_project_api_key_affinity(
+        &self,
+        owner_subject: &str,
+        project_id_hash: &str,
+    ) -> Result<Option<HttpProjectAffinityBinding>, ProxyError> {
+        let row = sqlx::query_as::<_, (String, String, String)>(
+            r#"SELECT owner_subject, project_id_hash, api_key_id
+               FROM http_project_api_key_affinity
+               WHERE owner_subject = ? AND project_id_hash = ?
+               LIMIT 1"#,
+        )
+        .bind(owner_subject)
+        .bind(project_id_hash)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(
+            |(owner_subject, project_id_hash, api_key_id)| HttpProjectAffinityBinding {
+                owner_subject,
+                project_id_hash,
+                api_key_id,
+            },
+        ))
+    }
+
+    pub(crate) async fn set_http_project_api_key_affinity(
+        &self,
+        owner_subject: &str,
+        project_id_hash: &str,
+        api_key_id: &str,
+    ) -> Result<(), ProxyError> {
+        let now = Utc::now().timestamp();
+        sqlx::query(
+            r#"
+            INSERT INTO http_project_api_key_affinity (
+                owner_subject,
+                project_id_hash,
+                api_key_id,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(owner_subject, project_id_hash) DO UPDATE SET
+                api_key_id = excluded.api_key_id,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(owner_subject)
+        .bind(project_id_hash)
         .bind(api_key_id)
         .bind(now)
         .bind(now)
