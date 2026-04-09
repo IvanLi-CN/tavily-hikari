@@ -2321,6 +2321,7 @@ body.not-found-page-body,
   display: grid;
   gap: 16px;
   min-width: 0;
+  align-content: start;
   flex: 1 1 620px;
 }
 
@@ -2328,11 +2329,14 @@ body.not-found-page-body,
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  align-items: flex-start;
 }
 
 .user-console-header-eyebrow {
   display: inline-flex;
   align-items: center;
+  align-self: flex-start;
+  flex: 0 0 auto;
   gap: 6px;
   padding: 0.42rem 0.8rem;
   border-radius: 999px;
@@ -2343,6 +2347,7 @@ body.not-found-page-body,
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .user-console-header-copy {
@@ -2442,6 +2447,7 @@ body.not-found-page-body,
 .user-console-header-side {
   display: grid;
   justify-items: end;
+  align-content: start;
   gap: 12px;
   min-width: min(100%, 320px);
   flex: 0 1 320px;
@@ -7832,6 +7838,7 @@ tbody .log-details-row:hover {
   .user-console-header-side {
     width: 100%;
     min-width: 0;
+    flex: 0 1 auto;
   }
 
   .user-console-header-summary-grid {
@@ -7840,6 +7847,8 @@ tbody .log-details-row:hover {
 
   .user-console-header-side {
     justify-items: stretch;
+    align-content: start;
+    gap: 10px;
   }
 
   .user-console-header-tools,
