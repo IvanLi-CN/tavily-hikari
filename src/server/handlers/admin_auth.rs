@@ -275,6 +275,29 @@ struct ProfileView {
     user_provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     user_display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user_avatar_url: Option<String>,
+}
+
+fn resolve_linuxdo_avatar_url(cfg: &LinuxDoOAuthOptions, avatar_template: Option<&str>) -> Option<String> {
+    let template = avatar_template
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?
+        .replace("{size}", "96");
+
+    if template.starts_with("https://") || template.starts_with("http://") {
+        return Some(template);
+    }
+
+    let base = reqwest::Url::parse(&cfg.userinfo_url).ok()?;
+    if template.starts_with("//") {
+        return Some(format!("{}:{}", base.scheme(), template));
+    }
+    if template.starts_with('/') {
+        return base.join(&template).ok().map(|url| url.to_string());
+    }
+
+    base.join(&format!("/{template}")).ok().map(|url| url.to_string())
 }
 
 #[derive(Debug, Serialize)]
@@ -354,6 +377,7 @@ async fn get_profile(
             user_logged_in: None,
             user_provider: None,
             user_display_name: None,
+            user_avatar_url: None,
         }));
     }
 
@@ -393,6 +417,13 @@ async fn get_profile(
             .clone()
             .or_else(|| session.user.username.clone())
     });
+    let user_avatar_url = user_session.as_ref().and_then(|session| {
+        if session.user.provider == "linuxdo" {
+            resolve_linuxdo_avatar_url(&state.linuxdo_oauth, session.user.avatar_template.as_deref())
+        } else {
+            None
+        }
+    });
 
     Ok(Json(ProfileView {
         display_name,
@@ -403,6 +434,7 @@ async fn get_profile(
         user_logged_in,
         user_provider,
         user_display_name,
+        user_avatar_url,
     }))
 }
 

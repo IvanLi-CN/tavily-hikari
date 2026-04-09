@@ -1106,6 +1106,7 @@ export interface Profile {
   userLoggedIn?: boolean
   userProvider?: 'linuxdo' | null
   userDisplayName?: string | null
+  userAvatarUrl?: string | null
 }
 
 export function fetchProfile(signal?: AbortSignal): Promise<Profile> {

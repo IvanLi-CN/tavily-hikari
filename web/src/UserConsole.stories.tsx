@@ -30,6 +30,7 @@ interface UserConsoleStoryArgs {
   routeHashOverride?: string
   pushStatusPreview?: PushStatusPreview
   pushStatusBubbleOpen?: boolean
+  autoOpenAccountMenu?: boolean
 }
 
 interface UserConsoleStoryState {
@@ -160,6 +161,22 @@ const tokenLogsSample: ServerPublicTokenLogMock[] = [
   },
 ]
 
+const storyAvatarDataUrl =
+  'data:image/svg+xml;utf8,' +
+  encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+      <defs>
+        <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#3b82f6" />
+          <stop offset="100%" stop-color="#1d4ed8" />
+        </linearGradient>
+      </defs>
+      <rect width="64" height="64" rx="32" fill="url(#g)" />
+      <circle cx="32" cy="25" r="13" fill="#dbeafe" />
+      <path d="M14 56c2-10 9.7-16 18-16s16 6 18 16" fill="#dbeafe" />
+    </svg>`,
+  )
+
 const profileSample: Profile = {
   displayName: 'Ivan',
   isAdmin: false,
@@ -169,6 +186,7 @@ const profileSample: Profile = {
   userLoggedIn: true,
   userProvider: 'linuxdo',
   userDisplayName: 'Ivan',
+  userAvatarUrl: storyAvatarDataUrl,
 }
 
 const adminProfileSample: Profile = {
@@ -677,6 +695,17 @@ function UserConsoleStory(
     return () => window.clearTimeout(timer)
   }, [pushStatusBubbleOpen, ready, storyState.routeHash])
 
+  useEffect(() => {
+    if (!ready || args.autoOpenAccountMenu !== true) return
+    const timer = window.setTimeout(() => {
+      const trigger = document.querySelector<HTMLButtonElement>('.user-console-account-trigger')
+      if (!trigger) return
+      trigger.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 }))
+      trigger.click()
+    }, 120)
+    return () => window.clearTimeout(timer)
+  }, [args.autoOpenAccountMenu, ready])
+
   if (!ready) {
     return <div style={{ minHeight: '100vh' }} />
   }
@@ -764,6 +793,10 @@ const meta = {
       table: { disable: true },
       control: false,
     },
+    autoOpenAccountMenu: {
+      table: { disable: true },
+      control: false,
+    },
   },
   render: (args) => <UserConsoleStory {...args} />,
 } satisfies Meta<UserConsoleStoryArgs>
@@ -783,8 +816,8 @@ export const ConsoleHome: Story = {
 
     for (const selector of [
       '.user-console-header',
-      '.user-console-header-card',
-      '.user-console-logout-button',
+      '.user-console-header-inline-meta',
+      '.user-console-account-trigger',
       '.user-console-landing-stack',
     ]) {
       if (canvasElement.querySelector(selector) == null) {
@@ -828,13 +861,44 @@ export const ConsoleHomeAdminMobile: Story = {
 
     for (const selector of [
       '.user-console-header',
-      '.user-console-admin-entry',
-      '.user-console-logout-button',
+      '.user-console-header-actions',
+      '.user-console-account-trigger',
     ]) {
       if (canvasElement.querySelector(selector) == null) {
         throw new Error(`Expected ConsoleHomeAdminMobile to render ${selector}`)
       }
     }
+
+    const menuTrigger = canvasElement.querySelector<HTMLElement>('.user-console-account-trigger')
+    if (menuTrigger == null) {
+      throw new Error('Expected ConsoleHomeAdminMobile to render a compact account menu trigger.')
+    }
+
+    menuTrigger.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 }))
+    menuTrigger.click()
+    await new Promise((resolve) => window.setTimeout(resolve, 120))
+
+    for (const selector of [
+      '.user-console-account-menu-admin',
+      '.user-console-account-menu-logout',
+    ]) {
+      if (canvasElement.ownerDocument.querySelector(selector) == null) {
+        throw new Error(`Expected ConsoleHomeAdminMobile menu to render ${selector}`)
+      }
+    }
+  },
+}
+
+export const ConsoleHomeAdminMobileMenuOpen: Story = {
+  name: 'Console Home Admin Mobile Menu Open',
+  args: {
+    consoleView: 'Console Home',
+    isAdmin: true,
+    landingFocus: 'Overview Focus',
+    autoOpenAccountMenu: true,
+  },
+  parameters: {
+    viewport: { defaultViewport: '0390-device-iphone-14' },
   },
 }
 

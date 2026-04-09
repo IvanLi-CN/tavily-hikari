@@ -15,7 +15,7 @@ function renderWithProviders(node: ReactElement): string {
 }
 
 describe('UserConsoleHeader', () => {
-  it('renders the hero cards, admin CTA, and logout action together', () => {
+  it('renders a compact header with inline context and an account trigger', () => {
     const html = renderWithProviders(
       <UserConsoleHeader
         title="User Console"
@@ -27,6 +27,7 @@ describe('UserConsoleHeader', () => {
         sessionLabel="Signed in as"
         sessionDisplayName="Ivan"
         sessionProviderLabel="LinuxDo"
+        sessionAvatarUrl="https://connect.linux.do/user_avatar/connect.linux.do/ivan/96/1.png"
         adminLabel="Admin"
         isAdmin
         adminHref="/admin"
@@ -40,16 +41,15 @@ describe('UserConsoleHeader', () => {
     )
 
     expect(html).toContain('User Console')
-    expect(html).toContain('Current View')
     expect(html).toContain('Token Detail')
-    expect(html).toContain('Ivan')
-    expect(html).toContain('LinuxDo')
-    expect(html).toContain('Open Admin Dashboard')
-    expect(html).toContain('Sign out')
-    expect(html).toContain('user-console-header')
+    expect(html).toContain('Signed in as: Ivan')
+    expect(html).toContain('user-console-header-inline-meta')
+    expect(html).toContain('user-console-account-trigger')
+    expect(html).toContain('user-console-account-avatar-image')
+    expect(html).not.toContain('Your account dashboard and token management')
   })
 
-  it('keeps the admin CTA but hides logout when no user session is available', () => {
+  it('keeps the account trigger but omits sign out when no user session is available', () => {
     const html = renderWithProviders(
       <UserConsoleHeader
         title="User Console"
@@ -72,7 +72,8 @@ describe('UserConsoleHeader', () => {
       />
     )
 
-    expect(html).toContain('Open Admin Dashboard')
+    expect(html).toContain('Signed in as: dev-mode')
+    expect(html).toContain('user-console-account-trigger')
     expect(html).not.toContain('Sign out')
   })
 })

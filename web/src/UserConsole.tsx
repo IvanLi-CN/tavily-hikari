@@ -2068,10 +2068,12 @@ export default function UserConsole(): JSX.Element {
         sessionLabel={text.header.session}
         sessionDisplayName={sessionDisplayName}
         sessionProviderLabel={sessionProviderLabel}
+        sessionAvatarUrl={profile?.userAvatarUrl}
         adminLabel={text.header.adminLabel}
         isAdmin={profile?.isAdmin === true}
         adminHref={adminHref}
         adminActionLabel={publicStrings.adminButton}
+        adminMenuLabel={text.header.adminMenuAction}
         logoutVisible={logoutVisible}
         isLoggingOut={isLoggingOut}
         logoutLabel={text.header.logout}
@@ -2940,6 +2942,7 @@ const EN = {
     currentView: 'Current View',
     session: 'Signed in as',
     adminLabel: 'Admin',
+    adminMenuAction: 'Admin dashboard',
     logout: 'Sign out',
     loggingOut: 'Signing out…',
     logoutFailed: 'Failed to sign out: {message}',
@@ -3129,6 +3132,7 @@ const ZH = {
     currentView: '当前视图',
     session: '当前身份',
     adminLabel: '管理员',
+    adminMenuAction: '管理员面板',
     logout: '退出登录',
     loggingOut: '退出中…',
     logoutFailed: '退出登录失败：{message}',
