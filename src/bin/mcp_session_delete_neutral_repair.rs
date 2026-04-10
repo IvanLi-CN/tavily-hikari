@@ -1132,6 +1132,107 @@ mod tests {
         (proxy, pool, db_str)
     }
 
+    async fn init_pool_with_schema(prefix: &str) -> (sqlx::SqlitePool, String) {
+        let db_path = temp_db_path(prefix);
+        let db_str = db_path.to_string_lossy().to_string();
+        let pool = connect_sqlite_pool(&db_str).await.expect("sqlite pool");
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS auth_tokens (
+                id TEXT PRIMARY KEY,
+                secret TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                note TEXT,
+                group_name TEXT,
+                total_requests INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                last_used_at INTEGER,
+                deleted_at INTEGER
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create auth_tokens schema");
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS request_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                status_code INTEGER,
+                tavily_status_code INTEGER,
+                error_message TEXT,
+                response_body BLOB,
+                failure_kind TEXT
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create request_logs schema");
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS auth_token_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                token_id TEXT NOT NULL,
+                method TEXT NOT NULL,
+                path TEXT NOT NULL,
+                query TEXT,
+                http_status INTEGER,
+                mcp_status INTEGER,
+                request_kind_key TEXT,
+                request_kind_label TEXT,
+                request_kind_detail TEXT,
+                result_status TEXT NOT NULL,
+                error_message TEXT,
+                failure_kind TEXT,
+                key_effect_code TEXT NOT NULL DEFAULT 'none',
+                key_effect_summary TEXT,
+                counts_business_quota INTEGER NOT NULL DEFAULT 1,
+                business_credits INTEGER,
+                billing_subject TEXT,
+                billing_state TEXT NOT NULL DEFAULT 'none',
+                api_key_id TEXT,
+                request_log_id INTEGER REFERENCES request_logs(id),
+                created_at INTEGER NOT NULL,
+                FOREIGN KEY (token_id) REFERENCES auth_tokens(id)
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create auth_token_logs schema");
+        (pool, db_str)
+    }
+
+    async fn seed_access_token_row(pool: &sqlx::SqlitePool, note: &str) -> String {
+        let token_id = nanoid!(4);
+        let secret = nanoid!(24);
+        let created_at = Utc::now().timestamp();
+        sqlx::query(
+            r#"
+            INSERT INTO auth_tokens (
+                id,
+                secret,
+                enabled,
+                note,
+                group_name,
+                total_requests,
+                created_at,
+                last_used_at,
+                deleted_at
+            ) VALUES (?, ?, 1, ?, NULL, 0, ?, NULL, NULL)
+            "#,
+        )
+        .bind(&token_id)
+        .bind(secret)
+        .bind(note)
+        .bind(created_at)
+        .execute(pool)
+        .await
+        .expect("insert auth token");
+        token_id
+    }
+
     async fn seed_session_delete_misclassified_logs(
         pool: &sqlx::SqlitePool,
         token_id: &str,
@@ -1618,12 +1719,8 @@ mod tests {
 
     #[tokio::test]
     async fn auth_candidates_include_standalone_rows_matched_by_error_text() {
-        let (proxy, pool, db_str) =
-            init_proxy_and_pool("session-delete-repair-standalone-auth").await;
-        let token = proxy
-            .create_access_token(Some("session-delete-repair-standalone-auth"))
-            .await
-            .expect("create token");
+        let (pool, db_str) = init_pool_with_schema("session-delete-repair-standalone-auth").await;
+        let token_id = seed_access_token_row(&pool, "session-delete-repair-standalone-auth").await;
         let created_at = Utc::now().timestamp();
 
         let auth_log_id: i64 = sqlx::query_scalar(
@@ -1676,8 +1773,8 @@ mod tests {
             RETURNING id
             "#,
         )
-        .bind(&token.id)
-        .bind(format!("token:{}", token.id))
+        .bind(&token_id)
+        .bind(format!("token:{token_id}"))
         .bind(created_at)
         .fetch_one(&pool)
         .await
@@ -1733,12 +1830,9 @@ mod tests {
 
     #[tokio::test]
     async fn auth_candidates_include_rows_when_failure_kind_is_missing() {
-        let (proxy, pool, db_str) =
-            init_proxy_and_pool("session-delete-repair-null-failure-kind").await;
-        let token = proxy
-            .create_access_token(Some("session-delete-repair-null-failure-kind"))
-            .await
-            .expect("create token");
+        let (pool, db_str) = init_pool_with_schema("session-delete-repair-null-failure-kind").await;
+        let token_id =
+            seed_access_token_row(&pool, "session-delete-repair-null-failure-kind").await;
         let created_at = Utc::now().timestamp();
 
         let auth_log_id: i64 = sqlx::query_scalar(
@@ -1791,8 +1885,8 @@ mod tests {
             RETURNING id
             "#,
         )
-        .bind(&token.id)
-        .bind(format!("token:{}", token.id))
+        .bind(&token_id)
+        .bind(format!("token:{token_id}"))
         .bind(created_at)
         .fetch_one(&pool)
         .await
@@ -1832,6 +1926,11 @@ mod tests {
         if first_execution.auth_token_rows_updated > 0 {
             assert!(first_execution.monthly_rebase.is_some());
         }
+
+        drop(pool);
+        let pool = connect_sqlite_pool(&db_str)
+            .await
+            .expect("reopen sqlite pool");
 
         let second_request_candidates = load_request_log_candidates(&pool)
             .await
