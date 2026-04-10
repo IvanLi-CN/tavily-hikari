@@ -273,20 +273,38 @@ async fn load_auth_token_log_candidates(
         LEFT JOIN request_logs rl ON rl.id = atl.request_log_id
         WHERE atl.method = 'DELETE'
           AND atl.path = '/mcp'
-          AND COALESCE(atl.http_status, rl.status_code) = 405
-          AND COALESCE(atl.mcp_status, rl.tavily_status_code) = 405
           AND (
-                COALESCE(atl.failure_kind, rl.failure_kind) = ?
-                OR COALESCE(atl.failure_kind, rl.failure_kind) IS NULL
-          )
-          AND (
-                LOWER(COALESCE(atl.error_message, '')) LIKE ?
-                OR LOWER(COALESCE(rl.error_message, '')) LIKE ?
-                OR LOWER(CAST(COALESCE(rl.response_body, X'') AS TEXT)) LIKE ?
+                (
+                    atl.request_log_id IS NULL
+                    AND atl.http_status = 405
+                    AND atl.mcp_status = 405
+                    AND (
+                          atl.failure_kind = ?
+                          OR atl.failure_kind IS NULL
+                    )
+                    AND LOWER(COALESCE(atl.error_message, '')) LIKE ?
+                )
+                OR
+                (
+                    atl.request_log_id IS NOT NULL
+                    AND COALESCE(atl.http_status, rl.status_code) = 405
+                    AND COALESCE(atl.mcp_status, rl.tavily_status_code) = 405
+                    AND (
+                          COALESCE(atl.failure_kind, rl.failure_kind) = ?
+                          OR COALESCE(atl.failure_kind, rl.failure_kind) IS NULL
+                    )
+                    AND (
+                          LOWER(COALESCE(atl.error_message, '')) LIKE ?
+                          OR LOWER(COALESCE(rl.error_message, '')) LIKE ?
+                          OR LOWER(CAST(COALESCE(rl.response_body, X'') AS TEXT)) LIKE ?
+                    )
+                )
           )
         ORDER BY atl.id ASC
         "#,
     )
+    .bind(FAILURE_KIND_MCP_METHOD_405)
+    .bind(&message_like)
     .bind(FAILURE_KIND_MCP_METHOD_405)
     .bind(&message_like)
     .bind(&message_like)
@@ -1135,7 +1153,17 @@ mod tests {
     async fn init_pool_with_schema(prefix: &str) -> (sqlx::SqlitePool, String) {
         let db_path = temp_db_path(prefix);
         let db_str = db_path.to_string_lossy().to_string();
-        let pool = connect_sqlite_pool(&db_str).await.expect("sqlite pool");
+        let options = sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(&db_str)
+            .create_if_missing(true)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+            .busy_timeout(std::time::Duration::from_secs(5));
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("sqlite pool");
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS auth_tokens (
