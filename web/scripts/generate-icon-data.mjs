@@ -43,6 +43,7 @@ const ICON_SOURCES = [
     ['mdi:key-change', 'key-change'],
     ['mdi:lock-outline', 'lock-outline'],
     ['mdi:loading', 'loading'],
+    ['mdi:account-arrow-right-outline', 'account-arrow-right-outline'],
     ['mdi:logout-variant', 'logout-variant'],
     ['mdi:map-marker-radius-outline', 'map-marker-radius-outline'],
     ['mdi:menu', 'menu'],

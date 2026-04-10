@@ -279,25 +279,724 @@ struct ProfileView {
     user_avatar_url: Option<String>,
 }
 
-fn resolve_linuxdo_avatar_url(cfg: &LinuxDoOAuthOptions, avatar_template: Option<&str>) -> Option<String> {
+fn resolve_linuxdo_avatar_url(
+    cfg: &LinuxDoOAuthOptions,
+    avatar_template: Option<&str>,
+) -> Option<String> {
     let template = avatar_template
         .map(str::trim)
         .filter(|value| !value.is_empty())?
         .replace("{size}", "96");
 
-    if template.starts_with("https://") || template.starts_with("http://") {
-        return Some(template);
+    if let Ok(url) = reqwest::Url::parse(&template)
+        && matches!(url.scheme(), "http" | "https")
+    {
+        return resolve_absolute_linuxdo_avatar_url(cfg, url.as_str());
     }
-
-    let base = reqwest::Url::parse(&cfg.authorize_url).ok()?;
     if template.starts_with("//") {
-        return Some(format!("{}:{}", base.scheme(), template));
-    }
-    if template.starts_with('/') {
-        return base.join(&template).ok().map(|url| url.to_string());
+        return resolve_absolute_linuxdo_avatar_url(cfg, &format!("https:{template}"));
     }
 
-    base.join(&format!("/{template}")).ok().map(|url| url.to_string())
+    let base = linuxdo_avatar_origin(cfg, &template)?;
+    join_avatar_path(&base, &template)
+}
+
+fn resolve_absolute_linuxdo_avatar_url(
+    cfg: &LinuxDoOAuthOptions,
+    template: &str,
+) -> Option<String> {
+    let mut url = reqwest::Url::parse(template).ok()?;
+    if origin_is_public_browser_safe(&url) {
+        let _ = url.set_username("");
+        let _ = url.set_password(None);
+        url.set_fragment(None);
+        return Some(url.to_string());
+    }
+
+    let mut relative = url.path().to_string();
+    if let Some(query) = url.query() {
+        relative.push('?');
+        relative.push_str(query);
+    }
+    let base = linuxdo_avatar_origin(cfg, &relative)?;
+    let normalized_relative = normalize_avatar_relative_path(&base, &relative);
+    join_avatar_path(&base, &normalized_relative)
+}
+
+fn linuxdo_avatar_origin(cfg: &LinuxDoOAuthOptions, template: &str) -> Option<reqwest::Url> {
+    linuxdo_avatar_template_origin(template)
+        .or_else(|| linuxdo_public_oauth_origin(cfg))
+}
+
+fn linuxdo_avatar_template_origin(template: &str) -> Option<reqwest::Url> {
+    template
+        .trim_start_matches('/')
+        .strip_prefix("user_avatar/")
+        .and_then(|value| value.split('/').next())
+        .filter(|value| !value.is_empty())
+        .and_then(|host| origin_from_url(&format!("https://{host}")))
+        .filter(origin_is_public_browser_safe)
+}
+
+fn linuxdo_public_oauth_origin(cfg: &LinuxDoOAuthOptions) -> Option<reqwest::Url> {
+    [
+        cfg.userinfo_url.as_str(),
+        cfg.authorize_url.as_str(),
+        cfg.token_url.as_str(),
+    ]
+    .into_iter()
+    .filter_map(oauth_origin_from_url)
+    .find(origin_is_public_browser_safe)
+}
+
+fn origin_is_public_browser_safe(origin: &reqwest::Url) -> bool {
+    if origin.scheme() != "https" {
+        return false;
+    }
+
+    let Some(host) = origin.host_str() else {
+        return false;
+    };
+    let host_no_brackets = host.trim_start_matches('[').trim_end_matches(']');
+    let canonical_host = host_no_brackets.trim_end_matches('.');
+    if canonical_host.is_empty()
+        || canonical_host.eq_ignore_ascii_case("localhost")
+        || canonical_host.ends_with(".localhost")
+        || canonical_host.eq_ignore_ascii_case("lvh.me")
+        || canonical_host.ends_with(".lvh.me")
+        || canonical_host.ends_with(".local")
+        || canonical_host.ends_with(".internal")
+        || canonical_host.eq_ignore_ascii_case("localtest.me")
+        || canonical_host.ends_with(".localtest.me")
+    {
+        return false;
+    }
+
+    match canonical_host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(ip)) => ipv4_is_public_browser_safe(ip),
+        Ok(std::net::IpAddr::V6(ip)) => ipv6_is_public_browser_safe(ip),
+        Err(_) => {
+            if let Some(ip) = encoded_ipv4_host(canonical_host) {
+                return ipv4_is_public_browser_safe(ip);
+            }
+            hostname_labels_look_public(canonical_host)
+        }
+    }
+}
+
+fn hostname_labels_look_public(host: &str) -> bool {
+    let labels = host
+        .split('.')
+        .filter(|label| !label.is_empty())
+        .map(|label| label.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    if labels.len() < 2 {
+        return false;
+    }
+
+    let suspicious_private_labels = [
+        "cluster",
+        "corp",
+        "home",
+        "intra",
+        "internal",
+        "lan",
+        "localhost",
+        "local",
+        "office",
+        "priv",
+        "private",
+        "svc",
+        "vpn",
+    ];
+
+    labels[..labels.len().saturating_sub(2)]
+        .iter()
+        .all(|label| !suspicious_private_labels.contains(&label.as_str()))
+}
+
+fn ipv4_is_public_browser_safe(ip: std::net::Ipv4Addr) -> bool {
+    let [a, b, c, _] = ip.octets();
+    let is_current_network = a == 0;
+    let is_shared = a == 100 && (b & 0b1100_0000) == 0b0100_0000;
+    let is_ietf_protocol_assignment = a == 192 && b == 0 && c == 0;
+    let is_documentation = (a == 192 && b == 0 && c == 2)
+        || (a == 198 && b == 51 && c == 100)
+        || (a == 203 && b == 0 && c == 113);
+    let is_benchmarking = a == 198 && (b == 18 || b == 19);
+    let is_6to4_relay = a == 192 && b == 88 && c == 99;
+    let is_multicast_or_reserved = a >= 224;
+
+    !(ip.is_private()
+        || ip.is_loopback()
+        || ip.is_link_local()
+        || ip.is_unspecified()
+        || ip.is_broadcast()
+        || ip.is_documentation()
+        || is_current_network
+        || is_shared
+        || is_ietf_protocol_assignment
+        || is_documentation
+        || is_benchmarking
+        || is_6to4_relay
+        || is_multicast_or_reserved)
+}
+
+fn ipv6_is_public_browser_safe(ip: std::net::Ipv6Addr) -> bool {
+    let segments = ip.segments();
+    let is_link_local = (segments[0] & 0xffc0) == 0xfe80;
+    let is_site_local = (segments[0] & 0xffc0) == 0xfec0;
+    let is_multicast = (segments[0] & 0xff00) == 0xff00;
+    let is_documentation = segments[0] == 0x2001 && segments[1] == 0x0db8;
+
+    !(ip.is_loopback()
+        || ip.is_unspecified()
+        || ip.is_unique_local()
+        || is_link_local
+        || is_site_local
+        || is_multicast
+        || is_documentation)
+}
+
+fn encoded_ipv4_host(host: &str) -> Option<std::net::Ipv4Addr> {
+    let labels = host.split('.').collect::<Vec<_>>();
+    let rebinding_suffix_len = rebinding_domain_suffix_len(&labels)?;
+    let rebinding_prefix = &labels[..labels.len().checked_sub(rebinding_suffix_len)?];
+    if rebinding_prefix.is_empty() {
+        return None;
+    }
+
+    for window_size in 1..=4 {
+        for window in rebinding_prefix.windows(window_size) {
+            if let Some(ip) = ipv4_addr_from_encoded_parts(window) {
+                return Some(ip);
+            }
+        }
+    }
+
+    for label in rebinding_prefix {
+        let dashed = label.split('-').collect::<Vec<_>>();
+        for window_size in 1..=4 {
+            for window in dashed.windows(window_size) {
+                if let Some(ip) = ipv4_addr_from_encoded_parts(window) {
+                    return Some(ip);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn rebinding_domain_suffix_len(labels: &[&str]) -> Option<usize> {
+    if labels.len() < 2 {
+        return None;
+    }
+
+    let domain = labels[labels.len() - 2..]
+        .iter()
+        .map(|label| label.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    match domain.as_slice() {
+        [prefix, suffix] if prefix == "nip" && suffix == "io" => Some(2),
+        [prefix, suffix] if prefix == "sslip" && suffix == "io" => Some(2),
+        [prefix, suffix] if prefix == "xip" && suffix == "io" => Some(2),
+        _ => None,
+    }
+}
+
+fn ipv4_addr_from_encoded_parts(parts: &[&str]) -> Option<std::net::Ipv4Addr> {
+    match parts.len() {
+        1 => {
+            let value = parse_ipv4_number(parts[0])?;
+            Some(std::net::Ipv4Addr::from(value))
+        }
+        2 => {
+            let first = parse_ipv4_number(parts[0])?;
+            let second = parse_ipv4_number(parts[1])?;
+            if first > 0xff || second > 0x00ff_ffff {
+                return None;
+            }
+            Some(std::net::Ipv4Addr::new(
+                first as u8,
+                ((second >> 16) & 0xff) as u8,
+                ((second >> 8) & 0xff) as u8,
+                (second & 0xff) as u8,
+            ))
+        }
+        3 => {
+            let first = parse_ipv4_number(parts[0])?;
+            let second = parse_ipv4_number(parts[1])?;
+            let third = parse_ipv4_number(parts[2])?;
+            if first > 0xff || second > 0xff || third > 0xffff {
+                return None;
+            }
+            Some(std::net::Ipv4Addr::new(
+                first as u8,
+                second as u8,
+                ((third >> 8) & 0xff) as u8,
+                (third & 0xff) as u8,
+            ))
+        }
+        4 => {
+            let mut octets = [0_u8; 4];
+            for (index, part) in parts.iter().enumerate() {
+                let value = parse_ipv4_number(part)?;
+                if value > 0xff {
+                    return None;
+                }
+                octets[index] = value as u8;
+            }
+            Some(std::net::Ipv4Addr::new(
+                octets[0], octets[1], octets[2], octets[3],
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn parse_ipv4_number(value: &str) -> Option<u32> {
+    if value.is_empty() {
+        return None;
+    }
+
+    if let Some(hex) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    {
+        if hex.is_empty() {
+            return None;
+        }
+        return u32::from_str_radix(hex, 16).ok();
+    }
+
+    if value.len() > 1 && value.starts_with('0') {
+        return u32::from_str_radix(value, 8).ok();
+    }
+
+    value.parse::<u32>().ok()
+}
+
+fn normalize_avatar_relative_path(base: &reqwest::Url, value: &str) -> String {
+    let trimmed = value.trim_start_matches('/');
+    let base_path = base.path().trim_end_matches('/');
+    if base_path.is_empty() {
+        return trimmed.to_string();
+    }
+
+    let base_without_leading = base_path.trim_start_matches('/');
+    if trimmed == base_without_leading {
+        return String::new();
+    }
+    if let Some(stripped) = trimmed.strip_prefix(base_without_leading) {
+        if stripped.is_empty() {
+            return String::new();
+        }
+        if let Some(next) = stripped.strip_prefix('/') {
+            return next.to_string();
+        }
+    }
+
+    trimmed.to_string()
+}
+
+fn origin_from_url(value: &str) -> Option<reqwest::Url> {
+    let mut origin = reqwest::Url::parse(value).ok()?;
+    let _ = origin.set_username("");
+    let _ = origin.set_password(None);
+    origin.set_path("/");
+    origin.set_query(None);
+    origin.set_fragment(None);
+    Some(origin)
+}
+
+fn oauth_origin_from_url(value: &str) -> Option<reqwest::Url> {
+    let mut origin = reqwest::Url::parse(value).ok()?;
+    let _ = origin.set_username("");
+    let _ = origin.set_password(None);
+    origin.set_path(&oauth_origin_base_path(origin.path()));
+    origin.set_query(None);
+    origin.set_fragment(None);
+    Some(origin)
+}
+
+fn oauth_origin_base_path(path: &str) -> String {
+    for suffix in ["/api/user", "/oauth2/authorize", "/oauth2/token"] {
+        if let Some(prefix) = path.strip_suffix(suffix) {
+            if prefix.is_empty() {
+                return "/".to_string();
+            }
+            return format!("{}/", prefix.trim_end_matches('/'));
+        }
+    }
+    "/".to_string()
+}
+
+fn join_avatar_path(base: &reqwest::Url, value: &str) -> Option<String> {
+    let relative = value.trim_start_matches('/');
+    let next = if relative.is_empty() {
+        base.clone()
+    } else {
+        base.join(relative).ok()?
+    };
+    Some(next.to_string())
+}
+
+#[cfg(test)]
+mod avatar_url_tests {
+    use super::*;
+
+    #[test]
+    fn resolve_linuxdo_avatar_url_prefers_public_host_from_template() {
+        let mut cfg = LinuxDoOAuthOptions::disabled();
+        cfg.authorize_url = "http://oauth.internal:3000/oauth2/authorize".to_string();
+        cfg.userinfo_url = "http://discourse.internal:3000/api/user".to_string();
+
+        assert_eq!(
+            resolve_linuxdo_avatar_url(
+                &cfg,
+                Some("/user_avatar/connect.linux.do/linuxdo_alice/{size}/1_2.png"),
+            )
+            .as_deref(),
+            Some("https://connect.linux.do/user_avatar/connect.linux.do/linuxdo_alice/96/1_2.png"),
+        );
+    }
+
+    #[test]
+    fn resolve_linuxdo_avatar_url_falls_back_to_configured_origin_for_hostless_templates() {
+        let mut cfg = LinuxDoOAuthOptions::disabled();
+        cfg.authorize_url = "https://forum.example.com/oauth2/authorize".to_string();
+        cfg.userinfo_url = "https://forum.example.com/api/user".to_string();
+
+        assert_eq!(
+            resolve_linuxdo_avatar_url(&cfg, Some("/avatar/linuxdo_alice/{size}/1_2.png"))
+                .as_deref(),
+            Some("https://forum.example.com/avatar/linuxdo_alice/96/1_2.png"),
+        );
+    }
+
+    #[test]
+    fn resolve_linuxdo_avatar_url_preserves_oauth_subpaths_for_hostless_templates() {
+        let mut cfg = LinuxDoOAuthOptions::disabled();
+        cfg.authorize_url = "https://forum.example.com/discourse/oauth2/authorize".to_string();
+        cfg.userinfo_url = "https://forum.example.com/discourse/api/user".to_string();
+
+        assert_eq!(
+            resolve_linuxdo_avatar_url(&cfg, Some("/avatar/linuxdo_alice/{size}/1_2.png"))
+                .as_deref(),
+            Some("https://forum.example.com/discourse/avatar/linuxdo_alice/96/1_2.png"),
+        );
+    }
+
+    #[test]
+    fn resolve_linuxdo_avatar_url_avoids_private_oauth_origins_for_hostless_templates() {
+        let mut cfg = LinuxDoOAuthOptions::disabled();
+        cfg.authorize_url = "http://oauth.internal:3000/oauth2/authorize".to_string();
+        cfg.token_url = "http://oauth.internal:3000/oauth2/token".to_string();
+        cfg.userinfo_url = "http://discourse.internal:3000/api/user".to_string();
+
+        assert_eq!(resolve_linuxdo_avatar_url(&cfg, Some("/avatar/linuxdo_alice/{size}/1_2.png")), None);
+    }
+
+    #[test]
+    fn resolve_linuxdo_avatar_url_salvages_unsafe_absolute_templates() {
+        let cfg = LinuxDoOAuthOptions::disabled();
+
+        assert_eq!(
+            resolve_linuxdo_avatar_url(
+                &cfg,
+                Some("http://oauth.internal:3000/user_avatar/connect.linux.do/linuxdo_alice/{size}/1_2.png"),
+            )
+            .as_deref(),
+            Some("https://connect.linux.do/user_avatar/connect.linux.do/linuxdo_alice/96/1_2.png"),
+        );
+    }
+
+    #[test]
+    fn resolve_linuxdo_avatar_url_treats_absolute_schemes_case_insensitively() {
+        let cfg = LinuxDoOAuthOptions::disabled();
+
+        assert_eq!(
+            resolve_linuxdo_avatar_url(
+                &cfg,
+                Some("HTTPS://cdn.example.com/user_avatar/connect.linux.do/linuxdo_alice/{size}/1_2.png"),
+            )
+            .as_deref(),
+            Some("https://cdn.example.com/user_avatar/connect.linux.do/linuxdo_alice/96/1_2.png"),
+        );
+    }
+
+    #[test]
+    fn resolve_linuxdo_avatar_url_ignores_private_hosts_embedded_in_templates() {
+        let mut cfg = LinuxDoOAuthOptions::disabled();
+        cfg.authorize_url = "https://forum.example.com/oauth2/authorize".to_string();
+        cfg.userinfo_url = "https://forum.example.com/api/user".to_string();
+
+        assert_eq!(
+            resolve_linuxdo_avatar_url(
+                &cfg,
+                Some("/user_avatar/discourse.internal/linuxdo_alice/{size}/1_2.png"),
+            )
+            .as_deref(),
+            Some("https://forum.example.com/user_avatar/discourse.internal/linuxdo_alice/96/1_2.png"),
+        );
+    }
+
+    #[test]
+    fn resolve_linuxdo_avatar_url_avoids_private_ipv6_origins() {
+        let mut cfg = LinuxDoOAuthOptions::disabled();
+        cfg.authorize_url = "https://[fe80::1]/oauth2/authorize".to_string();
+        cfg.token_url = "https://[fe80::1]/oauth2/token".to_string();
+        cfg.userinfo_url = "https://[fe80::1]/api/user".to_string();
+
+        assert_eq!(resolve_linuxdo_avatar_url(&cfg, Some("/avatar/linuxdo_alice/{size}/1_2.png")), None);
+    }
+
+    #[test]
+    fn resolve_linuxdo_avatar_url_sanitizes_protocol_relative_templates() {
+        let mut cfg = LinuxDoOAuthOptions::disabled();
+        cfg.authorize_url = "http://oauth.internal:3000/oauth2/authorize".to_string();
+        cfg.token_url = "http://oauth.internal:3000/oauth2/token".to_string();
+        cfg.userinfo_url = "http://discourse.internal:3000/api/user".to_string();
+
+        assert_eq!(resolve_linuxdo_avatar_url(&cfg, Some("//127.0.0.1/avatar/linuxdo_alice/{size}/1_2.png")), None);
+    }
+
+    #[test]
+    fn resolve_linuxdo_avatar_url_avoids_non_global_ipv4_origins() {
+        let mut cfg = LinuxDoOAuthOptions::disabled();
+        cfg.authorize_url = "https://100.64.0.1/oauth2/authorize".to_string();
+        cfg.token_url = "https://100.64.0.1/oauth2/token".to_string();
+        cfg.userinfo_url = "https://100.64.0.1/api/user".to_string();
+
+        assert_eq!(resolve_linuxdo_avatar_url(&cfg, Some("/avatar/linuxdo_alice/{size}/1_2.png")), None);
+    }
+
+    #[test]
+    fn resolve_linuxdo_avatar_url_avoids_single_label_oauth_origins() {
+        let mut cfg = LinuxDoOAuthOptions::disabled();
+        cfg.userinfo_url = "https://discourse/api/user".to_string();
+        cfg.authorize_url = "https://oauth/oauth2/authorize".to_string();
+        cfg.token_url = "https://oauth/oauth2/token".to_string();
+
+        assert_eq!(resolve_linuxdo_avatar_url(&cfg, Some("/avatar/linuxdo_alice/{size}/1_2.png")), None);
+    }
+
+    #[test]
+    fn resolve_linuxdo_avatar_url_ignores_single_label_hosts_embedded_in_templates() {
+        let mut cfg = LinuxDoOAuthOptions::disabled();
+        cfg.authorize_url = "https://forum.example.com/oauth2/authorize".to_string();
+        cfg.userinfo_url = "https://forum.example.com/api/user".to_string();
+
+        assert_eq!(
+            resolve_linuxdo_avatar_url(
+                &cfg,
+                Some("/user_avatar/discourse/linuxdo_alice/{size}/1_2.png"),
+            )
+            .as_deref(),
+            Some("https://forum.example.com/user_avatar/discourse/linuxdo_alice/96/1_2.png"),
+        );
+    }
+
+    #[test]
+    fn resolve_linuxdo_avatar_url_keeps_numbered_public_cdn_hosts() {
+        let mut cfg = LinuxDoOAuthOptions::disabled();
+        cfg.authorize_url = "https://203-0-113.example.com/oauth2/authorize".to_string();
+        cfg.token_url = "https://203-0-113.example.com/oauth2/token".to_string();
+        cfg.userinfo_url = "https://203-0-113.example.com/api/user".to_string();
+
+        assert_eq!(
+            resolve_linuxdo_avatar_url(&cfg, Some("/avatar/linuxdo_alice/{size}/1_2.png")).as_deref(),
+            Some("https://203-0-113.example.com/avatar/linuxdo_alice/96/1_2.png"),
+        );
+    }
+
+    #[test]
+    fn resolve_linuxdo_avatar_url_keeps_dotted_public_cdn_hosts() {
+        let mut cfg = LinuxDoOAuthOptions::disabled();
+        cfg.authorize_url = "https://cdn.203.0.113.example.com/oauth2/authorize".to_string();
+        cfg.token_url = "https://cdn.203.0.113.example.com/oauth2/token".to_string();
+        cfg.userinfo_url = "https://cdn.203.0.113.example.com/api/user".to_string();
+
+        assert_eq!(
+            resolve_linuxdo_avatar_url(&cfg, Some("/avatar/linuxdo_alice/{size}/1_2.png")).as_deref(),
+            Some("https://cdn.203.0.113.example.com/avatar/linuxdo_alice/96/1_2.png"),
+        );
+    }
+
+    #[test]
+    fn resolve_linuxdo_avatar_url_avoids_private_rebinding_hosts() {
+        let mut cfg = LinuxDoOAuthOptions::disabled();
+        cfg.authorize_url = "https://127.0.0.1.nip.io/oauth2/authorize".to_string();
+        cfg.token_url = "https://127.0.0.1.nip.io/oauth2/token".to_string();
+        cfg.userinfo_url = "https://127.0.0.1.nip.io/api/user".to_string();
+
+        assert_eq!(resolve_linuxdo_avatar_url(&cfg, Some("/avatar/linuxdo_alice/{size}/1_2.png")), None);
+    }
+
+    #[test]
+    fn resolve_linuxdo_avatar_url_avoids_private_xip_rebinding_hosts() {
+        let mut cfg = LinuxDoOAuthOptions::disabled();
+        cfg.authorize_url = "https://127.0.0.1.xip.io/oauth2/authorize".to_string();
+        cfg.token_url = "https://127.0.0.1.xip.io/oauth2/token".to_string();
+        cfg.userinfo_url = "https://127.0.0.1.xip.io/api/user".to_string();
+
+        assert_eq!(resolve_linuxdo_avatar_url(&cfg, Some("/avatar/linuxdo_alice/{size}/1_2.png")), None);
+    }
+
+    #[test]
+    fn resolve_linuxdo_avatar_url_avoids_private_rebinding_subdomains() {
+        let mut cfg = LinuxDoOAuthOptions::disabled();
+        cfg.authorize_url = "https://foo.127.0.0.1.nip.io/oauth2/authorize".to_string();
+        cfg.token_url = "https://foo.127.0.0.1.nip.io/oauth2/token".to_string();
+        cfg.userinfo_url = "https://foo.127.0.0.1.nip.io/api/user".to_string();
+
+        assert_eq!(resolve_linuxdo_avatar_url(&cfg, Some("/avatar/linuxdo_alice/{size}/1_2.png")), None);
+    }
+
+    #[test]
+    fn resolve_linuxdo_avatar_url_avoids_private_split_horizon_hosts() {
+        let mut cfg = LinuxDoOAuthOptions::disabled();
+        cfg.authorize_url = "https://forum.corp.example.com/oauth2/authorize".to_string();
+        cfg.token_url = "https://forum.corp.example.com/oauth2/token".to_string();
+        cfg.userinfo_url = "https://forum.corp.example.com/api/user".to_string();
+
+        assert_eq!(resolve_linuxdo_avatar_url(&cfg, Some("/avatar/linuxdo_alice/{size}/1_2.png")), None);
+    }
+
+    #[test]
+    fn resolve_linuxdo_avatar_url_avoids_dashed_rebinding_hosts() {
+        let mut cfg = LinuxDoOAuthOptions::disabled();
+        cfg.authorize_url = "https://foo-127-0-0-1.sslip.io/oauth2/authorize".to_string();
+        cfg.token_url = "https://foo-127-0-0-1.sslip.io/oauth2/token".to_string();
+        cfg.userinfo_url = "https://foo-127-0-0-1.sslip.io/api/user".to_string();
+
+        assert_eq!(resolve_linuxdo_avatar_url(&cfg, Some("/avatar/linuxdo_alice/{size}/1_2.png")), None);
+    }
+
+    #[test]
+    fn resolve_linuxdo_avatar_url_avoids_loopback_alias_hosts() {
+        let mut cfg = LinuxDoOAuthOptions::disabled();
+        cfg.authorize_url = "https://oauth.lvh.me/oauth2/authorize".to_string();
+        cfg.token_url = "https://oauth.lvh.me/oauth2/token".to_string();
+        cfg.userinfo_url = "https://oauth.lvh.me/api/user".to_string();
+
+        assert_eq!(resolve_linuxdo_avatar_url(&cfg, Some("/avatar/linuxdo_alice/{size}/1_2.png")), None);
+    }
+
+    #[test]
+    fn resolve_linuxdo_avatar_url_avoids_trailing_dot_loopback_alias_hosts() {
+        let mut cfg = LinuxDoOAuthOptions::disabled();
+        cfg.authorize_url = "https://foo.localhost./oauth2/authorize".to_string();
+        cfg.token_url = "https://foo.localhost./oauth2/token".to_string();
+        cfg.userinfo_url = "https://foo.localhost./api/user".to_string();
+
+        assert_eq!(resolve_linuxdo_avatar_url(&cfg, Some("/avatar/linuxdo_alice/{size}/1_2.png")), None);
+    }
+
+    #[test]
+    fn resolve_linuxdo_avatar_url_omits_hostless_letter_avatar_proxy_without_public_origin() {
+        let mut cfg = LinuxDoOAuthOptions::disabled();
+        cfg.authorize_url = "https://oauth.internal/oauth2/authorize".to_string();
+        cfg.token_url = "https://oauth.internal/oauth2/token".to_string();
+        cfg.userinfo_url = "https://oauth.internal/api/user".to_string();
+
+        assert_eq!(
+            resolve_linuxdo_avatar_url(&cfg, Some("/letter_avatar_proxy/v4/letter/a/96.png")),
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_linuxdo_avatar_url_ignores_rebinding_hosts_embedded_in_templates() {
+        let mut cfg = LinuxDoOAuthOptions::disabled();
+        cfg.authorize_url = "https://forum.example.com/oauth2/authorize".to_string();
+        cfg.userinfo_url = "https://forum.example.com/api/user".to_string();
+
+        assert_eq!(
+            resolve_linuxdo_avatar_url(
+                &cfg,
+                Some("/user_avatar/192-168-1-1.sslip.io/linuxdo_alice/{size}/1_2.png"),
+            )
+            .as_deref(),
+            Some("https://forum.example.com/user_avatar/192-168-1-1.sslip.io/linuxdo_alice/96/1_2.png"),
+        );
+    }
+
+    #[test]
+    fn resolve_linuxdo_avatar_url_ignores_rebinding_subdomains_embedded_in_templates() {
+        let mut cfg = LinuxDoOAuthOptions::disabled();
+        cfg.authorize_url = "https://forum.example.com/oauth2/authorize".to_string();
+        cfg.userinfo_url = "https://forum.example.com/api/user".to_string();
+
+        assert_eq!(
+            resolve_linuxdo_avatar_url(
+                &cfg,
+                Some("/user_avatar/foo.127-0-0-1.sslip.io/linuxdo_alice/{size}/1_2.png"),
+            )
+            .as_deref(),
+            Some("https://forum.example.com/user_avatar/foo.127-0-0-1.sslip.io/linuxdo_alice/96/1_2.png"),
+        );
+    }
+
+    #[test]
+    fn resolve_linuxdo_avatar_url_ignores_dashed_rebinding_hosts_embedded_in_templates() {
+        let mut cfg = LinuxDoOAuthOptions::disabled();
+        cfg.authorize_url = "https://forum.example.com/oauth2/authorize".to_string();
+        cfg.userinfo_url = "https://forum.example.com/api/user".to_string();
+
+        assert_eq!(
+            resolve_linuxdo_avatar_url(
+                &cfg,
+                Some("/user_avatar/foo-127-0-0-1.sslip.io/linuxdo_alice/{size}/1_2.png"),
+            )
+            .as_deref(),
+            Some("https://forum.example.com/user_avatar/foo-127-0-0-1.sslip.io/linuxdo_alice/96/1_2.png"),
+        );
+    }
+
+    #[test]
+    fn resolve_linuxdo_avatar_url_avoids_decimal_rebinding_hosts() {
+        let mut cfg = LinuxDoOAuthOptions::disabled();
+        cfg.authorize_url = "https://2130706433.nip.io/oauth2/authorize".to_string();
+        cfg.token_url = "https://2130706433.nip.io/oauth2/token".to_string();
+        cfg.userinfo_url = "https://2130706433.nip.io/api/user".to_string();
+
+        assert_eq!(resolve_linuxdo_avatar_url(&cfg, Some("/avatar/linuxdo_alice/{size}/1_2.png")), None);
+    }
+
+    #[test]
+    fn resolve_linuxdo_avatar_url_ignores_hex_rebinding_hosts_embedded_in_templates() {
+        let mut cfg = LinuxDoOAuthOptions::disabled();
+        cfg.authorize_url = "https://forum.example.com/oauth2/authorize".to_string();
+        cfg.userinfo_url = "https://forum.example.com/api/user".to_string();
+
+        assert_eq!(
+            resolve_linuxdo_avatar_url(
+                &cfg,
+                Some("/user_avatar/0x7f000001.sslip.io/linuxdo_alice/{size}/1_2.png"),
+            )
+            .as_deref(),
+            Some("https://forum.example.com/user_avatar/0x7f000001.sslip.io/linuxdo_alice/96/1_2.png"),
+        );
+    }
+
+    #[test]
+    fn resolve_linuxdo_avatar_url_keeps_single_oauth_subpath_for_unsafe_absolute_templates() {
+        let mut cfg = LinuxDoOAuthOptions::disabled();
+        cfg.authorize_url = "https://forum.example.com/discourse/oauth2/authorize".to_string();
+        cfg.token_url = "https://forum.example.com/discourse/oauth2/token".to_string();
+        cfg.userinfo_url = "https://forum.example.com/discourse/api/user".to_string();
+
+        assert_eq!(
+            resolve_linuxdo_avatar_url(
+                &cfg,
+                Some("http://oauth.internal/discourse/avatar/linuxdo_alice/{size}/1_2.png"),
+            )
+            .as_deref(),
+            Some("https://forum.example.com/discourse/avatar/linuxdo_alice/96/1_2.png"),
+        );
+    }
 }
 
 #[derive(Debug, Serialize)]

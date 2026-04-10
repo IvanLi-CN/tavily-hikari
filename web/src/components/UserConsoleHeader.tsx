@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { Icon } from '../lib/icons'
 
@@ -47,6 +47,10 @@ function UserConsoleAvatar(props: UserConsoleAvatarProps): JSX.Element {
   const [broken, setBroken] = useState(false)
   const initial = props.displayName.trim().charAt(0).toUpperCase() || '?'
 
+  useEffect(() => {
+    setBroken(false)
+  }, [props.avatarUrl])
+
   if (props.avatarUrl && !broken) {
     return (
       <img
@@ -74,6 +78,9 @@ export default function UserConsoleHeader(props: UserConsoleHeaderProps): JSX.El
   const accountMeta = [props.sessionProviderLabel, props.isAdmin ? props.adminLabel : null]
     .filter((value): value is string => Boolean(value))
     .join(' · ')
+  const contextSummary = props.currentViewDescription === props.subtitle
+    ? props.subtitle
+    : `${props.subtitle} · ${props.currentViewDescription}`
   const showAccountMenu = Boolean(
     props.sessionDisplayName || props.sessionProviderLabel || props.isAdmin || hasAdminAction || props.logoutVisible,
   )
@@ -81,11 +88,17 @@ export default function UserConsoleHeader(props: UserConsoleHeaderProps): JSX.El
   return (
     <section className="surface app-header user-console-header">
       <div className="user-console-header-primary">
-        <h1>{props.title}</h1>
-        <div className="user-console-header-inline-meta" aria-label={`${props.currentViewLabel}: ${props.currentViewTitle}`}>
-          <span className="user-console-header-inline-chip user-console-header-inline-chip-view">
-            {props.currentViewTitle}
-          </span>
+        <div className="user-console-header-context" title={contextSummary}>
+          <span className="user-console-header-eyebrow">{props.eyebrow}</span>
+          <span className="user-console-header-summary">{contextSummary}</span>
+        </div>
+        <div className="user-console-header-title-row">
+          <h1>{props.title}</h1>
+          <div className="user-console-header-inline-meta" aria-label={`${props.currentViewLabel}: ${props.currentViewTitle}`}>
+            <span className="user-console-header-inline-chip user-console-header-inline-chip-view">
+              {props.currentViewTitle}
+            </span>
+          </div>
         </div>
       </div>
 

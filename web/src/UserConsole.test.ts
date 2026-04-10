@@ -88,6 +88,274 @@ describe('UserConsole landing guide helpers', () => {
     expect(__testables.resolveUserConsoleProviderLabel(null, { linuxdo: 'LinuxDo' })).toBeNull()
   })
 
+  it('prefers the public home as the logout redirect when it is available', async () => {
+    const probe = mock(async () => ({ ok: true, status: 200 }))
+
+    await expect(__testables.resolvePostLogoutTarget({
+      pathname: '/console',
+      search: '',
+    } as Pick<Location, 'pathname' | 'search'>, probe)).resolves.toBe('/')
+    expect(probe).toHaveBeenCalledWith('/', {
+      method: 'HEAD',
+      credentials: 'same-origin',
+    })
+  })
+
+  it('falls back to the active console entry path when the public home is unavailable', async () => {
+    const probe = mock(async () => ({ ok: false, status: 404 }))
+
+    await expect(__testables.resolvePostLogoutTarget({
+      pathname: 'console.html',
+      search: '?from=oauth',
+    } as Pick<Location, 'pathname' | 'search'>, probe)).resolves.toBe('/console.html?from=oauth')
+
+    expect(__testables.resolveFallbackLogoutTarget({
+      pathname: '',
+      search: '',
+    } as Pick<Location, 'pathname' | 'search'>)).toBe('/')
+  })
+
+  it('treats a root redirect back to the console entry as a console-only deployment', async () => {
+    const probe = mock(async () => ({
+      ok: true,
+      status: 200,
+      redirected: true,
+      url: 'https://app.test/console',
+    }))
+
+    await expect(__testables.resolvePostLogoutTarget({
+      pathname: '/console',
+      search: '?from=logout',
+    } as Pick<Location, 'pathname' | 'search'>, probe)).resolves.toBe('/console?from=logout')
+  })
+
+  it('stays on the console entry when the root redirects to an auth page after logout', async () => {
+    const probe = mock(async () => ({
+      ok: true,
+      status: 200,
+      redirected: true,
+      url: 'https://app.test/auth/linuxdo',
+    }))
+
+    await expect(__testables.resolvePostLogoutTarget({
+      pathname: '/console',
+      search: '?from=logout',
+    } as Pick<Location, 'pathname' | 'search'>, probe)).resolves.toBe('/console?from=logout')
+  })
+
+  it('retries GET when the public home rejects HEAD during logout target probing', async () => {
+    const probe = mock(async (_input, init) => {
+      if (init?.method === 'HEAD') {
+        return {
+          ok: false,
+          status: 405,
+          redirected: false,
+          url: 'https://app.test/',
+        }
+      }
+
+      return {
+        ok: true,
+        status: 200,
+        redirected: false,
+        url: 'https://app.test/',
+      }
+    })
+
+    await expect(__testables.resolvePostLogoutTarget({
+      pathname: '/console',
+      search: '',
+    } as Pick<Location, 'pathname' | 'search'>, probe)).resolves.toBe('/')
+    expect(probe.mock.calls).toEqual([
+      ['/', { method: 'HEAD', credentials: 'same-origin' }],
+      ['/', { method: 'GET', credentials: 'same-origin' }],
+    ])
+  })
+
+  it('retries GET when HEAD fails with a non-405 status but the public home still loads', async () => {
+    const probe = mock(async (_input, init) => {
+      if (init?.method === 'HEAD') {
+        return {
+          ok: false,
+          status: 403,
+          redirected: false,
+          url: 'https://app.test/',
+        }
+      }
+
+      return {
+        ok: true,
+        status: 200,
+        redirected: false,
+        url: 'https://app.test/',
+      }
+    })
+
+    await expect(__testables.resolvePostLogoutTarget({
+      pathname: '/console',
+      search: '',
+    } as Pick<Location, 'pathname' | 'search'>, probe)).resolves.toBe('/')
+    expect(probe.mock.calls).toEqual([
+      ['/', { method: 'HEAD', credentials: 'same-origin' }],
+      ['/', { method: 'GET', credentials: 'same-origin' }],
+    ])
+  })
+
+  it('does not redirect again when logout already landed on the console fallback entry', () => {
+    expect(__testables.shouldRedirectToLogoutTarget({
+      pathname: '/console.html',
+      search: '?from=oauth',
+    } as Pick<Location, 'pathname' | 'search'>, '/console.html?from=oauth')).toBe(false)
+
+    expect(__testables.shouldRedirectToLogoutTarget({
+      pathname: '/console',
+      search: '',
+    } as Pick<Location, 'pathname' | 'search'>, '/')).toBe(true)
+  })
+
+  it('invalidates active probe runs by resetting both probe buttons to idle', () => {
+    expect(__testables.createClearedProbeUiState(7)).toEqual({
+      nextRunId: 8,
+      mcpProbe: {
+        state: 'idle',
+        completed: 0,
+        total: 4,
+      },
+      apiProbe: {
+        state: 'idle',
+        completed: 0,
+        total: 6,
+      },
+    })
+  })
+
+  it('aborts the active probe request when the route resets probe state', () => {
+    const abortActiveProbeRun = mock(() => {})
+
+    expect(__testables.resetActiveProbeUiState(7, abortActiveProbeRun)).toEqual({
+      nextRunId: 8,
+      mcpProbe: {
+        state: 'idle',
+        completed: 0,
+        total: 4,
+      },
+      apiProbe: {
+        state: 'idle',
+        completed: 0,
+        total: 6,
+      },
+    })
+    expect(abortActiveProbeRun).toHaveBeenCalledTimes(1)
+  })
+
+  it('clears sensitive console state when profile refresh reports a logged-out session', () => {
+    const events: string[] = []
+
+    __testables.applyLoggedOutConsoleReset({
+      clearSensitiveConsoleState: () => {
+        events.push('clear')
+      },
+      setShowLoggedOutState: (value) => {
+        events.push(`show:${String(value)}`)
+      },
+    })
+
+    expect(events).toEqual(['show:false', 'clear'])
+  })
+
+  it('waits for logout success before clearing active console loads', async () => {
+    const events: string[] = []
+    let resolveLogout: (() => void) | null = null
+
+    const logoutRequest = mock(() => new Promise<void>((resolve) => {
+      events.push('logout:start')
+      resolveLogout = () => {
+        events.push('logout:resolved')
+        resolve()
+      }
+    }))
+    const abortActiveConsoleLoads = mock(() => {
+      events.push('abort')
+    })
+    const redirectAfterLogout = mock(async () => {
+      events.push('redirect')
+    })
+
+    const logoutFlow = __testables.performUserLogoutFlow({
+      logoutRequest,
+      abortActiveConsoleLoads,
+      redirectAfterLogout,
+    })
+
+    expect(events).toEqual(['logout:start'])
+    expect(abortActiveConsoleLoads).not.toHaveBeenCalled()
+    expect(redirectAfterLogout).not.toHaveBeenCalled()
+
+    resolveLogout?.()
+    await logoutFlow
+
+    expect(events).toEqual([
+      'logout:start',
+      'logout:resolved',
+      'abort',
+      'redirect',
+    ])
+  })
+
+  it('keeps the active console state intact when logout fails', async () => {
+    const abortActiveConsoleLoads = mock(() => {})
+    const redirectAfterLogout = mock(async () => {})
+
+    await expect(__testables.performUserLogoutFlow({
+      logoutRequest: async () => {
+        throw new Error('temporary failure')
+      },
+      abortActiveConsoleLoads,
+      redirectAfterLogout,
+    })).rejects.toThrow('temporary failure')
+
+    expect(abortActiveConsoleLoads).not.toHaveBeenCalled()
+    expect(redirectAfterLogout).not.toHaveBeenCalled()
+  })
+
+  it('preserves admin affordances when only the user session logs out', () => {
+    expect(__testables.toLoggedOutConsoleProfile({
+      displayName: 'ops-admin',
+      isAdmin: true,
+      forwardAuthEnabled: true,
+      builtinAuthEnabled: false,
+      allowRegistration: true,
+      userLoggedIn: true,
+      userProvider: 'linuxdo',
+      userDisplayName: 'Ivan',
+      userAvatarUrl: 'https://connect.linux.do/avatar.png',
+    })).toEqual({
+      displayName: 'ops-admin',
+      isAdmin: true,
+      forwardAuthEnabled: true,
+      builtinAuthEnabled: false,
+      allowRegistration: true,
+      userLoggedIn: false,
+      userProvider: null,
+      userDisplayName: null,
+      userAvatarUrl: null,
+    })
+  })
+
+  it('materializes a logged-out placeholder profile when the first profile load returns 401', () => {
+    expect(__testables.toLoggedOutConsoleProfile(null)).toEqual({
+      displayName: null,
+      isAdmin: false,
+      forwardAuthEnabled: false,
+      builtinAuthEnabled: false,
+      allowRegistration: false,
+      userLoggedIn: false,
+      userProvider: null,
+      userDisplayName: null,
+      userAvatarUrl: null,
+    })
+  })
+
   it('maps request-log push issues to the expected bubble copy', () => {
     const copy = {
       ariaLabel: 'status',
@@ -190,6 +458,27 @@ describe('UserConsole probe step definitions', () => {
     expect(steps[2]?.billable).toBe(false)
     expect(steps[3]?.id).toBe('mcp-tools-list')
     expect(steps[3]?.billable).toBeUndefined()
+  })
+
+  it('threads abort signals through MCP probe requests', async () => {
+    const fetchMock = mock(async () => {
+      return new Response(JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'req-1',
+        result: { ok: true },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+    globalThis.fetch = fetchMock as typeof fetch
+
+    const controller = new AbortController()
+    const steps = __testables.buildMcpProbeStepDefinitions(mcpProbeText)
+    await expect(steps[0]?.run('th-zjvc-secret', createMcpProbeContext({ signal: controller.signal }))).resolves.toBeNull()
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect((fetchMock.mock.calls[0] as [RequestInfo | URL, RequestInit])[1]?.signal).toBe(controller.signal)
   })
 
   it('preserves every advertised MCP tool name, including legacy aliases', () => {
@@ -793,5 +1082,24 @@ describe('UserConsole probe step definitions', () => {
       citation_format: 'numbered',
     })
     expect(researchResultDetail).toBe('Research status: completed')
+  })
+
+  it('threads abort signals through API probe requests', async () => {
+    const calls: Array<{ url: string, init?: RequestInit }> = []
+    globalThis.fetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: requestUrl(input), init })
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }) as typeof fetch
+
+    const controller = new AbortController()
+    const steps = __testables.buildApiProbeStepDefinitions(apiProbeText)
+    await expect(steps[0]?.run('th-zjvc-secret', { requestId: null, signal: controller.signal })).resolves.toBeNull()
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.url).toBe('/api/tavily/search')
+    expect(calls[0]?.init?.signal).toBe(controller.signal)
   })
 })

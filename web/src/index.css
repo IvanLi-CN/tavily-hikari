@@ -2321,11 +2321,49 @@ body.not-found-page-body,
 }
 
 .user-console-header-primary {
+  display: grid;
+  align-content: center;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.user-console-header-context {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1.1;
+}
+
+.user-console-header-eyebrow {
+  flex: 0 0 auto;
+  max-width: 11ch;
+  color: hsl(var(--primary));
+  font-size: 0.64rem;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.user-console-header-summary {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.user-console-header-title-row {
   display: flex;
   align-items: center;
   gap: 10px;
   min-width: 0;
-  flex: 1 1 auto;
 }
 
 .user-console-header-primary h1 {
@@ -7915,11 +7953,20 @@ tbody .log-details-row:hover {
   }
 
   .user-console-header-primary {
-    gap: 8px;
+    gap: 2px;
   }
 
   .user-console-header-primary h1 {
     font-size: 1.04rem;
+  }
+
+  .user-console-header-context {
+    gap: 5px;
+    font-size: 0.64rem;
+  }
+
+  .user-console-header-eyebrow {
+    max-width: 9ch;
   }
 
   .user-console-header-inline-meta {

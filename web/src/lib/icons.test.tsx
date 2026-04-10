@@ -6,6 +6,7 @@ import { Icon, getGuideClientIconName } from './icons'
 const REQUIRED_RUNTIME_ICON_NAMES = [
   'circle-flags:cn',
   'circle-flags:gb',
+  'mdi:account-arrow-right-outline',
   'mdi:account-group-outline',
   'mdi:account-off-outline',
   'mdi:alert-circle',
@@ -43,6 +44,7 @@ const REQUIRED_RUNTIME_ICON_NAMES = [
   'mdi:key-outline',
   'mdi:lock-outline',
   'mdi:loading',
+  'mdi:logout-variant',
   'mdi:map-marker-radius-outline',
   'mdi:menu',
   'mdi:monitor-dashboard',
