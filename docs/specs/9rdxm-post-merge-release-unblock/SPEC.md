@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 部分完成（2/4）
+- Status: 已完成
 - Created: 2026-04-10
 - Last: 2026-04-10
 
@@ -10,7 +10,7 @@
 
 - `PR #227` 于 2026-04-10 03:08（Asia/Shanghai）合入 `main` 后，`CI Pipeline` run `#24208388945` 在 `Backend Tests` 失败，导致同一 merge SHA 的 `Release` run `#24208510515` 被跳过。
 - 当前 `main` 对应的最新正式版仍停留在 `v0.37.0`，而 `445a80f87b42ca1eccb60520a443d09326287f95` 依照既有 `type:minor + channel:stable` intent 本应发布为 `v0.38.0`。
-- 失败集中在 `src/bin/mcp_session_delete_neutral_repair.rs` 的 `auth_candidates_include_standalone_rows_matched_by_error_text`，本地 `cargo test --locked --all-features` 暂未稳定复现，说明这是一次 main-only / CI-only 的 post-merge 阻塞，需要先把测试链路做成确定性收敛，再回填漏发 release。
+- 失败最初集中在 `src/bin/mcp_session_delete_neutral_repair.rs` 的 `auth_candidates_include_standalone_rows_matched_by_error_text`；随后又在本地高频循环中复现了同类 standalone 漏匹配与 `failure_kind IS NULL` sibling regression，说明仅做第一轮 direct DB seeding 仍不足以让这条 repair 测试链路稳定收敛。
 
 ## 目标 / 非目标
 
@@ -66,7 +66,7 @@
 
 ### Core flows
 
-- 本地 / CI 执行 `cargo test --bin mcp_session_delete_neutral_repair` 时，standalone auth regression 直接 seed 一个最小合法 `auth_tokens` row，再写入 `request_log_id IS NULL` 的 `auth_token_logs` row，随后稳定命中 `load_auth_token_log_candidates`。
+- 本地 / CI 执行 `cargo test --bin mcp_session_delete_neutral_repair` 时，standalone auth regression 直接 seed 一个最小合法 `auth_tokens` row，再写入 `request_log_id IS NULL` 的 `auth_token_logs` row；测试 harness 使用单连接 SQLite pool，查询侧对 standalone / joined auth rows 走显式分支，随后稳定命中 `load_auth_token_log_candidates`。
 - 修复 PR 合入 `main` 后，新的 `CI Pipeline` push run 必须通过，恢复 release workflow 的自动前置条件。
 - 在 `main` 恢复健康后，对旧 merge SHA `445a80f87b42ca1eccb60520a443d09326287f95` 发起 `workflow_dispatch` 回填，使漏掉的 stable release 重新生成 `v0.38.0`、对应 GitHub Release 与 GHCR stable tags。
 
@@ -137,8 +137,8 @@ None
 
 - [x] M1: 冻结 incident 事实，并建立 spec / README 索引
 - [x] M2: 把 standalone auth regression 切到 direct DB seeding，去掉不必要的 runtime token 创建依赖
-- [ ] M3: 完成本地验证、PR-stage review-loop、修复 PR 合并与 main CI 恢复
-- [ ] M4: 完成 `445a80f87b42ca1eccb60520a443d09326287f95` 的 stable release backfill，并把最终 run / URL 回填到 spec
+- [x] M3: 完成本地验证、PR-stage review-loop、修复 PR 合并与 main CI 恢复
+- [x] M4: 完成 `445a80f87b42ca1eccb60520a443d09326287f95` 的 stable release backfill，并把最终 run / URL 回填到 spec
 
 ## 方案概述（Approach, high-level）
 
@@ -160,14 +160,20 @@ None
 - Skipped release run: `#24208510515`
 - Latest stable before recovery: `v0.37.0`
 - Target backfill version: `v0.38.0`
-- Fix PR: TBD
-- Backfill release run: TBD
-- Final release URL: TBD
+- Recovery CI run: `#24227470494`
+- Fix PRs: `#229`, `#230`
+- Backfill release run: `#24227733663`
+- Final release URL: [v0.38.0](https://github.com/IvanLi-CN/tavily-hikari/releases/tag/v0.38.0)
+- PR #227 release comment: [#issuecomment-4220964591](https://github.com/IvanLi-CN/tavily-hikari/pull/227#issuecomment-4220964591)
+- GHCR stable tags: `ghcr.io/ivanli-cn/tavily-hikari:latest`, `ghcr.io/ivanli-cn/tavily-hikari:v0.38.0`
+- Release-rule boundary: 保持既有 semver / label 规则不变；`#229` 与 `#230` 均使用 `type:skip + channel:stable`，只恢复 `main` 的 post-merge 发布前置条件，不额外生成新的产品版本。
 
 ## 变更记录（Change log）
 
 - 2026-04-10: 创建 spec，冻结“先修 standalone auth regression，再回填 `v0.38.0`”的快车道执行合同。
 - 2026-04-10: standalone auth regression 改为最小 schema + direct DB seeding，`mcp_session_delete_neutral_repair` 50 次循环与 `cargo test --locked --all-features` 已在本地通过。
+- 2026-04-10: follow-up PR `#230` 追加单连接 SQLite 测试 harness 与 standalone/joined auth candidate 显式分支，`main` 的 `CI Pipeline` run `#24227470494` 恢复为 success。
+- 2026-04-10: `Release` workflow_dispatch run `#24227733663` 为 `445a80f87b42ca1eccb60520a443d09326287f95` 回填稳定版 `v0.38.0`，GitHub Release、GHCR `latest` / `v0.38.0` 标签与 PR `#227` release comment 已全部落地。
 
 ## 参考（References）
 
