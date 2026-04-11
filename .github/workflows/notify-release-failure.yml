@@ -1,0 +1,205 @@
+name: Notify failed release
+
+on:
+  workflow_run:
+    workflows:
+      - Release
+    types:
+      - completed
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  resolve_release_context:
+    if: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'failure' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      ref_label: ${{ steps.resolve.outputs.ref_label }}
+      head_sha: ${{ steps.resolve.outputs.head_sha }}
+      actor: ${{ steps.resolve.outputs.actor }}
+      extra_details: ${{ steps.resolve.outputs.extra_details }}
+    steps:
+      - name: Resolve failed release metadata
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          RUN_EVENT: ${{ github.event.workflow_run.event }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          TRIGGERING_ACTOR: ${{ github.event.workflow_run.triggering_actor.login || github.event.workflow_run.actor.login || github.actor }}
+        shell: bash
+        run: |
+          python3 - <<'PYCODE'
+          from __future__ import annotations
+
+          import json
+          import os
+          import re
+          from urllib import error, request
+
+          api_root = os.environ.get('GITHUB_API_URL', 'https://api.github.com').rstrip('/')
+          token = os.environ['GH_TOKEN']
+          repository = os.environ['REPOSITORY']
+          run_id = os.environ['RUN_ID']
+          run_attempt = os.environ.get('RUN_ATTEMPT', '').strip()
+          run_event = os.environ.get('RUN_EVENT', '').strip()
+          head_branch = os.environ.get('HEAD_BRANCH', '').strip()
+          fallback_head_sha = os.environ.get('HEAD_SHA', '').strip()
+          actor = os.environ.get('TRIGGERING_ACTOR', '').strip()
+          output_path = os.environ['GITHUB_OUTPUT']
+
+          sha_re = re.compile(r'\b[0-9a-f]{40}\b')
+          actual_patterns = [re.compile(r'\bRELEASE_TARGET_SHA=([0-9a-f]{40})\b')]
+          requested_patterns = [re.compile(r'\bRELEASE_REQUESTED_SHA=([0-9a-f]{40})\b')]
+
+          def api_request(path: str, *, accept: str = 'application/vnd.github+json') -> str:
+              url = path if path.startswith('http') else f'{api_root}{path}'
+              req = request.Request(
+                  url,
+                  headers={
+                      'Authorization': f'Bearer {token}',
+                      'Accept': accept,
+                      'X-GitHub-Api-Version': '2022-11-28',
+                      'User-Agent': 'tavily-hikari-release-alert-resolver',
+                  },
+              )
+              with request.urlopen(req) as resp:
+                  charset = resp.headers.get_content_charset() or 'utf-8'
+                  return resp.read().decode(charset, errors='replace')
+
+          def api_json(path: str) -> dict:
+              return json.loads(api_request(path))
+
+          def list_jobs() -> list[dict]:
+              paths = []
+              if run_attempt:
+                  paths.append(f'/repos/{repository}/actions/runs/{run_id}/attempts/{run_attempt}/jobs?per_page=100')
+              paths.append(f'/repos/{repository}/actions/runs/{run_id}/jobs?per_page=100')
+              last_error: Exception | None = None
+              for path in paths:
+                  try:
+                      payload = api_json(path)
+                  except error.HTTPError as exc:
+                      last_error = exc
+                      if exc.code == 404:
+                          continue
+                      raise
+                  return payload.get('jobs', [])
+              if last_error is not None:
+                  raise last_error
+              return []
+
+          def load_job_log(job_id: int) -> str:
+              return api_request(f'/repos/{repository}/actions/jobs/{job_id}/logs')
+
+          def pick_ref_label() -> str:
+              if run_event == 'workflow_dispatch':
+                  if head_branch:
+                      return f'dispatch ref: {head_branch}'
+                  return 'dispatch ref: unavailable from workflow_run payload'
+              if head_branch:
+                  return f'branch: {head_branch}'
+              return 'ref: unavailable from workflow_run payload'
+
+          def match_sha(patterns: list[re.Pattern[str]], text: str) -> str:
+              for pattern in patterns:
+                  match = pattern.search(text)
+                  if match:
+                      candidate = match.group(1)
+                      if sha_re.fullmatch(candidate):
+                          return candidate
+              return ''
+
+          resolved_sha = fallback_head_sha
+          extra_details = ''
+
+          try:
+              jobs = list_jobs()
+              requested_sha = ''
+              resolved_from = ''
+              for job in jobs:
+                  if not isinstance(job, dict):
+                      continue
+                  job_id = job.get('id')
+                  job_name = str(job.get('name') or 'unnamed job')
+                  if not isinstance(job_id, int):
+                      continue
+                  log_text = load_job_log(job_id)
+                  candidate = match_sha(actual_patterns, log_text)
+                  if candidate:
+                      resolved_sha = candidate
+                      resolved_from = job_name
+                      break
+                  if not requested_sha:
+                      requested_sha = match_sha(requested_patterns, log_text)
+                      if requested_sha:
+                          resolved_from = job_name
+
+              if resolved_sha == fallback_head_sha and requested_sha:
+                  resolved_sha = requested_sha
+
+              if resolved_sha and resolved_sha != fallback_head_sha:
+                  extra_details = f'resolved release target sha from {resolved_from} logs'
+              elif requested_sha and run_event == 'workflow_dispatch':
+                  extra_details = f'resolved requested commit sha from {resolved_from} logs'
+              elif run_event == 'workflow_dispatch':
+                  extra_details = 'manual release dispatch'
+          except Exception as exc:  # noqa: BLE001
+              if run_event == 'workflow_dispatch':
+                  extra_details = f'manual release dispatch; target sha resolution fell back to workflow_run head sha ({type(exc).__name__})'
+              else:
+                  extra_details = f'target sha resolution fell back to workflow_run head sha ({type(exc).__name__})'
+
+          with open(output_path, 'a', encoding='utf-8') as handle:
+              handle.write(f'ref_label={pick_ref_label()}\n')
+              handle.write(f'head_sha={resolved_sha or fallback_head_sha}\n')
+              handle.write(f'actor={actor}\n')
+              handle.write('extra_details<<EOF\n')
+              handle.write(extra_details)
+              handle.write('\nEOF\n')
+          PYCODE
+
+  notify_failure:
+    if: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'failure' }}
+    needs:
+      - resolve_release_context
+    uses: IvanLi-CN/github-workflows/.github/workflows/release-failure-telegram.yml@main
+    with:
+      repository: ${{ github.repository }}
+      workflow_name: ${{ github.event.workflow_run.name }}
+      conclusion: ${{ github.event.workflow_run.conclusion }}
+      run_url: ${{ github.event.workflow_run.html_url }}
+      ref_label: ${{ needs.resolve_release_context.outputs.ref_label }}
+      head_sha: ${{ needs.resolve_release_context.outputs.head_sha }}
+      run_attempt: ${{ github.event.workflow_run.run_attempt }}
+      actor: ${{ needs.resolve_release_context.outputs.actor }}
+      event_name: ${{ github.event.workflow_run.event }}
+      extra_details: ${{ needs.resolve_release_context.outputs.extra_details }}
+    secrets:
+      SHOUTRRR_URL: ${{ secrets.SHOUTRRR_URL }}
+
+  smoke_test:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    uses: IvanLi-CN/github-workflows/.github/workflows/release-failure-telegram.yml@main
+    with:
+      alert_kind: "release-alert-smoke"
+      repository: ${{ github.repository }}
+      workflow_name: "Notify failed release"
+      conclusion: "failure"
+      run_url: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+      ref_label: "${{ format('branch: {0}', github.ref_name) }}"
+      head_sha: ${{ github.sha }}
+      run_attempt: ${{ github.run_attempt }}
+      actor: ${{ github.actor }}
+      event_name: "workflow_dispatch"
+      extra_details: "manual notifier smoke test"
+    secrets:
+      SHOUTRRR_URL: ${{ secrets.SHOUTRRR_URL }}

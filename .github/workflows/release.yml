@@ -53,6 +53,13 @@ jobs:
           fetch-depth: 0
           ref: ${{ env.RELEASE_HEAD_SHA }}
 
+      - name: Log release target markers
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "RELEASE_REQUESTED_SHA=${RELEASE_HEAD_SHA}"
+          echo "RELEASE_TARGET_SHA=${RELEASE_HEAD_SHA}"
+
       - name: Determine release intent (labels)
         id: intent
         shell: bash
