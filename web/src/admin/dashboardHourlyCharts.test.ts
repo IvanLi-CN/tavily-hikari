@@ -8,6 +8,7 @@ import {
   createEmptyDashboardHourlyRequestWindow,
   DASHBOARD_RESULT_SERIES_ORDER,
   DASHBOARD_TYPE_SERIES_ORDER,
+  formatHourlyBucketLabel,
   getVisibleHourlyBuckets,
   readDashboardHourlyChartPreferences,
   toggleSeriesSelection,
@@ -41,6 +42,13 @@ describe('dashboardHourlyCharts helpers', () => {
     expect(targetVisibleIndex).toBeGreaterThanOrEqual(0)
     expect(delta[targetVisibleIndex]).toBe(40)
     expect(delta.filter((value) => value !== 0)).toEqual([40])
+  })
+
+  it('formats hourly bucket labels in the requested local timezone', () => {
+    const bucketStart = Date.UTC(2026, 3, 10, 22, 0, 0) / 1000
+
+    expect(formatHourlyBucketLabel(bucketStart, 'UTC')).toEqual(['04/10', '22:00'])
+    expect(formatHourlyBucketLabel(bucketStart, 'Asia/Shanghai')).toEqual(['04/11', '06:00'])
   })
 
   it('toggles absolute-series visibility without mutating the source array', () => {

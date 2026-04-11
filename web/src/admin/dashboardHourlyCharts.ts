@@ -147,18 +147,36 @@ export function writeDashboardHourlyChartPreferences(
   storage.setItem(key, JSON.stringify(value))
 }
 
-const bucketLabelDayFormatter = new Intl.DateTimeFormat('en-US', {
-  timeZone: 'UTC',
-  month: '2-digit',
-  day: '2-digit',
-})
+const bucketLabelFormatterCache = new Map<string, {
+  dayFormatter: Intl.DateTimeFormat
+  hourFormatter: Intl.DateTimeFormat
+}>()
 
-const bucketLabelHourFormatter = new Intl.DateTimeFormat('en-US', {
-  timeZone: 'UTC',
-  hour: '2-digit',
-  minute: '2-digit',
-  hour12: false,
-})
+function getHourlyBucketLabelFormatters(timeZone?: string): {
+  dayFormatter: Intl.DateTimeFormat
+  hourFormatter: Intl.DateTimeFormat
+} {
+  const cacheKey = timeZone ?? '__local__'
+  const cached = bucketLabelFormatterCache.get(cacheKey)
+  if (cached) return cached
+
+  const formatOptions = timeZone ? { timeZone } : {}
+  const formatters = {
+    dayFormatter: new Intl.DateTimeFormat('en-US', {
+      ...formatOptions,
+      month: '2-digit',
+      day: '2-digit',
+    }),
+    hourFormatter: new Intl.DateTimeFormat('en-US', {
+      ...formatOptions,
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }),
+  }
+  bucketLabelFormatterCache.set(cacheKey, formatters)
+  return formatters
+}
 
 export function createEmptyDashboardHourlyRequestWindow(): DashboardHourlyRequestWindow {
   return {
@@ -183,9 +201,10 @@ export function buildHourlyBucketLookup(
   return new Map(buckets.map((bucket) => [bucket.bucketStart, bucket]))
 }
 
-export function formatHourlyBucketLabel(bucketStart: number): [string, string] {
+export function formatHourlyBucketLabel(bucketStart: number, timeZone?: string): [string, string] {
   const date = new Date(bucketStart * 1000)
-  return [bucketLabelDayFormatter.format(date), bucketLabelHourFormatter.format(date)]
+  const { dayFormatter, hourFormatter } = getHourlyBucketLabelFormatters(timeZone)
+  return [dayFormatter.format(date), hourFormatter.format(date)]
 }
 
 export function getResultSeriesValue(bucket: DashboardHourlyRequestBucket, series: DashboardResultSeriesId): number {

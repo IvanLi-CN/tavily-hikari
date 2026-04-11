@@ -151,6 +151,7 @@ interface DashboardOverviewProps {
   initialResultDeltaSeries?: DashboardDeltaSelection<DashboardResultSeriesId>
   initialTypeDeltaSeries?: DashboardDeltaSelection<DashboardTypeSeriesId>
   chartPersistenceKey?: string | null
+  chartLabelTimeZone?: string | null
 }
 
 interface DashboardChartPalette {
@@ -198,7 +199,7 @@ function formatSignedValue(value: number): string {
   return String(value)
 }
 
-function formatUtcWindow(copy: string, count: number): string {
+function formatChartWindow(copy: string, count: number): string {
   return copy.replace('{count}', String(count))
 }
 
@@ -318,6 +319,7 @@ function DashboardTrendPanel({
   initialResultDeltaSeries = 'all',
   initialTypeDeltaSeries = 'all',
   chartPersistenceKey = null,
+  chartLabelTimeZone = null,
 }: {
   strings: DashboardOverviewStrings
   overviewReady: boolean
@@ -328,6 +330,7 @@ function DashboardTrendPanel({
   initialResultDeltaSeries?: DashboardDeltaSelection<DashboardResultSeriesId>
   initialTypeDeltaSeries?: DashboardDeltaSelection<DashboardTypeSeriesId>
   chartPersistenceKey?: string | null
+  chartLabelTimeZone?: string | null
 }): JSX.Element {
   const initialPreferences = useMemo<DashboardHourlyChartPreferences>(() => {
     const fallback = createDashboardHourlyChartPreferences({
@@ -375,7 +378,10 @@ function DashboardTrendPanel({
   const palette = readDashboardChartPalette()
   const visibleBuckets = useMemo(() => getVisibleHourlyBuckets(hourlyRequestWindow), [hourlyRequestWindow])
   const retainedLookup = useMemo(() => buildHourlyBucketLookup(hourlyRequestWindow.buckets), [hourlyRequestWindow.buckets])
-  const labels = useMemo(() => visibleBuckets.map((bucket) => formatHourlyBucketLabel(bucket.bucketStart)), [visibleBuckets])
+  const labels = useMemo(
+    () => visibleBuckets.map((bucket) => formatHourlyBucketLabel(bucket.bucketStart, chartLabelTimeZone ?? undefined)),
+    [chartLabelTimeZone, visibleBuckets],
+  )
 
   const resultSeriesLabels: Record<DashboardResultSeriesId, string> = {
     secondarySuccess: strings.chartResultSecondarySuccess,
@@ -530,7 +536,7 @@ function DashboardTrendPanel({
           <h2>{strings.trendsTitle}</h2>
           <p className="panel-description">{strings.trendsDescription}</p>
         </div>
-        <div className="dashboard-trend-meta">{formatUtcWindow(strings.chartUtcWindow, hourlyRequestWindow.visibleBuckets)}</div>
+        <div className="dashboard-trend-meta">{formatChartWindow(strings.chartUtcWindow, hourlyRequestWindow.visibleBuckets)}</div>
       </div>
 
       <SegmentedTabs<DashboardHourlyChartMode>
@@ -645,6 +651,7 @@ export default function DashboardOverview({
   initialResultDeltaSeries,
   initialTypeDeltaSeries,
   chartPersistenceKey,
+  chartLabelTimeZone,
 }: DashboardOverviewProps): JSX.Element {
   const disabledTokens = tokens.filter((item) => !item.enabled).slice(0, 5)
   const exhaustedKeys = keys.filter((item) => item.status === 'exhausted').slice(0, 5)
@@ -804,6 +811,7 @@ export default function DashboardOverview({
         initialResultDeltaSeries={initialResultDeltaSeries}
         initialTypeDeltaSeries={initialTypeDeltaSeries}
         chartPersistenceKey={chartPersistenceKey}
+        chartLabelTimeZone={chartLabelTimeZone}
       />
 
       <section className="surface panel">
