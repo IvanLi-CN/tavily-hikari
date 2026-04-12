@@ -1141,6 +1141,8 @@ interface AdminTranslationsShape {
       resultOrEffectAll: string
       resultGroup: string
       keyEffectGroup: string
+      bindingEffectGroup: string
+      selectionEffectGroup: string
       tokenAll: string
       keyAll: string
       noFacetOptions: string
@@ -1160,6 +1162,7 @@ interface AdminTranslationsShape {
       mcpStatus: string
       result: string
       keyEffect: string
+      effects: string
       error: string
     }
     toggles: {
@@ -1188,6 +1191,26 @@ interface AdminTranslationsShape {
       markedExhausted: string
       restoredActive: string
       clearedQuarantine: string
+      mcpSessionInitBackoffSet: string
+      mcpSessionRetryWaited: string
+      mcpSessionRetryScheduled: string
+      unknown: string
+    }
+    bindingEffects: {
+      none: string
+      bound: string
+      reused: string
+      rebound: string
+      unknown: string
+    }
+    selectionEffects: {
+      none: string
+      mcpSessionInitCooldownAvoided: string
+      mcpSessionInitRateLimitAvoided: string
+      mcpSessionInitPressureAvoided: string
+      httpProjectAffinityCooldownAvoided: string
+      httpProjectAffinityRateLimitAvoided: string
+      httpProjectAffinityPressureAvoided: string
       unknown: string
     }
   }
@@ -1197,6 +1220,8 @@ interface AdminTranslationsShape {
     response: string
     outcome: string
     keyEffect: string
+    bindingEffect: string
+    selectionEffect: string
     requestTypeDetail: string
     solution: string
     requestBody: string
@@ -1206,6 +1231,8 @@ interface AdminTranslationsShape {
     loadBodyFailed: string
     retryLoadBody: string
     noKeyEffect: string
+    noBindingEffect: string
+    noSelectionEffect: string
     forwardedHeaders: string
     droppedHeaders: string
   }
@@ -2480,6 +2507,8 @@ export const translations: Record<Language, TranslationShape> = {
           resultOrEffectAll: 'All',
           resultGroup: 'Result',
           keyEffectGroup: 'Key Effect',
+          bindingEffectGroup: 'Binding Effect',
+          selectionEffectGroup: 'Selection Effect',
           tokenAll: 'All tokens',
           keyAll: 'All',
           noFacetOptions: 'No options in this window',
@@ -2499,6 +2528,7 @@ export const translations: Record<Language, TranslationShape> = {
           mcpStatus: 'Tavily Status',
           result: 'Result',
           keyEffect: 'Key Effect',
+          effects: 'Effects',
           error: 'Error',
         },
         toggles: {
@@ -2527,7 +2557,27 @@ export const translations: Record<Language, TranslationShape> = {
           markedExhausted: 'Exhausted',
           restoredActive: 'Restored',
           clearedQuarantine: 'Cleared',
+          mcpSessionInitBackoffSet: 'MCP Backoff Set',
+          mcpSessionRetryWaited: 'MCP Retry Waited',
+          mcpSessionRetryScheduled: 'MCP Retry Scheduled',
           unknown: 'Updated',
+        },
+        bindingEffects: {
+          none: 'No Binding Change',
+          bound: 'Bound',
+          reused: 'Reused',
+          rebound: 'Rebound',
+          unknown: 'Binding Updated',
+        },
+        selectionEffects: {
+          none: 'No Routing Change',
+          mcpSessionInitCooldownAvoided: 'MCP Cooldown Avoided',
+          mcpSessionInitRateLimitAvoided: 'MCP Rate Limit Avoided',
+          mcpSessionInitPressureAvoided: 'MCP Pressure Avoided',
+          httpProjectAffinityCooldownAvoided: 'Project Cooldown Avoided',
+          httpProjectAffinityRateLimitAvoided: 'Project Rate Limit Avoided',
+          httpProjectAffinityPressureAvoided: 'Project Pressure Avoided',
+          unknown: 'Routing Updated',
         },
       },
       jobs: {
@@ -2595,6 +2645,8 @@ export const translations: Record<Language, TranslationShape> = {
         response: 'Response',
         outcome: 'Outcome',
         keyEffect: 'Key Effect',
+        bindingEffect: 'Binding Effect',
+        selectionEffect: 'Selection Effect',
         requestTypeDetail: 'Request Type Detail',
         solution: 'Suggested Handling',
         requestBody: 'Request Body',
@@ -2604,6 +2656,8 @@ export const translations: Record<Language, TranslationShape> = {
         loadBodyFailed: 'Failed to load request details.',
         retryLoadBody: 'Retry',
         noKeyEffect: 'No automatic key state change',
+        noBindingEffect: 'No project binding change',
+        noSelectionEffect: 'No routing avoidance recorded',
         forwardedHeaders: 'Forwarded Headers',
         droppedHeaders: 'Dropped Headers',
       },
@@ -3836,6 +3890,8 @@ export const translations: Record<Language, TranslationShape> = {
           resultOrEffectAll: 'All',
           resultGroup: '结果',
           keyEffectGroup: 'Key 影响',
+          bindingEffectGroup: '绑定效果',
+          selectionEffectGroup: '选路原因',
           tokenAll: '全部 Token',
           keyAll: 'All',
           noFacetOptions: '当前没有可选项',
@@ -3855,6 +3911,7 @@ export const translations: Record<Language, TranslationShape> = {
           mcpStatus: 'Tavily 状态',
           result: '结果',
           keyEffect: 'Key 影响',
+          effects: '效果',
           error: '错误',
         },
         toggles: {
@@ -3883,7 +3940,27 @@ export const translations: Record<Language, TranslationShape> = {
           markedExhausted: '已耗尽',
           restoredActive: '已恢复',
           clearedQuarantine: '已清除',
+          mcpSessionInitBackoffSet: '已设置 MCP 回退',
+          mcpSessionRetryWaited: 'MCP 已等待重试',
+          mcpSessionRetryScheduled: 'MCP 已安排重试',
           unknown: '已更新',
+        },
+        bindingEffects: {
+          none: '无绑定变更',
+          bound: '已绑定',
+          reused: '已复用',
+          rebound: '已重绑',
+          unknown: '绑定已更新',
+        },
+        selectionEffects: {
+          none: '无选路变更',
+          mcpSessionInitCooldownAvoided: 'MCP 避开冷却 Key',
+          mcpSessionInitRateLimitAvoided: 'MCP 避开限流 Key',
+          mcpSessionInitPressureAvoided: 'MCP 避开高压 Key',
+          httpProjectAffinityCooldownAvoided: '项目避开冷却 Key',
+          httpProjectAffinityRateLimitAvoided: '项目避开限流 Key',
+          httpProjectAffinityPressureAvoided: '项目避开高压 Key',
+          unknown: '选路已更新',
         },
       },
       jobs: {
@@ -3951,6 +4028,8 @@ export const translations: Record<Language, TranslationShape> = {
         response: '响应',
         outcome: '结果',
         keyEffect: 'Key 影响',
+        bindingEffect: '绑定效果',
+        selectionEffect: '选路原因',
         requestTypeDetail: '请求类型详情',
         solution: '建议处理',
         requestBody: '请求体',
@@ -3960,6 +4039,8 @@ export const translations: Record<Language, TranslationShape> = {
         loadBodyFailed: '加载请求详情失败。',
         retryLoadBody: '重试',
         noKeyEffect: '无自动状态变更',
+        noBindingEffect: '无项目绑定变更',
+        noSelectionEffect: '无选路避让记录',
         forwardedHeaders: '转发的 Header',
         droppedHeaders: '被丢弃的 Header',
       },

@@ -5161,8 +5161,25 @@ table {
 }
 
 .recent-requests-table .recent-requests-col--key-effect {
-  width: 16ch;
+  width: 24ch;
+  min-width: 24ch;
   overflow: visible;
+}
+
+.recent-requests-effect-badges {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.375rem;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.recent-requests-effect-badge.status-pill {
+  min-width: 0;
+  padding: 1px 8px;
+  font-size: 0.69rem;
+  letter-spacing: 0;
 }
 
 .recent-requests-table .recent-requests-col--key,

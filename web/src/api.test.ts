@@ -763,7 +763,14 @@ describe('admin user tag api helpers', () => {
           JSON.stringify({
             retentionDays: 32,
             requestKindOptions: [],
-            facets: { results: [], keyEffects: [], tokens: [], keys: [] },
+            facets: {
+              results: [],
+              keyEffects: [],
+              bindingEffects: [{ value: 'http_project_affinity_bound', count: 1 }],
+              selectionEffects: [{ value: 'http_project_affinity_pressure_avoided', count: 2 }],
+              tokens: [],
+              keys: [],
+            },
           }),
           { status: 200, headers: { 'Content-Type': 'application/json' } },
         ),
@@ -779,7 +786,7 @@ describe('admin user tag api helpers', () => {
     await fetchKeyLogsCatalog('K001', {
       since: 0,
       requestKinds: ['mcp:search'],
-      keyEffect: 'quarantined',
+      bindingEffect: 'http_project_affinity_reused',
       tokenId: 'T001',
     })
     await fetchTokenLogsCatalog('T001', {
@@ -794,11 +801,16 @@ describe('admin user tag api helpers', () => {
       '/api/logs/catalog?request_kind=api%3Asearch&result=error&key_id=K001',
     )
     expect(fetchMock.mock.calls[1]?.[0]).toBe(
-      '/api/keys/K001/logs/catalog?request_kind=mcp%3Asearch&key_effect=quarantined&auth_token_id=T001&since=0',
+      '/api/keys/K001/logs/catalog?request_kind=mcp%3Asearch&binding_effect=http_project_affinity_reused&auth_token_id=T001&since=0',
     )
     expect(fetchMock.mock.calls[2]?.[0]).toBe(
       '/api/tokens/T001/logs/catalog?request_kind=api%3Aextract&result=quota_exhausted&key_id=K001&since=2026-04-01T00%3A00%3A00%2B08%3A00&until=2026-04-02T00%3A00%3A00%2B08%3A00',
     )
+    const catalog = await fetchRequestLogsCatalog()
+    expect(catalog.facets.bindingEffects).toEqual([{ value: 'http_project_affinity_bound', count: 1 }])
+    expect(catalog.facets.selectionEffects).toEqual([
+      { value: 'http_project_affinity_pressure_avoided', count: 2 },
+    ])
   })
 
   it('builds cursor-based scoped request log list URLs', async () => {
@@ -832,6 +844,7 @@ describe('admin user tag api helpers', () => {
       sinceIso: '2026-04-01T00:00:00+08:00',
       untilIso: '2026-04-02T00:00:00+08:00',
       keyId: 'K001',
+      selectionEffect: 'mcp_session_init_pressure_avoided',
       operationalClass: 'neutral',
     })
 
@@ -839,7 +852,7 @@ describe('admin user tag api helpers', () => {
       '/api/keys/K001/logs/list?limit=10&cursor=150%3A1&direction=newer&request_kind=api%3Aextract&since=100',
     )
     expect(fetchMock.mock.calls[1]?.[0]).toBe(
-      '/api/tokens/T001/logs/list?limit=10&direction=older&operational_class=neutral&key_id=K001&since=2026-04-01T00%3A00%3A00%2B08%3A00&until=2026-04-02T00%3A00%3A00%2B08%3A00',
+      '/api/tokens/T001/logs/list?limit=10&direction=older&selection_effect=mcp_session_init_pressure_avoided&operational_class=neutral&key_id=K001&since=2026-04-01T00%3A00%3A00%2B08%3A00&until=2026-04-02T00%3A00%3A00%2B08%3A00',
     )
   })
 })

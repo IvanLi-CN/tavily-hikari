@@ -64,6 +64,8 @@ ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip, Legend)
 const emptyRequestLogFacets: RequestLogFacets = {
   results: [],
   keyEffects: [],
+  bindingEffects: [],
+  selectionEffects: [],
   tokens: [],
   keys: [],
 }
@@ -477,6 +479,8 @@ export default function TokenDetail({
     forceEmptyMatch: boolean
     result?: string
     keyEffect?: string
+    bindingEffect?: string
+    selectionEffect?: string
     keyId?: string
   }>({
     tokenId: id,
@@ -486,6 +490,8 @@ export default function TokenDetail({
     forceEmptyMatch: false,
     result: undefined,
     keyEffect: undefined,
+    bindingEffect: undefined,
+    selectionEffect: undefined,
     keyId: undefined,
   })
 
@@ -576,6 +582,10 @@ export default function TokenDetail({
       ? (outcomeFilter.value as 'success' | 'error' | 'neutral' | 'quota_exhausted')
       : undefined
   const keyEffectFilter = outcomeFilter?.kind === 'keyEffect' ? outcomeFilter.value : undefined
+  const bindingEffectFilter =
+    outcomeFilter?.kind === 'bindingEffect' ? outcomeFilter.value : undefined
+  const selectionEffectFilter =
+    outcomeFilter?.kind === 'selectionEffect' ? outcomeFilter.value : undefined
   const effectiveSelectedRequestKinds = useMemo(
     () =>
       resolveEffectiveRequestKindSelection(
@@ -595,13 +605,15 @@ export default function TokenDetail({
   )
   const logsQueryBaseKey = useMemo(
     () =>
-      `${summaryQueryBaseKey}:quick=${requestKindQuickBilling}:${requestKindQuickProtocol}:requestKinds=${selectedRequestKindsNormalized.join(',')}:result=${resultFilter ?? ''}:keyEffect=${keyEffectFilter ?? ''}:key=${selectedKeyId ?? ''}`,
+      `${summaryQueryBaseKey}:quick=${requestKindQuickBilling}:${requestKindQuickProtocol}:requestKinds=${selectedRequestKindsNormalized.join(',')}:result=${resultFilter ?? ''}:keyEffect=${keyEffectFilter ?? ''}:bindingEffect=${bindingEffectFilter ?? ''}:selectionEffect=${selectionEffectFilter ?? ''}:key=${selectedKeyId ?? ''}`,
     [
+      bindingEffectFilter,
       keyEffectFilter,
       requestKindQuickBilling,
       requestKindQuickProtocol,
       resultFilter,
       selectedKeyId,
+      selectionEffectFilter,
       selectedRequestKindsNormalized,
       summaryQueryBaseKey,
     ],
@@ -618,6 +630,8 @@ export default function TokenDetail({
     forceEmptyMatch: hasQuickRequestKindEmptyMatch,
     result: resultFilter,
     keyEffect: keyEffectFilter,
+    bindingEffect: bindingEffectFilter,
+    selectionEffect: selectionEffectFilter,
     keyId: selectedKeyId ?? undefined,
   }
   useEffect(() => {
@@ -717,8 +731,18 @@ export default function TokenDetail({
       nextPerPage = perPageRef.current,
       signal?: AbortSignal,
     ) => {
-      const { tokenId, sinceIso, untilIso, requestKinds, forceEmptyMatch, result, keyEffect, keyId } =
-        logsRequestContextRef.current
+      const {
+        tokenId,
+        sinceIso,
+        untilIso,
+        requestKinds,
+        forceEmptyMatch,
+        result,
+        keyEffect,
+        bindingEffect,
+        selectionEffect,
+        keyId,
+      } = logsRequestContextRef.current
       return fetchTokenLogsList(
         tokenId,
         {
@@ -730,6 +754,8 @@ export default function TokenDetail({
           requestKinds: forceEmptyMatch ? [tokenLogRequestKindEmptySelectionKey] : requestKinds,
           result: result as 'success' | 'error' | 'quota_exhausted' | undefined,
           keyEffect,
+          bindingEffect,
+          selectionEffect,
           keyId,
         },
         signal,
@@ -1426,6 +1452,8 @@ export default function TokenDetail({
         outcomeFilter={outcomeFilter}
         resultOptions={logFacets.results}
         keyEffectOptions={logFacets.keyEffects}
+        bindingEffectOptions={logFacets.bindingEffects}
+        selectionEffectOptions={logFacets.selectionEffects}
         onOutcomeFilterChange={handleOutcomeFilterChange}
         keyOptions={logFacets.keys}
         selectedKeyId={selectedKeyId}

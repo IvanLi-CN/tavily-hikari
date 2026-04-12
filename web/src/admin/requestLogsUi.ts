@@ -13,6 +13,8 @@ export interface RequestLogsFilterQueryInput {
   requestKinds?: string[]
   result?: LogResultFilter
   keyEffect?: string
+  bindingEffect?: string
+  selectionEffect?: string
   tokenId?: string | null
   keyId?: string | null
   operationalClass?: LogOperationalClass | 'all'
@@ -59,6 +61,8 @@ function buildRequestLogsFilterQuery(input: RequestLogsFilterQueryInput): Reques
     requestKinds: input.requestKinds,
     result: input.result,
     keyEffect: input.keyEffect,
+    bindingEffect: input.bindingEffect,
+    selectionEffect: input.selectionEffect,
     tokenId: input.tokenId ?? undefined,
     keyId: input.keyId ?? undefined,
     operationalClass: input.operationalClass,

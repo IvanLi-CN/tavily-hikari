@@ -748,6 +748,8 @@ function filterStoryRequestLogs(
     requestKinds = [],
     result,
     keyEffect,
+    bindingEffect,
+    selectionEffect,
     tokenId,
     keyId,
     forceEmptyMatch = false,
@@ -755,6 +757,8 @@ function filterStoryRequestLogs(
     requestKinds?: string[]
     result?: string
     keyEffect?: string
+    bindingEffect?: string
+    selectionEffect?: string
     tokenId?: string | null
     keyId?: string | null
     forceEmptyMatch?: boolean
@@ -771,6 +775,12 @@ function filterStoryRequestLogs(
           return false
         }
         if (keyEffect && (log.key_effect_code ?? 'none') !== keyEffect) {
+          return false
+        }
+        if (bindingEffect && (log.binding_effect_code ?? 'none') !== bindingEffect) {
+          return false
+        }
+        if (selectionEffect && (log.selection_effect_code ?? 'none') !== selectionEffect) {
           return false
         }
         if (tokenId?.trim() && log.auth_token_id !== tokenId) {
@@ -801,6 +811,8 @@ function buildStoryRequestLogsCatalog(
     facets: {
       results: buildStoryLogFacetOptions(logs.map((log) => log.result_status)),
       keyEffects: buildStoryLogFacetOptions(logs.map((log) => log.key_effect_code ?? 'none')),
+      bindingEffects: buildStoryLogFacetOptions(logs.map((log) => log.binding_effect_code ?? 'none')),
+      selectionEffects: buildStoryLogFacetOptions(logs.map((log) => log.selection_effect_code ?? 'none')),
       tokens: showTokens ? buildStoryLogFacetOptions(logs.map((log) => log.auth_token_id)) : [],
       keys: showKeys ? buildStoryLogFacetOptions(logs.map((log) => log.key_id)) : [],
     },
@@ -815,6 +827,8 @@ function buildStoryRequestLogsList(
     requestKinds = [],
     result,
     keyEffect,
+    bindingEffect,
+    selectionEffect,
     tokenId,
     keyId,
     forceEmptyMatch = false,
@@ -824,6 +838,8 @@ function buildStoryRequestLogsList(
     requestKinds?: string[]
     result?: string
     keyEffect?: string
+    bindingEffect?: string
+    selectionEffect?: string
     tokenId?: string | null
     keyId?: string | null
     forceEmptyMatch?: boolean
@@ -833,6 +849,8 @@ function buildStoryRequestLogsList(
     requestKinds,
     result,
     keyEffect,
+    bindingEffect,
+    selectionEffect,
     tokenId,
     keyId,
     forceEmptyMatch,
@@ -3887,6 +3905,8 @@ function RequestsPageCanvas({
         requestKinds: effectiveSelectedRequestKinds,
         result: outcomeFilter?.kind === 'result' ? outcomeFilter.value : undefined,
         keyEffect: outcomeFilter?.kind === 'keyEffect' ? outcomeFilter.value : undefined,
+        bindingEffect: outcomeFilter?.kind === 'bindingEffect' ? outcomeFilter.value : undefined,
+        selectionEffect: outcomeFilter?.kind === 'selectionEffect' ? outcomeFilter.value : undefined,
         keyId: selectedKeyId,
         forceEmptyMatch: hasEmptyRequestKindMatch,
       }),
@@ -3954,6 +3974,8 @@ function RequestsPageCanvas({
         outcomeFilter={outcomeFilter}
         resultOptions={catalog.facets.results}
         keyEffectOptions={catalog.facets.keyEffects}
+        bindingEffectOptions={catalog.facets.bindingEffects}
+        selectionEffectOptions={catalog.facets.selectionEffects}
         onOutcomeFilterChange={(value) => {
           setOutcomeFilter(value)
           setCurrentPage(1)

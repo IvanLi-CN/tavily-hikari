@@ -1773,7 +1773,6 @@ impl XraySupervisor {
         egress_socks5_url: Option<&Url>,
         temporary: bool,
     ) -> Result<String, ProxyError> {
-        self.ensure_shared_process_started().await?;
         let relay_id = self.next_relay_id(&route_key, temporary);
         let local_port = pick_unused_local_port()?;
         let local_proxy_url =
@@ -1844,12 +1843,14 @@ impl XraySupervisor {
         write_xray_runtime_json(&config_paths[0], &inbound_config)?;
         write_xray_runtime_json(&config_paths[1], &outbound_config)?;
         write_xray_runtime_json(&config_paths[2], &rules_config)?;
+        self.ensure_shared_process_started().await?;
 
         if let Err(err) = self
             .run_shared_api_command("ado", &[config_paths[1].clone()], &[])
             .await
         {
             cleanup_handle.drop_runtime_files();
+            self.shutdown_shared_process_if_idle().await;
             return Err(err);
         }
         if let Err(err) = self
@@ -1871,6 +1872,7 @@ impl XraySupervisor {
                 )));
             }
             cleanup_handle.drop_runtime_files();
+            self.shutdown_shared_process_if_idle().await;
             return Err(err);
         }
         if let Err(err) = self
@@ -1898,6 +1900,7 @@ impl XraySupervisor {
                     "{err}; shared xray rollback failed after adrules error: {cleanup_err}"
                 )));
             }
+            self.shutdown_shared_process_if_idle().await;
             return Err(err);
         }
         if let Err(err) = wait_for_local_port_ready(
@@ -1928,6 +1931,7 @@ impl XraySupervisor {
                     "{err}; shared xray rollback failed after local port wait error: {cleanup_err}"
                 )));
             }
+            self.shutdown_shared_process_if_idle().await;
             return Err(err);
         }
 
@@ -4969,6 +4973,10 @@ rule-providers:
     }
 
     fn write_fake_xray_binary(prefix: &str) -> String {
+        write_fake_xray_binary_with_api_failure(prefix, None)
+    }
+
+    fn write_fake_xray_binary_with_api_failure(prefix: &str, fail_command: Option<&str>) -> String {
         let path = std::env::temp_dir().join(format!(
             "{prefix}-fake-xray-{}-{}.py",
             std::process::id(),
@@ -4983,6 +4991,8 @@ import sys
 import threading
 import time
 from pathlib import Path
+
+FAIL_COMMAND = "__FAIL_COMMAND__"
 
 def state_path_for_server(server: str) -> Path:
     port = server.rsplit(":", 1)[1]
@@ -5118,6 +5128,9 @@ def parse_server(args):
     return server, positionals
 
 def api_mode(command: str, args) -> int:
+    if FAIL_COMMAND and command == FAIL_COMMAND:
+        print(f"forced api failure for {command}", file=sys.stderr)
+        return 1
     server, positionals = parse_server(args)
     state_path = state_path_for_server(server)
     state = load_json(state_path)
@@ -5165,7 +5178,8 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
-"#;
+"#
+        .replace("__FAIL_COMMAND__", fail_command.unwrap_or(""));
         fs::write(&path, script).expect("write fake xray script");
         #[cfg(unix)]
         {
@@ -5390,6 +5404,73 @@ if __name__ == "__main__":
     }
 
     #[tokio::test]
+    async fn tavily_proxy_send_plan_reaps_retired_handles_after_plan_drop() {
+        let root_dir = temp_runtime_dir("proxy-shared-xray-plan-drop");
+        let db_path = root_dir.join("proxy.db");
+        let runtime_dir = root_dir.join("xray-runtime");
+        let proxy = TavilyProxy::with_options(
+            Vec::<String>::new(),
+            "http://127.0.0.1:9/mcp",
+            db_path
+                .to_str()
+                .expect("database path should be valid utf-8"),
+            TavilyProxyOptions {
+                xray_binary: write_fake_xray_binary("proxy-shared-xray-plan-drop"),
+                xray_runtime_dir: runtime_dir,
+                forward_proxy_trace_url: Url::parse("http://127.0.0.1/cdn-cgi/trace")
+                    .expect("valid trace url"),
+            },
+        )
+        .await
+        .expect("create proxy with fake xray");
+
+        let stale_candidate = {
+            let mut supervisor = proxy.xray_supervisor.lock().await;
+            let mut initial = vec![subscription_vless_endpoint(
+                "node-a",
+                "a.example.com",
+                "Alpha",
+            )];
+            supervisor
+                .sync_endpoints(&mut initial, None)
+                .await
+                .expect("initial sync");
+            let stale = SelectedForwardProxy::from_endpoint(&initial[0]);
+            let mut changed = vec![subscription_vless_endpoint(
+                "node-a",
+                "changed.example.com",
+                "Alpha New",
+            )];
+            supervisor
+                .sync_endpoints(&mut changed, None)
+                .await
+                .expect("changed sync");
+            let snapshot = supervisor.debug_snapshot().await;
+            assert_eq!(snapshot.total_handles, 2);
+            assert_eq!(snapshot.retiring_handles, 1);
+            stale
+        };
+
+        proxy
+            .send_with_forward_proxy_plan(
+                "subject",
+                None,
+                "request",
+                vec![stale_candidate],
+                |client| client.get("http://127.0.0.1:9/"),
+            )
+            .await
+            .expect_err("closed upstream should fail");
+
+        let snapshot = proxy.xray_supervisor.lock().await.debug_snapshot().await;
+        assert_eq!(snapshot.active_endpoint_handles, 1);
+        assert_eq!(snapshot.total_handles, 1);
+        assert_eq!(snapshot.retiring_handles, 0);
+
+        proxy.xray_supervisor.lock().await.shutdown_all().await;
+    }
+
+    #[tokio::test]
     async fn xray_supervisor_validation_handles_cleanup_idle_shared_process() {
         let runtime_dir = temp_runtime_dir("shared-xray-validate-temp");
         let mut supervisor = XraySupervisor::new(
@@ -5425,6 +5506,32 @@ if __name__ == "__main__":
             cleaned_snapshot.runtime_files.is_empty(),
             "temporary validation should not leave runtime files behind: {:?}",
             cleaned_snapshot.runtime_files
+        );
+    }
+
+    #[tokio::test]
+    async fn xray_supervisor_failed_temp_handle_creation_cleans_up_shared_process() {
+        let runtime_dir = temp_runtime_dir("shared-xray-temp-failure");
+        let mut supervisor = XraySupervisor::new(
+            write_fake_xray_binary_with_api_failure("shared-xray-temp-failure", Some("ado")),
+            runtime_dir,
+        );
+        let endpoint = subscription_vless_endpoint("validate-node", "validate.example.com", "Temp");
+
+        supervisor
+            .resolve_validation_endpoint(&endpoint, None)
+            .await
+            .expect_err("failing xray api should abort temp handle creation");
+
+        let snapshot = supervisor.debug_snapshot().await;
+        assert_eq!(snapshot.shared_pid, None);
+        assert_eq!(snapshot.active_endpoint_handles, 0);
+        assert_eq!(snapshot.total_handles, 0);
+        assert_eq!(snapshot.retiring_handles, 0);
+        assert!(
+            snapshot.runtime_files.is_empty(),
+            "failed temp handle creation should not leave runtime files behind: {:?}",
+            snapshot.runtime_files
         );
     }
 

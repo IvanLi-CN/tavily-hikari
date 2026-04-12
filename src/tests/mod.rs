@@ -936,6 +936,10 @@ async fn successful_request_logs_do_not_backfill_failure_kind() {
             failure_kind: None,
             key_effect_code: KEY_EFFECT_NONE,
             key_effect_summary: None,
+            binding_effect_code: KEY_EFFECT_NONE,
+            binding_effect_summary: None,
+            selection_effect_code: KEY_EFFECT_NONE,
+            selection_effect_summary: None,
             forwarded_headers: &[],
             dropped_headers: &[],
         })
@@ -1261,7 +1265,9 @@ async fn token_log_filters_and_options_use_backfilled_request_kind_columns() {
 
     let filters = vec!["mcp:raw:/mcp/sse".to_string()];
     let page = repaired
-        .token_logs_page(&token.id, 1, 20, 0, None, &filters, None, None, None, None)
+        .token_logs_page(
+            &token.id, 1, 20, 0, None, &filters, None, None, None, None, None, None,
+        )
         .await
         .expect("query filtered token logs");
     assert_eq!(page.total, 1);
@@ -1306,6 +1312,8 @@ async fn token_log_filters_and_options_use_backfilled_request_kind_columns() {
             0,
             None,
             &[],
+            None,
+            None,
             None,
             None,
             None,
@@ -10186,6 +10194,280 @@ async fn pending_billing_for_previous_subject_stays_pending_after_token_binding_
 }
 
 #[tokio::test]
+async fn pending_billing_request_log_metadata_persists_binding_and_selection_effects() {
+    let db_path = temp_db_path("pending-billing-effect-metadata");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let token = proxy
+        .create_access_token(Some("pending-billing-effect-metadata"))
+        .await
+        .expect("create token");
+    let key_id = proxy
+        .add_or_undelete_key("tvly-pending-billing-effect-metadata")
+        .await
+        .expect("create api key");
+
+    let first_log_id = proxy
+        .record_pending_billing_attempt_request_log_metadata(
+            &token.id,
+            &Method::POST,
+            "/api/tavily/search",
+            None,
+            Some(StatusCode::OK.as_u16() as i64),
+            Some(200),
+            true,
+            OUTCOME_SUCCESS,
+            None,
+            1,
+            Some(&key_id),
+            None,
+            Some(KEY_EFFECT_NONE),
+            None,
+            Some(KEY_EFFECT_HTTP_PROJECT_AFFINITY_BOUND),
+            Some("bound"),
+            Some(KEY_EFFECT_HTTP_PROJECT_AFFINITY_PRESSURE_AVOIDED),
+            Some("pressure avoided"),
+            None,
+        )
+        .await
+        .expect("record pending billing with request metadata");
+
+    let second_log_id = proxy
+        .record_pending_billing_attempt_for_subject_request_log_metadata(
+            &token.id,
+            &Method::POST,
+            "/api/tavily/search",
+            None,
+            Some(StatusCode::OK.as_u16() as i64),
+            Some(200),
+            true,
+            OUTCOME_SUCCESS,
+            None,
+            1,
+            "user:test-user",
+            Some(&key_id),
+            None,
+            Some(KEY_EFFECT_NONE),
+            None,
+            Some(KEY_EFFECT_HTTP_PROJECT_AFFINITY_REBOUND),
+            Some("rebound"),
+            Some(KEY_EFFECT_HTTP_PROJECT_AFFINITY_COOLDOWN_AVOIDED),
+            Some("cooldown avoided"),
+            None,
+        )
+        .await
+        .expect("record pending billing with subject metadata");
+
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(&db_str)
+        .create_if_missing(true)
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_secs(5));
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .min_connections(1)
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .expect("open sqlite pool");
+
+    for (log_id, expected_binding, expected_selection) in [
+        (
+            first_log_id,
+            KEY_EFFECT_HTTP_PROJECT_AFFINITY_BOUND,
+            KEY_EFFECT_HTTP_PROJECT_AFFINITY_PRESSURE_AVOIDED,
+        ),
+        (
+            second_log_id,
+            KEY_EFFECT_HTTP_PROJECT_AFFINITY_REBOUND,
+            KEY_EFFECT_HTTP_PROJECT_AFFINITY_COOLDOWN_AVOIDED,
+        ),
+    ] {
+        let row = sqlx::query(
+            r#"
+            SELECT key_effect_code, binding_effect_code, selection_effect_code
+            FROM auth_token_logs
+            WHERE id = ?
+            "#,
+        )
+        .bind(log_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read pending billing token log");
+        assert_eq!(
+            row.try_get::<String, _>("key_effect_code")
+                .expect("key effect code"),
+            KEY_EFFECT_NONE
+        );
+        assert_eq!(
+            row.try_get::<String, _>("binding_effect_code")
+                .expect("binding effect code"),
+            expected_binding
+        );
+        assert_eq!(
+            row.try_get::<String, _>("selection_effect_code")
+                .expect("selection effect code"),
+            expected_selection
+        );
+    }
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn startup_migration_preserves_legacy_mcp_session_retry_key_effects() {
+    let db_path = temp_db_path("mcp-session-retry-effect-migration");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let token = proxy
+        .create_access_token(Some("mcp-session-retry-effect-migration"))
+        .await
+        .expect("create token");
+    drop(proxy);
+
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(&db_str)
+        .create_if_missing(true)
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_secs(5));
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .min_connections(1)
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .expect("open sqlite pool");
+
+    let now = Utc::now().timestamp();
+    sqlx::query(
+        r#"
+        INSERT INTO request_logs (
+            auth_token_id,
+            method,
+            path,
+            result_status,
+            key_effect_code,
+            key_effect_summary,
+            visibility,
+            created_at
+        ) VALUES (?, 'POST', '/mcp', 'success', 'mcp_session_retry_waited', 'legacy retry waited', 'visible', ?)
+        "#,
+    )
+    .bind(&token.id)
+    .bind(now)
+    .execute(&pool)
+    .await
+    .expect("insert legacy request log");
+
+    sqlx::query(
+        r#"
+        INSERT INTO auth_token_logs (
+            token_id,
+            method,
+            path,
+            result_status,
+            key_effect_code,
+            key_effect_summary,
+            created_at
+        ) VALUES (?, 'POST', '/mcp', 'success', 'mcp_session_retry_scheduled', 'legacy retry scheduled', ?)
+        "#,
+    )
+    .bind(&token.id)
+    .bind(now)
+    .execute(&pool)
+    .await
+    .expect("insert legacy token log");
+    drop(pool);
+
+    let migrated_proxy =
+        TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("proxy reopened for migration");
+
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(&db_str)
+        .create_if_missing(true)
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_secs(5));
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .min_connections(1)
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .expect("reopen sqlite pool");
+
+    let request_row = sqlx::query(
+        "SELECT key_effect_code, key_effect_summary FROM request_logs ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read migrated request log");
+    assert_eq!(
+        request_row
+            .try_get::<String, _>("key_effect_code")
+            .expect("request key effect"),
+        KEY_EFFECT_MCP_SESSION_RETRY_WAITED
+    );
+    assert_eq!(
+        request_row
+            .try_get::<Option<String>, _>("key_effect_summary")
+            .expect("request key effect summary"),
+        Some("legacy retry waited".to_string())
+    );
+
+    let token_row = sqlx::query(
+        "SELECT key_effect_code, key_effect_summary FROM auth_token_logs ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read migrated token log");
+    assert_eq!(
+        token_row
+            .try_get::<String, _>("key_effect_code")
+            .expect("token key effect"),
+        KEY_EFFECT_MCP_SESSION_RETRY_SCHEDULED
+    );
+    assert_eq!(
+        token_row
+            .try_get::<Option<String>, _>("key_effect_summary")
+            .expect("token key effect summary"),
+        Some("legacy retry scheduled".to_string())
+    );
+
+    let request_logs_catalog = migrated_proxy
+        .request_logs_catalog(&[], None, None, None, None, None, None, None)
+        .await
+        .expect("load request logs catalog");
+    assert!(
+        request_logs_catalog
+            .facets
+            .key_effects
+            .iter()
+            .any(|option| option.value == KEY_EFFECT_MCP_SESSION_RETRY_WAITED),
+        "legacy retry waited effect should remain queryable in request log facets"
+    );
+
+    let token_logs_catalog = migrated_proxy
+        .token_logs_catalog(&token.id, 0, None, &[], None, None, None, None, None, None)
+        .await
+        .expect("load token logs catalog");
+    assert!(
+        token_logs_catalog
+            .facets
+            .key_effects
+            .iter()
+            .any(|option| option.value == KEY_EFFECT_MCP_SESSION_RETRY_SCHEDULED),
+        "legacy retry scheduled effect should remain queryable in token log facets"
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn pending_billing_for_previous_account_subject_stays_pending_after_token_becomes_unbound() {
     let db_path = temp_db_path("pending-billing-account-to-token-subject-flip");
     let db_str = db_path.to_string_lossy().to_string();
@@ -14593,15 +14875,19 @@ async fn http_project_affinity_reuses_existing_binding_for_same_project() {
         .await
         .expect("select project key")
         .expect("project affinity selection");
+    assert_eq!(
+        first.binding_effect.code,
+        KEY_EFFECT_HTTP_PROJECT_AFFINITY_BOUND,
+    );
     assert!(
         matches!(
-            first.key_effect.code.as_str(),
-            KEY_EFFECT_HTTP_PROJECT_AFFINITY_BOUND
+            first.selection_effect.code.as_str(),
+            KEY_EFFECT_NONE
                 | KEY_EFFECT_HTTP_PROJECT_AFFINITY_COOLDOWN_AVOIDED
                 | KEY_EFFECT_HTTP_PROJECT_AFFINITY_RATE_LIMIT_AVOIDED
                 | KEY_EFFECT_HTTP_PROJECT_AFFINITY_PRESSURE_AVOIDED
         ),
-        "first selection should establish the binding or explain why a hotter key was avoided",
+        "first selection should explain any avoided hotter key separately from the binding event",
     );
 
     let second = proxy
@@ -14611,9 +14897,10 @@ async fn http_project_affinity_reuses_existing_binding_for_same_project() {
         .expect("project affinity selection");
     assert_eq!(second.lease.id, first.lease.id);
     assert_eq!(
-        second.key_effect.code,
+        second.binding_effect.code,
         KEY_EFFECT_HTTP_PROJECT_AFFINITY_REUSED,
     );
+    assert_eq!(second.selection_effect.code, KEY_EFFECT_NONE);
 
     let binding = proxy
         .key_store
@@ -14876,7 +15163,11 @@ async fn http_project_affinity_rebinds_after_cooldown() {
         .expect("project affinity selection");
     assert_eq!(selection.lease.id, cooler_key_id);
     assert_eq!(
-        selection.key_effect.code,
+        selection.binding_effect.code,
+        KEY_EFFECT_HTTP_PROJECT_AFFINITY_REBOUND,
+    );
+    assert_eq!(
+        selection.selection_effect.code,
         KEY_EFFECT_HTTP_PROJECT_AFFINITY_COOLDOWN_AVOIDED,
     );
 

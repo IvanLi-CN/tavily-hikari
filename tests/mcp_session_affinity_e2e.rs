@@ -1138,9 +1138,13 @@ async fn mcp_session_init_avoids_rate_limited_key_for_new_sessions_without_movin
 
     let session_cool = initialize_mcp_session(&base_url, &token, "cool").await;
 
-    let (initialize_api_key_id, initialize_key_effect): (String, String) = sqlx::query_as(
+    let (initialize_api_key_id, initialize_key_effect, initialize_selection_effect): (
+        String,
+        String,
+        String,
+    ) = sqlx::query_as(
         r#"
-        SELECT api_key_id, key_effect_code
+        SELECT api_key_id, key_effect_code, selection_effect_code
         FROM request_logs
         WHERE request_kind_key = 'mcp:initialize'
         ORDER BY id DESC
@@ -1151,7 +1155,11 @@ async fn mcp_session_init_avoids_rate_limited_key_for_new_sessions_without_movin
     .await
     .expect("fetch initialize log");
     assert_eq!(initialize_api_key_id, cool_key_id);
-    assert_eq!(initialize_key_effect, "mcp_session_init_cooldown_avoided");
+    assert_eq!(initialize_key_effect, "none");
+    assert_eq!(
+        initialize_selection_effect,
+        "mcp_session_init_cooldown_avoided"
+    );
 
     notify_initialized(&base_url, &token, &session_cool).await;
     let cool_row = fetch_mcp_session_record(&db_path, &session_cool.proxy_session_id).await;

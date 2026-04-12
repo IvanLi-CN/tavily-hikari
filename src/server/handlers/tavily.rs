@@ -480,8 +480,12 @@ async fn tavily_http_research_result(
                         analysis.status,
                         None,
                         analysis.failure_kind.as_deref(),
-                        Some(analysis.key_effect.code.as_str()),
-                        analysis.key_effect.summary.as_deref(),
+                        Some(resp.key_effect_code.as_str()),
+                        resp.key_effect_summary.as_deref(),
+                        Some(resp.binding_effect_code.as_str()),
+                        resp.binding_effect_summary.as_deref(),
+                        Some(resp.selection_effect_code.as_str()),
+                        resp.selection_effect_summary.as_deref(),
                         resp.request_log_id,
                     )
                     .await;
@@ -840,8 +844,12 @@ async fn proxy_tavily_http_endpoint(
                                     subject,
                                     analysis.api_key_id.as_deref(),
                                     analysis.failure_kind.as_deref(),
-                                    Some(analysis.key_effect.code.as_str()),
-                                    analysis.key_effect.summary.as_deref(),
+                                    Some(resp.key_effect_code.as_str()),
+                                    resp.key_effect_summary.as_deref(),
+                                    Some(resp.binding_effect_code.as_str()),
+                                    resp.binding_effect_summary.as_deref(),
+                                    Some(resp.selection_effect_code.as_str()),
+                                    resp.selection_effect_summary.as_deref(),
                                     resp.request_log_id,
                                 )
                                 .await
@@ -861,8 +869,12 @@ async fn proxy_tavily_http_endpoint(
                                     credits,
                                     analysis.api_key_id.as_deref(),
                                     analysis.failure_kind.as_deref(),
-                                    Some(analysis.key_effect.code.as_str()),
-                                    analysis.key_effect.summary.as_deref(),
+                                    Some(resp.key_effect_code.as_str()),
+                                    resp.key_effect_summary.as_deref(),
+                                    Some(resp.binding_effect_code.as_str()),
+                                    resp.binding_effect_summary.as_deref(),
+                                    Some(resp.selection_effect_code.as_str()),
+                                    resp.selection_effect_summary.as_deref(),
                                     resp.request_log_id,
                                 )
                                 .await
@@ -946,8 +958,12 @@ async fn proxy_tavily_http_endpoint(
                             analysis.status,
                             billing_error.as_deref(),
                             analysis.failure_kind.as_deref(),
-                            Some(analysis.key_effect.code.as_str()),
-                            analysis.key_effect.summary.as_deref(),
+                            Some(resp.key_effect_code.as_str()),
+                            resp.key_effect_summary.as_deref(),
+                            Some(resp.binding_effect_code.as_str()),
+                            resp.binding_effect_summary.as_deref(),
+                            Some(resp.selection_effect_code.as_str()),
+                            resp.selection_effect_summary.as_deref(),
                             resp.request_log_id,
                         )
                         .await;
@@ -1074,8 +1090,12 @@ async fn proxy_tavily_http_endpoint(
                                 subject,
                                 analysis.api_key_id.as_deref(),
                                 analysis.failure_kind.as_deref(),
-                                Some(analysis.key_effect.code.as_str()),
-                                analysis.key_effect.summary.as_deref(),
+                                Some(resp.key_effect_code.as_str()),
+                                resp.key_effect_summary.as_deref(),
+                                Some(resp.binding_effect_code.as_str()),
+                                resp.binding_effect_summary.as_deref(),
+                                Some(resp.selection_effect_code.as_str()),
+                                resp.selection_effect_summary.as_deref(),
                                 resp.request_log_id,
                             )
                             .await
@@ -1095,8 +1115,12 @@ async fn proxy_tavily_http_endpoint(
                                 credits,
                                 analysis.api_key_id.as_deref(),
                                 analysis.failure_kind.as_deref(),
-                                Some(analysis.key_effect.code.as_str()),
-                                analysis.key_effect.summary.as_deref(),
+                                Some(resp.key_effect_code.as_str()),
+                                resp.key_effect_summary.as_deref(),
+                                Some(resp.binding_effect_code.as_str()),
+                                resp.binding_effect_summary.as_deref(),
+                                Some(resp.selection_effect_code.as_str()),
+                                resp.selection_effect_summary.as_deref(),
                                 resp.request_log_id,
                             )
                             .await
@@ -1174,8 +1198,12 @@ async fn proxy_tavily_http_endpoint(
                         analysis.status,
                         billing_error.as_deref(),
                         analysis.failure_kind.as_deref(),
-                        Some(analysis.key_effect.code.as_str()),
-                        analysis.key_effect.summary.as_deref(),
+                        Some(resp.key_effect_code.as_str()),
+                        resp.key_effect_summary.as_deref(),
+                        Some(resp.binding_effect_code.as_str()),
+                        resp.binding_effect_summary.as_deref(),
+                        Some(resp.selection_effect_code.as_str()),
+                        resp.selection_effect_summary.as_deref(),
                         resp.request_log_id,
                     )
                     .await;

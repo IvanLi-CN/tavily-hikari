@@ -140,6 +140,10 @@ const logTemplates = [
     result_status: "success",
     key_effect_code: "none",
     key_effect_summary: null,
+    binding_effect_code: "http_project_affinity_bound",
+    binding_effect_summary: "The system created a new upstream key binding for this project",
+    selection_effect_code: "http_project_affinity_pressure_avoided",
+    selection_effect_summary: "Project affinity routing avoided a key under higher recent pressure",
     error_message: null,
   },
   {
@@ -155,6 +159,10 @@ const logTemplates = [
     result_status: "success",
     key_effect_code: "none",
     key_effect_summary: null,
+    binding_effect_code: "http_project_affinity_reused",
+    binding_effect_summary: "The system reused the current upstream key binding for this project",
+    selection_effect_code: "none",
+    selection_effect_summary: null,
     error_message: null,
   },
   {
@@ -168,8 +176,12 @@ const logTemplates = [
     request_kind_label: "API | map",
     request_kind_detail: null,
     result_status: "success",
-    key_effect_code: "none",
-    key_effect_summary: null,
+    key_effect_code: "mcp_session_init_backoff_set",
+    key_effect_summary: "The system armed a temporary backoff for MCP session initialization",
+    binding_effect_code: "none",
+    binding_effect_summary: null,
+    selection_effect_code: "mcp_session_init_pressure_avoided",
+    selection_effect_summary: "Initialization avoided a key under higher recent pressure",
     error_message: null,
   },
   {
@@ -514,6 +526,8 @@ function buildLogsCatalog(source: RequestLog[]): RequestLogsCatalog {
     facets: {
       results: buildFacetOptions(source.map((log) => log.result_status)),
       keyEffects: buildFacetOptions(source.map((log) => log.key_effect_code ?? "none")),
+      bindingEffects: buildFacetOptions(source.map((log) => log.binding_effect_code ?? "none")),
+      selectionEffects: buildFacetOptions(source.map((log) => log.selection_effect_code ?? "none")),
       tokens: [],
       keys: buildFacetOptions(source.map((log) => log.key_id)),
     },
@@ -600,6 +614,8 @@ function installFetchMock(
       const selectedRequestKinds = url.searchParams.getAll("request_kind");
       const selectedResult = url.searchParams.get("result")?.trim() ?? "";
       const selectedKeyEffect = url.searchParams.get("key_effect")?.trim() ?? "";
+      const selectedBindingEffect = url.searchParams.get("binding_effect")?.trim() ?? "";
+      const selectedSelectionEffect = url.searchParams.get("selection_effect")?.trim() ?? "";
       const selectedKeyId = url.searchParams.get("key_id")?.trim() ?? "";
       const source = [...storyData.logs, ...storyData.logsPageTwo].map((log) => ({
         ...log,
@@ -619,6 +635,12 @@ function installFetchMock(
           return false;
         }
         if (selectedKeyEffect && (log.key_effect_code ?? "none") !== selectedKeyEffect) {
+          return false;
+        }
+        if (selectedBindingEffect && (log.binding_effect_code ?? "none") !== selectedBindingEffect) {
+          return false;
+        }
+        if (selectedSelectionEffect && (log.selection_effect_code ?? "none") !== selectedSelectionEffect) {
           return false;
         }
         return true;

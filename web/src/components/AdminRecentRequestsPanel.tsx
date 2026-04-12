@@ -46,7 +46,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
 
 type Language = 'en' | 'zh'
 type RecentRequestsVariant = 'admin' | 'token'
-type RecentRequestsOutcomeFilterKind = 'result' | 'keyEffect'
+type RecentRequestsOutcomeFilterKind = 'result' | 'keyEffect' | 'bindingEffect' | 'selectionEffect'
 
 export interface RecentRequestsOutcomeFilter {
   kind: RecentRequestsOutcomeFilterKind
@@ -77,6 +77,8 @@ export interface AdminRecentRequestsPanelProps {
   outcomeFilter: RecentRequestsOutcomeFilter | null
   resultOptions: LogFacetOption[]
   keyEffectOptions: LogFacetOption[]
+  bindingEffectOptions?: LogFacetOption[]
+  selectionEffectOptions?: LogFacetOption[]
   onOutcomeFilterChange: (value: RecentRequestsOutcomeFilter | null) => void
   keyOptions?: LogFacetOption[]
   selectedKeyId?: string | null
@@ -144,6 +146,10 @@ function keyEffectTone(code: string | null | undefined): StatusTone {
     case 'restored_active':
     case 'cleared_quarantine':
       return 'success'
+    case 'mcp_session_init_backoff_set':
+    case 'mcp_session_retry_waited':
+    case 'mcp_session_retry_scheduled':
+      return 'warning'
     default:
       return 'neutral'
   }
@@ -159,6 +165,12 @@ function keyEffectLabel(code: string | null | undefined, strings: AdminTranslati
       return strings.logs.keyEffects.restoredActive
     case 'cleared_quarantine':
       return strings.logs.keyEffects.clearedQuarantine
+    case 'mcp_session_init_backoff_set':
+      return strings.logs.keyEffects.mcpSessionInitBackoffSet
+    case 'mcp_session_retry_waited':
+      return strings.logs.keyEffects.mcpSessionRetryWaited
+    case 'mcp_session_retry_scheduled':
+      return strings.logs.keyEffects.mcpSessionRetryScheduled
     case 'none':
     case '':
       return strings.logs.keyEffects.none
@@ -169,6 +181,126 @@ function keyEffectLabel(code: string | null | undefined, strings: AdminTranslati
 
 function keyEffectBadgeLabel(log: RequestLog, strings: AdminTranslations): string {
   return keyEffectLabel(log.key_effect_code, strings)
+}
+
+function keyEffectBadgeCompactLabel(log: RequestLog, strings: AdminTranslations, language: Language): string {
+  switch ((log.key_effect_code ?? '').trim()) {
+    case 'quarantined':
+      return language === 'zh' ? '隔离' : 'Quarantined'
+    case 'marked_exhausted':
+      return language === 'zh' ? '耗尽' : 'Exhausted'
+    case 'restored_active':
+      return language === 'zh' ? '恢复' : 'Restored'
+    case 'cleared_quarantine':
+      return language === 'zh' ? '解隔离' : 'Cleared'
+    case 'mcp_session_init_backoff_set':
+      return language === 'zh' ? 'MCP回退' : 'MCP backoff'
+    case 'mcp_session_retry_waited':
+      return language === 'zh' ? 'MCP已等待' : 'MCP waited'
+    case 'mcp_session_retry_scheduled':
+      return language === 'zh' ? 'MCP重试' : 'MCP retry'
+    default:
+      return keyEffectBadgeLabel(log, strings)
+  }
+}
+
+function bindingEffectTone(code: string | null | undefined): StatusTone {
+  switch ((code ?? '').trim()) {
+    case 'http_project_affinity_bound':
+      return 'success'
+    case 'http_project_affinity_reused':
+      return 'neutral'
+    case 'http_project_affinity_rebound':
+      return 'warning'
+    default:
+      return 'neutral'
+  }
+}
+
+function bindingEffectLabel(code: string | null | undefined, strings: AdminTranslations): string {
+  switch ((code ?? '').trim()) {
+    case 'http_project_affinity_bound':
+      return strings.logs.bindingEffects.bound
+    case 'http_project_affinity_reused':
+      return strings.logs.bindingEffects.reused
+    case 'http_project_affinity_rebound':
+      return strings.logs.bindingEffects.rebound
+    case 'none':
+    case '':
+      return strings.logs.bindingEffects.none
+    default:
+      return strings.logs.bindingEffects.unknown
+  }
+}
+
+function bindingEffectBadgeLabel(log: RequestLog, strings: AdminTranslations, language: Language): string {
+  switch ((log.binding_effect_code ?? '').trim()) {
+    case 'http_project_affinity_bound':
+      return language === 'zh' ? '绑定' : 'Bound'
+    case 'http_project_affinity_reused':
+      return language === 'zh' ? '复用' : 'Reused'
+    case 'http_project_affinity_rebound':
+      return language === 'zh' ? '重绑' : 'Rebound'
+    default:
+      return bindingEffectLabel(log.binding_effect_code, strings)
+  }
+}
+
+function selectionEffectTone(code: string | null | undefined): StatusTone {
+  switch ((code ?? '').trim()) {
+    case 'mcp_session_init_cooldown_avoided':
+    case 'http_project_affinity_cooldown_avoided':
+      return 'warning'
+    case 'mcp_session_init_rate_limit_avoided':
+    case 'http_project_affinity_rate_limit_avoided':
+      return 'error'
+    case 'mcp_session_init_pressure_avoided':
+    case 'http_project_affinity_pressure_avoided':
+      return 'success'
+    default:
+      return 'neutral'
+  }
+}
+
+function selectionEffectLabel(code: string | null | undefined, strings: AdminTranslations): string {
+  switch ((code ?? '').trim()) {
+    case 'mcp_session_init_cooldown_avoided':
+      return strings.logs.selectionEffects.mcpSessionInitCooldownAvoided
+    case 'mcp_session_init_rate_limit_avoided':
+      return strings.logs.selectionEffects.mcpSessionInitRateLimitAvoided
+    case 'mcp_session_init_pressure_avoided':
+      return strings.logs.selectionEffects.mcpSessionInitPressureAvoided
+    case 'http_project_affinity_cooldown_avoided':
+      return strings.logs.selectionEffects.httpProjectAffinityCooldownAvoided
+    case 'http_project_affinity_rate_limit_avoided':
+      return strings.logs.selectionEffects.httpProjectAffinityRateLimitAvoided
+    case 'http_project_affinity_pressure_avoided':
+      return strings.logs.selectionEffects.httpProjectAffinityPressureAvoided
+    case 'none':
+    case '':
+      return strings.logs.selectionEffects.none
+    default:
+      return strings.logs.selectionEffects.unknown
+  }
+}
+
+function selectionEffectBadgeLabel(log: RequestLog, strings: AdminTranslations, language: Language): string {
+  switch ((log.selection_effect_code ?? '').trim()) {
+    case 'mcp_session_init_cooldown_avoided':
+      return language === 'zh' ? 'MCP避冷却' : 'MCP cooldown'
+    case 'mcp_session_init_rate_limit_avoided':
+      return language === 'zh' ? 'MCP避429' : 'MCP 429'
+    case 'mcp_session_init_pressure_avoided':
+      return language === 'zh' ? 'MCP避高压' : 'MCP pressure'
+    case 'http_project_affinity_cooldown_avoided':
+      return language === 'zh' ? '避冷却' : 'Cooldown'
+    case 'http_project_affinity_rate_limit_avoided':
+      return language === 'zh' ? '避429' : '429 avoided'
+    case 'http_project_affinity_pressure_avoided':
+      return language === 'zh' ? '避高压' : 'Pressure'
+    default:
+      return selectionEffectLabel(log.selection_effect_code, strings)
+  }
 }
 
 function formatKeyEffectSummary(
@@ -188,11 +320,154 @@ function formatKeyEffectSummary(
         : 'The system automatically restored this exhausted key to active'
     case 'cleared_quarantine':
       return language === 'zh' ? '管理员已解除该 Key 的隔离' : 'An admin cleared the quarantine on this key'
+    case 'mcp_session_init_backoff_set':
+      return language === 'zh'
+        ? '系统已为 MCP 初始化请求设置临时退避'
+        : 'The system armed a temporary backoff for MCP session initialization'
+    case 'mcp_session_retry_waited':
+      return language === 'zh'
+        ? '该 MCP 会话请求在发送上游前等待了 Retry-After'
+        : 'This MCP session request waited for Retry-After before sending upstream'
+    case 'mcp_session_retry_scheduled':
+      return language === 'zh'
+        ? '该 MCP 会话请求命中上游 429 后按 Retry-After 安排了一次重试'
+        : 'This MCP session request hit upstream 429 and retried once after Retry-After'
     case 'none':
       return strings.logDetails.noKeyEffect
     default:
       return summary && summary.length > 0 ? summary : strings.logDetails.noKeyEffect
   }
+}
+
+function formatBindingEffectSummary(
+  log: RequestLog,
+  strings: AdminTranslations,
+  language: Language,
+): string {
+  const summary = log.binding_effect_summary?.trim()
+  switch ((log.binding_effect_code ?? '').trim()) {
+    case 'http_project_affinity_bound':
+      return language === 'zh'
+        ? '系统为该项目创建了新的上游 Key 绑定'
+        : 'The system created a new upstream key binding for this project'
+    case 'http_project_affinity_reused':
+      return language === 'zh'
+        ? '系统继续复用该项目当前的上游 Key 绑定'
+        : 'The system reused the current upstream key binding for this project'
+    case 'http_project_affinity_rebound':
+      return language === 'zh'
+        ? '系统将该项目重新绑定到新的上游 Key'
+        : 'The system rebound this project to a different upstream key'
+    case 'none':
+      return strings.logDetails.noBindingEffect
+    default:
+      return summary && summary.length > 0 ? summary : strings.logDetails.noBindingEffect
+  }
+}
+
+function formatSelectionEffectSummary(
+  log: RequestLog,
+  strings: AdminTranslations,
+  language: Language,
+): string {
+  const summary = log.selection_effect_summary?.trim()
+  switch ((log.selection_effect_code ?? '').trim()) {
+    case 'mcp_session_init_cooldown_avoided':
+      return language === 'zh'
+        ? '初始化时避开了仍处于冷却中的 Key'
+        : 'Initialization avoided a key that is still in cooldown'
+    case 'mcp_session_init_rate_limit_avoided':
+      return language === 'zh'
+        ? '初始化时避开了最近更容易触发限流的 Key'
+        : 'Initialization avoided a key that was recently more rate-limited'
+    case 'mcp_session_init_pressure_avoided':
+      return language === 'zh'
+        ? '初始化时避开了近期压力更高的 Key'
+        : 'Initialization avoided a key under higher recent pressure'
+    case 'http_project_affinity_cooldown_avoided':
+      return language === 'zh'
+        ? '项目亲和选路避开了仍处于冷却中的 Key'
+        : 'Project affinity routing avoided a key that is still in cooldown'
+    case 'http_project_affinity_rate_limit_avoided':
+      return language === 'zh'
+        ? '项目亲和选路避开了最近更容易触发限流的 Key'
+        : 'Project affinity routing avoided a key that was recently more rate-limited'
+    case 'http_project_affinity_pressure_avoided':
+      return language === 'zh'
+        ? '项目亲和选路避开了近期压力更高的 Key'
+        : 'Project affinity routing avoided a key under higher recent pressure'
+    case 'none':
+      return strings.logDetails.noSelectionEffect
+    default:
+      return summary && summary.length > 0 ? summary : strings.logDetails.noSelectionEffect
+  }
+}
+
+function hasExplicitEffect(code: string | null | undefined): boolean {
+  const normalized = (code ?? '').trim()
+  return normalized.length > 0 && normalized !== 'none'
+}
+
+function renderEffectBadges(
+  log: RequestLog,
+  strings: AdminTranslations,
+  language: Language,
+  className?: string,
+): JSX.Element {
+  const badgeClassName = className ? `${className} recent-requests-effect-badge` : 'recent-requests-effect-badge'
+  const badges: JSX.Element[] = []
+
+  if (hasExplicitEffect(log.key_effect_code)) {
+    badges.push(
+      <StatusBadge
+        key="key"
+        className={badgeClassName}
+        tone={keyEffectTone(log.key_effect_code)}
+        title={formatKeyEffectSummary(log, strings, language)}
+      >
+        {keyEffectBadgeCompactLabel(log, strings, language)}
+      </StatusBadge>,
+    )
+  }
+  if (hasExplicitEffect(log.binding_effect_code)) {
+    badges.push(
+      <StatusBadge
+        key="binding"
+        className={badgeClassName}
+        tone={bindingEffectTone(log.binding_effect_code)}
+        title={formatBindingEffectSummary(log, strings, language)}
+      >
+        {bindingEffectBadgeLabel(log, strings, language)}
+      </StatusBadge>,
+    )
+  }
+  if (hasExplicitEffect(log.selection_effect_code)) {
+    badges.push(
+      <StatusBadge
+        key="selection"
+        className={badgeClassName}
+        tone={selectionEffectTone(log.selection_effect_code)}
+        title={formatSelectionEffectSummary(log, strings, language)}
+      >
+        {selectionEffectBadgeLabel(log, strings, language)}
+      </StatusBadge>,
+    )
+  }
+
+  if (badges.length === 0) {
+    badges.push(
+      <StatusBadge
+        key="none"
+        className={badgeClassName}
+        tone={keyEffectTone(log.key_effect_code)}
+        title={formatKeyEffectSummary(log, strings, language)}
+      >
+        {keyEffectBadgeCompactLabel(log, strings, language)}
+      </StatusBadge>,
+    )
+  }
+
+  return <div className="recent-requests-effect-badges">{badges}</div>
 }
 
 function formatRequestStatusPair(httpStatus: number | null, mcpStatus: number | null): string {
@@ -259,7 +534,13 @@ function summarizeOutcomeFilter(
   if (filter.kind === 'result') {
     return statusLabel(filter.value, strings)
   }
-  return keyEffectLabel(filter.value, strings)
+  if (filter.kind === 'keyEffect') {
+    return keyEffectLabel(filter.value, strings)
+  }
+  if (filter.kind === 'bindingEffect') {
+    return bindingEffectLabel(filter.value, strings)
+  }
+  return selectionEffectLabel(filter.value, strings)
 }
 
 function renderOutcomeFacetLabel(
@@ -267,8 +548,22 @@ function renderOutcomeFacetLabel(
   value: string,
   strings: AdminTranslations,
 ): JSX.Element {
-  const tone = kind === 'result' ? statusTone(value) : keyEffectTone(value)
-  const label = kind === 'result' ? statusLabel(value, strings) : keyEffectLabel(value, strings)
+  const tone =
+    kind === 'result'
+      ? statusTone(value)
+      : kind === 'keyEffect'
+        ? keyEffectTone(value)
+        : kind === 'bindingEffect'
+          ? bindingEffectTone(value)
+          : selectionEffectTone(value)
+  const label =
+    kind === 'result'
+      ? statusLabel(value, strings)
+      : kind === 'keyEffect'
+        ? keyEffectLabel(value, strings)
+        : kind === 'bindingEffect'
+          ? bindingEffectLabel(value, strings)
+          : selectionEffectLabel(value, strings)
   return <StatusBadge tone={tone}>{label}</StatusBadge>
 }
 
@@ -320,6 +615,26 @@ function RecentRequestDetails({
           ? strings.logDetails.loadBodyFailed
           : log.response_body ?? strings.logDetails.noBody
   const requestKindLabel = log.request_kind_label ?? log.request_kind_key ?? strings.logs.errors.none
+  const effectEntries = [
+    hasExplicitEffect(log.key_effect_code)
+      ? {
+          label: strings.logDetails.keyEffect,
+          value: formatKeyEffectSummary(log, strings, language),
+        }
+      : null,
+    hasExplicitEffect(log.binding_effect_code)
+      ? {
+          label: strings.logDetails.bindingEffect,
+          value: formatBindingEffectSummary(log, strings, language),
+        }
+      : null,
+    hasExplicitEffect(log.selection_effect_code)
+      ? {
+          label: strings.logDetails.selectionEffect,
+          value: formatSelectionEffectSummary(log, strings, language),
+        }
+      : null,
+  ].filter((entry): entry is { label: string; value: string } => entry != null)
 
   return (
     <div className="log-details-panel">
@@ -354,10 +669,19 @@ function RecentRequestDetails({
           <span className="log-details-label">{strings.logDetails.outcome}</span>
           <span className="log-details-value">{statusLabel(log.result_status, strings)}</span>
         </div>
-        <div>
-          <span className="log-details-label">{strings.logDetails.keyEffect}</span>
-          <span className="log-details-value">{formatKeyEffectSummary(log, strings, language)}</span>
-        </div>
+        {effectEntries.length === 0 ? (
+          <div>
+            <span className="log-details-label">{strings.logDetails.keyEffect}</span>
+            <span className="log-details-value">{strings.logDetails.noKeyEffect}</span>
+          </div>
+        ) : (
+          effectEntries.map((entry) => (
+            <div key={entry.label}>
+              <span className="log-details-label">{entry.label}</span>
+              <span className="log-details-value">{entry.value}</span>
+            </div>
+          ))
+        )}
       </div>
       <div className="log-details-body">
         <div className="log-details-section">
@@ -432,6 +756,8 @@ export default function AdminRecentRequestsPanel({
   outcomeFilter,
   resultOptions,
   keyEffectOptions,
+  bindingEffectOptions = [],
+  selectionEffectOptions = [],
   onOutcomeFilterChange,
   keyOptions = [],
   selectedKeyId,
@@ -720,11 +1046,20 @@ export default function AdminRecentRequestsPanel({
                   return
                 }
                 const [kind, nextValue] = value.split(':', 2)
-                if (!nextValue || (kind !== 'result' && kind !== 'keyEffect')) {
+                if (
+                  !nextValue ||
+                  (kind !== 'result'
+                    && kind !== 'keyEffect'
+                    && kind !== 'bindingEffect'
+                    && kind !== 'selectionEffect')
+                ) {
                   onOutcomeFilterChange(null)
                   return
                 }
-                onOutcomeFilterChange({ kind, value: nextValue })
+                onOutcomeFilterChange({
+                  kind: kind as RecentRequestsOutcomeFilterKind,
+                  value: nextValue,
+                })
               }}
             >
               <SelectTrigger
@@ -769,6 +1104,48 @@ export default function AdminRecentRequestsPanel({
                         <span className="recent-requests-facet-option recent-requests-facet-option--status">
                           <span className="recent-requests-facet-option-main">
                             {renderOutcomeFacetLabel('keyEffect', option.value, strings)}
+                          </span>
+                          <span className="recent-requests-facet-option-spacer" aria-hidden="true" />
+                          <span className="recent-requests-facet-count">{`x${option.count ?? 0}`}</span>
+                        </span>
+                      </SelectItem>
+                    ))
+                  )}
+                </SelectGroup>
+                <SelectSeparator />
+                <SelectGroup>
+                  <SelectLabel>{strings.logs.filters.bindingEffectGroup}</SelectLabel>
+                  {bindingEffectOptions.length === 0 ? (
+                    <SelectItem value="__recent-requests-no-binding-effects__" disabled>
+                      {strings.logs.filters.noFacetOptions}
+                    </SelectItem>
+                  ) : (
+                    bindingEffectOptions.map((option) => (
+                      <SelectItem key={`binding-effect-${option.value}`} value={`bindingEffect:${option.value}`}>
+                        <span className="recent-requests-facet-option recent-requests-facet-option--status">
+                          <span className="recent-requests-facet-option-main">
+                            {renderOutcomeFacetLabel('bindingEffect', option.value, strings)}
+                          </span>
+                          <span className="recent-requests-facet-option-spacer" aria-hidden="true" />
+                          <span className="recent-requests-facet-count">{`x${option.count ?? 0}`}</span>
+                        </span>
+                      </SelectItem>
+                    ))
+                  )}
+                </SelectGroup>
+                <SelectSeparator />
+                <SelectGroup>
+                  <SelectLabel>{strings.logs.filters.selectionEffectGroup}</SelectLabel>
+                  {selectionEffectOptions.length === 0 ? (
+                    <SelectItem value="__recent-requests-no-selection-effects__" disabled>
+                      {strings.logs.filters.noFacetOptions}
+                    </SelectItem>
+                  ) : (
+                    selectionEffectOptions.map((option) => (
+                      <SelectItem key={`selection-effect-${option.value}`} value={`selectionEffect:${option.value}`}>
+                        <span className="recent-requests-facet-option recent-requests-facet-option--status">
+                          <span className="recent-requests-facet-option-main">
+                            {renderOutcomeFacetLabel('selectionEffect', option.value, strings)}
                           </span>
                           <span className="recent-requests-facet-option-spacer" aria-hidden="true" />
                           <span className="recent-requests-facet-count">{`x${option.count ?? 0}`}</span>
@@ -825,7 +1202,7 @@ export default function AdminRecentRequestsPanel({
             <TableHead className="recent-requests-col recent-requests-col--status">{strings.logs.table.status}</TableHead>
             <TableHead className="recent-requests-col recent-requests-col--credits">{strings.logs.table.chargedCredits}</TableHead>
             <TableHead className="recent-requests-col recent-requests-col--result">{strings.logs.table.result}</TableHead>
-            <TableHead className="recent-requests-col recent-requests-col--key-effect">{strings.logs.table.keyEffect}</TableHead>
+            <TableHead className="recent-requests-col recent-requests-col--key-effect">{strings.logs.table.effects}</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -942,9 +1319,7 @@ export default function AdminRecentRequestsPanel({
                       </Button>
                     </TableCell>
                     <TableCell className="recent-requests-col recent-requests-col--key-effect">
-                      <StatusBadge tone={keyEffectTone(log.key_effect_code)} title={formatKeyEffectSummary(log, strings, language)}>
-                        {keyEffectBadgeLabel(log, strings)}
-                      </StatusBadge>
+                      {renderEffectBadges(log, strings, language)}
                     </TableCell>
                   </TableRow>
                   {expanded ? (
@@ -1078,14 +1453,13 @@ export default function AdminRecentRequestsPanel({
                   </button>
                 </div>
                 <div className={mobileStackedClassName}>
-                  <span>{strings.logs.table.keyEffect}</span>
-                  <StatusBadge
-                    className={variant === 'token' ? 'user-console-mobile-status' : undefined}
-                    tone={keyEffectTone(log.key_effect_code)}
-                    title={formatKeyEffectSummary(log, strings, language)}
-                  >
-                    {keyEffectBadgeLabel(log, strings)}
-                  </StatusBadge>
+                  <span>{strings.logs.table.effects}</span>
+                  {renderEffectBadges(
+                    log,
+                    strings,
+                    language,
+                    variant === 'token' ? 'user-console-mobile-status' : undefined,
+                  )}
                 </div>
                 {expanded ? (
                   <div className="recent-requests-mobile-details" id={`recent-request-mobile-details-${log.id}`}>
