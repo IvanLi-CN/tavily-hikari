@@ -143,6 +143,15 @@ describe('UserConsole landing guide helpers', () => {
     } as Pick<Location, 'pathname' | 'search'>, probe)).resolves.toBe('/console?from=logout')
   })
 
+  it('keeps nested console paths as the logout fallback when the public home is unavailable', async () => {
+    const probe = mock(async () => ({ ok: false, status: 404 }))
+
+    await expect(__testables.resolvePostLogoutTarget({
+      pathname: '/console/tokens/a1b2',
+      search: '?from=logout',
+    } as Pick<Location, 'pathname' | 'search'>, probe)).resolves.toBe('/console/tokens/a1b2?from=logout')
+  })
+
   it('retries GET when the public home rejects HEAD during logout target probing', async () => {
     const probe = mock(async (_input, init) => {
       if (init?.method === 'HEAD') {
@@ -206,6 +215,11 @@ describe('UserConsole landing guide helpers', () => {
       pathname: '/console.html',
       search: '?from=oauth',
     } as Pick<Location, 'pathname' | 'search'>, '/console.html?from=oauth')).toBe(false)
+
+    expect(__testables.shouldRedirectToLogoutTarget({
+      pathname: '/console/tokens/a1b2',
+      search: '?from=logout',
+    } as Pick<Location, 'pathname' | 'search'>, '/console/tokens/a1b2?from=logout')).toBe(false)
 
     expect(__testables.shouldRedirectToLogoutTarget({
       pathname: '/console',

@@ -140,20 +140,10 @@ function PublicHome(): JSX.Element {
   }, [todayWindow.todayEnd])
 
   useEffect(() => {
-    const hash = window.location.hash.slice(1)
-    const decodedHash = hash ? decodeURIComponent(hash) : null
     const tokenStore = loadTokenMap()
     const lastToken = loadLastToken()
 
-    let initialToken: string | null = null
-    if (decodedHash && isFullToken(decodedHash)) {
-      initialToken = decodedHash
-    } else if (decodedHash) {
-      const id = extractTokenId(decodedHash)
-      if (id && tokenStore[id]) {
-        initialToken = tokenStore[id]
-      }
-    }
+    let initialToken = resolveInitialTokenFromHash(window.location.hash, tokenStore)
 
     if (!initialToken && lastToken) {
       initialToken = lastToken
@@ -922,6 +912,7 @@ export default PublicHome
 export const __testables = {
   resolvePublicGuideToken,
   resolveGuideSamples,
+  resolveInitialTokenFromHash,
   shouldRevealPublicGuideToken,
   buildGuideContent,
 }
@@ -1266,6 +1257,21 @@ function resolveGuideSamples(content: GuideContent): GuideSample[] {
 
 function resolvePublicGuideToken(token: string, placeholder: string, revealed: boolean): string {
   return revealed && isFullToken(token) ? token : placeholder
+}
+
+function resolveInitialTokenFromHash(hashValue: string, tokenStore: Record<string, string>): string | null {
+  const normalizedHash = hashValue.startsWith('#') ? hashValue.slice(1) : hashValue
+  const decodedHash = normalizedHash ? decodeURIComponent(normalizedHash) : null
+  if (decodedHash && isFullToken(decodedHash)) {
+    return decodedHash
+  }
+  if (!decodedHash) return null
+
+  const id = extractTokenId(decodedHash)
+  if (id && tokenStore[id]) {
+    return tokenStore[id]
+  }
+  return null
 }
 
 function shouldRevealPublicGuideToken(token: string, revealedToken: string | null): boolean {

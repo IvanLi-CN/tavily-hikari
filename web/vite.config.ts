@@ -39,7 +39,10 @@ export default defineConfig(({ mode }) => {
             ) {
               req.url = `/admin.html${parsed.search}`
             }
-            if (pathname === '/console' || pathname === '/console/') {
+            if (
+              (pathname === '/console' || pathname.startsWith('/console/'))
+              && pathname !== '/console.html'
+            ) {
               req.url = `/console.html${parsed.search}`
             }
             if (pathname === '/login' || pathname === '/login/') {

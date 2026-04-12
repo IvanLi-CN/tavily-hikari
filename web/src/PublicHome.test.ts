@@ -4,6 +4,20 @@ import { __testables } from './PublicHome'
 
 describe('PublicHome guide token visibility', () => {
   const placeholder = 'th-xxxx-xxxxxxxxxxxx'
+  const storedToken = 'th-a1b2-1234567890abcdef'
+
+  it('keeps the legacy full-token hash bootstrap for the public homepage', () => {
+    expect(__testables.resolveInitialTokenFromHash(`#${storedToken}`, {})).toBe(storedToken)
+  })
+
+  it('keeps the legacy token-id hash bootstrap for the public homepage', () => {
+    expect(__testables.resolveInitialTokenFromHash('#a1b2', { a1b2: storedToken })).toBe(storedToken)
+  })
+
+  it('returns null when the homepage hash does not map to a known token', () => {
+    expect(__testables.resolveInitialTokenFromHash('#unknown', { a1b2: storedToken })).toBeNull()
+    expect(__testables.resolveInitialTokenFromHash('', { a1b2: storedToken })).toBeNull()
+  })
 
   it('keeps the guide masked by default even when a full token is available', () => {
     expect(__testables.resolvePublicGuideToken('th-a1b2-1234567890abcdef', placeholder, false)).toBe(placeholder)

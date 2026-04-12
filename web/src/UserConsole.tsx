@@ -71,8 +71,9 @@ import { useResponsiveModes } from './lib/responsive'
 import { getUserConsoleAdminHref } from './lib/userConsoleAdminEntry'
 import { resolveUserConsoleAvailability } from './lib/userConsoleAvailability'
 import {
-  parseUserConsoleHash,
-  userConsoleRouteToHash,
+  normalizeUserConsolePathname,
+  parseUserConsolePath,
+  userConsoleRouteToPath,
   type UserConsoleLandingSection,
   type UserConsoleRoute as ConsoleRoute,
 } from './lib/userConsoleRoutes'
@@ -294,7 +295,11 @@ type LogoutTargetProbe = (
 ) => Promise<Pick<Response, 'ok' | 'status' | 'redirected' | 'url'>>
 
 function isConsoleEntryPath(pathname: string): boolean {
-  return pathname === '/console' || pathname === '/console/' || pathname === '/console.html'
+  const normalizedPath = normalizeUserConsolePathname(pathname)
+  return normalizedPath === '/console'
+    || normalizedPath === '/console/dashboard'
+    || normalizedPath === '/console/tokens'
+    || normalizedPath.startsWith('/console/tokens/')
 }
 
 function isPublicHomePath(pathname: string): boolean {
@@ -1123,7 +1128,7 @@ export default function UserConsole(): JSX.Element {
   const [versionState, setVersionState] = useState<
     { status: 'loading' } | { status: 'error' } | { status: 'ready'; value: VersionInfo | null }
   >({ status: 'loading' })
-  const [route, setRoute] = useState<ConsoleRoute>(() => parseUserConsoleHash(window.location.hash || ''))
+  const [route, setRoute] = useState<ConsoleRoute>(() => parseUserConsolePath(window.location.pathname || ''))
   const [detail, setDetail] = useState<UserTokenSummary | null>(null)
   const [detailLogs, setDetailLogs] = useState<PublicTokenLog[]>([])
   const [detailLogsPushIssue, setDetailLogsPushIssue] = useState<DetailLogsPushIssueCode | null>(null)
@@ -1288,22 +1293,30 @@ export default function UserConsole(): JSX.Element {
   }, [clearSensitiveConsoleState])
 
   useEffect(() => {
-    const handlePopState = () => {
-      historyTraversalRef.current = true
-    }
     const syncRoute = () => {
-      const nextRoute = parseUserConsoleHash(window.location.hash || '')
+      const nextPathname = window.location.pathname || ''
+      const nextRoute = parseUserConsolePath(nextPathname)
+      const normalizedPath = normalizeUserConsolePathname(nextPathname)
+      const canonicalPath = userConsoleRouteToPath(nextRoute)
+      if (normalizedPath !== canonicalPath && isConsoleEntryPath(nextPathname)) {
+        window.history.replaceState(null, '', `${canonicalPath}${window.location.search}${window.location.hash}`)
+      }
       if (nextRoute.name === 'landing' && nextRoute.section && !historyTraversalRef.current) {
         shouldScrollLandingSectionRef.current = true
       }
       setRoute(nextRoute)
       historyTraversalRef.current = false
     }
+
+    const handlePopState = () => {
+      historyTraversalRef.current = true
+      syncRoute()
+    }
+
+    syncRoute()
     window.addEventListener('popstate', handlePopState)
-    window.addEventListener('hashchange', syncRoute)
     return () => {
       window.removeEventListener('popstate', handlePopState)
-      window.removeEventListener('hashchange', syncRoute)
     }
   }, [])
 
@@ -1916,13 +1929,10 @@ export default function UserConsole(): JSX.Element {
   }, [consoleEmptyState, route])
 
   const navigateToRoute = useCallback((nextRoute: ConsoleRoute) => {
-    const nextHash = userConsoleRouteToHash(nextRoute)
-    if (window.location.hash !== nextHash) {
-      if (nextHash) {
-        window.location.hash = nextHash
-        return
-      }
-      window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`)
+    const nextPath = userConsoleRouteToPath(nextRoute)
+    const currentPath = normalizeUserConsolePathname(window.location.pathname || '')
+    if (currentPath !== nextPath || window.location.hash) {
+      window.history.pushState(null, '', `${nextPath}${window.location.search}`)
     }
     setRoute(nextRoute)
   }, [])

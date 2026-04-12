@@ -26,6 +26,7 @@ Tavily Hikari is a Rust + Axum proxy for Tavily's MCP endpoint. It multiplexes m
 - **High-anonymity forwarding** – only `/mcp` traffic is tunneled upstream; sensitive headers are stripped or rewritten. See [`docs/high-anonymity-proxy.md`](docs/high-anonymity-proxy.md).
 - **Full audit trail** – `request_logs` persists method/path/query, upstream responses, error payloads, and the list of forwarded/dropped headers.
 - **Operator UI** – the SPA in `web/` visualizes key health, request logs, and admin actions (soft delete, restore, reveal real keys).
+- **Path-based web console routes** – the user console now uses `/console`, `/console/dashboard`, `/console/tokens`, and `/console/tokens/:id`; homepage token bootstrap intentionally remains hash-based (`/#<token>` or `/#<token-id>`) so full tokens never move into path/query logging surfaces.
 - **CI + Release** – GitHub Actions runs lint/tests; releases are driven by PR intent labels and publish `ghcr.io/ivanli-cn/tavily-hikari:<tag>` with prebuilt web assets.
 
 ## Architecture Snapshot
