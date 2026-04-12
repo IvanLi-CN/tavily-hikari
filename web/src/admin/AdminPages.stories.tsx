@@ -6088,7 +6088,12 @@ async function waitForStoryUi(ms = 80): Promise<void> {
 
 function updateStorySearchInput(input: HTMLInputElement, value: string): void {
   input.focus()
-  input.value = value
+  const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
+  if (valueSetter) {
+    valueSetter.call(input, value)
+  } else {
+    input.value = value
+  }
   input.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }))
 }
 
