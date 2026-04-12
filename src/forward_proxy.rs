@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{FromRow, QueryBuilder, Row, Sqlite, SqlitePool};
 use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
     process::{Child, Command},
     sync::{Mutex, RwLock},
@@ -1498,6 +1499,42 @@ struct SharedXrayProcess {
 }
 
 #[derive(Debug)]
+struct ReservedLocalPort {
+    port: u16,
+    listener: Option<std::net::TcpListener>,
+}
+
+impl ReservedLocalPort {
+    fn bind() -> Result<Self, ProxyError> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(|err| {
+            ProxyError::Other(format!(
+                "failed to bind local socket for port allocation: {err}"
+            ))
+        })?;
+        let port = listener
+            .local_addr()
+            .map_err(|err| {
+                ProxyError::Other(format!(
+                    "failed to read local address for allocated port: {err}"
+                ))
+            })?
+            .port();
+        Ok(Self {
+            port,
+            listener: Some(listener),
+        })
+    }
+
+    fn port(&self) -> u16 {
+        self.port
+    }
+
+    fn release(&mut self) {
+        self.listener.take();
+    }
+}
+
+#[derive(Debug)]
 pub(crate) struct SharedXrayRelayHandle {
     relay_id: String,
     endpoint_key: Option<String>,
@@ -1810,7 +1847,8 @@ impl XraySupervisor {
         temporary: bool,
     ) -> Result<String, ProxyError> {
         let relay_id = self.next_relay_id(&route_key, temporary);
-        let local_port = pick_unused_local_port()?;
+        let mut local_port_reservation = reserve_unused_local_port()?;
+        let local_port = local_port_reservation.port();
         let local_proxy_url =
             Url::parse(&format!("socks5h://127.0.0.1:{local_port}")).map_err(|err| {
                 ProxyError::Other(format!("failed to build local xray socks endpoint: {err}"))
@@ -1880,6 +1918,7 @@ impl XraySupervisor {
         write_xray_runtime_json(&config_paths[1], &outbound_config)?;
         write_xray_runtime_json(&config_paths[2], &rules_config)?;
         self.ensure_shared_process_started().await?;
+        local_port_reservation.release();
 
         if let Err(err) = self
             .run_shared_api_command("ado", &[config_paths[1].clone()], &[])
@@ -1939,7 +1978,7 @@ impl XraySupervisor {
             self.shutdown_shared_process_if_idle().await;
             return Err(err);
         }
-        if let Err(err) = wait_for_local_port_ready(
+        if let Err(err) = wait_for_local_socks_ready(
             local_port,
             Duration::from_millis(XRAY_PROXY_READY_TIMEOUT_MS),
         )
@@ -2056,7 +2095,8 @@ impl XraySupervisor {
             return Ok(());
         }
         let _ = fs::create_dir_all(&self.runtime_dir);
-        let api_port = pick_unused_local_port()?;
+        let mut api_port_reservation = reserve_unused_local_port()?;
+        let api_port = api_port_reservation.port();
         let api_server = format!("127.0.0.1:{api_port}");
         let config_path = self.runtime_dir.join("shared-xray-base.json");
         let config = json!({
@@ -2073,6 +2113,7 @@ impl XraySupervisor {
             "outbounds": [{ "tag": "direct", "protocol": "freedom" }]
         });
         write_xray_runtime_json(&config_path, &config)?;
+        api_port_reservation.release();
 
         let mut child = Command::new(&self.binary)
             .arg("run")
@@ -4155,6 +4196,14 @@ async fn wait_for_xray_api_ready(
         .await
         .is_ok_and(|connection| connection.is_ok())
         {
+            sleep(Duration::from_millis(50)).await;
+            if let Some(status) = child.try_wait().map_err(|err| {
+                ProxyError::Other(format!("failed to poll xray proxy process status: {err}"))
+            })? {
+                return Err(ProxyError::Other(format!(
+                    "xray process exited before ready: {status}"
+                )));
+            }
             return Ok(());
         }
         if Instant::now() >= deadline {
@@ -4166,20 +4215,28 @@ async fn wait_for_xray_api_ready(
     }
 }
 
-async fn wait_for_local_port_ready(
+async fn wait_for_local_socks_ready(
     local_port: u16,
     ready_timeout: Duration,
 ) -> Result<(), ProxyError> {
     let deadline = Instant::now() + ready_timeout;
     loop {
-        if timeout(
+        if let Ok(Ok(mut stream)) = timeout(
             Duration::from_millis(250),
             TcpStream::connect(("127.0.0.1", local_port)),
         )
         .await
-        .is_ok_and(|connection| connection.is_ok())
         {
-            return Ok(());
+            let mut response = [0_u8; 2];
+            let handshake = timeout(Duration::from_millis(250), async {
+                stream.write_all(&[0x05, 0x01, 0x00]).await?;
+                stream.read_exact(&mut response).await?;
+                Ok::<_, io::Error>(response)
+            })
+            .await;
+            if handshake.is_ok_and(|result| result.is_ok_and(|reply| reply == [0x05, 0x00])) {
+                return Ok(());
+            }
         }
         if Instant::now() >= deadline {
             return Err(ProxyError::Other(
@@ -4214,21 +4271,8 @@ async fn terminate_child_process(
     Ok(())
 }
 
-fn pick_unused_local_port() -> Result<u16, ProxyError> {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(|err| {
-        ProxyError::Other(format!(
-            "failed to bind local socket for port allocation: {err}"
-        ))
-    })?;
-    let port = listener
-        .local_addr()
-        .map_err(|err| {
-            ProxyError::Other(format!(
-                "failed to read local address for allocated port: {err}"
-            ))
-        })?
-        .port();
-    Ok(port)
+fn reserve_unused_local_port() -> Result<ReservedLocalPort, ProxyError> {
+    ReservedLocalPort::bind()
 }
 
 pub fn stable_hash_u64(raw: &str) -> u64 {
@@ -5062,9 +5106,17 @@ class DummyListener:
             except OSError:
                 break
             try:
-                conn.close()
+                conn.settimeout(0.2)
+                greeting = conn.recv(3)
+                if greeting == b"\x05\x01\x00":
+                    conn.sendall(b"\x05\x00")
             except OSError:
                 pass
+            finally:
+                try:
+                    conn.close()
+                except OSError:
+                    pass
 
     def close(self):
         self._stop.set()
@@ -5240,6 +5292,80 @@ if __name__ == "__main__":
             Some(sample_vless_share_link(host, label)),
             "https://subscription.example.com/feed".to_string(),
         )
+    }
+
+    #[test]
+    fn reserved_local_port_keeps_port_bound_until_release() {
+        let mut reservation = reserve_unused_local_port().expect("reserve loopback port");
+        let port = reservation.port();
+        assert!(
+            std::net::TcpListener::bind(("127.0.0.1", port)).is_err(),
+            "reserved port should stay bound until release"
+        );
+
+        reservation.release();
+
+        let rebound = std::net::TcpListener::bind(("127.0.0.1", port))
+            .expect("released port should be reusable");
+        drop(rebound);
+    }
+
+    #[tokio::test]
+    async fn wait_for_local_socks_ready_rejects_unrelated_listener() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind unrelated listener");
+        let port = listener.local_addr().expect("listener addr").port();
+        let server = tokio::spawn(async move {
+            loop {
+                let (socket, _) = listener.accept().await.expect("accept unrelated client");
+                drop(socket);
+            }
+        });
+
+        let err = wait_for_local_socks_ready(port, Duration::from_millis(250))
+            .await
+            .expect_err("plain listener should not satisfy socks readiness");
+        assert!(
+            err.to_string()
+                .contains("xray local socks endpoint was not ready in time"),
+            "unexpected error: {err}"
+        );
+
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn wait_for_local_socks_ready_accepts_socks_handshake() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind socks listener");
+        let port = listener.local_addr().expect("listener addr").port();
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.expect("accept socks client");
+                tokio::spawn(async move {
+                    let mut greeting = [0_u8; 3];
+                    socket
+                        .read_exact(&mut greeting)
+                        .await
+                        .expect("read socks greeting");
+                    assert_eq!(greeting, [0x05, 0x01, 0x00]);
+                    socket
+                        .write_all(&[0x05, 0x00])
+                        .await
+                        .expect("write socks greeting response");
+                });
+            }
+        });
+
+        wait_for_local_socks_ready(port, Duration::from_secs(1))
+            .await
+            .expect("socks handshake should mark relay ready");
+
+        server.abort();
+        let _ = server.await;
     }
 
     #[tokio::test]
