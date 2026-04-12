@@ -429,7 +429,8 @@ pub(crate) struct HttpProjectAffinityCandidate {
 #[derive(Debug)]
 pub(crate) struct HttpProjectAffinitySelection {
     pub(crate) lease: ApiKeyLease,
-    pub(crate) key_effect: KeyEffect,
+    pub(crate) binding_effect: KeyEffect,
+    pub(crate) selection_effect: KeyEffect,
 }
 
 fn default_forward_proxy_trace_url() -> Url {
@@ -494,6 +495,22 @@ impl TavilyProxy {
             KEY_EFFECT_HTTP_PROJECT_AFFINITY_REBOUND,
             "HTTP project affinity rebound the project onto a different upstream key",
         )
+    }
+
+    fn primary_request_effect(
+        key_effect: &KeyEffect,
+        binding_effect: &KeyEffect,
+        selection_effect: &KeyEffect,
+    ) -> KeyEffect {
+        if key_effect.code != KEY_EFFECT_NONE {
+            key_effect.clone()
+        } else if selection_effect.code != KEY_EFFECT_NONE {
+            selection_effect.clone()
+        } else if binding_effect.code != KEY_EFFECT_NONE {
+            binding_effect.clone()
+        } else {
+            KeyEffect::none()
+        }
     }
 
     fn mcp_session_init_lock_subject(user_id: Option<&str>, token_id: &str) -> String {
@@ -3935,7 +3952,8 @@ impl TavilyProxy {
             {
                 return Ok(Some(HttpProjectAffinitySelection {
                     lease,
-                    key_effect: Self::http_project_affinity_reused_effect(),
+                    binding_effect: Self::http_project_affinity_reused_effect(),
+                    selection_effect: KeyEffect::none(),
                 }));
             }
         }
@@ -3971,22 +3989,21 @@ impl TavilyProxy {
                     )
                     .await?;
 
-                let key_effect = match existing_key_id.as_deref() {
-                    None => {
-                        if selection_effect.code != KEY_EFFECT_NONE {
-                            selection_effect.clone()
-                        } else {
-                            Self::http_project_affinity_bound_effect()
-                        }
-                    }
-                    Some(existing_key_id) if existing_key_id == lease.id => {
-                        if existing_key_cooled && selection_effect.code != KEY_EFFECT_NONE {
+                let (binding_effect, selection_effect) = match existing_key_id.as_deref() {
+                    None => (
+                        Self::http_project_affinity_bound_effect(),
+                        selection_effect.clone(),
+                    ),
+                    Some(existing_key_id) if existing_key_id == lease.id => (
+                        Self::http_project_affinity_reused_effect(),
+                        if existing_key_cooled {
                             selection_effect.clone()
                         } else {
                             KeyEffect::none()
-                        }
-                    }
-                    Some(_) if existing_key_cooled => {
+                        },
+                    ),
+                    Some(_) if existing_key_cooled => (
+                        Self::http_project_affinity_rebound_effect(),
                         if selection_effect.code != KEY_EFFECT_NONE {
                             selection_effect.clone()
                         } else {
@@ -3994,12 +4011,19 @@ impl TavilyProxy {
                                 KEY_EFFECT_HTTP_PROJECT_AFFINITY_COOLDOWN_AVOIDED,
                                 "HTTP project affinity skipped a cooled bound key",
                             )
-                        }
-                    }
-                    Some(_) => Self::http_project_affinity_rebound_effect(),
+                        },
+                    ),
+                    Some(_) => (
+                        Self::http_project_affinity_rebound_effect(),
+                        selection_effect.clone(),
+                    ),
                 };
 
-                return Ok(Some(HttpProjectAffinitySelection { lease, key_effect }));
+                return Ok(Some(HttpProjectAffinitySelection {
+                    lease,
+                    binding_effect,
+                    selection_effect,
+                }));
             }
         }
 
@@ -4471,13 +4495,10 @@ impl TavilyProxy {
                     .maybe_arm_mcp_session_init_backoff(&lease.id, &headers, &outcome)
                     .await?;
                 let mut key_effect = key_effect;
-                if key_effect.code == KEY_EFFECT_NONE {
-                    if armed_mcp_init_backoff {
-                        key_effect = Self::mcp_session_init_backoff_effect();
-                    } else if mcp_session_init_effect.code != KEY_EFFECT_NONE {
-                        key_effect = mcp_session_init_effect.clone();
-                    }
+                if key_effect.code == KEY_EFFECT_NONE && armed_mcp_init_backoff {
+                    key_effect = Self::mcp_session_init_backoff_effect();
                 }
+                let selection_effect = mcp_session_init_effect.clone();
 
                 let request_log_id = self
                     .key_store
@@ -4496,6 +4517,10 @@ impl TavilyProxy {
                         failure_kind: outcome.failure_kind.as_deref(),
                         key_effect_code: key_effect.code.as_str(),
                         key_effect_summary: key_effect.summary.as_deref(),
+                        binding_effect_code: KEY_EFFECT_NONE,
+                        binding_effect_summary: None,
+                        selection_effect_code: selection_effect.code.as_str(),
+                        selection_effect_summary: selection_effect.summary.as_deref(),
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
                     })
@@ -4519,6 +4544,10 @@ impl TavilyProxy {
                     request_log_id: Some(request_log_id),
                     key_effect_code: key_effect.code,
                     key_effect_summary: key_effect.summary,
+                    binding_effect_code: KEY_EFFECT_NONE.to_string(),
+                    binding_effect_summary: None,
+                    selection_effect_code: selection_effect.code,
+                    selection_effect_summary: selection_effect.summary,
                 })
             }
             Err(err) => {
@@ -4545,6 +4574,10 @@ impl TavilyProxy {
                         failure_kind: None,
                         key_effect_code: KEY_EFFECT_NONE,
                         key_effect_summary: None,
+                        binding_effect_code: KEY_EFFECT_NONE,
+                        binding_effect_summary: None,
+                        selection_effect_code: KEY_EFFECT_NONE,
+                        selection_effect_summary: None,
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
                     })
@@ -4573,13 +4606,15 @@ impl TavilyProxy {
         let http_project_affinity = self
             .resolve_http_project_affinity_context(auth_token_id, http_project_id)
             .await?;
-        let mut http_project_effect = KeyEffect::none();
+        let mut http_project_binding_effect = KeyEffect::none();
+        let mut http_project_selection_effect = KeyEffect::none();
         let lease = if http_project_affinity.is_some() {
             if let Some(selection) = self
                 .acquire_key_for_http_project(auth_token_id, http_project_id)
                 .await?
             {
-                http_project_effect = selection.key_effect;
+                http_project_binding_effect = selection.binding_effect;
+                http_project_selection_effect = selection.selection_effect;
                 selection.lease
             } else {
                 self.acquire_key_for(auth_token_id).await?
@@ -4696,13 +4731,14 @@ impl TavilyProxy {
                     false
                 };
                 let mut key_effect = key_effect;
-                if key_effect.code == KEY_EFFECT_NONE {
-                    if armed_mcp_init_backoff {
-                        key_effect = Self::mcp_session_init_backoff_effect();
-                    } else if http_project_effect.code != KEY_EFFECT_NONE {
-                        key_effect = http_project_effect.clone();
-                    }
+                if key_effect.code == KEY_EFFECT_NONE && armed_mcp_init_backoff {
+                    key_effect = Self::mcp_session_init_backoff_effect();
                 }
+                let primary_effect = Self::primary_request_effect(
+                    &key_effect,
+                    &http_project_binding_effect,
+                    &http_project_selection_effect,
+                );
 
                 let request_log_id = self
                     .key_store
@@ -4721,6 +4757,10 @@ impl TavilyProxy {
                         failure_kind: analysis.failure_kind.as_deref(),
                         key_effect_code: key_effect.code.as_str(),
                         key_effect_summary: key_effect.summary.as_deref(),
+                        binding_effect_code: http_project_binding_effect.code.as_str(),
+                        binding_effect_summary: http_project_binding_effect.summary.as_deref(),
+                        selection_effect_code: http_project_selection_effect.code.as_str(),
+                        selection_effect_summary: http_project_selection_effect.summary.as_deref(),
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
                     })
@@ -4745,7 +4785,7 @@ impl TavilyProxy {
                         )
                         .await?;
                 }
-                analysis.key_effect = key_effect.clone();
+                analysis.key_effect = primary_effect;
 
                 Ok((
                     ProxyResponse {
@@ -4756,6 +4796,10 @@ impl TavilyProxy {
                         request_log_id: Some(request_log_id),
                         key_effect_code: key_effect.code,
                         key_effect_summary: key_effect.summary,
+                        binding_effect_code: http_project_binding_effect.code,
+                        binding_effect_summary: http_project_binding_effect.summary,
+                        selection_effect_code: http_project_selection_effect.code,
+                        selection_effect_summary: http_project_selection_effect.summary,
                     },
                     analysis,
                 ))
@@ -4779,6 +4823,10 @@ impl TavilyProxy {
                         failure_kind: None,
                         key_effect_code: KEY_EFFECT_NONE,
                         key_effect_summary: None,
+                        binding_effect_code: KEY_EFFECT_NONE,
+                        binding_effect_summary: None,
+                        selection_effect_code: KEY_EFFECT_NONE,
+                        selection_effect_summary: None,
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
                     })
@@ -4809,13 +4857,15 @@ impl TavilyProxy {
         let http_project_affinity = self
             .resolve_http_project_affinity_context(auth_token_id, http_project_id)
             .await?;
-        let mut http_project_effect = KeyEffect::none();
+        let mut http_project_binding_effect = KeyEffect::none();
+        let mut http_project_selection_effect = KeyEffect::none();
         let lease = if http_project_affinity.is_some() {
             if let Some(selection) = self
                 .acquire_key_for_http_project(auth_token_id, http_project_id)
                 .await?
             {
-                http_project_effect = selection.key_effect;
+                http_project_binding_effect = selection.binding_effect;
+                http_project_selection_effect = selection.selection_effect;
                 selection.lease
             } else {
                 self.acquire_key_for(auth_token_id).await?
@@ -4941,13 +4991,14 @@ impl TavilyProxy {
                     false
                 };
                 let mut key_effect = key_effect;
-                if key_effect.code == KEY_EFFECT_NONE {
-                    if armed_mcp_init_backoff {
-                        key_effect = Self::mcp_session_init_backoff_effect();
-                    } else if http_project_effect.code != KEY_EFFECT_NONE {
-                        key_effect = http_project_effect.clone();
-                    }
+                if key_effect.code == KEY_EFFECT_NONE && armed_mcp_init_backoff {
+                    key_effect = Self::mcp_session_init_backoff_effect();
                 }
+                let primary_effect = Self::primary_request_effect(
+                    &key_effect,
+                    &http_project_binding_effect,
+                    &http_project_selection_effect,
+                );
 
                 let request_log_id = self
                     .key_store
@@ -4966,6 +5017,10 @@ impl TavilyProxy {
                         failure_kind: analysis.failure_kind.as_deref(),
                         key_effect_code: key_effect.code.as_str(),
                         key_effect_summary: key_effect.summary.as_deref(),
+                        binding_effect_code: http_project_binding_effect.code.as_str(),
+                        binding_effect_summary: http_project_binding_effect.summary.as_deref(),
+                        selection_effect_code: http_project_selection_effect.code.as_str(),
+                        selection_effect_summary: http_project_selection_effect.summary.as_deref(),
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
                     })
@@ -4990,7 +5045,7 @@ impl TavilyProxy {
                         )
                         .await?;
                 }
-                analysis.key_effect = key_effect.clone();
+                analysis.key_effect = primary_effect;
 
                 let after_usage = match self
                     .fetch_research_usage_for_secret_with_retries(
@@ -5026,6 +5081,10 @@ impl TavilyProxy {
                         request_log_id: Some(request_log_id),
                         key_effect_code: key_effect.code,
                         key_effect_summary: key_effect.summary,
+                        binding_effect_code: http_project_binding_effect.code,
+                        binding_effect_summary: http_project_binding_effect.summary,
+                        selection_effect_code: http_project_selection_effect.code,
+                        selection_effect_summary: http_project_selection_effect.summary,
                     },
                     analysis,
                     delta,
@@ -5050,6 +5109,10 @@ impl TavilyProxy {
                         failure_kind: None,
                         key_effect_code: KEY_EFFECT_NONE,
                         key_effect_summary: None,
+                        binding_effect_code: KEY_EFFECT_NONE,
+                        binding_effect_summary: None,
+                        selection_effect_code: KEY_EFFECT_NONE,
+                        selection_effect_summary: None,
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
                     })
@@ -5162,6 +5225,10 @@ impl TavilyProxy {
                         failure_kind: analysis.failure_kind.as_deref(),
                         key_effect_code: key_effect.code.as_str(),
                         key_effect_summary: key_effect.summary.as_deref(),
+                        binding_effect_code: KEY_EFFECT_NONE,
+                        binding_effect_summary: None,
+                        selection_effect_code: KEY_EFFECT_NONE,
+                        selection_effect_summary: None,
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
                     })
@@ -5187,6 +5254,10 @@ impl TavilyProxy {
                         request_log_id: Some(request_log_id),
                         key_effect_code: key_effect.code,
                         key_effect_summary: key_effect.summary,
+                        binding_effect_code: KEY_EFFECT_NONE.to_string(),
+                        binding_effect_summary: None,
+                        selection_effect_code: KEY_EFFECT_NONE.to_string(),
+                        selection_effect_summary: None,
                     },
                     analysis,
                 ))
@@ -5210,6 +5281,10 @@ impl TavilyProxy {
                         failure_kind: None,
                         key_effect_code: KEY_EFFECT_NONE,
                         key_effect_summary: None,
+                        binding_effect_code: KEY_EFFECT_NONE,
+                        binding_effect_summary: None,
+                        selection_effect_code: KEY_EFFECT_NONE,
+                        selection_effect_summary: None,
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
                     })
@@ -5323,6 +5398,8 @@ impl TavilyProxy {
         request_kinds: &[String],
         result_status: Option<&str>,
         key_effect_code: Option<&str>,
+        binding_effect_code: Option<&str>,
+        selection_effect_code: Option<&str>,
         auth_token_id: Option<&str>,
         key_id: Option<&str>,
         operational_class: Option<&str>,
@@ -5336,6 +5413,8 @@ impl TavilyProxy {
                 request_kinds,
                 result_status,
                 key_effect_code,
+                binding_effect_code,
+                selection_effect_code,
                 auth_token_id,
                 key_id,
                 operational_class,
@@ -5353,6 +5432,8 @@ impl TavilyProxy {
         request_kinds: &[String],
         result_status: Option<&str>,
         key_effect_code: Option<&str>,
+        binding_effect_code: Option<&str>,
+        selection_effect_code: Option<&str>,
         auth_token_id: Option<&str>,
         key_id: Option<&str>,
         operational_class: Option<&str>,
@@ -5367,6 +5448,8 @@ impl TavilyProxy {
                 request_kinds,
                 result_status,
                 key_effect_code,
+                binding_effect_code,
+                selection_effect_code,
                 auth_token_id,
                 key_id,
                 operational_class,
@@ -5383,6 +5466,8 @@ impl TavilyProxy {
         request_kinds: &[String],
         result_status: Option<&str>,
         key_effect_code: Option<&str>,
+        binding_effect_code: Option<&str>,
+        selection_effect_code: Option<&str>,
         auth_token_id: Option<&str>,
         key_id: Option<&str>,
         operational_class: Option<&str>,
@@ -5397,6 +5482,8 @@ impl TavilyProxy {
                     request_kinds,
                     result_status,
                     key_effect_code,
+                    binding_effect_code,
+                    selection_effect_code,
                     auth_token_id,
                     key_id,
                     operational_class,
@@ -5444,6 +5531,8 @@ impl TavilyProxy {
         request_kinds: &[String],
         result_status: Option<&str>,
         key_effect_code: Option<&str>,
+        binding_effect_code: Option<&str>,
+        selection_effect_code: Option<&str>,
         auth_token_id: Option<&str>,
         page: i64,
         per_page: i64,
@@ -5455,6 +5544,8 @@ impl TavilyProxy {
                 request_kinds,
                 result_status,
                 key_effect_code,
+                binding_effect_code,
+                selection_effect_code,
                 auth_token_id,
                 None,
                 None,
@@ -5474,6 +5565,8 @@ impl TavilyProxy {
         request_kinds: &[String],
         result_status: Option<&str>,
         key_effect_code: Option<&str>,
+        binding_effect_code: Option<&str>,
+        selection_effect_code: Option<&str>,
         auth_token_id: Option<&str>,
         operational_class: Option<&str>,
         cursor: Option<&RequestLogsCursor>,
@@ -5487,6 +5580,8 @@ impl TavilyProxy {
                 request_kinds,
                 result_status,
                 key_effect_code,
+                binding_effect_code,
+                selection_effect_code,
                 auth_token_id,
                 None,
                 operational_class,
@@ -5505,6 +5600,8 @@ impl TavilyProxy {
         request_kinds: &[String],
         result_status: Option<&str>,
         key_effect_code: Option<&str>,
+        binding_effect_code: Option<&str>,
+        selection_effect_code: Option<&str>,
         auth_token_id: Option<&str>,
         operational_class: Option<&str>,
     ) -> Result<RequestLogsCatalog, ProxyError> {
@@ -5518,6 +5615,8 @@ impl TavilyProxy {
                     request_kinds,
                     result_status,
                     key_effect_code,
+                    binding_effect_code,
+                    selection_effect_code,
                     auth_token_id,
                     key_id: None,
                     operational_class,
@@ -6540,6 +6639,10 @@ impl TavilyProxy {
                 failure_kind,
                 key_effect_code: KEY_EFFECT_NONE,
                 key_effect_summary: None,
+                binding_effect_code: KEY_EFFECT_NONE,
+                binding_effect_summary: None,
+                selection_effect_code: KEY_EFFECT_NONE,
+                selection_effect_summary: None,
                 forwarded_headers,
                 dropped_headers,
             })
@@ -6606,6 +6709,10 @@ impl TavilyProxy {
             key_effect_code,
             key_effect_summary,
             None,
+            None,
+            None,
+            None,
+            None,
         )
         .await
     }
@@ -6625,6 +6732,10 @@ impl TavilyProxy {
         failure_kind: Option<&str>,
         key_effect_code: Option<&str>,
         key_effect_summary: Option<&str>,
+        binding_effect_code: Option<&str>,
+        binding_effect_summary: Option<&str>,
+        selection_effect_code: Option<&str>,
+        selection_effect_summary: Option<&str>,
         request_log_id: Option<i64>,
     ) -> Result<(), ProxyError> {
         let request_kind = classify_token_request_kind(path, None);
@@ -6642,6 +6753,10 @@ impl TavilyProxy {
             failure_kind,
             key_effect_code,
             key_effect_summary,
+            binding_effect_code,
+            binding_effect_summary,
+            selection_effect_code,
+            selection_effect_summary,
             request_log_id,
         )
         .await
@@ -6711,6 +6826,10 @@ impl TavilyProxy {
             key_effect_code,
             key_effect_summary,
             None,
+            None,
+            None,
+            None,
+            None,
         )
         .await
     }
@@ -6731,6 +6850,10 @@ impl TavilyProxy {
         failure_kind: Option<&str>,
         key_effect_code: Option<&str>,
         key_effect_summary: Option<&str>,
+        binding_effect_code: Option<&str>,
+        binding_effect_summary: Option<&str>,
+        selection_effect_code: Option<&str>,
+        selection_effect_summary: Option<&str>,
         request_log_id: Option<i64>,
     ) -> Result<(), ProxyError> {
         self.key_store
@@ -6748,6 +6871,10 @@ impl TavilyProxy {
                 failure_kind,
                 key_effect_code.unwrap_or(KEY_EFFECT_NONE),
                 key_effect_summary,
+                binding_effect_code.unwrap_or(KEY_EFFECT_NONE),
+                binding_effect_summary,
+                selection_effect_code.unwrap_or(KEY_EFFECT_NONE),
+                selection_effect_summary,
                 request_log_id,
             )
             .await
@@ -6823,6 +6950,10 @@ impl TavilyProxy {
             key_effect_code,
             key_effect_summary,
             None,
+            None,
+            None,
+            None,
+            None,
         )
         .await
     }
@@ -6844,6 +6975,10 @@ impl TavilyProxy {
         failure_kind: Option<&str>,
         key_effect_code: Option<&str>,
         key_effect_summary: Option<&str>,
+        binding_effect_code: Option<&str>,
+        binding_effect_summary: Option<&str>,
+        selection_effect_code: Option<&str>,
+        selection_effect_summary: Option<&str>,
         request_log_id: Option<i64>,
     ) -> Result<i64, ProxyError> {
         let request_kind = classify_token_request_kind(path, None);
@@ -6863,6 +6998,10 @@ impl TavilyProxy {
             failure_kind,
             key_effect_code,
             key_effect_summary,
+            binding_effect_code,
+            binding_effect_summary,
+            selection_effect_code,
+            selection_effect_summary,
             request_log_id,
         )
         .await
@@ -6940,6 +7079,10 @@ impl TavilyProxy {
             key_effect_code,
             key_effect_summary,
             None,
+            None,
+            None,
+            None,
+            None,
         )
         .await
     }
@@ -6962,6 +7105,10 @@ impl TavilyProxy {
         failure_kind: Option<&str>,
         key_effect_code: Option<&str>,
         key_effect_summary: Option<&str>,
+        binding_effect_code: Option<&str>,
+        binding_effect_summary: Option<&str>,
+        selection_effect_code: Option<&str>,
+        selection_effect_summary: Option<&str>,
         request_log_id: Option<i64>,
     ) -> Result<i64, ProxyError> {
         let billing_subject = self.billing_subject_for_token(token_id).await?;
@@ -6982,6 +7129,10 @@ impl TavilyProxy {
             failure_kind,
             key_effect_code,
             key_effect_summary,
+            binding_effect_code,
+            binding_effect_summary,
+            selection_effect_code,
+            selection_effect_summary,
             request_log_id,
         )
         .await
@@ -7059,6 +7210,10 @@ impl TavilyProxy {
             key_effect_code,
             key_effect_summary,
             None,
+            None,
+            None,
+            None,
+            None,
         )
         .await
     }
@@ -7081,6 +7236,10 @@ impl TavilyProxy {
         failure_kind: Option<&str>,
         key_effect_code: Option<&str>,
         key_effect_summary: Option<&str>,
+        binding_effect_code: Option<&str>,
+        binding_effect_summary: Option<&str>,
+        selection_effect_code: Option<&str>,
+        selection_effect_summary: Option<&str>,
         request_log_id: Option<i64>,
     ) -> Result<i64, ProxyError> {
         let request_kind = classify_token_request_kind(path, None);
@@ -7101,6 +7260,10 @@ impl TavilyProxy {
             failure_kind,
             key_effect_code,
             key_effect_summary,
+            binding_effect_code,
+            binding_effect_summary,
+            selection_effect_code,
+            selection_effect_summary,
             request_log_id,
         )
         .await
@@ -7144,6 +7307,10 @@ impl TavilyProxy {
             key_effect_code,
             key_effect_summary,
             None,
+            None,
+            None,
+            None,
+            None,
         )
         .await
     }
@@ -7167,6 +7334,10 @@ impl TavilyProxy {
         failure_kind: Option<&str>,
         key_effect_code: Option<&str>,
         key_effect_summary: Option<&str>,
+        binding_effect_code: Option<&str>,
+        binding_effect_summary: Option<&str>,
+        selection_effect_code: Option<&str>,
+        selection_effect_summary: Option<&str>,
         request_log_id: Option<i64>,
     ) -> Result<i64, ProxyError> {
         self.key_store
@@ -7187,6 +7358,10 @@ impl TavilyProxy {
                 failure_kind,
                 key_effect_code.unwrap_or(KEY_EFFECT_NONE),
                 key_effect_summary,
+                binding_effect_code.unwrap_or(KEY_EFFECT_NONE),
+                binding_effect_summary,
+                selection_effect_code.unwrap_or(KEY_EFFECT_NONE),
+                selection_effect_summary,
                 request_log_id,
             )
             .await
@@ -7325,6 +7500,8 @@ impl TavilyProxy {
         request_kinds: &[String],
         result_status: Option<&str>,
         key_effect_code: Option<&str>,
+        binding_effect_code: Option<&str>,
+        selection_effect_code: Option<&str>,
         key_id: Option<&str>,
         operational_class: Option<&str>,
     ) -> Result<TokenLogsPage, ProxyError> {
@@ -7338,6 +7515,8 @@ impl TavilyProxy {
                 request_kinds,
                 result_status,
                 key_effect_code,
+                binding_effect_code,
+                selection_effect_code,
                 key_id,
                 operational_class,
             )
@@ -7354,6 +7533,8 @@ impl TavilyProxy {
         request_kinds: &[String],
         result_status: Option<&str>,
         key_effect_code: Option<&str>,
+        binding_effect_code: Option<&str>,
+        selection_effect_code: Option<&str>,
         key_id: Option<&str>,
         operational_class: Option<&str>,
         cursor: Option<&RequestLogsCursor>,
@@ -7368,6 +7549,8 @@ impl TavilyProxy {
                 request_kinds,
                 result_status,
                 key_effect_code,
+                binding_effect_code,
+                selection_effect_code,
                 key_id,
                 operational_class,
                 cursor,
@@ -7385,6 +7568,8 @@ impl TavilyProxy {
         request_kinds: &[String],
         result_status: Option<&str>,
         key_effect_code: Option<&str>,
+        binding_effect_code: Option<&str>,
+        selection_effect_code: Option<&str>,
         key_id: Option<&str>,
         operational_class: Option<&str>,
     ) -> Result<RequestLogsCatalog, ProxyError> {
@@ -7397,6 +7582,8 @@ impl TavilyProxy {
                     request_kinds,
                     result_status,
                     key_effect_code,
+                    binding_effect_code,
+                    selection_effect_code,
                     key_id,
                     operational_class,
                 },
@@ -7429,6 +7616,8 @@ impl TavilyProxy {
                     request_kinds: &[],
                     result_status: None,
                     key_effect_code: None,
+                    binding_effect_code: None,
+                    selection_effect_code: None,
                     key_id: None,
                     operational_class: None,
                 },

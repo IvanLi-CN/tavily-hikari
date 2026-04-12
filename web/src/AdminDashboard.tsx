@@ -1409,6 +1409,8 @@ function keyEffectBadgeLabel(log: RequestLog, strings: AdminTranslations): strin
 const emptyRequestLogFacets: RequestLogFacets = {
   results: [],
   keyEffects: [],
+  bindingEffects: [],
+  selectionEffects: [],
   tokens: [],
   keys: [],
 }
@@ -3039,6 +3041,10 @@ function AdminDashboard(): JSX.Element {
       : undefined
   const requestLogKeyEffectFilter =
     requestLogOutcomeFilter?.kind === 'keyEffect' ? requestLogOutcomeFilter.value : undefined
+  const requestLogBindingEffectFilter =
+    requestLogOutcomeFilter?.kind === 'bindingEffect' ? requestLogOutcomeFilter.value : undefined
+  const requestLogSelectionEffectFilter =
+    requestLogOutcomeFilter?.kind === 'selectionEffect' ? requestLogOutcomeFilter.value : undefined
 
   // Logs list: cursor pagination, list first and catalog after
   useEffect(() => {
@@ -3075,6 +3081,8 @@ function AdminDashboard(): JSX.Element {
         requestKinds: requestLogEffectiveKinds,
         result: requestLogResultFilter,
         keyEffect: requestLogKeyEffectFilter,
+        bindingEffect: requestLogBindingEffectFilter,
+        selectionEffect: requestLogSelectionEffectFilter,
         keyId: requestLogKeyFilter ?? undefined,
       },
       request.signal,
@@ -3114,6 +3122,8 @@ function AdminDashboard(): JSX.Element {
     requestLogEffectiveKindsKey,
     requestLogHasEmptyMatch,
     requestLogKeyEffectFilter,
+    requestLogBindingEffectFilter,
+    requestLogSelectionEffectFilter,
     requestLogKeyFilter,
     requestLogResultFilter,
   ])
@@ -4127,6 +4137,8 @@ function AdminDashboard(): JSX.Element {
         requestKinds: requestLogEffectiveKinds,
         result: requestLogResultFilter,
         keyEffect: requestLogKeyEffectFilter,
+        bindingEffect: requestLogBindingEffectFilter,
+        selectionEffect: requestLogSelectionEffectFilter,
         keyId: requestLogKeyFilter,
       })
       if (listPlan.kind === 'empty') {
@@ -10353,6 +10365,8 @@ function AdminDashboard(): JSX.Element {
           outcomeFilter={requestLogOutcomeFilter}
           resultOptions={requestLogFacets.results}
           keyEffectOptions={requestLogFacets.keyEffects}
+          bindingEffectOptions={requestLogFacets.bindingEffects}
+          selectionEffectOptions={requestLogFacets.selectionEffects}
           onOutcomeFilterChange={handleRequestLogOutcomeFilter}
           keyOptions={requestLogFacets.keys}
           selectedKeyId={requestLogKeyFilter}
@@ -11401,6 +11415,10 @@ export function KeyDetails({
       : undefined
   const keyLogKeyEffectFilter =
     keyLogOutcomeFilter?.kind === 'keyEffect' ? keyLogOutcomeFilter.value : undefined
+  const keyLogBindingEffectFilter =
+    keyLogOutcomeFilter?.kind === 'bindingEffect' ? keyLogOutcomeFilter.value : undefined
+  const keyLogSelectionEffectFilter =
+    keyLogOutcomeFilter?.kind === 'selectionEffect' ? keyLogOutcomeFilter.value : undefined
 
   useEffect(() => {
     logsAbortRef.current?.abort()
@@ -11436,6 +11454,8 @@ export function KeyDetails({
         requestKinds: keyLogEffectiveKinds,
         result: keyLogResultFilter,
         keyEffect: keyLogKeyEffectFilter,
+        bindingEffect: keyLogBindingEffectFilter,
+        selectionEffect: keyLogSelectionEffectFilter,
       },
       controller.signal,
     )
@@ -11463,6 +11483,8 @@ export function KeyDetails({
     keyLogEffectiveKindsKey,
     keyLogHasEmptyMatch,
     keyLogKeyEffectFilter,
+    keyLogBindingEffectFilter,
+    keyLogSelectionEffectFilter,
     keyLogResultFilter,
     logsPerPage,
     logsCursor,
@@ -12088,6 +12110,8 @@ export function KeyDetails({
           outcomeFilter={keyLogOutcomeFilter}
           resultOptions={keyLogFacets.results}
           keyEffectOptions={keyLogFacets.keyEffects}
+          bindingEffectOptions={keyLogFacets.bindingEffects}
+          selectionEffectOptions={keyLogFacets.selectionEffects}
           onOutcomeFilterChange={handleKeyLogOutcomeFilter}
           keyOptions={[]}
           showKeyColumn={false}

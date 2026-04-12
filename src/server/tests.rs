@@ -224,6 +224,10 @@ mod tests {
                 failure_kind TEXT,
                 key_effect_code TEXT NOT NULL DEFAULT 'none',
                 key_effect_summary TEXT,
+                binding_effect_code TEXT NOT NULL DEFAULT 'none',
+                binding_effect_summary TEXT,
+                selection_effect_code TEXT NOT NULL DEFAULT 'none',
+                selection_effect_summary TEXT,
                 counts_business_quota INTEGER NOT NULL DEFAULT 1,
                 business_credits INTEGER,
                 billing_subject TEXT,
@@ -9441,6 +9445,10 @@ colo=LAX
             failure_kind: Some("upstream_rate_limited_429".to_string()),
             key_effect_code: "none".to_string(),
             key_effect_summary: None,
+            binding_effect_code: "none".to_string(),
+            binding_effect_summary: None,
+            selection_effect_code: "none".to_string(),
+            selection_effect_summary: None,
             created_at: 1_700_000_000,
         };
         let view = PublicTokenLogView::from_record(record.clone(), UiLanguage::En);
@@ -9486,6 +9494,10 @@ colo=LAX
             failure_kind: Some("mcp_method_405".to_string()),
             key_effect_code: "none".to_string(),
             key_effect_summary: Some("No automatic status change".to_string()),
+            binding_effect_code: "none".to_string(),
+            binding_effect_summary: None,
+            selection_effect_code: "none".to_string(),
+            selection_effect_summary: None,
             created_at: 1_700_000_002,
         };
         let public_view = PublicTokenLogView::from_record(token_record.clone(), UiLanguage::Zh);
@@ -9516,6 +9528,10 @@ colo=LAX
                 failure_kind: Some("mcp_method_405".to_string()),
                 key_effect_code: "none".to_string(),
                 key_effect_summary: Some("No automatic status change".to_string()),
+                binding_effect_code: "none".to_string(),
+                binding_effect_summary: None,
+                selection_effect_code: "none".to_string(),
+                selection_effect_summary: None,
                 operational_class: "neutral".to_string(),
                 request_body: Vec::new(),
                 response_body: br#"{"jsonrpc":"2.0","id":"server-error","error":{"code":-32600,"message":"Method Not Allowed: Session termination not supported"}}"#.to_vec(),
@@ -9549,6 +9565,10 @@ colo=LAX
             failure_kind: Some("upstream_account_deactivated_401".to_string()),
             key_effect_code: "quarantined".to_string(),
             key_effect_summary: Some("The system automatically quarantined this key".to_string()),
+            binding_effect_code: "none".to_string(),
+            binding_effect_summary: None,
+            selection_effect_code: "none".to_string(),
+            selection_effect_summary: None,
             created_at: 1_700_000_001,
         });
 
@@ -9567,6 +9587,18 @@ colo=LAX
                 .get("key_effect_summary")
                 .and_then(|value| value.as_str()),
             Some("The system automatically quarantined this key"),
+        );
+        assert_eq!(
+            object
+                .get("binding_effect_code")
+                .and_then(|value| value.as_str()),
+            Some("none"),
+        );
+        assert_eq!(
+            object
+                .get("selection_effect_code")
+                .and_then(|value| value.as_str()),
+            Some("none"),
         );
         assert_eq!(
             object
@@ -11487,6 +11519,8 @@ colo=LAX
                 None,
                 None,
                 None,
+                None,
+                None,
                 RequestLogsCursorDirection::Older,
                 20,
             )
@@ -12073,6 +12107,238 @@ colo=LAX
                 .and_then(|value| value.as_str()),
             Some(token.id.as_str())
         );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn log_endpoints_allow_combining_binding_and_selection_filters() {
+        let db_path = temp_db_path("compound-effect-filters");
+        let db_str = db_path.to_string_lossy().to_string();
+        let expected_api_key = "tvly-compound-effect-filters";
+        let (upstream_addr, _hits) =
+            spawn_http_search_mock_with_usage(expected_api_key.to_string()).await;
+        let upstream = format!("http://{upstream_addr}");
+
+        let proxy = TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+            .await
+            .expect("proxy created");
+        let token = proxy
+            .create_access_token(Some("compound-effect-filters"))
+            .await
+            .expect("create token");
+        let key_id = proxy
+            .list_api_key_metrics()
+            .await
+            .expect("list api key metrics")
+            .into_iter()
+            .next()
+            .expect("seeded key exists")
+            .id;
+
+        let admin_password = "compound-effect-filters-password";
+        let admin_addr = spawn_builtin_keys_admin_server(proxy, admin_password).await;
+        let (client, admin_cookie) = login_builtin_admin_cookie(admin_addr, admin_password).await;
+        let pool = connect_sqlite_test_pool(&db_str).await;
+
+        let binding_effect = "http_project_affinity_rebound";
+        let selection_effect = "http_project_affinity_cooldown_avoided";
+        let created_at = Utc::now().timestamp();
+        let since = Utc::now() - ChronoDuration::minutes(5);
+        let until = Utc::now() + ChronoDuration::minutes(5);
+        let token_since = since.to_rfc3339();
+        let token_until = until.to_rfc3339();
+
+        let request_log_id: i64 = sqlx::query_scalar(
+            r#"
+            INSERT INTO request_logs (
+                api_key_id,
+                auth_token_id,
+                method,
+                path,
+                query,
+                status_code,
+                tavily_status_code,
+                error_message,
+                result_status,
+                request_kind_key,
+                request_kind_label,
+                key_effect_code,
+                binding_effect_code,
+                selection_effect_code,
+                request_body,
+                response_body,
+                forwarded_headers,
+                dropped_headers,
+                visibility,
+                created_at
+            ) VALUES (?, ?, 'POST', '/api/tavily/search', 'q=compound', 200, 200, NULL, 'success', 'api:search', 'API | search', 'none', ?, ?, X'7B7D', X'5B5D', '[]', '[]', 'visible', ?)
+            RETURNING id
+            "#,
+        )
+        .bind(&key_id)
+        .bind(&token.id)
+        .bind(binding_effect)
+        .bind(selection_effect)
+        .bind(created_at)
+        .fetch_one(&pool)
+        .await
+        .expect("insert request log");
+
+        sqlx::query(
+            r#"
+            INSERT INTO auth_token_logs (
+                token_id,
+                method,
+                path,
+                query,
+                http_status,
+                mcp_status,
+                request_kind_key,
+                request_kind_label,
+                result_status,
+                key_effect_code,
+                binding_effect_code,
+                selection_effect_code,
+                api_key_id,
+                request_log_id,
+                created_at
+            ) VALUES (?, 'POST', '/api/tavily/search', 'q=compound', 200, 200, 'api:search', 'API | search', 'success', 'none', ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&token.id)
+        .bind(binding_effect)
+        .bind(selection_effect)
+        .bind(&key_id)
+        .bind(request_log_id)
+        .bind(created_at)
+        .execute(&pool)
+        .await
+        .expect("insert token log");
+
+        let compound_query =
+            format!("binding_effect={binding_effect}&selection_effect={selection_effect}");
+
+        let admin_list_resp = client
+            .get(format!(
+                "http://{}/api/logs/list?limit=5&{}",
+                admin_addr, compound_query
+            ))
+            .header(reqwest::header::COOKIE, admin_cookie.clone())
+            .send()
+            .await
+            .expect("compound admin list");
+        assert_eq!(admin_list_resp.status(), reqwest::StatusCode::OK);
+        let admin_list: serde_json::Value = admin_list_resp.json().await.expect("admin list json");
+        assert_eq!(
+            admin_list
+                .pointer("/items/0/binding_effect_code")
+                .and_then(|value| value.as_str()),
+            Some(binding_effect)
+        );
+        assert_eq!(
+            admin_list
+                .pointer("/items/0/selection_effect_code")
+                .and_then(|value| value.as_str()),
+            Some(selection_effect)
+        );
+
+        let admin_catalog_resp = client
+            .get(format!(
+                "http://{}/api/logs/catalog?{}",
+                admin_addr, compound_query
+            ))
+            .header(reqwest::header::COOKIE, admin_cookie.clone())
+            .send()
+            .await
+            .expect("compound admin catalog");
+        assert_eq!(admin_catalog_resp.status(), reqwest::StatusCode::OK);
+        let admin_catalog: serde_json::Value =
+            admin_catalog_resp.json().await.expect("admin catalog json");
+        assert_eq!(
+            admin_catalog
+                .pointer("/facets/bindingEffects/0/value")
+                .and_then(|value| value.as_str()),
+            Some(binding_effect)
+        );
+        assert_eq!(
+            admin_catalog
+                .pointer("/facets/selectionEffects/0/value")
+                .and_then(|value| value.as_str()),
+            Some(selection_effect)
+        );
+
+        let key_list_resp = client
+            .get(format!(
+                "http://{}/api/keys/{}/logs/list?limit=5&since=0&{}",
+                admin_addr, key_id, compound_query
+            ))
+            .header(reqwest::header::COOKIE, admin_cookie.clone())
+            .send()
+            .await
+            .expect("compound key list");
+        assert_eq!(key_list_resp.status(), reqwest::StatusCode::OK);
+        let key_list: serde_json::Value = key_list_resp.json().await.expect("key list json");
+        assert_eq!(
+            key_list
+                .pointer("/items/0/binding_effect_code")
+                .and_then(|value| value.as_str()),
+            Some(binding_effect)
+        );
+
+        let key_catalog_resp = client
+            .get(format!(
+                "http://{}/api/keys/{}/logs/catalog?since=0&{}",
+                admin_addr, key_id, compound_query
+            ))
+            .header(reqwest::header::COOKIE, admin_cookie.clone())
+            .send()
+            .await
+            .expect("compound key catalog");
+        assert_eq!(key_catalog_resp.status(), reqwest::StatusCode::OK);
+
+        let token_list_resp = client
+            .get(format!(
+                "http://{}/api/tokens/{}/logs/list?limit=5&since={}&until={}&{}",
+                admin_addr,
+                token.id,
+                urlencoding::encode(&token_since),
+                urlencoding::encode(&token_until),
+                compound_query
+            ))
+            .header(reqwest::header::COOKIE, admin_cookie.clone())
+            .send()
+            .await
+            .expect("compound token list");
+        assert_eq!(token_list_resp.status(), reqwest::StatusCode::OK);
+        let token_list: serde_json::Value = token_list_resp.json().await.expect("token list json");
+        assert_eq!(
+            token_list
+                .pointer("/items/0/binding_effect_code")
+                .and_then(|value| value.as_str()),
+            Some(binding_effect)
+        );
+        assert_eq!(
+            token_list
+                .pointer("/items/0/selection_effect_code")
+                .and_then(|value| value.as_str()),
+            Some(selection_effect)
+        );
+
+        let token_catalog_resp = client
+            .get(format!(
+                "http://{}/api/tokens/{}/logs/catalog?since={}&until={}&{}",
+                admin_addr,
+                token.id,
+                urlencoding::encode(&token_since),
+                urlencoding::encode(&token_until),
+                compound_query
+            ))
+            .header(reqwest::header::COOKIE, admin_cookie)
+            .send()
+            .await
+            .expect("compound token catalog");
+        assert_eq!(token_catalog_resp.status(), reqwest::StatusCode::OK);
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -17424,13 +17690,53 @@ colo=LAX
         assert_eq!(seen[0].0, expected_api_key);
         assert_eq!(seen[0].1.as_deref(), Some(project_id));
 
-        let key_effect_code: String = sqlx::query_scalar(
-            "SELECT key_effect_code FROM request_logs ORDER BY id DESC LIMIT 1",
+        let effect_row = sqlx::query(
+            "SELECT key_effect_code, binding_effect_code, selection_effect_code FROM request_logs ORDER BY id DESC LIMIT 1",
         )
         .fetch_one(&pool)
         .await
-        .expect("load project-affinity key effect");
-        assert_eq!(key_effect_code, "http_project_affinity_bound");
+        .expect("load project-affinity effect row");
+        assert_eq!(
+            effect_row.try_get::<String, _>("key_effect_code").unwrap(),
+            "none"
+        );
+        assert_eq!(
+            effect_row
+                .try_get::<String, _>("binding_effect_code")
+                .unwrap(),
+            "http_project_affinity_bound"
+        );
+        assert_eq!(
+            effect_row
+                .try_get::<String, _>("selection_effect_code")
+                .unwrap(),
+            "none"
+        );
+
+        let token_effect_row = sqlx::query(
+            "SELECT key_effect_code, binding_effect_code, selection_effect_code FROM auth_token_logs ORDER BY id DESC LIMIT 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load project-affinity token effect row");
+        assert_eq!(
+            token_effect_row
+                .try_get::<String, _>("key_effect_code")
+                .unwrap(),
+            "none"
+        );
+        assert_eq!(
+            token_effect_row
+                .try_get::<String, _>("binding_effect_code")
+                .unwrap(),
+            "http_project_affinity_bound"
+        );
+        assert_eq!(
+            token_effect_row
+                .try_get::<String, _>("selection_effect_code")
+                .unwrap(),
+            "none"
+        );
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -23975,6 +24281,41 @@ colo=LAX
             last_rate_limit_reason.as_deref(),
             Some("upstream_rate_limited_429")
         );
+
+        let retry_request_effects: Vec<String> = sqlx::query_scalar(
+            r#"
+            SELECT key_effect_code
+            FROM request_logs
+            WHERE key_effect_code IN (
+                'mcp_session_init_backoff_set',
+                'mcp_session_retry_scheduled',
+                'mcp_session_retry_waited'
+            )
+            ORDER BY id ASC
+            "#,
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("load retry request log effects");
+        assert_eq!(
+            retry_request_effects.last().map(String::as_str),
+            Some("mcp_session_retry_waited")
+        );
+        assert!(
+            retry_request_effects
+                .iter()
+                .any(|code| code == "mcp_session_init_backoff_set"
+                    || code == "mcp_session_retry_scheduled"),
+            "first rate-limited follow-up attempt should retain a retry/backoff audit marker"
+        );
+
+        let latest_token_retry_effect: String = sqlx::query_scalar(
+            "SELECT key_effect_code FROM auth_token_logs ORDER BY id DESC LIMIT 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load latest token retry effect");
+        assert_eq!(latest_token_retry_effect, "mcp_session_retry_waited");
 
         let _ = std::fs::remove_file(db_path);
     }

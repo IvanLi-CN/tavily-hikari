@@ -228,6 +228,10 @@ export interface RequestLog {
   failure_kind?: string | null
   key_effect_code?: string
   key_effect_summary?: string | null
+  binding_effect_code?: string
+  binding_effect_summary?: string | null
+  selection_effect_code?: string
+  selection_effect_summary?: string | null
   request_body: string | null
   response_body: string | null
   forwarded_headers: string[]
@@ -256,6 +260,8 @@ export interface LogFacetOption {
 export interface RequestLogFacets {
   results: LogFacetOption[]
   keyEffects: LogFacetOption[]
+  bindingEffects: LogFacetOption[]
+  selectionEffects: LogFacetOption[]
   tokens: LogFacetOption[]
   keys: LogFacetOption[]
 }
@@ -293,6 +299,10 @@ interface ServerRequestLogFacets {
   results?: ServerLogFacetOption[]
   keyEffects?: ServerLogFacetOption[]
   key_effects?: ServerLogFacetOption[]
+  bindingEffects?: ServerLogFacetOption[]
+  binding_effects?: ServerLogFacetOption[]
+  selectionEffects?: ServerLogFacetOption[]
+  selection_effects?: ServerLogFacetOption[]
   tokens?: ServerLogFacetOption[]
   keys?: ServerLogFacetOption[]
 }
@@ -336,6 +346,8 @@ export interface RequestLogsPageQuery {
   requestKinds?: string[]
   result?: LogResultFilter
   keyEffect?: string
+  bindingEffect?: string
+  selectionEffect?: string
   operationalClass?: LogOperationalClass | 'all'
   includeBodies?: boolean
   tokenId?: string
@@ -358,6 +370,8 @@ function normalizeRequestLogFacets(value?: ServerRequestLogFacets): RequestLogFa
   return {
     results: value?.results ?? [],
     keyEffects: value?.keyEffects ?? value?.key_effects ?? [],
+    bindingEffects: value?.bindingEffects ?? value?.binding_effects ?? [],
+    selectionEffects: value?.selectionEffects ?? value?.selection_effects ?? [],
     tokens: value?.tokens ?? [],
     keys: value?.keys ?? [],
   }
@@ -399,6 +413,8 @@ function appendRequestLogsPageFilters(
     requestKinds,
     result,
     keyEffect,
+    bindingEffect,
+    selectionEffect,
     operationalClass,
     includeBodies,
     tokenId,
@@ -411,6 +427,8 @@ function appendRequestLogsPageFilters(
     | 'requestKinds'
     | 'result'
     | 'keyEffect'
+    | 'bindingEffect'
+    | 'selectionEffect'
     | 'operationalClass'
     | 'includeBodies'
     | 'tokenId'
@@ -426,6 +444,8 @@ function appendRequestLogsPageFilters(
   }
   if (result) params.set('result', result)
   if (keyEffect?.trim()) params.set('key_effect', keyEffect.trim())
+  if (bindingEffect?.trim()) params.set('binding_effect', bindingEffect.trim())
+  if (selectionEffect?.trim()) params.set('selection_effect', selectionEffect.trim())
   if (operationalClass && operationalClass !== 'all') params.set('operational_class', operationalClass)
   if (includeBodies) params.set('include_bodies', 'true')
   if (tokenId?.trim()) params.set('auth_token_id', tokenId.trim())

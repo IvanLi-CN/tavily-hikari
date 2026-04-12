@@ -175,6 +175,10 @@ CREATE TABLE request_logs_new (
     failure_kind TEXT,
     key_effect_code TEXT NOT NULL DEFAULT 'none',
     key_effect_summary TEXT,
+    binding_effect_code TEXT NOT NULL DEFAULT 'none',
+    binding_effect_summary TEXT,
+    selection_effect_code TEXT NOT NULL DEFAULT 'none',
+    selection_effect_summary TEXT,
     request_body BLOB,
     response_body BLOB,
     forwarded_headers TEXT,
@@ -202,6 +206,10 @@ CREATE TABLE auth_token_logs_new (
     failure_kind TEXT,
     key_effect_code TEXT NOT NULL DEFAULT 'none',
     key_effect_summary TEXT,
+    binding_effect_code TEXT NOT NULL DEFAULT 'none',
+    binding_effect_summary TEXT,
+    selection_effect_code TEXT NOT NULL DEFAULT 'none',
+    selection_effect_summary TEXT,
     counts_business_quota INTEGER NOT NULL DEFAULT 1,
     business_credits INTEGER,
     billing_subject TEXT,
@@ -228,6 +236,8 @@ struct RequestLogFilterParams<'a, 'b> {
     request_kinds: &'b [String],
     result_status: Option<&'b str>,
     key_effect_code: Option<&'b str>,
+    binding_effect_code: Option<&'b str>,
+    selection_effect_code: Option<&'b str>,
     auth_token_id: Option<&'b str>,
     key_id: Option<&'b str>,
     stored_request_kind_sql: &'a str,
@@ -241,6 +251,8 @@ pub(crate) struct RequestLogsCatalogFilters<'a> {
     pub(crate) request_kinds: &'a [String],
     pub(crate) result_status: Option<&'a str>,
     pub(crate) key_effect_code: Option<&'a str>,
+    pub(crate) binding_effect_code: Option<&'a str>,
+    pub(crate) selection_effect_code: Option<&'a str>,
     pub(crate) auth_token_id: Option<&'a str>,
     pub(crate) key_id: Option<&'a str>,
     pub(crate) operational_class: Option<&'a str>,
@@ -251,6 +263,8 @@ pub(crate) struct TokenLogsCatalogFilters<'a> {
     pub(crate) request_kinds: &'a [String],
     pub(crate) result_status: Option<&'a str>,
     pub(crate) key_effect_code: Option<&'a str>,
+    pub(crate) binding_effect_code: Option<&'a str>,
+    pub(crate) selection_effect_code: Option<&'a str>,
     pub(crate) key_id: Option<&'a str>,
     pub(crate) operational_class: Option<&'a str>,
 }
@@ -1157,6 +1171,10 @@ impl KeyStore {
                 failure_kind TEXT,
                 key_effect_code TEXT NOT NULL DEFAULT 'none',
                 key_effect_summary TEXT,
+                binding_effect_code TEXT NOT NULL DEFAULT 'none',
+                binding_effect_summary TEXT,
+                selection_effect_code TEXT NOT NULL DEFAULT 'none',
+                selection_effect_summary TEXT,
                 request_body BLOB,
                 response_body BLOB,
                 forwarded_headers TEXT,
@@ -1205,6 +1223,18 @@ impl KeyStore {
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_request_logs_key_effect_time
                ON request_logs(key_effect_code, created_at DESC, id DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_request_logs_binding_effect_time
+               ON request_logs(binding_effect_code, created_at DESC, id DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_request_logs_selection_effect_time
+               ON request_logs(selection_effect_code, created_at DESC, id DESC)"#,
         )
         .execute(&self.pool)
         .await?;
@@ -1754,6 +1784,10 @@ impl KeyStore {
                 failure_kind TEXT,
                 key_effect_code TEXT NOT NULL DEFAULT 'none',
                 key_effect_summary TEXT,
+                binding_effect_code TEXT NOT NULL DEFAULT 'none',
+                binding_effect_summary TEXT,
+                selection_effect_code TEXT NOT NULL DEFAULT 'none',
+                selection_effect_summary TEXT,
                 counts_business_quota INTEGER NOT NULL DEFAULT 1,
                 business_credits INTEGER,
                 billing_subject TEXT,
@@ -1802,6 +1836,46 @@ impl KeyStore {
             .await?
         {
             sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN key_effect_summary TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
+
+        if !self
+            .table_column_exists("auth_token_logs", "binding_effect_code")
+            .await?
+        {
+            sqlx::query(
+                "ALTER TABLE auth_token_logs ADD COLUMN binding_effect_code TEXT NOT NULL DEFAULT 'none'",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
+
+        if !self
+            .table_column_exists("auth_token_logs", "binding_effect_summary")
+            .await?
+        {
+            sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN binding_effect_summary TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
+
+        if !self
+            .table_column_exists("auth_token_logs", "selection_effect_code")
+            .await?
+        {
+            sqlx::query(
+                "ALTER TABLE auth_token_logs ADD COLUMN selection_effect_code TEXT NOT NULL DEFAULT 'none'",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
+
+        if !self
+            .table_column_exists("auth_token_logs", "selection_effect_summary")
+            .await?
+        {
+            sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN selection_effect_summary TEXT")
                 .execute(&self.pool)
                 .await?;
         }
@@ -1881,6 +1955,7 @@ impl KeyStore {
         }
 
         self.ensure_auth_token_logs_indexes().await?;
+        self.migrate_log_effect_buckets().await?;
 
         sqlx::query(
             r#"
@@ -4669,6 +4744,10 @@ impl KeyStore {
                         failure_kind,
                         key_effect_code,
                         key_effect_summary,
+                        binding_effect_code,
+                        binding_effect_summary,
+                        selection_effect_code,
+                        selection_effect_summary,
                         request_body,
                         response_body,
                         forwarded_headers,
@@ -4694,6 +4773,10 @@ impl KeyStore {
                         NULL AS failure_kind,
                         'none' AS key_effect_code,
                         NULL AS key_effect_summary,
+                        'none' AS binding_effect_code,
+                        NULL AS binding_effect_summary,
+                        'none' AS selection_effect_code,
+                        NULL AS selection_effect_summary,
                         request_body,
                         response_body,
                         forwarded_headers,
@@ -4728,6 +4811,10 @@ impl KeyStore {
                         failure_kind,
                         key_effect_code,
                         key_effect_summary,
+                        binding_effect_code,
+                        binding_effect_summary,
+                        selection_effect_code,
+                        selection_effect_summary,
                         request_body,
                         response_body,
                         forwarded_headers,
@@ -4753,6 +4840,10 @@ impl KeyStore {
                         failure_kind,
                         key_effect_code,
                         key_effect_summary,
+                        binding_effect_code,
+                        binding_effect_summary,
+                        selection_effect_code,
+                        selection_effect_summary,
                         request_body,
                         response_body,
                         forwarded_headers,
@@ -4904,6 +4995,10 @@ impl KeyStore {
                         failure_kind,
                         key_effect_code,
                         key_effect_summary,
+                        binding_effect_code,
+                        binding_effect_summary,
+                        selection_effect_code,
+                        selection_effect_summary,
                         counts_business_quota,
                         business_credits,
                         billing_subject,
@@ -4928,6 +5023,10 @@ impl KeyStore {
                         failure_kind,
                         key_effect_code,
                         key_effect_summary,
+                        binding_effect_code,
+                        binding_effect_summary,
+                        selection_effect_code,
+                        selection_effect_summary,
                         counts_business_quota,
                         business_credits,
                         billing_subject,
@@ -5082,6 +5181,18 @@ impl KeyStore {
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_token_logs_request_log_id
                ON auth_token_logs(request_log_id)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_token_logs_binding_effect_time
+               ON auth_token_logs(token_id, binding_effect_code, created_at DESC, id DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_token_logs_selection_effect_time
+               ON auth_token_logs(token_id, selection_effect_code, created_at DESC, id DESC)"#,
         )
         .execute(&self.pool)
         .await?;
@@ -5635,6 +5746,46 @@ impl KeyStore {
                 .await?;
         }
 
+        if !self
+            .request_logs_column_exists("binding_effect_code")
+            .await?
+        {
+            sqlx::query(
+                "ALTER TABLE request_logs ADD COLUMN binding_effect_code TEXT NOT NULL DEFAULT 'none'",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
+
+        if !self
+            .request_logs_column_exists("binding_effect_summary")
+            .await?
+        {
+            sqlx::query("ALTER TABLE request_logs ADD COLUMN binding_effect_summary TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
+
+        if !self
+            .request_logs_column_exists("selection_effect_code")
+            .await?
+        {
+            sqlx::query(
+                "ALTER TABLE request_logs ADD COLUMN selection_effect_code TEXT NOT NULL DEFAULT 'none'",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
+
+        if !self
+            .request_logs_column_exists("selection_effect_summary")
+            .await?
+        {
+            sqlx::query("ALTER TABLE request_logs ADD COLUMN selection_effect_summary TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
+
         let mut request_kind_schema_changed =
             self.ensure_request_logs_request_kind_columns().await?;
 
@@ -5906,6 +6057,8 @@ impl KeyStore {
                 SELECT id, api_key_id, auth_token_id, method, path, query, status_code, tavily_status_code, error_message,
                        result_status, request_kind_key, request_kind_label, request_kind_detail,
                        business_credits, failure_kind, key_effect_code, key_effect_summary,
+                binding_effect_code, binding_effect_summary,
+                selection_effect_code, selection_effect_summary,
                        request_body, response_body, created_at, forwarded_headers, dropped_headers
                 FROM request_logs
                 WHERE api_key_id = ? AND visibility = ? AND created_at >= ?
@@ -5925,6 +6078,8 @@ impl KeyStore {
                 SELECT id, api_key_id, auth_token_id, method, path, query, status_code, tavily_status_code, error_message,
                        result_status, request_kind_key, request_kind_label, request_kind_detail,
                        business_credits, failure_kind, key_effect_code, key_effect_summary,
+                binding_effect_code, binding_effect_summary,
+                selection_effect_code, selection_effect_summary,
                        request_body, response_body, created_at, forwarded_headers, dropped_headers
                 FROM request_logs
                 WHERE api_key_id = ? AND visibility = ?
@@ -11713,6 +11868,10 @@ impl KeyStore {
         failure_kind: Option<&str>,
         key_effect_code: &str,
         key_effect_summary: Option<&str>,
+        binding_effect_code: &str,
+        binding_effect_summary: Option<&str>,
+        selection_effect_code: &str,
+        selection_effect_summary: Option<&str>,
         request_log_id: Option<i64>,
     ) -> Result<(), ProxyError> {
         let created_at = Utc::now().timestamp();
@@ -11730,14 +11889,18 @@ impl KeyStore {
             .map(str::to_string)
             .or_else(|| classify_failure_kind(path, http_status, mcp_status, error_message, &[]));
         let key_effect_summary = key_effect_summary.map(str::to_string);
+        let binding_effect_summary = binding_effect_summary.map(str::to_string);
+        let selection_effect_summary = selection_effect_summary.map(str::to_string);
         sqlx::query(
             r#"
             INSERT INTO auth_token_logs (
                 token_id, method, path, query, http_status, mcp_status,
                 request_kind_key, request_kind_label, request_kind_detail,
                 result_status, error_message, failure_kind, key_effect_code, key_effect_summary,
+                binding_effect_code, binding_effect_summary,
+                selection_effect_code, selection_effect_summary,
                 counts_business_quota, request_log_id, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(token_id)
@@ -11754,6 +11917,10 @@ impl KeyStore {
         .bind(failure_kind)
         .bind(key_effect_code)
         .bind(key_effect_summary)
+        .bind(binding_effect_code)
+        .bind(binding_effect_summary)
+        .bind(selection_effect_code)
+        .bind(selection_effect_summary)
         .bind(counts_business_quota)
         .bind(request_log_id)
         .bind(created_at)
@@ -11791,6 +11958,10 @@ impl KeyStore {
         failure_kind: Option<&str>,
         key_effect_code: &str,
         key_effect_summary: Option<&str>,
+        binding_effect_code: &str,
+        binding_effect_summary: Option<&str>,
+        selection_effect_code: &str,
+        selection_effect_summary: Option<&str>,
         request_log_id: Option<i64>,
     ) -> Result<i64, ProxyError> {
         let created_at = Utc::now().timestamp();
@@ -11818,6 +11989,8 @@ impl KeyStore {
             .map(str::to_string)
             .or_else(|| classify_failure_kind(path, http_status, mcp_status, error_message, &[]));
         let key_effect_summary = key_effect_summary.map(str::to_string);
+        let binding_effect_summary = binding_effect_summary.map(str::to_string);
+        let selection_effect_summary = selection_effect_summary.map(str::to_string);
         let log_id: i64 = sqlx::query_scalar(
             r#"
             INSERT INTO auth_token_logs (
@@ -11835,6 +12008,10 @@ impl KeyStore {
                 failure_kind,
                 key_effect_code,
                 key_effect_summary,
+                binding_effect_code,
+                binding_effect_summary,
+                selection_effect_code,
+                selection_effect_summary,
                 counts_business_quota,
                 business_credits,
                 billing_subject,
@@ -11842,7 +12019,7 @@ impl KeyStore {
                 api_key_id,
                 request_log_id,
                 created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
             "#,
         )
@@ -11860,6 +12037,10 @@ impl KeyStore {
         .bind(failure_kind)
         .bind(key_effect_code)
         .bind(key_effect_summary)
+        .bind(binding_effect_code)
+        .bind(binding_effect_summary)
+        .bind(selection_effect_code)
+        .bind(selection_effect_summary)
         .bind(counts_business_quota)
         .bind(business_credits)
         .bind(billing_subject)
@@ -12336,7 +12517,8 @@ impl KeyStore {
                        CASE WHEN billing_state = 'charged' THEN business_credits ELSE NULL END AS business_credits,
                        request_kind_key, request_kind_label, request_kind_detail,
                        counts_business_quota, result_status, error_message, failure_kind, key_effect_code,
-                       key_effect_summary, created_at
+                       key_effect_summary, binding_effect_code, binding_effect_summary,
+                       selection_effect_code, selection_effect_summary, created_at
                 FROM auth_token_logs
                 WHERE token_id = ? AND id < ?
                 ORDER BY created_at DESC, id DESC
@@ -12355,7 +12537,8 @@ impl KeyStore {
                        CASE WHEN billing_state = 'charged' THEN business_credits ELSE NULL END AS business_credits,
                        request_kind_key, request_kind_label, request_kind_detail,
                        counts_business_quota, result_status, error_message, failure_kind, key_effect_code,
-                       key_effect_summary, created_at
+                       key_effect_summary, binding_effect_code, binding_effect_summary,
+                       selection_effect_code, selection_effect_summary, created_at
                 FROM auth_token_logs
                 WHERE token_id = ?
                 ORDER BY created_at DESC, id DESC
@@ -12495,6 +12678,10 @@ impl KeyStore {
             failure_kind: row.try_get("failure_kind")?,
             key_effect_code: row.try_get("key_effect_code")?,
             key_effect_summary: row.try_get("key_effect_summary")?,
+            binding_effect_code: row.try_get("binding_effect_code")?,
+            binding_effect_summary: row.try_get("binding_effect_summary")?,
+            selection_effect_code: row.try_get("selection_effect_code")?,
+            selection_effect_summary: row.try_get("selection_effect_summary")?,
             created_at: row.try_get("created_at")?,
         })
     }
@@ -12600,6 +12787,26 @@ impl KeyStore {
                 filters,
             )
             .await?;
+        let binding_effects = self
+            .fetch_token_log_facet_options(
+                token_id,
+                since,
+                until,
+                "binding_effect_code",
+                false,
+                filters,
+            )
+            .await?;
+        let selection_effects = self
+            .fetch_token_log_facet_options(
+                token_id,
+                since,
+                until,
+                "selection_effect_code",
+                false,
+                filters,
+            )
+            .await?;
         let keys = self
             .fetch_token_log_facet_options(token_id, since, until, "api_key_id", true, filters)
             .await?;
@@ -12609,6 +12816,8 @@ impl KeyStore {
             facets: RequestLogPageFacets {
                 results,
                 key_effects,
+                binding_effects,
+                selection_effects,
                 tokens: Vec::new(),
                 keys,
             },
@@ -12629,6 +12838,8 @@ impl KeyStore {
         request_kinds: &[String],
         result_status: Option<&str>,
         key_effect_code: Option<&str>,
+        binding_effect_code: Option<&str>,
+        selection_effect_code: Option<&str>,
         key_id: Option<&str>,
         operational_class: Option<&str>,
         cursor: Option<&RequestLogsCursor>,
@@ -12667,7 +12878,8 @@ impl KeyStore {
                    request_kind_detail,
                    counts_business_quota,
                    result_status, error_message, failure_kind, key_effect_code,
-                   key_effect_summary, created_at
+                   key_effect_summary, binding_effect_code, binding_effect_summary,
+                   selection_effect_code, selection_effect_summary, created_at
             FROM auth_token_logs
             WHERE token_id =
             "#
@@ -12693,6 +12905,14 @@ impl KeyStore {
         if let Some(key_effect_code) = key_effect_code {
             rows_query.push(" AND key_effect_code = ");
             rows_query.push_bind(key_effect_code);
+        }
+        if let Some(binding_effect_code) = binding_effect_code {
+            rows_query.push(" AND binding_effect_code = ");
+            rows_query.push_bind(binding_effect_code);
+        }
+        if let Some(selection_effect_code) = selection_effect_code {
+            rows_query.push(" AND selection_effect_code = ");
+            rows_query.push_bind(selection_effect_code);
         }
         if let Some(key_id) = key_id {
             rows_query.push(" AND api_key_id = ");
@@ -12795,6 +13015,8 @@ impl KeyStore {
         request_kinds: &[String],
         result_status: Option<&str>,
         key_effect_code: Option<&str>,
+        binding_effect_code: Option<&str>,
+        selection_effect_code: Option<&str>,
         key_id: Option<&str>,
         operational_class: Option<&str>,
     ) -> Result<TokenLogsPage, ProxyError> {
@@ -12846,6 +13068,14 @@ impl KeyStore {
             total_query.push(" AND key_effect_code = ");
             total_query.push_bind(key_effect_code);
         }
+        if let Some(binding_effect_code) = binding_effect_code {
+            total_query.push(" AND binding_effect_code = ");
+            total_query.push_bind(binding_effect_code);
+        }
+        if let Some(selection_effect_code) = selection_effect_code {
+            total_query.push(" AND selection_effect_code = ");
+            total_query.push_bind(selection_effect_code);
+        }
         if let Some(key_id) = key_id {
             total_query.push(" AND api_key_id = ");
             total_query.push_bind(key_id);
@@ -12884,7 +13114,8 @@ impl KeyStore {
                    request_kind_detail,
                    counts_business_quota,
                    result_status, error_message, failure_kind, key_effect_code,
-                   key_effect_summary, created_at
+                   key_effect_summary, binding_effect_code, binding_effect_summary,
+                   selection_effect_code, selection_effect_summary, created_at
             FROM auth_token_logs
             WHERE token_id =
             "#
@@ -12910,6 +13141,14 @@ impl KeyStore {
         if let Some(key_effect_code) = key_effect_code {
             rows_query.push(" AND key_effect_code = ");
             rows_query.push_bind(key_effect_code);
+        }
+        if let Some(binding_effect_code) = binding_effect_code {
+            rows_query.push(" AND binding_effect_code = ");
+            rows_query.push_bind(binding_effect_code);
+        }
+        if let Some(selection_effect_code) = selection_effect_code {
+            rows_query.push(" AND selection_effect_code = ");
+            rows_query.push_bind(selection_effect_code);
         }
         if let Some(key_id) = key_id {
             rows_query.push(" AND api_key_id = ");
@@ -12950,6 +13189,8 @@ impl KeyStore {
             request_kinds: &[],
             result_status: None,
             key_effect_code: None,
+            binding_effect_code: None,
+            selection_effect_code: None,
             key_id: None,
             operational_class: None,
         };
@@ -12965,6 +13206,26 @@ impl KeyStore {
                 since,
                 until,
                 "key_effect_code",
+                false,
+                empty_filters,
+            )
+            .await?;
+        let binding_effects = self
+            .fetch_token_log_facet_options(
+                token_id,
+                since,
+                until,
+                "binding_effect_code",
+                false,
+                empty_filters,
+            )
+            .await?;
+        let selection_effects = self
+            .fetch_token_log_facet_options(
+                token_id,
+                since,
+                until,
+                "selection_effect_code",
                 false,
                 empty_filters,
             )
@@ -12987,6 +13248,8 @@ impl KeyStore {
             facets: RequestLogPageFacets {
                 results,
                 key_effects,
+                binding_effects,
+                selection_effects,
                 tokens: Vec::new(),
                 keys,
             },
@@ -13910,6 +14173,8 @@ impl KeyStore {
             }
         });
         let key_effect_summary = entry.key_effect_summary.map(str::to_string);
+        let binding_effect_summary = entry.binding_effect_summary.map(str::to_string);
+        let selection_effect_summary = entry.selection_effect_summary.map(str::to_string);
         let request_kind = normalize_request_kind_for_response_context(
             classify_token_request_kind(entry.path, Some(entry.request_body)),
             ResponseRequestKindContext {
@@ -13978,12 +14243,16 @@ impl KeyStore {
                 failure_kind,
                 key_effect_code,
                 key_effect_summary,
+                binding_effect_code,
+                binding_effect_summary,
+                selection_effect_code,
+                selection_effect_summary,
                 request_body,
                 response_body,
                 forwarded_headers,
                 dropped_headers,
                 created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
             "#,
         )
@@ -14003,6 +14272,10 @@ impl KeyStore {
         .bind(failure_kind)
         .bind(entry.key_effect_code)
         .bind(key_effect_summary)
+        .bind(entry.binding_effect_code)
+        .bind(binding_effect_summary)
+        .bind(entry.selection_effect_code)
+        .bind(selection_effect_summary)
         .bind(entry.request_body)
         .bind(entry.response_body)
         .bind(forwarded_json)
@@ -14644,6 +14917,10 @@ impl KeyStore {
                 failure_kind,
                 key_effect_code,
                 key_effect_summary,
+                binding_effect_code,
+                binding_effect_summary,
+                selection_effect_code,
+                selection_effect_summary,
                 request_body,
                 response_body,
                 forwarded_headers,
@@ -14701,6 +14978,8 @@ impl KeyStore {
                 None,
                 &request_kinds,
                 result_status,
+                None,
+                None,
                 None,
                 None,
                 None,
@@ -14779,6 +15058,10 @@ impl KeyStore {
             failure_kind,
             key_effect_code: row.try_get("key_effect_code")?,
             key_effect_summary: row.try_get("key_effect_summary")?,
+            binding_effect_code: row.try_get("binding_effect_code")?,
+            binding_effect_summary: row.try_get("binding_effect_summary")?,
+            selection_effect_code: row.try_get("selection_effect_code")?,
+            selection_effect_summary: row.try_get("selection_effect_summary")?,
             operational_class,
             request_body: request_body.unwrap_or_default(),
             response_body: response_body.unwrap_or_default(),
@@ -14939,6 +15222,8 @@ impl KeyStore {
         filters.request_kinds.is_empty()
             && filters.result_status.is_none()
             && filters.key_effect_code.is_none()
+            && filters.binding_effect_code.is_none()
+            && filters.selection_effect_code.is_none()
             && filters.auth_token_id.is_none()
             && filters.key_id.is_none()
             && filters.operational_class.is_none()
@@ -14948,8 +15233,91 @@ impl KeyStore {
         filters.request_kinds.is_empty()
             && filters.result_status.is_none()
             && filters.key_effect_code.is_none()
+            && filters.binding_effect_code.is_none()
+            && filters.selection_effect_code.is_none()
             && filters.key_id.is_none()
             && filters.operational_class.is_none()
+    }
+
+    async fn migrate_log_effect_buckets(&self) -> Result<(), ProxyError> {
+        let binding_codes = [
+            KEY_EFFECT_HTTP_PROJECT_AFFINITY_BOUND,
+            KEY_EFFECT_HTTP_PROJECT_AFFINITY_REUSED,
+            KEY_EFFECT_HTTP_PROJECT_AFFINITY_REBOUND,
+        ];
+        let selection_codes = [
+            KEY_EFFECT_MCP_SESSION_INIT_COOLDOWN_AVOIDED,
+            KEY_EFFECT_MCP_SESSION_INIT_RATE_LIMIT_AVOIDED,
+            KEY_EFFECT_MCP_SESSION_INIT_PRESSURE_AVOIDED,
+            KEY_EFFECT_HTTP_PROJECT_AFFINITY_COOLDOWN_AVOIDED,
+            KEY_EFFECT_HTTP_PROJECT_AFFINITY_RATE_LIMIT_AVOIDED,
+            KEY_EFFECT_HTTP_PROJECT_AFFINITY_PRESSURE_AVOIDED,
+        ];
+        debug_assert!(
+            binding_codes
+                .iter()
+                .all(|code| is_binding_effect_code(code))
+        );
+        debug_assert!(
+            selection_codes
+                .iter()
+                .all(|code| is_selection_effect_code(code))
+        );
+        debug_assert!(
+            [
+                KEY_EFFECT_NONE,
+                KEY_EFFECT_QUARANTINED,
+                KEY_EFFECT_MARKED_EXHAUSTED,
+                KEY_EFFECT_RESTORED_ACTIVE,
+                "cleared_quarantine",
+                KEY_EFFECT_MCP_SESSION_INIT_BACKOFF_SET,
+                KEY_EFFECT_MCP_SESSION_RETRY_WAITED,
+                KEY_EFFECT_MCP_SESSION_RETRY_SCHEDULED,
+            ]
+            .iter()
+            .all(|code| is_key_effect_code(code))
+        );
+
+        for table in ["request_logs", "auth_token_logs"] {
+            let binding_sql = format!(
+                "UPDATE {table}
+                 SET binding_effect_code = key_effect_code,
+                     binding_effect_summary = key_effect_summary,
+                     key_effect_code = 'none',
+                     key_effect_summary = NULL
+                 WHERE key_effect_code IN (?, ?, ?)
+                   AND (binding_effect_code IS NULL OR TRIM(binding_effect_code) = '' OR binding_effect_code = 'none')
+                   AND (selection_effect_code IS NULL OR TRIM(selection_effect_code) = '' OR selection_effect_code = 'none')"
+            );
+            sqlx::query(&binding_sql)
+                .bind(binding_codes[0])
+                .bind(binding_codes[1])
+                .bind(binding_codes[2])
+                .execute(&self.pool)
+                .await?;
+
+            let selection_sql = format!(
+                "UPDATE {table}
+                 SET selection_effect_code = key_effect_code,
+                     selection_effect_summary = key_effect_summary,
+                     key_effect_code = 'none',
+                     key_effect_summary = NULL
+                 WHERE key_effect_code IN (?, ?, ?, ?, ?, ?)
+                   AND (binding_effect_code IS NULL OR TRIM(binding_effect_code) = '' OR binding_effect_code = 'none')
+                   AND (selection_effect_code IS NULL OR TRIM(selection_effect_code) = '' OR selection_effect_code = 'none')"
+            );
+            sqlx::query(&selection_sql)
+                .bind(selection_codes[0])
+                .bind(selection_codes[1])
+                .bind(selection_codes[2])
+                .bind(selection_codes[3])
+                .bind(selection_codes[4])
+                .bind(selection_codes[5])
+                .execute(&self.pool)
+                .await?;
+        }
+
+        Ok(())
     }
 
     fn push_request_logs_scope<'a>(
@@ -14985,6 +15353,8 @@ impl KeyStore {
             request_kinds,
             result_status,
             key_effect_code,
+            binding_effect_code,
+            selection_effect_code,
             auth_token_id,
             key_id,
             stored_request_kind_sql,
@@ -15008,6 +15378,24 @@ impl KeyStore {
                 " WHERE key_effect_code = "
             });
             builder.push_bind(key_effect_code.to_string());
+            has_where = true;
+        }
+        if let Some(binding_effect_code) = binding_effect_code {
+            builder.push(if has_where {
+                " AND binding_effect_code = "
+            } else {
+                " WHERE binding_effect_code = "
+            });
+            builder.push_bind(binding_effect_code.to_string());
+            has_where = true;
+        }
+        if let Some(selection_effect_code) = selection_effect_code {
+            builder.push(if has_where {
+                " AND selection_effect_code = "
+            } else {
+                " WHERE selection_effect_code = "
+            });
+            builder.push_bind(selection_effect_code.to_string());
             has_where = true;
         }
         if let Some(auth_token_id) = auth_token_id {
@@ -15062,6 +15450,8 @@ impl KeyStore {
                 request_kinds: &normalized_request_kinds,
                 result_status: None,
                 key_effect_code: filters.key_effect_code,
+                binding_effect_code: filters.binding_effect_code,
+                selection_effect_code: filters.selection_effect_code,
                 auth_token_id: filters.auth_token_id,
                 key_id: filters.key_id,
                 stored_request_kind_sql,
@@ -15119,6 +15509,14 @@ impl KeyStore {
         if let Some(key_effect_code) = filters.key_effect_code {
             builder.push(" AND key_effect_code = ");
             builder.push_bind(key_effect_code);
+        }
+        if let Some(binding_effect_code) = filters.binding_effect_code {
+            builder.push(" AND binding_effect_code = ");
+            builder.push_bind(binding_effect_code);
+        }
+        if let Some(selection_effect_code) = filters.selection_effect_code {
+            builder.push(" AND selection_effect_code = ");
+            builder.push_bind(selection_effect_code);
         }
         if let Some(key_id) = filters.key_id {
             builder.push(" AND api_key_id = ");
@@ -15446,6 +15844,24 @@ impl KeyStore {
                 filters,
             )
             .await?;
+        let binding_effects = self
+            .fetch_request_log_facet_options(
+                "binding_effect_code",
+                scoped_key_id,
+                since,
+                false,
+                filters,
+            )
+            .await?;
+        let selection_effects = self
+            .fetch_request_log_facet_options(
+                "selection_effect_code",
+                scoped_key_id,
+                since,
+                false,
+                filters,
+            )
+            .await?;
         let tokens = if include_token_facets {
             self.fetch_request_log_facet_options(
                 "auth_token_id",
@@ -15471,6 +15887,8 @@ impl KeyStore {
             facets: RequestLogPageFacets {
                 results,
                 key_effects,
+                binding_effects,
+                selection_effects,
                 tokens,
                 keys,
             },
@@ -15489,6 +15907,8 @@ impl KeyStore {
         request_kinds: &[String],
         result_status: Option<&str>,
         key_effect_code: Option<&str>,
+        binding_effect_code: Option<&str>,
+        selection_effect_code: Option<&str>,
         auth_token_id: Option<&str>,
         key_id: Option<&str>,
         operational_class: Option<&str>,
@@ -15577,6 +15997,10 @@ impl KeyStore {
                 failure_kind,
                 key_effect_code,
                 key_effect_summary,
+                binding_effect_code,
+                binding_effect_summary,
+                selection_effect_code,
+                selection_effect_summary,
                 NULL AS request_body,
                 NULL AS response_body,
                 forwarded_headers,
@@ -15595,6 +16019,8 @@ impl KeyStore {
                 request_kinds: &normalized_request_kinds,
                 result_status: None,
                 key_effect_code,
+                binding_effect_code,
+                selection_effect_code,
                 auth_token_id,
                 key_id,
                 stored_request_kind_sql,
@@ -15704,6 +16130,8 @@ impl KeyStore {
         request_kinds: &[String],
         result_status: Option<&str>,
         key_effect_code: Option<&str>,
+        binding_effect_code: Option<&str>,
+        selection_effect_code: Option<&str>,
         auth_token_id: Option<&str>,
         key_id: Option<&str>,
         operational_class: Option<&str>,
@@ -15750,6 +16178,8 @@ impl KeyStore {
                 request_kinds: &normalized_request_kinds,
                 result_status: None,
                 key_effect_code,
+                binding_effect_code,
+                selection_effect_code,
                 auth_token_id,
                 key_id,
                 stored_request_kind_sql,
@@ -15803,6 +16233,10 @@ impl KeyStore {
                 failure_kind,
                 key_effect_code,
                 key_effect_summary,
+                binding_effect_code,
+                binding_effect_summary,
+                selection_effect_code,
+                selection_effect_summary,
                 request_body,
                 response_body,
                 forwarded_headers,
@@ -15819,6 +16253,8 @@ impl KeyStore {
                 request_kinds: &normalized_request_kinds,
                 result_status: None,
                 key_effect_code,
+                binding_effect_code,
+                selection_effect_code,
                 auth_token_id,
                 key_id,
                 stored_request_kind_sql,
@@ -15861,6 +16297,8 @@ impl KeyStore {
             request_kinds: &[],
             result_status: None,
             key_effect_code: None,
+            binding_effect_code: None,
+            selection_effect_code: None,
             auth_token_id: None,
             key_id: None,
             operational_class: None,
@@ -15874,6 +16312,24 @@ impl KeyStore {
         let key_effects = self
             .fetch_request_log_facet_options(
                 "key_effect_code",
+                scoped_key_id,
+                since,
+                false,
+                empty_filters,
+            )
+            .await?;
+        let binding_effects = self
+            .fetch_request_log_facet_options(
+                "binding_effect_code",
+                scoped_key_id,
+                since,
+                false,
+                empty_filters,
+            )
+            .await?;
+        let selection_effects = self
+            .fetch_request_log_facet_options(
+                "selection_effect_code",
                 scoped_key_id,
                 since,
                 false,
@@ -15912,6 +16368,8 @@ impl KeyStore {
             facets: RequestLogPageFacets {
                 results,
                 key_effects,
+                binding_effects,
+                selection_effects,
                 tokens,
                 keys,
             },

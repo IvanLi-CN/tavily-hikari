@@ -356,6 +356,8 @@ const KEY_EFFECT_QUARANTINED: &str = "quarantined";
 const KEY_EFFECT_MARKED_EXHAUSTED: &str = "marked_exhausted";
 const KEY_EFFECT_RESTORED_ACTIVE: &str = "restored_active";
 const KEY_EFFECT_MCP_SESSION_INIT_BACKOFF_SET: &str = "mcp_session_init_backoff_set";
+const KEY_EFFECT_MCP_SESSION_RETRY_WAITED: &str = "mcp_session_retry_waited";
+const KEY_EFFECT_MCP_SESSION_RETRY_SCHEDULED: &str = "mcp_session_retry_scheduled";
 const KEY_EFFECT_MCP_SESSION_INIT_COOLDOWN_AVOIDED: &str = "mcp_session_init_cooldown_avoided";
 const KEY_EFFECT_MCP_SESSION_INIT_RATE_LIMIT_AVOIDED: &str = "mcp_session_init_rate_limit_avoided";
 const KEY_EFFECT_MCP_SESSION_INIT_PRESSURE_AVOIDED: &str = "mcp_session_init_pressure_avoided";
@@ -427,6 +429,43 @@ const BLOCKED_HEADERS: &[&str] = &[
     "x-akamai-forwarded-for",
     "cdn-loop",
 ];
+
+pub(crate) fn is_binding_effect_code(code: &str) -> bool {
+    matches!(
+        code,
+        KEY_EFFECT_NONE
+            | KEY_EFFECT_HTTP_PROJECT_AFFINITY_BOUND
+            | KEY_EFFECT_HTTP_PROJECT_AFFINITY_REUSED
+            | KEY_EFFECT_HTTP_PROJECT_AFFINITY_REBOUND
+    )
+}
+
+pub(crate) fn is_selection_effect_code(code: &str) -> bool {
+    matches!(
+        code,
+        KEY_EFFECT_NONE
+            | KEY_EFFECT_MCP_SESSION_INIT_COOLDOWN_AVOIDED
+            | KEY_EFFECT_MCP_SESSION_INIT_RATE_LIMIT_AVOIDED
+            | KEY_EFFECT_MCP_SESSION_INIT_PRESSURE_AVOIDED
+            | KEY_EFFECT_HTTP_PROJECT_AFFINITY_COOLDOWN_AVOIDED
+            | KEY_EFFECT_HTTP_PROJECT_AFFINITY_RATE_LIMIT_AVOIDED
+            | KEY_EFFECT_HTTP_PROJECT_AFFINITY_PRESSURE_AVOIDED
+    )
+}
+
+pub(crate) fn is_key_effect_code(code: &str) -> bool {
+    matches!(
+        code,
+        KEY_EFFECT_NONE
+            | KEY_EFFECT_QUARANTINED
+            | KEY_EFFECT_MARKED_EXHAUSTED
+            | KEY_EFFECT_RESTORED_ACTIVE
+            | "cleared_quarantine"
+            | KEY_EFFECT_MCP_SESSION_INIT_BACKOFF_SET
+            | KEY_EFFECT_MCP_SESSION_RETRY_WAITED
+            | KEY_EFFECT_MCP_SESSION_RETRY_SCHEDULED
+    )
+}
 
 const ALLOWED_HEADERS: &[&str] = &[
     "accept",

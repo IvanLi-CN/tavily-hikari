@@ -208,6 +208,10 @@ struct RequestLogView {
     failure_kind: Option<String>,
     key_effect_code: String,
     key_effect_summary: Option<String>,
+    binding_effect_code: String,
+    binding_effect_summary: Option<String>,
+    selection_effect_code: String,
+    selection_effect_summary: Option<String>,
     request_body: Option<String>,
     response_body: Option<String>,
     forwarded_headers: Vec<String>,
@@ -419,6 +423,10 @@ struct TokenLogView {
     failure_kind: Option<String>,
     key_effect_code: String,
     key_effect_summary: Option<String>,
+    binding_effect_code: String,
+    binding_effect_summary: Option<String>,
+    selection_effect_code: String,
+    selection_effect_summary: Option<String>,
     created_at: i64,
     #[serde(rename = "operationalClass")]
     operational_class: String,
@@ -461,6 +469,10 @@ impl From<TokenLogRecord> for TokenLogView {
             failure_kind: r.failure_kind,
             key_effect_code: r.key_effect_code,
             key_effect_summary: r.key_effect_summary,
+            binding_effect_code: r.binding_effect_code,
+            binding_effect_summary: r.binding_effect_summary,
+            selection_effect_code: r.selection_effect_code,
+            selection_effect_summary: r.selection_effect_summary,
             created_at: r.created_at,
             operational_class: operational_class.to_string(),
             request_kind_protocol_group: request_kind_protocol_group.to_string(),
@@ -501,6 +513,8 @@ struct LogsQuery {
     per_page: Option<i64>,
     result: Option<String>,
     key_effect: Option<String>,
+    binding_effect: Option<String>,
+    selection_effect: Option<String>,
     auth_token_id: Option<String>,
     key_id: Option<String>,
     operational_class: Option<String>,
@@ -514,6 +528,8 @@ struct CursorLogsQuery {
     direction: Option<String>,
     result: Option<String>,
     key_effect: Option<String>,
+    binding_effect: Option<String>,
+    selection_effect: Option<String>,
     auth_token_id: Option<String>,
     key_id: Option<String>,
     operational_class: Option<String>,
@@ -529,6 +545,8 @@ struct TokenCursorLogsQuery {
     until: Option<String>,
     result: Option<String>,
     key_effect: Option<String>,
+    binding_effect: Option<String>,
+    selection_effect: Option<String>,
     key_id: Option<String>,
     operational_class: Option<String>,
 }
@@ -554,6 +572,8 @@ impl From<LogFacetOption> for LogFacetOptionView {
 struct RequestLogFacetsView {
     results: Vec<LogFacetOptionView>,
     key_effects: Vec<LogFacetOptionView>,
+    binding_effects: Vec<LogFacetOptionView>,
+    selection_effects: Vec<LogFacetOptionView>,
     tokens: Vec<LogFacetOptionView>,
     keys: Vec<LogFacetOptionView>,
 }
@@ -596,6 +616,18 @@ impl From<RequestLogsCatalog> for RequestLogsCatalogView {
                 key_effects: value
                     .facets
                     .key_effects
+                    .into_iter()
+                    .map(LogFacetOptionView::from)
+                    .collect(),
+                binding_effects: value
+                    .facets
+                    .binding_effects
+                    .into_iter()
+                    .map(LogFacetOptionView::from)
+                    .collect(),
+                selection_effects: value
+                    .facets
+                    .selection_effects
                     .into_iter()
                     .map(LogFacetOptionView::from)
                     .collect(),
@@ -704,8 +736,78 @@ fn normalize_key_effect_filter(value: Option<&str>) -> Option<&'static str> {
         Some(v) if v.eq_ignore_ascii_case("marked_exhausted") => Some("marked_exhausted"),
         Some(v) if v.eq_ignore_ascii_case("restored_active") => Some("restored_active"),
         Some(v) if v.eq_ignore_ascii_case("cleared_quarantine") => Some("cleared_quarantine"),
+        Some(v) if v.eq_ignore_ascii_case("mcp_session_init_backoff_set") => {
+            Some("mcp_session_init_backoff_set")
+        }
+        Some(v) if v.eq_ignore_ascii_case("mcp_session_retry_waited") => {
+            Some("mcp_session_retry_waited")
+        }
+        Some(v) if v.eq_ignore_ascii_case("mcp_session_retry_scheduled") => {
+            Some("mcp_session_retry_scheduled")
+        }
         _ => None,
     }
+}
+
+fn normalize_binding_effect_filter(value: Option<&str>) -> Option<&'static str> {
+    match value.map(str::trim) {
+        Some(v) if v.eq_ignore_ascii_case("none") => Some("none"),
+        Some(v) if v.eq_ignore_ascii_case("http_project_affinity_bound") => {
+            Some("http_project_affinity_bound")
+        }
+        Some(v) if v.eq_ignore_ascii_case("http_project_affinity_reused") => {
+            Some("http_project_affinity_reused")
+        }
+        Some(v) if v.eq_ignore_ascii_case("http_project_affinity_rebound") => {
+            Some("http_project_affinity_rebound")
+        }
+        _ => None,
+    }
+}
+
+fn normalize_selection_effect_filter(value: Option<&str>) -> Option<&'static str> {
+    match value.map(str::trim) {
+        Some(v) if v.eq_ignore_ascii_case("none") => Some("none"),
+        Some(v) if v.eq_ignore_ascii_case("mcp_session_init_cooldown_avoided") => {
+            Some("mcp_session_init_cooldown_avoided")
+        }
+        Some(v) if v.eq_ignore_ascii_case("mcp_session_init_rate_limit_avoided") => {
+            Some("mcp_session_init_rate_limit_avoided")
+        }
+        Some(v) if v.eq_ignore_ascii_case("mcp_session_init_pressure_avoided") => {
+            Some("mcp_session_init_pressure_avoided")
+        }
+        Some(v) if v.eq_ignore_ascii_case("http_project_affinity_cooldown_avoided") => {
+            Some("http_project_affinity_cooldown_avoided")
+        }
+        Some(v) if v.eq_ignore_ascii_case("http_project_affinity_rate_limit_avoided") => {
+            Some("http_project_affinity_rate_limit_avoided")
+        }
+        Some(v) if v.eq_ignore_ascii_case("http_project_affinity_pressure_avoided") => {
+            Some("http_project_affinity_pressure_avoided")
+        }
+        _ => None,
+    }
+}
+
+fn validate_logs_effect_filters(
+    result_status: Option<&str>,
+    key_effect_code: Option<&str>,
+    binding_effect_code: Option<&str>,
+    selection_effect_code: Option<&str>,
+) -> Result<(), StatusCode> {
+    let key_effect_active = key_effect_code.is_some();
+    let binding_effect_active = binding_effect_code.is_some();
+    let selection_effect_active = selection_effect_code.is_some();
+    if key_effect_active && (binding_effect_active || selection_effect_active) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if result_status.is_some()
+        && (key_effect_active || binding_effect_active || selection_effect_active)
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    Ok(())
 }
 
 fn normalize_optional_filter(value: Option<&str>) -> Option<&str> {
@@ -797,6 +899,8 @@ struct KeyLogsPageQuery {
     since: Option<i64>,
     result: Option<String>,
     key_effect: Option<String>,
+    binding_effect: Option<String>,
+    selection_effect: Option<String>,
     auth_token_id: Option<String>,
 }
 
@@ -863,9 +967,14 @@ async fn get_key_logs_page(
     let request_kinds = parse_request_kind_filters(raw_query.as_deref());
     let result_status = normalize_result_status_filter(q.result.as_deref());
     let key_effect_code = normalize_key_effect_filter(q.key_effect.as_deref());
-    if result_status.is_some() && key_effect_code.is_some() {
-        return Err(StatusCode::BAD_REQUEST);
-    }
+    let binding_effect_code = normalize_binding_effect_filter(q.binding_effect.as_deref());
+    let selection_effect_code = normalize_selection_effect_filter(q.selection_effect.as_deref());
+    validate_logs_effect_filters(
+        result_status,
+        key_effect_code,
+        binding_effect_code,
+        selection_effect_code,
+    )?;
     let auth_token_id = normalize_optional_filter(q.auth_token_id.as_deref());
 
     state
@@ -876,6 +985,8 @@ async fn get_key_logs_page(
             &request_kinds,
             result_status,
             key_effect_code,
+            binding_effect_code,
+            selection_effect_code,
             auth_token_id,
             page,
             per_page,
@@ -906,6 +1017,18 @@ async fn get_key_logs_page(
                     key_effects: logs
                         .facets
                         .key_effects
+                        .into_iter()
+                        .map(LogFacetOptionView::from)
+                        .collect(),
+                    binding_effects: logs
+                        .facets
+                        .binding_effects
+                        .into_iter()
+                        .map(LogFacetOptionView::from)
+                        .collect(),
+                    selection_effects: logs
+                        .facets
+                        .selection_effects
                         .into_iter()
                         .map(LogFacetOptionView::from)
                         .collect(),
@@ -943,9 +1066,14 @@ async fn get_key_logs_list(
     let request_kinds = parse_request_kind_filters(raw_query.as_deref());
     let result_status = normalize_result_status_filter(q.result.as_deref());
     let key_effect_code = normalize_key_effect_filter(q.key_effect.as_deref());
-    if result_status.is_some() && key_effect_code.is_some() {
-        return Err(StatusCode::BAD_REQUEST);
-    }
+    let binding_effect_code = normalize_binding_effect_filter(q.binding_effect.as_deref());
+    let selection_effect_code = normalize_selection_effect_filter(q.selection_effect.as_deref());
+    validate_logs_effect_filters(
+        result_status,
+        key_effect_code,
+        binding_effect_code,
+        selection_effect_code,
+    )?;
     let auth_token_id = normalize_optional_filter(q.auth_token_id.as_deref());
     let operational_class = normalize_operational_class_filter(q.operational_class.as_deref());
     if q
@@ -965,6 +1093,8 @@ async fn get_key_logs_list(
             &request_kinds,
             result_status,
             key_effect_code,
+            binding_effect_code,
+            selection_effect_code,
             auth_token_id,
             operational_class,
             cursor.as_ref(),
@@ -990,9 +1120,14 @@ async fn get_key_logs_catalog(
     let request_kinds = parse_request_kind_filters(raw_query.as_deref());
     let result_status = normalize_result_status_filter(q.result.as_deref());
     let key_effect_code = normalize_key_effect_filter(q.key_effect.as_deref());
-    if result_status.is_some() && key_effect_code.is_some() {
-        return Err(StatusCode::BAD_REQUEST);
-    }
+    let binding_effect_code = normalize_binding_effect_filter(q.binding_effect.as_deref());
+    let selection_effect_code = normalize_selection_effect_filter(q.selection_effect.as_deref());
+    validate_logs_effect_filters(
+        result_status,
+        key_effect_code,
+        binding_effect_code,
+        selection_effect_code,
+    )?;
     let auth_token_id = normalize_optional_filter(q.auth_token_id.as_deref());
     let operational_class = normalize_operational_class_filter(q.operational_class.as_deref());
     if q
@@ -1012,6 +1147,8 @@ async fn get_key_logs_catalog(
             &request_kinds,
             result_status,
             key_effect_code,
+            binding_effect_code,
+            selection_effect_code,
             auth_token_id,
             operational_class,
         )
@@ -1160,6 +1297,8 @@ struct TokenLogsPageQuery {
     until: Option<String>,
     result: Option<String>,
     key_effect: Option<String>,
+    binding_effect: Option<String>,
+    selection_effect: Option<String>,
     key_id: Option<String>,
     operational_class: Option<String>,
 }
@@ -1255,9 +1394,14 @@ async fn get_token_logs_page(
     let request_kinds = parse_request_kind_filters(raw_query.as_deref());
     let result_status = normalize_result_status_filter(q.result.as_deref());
     let key_effect_code = normalize_key_effect_filter(q.key_effect.as_deref());
-    if result_status.is_some() && key_effect_code.is_some() {
-        return Err(StatusCode::BAD_REQUEST);
-    }
+    let binding_effect_code = normalize_binding_effect_filter(q.binding_effect.as_deref());
+    let selection_effect_code = normalize_selection_effect_filter(q.selection_effect.as_deref());
+    validate_logs_effect_filters(
+        result_status,
+        key_effect_code,
+        binding_effect_code,
+        selection_effect_code,
+    )?;
     let key_id = normalize_optional_filter(q.key_id.as_deref());
     let operational_class = normalize_operational_class_filter(q.operational_class.as_deref());
     if q
@@ -1279,6 +1423,8 @@ async fn get_token_logs_page(
             &request_kinds,
             result_status,
             key_effect_code,
+            binding_effect_code,
+            selection_effect_code,
             key_id,
             operational_class,
         )
@@ -1315,6 +1461,18 @@ async fn get_token_logs_page(
                     key_effects: logs
                         .facets
                         .key_effects
+                        .into_iter()
+                        .map(LogFacetOptionView::from)
+                        .collect(),
+                    binding_effects: logs
+                        .facets
+                        .binding_effects
+                        .into_iter()
+                        .map(LogFacetOptionView::from)
+                        .collect(),
+                    selection_effects: logs
+                        .facets
+                        .selection_effects
                         .into_iter()
                         .map(LogFacetOptionView::from)
                         .collect(),
@@ -1365,9 +1523,14 @@ async fn get_token_logs_list(
     let request_kinds = parse_request_kind_filters(raw_query.as_deref());
     let result_status = normalize_result_status_filter(q.result.as_deref());
     let key_effect_code = normalize_key_effect_filter(q.key_effect.as_deref());
-    if result_status.is_some() && key_effect_code.is_some() {
-        return Err(StatusCode::BAD_REQUEST);
-    }
+    let binding_effect_code = normalize_binding_effect_filter(q.binding_effect.as_deref());
+    let selection_effect_code = normalize_selection_effect_filter(q.selection_effect.as_deref());
+    validate_logs_effect_filters(
+        result_status,
+        key_effect_code,
+        binding_effect_code,
+        selection_effect_code,
+    )?;
     let key_id = normalize_optional_filter(q.key_id.as_deref());
     let operational_class = normalize_operational_class_filter(q.operational_class.as_deref());
     if q
@@ -1389,6 +1552,8 @@ async fn get_token_logs_list(
             &request_kinds,
             result_status,
             key_effect_code,
+            binding_effect_code,
+            selection_effect_code,
             key_id,
             operational_class,
             cursor.as_ref(),
@@ -1426,9 +1591,14 @@ async fn get_token_logs_catalog(
     let request_kinds = parse_request_kind_filters(raw_query.as_deref());
     let result_status = normalize_result_status_filter(q.result.as_deref());
     let key_effect_code = normalize_key_effect_filter(q.key_effect.as_deref());
-    if result_status.is_some() && key_effect_code.is_some() {
-        return Err(StatusCode::BAD_REQUEST);
-    }
+    let binding_effect_code = normalize_binding_effect_filter(q.binding_effect.as_deref());
+    let selection_effect_code = normalize_selection_effect_filter(q.selection_effect.as_deref());
+    validate_logs_effect_filters(
+        result_status,
+        key_effect_code,
+        binding_effect_code,
+        selection_effect_code,
+    )?;
     let key_id = normalize_optional_filter(q.key_id.as_deref());
     let operational_class = normalize_operational_class_filter(q.operational_class.as_deref());
     if q
@@ -1449,6 +1619,8 @@ async fn get_token_logs_catalog(
             &request_kinds,
             result_status,
             key_effect_code,
+            binding_effect_code,
+            selection_effect_code,
             key_id,
             operational_class,
         )
@@ -1808,4 +1980,57 @@ async fn get_token_monthly_broken_keys(
         .map(build_monthly_broken_keys_view)
         .map(Json)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+#[cfg(test)]
+mod dto_tests {
+    use super::validate_logs_effect_filters;
+    use axum::http::StatusCode;
+
+    #[test]
+    fn validate_logs_effect_filters_allows_binding_and_selection_together() {
+        assert_eq!(
+            validate_logs_effect_filters(
+                None,
+                None,
+                Some("http_project_affinity_rebound"),
+                Some("http_project_affinity_cooldown_avoided"),
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn validate_logs_effect_filters_rejects_key_plus_binding() {
+        assert_eq!(
+            validate_logs_effect_filters(
+                None,
+                Some("quarantined"),
+                Some("http_project_affinity_rebound"),
+                None,
+            ),
+            Err(StatusCode::BAD_REQUEST)
+        );
+    }
+
+    #[test]
+    fn validate_logs_effect_filters_rejects_result_plus_key_effect() {
+        assert_eq!(
+            validate_logs_effect_filters(Some("success"), Some("quarantined"), None, None),
+            Err(StatusCode::BAD_REQUEST)
+        );
+    }
+
+    #[test]
+    fn validate_logs_effect_filters_rejects_result_plus_binding_effect() {
+        assert_eq!(
+            validate_logs_effect_filters(
+                Some("success"),
+                None,
+                Some("http_project_affinity_rebound"),
+                None,
+            ),
+            Err(StatusCode::BAD_REQUEST)
+        );
+    }
 }

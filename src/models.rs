@@ -23,6 +23,10 @@ pub(crate) struct AttemptLog<'a> {
     pub(crate) failure_kind: Option<&'a str>,
     pub(crate) key_effect_code: &'a str,
     pub(crate) key_effect_summary: Option<&'a str>,
+    pub(crate) binding_effect_code: &'a str,
+    pub(crate) binding_effect_summary: Option<&'a str>,
+    pub(crate) selection_effect_code: &'a str,
+    pub(crate) selection_effect_summary: Option<&'a str>,
     pub(crate) forwarded_headers: &'a [String],
     pub(crate) dropped_headers: &'a [String],
 }
@@ -50,6 +54,10 @@ pub struct ProxyResponse {
     pub request_log_id: Option<i64>,
     pub key_effect_code: String,
     pub key_effect_summary: Option<String>,
+    pub binding_effect_code: String,
+    pub binding_effect_summary: Option<String>,
+    pub selection_effect_code: String,
+    pub selection_effect_summary: Option<String>,
 }
 
 /// Token quota verdict used by the HTTP layer to decide whether to forward.
@@ -463,6 +471,10 @@ pub struct RequestLogRecord {
     pub failure_kind: Option<String>,
     pub key_effect_code: String,
     pub key_effect_summary: Option<String>,
+    pub binding_effect_code: String,
+    pub binding_effect_summary: Option<String>,
+    pub selection_effect_code: String,
+    pub selection_effect_summary: Option<String>,
     pub operational_class: String,
     pub request_body: Vec<u8>,
     pub response_body: Vec<u8>,
@@ -487,6 +499,8 @@ pub struct LogFacetOption {
 pub struct RequestLogPageFacets {
     pub results: Vec<LogFacetOption>,
     pub key_effects: Vec<LogFacetOption>,
+    pub binding_effects: Vec<LogFacetOption>,
+    pub selection_effects: Vec<LogFacetOption>,
     pub tokens: Vec<LogFacetOption>,
     pub keys: Vec<LogFacetOption>,
 }
@@ -986,6 +1000,10 @@ pub struct TokenLogRecord {
     pub failure_kind: Option<String>,
     pub key_effect_code: String,
     pub key_effect_summary: Option<String>,
+    pub binding_effect_code: String,
+    pub binding_effect_summary: Option<String>,
+    pub selection_effect_code: String,
+    pub selection_effect_summary: Option<String>,
     pub created_at: i64,
 }
 

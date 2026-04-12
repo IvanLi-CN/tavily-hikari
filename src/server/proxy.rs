@@ -36,6 +36,10 @@ const MCP_SESSION_RETRY_AFTER_MAX_SECS: i64 = 300;
 const FAILURE_KIND_UPSTREAM_RATE_LIMITED_429_CODE: &str = "upstream_rate_limited_429";
 const KEY_EFFECT_MCP_SESSION_RETRY_WAITED_CODE: &str = "mcp_session_retry_waited";
 const KEY_EFFECT_MCP_SESSION_RETRY_SCHEDULED_CODE: &str = "mcp_session_retry_scheduled";
+const KEY_EFFECT_MCP_SESSION_RETRY_WAITED_SUMMARY: &str =
+    "This MCP session request waited for Retry-After before sending upstream";
+const KEY_EFFECT_MCP_SESSION_RETRY_SCHEDULED_SUMMARY: &str =
+    "This MCP session request hit upstream 429 and was retried once after Retry-After";
 
 async fn sse_token(
     State(state): State<Arc<AppState>>,
@@ -155,6 +159,17 @@ async fn wait_for_mcp_session_retry_window(
     }
 }
 
+fn set_proxy_response_key_effect_if_none(
+    response: &mut ProxyResponse,
+    key_effect_code: &str,
+    key_effect_summary: Option<&str>,
+) {
+    if response.key_effect_code == "none" {
+        response.key_effect_code = key_effect_code.to_string();
+        response.key_effect_summary = key_effect_summary.map(str::to_string);
+    }
+}
+
 async fn annotate_request_log_key_effect_if_none(
     state: &Arc<AppState>,
     request_log_id: Option<i64>,
@@ -179,7 +194,7 @@ async fn proxy_mcp_follow_up_with_retry(
     proxy_request: ProxyRequest,
 ) -> Result<ProxyResponse, ProxyError> {
     let waited_before_send = wait_for_mcp_session_retry_window(state, proxy_session_id).await?;
-    let first_response = state.proxy.proxy_request(proxy_request.clone()).await?;
+    let mut first_response = state.proxy.proxy_request(proxy_request.clone()).await?;
     let first_analysis = analyze_mcp_attempt(first_response.status, &first_response.body);
     let first_rate_limited = first_analysis.failure_kind.as_deref()
         == Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429_CODE);
@@ -190,9 +205,14 @@ async fn proxy_mcp_follow_up_with_retry(
                 state,
                 first_response.request_log_id,
                 KEY_EFFECT_MCP_SESSION_RETRY_WAITED_CODE,
-                Some("This MCP session request waited for Retry-After before sending upstream"),
+                Some(KEY_EFFECT_MCP_SESSION_RETRY_WAITED_SUMMARY),
             )
             .await;
+            set_proxy_response_key_effect_if_none(
+                &mut first_response,
+                KEY_EFFECT_MCP_SESSION_RETRY_WAITED_CODE,
+                Some(KEY_EFFECT_MCP_SESSION_RETRY_WAITED_SUMMARY),
+            );
         }
         let _ = state.proxy.clear_mcp_session_rate_limit(proxy_session_id).await;
         return Ok(first_response);
@@ -213,20 +233,25 @@ async fn proxy_mcp_follow_up_with_retry(
         state,
         first_response.request_log_id,
         KEY_EFFECT_MCP_SESSION_RETRY_SCHEDULED_CODE,
-        Some("This MCP session request hit upstream 429 and was retried once after Retry-After"),
+        Some(KEY_EFFECT_MCP_SESSION_RETRY_SCHEDULED_SUMMARY),
     )
     .await;
 
     tokio::time::sleep(Duration::from_secs(retry_after_secs.max(0) as u64)).await;
 
-    let retry_response = state.proxy.proxy_request(proxy_request).await?;
+    let mut retry_response = state.proxy.proxy_request(proxy_request).await?;
     annotate_request_log_key_effect_if_none(
         state,
         retry_response.request_log_id,
         KEY_EFFECT_MCP_SESSION_RETRY_WAITED_CODE,
-        Some("This MCP session request was retried after waiting for Retry-After"),
+        Some(KEY_EFFECT_MCP_SESSION_RETRY_WAITED_SUMMARY),
     )
     .await;
+    set_proxy_response_key_effect_if_none(
+        &mut retry_response,
+        KEY_EFFECT_MCP_SESSION_RETRY_WAITED_CODE,
+        Some(KEY_EFFECT_MCP_SESSION_RETRY_WAITED_SUMMARY),
+    );
 
     let retry_analysis = analyze_mcp_attempt(retry_response.status, &retry_response.body);
     if retry_analysis.failure_kind.as_deref() == Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429_CODE)
@@ -516,6 +541,10 @@ async fn mcp_subpath_reject_handler(
                 &request_kind,
                 Some("mcp_path_404"),
                 Some("none"),
+                None,
+                None,
+                None,
+                None,
                 None,
                 request_log_id,
             )
@@ -1396,6 +1425,10 @@ async fn proxy_handler(
                                     analysis.failure_kind.as_deref(),
                                     Some(resp.key_effect_code.as_str()),
                                     resp.key_effect_summary.as_deref(),
+                                    Some(resp.binding_effect_code.as_str()),
+                                    resp.binding_effect_summary.as_deref(),
+                                    Some(resp.selection_effect_code.as_str()),
+                                    resp.selection_effect_summary.as_deref(),
                                     resp.request_log_id,
                                 )
                                 .await
@@ -1418,6 +1451,10 @@ async fn proxy_handler(
                                     analysis.failure_kind.as_deref(),
                                     Some(resp.key_effect_code.as_str()),
                                     resp.key_effect_summary.as_deref(),
+                                    Some(resp.binding_effect_code.as_str()),
+                                    resp.binding_effect_summary.as_deref(),
+                                    Some(resp.selection_effect_code.as_str()),
+                                    resp.selection_effect_summary.as_deref(),
                                     resp.request_log_id,
                                 )
                                 .await
@@ -1495,6 +1532,10 @@ async fn proxy_handler(
                             analysis.failure_kind.as_deref(),
                             Some(resp.key_effect_code.as_str()),
                             resp.key_effect_summary.as_deref(),
+                            Some(resp.binding_effect_code.as_str()),
+                            resp.binding_effect_summary.as_deref(),
+                            Some(resp.selection_effect_code.as_str()),
+                            resp.selection_effect_summary.as_deref(),
                             resp.request_log_id,
                         )
                         .await;
@@ -1755,6 +1796,10 @@ impl RequestLogView {
             failure_kind: record.failure_kind,
             key_effect_code: record.key_effect_code,
             key_effect_summary: record.key_effect_summary,
+            binding_effect_code: record.binding_effect_code,
+            binding_effect_summary: record.binding_effect_summary,
+            selection_effect_code: record.selection_effect_code,
+            selection_effect_summary: record.selection_effect_summary,
             request_body: include_bodies
                 .then(|| decode_body(&record.request_body))
                 .flatten(),
@@ -1806,6 +1851,10 @@ impl RequestLogView {
             failure_kind: record.failure_kind,
             key_effect_code: record.key_effect_code,
             key_effect_summary: record.key_effect_summary,
+            binding_effect_code: record.binding_effect_code,
+            binding_effect_summary: record.binding_effect_summary,
+            selection_effect_code: record.selection_effect_code,
+            selection_effect_summary: record.selection_effect_summary,
             request_body: None,
             response_body: None,
             forwarded_headers: Vec::new(),

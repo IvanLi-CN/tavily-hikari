@@ -25,6 +25,10 @@ const storyLogs: RequestLog[] = [
     error_message: null,
     key_effect_code: 'none',
     key_effect_summary: null,
+    binding_effect_code: 'http_project_affinity_bound',
+    binding_effect_summary: 'The system created a new upstream key binding for this project',
+    selection_effect_code: 'http_project_affinity_pressure_avoided',
+    selection_effect_summary: 'Project affinity routing avoided a key under higher recent pressure',
     request_body: null,
     response_body: null,
     forwarded_headers: ['x-request-id', 'x-forwarded-for'],
@@ -49,8 +53,12 @@ const storyLogs: RequestLog[] = [
     result_status: 'success',
     created_at: 1_774_693_580,
     error_message: null,
-    key_effect_code: 'none',
-    key_effect_summary: null,
+    key_effect_code: 'mcp_session_init_backoff_set',
+    key_effect_summary: 'The system armed a temporary backoff for MCP session initialization',
+    binding_effect_code: 'none',
+    binding_effect_summary: null,
+    selection_effect_code: 'mcp_session_init_pressure_avoided',
+    selection_effect_summary: 'Initialization avoided a key under higher recent pressure',
     request_body: null,
     response_body: null,
     forwarded_headers: ['x-request-id'],
@@ -77,6 +85,10 @@ const storyLogs: RequestLog[] = [
     error_message: null,
     key_effect_code: 'restored_active',
     key_effect_summary: 'The system automatically restored this key to active',
+    binding_effect_code: 'none',
+    binding_effect_summary: null,
+    selection_effect_code: 'none',
+    selection_effect_summary: null,
     request_body: null,
     response_body: null,
     forwarded_headers: ['x-request-id'],
@@ -104,6 +116,10 @@ const storyLogs: RequestLog[] = [
     failure_kind: 'upstream_account_deactivated_401',
     key_effect_code: 'quarantined',
     key_effect_summary: 'Automatically quarantined this key',
+    binding_effect_code: 'none',
+    binding_effect_summary: null,
+    selection_effect_code: 'none',
+    selection_effect_summary: null,
     request_body: null,
     response_body: null,
     forwarded_headers: ['x-request-id'],
@@ -130,6 +146,10 @@ const storyLogs: RequestLog[] = [
     error_message: null,
     key_effect_code: 'none',
     key_effect_summary: null,
+    binding_effect_code: 'http_project_affinity_reused',
+    binding_effect_summary: 'The system reused the current upstream key binding for this project',
+    selection_effect_code: 'none',
+    selection_effect_summary: null,
     request_body: null,
     response_body: null,
     forwarded_headers: ['x-request-id'],
@@ -207,6 +227,8 @@ function LazyDetailsStateGallery(): JSX.Element {
     () => ({
       results: buildFacetOptions(storyLogs.map((log) => log.result_status)),
       keyEffects: buildFacetOptions(storyLogs.map((log) => log.key_effect_code ?? 'none')),
+      bindingEffects: buildFacetOptions(storyLogs.map((log) => log.binding_effect_code ?? 'none')),
+      selectionEffects: buildFacetOptions(storyLogs.map((log) => log.selection_effect_code ?? 'none')),
       tokens: buildFacetOptions(storyLogs.map((log) => log.auth_token_id)),
       keys: buildFacetOptions(storyLogs.map((log) => log.key_id)),
     }),
@@ -249,6 +271,8 @@ function LazyDetailsStateGallery(): JSX.Element {
         outcomeFilter={null}
         resultOptions={facets.results}
         keyEffectOptions={facets.keyEffects}
+        bindingEffectOptions={facets.bindingEffects}
+        selectionEffectOptions={facets.selectionEffects}
         onOutcomeFilterChange={() => undefined}
         keyOptions={facets.keys}
         selectedKeyId={null}
@@ -335,6 +359,8 @@ function IdentifierAlignmentShowcase(): JSX.Element {
     () => ({
       results: buildFacetOptions(alignmentStoryLogs.map((log) => log.result_status)),
       keyEffects: buildFacetOptions(alignmentStoryLogs.map((log) => log.key_effect_code ?? 'none')),
+      bindingEffects: buildFacetOptions(alignmentStoryLogs.map((log) => log.binding_effect_code ?? 'none')),
+      selectionEffects: buildFacetOptions(alignmentStoryLogs.map((log) => log.selection_effect_code ?? 'none')),
       tokens: buildFacetOptions(alignmentStoryLogs.map((log) => log.auth_token_id)),
       keys: buildFacetOptions(alignmentStoryLogs.map((log) => log.key_id)),
     }),
@@ -366,6 +392,8 @@ function IdentifierAlignmentShowcase(): JSX.Element {
         outcomeFilter={{ kind: 'result', value: 'error' }}
         resultOptions={facets.results}
         keyEffectOptions={facets.keyEffects}
+        bindingEffectOptions={facets.bindingEffects}
+        selectionEffectOptions={facets.selectionEffects}
         onOutcomeFilterChange={() => undefined}
         keyOptions={facets.keys}
         selectedKeyId={null}
