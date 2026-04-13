@@ -14783,6 +14783,61 @@ colo=LAX
             .expect("invalid business patch request");
         assert_eq!(invalid_business_resp.status(), reqwest::StatusCode::BAD_REQUEST);
 
+        let omitted_legacy_resp = client
+            .patch(&patch_url)
+            .json(&serde_json::json!({
+                "hourlyLimit": 46,
+                "dailyLimit": 679,
+                "monthlyLimit": 911,
+            }))
+            .send()
+            .await
+            .expect("omitted legacy hourlyAny patch request");
+        assert_eq!(
+            omitted_legacy_resp.status(),
+            reqwest::StatusCode::NO_CONTENT,
+            "missing hourlyAnyLimit should be accepted and ignored"
+        );
+
+        let detail_omitted_resp = client
+            .get(&detail_url)
+            .send()
+            .await
+            .expect("user detail after omitted legacy patch request");
+        assert_eq!(detail_omitted_resp.status(), reqwest::StatusCode::OK);
+        let detail_omitted: serde_json::Value = detail_omitted_resp
+            .json()
+            .await
+            .expect("user detail after omitted legacy patch json");
+        assert_eq!(
+            detail_omitted
+                .get("quotaBase")
+                .and_then(|value| value.get("hourlyLimit"))
+                .and_then(|value| value.as_i64()),
+            Some(46)
+        );
+        assert_eq!(
+            detail_omitted
+                .get("quotaBase")
+                .and_then(|value| value.get("dailyLimit"))
+                .and_then(|value| value.as_i64()),
+            Some(679)
+        );
+        assert_eq!(
+            detail_omitted
+                .get("quotaBase")
+                .and_then(|value| value.get("monthlyLimit"))
+                .and_then(|value| value.as_i64()),
+            Some(911)
+        );
+        assert_eq!(
+            detail_omitted
+                .get("quotaBase")
+                .and_then(|value| value.get("hourlyAnyLimit"))
+                .and_then(|value| value.as_i64()),
+            Some(quota_base_hourly_any_before)
+        );
+
         let _ = std::fs::remove_file(db_path);
     }
 

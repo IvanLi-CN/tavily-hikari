@@ -8808,6 +8808,34 @@ async fn hourly_any_request_limit_keeps_unbound_tokens_isolated() {
 }
 
 #[tokio::test]
+async fn hourly_any_request_limit_evicts_idle_subjects_after_window() {
+    let db_path = temp_db_path("any-limit-idle-eviction");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let token = proxy
+        .create_access_token(Some("idle-eviction"))
+        .await
+        .expect("token created");
+
+    let verdict = proxy
+        .check_token_hourly_requests(&token.id)
+        .await
+        .expect("initial check ok");
+    assert!(verdict.allowed);
+    assert_eq!(proxy.debug_token_request_limiter_subject_count().await, 1);
+
+    let future_ts = Utc::now().timestamp() + request_rate_limit_window_secs() + 1;
+    proxy
+        .debug_prune_idle_token_request_subjects_at(future_ts)
+        .await;
+    assert_eq!(proxy.debug_token_request_limiter_subject_count().await, 0);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
 async fn delete_access_token_soft_deletes_and_hides_from_list() {
     let db_path = temp_db_path("token-delete");
     let db_str = db_path.to_string_lossy().to_string();

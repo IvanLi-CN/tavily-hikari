@@ -2601,7 +2601,7 @@ struct AdminUserDetailView {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct UpdateUserQuotaRequest {
-    hourly_any_limit: i64,
+    hourly_any_limit: Option<i64>,
     hourly_limit: i64,
     daily_limit: i64,
     monthly_limit: i64,

@@ -32,7 +32,13 @@ enum RequestRateLimitBackend {
 
 #[derive(Clone, Debug, Default)]
 struct MemoryRequestRateLimitBackend {
-    state: Arc<Mutex<HashMap<String, VecDeque<i64>>>>,
+    state: Arc<Mutex<MemoryRequestRateLimitState>>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct MemoryRequestRateLimitState {
+    entries: HashMap<String, VecDeque<i64>>,
+    next_gc_at: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -7541,6 +7547,18 @@ impl TavilyProxy {
         self.token_request_limit.snapshot_many(token_ids).await
     }
 
+    #[cfg(test)]
+    pub(crate) async fn debug_token_request_limiter_subject_count(&self) -> usize {
+        self.token_request_limit.debug_memory_subject_count().await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn debug_prune_idle_token_request_subjects_at(&self, now_ts: i64) {
+        self.token_request_limit
+            .debug_prune_idle_subjects_at(now_ts)
+            .await;
+    }
+
     /// Read-only snapshot of current token quota usage (hour / day / month).
     pub async fn token_quota_snapshot(
         &self,
@@ -8795,6 +8813,18 @@ impl TokenRequestLimit {
             .collect())
     }
 
+    #[cfg(test)]
+    pub(crate) async fn debug_memory_subject_count(&self) -> usize {
+        self.backend.debug_subject_count().await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn debug_prune_idle_subjects_at(&self, now_ts: i64) {
+        self.backend
+            .debug_prune_idle_subjects(now_ts, self.window_secs)
+            .await;
+    }
+
     async fn resolve_subject_for_token(
         &self,
         token_id: &str,
@@ -8860,6 +8890,20 @@ impl RequestRateLimitBackend {
             }
         }
     }
+
+    #[cfg(test)]
+    async fn debug_subject_count(&self) -> usize {
+        match self {
+            Self::Memory(backend) => backend.debug_subject_count().await,
+        }
+    }
+
+    #[cfg(test)]
+    async fn debug_prune_idle_subjects(&self, now_ts: i64, window_secs: i64) {
+        match self {
+            Self::Memory(backend) => backend.debug_prune_idle_subjects(now_ts, window_secs).await,
+        }
+    }
 }
 
 impl MemoryRequestRateLimitBackend {
@@ -8882,7 +8926,8 @@ impl MemoryRequestRateLimitBackend {
         }
 
         let mut state = self.state.lock().await;
-        let queue = state.entry(subject.key.clone()).or_default();
+        Self::maybe_gc(&mut state, now_ts, window_secs);
+        let queue = state.entries.entry(subject.key.clone()).or_default();
         Self::prune_queue(queue, now_ts, window_secs);
         if (queue.len() as i64) >= request_limit {
             let retry_after_seconds = queue
@@ -8891,7 +8936,7 @@ impl MemoryRequestRateLimitBackend {
                 .unwrap_or(1);
             let used = queue.len() as i64;
             if queue.is_empty() {
-                state.remove(&subject.key);
+                state.entries.remove(&subject.key);
             }
             return TokenHourlyRequestVerdict::new(
                 used.saturating_add(1),
@@ -8916,11 +8961,12 @@ impl MemoryRequestRateLimitBackend {
         window_secs: i64,
     ) -> HashMap<String, TokenHourlyRequestVerdict> {
         let mut state = self.state.lock().await;
+        Self::maybe_gc(&mut state, now_ts, window_secs);
         let mut verdicts = HashMap::new();
         let mut empty_keys = Vec::new();
         for subject in subjects {
             let (used, retry_after_seconds, should_remove) =
-                if let Some(queue) = state.get_mut(&subject.key) {
+                if let Some(queue) = state.entries.get_mut(&subject.key) {
                     Self::prune_queue(queue, now_ts, window_secs);
                     let used = queue.len() as i64;
                     let retry_after_seconds = if used >= request_limit {
@@ -8950,9 +8996,20 @@ impl MemoryRequestRateLimitBackend {
             );
         }
         for key in empty_keys {
-            state.remove(&key);
+            state.entries.remove(&key);
         }
         verdicts
+    }
+
+    fn maybe_gc(state: &mut MemoryRequestRateLimitState, now_ts: i64, window_secs: i64) {
+        if now_ts < state.next_gc_at {
+            return;
+        }
+        state.entries.retain(|_, queue| {
+            Self::prune_queue(queue, now_ts, window_secs);
+            !queue.is_empty()
+        });
+        state.next_gc_at = now_ts.saturating_add(window_secs.max(60));
     }
 
     fn prune_queue(queue: &mut VecDeque<i64>, now_ts: i64, window_secs: i64) {
@@ -8963,6 +9020,18 @@ impl MemoryRequestRateLimitBackend {
         {
             queue.pop_front();
         }
+    }
+
+    #[cfg(test)]
+    async fn debug_subject_count(&self) -> usize {
+        self.state.lock().await.entries.len()
+    }
+
+    #[cfg(test)]
+    async fn debug_prune_idle_subjects(&self, now_ts: i64, window_secs: i64) {
+        let mut state = self.state.lock().await;
+        state.next_gc_at = 0;
+        Self::maybe_gc(&mut state, now_ts, window_secs);
     }
 }
 
