@@ -46,7 +46,7 @@ describe('UserConsole Storybook acceptance controls', () => {
       if: { arg: 'consoleView', eq: 'Token Detail' },
     })
 
-    expect(meta.argTypes?.routeHashOverride).toMatchObject({
+    expect(meta.argTypes?.routePathOverride).toMatchObject({
       table: { disable: true },
       control: false,
     })
@@ -60,7 +60,7 @@ describe('UserConsole Storybook acceptance controls', () => {
     })
     expect(userConsoleStories.ConsoleHomeRoot).toMatchObject({
       name: 'Console Home Root',
-      args: { consoleView: 'Console Home', isAdmin: false, landingFocus: 'Overview Focus', routeHashOverride: '' },
+      args: { consoleView: 'Console Home', isAdmin: false, landingFocus: 'Overview Focus', routePathOverride: '/console' },
     })
     expect(userConsoleStories.ConsoleHomeAdmin).toMatchObject({
       name: 'Console Home Admin',
@@ -134,13 +134,13 @@ describe('UserConsole Storybook acceptance controls', () => {
     expect(userConsoleStories).not.toHaveProperty('QuotaBlocked')
   })
 
-  it('covers the no-hash console root as the merged landing default', () => {
+  it('covers the root console path as the merged landing default', () => {
     const rootArgs = {
       ...meta.args,
       ...userConsoleStories.ConsoleHomeRoot.args,
     }
 
-    expect(userConsoleStories.__testables.resolveStoryState(rootArgs).routeHash).toBe('')
-    expect(userConsoleStories.__testables.resolveStoryState(meta.args as typeof rootArgs).routeHash).toBe('#/dashboard')
+    expect(userConsoleStories.__testables.resolveStoryState(rootArgs).routePath).toBe('/console')
+    expect(userConsoleStories.__testables.resolveStoryState(meta.args as typeof rootArgs).routePath).toBe('/console/dashboard')
   })
 })

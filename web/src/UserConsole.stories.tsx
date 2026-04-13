@@ -10,7 +10,7 @@ import {
   DropdownMenuTrigger,
 } from './components/ui/dropdown-menu'
 import { Icon, getGuideClientIconName } from './lib/icons'
-import { userConsoleRouteToHash } from './lib/userConsoleRoutes'
+import { userConsoleRouteToPath } from './lib/userConsoleRoutes'
 
 type ConsoleView = 'Console Home' | 'Token Detail'
 type LandingFocus = 'Overview Focus' | 'Token Focus'
@@ -27,7 +27,7 @@ interface UserConsoleStoryArgs {
   landingFocus: LandingFocus
   tokenListState: TokenListState
   tokenDetailPreview: TokenDetailPreview
-  routeHashOverride?: string
+  routePathOverride?: string
   pushStatusPreview?: PushStatusPreview
   pushStatusBubbleOpen?: boolean
   autoOpenAccountMenu?: boolean
@@ -36,7 +36,7 @@ interface UserConsoleStoryArgs {
 interface UserConsoleStoryState {
   autoRevealToken: boolean
   isAdmin: boolean
-  routeHash: string
+  routePath: string
   tokenListMode: 'single' | 'multiple' | 'empty'
 }
 
@@ -44,7 +44,7 @@ type MockEventSourceShape = EventSource & {
   dispatchEvent: (event: Event) => boolean
 }
 
-const TOKEN_DETAIL_HASH = '#/tokens/a1b2'
+const TOKEN_DETAIL_PATH = '/console/tokens/a1b2'
 const guideProofLabels = [
   { id: 'codex', label: 'Codex CLI' },
   { id: 'claude', label: 'Claude Code' },
@@ -208,10 +208,10 @@ function jsonResponse(data: unknown, status = 200): Response {
   })
 }
 
-function routeHashFromView(view: ConsoleView, landingFocus: LandingFocus, routeHashOverride?: string): string {
-  if (view === 'Token Detail') return TOKEN_DETAIL_HASH
-  if (typeof routeHashOverride === 'string') return routeHashOverride
-  return userConsoleRouteToHash({
+function routePathFromView(view: ConsoleView, landingFocus: LandingFocus, routePathOverride?: string): string {
+  if (view === 'Token Detail') return TOKEN_DETAIL_PATH
+  if (typeof routePathOverride === 'string') return routePathOverride
+  return userConsoleRouteToPath({
     name: 'landing',
     section: landingFocus === 'Token Focus' ? 'tokens' : 'dashboard',
   })
@@ -229,7 +229,7 @@ function resolveStoryState(args: UserConsoleStoryArgs): UserConsoleStoryState {
   return {
     autoRevealToken: args.consoleView === 'Token Detail' && args.tokenDetailPreview === 'Token Revealed',
     isAdmin: args.isAdmin,
-    routeHash: routeHashFromView(args.consoleView, args.landingFocus, args.routeHashOverride),
+    routePath: routePathFromView(args.consoleView, args.landingFocus, args.routePathOverride),
     tokenListMode,
   }
 }
@@ -624,7 +624,7 @@ function UserConsoleStory(
   const [ready, setReady] = useState(false)
   const storyState = useMemo(
     () => resolveStoryState(args),
-    [args.consoleView, args.isAdmin, args.landingFocus, args.tokenListState, args.tokenDetailPreview, args.routeHashOverride],
+    [args.consoleView, args.isAdmin, args.landingFocus, args.tokenListState, args.tokenDetailPreview, args.routePathOverride],
   )
   const copyRecoveryMode = args.copyRecoveryMode ?? 'none'
   const guideRevealMode = args.guideRevealMode ?? 'none'
@@ -632,21 +632,21 @@ function UserConsoleStory(
   const pushStatusBubbleOpen = args.pushStatusBubbleOpen ?? false
 
   useLayoutEffect(() => {
-    const previousHash = window.location.hash
+    const previousLocation = `${window.location.pathname}${window.location.search}${window.location.hash}`
     const cleanupFetch = installUserConsoleFetchMock(storyState)
     const cleanupEventSource = installEventSourceMock(pushStatusPreview)
     const cleanupClipboard = copyRecoveryMode === 'none' ? null : installClipboardFailureMock()
-    window.location.hash = storyState.routeHash
+    window.history.replaceState(null, '', storyState.routePath)
     setReady(true)
 
     return () => {
       cleanupFetch()
       cleanupEventSource()
       cleanupClipboard?.()
-      window.location.hash = previousHash
+      window.history.replaceState(null, '', previousLocation)
       setReady(false)
     }
-  }, [copyRecoveryMode, pushStatusPreview, storyState.isAdmin, storyState.routeHash, storyState.tokenListMode])
+  }, [copyRecoveryMode, pushStatusPreview, storyState.isAdmin, storyState.routePath, storyState.tokenListMode])
 
   useEffect(() => {
     if (!ready || !storyState.autoRevealToken) return
@@ -679,21 +679,21 @@ function UserConsoleStory(
   }, [guideRevealMode, ready])
 
   useEffect(() => {
-    if (!ready || storyState.routeHash !== TOKEN_DETAIL_HASH || pushStatusPreview !== 'Live') return
+    if (!ready || storyState.routePath !== TOKEN_DETAIL_PATH || pushStatusPreview !== 'Live') return
     const timer = window.setTimeout(() => {
       emitUserTokenSnapshot()
     }, 500)
     return () => window.clearTimeout(timer)
-  }, [pushStatusPreview, ready, storyState.routeHash])
+  }, [pushStatusPreview, ready, storyState.routePath])
 
   useEffect(() => {
-    if (!ready || !pushStatusBubbleOpen || storyState.routeHash !== TOKEN_DETAIL_HASH) return
+    if (!ready || !pushStatusBubbleOpen || storyState.routePath !== TOKEN_DETAIL_PATH) return
     const timer = window.setTimeout(() => {
       const trigger = document.querySelector<HTMLButtonElement>('.user-console-push-status-trigger')
       trigger?.focus()
     }, 220)
     return () => window.clearTimeout(timer)
-  }, [pushStatusBubbleOpen, ready, storyState.routeHash])
+  }, [pushStatusBubbleOpen, ready, storyState.routePath])
 
   useEffect(() => {
     if (!ready || args.autoOpenAccountMenu !== true) return
@@ -711,7 +711,7 @@ function UserConsoleStory(
   }
 
   const storyKey = [
-    storyState.routeHash,
+    storyState.routePath,
     storyState.isAdmin ? 'admin' : 'user',
     storyState.tokenListMode,
     storyState.autoRevealToken ? 'revealed' : 'hidden',
@@ -762,7 +762,7 @@ const meta = {
     },
     landingFocus: {
       name: 'Landing focus',
-      description: 'Preview which merged section the legacy hash should auto-focus.',
+      description: 'Preview which merged section the path route should auto-focus.',
       options: ['Overview Focus', 'Token Focus'],
       control: { type: 'inline-radio' },
       if: { arg: 'consoleView', eq: 'Console Home' },
@@ -781,7 +781,7 @@ const meta = {
       control: { type: 'select' },
       if: { arg: 'consoleView', eq: 'Token Detail' },
     },
-    routeHashOverride: {
+    routePathOverride: {
       table: { disable: true },
       control: false,
     },
@@ -833,7 +833,7 @@ export const ConsoleHomeRoot: Story = {
     consoleView: 'Console Home',
     isAdmin: false,
     landingFocus: 'Overview Focus',
-    routeHashOverride: '',
+    routePathOverride: '/console',
   },
 }
 

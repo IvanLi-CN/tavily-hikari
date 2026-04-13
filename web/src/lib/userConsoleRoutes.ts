@@ -4,9 +4,29 @@ export type UserConsoleRoute
   = | { name: 'landing'; section: UserConsoleLandingSection | null }
     | { name: 'token'; id: string }
 
-export function parseUserConsoleHash(hash: string): UserConsoleRoute {
-  const normalizedHash = hash.trim()
-  const tokenMatch = normalizedHash.match(/^#\/tokens\/([^/?#]+)/)
+export function normalizeUserConsolePathname(pathname: string): string {
+  const trimmed = pathname.trim()
+  if (!trimmed) return '/console'
+
+  let normalizedPath = trimmed.startsWith('/') ? trimmed : `/${trimmed}`
+  if (normalizedPath === '/console.html') {
+    return '/console'
+  }
+  if (normalizedPath.startsWith('/console.html/')) {
+    normalizedPath = `/console${normalizedPath.slice('/console.html'.length)}`
+  }
+  if (normalizedPath.length > 1) {
+    normalizedPath = normalizedPath.replace(/\/+$|(?<!:)\/+(?=\?)/g, '')
+  }
+  if (normalizedPath.length > 1 && normalizedPath.endsWith('/')) {
+    normalizedPath = normalizedPath.replace(/\/+$/, '') || '/'
+  }
+  return normalizedPath
+}
+
+export function parseUserConsolePath(pathname: string): UserConsoleRoute {
+  const normalizedPath = normalizeUserConsolePathname(pathname)
+  const tokenMatch = normalizedPath.match(/^\/console\/tokens\/([^/?#]+)$/)
   if (tokenMatch) {
     try {
       return { name: 'token', id: decodeURIComponent(tokenMatch[1]) }
@@ -15,25 +35,25 @@ export function parseUserConsoleHash(hash: string): UserConsoleRoute {
     }
   }
 
-  if (/^#\/tokens(?:$|[/?].*)/.test(normalizedHash)) {
+  if (normalizedPath === '/console/tokens') {
     return { name: 'landing', section: 'tokens' }
   }
-  if (/^#\/dashboard(?:$|[/?].*)/.test(normalizedHash)) {
+  if (normalizedPath === '/console/dashboard') {
     return { name: 'landing', section: 'dashboard' }
   }
 
   return { name: 'landing', section: null }
 }
 
-export function userConsoleRouteToHash(route: UserConsoleRoute): string {
+export function userConsoleRouteToPath(route: UserConsoleRoute): string {
   if (route.name === 'token') {
-    return `#/tokens/${encodeURIComponent(route.id)}`
+    return `/console/tokens/${encodeURIComponent(route.id)}`
   }
   if (route.section === 'tokens') {
-    return '#/tokens'
+    return '/console/tokens'
   }
   if (route.section === 'dashboard') {
-    return '#/dashboard'
+    return '/console/dashboard'
   }
-  return ''
+  return '/console'
 }

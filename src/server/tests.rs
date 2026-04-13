@@ -4235,6 +4235,7 @@ mod tests {
         let app = Router::new()
             .route("/", get(serve_index))
             .route("/console", get(serve_console_index))
+            .route("/console/*path", get(serve_console_index))
             .route("/registration-paused", get(serve_registration_paused_index))
             .route("/auth/linuxdo", get(get_linuxdo_auth).post(post_linuxdo_auth))
             .route("/auth/linuxdo/callback", get(get_linuxdo_callback))
@@ -8627,6 +8628,33 @@ colo=LAX
             .await
             .expect("dashboard request");
         assert_eq!(dashboard_resp.status(), reqwest::StatusCode::NOT_FOUND);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn console_deep_link_route_serves_spa_when_user_oauth_is_disabled() {
+        let db_path = temp_db_path("console-deep-link-disabled");
+        let db_str = db_path.to_string_lossy().to_string();
+        let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+            .await
+            .expect("create proxy");
+
+        let addr =
+            spawn_user_oauth_server_with_options(proxy, LinuxDoOAuthOptions::disabled()).await;
+        let client = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build no-redirect client");
+
+        let console_resp = client
+            .get(format!("http://{}/console/tokens/a1b2", addr))
+            .send()
+            .await
+            .expect("console deep-link request");
+        assert_eq!(console_resp.status(), reqwest::StatusCode::OK);
+        let console_html = console_resp.text().await.expect("console deep-link html");
+        assert!(console_html.contains("<title>console</title>"));
 
         let _ = std::fs::remove_file(db_path);
     }
