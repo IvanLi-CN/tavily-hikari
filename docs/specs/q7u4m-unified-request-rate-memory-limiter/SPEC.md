@@ -123,6 +123,7 @@
   story_id_or_title: `user-console-userconsole--console-home-multiple-tokens`
   state: `ConsoleHomeMultipleTokens`
   evidence_note: User Console 已切到 `5m request rate` 语义，账户总览卡片与 token 列表均显示 `requestRate`，不再依赖旧 raw hourly-any 文案。
+  PR: include
 
 ![User Console request rate](./assets/user-console-request-rate.png)
 
@@ -137,6 +138,7 @@
   story_id_or_title: `admin-pages--users-usage`
   state: `UsersUsage`
   evidence_note: 用户用量表头已收敛为 `限流 | 1h` 短标签，避免把 5 分钟防刷窗口写成长句，同时继续和业务额度列分开表达。
+  PR: include
 
 ![Admin users usage request rate](./assets/admin-users-usage-request-rate.png)
 
@@ -151,5 +153,6 @@
   story_id_or_title: `admin-pages--unbound-token-usage`
   state: `UnboundTokenUsage search controls`
   evidence_note: 搜索按钮在中文文案下已固定为单行展示，输入框收缩、按钮不再被挤成竖排。
+  PR: include
 
 ![Admin unbound token search button fixed](./assets/admin-unbound-token-search-button-fixed.png)
