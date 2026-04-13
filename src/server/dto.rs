@@ -1345,6 +1345,7 @@ struct TokenLeaderboardItemView {
     total_requests: i64,
     last_used_at: Option<i64>,
     quota_state: String,
+    request_rate: tavily_hikari::RequestRateView,
     // Business quota windows (tools/call)
     quota_hourly_used: i64,
     quota_hourly_limit: i64,
@@ -1882,10 +1883,20 @@ async fn get_token_leaderboard(
             .map(|w| w.as_str().to_string())
             .unwrap_or_else(|| "normal".to_string());
 
-        let (hourly_any_used, hourly_any_limit) = hourly_any_map
+        let request_rate = hourly_any_map
             .get(&token.id)
-            .map(|v| (v.hourly_used, v.hourly_limit))
-            .unwrap_or((0, effective_token_hourly_request_limit()));
+            .cloned()
+            .unwrap_or_else(|| {
+                TokenHourlyRequestVerdict::new(
+                    0,
+                    request_rate_limit(),
+                    request_rate_limit_window_minutes(),
+                    tavily_hikari::RequestRateScope::Token,
+                    0,
+                )
+            });
+        let (hourly_any_used, hourly_any_limit) =
+            (request_rate.hourly_used, request_rate.hourly_limit);
         let has_monthly_broken_record = monthly_broken_subjects.contains(&token.id);
         let monthly_broken_count = has_monthly_broken_record.then(|| {
             monthly_broken_counts
@@ -1908,6 +1919,7 @@ async fn get_token_leaderboard(
             total_requests: all.total_requests,
             last_used_at: all.last_activity,
             quota_state,
+            request_rate: request_rate.request_rate(),
             quota_hourly_used: hour_used,
             quota_hourly_limit: hour_limit,
             quota_daily_used: day_used,

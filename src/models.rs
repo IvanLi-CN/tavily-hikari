@@ -74,7 +74,7 @@ pub struct TokenQuotaVerdict {
 }
 
 impl TokenQuotaVerdict {
-    pub(crate) fn new(
+    pub fn new(
         hourly_used_raw: i64,
         hourly_limit: i64,
         daily_used_raw: i64,
@@ -255,16 +255,51 @@ pub struct MonthlyQuotaRebaseReport {
     pub meta_updated: bool,
 }
 
-/// Lightweight verdict for the per-token hourly raw request limiter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RequestRateScope {
+    User,
+    Token,
+}
+
+impl RequestRateScope {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Token => "token",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestRateView {
+    pub used: i64,
+    pub limit: i64,
+    pub window_minutes: i64,
+    pub scope: RequestRateScope,
+}
+
+/// Lightweight verdict for the rolling request-rate limiter that counts all
+/// authenticated requests for a bound user or unbound token subject.
 #[derive(Debug, Clone)]
 pub struct TokenHourlyRequestVerdict {
     pub allowed: bool,
     pub hourly_used: i64,
     pub hourly_limit: i64,
+    pub window_minutes: i64,
+    pub scope: RequestRateScope,
+    pub retry_after_seconds: i64,
 }
 
 impl TokenHourlyRequestVerdict {
-    pub(crate) fn new(hourly_used_raw: i64, hourly_limit: i64) -> Self {
+    pub fn new(
+        hourly_used_raw: i64,
+        hourly_limit: i64,
+        window_minutes: i64,
+        scope: RequestRateScope,
+        retry_after_seconds: i64,
+    ) -> Self {
         let hourly_limit = hourly_limit.max(0);
         let hourly_used_raw = hourly_used_raw.max(0);
         let allowed = hourly_limit > 0 && hourly_used_raw <= hourly_limit;
@@ -273,6 +308,18 @@ impl TokenHourlyRequestVerdict {
             allowed,
             hourly_used,
             hourly_limit,
+            window_minutes: window_minutes.max(1),
+            scope,
+            retry_after_seconds: retry_after_seconds.max(0),
+        }
+    }
+
+    pub fn request_rate(&self) -> RequestRateView {
+        RequestRateView {
+            used: self.hourly_used,
+            limit: self.hourly_limit,
+            window_minutes: self.window_minutes,
+            scope: self.scope,
         }
     }
 }
@@ -758,6 +805,7 @@ pub struct AdminUserQuotaDetails {
 
 #[derive(Debug, Clone)]
 pub struct UserDashboardSummary {
+    pub request_rate: RequestRateView,
     pub hourly_any_used: i64,
     pub hourly_any_limit: i64,
     pub quota_hourly_used: i64,
@@ -875,6 +923,7 @@ pub struct UserTokenSummary {
     pub enabled: bool,
     pub note: Option<String>,
     pub last_used_at: Option<i64>,
+    pub request_rate: RequestRateView,
     pub hourly_any_used: i64,
     pub hourly_any_limit: i64,
     pub quota_hourly_used: i64,

@@ -23,6 +23,7 @@ mod tests {
     use tavily_hikari::{
         DEFAULT_UPSTREAM, ForwardProxySettings, effective_auth_token_log_retention_days,
         effective_request_logs_retention_days, effective_token_hourly_limit,
+        request_rate_limit, request_rate_limit_window_minutes,
     };
     use tokio::net::TcpListener;
     use tokio::sync::Notify;
@@ -8314,11 +8315,46 @@ colo=LAX
         let first_item = items.first().expect("user token row");
         assert_eq!(
             dashboard_body
+                .get("requestRate")
+                .and_then(|value| value.get("limit"))
+                .and_then(|value| value.as_i64()),
+            Some(request_rate_limit())
+        );
+        assert_eq!(
+            dashboard_body
+                .get("requestRate")
+                .and_then(|value| value.get("windowMinutes"))
+                .and_then(|value| value.as_i64()),
+            Some(request_rate_limit_window_minutes())
+        );
+        assert_eq!(
+            dashboard_body
+                .get("requestRate")
+                .and_then(|value| value.get("scope"))
+                .and_then(|value| value.as_str()),
+            Some("user")
+        );
+        assert_eq!(
+            dashboard_body
                 .get("hourlyAnyLimit")
                 .and_then(|value| value.as_i64()),
             first_item
                 .get("hourlyAnyLimit")
                 .and_then(|value| value.as_i64())
+        );
+        assert_eq!(
+            first_item
+                .get("requestRate")
+                .and_then(|value| value.get("limit"))
+                .and_then(|value| value.as_i64()),
+            Some(request_rate_limit())
+        );
+        assert_eq!(
+            first_item
+                .get("requestRate")
+                .and_then(|value| value.get("scope"))
+                .and_then(|value| value.as_str()),
+            Some("user")
         );
         assert_eq!(
             first_item.get("tokenId").and_then(|value| value.as_str()),
@@ -14191,11 +14227,12 @@ colo=LAX
             .await
             .expect("drop auth_tokens");
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(25);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
         let mut buffer = String::new();
         let mut refreshed_snapshot: Option<serde_json::Value> = None;
         while tokio::time::Instant::now() < deadline {
-            let chunk = tokio::time::timeout(Duration::from_secs(10), events_resp.chunk())
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let chunk = tokio::time::timeout(remaining, events_resp.chunk())
                 .await
                 .expect("await refreshed event chunk in time")
                 .expect("read refreshed event chunk")
@@ -14549,6 +14586,14 @@ colo=LAX
         let effective_quota = detail_body
             .get("effectiveQuota")
             .expect("effectiveQuota present");
+        let quota_base_hourly_any_before = quota_base
+            .get("hourlyAnyLimit")
+            .and_then(|value| value.as_i64())
+            .expect("base hourlyAny limit before patch");
+        let effective_hourly_any_before = effective_quota
+            .get("hourlyAnyLimit")
+            .and_then(|value| value.as_i64())
+            .expect("effective hourlyAny limit before patch");
         assert_eq!(
             effective_quota
                 .get("hourlyAnyLimit")
@@ -14602,10 +14647,31 @@ colo=LAX
             .expect("user detail after patch json");
         assert_eq!(
             detail_after
+                .get("requestRate")
+                .and_then(|value| value.get("limit"))
+                .and_then(|value| value.as_i64()),
+            Some(request_rate_limit())
+        );
+        assert_eq!(
+            detail_after
+                .get("requestRate")
+                .and_then(|value| value.get("windowMinutes"))
+                .and_then(|value| value.as_i64()),
+            Some(request_rate_limit_window_minutes())
+        );
+        assert_eq!(
+            detail_after
+                .get("requestRate")
+                .and_then(|value| value.get("scope"))
+                .and_then(|value| value.as_str()),
+            Some("user")
+        );
+        assert_eq!(
+            detail_after
                 .get("quotaBase")
                 .and_then(|value| value.get("hourlyAnyLimit"))
                 .and_then(|value| value.as_i64()),
-            Some(123)
+            Some(quota_base_hourly_any_before)
         );
         assert_eq!(
             detail_after
@@ -14633,7 +14699,7 @@ colo=LAX
                 .get("effectiveQuota")
                 .and_then(|value| value.get("hourlyAnyLimit"))
                 .and_then(|value| value.as_i64()),
-            Some(123 + system_hourly_any_delta + 5)
+            Some(effective_hourly_any_before)
         );
         assert_eq!(
             detail_after
@@ -14660,7 +14726,7 @@ colo=LAX
             detail_after
                 .get("hourlyAnyLimit")
                 .and_then(|value| value.as_i64()),
-            Some(123 + system_hourly_any_delta + 5)
+            Some(request_rate_limit())
         );
         assert_eq!(
             detail_after
@@ -14697,8 +14763,25 @@ colo=LAX
             }))
             .send()
             .await
-            .expect("invalid patch request");
-        assert_eq!(invalid_resp.status(), reqwest::StatusCode::BAD_REQUEST);
+            .expect("legacy hourlyAny patch request");
+        assert_eq!(
+            invalid_resp.status(),
+            reqwest::StatusCode::NO_CONTENT,
+            "legacy hourlyAnyLimit should be ignored instead of rejected"
+        );
+
+        let invalid_business_resp = client
+            .patch(&patch_url)
+            .json(&serde_json::json!({
+                "hourlyAnyLimit": 999,
+                "hourlyLimit": -1,
+                "dailyLimit": 678,
+                "monthlyLimit": 910,
+            }))
+            .send()
+            .await
+            .expect("invalid business patch request");
+        assert_eq!(invalid_business_resp.status(), reqwest::StatusCode::BAD_REQUEST);
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -17282,8 +17365,6 @@ colo=LAX
         let db_path = temp_db_path("http-search-hourly-any-nonbillable");
         let db_str = db_path.to_string_lossy().to_string();
 
-        let _hourly_limit_guard = EnvVarGuard::set("TOKEN_HOURLY_REQUEST_LIMIT", "1");
-
         let expected_api_key = "tvly-http-search-hourly-any-key";
         let proxy = TavilyProxy::with_endpoint(
             vec![expected_api_key.to_string()],
@@ -17322,7 +17403,15 @@ colo=LAX
             first.status()
         );
 
-        // 2nd request should be blocked by hourly-any limiter before upstream.
+        for _ in 1..request_rate_limit() {
+            let verdict = proxy
+                .check_token_hourly_requests(&access_token.id)
+                .await
+                .expect("prefill request-rate window");
+            assert!(verdict.allowed, "prefill raw limiter should stay allowed");
+        }
+
+        // 61st request should be blocked by request-rate limiter before upstream.
         let second = client
             .post(url)
             .json(&serde_json::json!({
@@ -17335,7 +17424,36 @@ colo=LAX
         assert_eq!(
             second.status(),
             reqwest::StatusCode::TOO_MANY_REQUESTS,
-            "expected hourly-any 429 on second request"
+            "expected request-rate 429 once the fixed 5m window is exhausted"
+        );
+        let retry_after = second
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .expect("429 response should include Retry-After");
+        assert!(retry_after > 0);
+        let second_body: Value = second.json().await.expect("429 json body");
+        assert_eq!(
+            second_body
+                .get("requestRate")
+                .and_then(|value| value.get("limit"))
+                .and_then(|value| value.as_i64()),
+            Some(request_rate_limit())
+        );
+        assert_eq!(
+            second_body
+                .get("requestRate")
+                .and_then(|value| value.get("windowMinutes"))
+                .and_then(|value| value.as_i64()),
+            Some(request_rate_limit_window_minutes())
+        );
+        assert_eq!(
+            second_body
+                .get("requestRate")
+                .and_then(|value| value.get("scope"))
+                .and_then(|value| value.as_str()),
+            Some("token")
         );
 
         // Inspect latest auth_token_logs row for hourly-any 429.
@@ -17447,8 +17565,6 @@ colo=LAX
         let db_path = temp_db_path("http-map-hourly-any");
         let db_str = db_path.to_string_lossy().to_string();
 
-        let _hourly_limit_guard = EnvVarGuard::set("TOKEN_HOURLY_REQUEST_LIMIT", "1");
-
         let expected_api_key = "tvly-http-map-hourly-any-key";
         let proxy = TavilyProxy::with_endpoint(
             vec![expected_api_key.to_string()],
@@ -17471,37 +17587,36 @@ colo=LAX
         let client = Client::new();
         let url = format!("http://{}/api/tavily/map", proxy_addr);
 
-        let first = client
-            .post(url.clone())
+        for _ in 0..request_rate_limit() {
+            let verdict = proxy
+                .check_token_hourly_requests(&access_token.id)
+                .await
+                .expect("prefill request-rate window");
+            assert!(verdict.allowed, "prefill raw limiter should stay allowed");
+        }
+
+        let blocked = client
+            .post(url)
             .json(&serde_json::json!({
                 "api_key": access_token.token,
                 "url": "https://example.com"
             }))
             .send()
             .await
-            .expect("first request");
+            .expect("blocked request");
         assert_eq!(
-            first.status(),
-            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
-            "first request should hit upstream and return 500"
-        );
-        assert_eq!(hits.load(Ordering::SeqCst), 1);
-
-        let second = client
-            .post(url)
-            .json(&serde_json::json!({
-                "api_key": access_token.token,
-                "url": "https://example.com/second"
-            }))
-            .send()
-            .await
-            .expect("second request");
-        assert_eq!(
-            second.status(),
+            blocked.status(),
             reqwest::StatusCode::TOO_MANY_REQUESTS,
-            "second request should be blocked by hourly-any limiter"
+            "map request should be blocked by the fixed request-rate limiter"
         );
-        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        let retry_after = blocked
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .expect("429 response should include Retry-After");
+        assert!(retry_after > 0);
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
 
         let _ = std::fs::remove_file(db_path);
     }

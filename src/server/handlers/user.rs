@@ -704,6 +704,7 @@ async fn get_user_token(
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct UserDashboardView {
+    request_rate: tavily_hikari::RequestRateView,
     hourly_any_used: i64,
     hourly_any_limit: i64,
     quota_hourly_used: i64,
@@ -725,6 +726,7 @@ struct UserTokenSummaryView {
     enabled: bool,
     note: Option<String>,
     last_used_at: Option<i64>,
+    request_rate: tavily_hikari::RequestRateView,
     hourly_any_used: i64,
     hourly_any_limit: i64,
     quota_hourly_used: i64,
@@ -783,6 +785,7 @@ async fn get_user_dashboard(
             (StatusCode::INTERNAL_SERVER_ERROR, "failed to load dashboard".to_string())
         })?;
     Ok(Json(UserDashboardView {
+        request_rate: summary.request_rate.clone(),
         hourly_any_used: summary.hourly_any_used,
         hourly_any_limit: summary.hourly_any_limit,
         quota_hourly_used: summary.quota_hourly_used,
@@ -861,10 +864,19 @@ async fn build_user_token_detail_view(
                 "failed to load token hourly limits".to_string(),
             )
         })?;
-    let (hourly_any_used, hourly_any_limit) = hourly_any
+    let request_rate = hourly_any
         .get(&token.id)
-        .map(|snapshot| (snapshot.hourly_used, snapshot.hourly_limit))
-        .unwrap_or((0, effective_token_hourly_request_limit()));
+        .cloned()
+        .unwrap_or_else(|| {
+            TokenHourlyRequestVerdict::new(
+                0,
+                request_rate_limit(),
+                request_rate_limit_window_minutes(),
+                tavily_hikari::RequestRateScope::Token,
+                0,
+            )
+        });
+    let (hourly_any_used, hourly_any_limit) = (request_rate.hourly_used, request_rate.hourly_limit);
     let (
         quota_hourly_used,
         quota_hourly_limit,
@@ -879,6 +891,7 @@ async fn build_user_token_detail_view(
         enabled: token.enabled,
         note: token.note,
         last_used_at: token.last_used_at,
+        request_rate: request_rate.request_rate(),
         hourly_any_used,
         hourly_any_limit,
         quota_hourly_used,
@@ -996,15 +1009,26 @@ async fn get_user_tokens(
             quota_monthly_used,
             quota_monthly_limit,
         ) = user_token_quota_values(&token);
-        let (hourly_any_used, hourly_any_limit) = hourly_any
+        let request_rate = hourly_any
             .get(&token.id)
-            .map(|v| (v.hourly_used, v.hourly_limit))
-            .unwrap_or((0, effective_token_hourly_request_limit()));
+            .cloned()
+            .unwrap_or_else(|| {
+                TokenHourlyRequestVerdict::new(
+                    0,
+                    request_rate_limit(),
+                    request_rate_limit_window_minutes(),
+                    tavily_hikari::RequestRateScope::Token,
+                    0,
+                )
+            });
+        let (hourly_any_used, hourly_any_limit) =
+            (request_rate.hourly_used, request_rate.hourly_limit);
         items.push(UserTokenSummaryView {
             token_id: token.id,
             enabled: token.enabled,
             note: token.note,
             last_used_at: token.last_used_at,
+            request_rate: request_rate.request_rate(),
             hourly_any_used,
             hourly_any_limit,
             quota_hourly_used,

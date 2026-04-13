@@ -3,6 +3,7 @@ use crate::models::*;
 use crate::store::*;
 use crate::*;
 use sha2::{Digest, Sha256};
+use std::collections::VecDeque;
 
 #[derive(Clone, Debug)]
 struct TokenQuota {
@@ -18,8 +19,42 @@ struct TokenQuota {
 #[derive(Clone, Debug)]
 struct TokenRequestLimit {
     store: Arc<KeyStore>,
-    cleanup: Arc<Mutex<CleanupState>>,
-    hourly_limit: i64,
+    backend: RequestRateLimitBackend,
+    request_limit: i64,
+    window_minutes: i64,
+    window_secs: i64,
+}
+
+#[derive(Clone, Debug)]
+enum RequestRateLimitBackend {
+    Memory(Arc<MemoryRequestRateLimitBackend>),
+}
+
+#[derive(Clone, Debug, Default)]
+struct MemoryRequestRateLimitBackend {
+    state: Arc<Mutex<HashMap<String, VecDeque<i64>>>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct RequestRateSubject {
+    key: String,
+    scope: RequestRateScope,
+}
+
+impl RequestRateSubject {
+    fn user(user_id: &str) -> Self {
+        Self {
+            key: format!("user:{user_id}"),
+            scope: RequestRateScope::User,
+        }
+    }
+
+    fn token(token_id: &str) -> Self {
+        Self {
+            key: format!("token:{token_id}"),
+            scope: RequestRateScope::Token,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -6112,6 +6147,12 @@ impl TavilyProxy {
             .user_dashboard_summaries_for_users(&[user_id.to_string()], daily_window)
             .await?;
         Ok(summaries.remove(user_id).unwrap_or(UserDashboardSummary {
+            request_rate: RequestRateView {
+                used: 0,
+                limit: request_rate_limit(),
+                window_minutes: request_rate_limit_window_minutes(),
+                scope: RequestRateScope::User,
+            },
             hourly_any_used: 0,
             hourly_any_limit: 0,
             quota_hourly_used: 0,
@@ -6139,9 +6180,6 @@ impl TavilyProxy {
         }
 
         let now = Utc::now();
-        let now_ts = now.timestamp();
-        let minute_bucket = now_ts - (now_ts % SECS_PER_MINUTE);
-        let hour_window_start = minute_bucket - 59 * SECS_PER_MINUTE;
         let month_start = start_of_month(now).timestamp();
         let server_daily_window = server_local_day_window_utc(now.with_timezone(&Local));
         let resolved_daily_window = daily_window.unwrap_or(server_daily_window);
@@ -6154,14 +6192,12 @@ impl TavilyProxy {
             .key_store
             .resolve_account_quota_limits_bulk(&deduped_user_ids)
             .await?;
-        let hourly_any_totals = self
-            .key_store
-            .sum_account_usage_buckets_bulk(
-                &deduped_user_ids,
-                GRANULARITY_REQUEST_MINUTE,
-                hour_window_start,
-            )
+        let request_rate_totals = self
+            .token_request_limit
+            .snapshot_for_users(&deduped_user_ids)
             .await?;
+        let minute_bucket = now.timestamp() - (now.timestamp() % SECS_PER_MINUTE);
+        let hour_window_start = minute_bucket - 59 * SECS_PER_MINUTE;
         let hourly_totals = self
             .key_store
             .sum_account_usage_buckets_bulk(
@@ -6209,11 +6245,25 @@ impl TavilyProxy {
                     .cloned()
                     .unwrap_or_else(|| default_limits.clone());
                 let metrics = log_metrics.get(&user_id).cloned().unwrap_or_default();
+                let request_rate =
+                    request_rate_totals
+                        .get(&user_id)
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            TokenHourlyRequestVerdict::new(
+                                0,
+                                request_rate_limit(),
+                                request_rate_limit_window_minutes(),
+                                RequestRateScope::User,
+                                0,
+                            )
+                        });
                 (
                     user_id.clone(),
                     UserDashboardSummary {
-                        hourly_any_used: hourly_any_totals.get(&user_id).copied().unwrap_or(0),
-                        hourly_any_limit: limits.hourly_any_limit,
+                        request_rate: request_rate.request_rate(),
+                        hourly_any_used: request_rate.hourly_used,
+                        hourly_any_limit: request_rate.hourly_limit,
                         quota_hourly_used: hourly_totals.get(&user_id).copied().unwrap_or(0),
                         quota_hourly_limit: limits.hourly_limit,
                         quota_daily_used: daily_totals.get(&user_id).copied().unwrap_or(0)
@@ -6437,6 +6487,19 @@ impl TavilyProxy {
                 daily_limit,
                 monthly_limit,
             )
+            .await
+    }
+
+    /// Admin: update only business quota limits and preserve deprecated raw request fields.
+    pub async fn update_account_business_quota_limits(
+        &self,
+        user_id: &str,
+        hourly_limit: i64,
+        daily_limit: i64,
+        monthly_limit: i64,
+    ) -> Result<bool, ProxyError> {
+        self.key_store
+            .update_account_business_quota_limits(user_id, hourly_limit, daily_limit, monthly_limit)
             .await
     }
 
@@ -8633,8 +8696,12 @@ impl TokenRequestLimit {
     pub(crate) fn new(store: Arc<KeyStore>) -> Self {
         Self {
             store,
-            cleanup: Arc::new(Mutex::new(CleanupState::default())),
-            hourly_limit: effective_token_hourly_request_limit(),
+            backend: RequestRateLimitBackend::Memory(Arc::new(
+                MemoryRequestRateLimitBackend::default(),
+            )),
+            request_limit: request_rate_limit(),
+            window_minutes: request_rate_limit_window_minutes(),
+            window_secs: request_rate_limit_window_secs(),
         }
     }
 
@@ -8643,61 +8710,20 @@ impl TokenRequestLimit {
         token_id: &str,
     ) -> Result<TokenHourlyRequestVerdict, ProxyError> {
         let now_ts = Utc::now().timestamp();
-        let minute_bucket = now_ts - (now_ts % SECS_PER_MINUTE);
-        let hour_window_start = minute_bucket - 59 * SECS_PER_MINUTE;
-        let verdict =
-            if let Some(user_id) = self.store.find_user_id_by_token_fresh(token_id).await? {
-                let limits = self
-                    .store
-                    .resolve_account_quota_resolution(&user_id)
-                    .await?
-                    .effective;
-                if limits.hourly_any_limit <= 0 {
-                    let hourly_used = self
-                        .store
-                        .sum_account_usage_buckets(
-                            &user_id,
-                            GRANULARITY_REQUEST_MINUTE,
-                            hour_window_start,
-                        )
-                        .await?;
-                    TokenHourlyRequestVerdict::new(hourly_used, limits.hourly_any_limit)
-                } else {
-                    self.store
-                        .increment_account_usage_bucket(
-                            &user_id,
-                            minute_bucket,
-                            GRANULARITY_REQUEST_MINUTE,
-                        )
-                        .await?;
-                    let hourly_used = self
-                        .store
-                        .sum_account_usage_buckets(
-                            &user_id,
-                            GRANULARITY_REQUEST_MINUTE,
-                            hour_window_start,
-                        )
-                        .await?;
-                    TokenHourlyRequestVerdict::new(hourly_used, limits.hourly_any_limit)
-                }
-            } else {
-                // Increment per-minute raw request bucket for this token.
-                self.store
-                    .increment_usage_bucket(token_id, minute_bucket, GRANULARITY_REQUEST_MINUTE)
-                    .await?;
-
-                let hourly_used = self
-                    .store
-                    .sum_usage_buckets(token_id, GRANULARITY_REQUEST_MINUTE, hour_window_start)
-                    .await?;
-                TokenHourlyRequestVerdict::new(hourly_used, self.hourly_limit)
-            };
-
-        self.maybe_cleanup(now_ts).await?;
-        Ok(verdict)
+        let subject = self.resolve_subject_for_token(token_id).await?;
+        Ok(self
+            .backend
+            .check(
+                &subject,
+                now_ts,
+                self.request_limit,
+                self.window_minutes,
+                self.window_secs,
+            )
+            .await)
     }
 
-    /// Read-only snapshot of hourly raw request usage for a set of tokens.
+    /// Read-only snapshot of rolling request-rate usage for a set of tokens.
     /// This does NOT increment counters and is intended for dashboards / leaderboards.
     pub(crate) async fn snapshot_many(
         &self,
@@ -8707,89 +8733,236 @@ impl TokenRequestLimit {
             return Ok(HashMap::new());
         }
         let now_ts = Utc::now().timestamp();
-        let minute_bucket = now_ts - (now_ts % SECS_PER_MINUTE);
-        let hour_window_start = minute_bucket - 59 * SECS_PER_MINUTE;
+        let subjects_by_token = self.resolve_subjects_for_tokens(token_ids).await?;
+        let mut unique_subjects: Vec<RequestRateSubject> =
+            subjects_by_token.values().cloned().collect();
+        unique_subjects.sort_by(|left, right| left.key.cmp(&right.key));
+        unique_subjects.dedup_by(|left, right| left.key == right.key);
+        let verdicts = self
+            .backend
+            .snapshot_many(
+                &unique_subjects,
+                now_ts,
+                self.request_limit,
+                self.window_minutes,
+                self.window_secs,
+            )
+            .await;
+        Ok(token_ids
+            .iter()
+            .filter_map(|token_id| {
+                subjects_by_token
+                    .get(token_id)
+                    .and_then(|subject| verdicts.get(&subject.key).cloned())
+                    .map(|verdict| (token_id.clone(), verdict))
+            })
+            .collect())
+    }
 
-        let token_bindings = self.store.list_user_bindings_for_tokens(token_ids).await?;
-        let mut token_subjects: Vec<String> = Vec::new();
-        let mut account_subjects: Vec<(String, String)> = Vec::new();
-        let mut account_user_ids: Vec<String> = Vec::new();
-        for token_id in token_ids {
-            if let Some(user_id) = token_bindings.get(token_id) {
-                account_subjects.push((token_id.clone(), user_id.clone()));
-                account_user_ids.push(user_id.clone());
+    pub(crate) async fn snapshot_for_users(
+        &self,
+        user_ids: &[String],
+    ) -> Result<HashMap<String, TokenHourlyRequestVerdict>, ProxyError> {
+        if user_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let now_ts = Utc::now().timestamp();
+        let mut unique_subjects: Vec<RequestRateSubject> = user_ids
+            .iter()
+            .map(|user_id| RequestRateSubject::user(user_id))
+            .collect();
+        unique_subjects.sort_by(|left, right| left.key.cmp(&right.key));
+        unique_subjects.dedup_by(|left, right| left.key == right.key);
+        let verdicts = self
+            .backend
+            .snapshot_many(
+                &unique_subjects,
+                now_ts,
+                self.request_limit,
+                self.window_minutes,
+                self.window_secs,
+            )
+            .await;
+        Ok(user_ids
+            .iter()
+            .filter_map(|user_id| {
+                let subject = RequestRateSubject::user(user_id);
+                verdicts
+                    .get(&subject.key)
+                    .cloned()
+                    .map(|verdict| (user_id.clone(), verdict))
+            })
+            .collect())
+    }
+
+    async fn resolve_subject_for_token(
+        &self,
+        token_id: &str,
+    ) -> Result<RequestRateSubject, ProxyError> {
+        Ok(
+            if let Some(user_id) = self.store.find_user_id_by_token_fresh(token_id).await? {
+                RequestRateSubject::user(&user_id)
             } else {
-                token_subjects.push(token_id.clone());
+                RequestRateSubject::token(token_id)
+            },
+        )
+    }
+
+    async fn resolve_subjects_for_tokens(
+        &self,
+        token_ids: &[String],
+    ) -> Result<HashMap<String, RequestRateSubject>, ProxyError> {
+        let bindings = self.store.list_user_bindings_for_tokens(token_ids).await?;
+        Ok(token_ids
+            .iter()
+            .map(|token_id| {
+                let subject = bindings
+                    .get(token_id)
+                    .map(|user_id| RequestRateSubject::user(user_id))
+                    .unwrap_or_else(|| RequestRateSubject::token(token_id));
+                (token_id.clone(), subject)
+            })
+            .collect())
+    }
+}
+
+impl RequestRateLimitBackend {
+    async fn check(
+        &self,
+        subject: &RequestRateSubject,
+        now_ts: i64,
+        request_limit: i64,
+        window_minutes: i64,
+        window_secs: i64,
+    ) -> TokenHourlyRequestVerdict {
+        match self {
+            Self::Memory(backend) => {
+                backend
+                    .check(subject, now_ts, request_limit, window_minutes, window_secs)
+                    .await
             }
         }
-        account_user_ids.sort_unstable();
-        account_user_ids.dedup();
+    }
 
-        let mut map = HashMap::new();
-        let token_totals = self
-            .store
-            .sum_usage_buckets_bulk(
-                &token_subjects,
-                GRANULARITY_REQUEST_MINUTE,
-                hour_window_start,
-            )
-            .await?;
-        for token_id in token_subjects {
-            let used = token_totals.get(&token_id).copied().unwrap_or(0);
-            map.insert(
-                token_id,
-                TokenHourlyRequestVerdict::new(used, self.hourly_limit),
+    async fn snapshot_many(
+        &self,
+        subjects: &[RequestRateSubject],
+        now_ts: i64,
+        request_limit: i64,
+        window_minutes: i64,
+        window_secs: i64,
+    ) -> HashMap<String, TokenHourlyRequestVerdict> {
+        match self {
+            Self::Memory(backend) => {
+                backend
+                    .snapshot_many(subjects, now_ts, request_limit, window_minutes, window_secs)
+                    .await
+            }
+        }
+    }
+}
+
+impl MemoryRequestRateLimitBackend {
+    async fn check(
+        &self,
+        subject: &RequestRateSubject,
+        now_ts: i64,
+        request_limit: i64,
+        window_minutes: i64,
+        window_secs: i64,
+    ) -> TokenHourlyRequestVerdict {
+        if request_limit <= 0 {
+            return TokenHourlyRequestVerdict::new(
+                0,
+                request_limit,
+                window_minutes,
+                subject.scope,
+                window_secs.max(1),
             );
         }
 
-        if !account_user_ids.is_empty() {
-            let account_limits = self
-                .store
-                .resolve_account_quota_limits_bulk(&account_user_ids)
-                .await?;
-            let account_totals = self
-                .store
-                .sum_account_usage_buckets_bulk(
-                    &account_user_ids,
-                    GRANULARITY_REQUEST_MINUTE,
-                    hour_window_start,
-                )
-                .await?;
-            let default_hourly_any_limit = AccountQuotaLimits::zero_base().hourly_any_limit;
-            for (token_id, user_id) in account_subjects {
-                let used = account_totals.get(&user_id).copied().unwrap_or(0);
-                let limit = account_limits
-                    .get(&user_id)
-                    .map(|limits| limits.hourly_any_limit)
-                    .unwrap_or(default_hourly_any_limit);
-                map.insert(token_id, TokenHourlyRequestVerdict::new(used, limit));
+        let mut state = self.state.lock().await;
+        let queue = state.entry(subject.key.clone()).or_default();
+        Self::prune_queue(queue, now_ts, window_secs);
+        if (queue.len() as i64) >= request_limit {
+            let retry_after_seconds = queue
+                .front()
+                .map(|oldest| (oldest + window_secs - now_ts).max(1))
+                .unwrap_or(1);
+            let used = queue.len() as i64;
+            if queue.is_empty() {
+                state.remove(&subject.key);
             }
+            return TokenHourlyRequestVerdict::new(
+                used.saturating_add(1),
+                request_limit,
+                window_minutes,
+                subject.scope,
+                retry_after_seconds,
+            );
         }
-        Ok(map)
+
+        queue.push_back(now_ts);
+        let used = queue.len() as i64;
+        TokenHourlyRequestVerdict::new(used, request_limit, window_minutes, subject.scope, 0)
     }
 
-    pub(crate) async fn maybe_cleanup(&self, now_ts: i64) -> Result<(), ProxyError> {
-        let should_prune = {
-            let mut guard = self.cleanup.lock().await;
-            if now_ts - guard.last_pruned < CLEANUP_INTERVAL_SECS {
-                false
-            } else {
-                guard.last_pruned = now_ts;
-                true
+    async fn snapshot_many(
+        &self,
+        subjects: &[RequestRateSubject],
+        now_ts: i64,
+        request_limit: i64,
+        window_minutes: i64,
+        window_secs: i64,
+    ) -> HashMap<String, TokenHourlyRequestVerdict> {
+        let mut state = self.state.lock().await;
+        let mut verdicts = HashMap::new();
+        let mut empty_keys = Vec::new();
+        for subject in subjects {
+            let (used, retry_after_seconds, should_remove) =
+                if let Some(queue) = state.get_mut(&subject.key) {
+                    Self::prune_queue(queue, now_ts, window_secs);
+                    let used = queue.len() as i64;
+                    let retry_after_seconds = if used >= request_limit {
+                        queue
+                            .front()
+                            .map(|oldest| (oldest + window_secs - now_ts).max(1))
+                            .unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    (used, retry_after_seconds, queue.is_empty())
+                } else {
+                    (0, 0, false)
+                };
+            if should_remove {
+                empty_keys.push(subject.key.clone());
             }
-        };
-
-        if should_prune {
-            let threshold = now_ts - BUCKET_RETENTION_SECS;
-            self.store
-                .delete_old_usage_buckets(GRANULARITY_REQUEST_MINUTE, threshold)
-                .await?;
-            self.store
-                .delete_old_account_usage_buckets(GRANULARITY_REQUEST_MINUTE, threshold)
-                .await?;
+            verdicts.insert(
+                subject.key.clone(),
+                TokenHourlyRequestVerdict::new(
+                    used,
+                    request_limit,
+                    window_minutes,
+                    subject.scope,
+                    retry_after_seconds,
+                ),
+            );
         }
+        for key in empty_keys {
+            state.remove(&key);
+        }
+        verdicts
+    }
 
-        Ok(())
+    fn prune_queue(queue: &mut VecDeque<i64>, now_ts: i64, window_secs: i64) {
+        let expires_at = now_ts - window_secs;
+        while queue
+            .front()
+            .is_some_and(|timestamp| *timestamp <= expires_at)
+        {
+            queue.pop_front();
+        }
     }
 }
 

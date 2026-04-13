@@ -2510,6 +2510,7 @@ struct AdminUserSummaryView {
     last_login_at: Option<i64>,
     token_count: i64,
     api_key_count: i64,
+    request_rate: tavily_hikari::RequestRateView,
     hourly_any_used: i64,
     hourly_any_limit: i64,
     quota_hourly_used: i64,
@@ -2535,6 +2536,7 @@ struct AdminUserTokenSummaryView {
     enabled: bool,
     note: Option<String>,
     last_used_at: Option<i64>,
+    request_rate: tavily_hikari::RequestRateView,
     hourly_any_used: i64,
     hourly_any_limit: i64,
     quota_hourly_used: i64,
@@ -2573,6 +2575,7 @@ struct AdminUserDetailView {
     last_login_at: Option<i64>,
     token_count: i64,
     api_key_count: i64,
+    request_rate: tavily_hikari::RequestRateView,
     hourly_any_used: i64,
     hourly_any_limit: i64,
     quota_hourly_used: i64,
@@ -2679,6 +2682,7 @@ struct AdminUserSummaryRow {
 #[derive(Debug, Clone)]
 struct AdminUnboundTokenUsageRow {
     token: AuthToken,
+    request_rate: tavily_hikari::RequestRateView,
     hourly_any_used: i64,
     hourly_any_limit: i64,
     daily_success: i64,
@@ -2697,6 +2701,7 @@ struct AdminUnboundTokenUsageView {
     enabled: bool,
     note: Option<String>,
     group: Option<String>,
+    request_rate: tavily_hikari::RequestRateView,
     hourly_any_used: i64,
     hourly_any_limit: i64,
     quota_hourly_used: i64,
@@ -2804,6 +2809,17 @@ fn normalize_optional_text(value: Option<String>) -> Option<String> {
     })
 }
 
+fn default_request_rate_view(scope: tavily_hikari::RequestRateScope) -> tavily_hikari::RequestRateView {
+    TokenHourlyRequestVerdict::new(
+        0,
+        request_rate_limit(),
+        request_rate_limit_window_minutes(),
+        scope,
+        0,
+    )
+    .request_rate()
+}
+
 fn build_admin_user_summary_view(
     user: &tavily_hikari::AdminUserIdentity,
     summary: &tavily_hikari::UserDashboardSummary,
@@ -2820,6 +2836,7 @@ fn build_admin_user_summary_view(
         last_login_at: user.last_login_at,
         token_count: user.token_count,
         api_key_count,
+        request_rate: summary.request_rate.clone(),
         hourly_any_used: summary.hourly_any_used,
         hourly_any_limit: summary.hourly_any_limit,
         quota_hourly_used: summary.quota_hourly_used,
@@ -2876,6 +2893,7 @@ fn build_monthly_broken_keys_view(
 
 fn empty_user_dashboard_summary() -> tavily_hikari::UserDashboardSummary {
     tavily_hikari::UserDashboardSummary {
+        request_rate: default_request_rate_view(tavily_hikari::RequestRateScope::User),
         hourly_any_used: 0,
         hourly_any_limit: 0,
         quota_hourly_used: 0,
@@ -3201,6 +3219,7 @@ fn build_admin_unbound_token_usage_view(
         enabled: row.token.enabled,
         note: row.token.note,
         group: row.token.group_name,
+        request_rate: row.request_rate,
         hourly_any_used: row.hourly_any_used,
         hourly_any_limit: row.hourly_any_limit,
         quota_hourly_used,
@@ -3650,11 +3669,13 @@ async fn list_unbound_token_usage(
         .into_iter()
         .map(|token| {
             let hourly_any = hourly_any_map.get(&token.id).cloned().unwrap_or_else(|| {
-                TokenHourlyRequestVerdict {
-                    allowed: true,
-                    hourly_used: 0,
-                    hourly_limit: effective_token_hourly_request_limit(),
-                }
+                TokenHourlyRequestVerdict::new(
+                    0,
+                    request_rate_limit(),
+                    request_rate_limit_window_minutes(),
+                    tavily_hikari::RequestRateScope::Token,
+                    0,
+                )
             });
             let metrics = log_metrics.get(&token.id).cloned().unwrap_or_default();
             let has_monthly_broken_record = monthly_broken_subjects.contains(&token.id);
@@ -3669,6 +3690,7 @@ async fn list_unbound_token_usage(
                 monthly_broken_limit: has_monthly_broken_record
                     .then_some(UNBOUND_TOKEN_MONTHLY_BROKEN_LIMIT_DEFAULT),
                 token,
+                request_rate: hourly_any.request_rate(),
                 hourly_any_used: hourly_any.hourly_used,
                 hourly_any_limit: hourly_any.hourly_limit,
                 daily_success: metrics.daily_success,
@@ -3805,15 +3827,26 @@ async fn get_user_detail(
             quota_monthly_used,
             quota_monthly_limit,
         ) = user_token_quota_values(&token);
-        let (hourly_any_used, hourly_any_limit) = hourly_any
+        let request_rate = hourly_any
             .get(&token.id)
-            .map(|value| (value.hourly_used, value.hourly_limit))
-            .unwrap_or((0, effective_token_hourly_request_limit()));
+            .cloned()
+            .unwrap_or_else(|| {
+                TokenHourlyRequestVerdict::new(
+                    0,
+                    request_rate_limit(),
+                    request_rate_limit_window_minutes(),
+                    tavily_hikari::RequestRateScope::Token,
+                    0,
+                )
+            });
+        let (hourly_any_used, hourly_any_limit) =
+            (request_rate.hourly_used, request_rate.hourly_limit);
         token_items.push(AdminUserTokenSummaryView {
             token_id: token.id,
             enabled: token.enabled,
             note: token.note,
             last_used_at: token.last_used_at,
+            request_rate: request_rate.request_rate(),
             hourly_any_used,
             hourly_any_limit,
             quota_hourly_used,
@@ -3836,6 +3869,7 @@ async fn get_user_detail(
         last_login_at: user.last_login_at,
         token_count: user.token_count,
         api_key_count,
+        request_rate: summary.request_rate.clone(),
         hourly_any_used: summary.hourly_any_used,
         hourly_any_limit: summary.hourly_any_limit,
         quota_hourly_used: summary.quota_hourly_used,
@@ -3876,8 +3910,8 @@ async fn update_user_quota(
     if !is_admin_request(state.as_ref(), &headers) {
         return Err((StatusCode::FORBIDDEN, "forbidden".to_string()));
     }
-    if payload.hourly_any_limit < 0
-        || payload.hourly_limit < 0
+    let _legacy_hourly_any_limit = payload.hourly_any_limit;
+    if payload.hourly_limit < 0
         || payload.daily_limit < 0
         || payload.monthly_limit < 0
     {
@@ -3888,9 +3922,8 @@ async fn update_user_quota(
     }
     let updated = state
         .proxy
-        .update_account_quota_limits(
+        .update_account_business_quota_limits(
             &id,
-            payload.hourly_any_limit,
             payload.hourly_limit,
             payload.daily_limit,
             payload.monthly_limit,
@@ -4349,6 +4382,7 @@ mod admin_resources_tests {
 
     fn mock_summary() -> tavily_hikari::UserDashboardSummary {
         tavily_hikari::UserDashboardSummary {
+            request_rate: default_request_rate_view(tavily_hikari::RequestRateScope::User),
             hourly_any_used: 0,
             hourly_any_limit: 0,
             quota_hourly_used: 0,

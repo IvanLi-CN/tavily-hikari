@@ -20,6 +20,8 @@ import type {
   JobGroup,
   JobLogView,
   MonthlyBrokenKeyDetail,
+  RequestRate,
+  RequestRateScope,
   RequestLog,
   RequestLogsCatalog,
   RequestLogsListPage,
@@ -113,6 +115,7 @@ import {
   type QuotaSliderField,
   type QuotaSliderSeed,
 } from './quotaSlider'
+import { formatRequestRateSummary, resolveRequestRate } from '../requestRate'
 import AdminOverlayHost from './AdminOverlayHost'
 const now = 1_762_380_000
 const ADMIN_USERS_DEFAULT_SORT_FIELD: AdminUsersSortField = 'lastLoginAt'
@@ -134,6 +137,20 @@ const defaultDashboardHourlyRequestWindow = buildDashboardHourlyRequestWindowFix
     apiBillable: (index % 5) + 4,
   }),
 })
+
+function createRequestRate(
+  used: number,
+  limit: number,
+  scope: RequestRateScope,
+  windowMinutes = 5,
+): RequestRate {
+  return {
+    used,
+    limit,
+    windowMinutes,
+    scope,
+  }
+}
 
 function formatKeyGroupName(group: string | null | undefined, ungroupedLabel: string): string {
   const normalized = group?.trim() ?? ''
@@ -1116,8 +1133,9 @@ const MOCK_USERS: AdminUserSummary[] = [
     tokenCount: 2,
     apiKeyCount: 3,
     tags: MOCK_ALICE_TAGS,
-    hourlyAnyUsed: 312,
-    hourlyAnyLimit: 1_770,
+    requestRate: createRequestRate(58, 60, 'user'),
+    hourlyAnyUsed: 58,
+    hourlyAnyLimit: 60,
     quotaHourlyUsed: 1_118,
     quotaHourlyLimit: 1_200,
     quotaDailyUsed: 5_201,
@@ -1141,8 +1159,9 @@ const MOCK_USERS: AdminUserSummary[] = [
     tokenCount: 1,
     apiKeyCount: 2,
     tags: MOCK_BOB_TAGS,
-    hourlyAnyUsed: 611,
-    hourlyAnyLimit: 0,
+    requestRate: createRequestRate(60, 60, 'user'),
+    hourlyAnyUsed: 60,
+    hourlyAnyLimit: 60,
     quotaHourlyUsed: 602,
     quotaHourlyLimit: 0,
     quotaDailyUsed: 10_009,
@@ -1166,8 +1185,9 @@ const MOCK_USERS: AdminUserSummary[] = [
     tokenCount: 0,
     apiKeyCount: 0,
     tags: [],
+    requestRate: createRequestRate(0, 60, 'user'),
     hourlyAnyUsed: 0,
-    hourlyAnyLimit: 600,
+    hourlyAnyLimit: 60,
     quotaHourlyUsed: 0,
     quotaHourlyLimit: 500,
     quotaDailyUsed: 0,
@@ -1190,8 +1210,9 @@ const MOCK_USER_TOKENS: AdminUserTokenSummary[] = [
     enabled: true,
     note: 'Primary production',
     lastUsedAt: now - 24,
-    hourlyAnyUsed: 188,
-    hourlyAnyLimit: 600,
+    requestRate: createRequestRate(58, 60, 'user'),
+    hourlyAnyUsed: 58,
+    hourlyAnyLimit: 60,
     quotaHourlyUsed: 180,
     quotaHourlyLimit: 500,
     quotaDailyUsed: 2_840,
@@ -1207,8 +1228,9 @@ const MOCK_USER_TOKENS: AdminUserTokenSummary[] = [
     enabled: true,
     note: 'Batch backfill',
     lastUsedAt: now - 400,
-    hourlyAnyUsed: 124,
-    hourlyAnyLimit: 600,
+    requestRate: createRequestRate(58, 60, 'user'),
+    hourlyAnyUsed: 58,
+    hourlyAnyLimit: 60,
     quotaHourlyUsed: 118,
     quotaHourlyLimit: 500,
     quotaDailyUsed: 2_361,
@@ -1227,8 +1249,9 @@ const MOCK_UNBOUND_TOKEN_USAGE: AdminUnboundTokenUsageSummary[] = [
     enabled: true,
     note: 'Sandbox smoke traffic',
     group: 'sandbox',
+    requestRate: createRequestRate(12, 60, 'token'),
     hourlyAnyUsed: 12,
-    hourlyAnyLimit: 500,
+    hourlyAnyLimit: 60,
     quotaHourlyUsed: 9,
     quotaHourlyLimit: 300,
     quotaDailyUsed: 124,
@@ -1248,8 +1271,9 @@ const MOCK_UNBOUND_TOKEN_USAGE: AdminUnboundTokenUsageSummary[] = [
     enabled: false,
     note: 'Legacy import runner',
     group: 'ops',
-    hourlyAnyUsed: 66,
-    hourlyAnyLimit: 200,
+    requestRate: createRequestRate(60, 60, 'token'),
+    hourlyAnyUsed: 60,
+    hourlyAnyLimit: 60,
     quotaHourlyUsed: 61,
     quotaHourlyLimit: 120,
     quotaDailyUsed: 402,
@@ -1269,8 +1293,9 @@ const MOCK_UNBOUND_TOKEN_USAGE: AdminUnboundTokenUsageSummary[] = [
     enabled: true,
     note: null,
     group: null,
+    requestRate: createRequestRate(4, 60, 'token'),
     hourlyAnyUsed: 4,
-    hourlyAnyLimit: 100,
+    hourlyAnyLimit: 60,
     quotaHourlyUsed: 3,
     quotaHourlyLimit: 80,
     quotaDailyUsed: 28,
@@ -2561,7 +2586,6 @@ function StoryUserTagCatalogCard({
         ) : (
           <dl className="user-tag-catalog-delta-grid">
             {([
-              [users.quota.hourlyAny, draft.hourlyAnyDelta],
               [users.quota.hourly, draft.hourlyDelta],
               [users.quota.daily, draft.dailyDelta],
               [users.quota.monthly, draft.monthlyDelta],
@@ -4710,7 +4734,8 @@ function UsersUsagePageCanvas({
               </thead>
               <tbody>
                 {sortedUsers.map((item) => {
-                  const hourlyAnyMetric = formatQuotaStackValue(item.hourlyAnyUsed, item.hourlyAnyLimit)
+                  const requestRate = resolveRequestRate(item, 'user')
+                  const requestRateMetric = formatQuotaStackValue(requestRate.used, requestRate.limit)
                   const hourlyMetric = formatQuotaStackValue(item.quotaHourlyUsed, item.quotaHourlyLimit)
                   const dailyQuotaMetric = formatQuotaStackValue(item.quotaDailyUsed, item.quotaDailyLimit)
                   const monthlyQuotaMetric = formatQuotaStackValue(item.quotaMonthlyUsed, item.quotaMonthlyLimit)
@@ -4745,8 +4770,8 @@ function UsersUsagePageCanvas({
                       </td>
                       <td className="admin-users-compact-cell">
                         <div className="admin-table-value-stack">
-                          <span className={`admin-table-value-primary${hourlyAnyMetric.primaryClassName ? ` ${hourlyAnyMetric.primaryClassName}` : ''}`}>{hourlyAnyMetric.primary}</span>
-                          <span className="admin-table-value-secondary">{hourlyAnyMetric.secondary}</span>
+                          <span className={`admin-table-value-primary${requestRateMetric.primaryClassName ? ` ${requestRateMetric.primaryClassName}` : ''}`}>{requestRateMetric.primary}</span>
+                          <span className="admin-table-value-secondary">{requestRateMetric.secondary}</span>
                         </div>
                       </td>
                       <td className="admin-users-compact-cell">
@@ -5015,7 +5040,8 @@ function UnboundTokenUsagePageCanvas({
               </thead>
               <tbody>
                 {pagedItems.map((item) => {
-                  const hourlyAnyMetric = formatQuotaStackValue(item.hourlyAnyUsed, item.hourlyAnyLimit)
+                  const requestRate = resolveRequestRate(item, 'token')
+                  const requestRateMetric = formatQuotaStackValue(requestRate.used, requestRate.limit)
                   const hourlyMetric = formatQuotaStackValue(item.quotaHourlyUsed, item.quotaHourlyLimit)
                   const dailyQuotaMetric = formatQuotaStackValue(item.quotaDailyUsed, item.quotaDailyLimit)
                   const monthlyQuotaMetric = formatQuotaStackValue(item.quotaMonthlyUsed, item.quotaMonthlyLimit)
@@ -5048,8 +5074,8 @@ function UnboundTokenUsagePageCanvas({
                       </td>
                       <td className="admin-users-compact-cell">
                         <div className="admin-table-value-stack">
-                          <span className={`admin-table-value-primary${hourlyAnyMetric.primaryClassName ? ` ${hourlyAnyMetric.primaryClassName}` : ''}`}>{hourlyAnyMetric.primary}</span>
-                          <span className="admin-table-value-secondary">{hourlyAnyMetric.secondary}</span>
+                          <span className={`admin-table-value-primary${requestRateMetric.primaryClassName ? ` ${requestRateMetric.primaryClassName}` : ''}`}>{requestRateMetric.primary}</span>
+                          <span className="admin-table-value-secondary">{requestRateMetric.secondary}</span>
                         </div>
                       </td>
                       <td className="admin-users-compact-cell">
@@ -5123,7 +5149,9 @@ function UnboundTokenUsagePageCanvas({
           {pagedItems.length === 0 ? (
             <div className="empty-state alert">{errorMessage ?? strings.empty.none}</div>
           ) : (
-            pagedItems.map((item) => (
+            pagedItems.map((item) => {
+              const requestRate = resolveRequestRate(item, 'token')
+              return (
               <article key={item.tokenId} className="admin-mobile-card">
                 <div className="admin-mobile-identity-block">
                   <div className="admin-mobile-identity-row">
@@ -5147,8 +5175,8 @@ function UnboundTokenUsagePageCanvas({
                   </StatusBadge>
                 </div>
                 <div className="admin-mobile-kv">
-                  <span>{strings.table.hourlyAny}</span>
-                  <strong>{formatQuotaUsagePair(item.hourlyAnyUsed, item.hourlyAnyLimit)}</strong>
+                  <span>{formatRequestRateSummary(requestRate, language)}</span>
+                  <strong>{formatQuotaUsagePair(requestRate.used, requestRate.limit)}</strong>
                 </div>
                 <div className="admin-mobile-kv">
                   <span>{strings.table.hourly}</span>
@@ -5195,7 +5223,7 @@ function UnboundTokenUsagePageCanvas({
                   <strong>{formatTimestamp(item.lastUsedAt)}</strong>
                 </div>
               </article>
-            ))
+            )})
           )}
         </div>
 
@@ -5372,6 +5400,7 @@ function UserTagsPageCanvas({ editorMode = 'view' }: { editorMode?: StoryTagCard
 
 function UserDetailPageCanvas(): JSX.Element {
   const users = useTranslate().admin.users
+  const { language } = useLanguage()
   const detail = MOCK_USER_DETAIL
   const quotaSnapshot = buildStoryQuotaSnapshot(detail)
   const [quotaDraft, setQuotaDraft] = useState<Record<QuotaSliderField, string>>({
@@ -5548,10 +5577,6 @@ function UserDetailPageCanvas(): JSX.Element {
                 </div>
                 <div className="token-compact-pair">
                   <div className="token-compact-field">
-                    <span className="token-compact-label">{users.quota.hourlyAny}</span>
-                    <span className="token-compact-value">{formatSignedQuotaDelta(tag.hourlyAnyDelta)}</span>
-                  </div>
-                  <div className="token-compact-field">
                     <span className="token-compact-label">{users.quota.hourly}</span>
                     <span className="token-compact-value">{formatSignedQuotaDelta(tag.hourlyDelta)}</span>
                   </div>
@@ -5582,12 +5607,6 @@ function UserDetailPageCanvas(): JSX.Element {
         </div>
         <div className="quota-grid" style={{ marginTop: 12 }}>
           {([
-            {
-              field: 'hourlyAnyLimit',
-              label: users.quota.hourlyAny,
-              used: detail.hourlyAnyUsed,
-              currentLimit: detail.quotaBase.hourlyAnyLimit,
-            },
             {
               field: 'hourlyLimit',
               label: users.quota.hourly,
@@ -5661,7 +5680,6 @@ function UserDetailPageCanvas(): JSX.Element {
         {hasBlockAllTag && <div className="alert alert-warning">{users.effectiveQuota.blockAllNotice}</div>}
         <div className="token-info-grid">
           {([
-            ['hourlyAny', users.quota.hourlyAny, detail.effectiveQuota.hourlyAnyLimit],
             ['hourly', users.quota.hourly, detail.effectiveQuota.hourlyLimit],
             ['daily', users.quota.daily, detail.effectiveQuota.dailyLimit],
             ['monthly', users.quota.monthly, detail.effectiveQuota.monthlyLimit],
@@ -5679,7 +5697,6 @@ function UserDetailPageCanvas(): JSX.Element {
                 <th>{users.effectiveQuota.columns.item}</th>
                 <th>{users.effectiveQuota.columns.source}</th>
                 <th>{users.effectiveQuota.columns.effect}</th>
-                <th>{users.quota.hourlyAny}</th>
                 <th>{users.quota.hourly}</th>
                 <th>{users.quota.daily}</th>
                 <th>{users.quota.monthly}</th>
@@ -5728,7 +5745,6 @@ function UserDetailPageCanvas(): JSX.Element {
                               : users.catalog.effectKinds.quotaDelta}
                       </StatusBadge>
                     </td>
-                    <td>{formatBreakdownValue(entry.hourlyAnyDelta)}</td>
                     <td>{formatBreakdownValue(entry.hourlyDelta)}</td>
                     <td>{formatBreakdownValue(entry.dailyDelta)}</td>
                     <td>{formatBreakdownValue(entry.monthlyDelta)}</td>
@@ -5760,7 +5776,9 @@ function UserDetailPageCanvas(): JSX.Element {
               </tr>
             </thead>
             <tbody>
-              {detail.tokens.map((token) => (
+              {detail.tokens.map((token) => {
+                const requestRate = resolveRequestRate(token, token.requestRate?.scope ?? 'token')
+                return (
                 <tr key={token.tokenId}>
                   <td>
                     <div className="token-compact-pair">
@@ -5787,8 +5805,8 @@ function UserDetailPageCanvas(): JSX.Element {
                   <td>
                     <div className="token-compact-pair">
                       <div className="token-compact-field">
-                        <span className="token-compact-label">{users.tokens.table.hourlyAny}</span>
-                        <span className="token-compact-value">{formatQuotaUsagePair(token.hourlyAnyUsed, token.hourlyAnyLimit)}</span>
+                        <span className="token-compact-label">{formatRequestRateSummary(requestRate, language)}</span>
+                        <span className="token-compact-value">{formatQuotaUsagePair(requestRate.used, requestRate.limit)}</span>
                       </div>
                       <div className="token-compact-field">
                         <span className="token-compact-label">{users.tokens.table.hourly}</span>
@@ -5826,7 +5844,7 @@ function UserDetailPageCanvas(): JSX.Element {
                     </button>
                   </td>
                 </tr>
-              ))}
+              )})}
             </tbody>
           </table>
         </div>

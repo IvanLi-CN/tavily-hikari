@@ -6427,6 +6427,11 @@ tbody tr:hover {
   min-width: 260px;
 }
 
+.users-search-controls > button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 .user-tag-summary-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));

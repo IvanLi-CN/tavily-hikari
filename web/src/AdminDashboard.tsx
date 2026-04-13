@@ -104,6 +104,7 @@ import {
   type QuotaSliderField,
   type QuotaSliderSeed,
 } from './admin/quotaSlider'
+import { formatRequestRateScope, formatRequestRateSummary, resolveRequestRate } from './requestRate'
 import {
   type AdminUsersCollectionView,
   type AdminModuleId,
@@ -5676,14 +5677,12 @@ function AdminDashboard(): JSX.Element {
   const saveUserQuota = async () => {
     if (route.name !== 'user' || !userQuotaDraft) return
     const payload = {
-      hourlyAnyLimit: Number.parseInt(userQuotaDraft.hourlyAnyLimit, 10),
       hourlyLimit: Number.parseInt(userQuotaDraft.hourlyLimit, 10),
       dailyLimit: Number.parseInt(userQuotaDraft.dailyLimit, 10),
       monthlyLimit: Number.parseInt(userQuotaDraft.monthlyLimit, 10),
     }
     if (
-      !Number.isFinite(payload.hourlyAnyLimit) || payload.hourlyAnyLimit < 0
-      || !Number.isFinite(payload.hourlyLimit) || payload.hourlyLimit < 0
+      !Number.isFinite(payload.hourlyLimit) || payload.hourlyLimit < 0
       || !Number.isFinite(payload.dailyLimit) || payload.dailyLimit < 0
       || !Number.isFinite(payload.monthlyLimit) || payload.monthlyLimit < 0
     ) {
@@ -5736,7 +5735,6 @@ function AdminDashboard(): JSX.Element {
       : null
     const isSystemEditing = editingTag?.systemKey != null
     const parsedDeltas = {
-      hourlyAnyDelta: Number.parseInt(userTagCatalogDraft.hourlyAnyDelta, 10),
       hourlyDelta: Number.parseInt(userTagCatalogDraft.hourlyDelta, 10),
       dailyDelta: Number.parseInt(userTagCatalogDraft.dailyDelta, 10),
       monthlyDelta: Number.parseInt(userTagCatalogDraft.monthlyDelta, 10),
@@ -5759,7 +5757,7 @@ function AdminDashboard(): JSX.Element {
         : userTagCatalogDraft.displayName.trim(),
       icon: isSystemEditing ? editingTag?.icon ?? null : (userTagCatalogDraft.icon.trim() || null),
       effectKind,
-      hourlyAnyDelta: effectKind === 'block_all' ? 0 : parsedDeltas.hourlyAnyDelta,
+      hourlyAnyDelta: 0,
       hourlyDelta: effectKind === 'block_all' ? 0 : parsedDeltas.hourlyDelta,
       dailyDelta: effectKind === 'block_all' ? 0 : parsedDeltas.dailyDelta,
       monthlyDelta: effectKind === 'block_all' ? 0 : parsedDeltas.monthlyDelta,
@@ -6762,7 +6760,6 @@ function AdminDashboard(): JSX.Element {
           ) : (
             <dl className="user-tag-catalog-delta-grid">
               {([
-                ['hourlyAnyDelta', tag?.hourlyAnyDelta ?? 0, usersStrings.quota.hourlyAny],
                 ['hourlyDelta', tag?.hourlyDelta ?? 0, usersStrings.quota.hourly],
                 ['dailyDelta', tag?.dailyDelta ?? 0, usersStrings.quota.daily],
                 ['monthlyDelta', tag?.monthlyDelta ?? 0, usersStrings.quota.monthly],
@@ -7697,10 +7694,6 @@ function AdminDashboard(): JSX.Element {
                         </div>
                         <div className="token-compact-pair">
                           <div className="token-compact-field">
-                            <span className="token-compact-label">{usersStrings.quota.hourlyAny}</span>
-                            <span className="token-compact-value">{formatSignedQuotaDelta(tag.hourlyAnyDelta)}</span>
-                          </div>
-                          <div className="token-compact-field">
                             <span className="token-compact-label">{usersStrings.quota.hourly}</span>
                             <span className="token-compact-value">{formatSignedQuotaDelta(tag.hourlyDelta)}</span>
                           </div>
@@ -7734,12 +7727,6 @@ function AdminDashboard(): JSX.Element {
               </div>
               <div className="quota-grid">
                 {([
-                  {
-                    field: 'hourlyAnyLimit',
-                    label: usersStrings.quota.hourlyAny,
-                    used: detail.hourlyAnyUsed,
-                    currentLimit: detail.quotaBase.hourlyAnyLimit,
-                  },
                   {
                     field: 'hourlyLimit',
                     label: usersStrings.quota.hourly,
@@ -7904,7 +7891,6 @@ function AdminDashboard(): JSX.Element {
               )}
               <div className="token-info-grid">
                 {([
-                  ['hourlyAny', usersStrings.quota.hourlyAny, detail.effectiveQuota.hourlyAnyLimit],
                   ['hourly', usersStrings.quota.hourly, detail.effectiveQuota.hourlyLimit],
                   ['daily', usersStrings.quota.daily, detail.effectiveQuota.dailyLimit],
                   ['monthly', usersStrings.quota.monthly, detail.effectiveQuota.monthlyLimit],
@@ -7922,7 +7908,6 @@ function AdminDashboard(): JSX.Element {
                       <th>{usersStrings.effectiveQuota.columns.item}</th>
                       <th>{usersStrings.effectiveQuota.columns.source}</th>
                       <th>{usersStrings.effectiveQuota.columns.effect}</th>
-                      <th>{usersStrings.quota.hourlyAny}</th>
                       <th>{usersStrings.quota.hourly}</th>
                       <th>{usersStrings.quota.daily}</th>
                       <th>{usersStrings.quota.monthly}</th>
@@ -7966,7 +7951,6 @@ function AdminDashboard(): JSX.Element {
                                     : usersStrings.catalog.effectKinds.quotaDelta}
                             </StatusBadge>
                           </td>
-                          <td>{formatBreakdownValue(entry.hourlyAnyDelta)}</td>
                           <td>{formatBreakdownValue(entry.hourlyDelta)}</td>
                           <td>{formatBreakdownValue(entry.dailyDelta)}</td>
                           <td>{formatBreakdownValue(entry.monthlyDelta)}</td>
@@ -8002,7 +7986,8 @@ function AdminDashboard(): JSX.Element {
                     </thead>
                     <tbody>
                       {tokenItems.map((token) => {
-                        const hourlyAnyText = formatQuotaUsagePair(token.hourlyAnyUsed, token.hourlyAnyLimit)
+                        const requestRate = resolveRequestRate(token, token.requestRate?.scope ?? 'token')
+                        const hourlyAnyText = formatQuotaUsagePair(requestRate.used, requestRate.limit)
                         const hourlyText = formatQuotaUsagePair(token.quotaHourlyUsed, token.quotaHourlyLimit)
                         const dailyText = formatQuotaUsagePair(token.quotaDailyUsed, token.quotaDailyLimit)
                         const monthlyText = formatQuotaUsagePair(token.quotaMonthlyUsed, token.quotaMonthlyLimit)
@@ -8035,7 +8020,9 @@ function AdminDashboard(): JSX.Element {
                             <td>
                               <div className="token-compact-pair">
                                 <div className="token-compact-field">
-                                  <span className="token-compact-label">{usersStrings.tokens.table.hourlyAny}</span>
+                                  <span className="token-compact-label">
+                                    {formatRequestRateSummary(requestRate, language)}
+                                  </span>
                                   <span className="token-compact-value">{hourlyAnyText}</span>
                                 </div>
                                 <div className="token-compact-field">
@@ -8314,7 +8301,9 @@ function AdminDashboard(): JSX.Element {
                   </tr>
                 </thead>
                 <tbody>
-                  {users.map((item) => (
+                  {users.map((item) => {
+                    const requestRate = resolveRequestRate(item, 'user')
+                    return (
                     <tr key={item.userId}>
                       <td className="admin-users-identity-cell">
                         <button
@@ -8336,7 +8325,7 @@ function AdminDashboard(): JSX.Element {
                         </StatusBadge>
                       </td>
                       <td className="admin-users-compact-cell">
-                        <AdminTableValueStack {...formatQuotaStackValue(item.hourlyAnyUsed, item.hourlyAnyLimit)} />
+                        <AdminTableValueStack {...formatQuotaStackValue(requestRate.used, requestRate.limit)} />
                       </td>
                       <td className="admin-users-compact-cell">
                         <AdminTableValueStack {...formatQuotaStackValue(item.quotaHourlyUsed, item.quotaHourlyLimit)} />
@@ -8377,7 +8366,7 @@ function AdminDashboard(): JSX.Element {
                         <AdminTableValueStack {...formatStackedTimestamp(item.lastActivity, language)} />
                       </td>
                     </tr>
-                  ))}
+                  )})}
                 </tbody>
               </>
             )}
@@ -8393,7 +8382,9 @@ function AdminDashboard(): JSX.Element {
             {users.length === 0 ? (
               <div className="empty-state alert">{usersStrings.empty.none}</div>
             ) : (
-              users.map((item) => (
+              users.map((item) => {
+                const requestRate = resolveRequestRate(item, 'user')
+                return (
                 <article key={item.userId} className="admin-mobile-card">
                   <div className="admin-mobile-kv">
                     <span>{usersStrings.usage.table.user}</span>
@@ -8413,8 +8404,8 @@ function AdminDashboard(): JSX.Element {
                     </StatusBadge>
                   </div>
                   <div className="admin-mobile-kv">
-                    <span>{usersStrings.usage.table.hourlyAny}</span>
-                    <strong>{formatQuotaUsagePair(item.hourlyAnyUsed, item.hourlyAnyLimit)}</strong>
+                    <span>{formatRequestRateSummary(requestRate, language)}</span>
+                    <strong>{formatQuotaUsagePair(requestRate.used, requestRate.limit)}</strong>
                   </div>
                   <div className="admin-mobile-kv">
                     <span>{usersStrings.usage.table.hourly}</span>
@@ -8461,7 +8452,7 @@ function AdminDashboard(): JSX.Element {
                     <strong>{formatTimestamp(item.lastActivity)}</strong>
                   </div>
                 </article>
-              ))
+              )})
             )}
           </AdminLoadingRegion>
 
@@ -8672,7 +8663,9 @@ function AdminDashboard(): JSX.Element {
                   </tr>
                 </thead>
                 <tbody>
-                  {unboundTokenUsage.map((item) => (
+                  {unboundTokenUsage.map((item) => {
+                    const requestRate = resolveRequestRate(item, 'token')
+                    return (
                     <tr key={item.tokenId}>
                       <td className="admin-users-identity-cell">
                         <button
@@ -8693,7 +8686,7 @@ function AdminDashboard(): JSX.Element {
                         </StatusBadge>
                       </td>
                       <td className="admin-users-compact-cell">
-                        <AdminTableValueStack {...formatQuotaStackValue(item.hourlyAnyUsed, item.hourlyAnyLimit)} />
+                        <AdminTableValueStack {...formatQuotaStackValue(requestRate.used, requestRate.limit)} />
                       </td>
                       <td className="admin-users-compact-cell">
                         <AdminTableValueStack {...formatQuotaStackValue(item.quotaHourlyUsed, item.quotaHourlyLimit)} />
@@ -8737,7 +8730,7 @@ function AdminDashboard(): JSX.Element {
                         <AdminTableValueStack {...formatStackedTimestamp(item.lastUsedAt, language)} />
                       </td>
                     </tr>
-                  ))}
+                  )})}
                 </tbody>
               </>
             )}
@@ -8757,7 +8750,9 @@ function AdminDashboard(): JSX.Element {
             {unboundTokenUsage.length === 0 ? (
               <div className="empty-state alert">{unboundTokenUsageStrings.empty.none}</div>
             ) : (
-              unboundTokenUsage.map((item) => (
+              unboundTokenUsage.map((item) => {
+                const requestRate = resolveRequestRate(item, 'token')
+                return (
                 <article key={item.tokenId} className="admin-mobile-card">
                   <div className="admin-mobile-identity-block">
                     <div className="admin-mobile-identity-row">
@@ -8782,8 +8777,8 @@ function AdminDashboard(): JSX.Element {
                     </StatusBadge>
                   </div>
                   <div className="admin-mobile-kv">
-                    <span>{unboundTokenUsageStrings.table.hourlyAny}</span>
-                    <strong>{formatQuotaUsagePair(item.hourlyAnyUsed, item.hourlyAnyLimit)}</strong>
+                    <span>{formatRequestRateSummary(requestRate, language)}</span>
+                    <strong>{formatQuotaUsagePair(requestRate.used, requestRate.limit)}</strong>
                   </div>
                   <div className="admin-mobile-kv">
                     <span>{unboundTokenUsageStrings.table.hourly}</span>
@@ -8826,7 +8821,7 @@ function AdminDashboard(): JSX.Element {
                     <strong>{formatTimestamp(item.lastUsedAt)}</strong>
                   </div>
                 </article>
-              ))
+              )})
             )}
           </AdminLoadingRegion>
 

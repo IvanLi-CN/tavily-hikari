@@ -68,6 +68,12 @@ import {
   resolveMcpProbeButtonState,
 } from './lib/mcpProbe'
 import { useResponsiveModes } from './lib/responsive'
+import {
+  defaultRequestRateLabel,
+  formatRequestRateScope,
+  formatRequestRateSummary,
+  resolveRequestRate,
+} from './requestRate'
 import { getUserConsoleAdminHref } from './lib/userConsoleAdminEntry'
 import { resolveUserConsoleAvailability } from './lib/userConsoleAvailability'
 import {
@@ -2456,10 +2462,12 @@ export default function UserConsole(): JSX.Element {
             </div>
             <div className="access-stats">
               <div className="access-stat quota-stat-card">
-                <div className="quota-stat-label">{text.dashboard.hourlyAny}</div>
+                <div className="quota-stat-label">
+                  {formatRequestRateSummary(resolveRequestRate(dashboard, 'user'), language)}
+                </div>
                 <div className="quota-stat-value">
-                  {formatNumber(dashboard?.hourlyAnyUsed ?? 0)}
-                  <span>/ {formatNumber(dashboard?.hourlyAnyLimit ?? 0)}</span>
+                  {formatNumber(resolveRequestRate(dashboard, 'user').used)}
+                  <span>/ {formatNumber(resolveRequestRate(dashboard, 'user').limit)}</span>
                 </div>
               </div>
               <div className="access-stat quota-stat-card">
@@ -2524,8 +2532,13 @@ export default function UserConsole(): JSX.Element {
                           <td>
                             <div className="user-console-cell-stack">
                               <div className="user-console-cell-item">
-                                <span>{text.tokens.table.any}</span>
-                                <strong>{formatQuotaPair(item.hourlyAnyUsed, item.hourlyAnyLimit)}</strong>
+                                <span>{formatRequestRateSummary(resolveRequestRate(item, 'token'), language)}</span>
+                                <strong>
+                                  {formatQuotaPair(
+                                    resolveRequestRate(item, 'token').used,
+                                    resolveRequestRate(item, 'token').limit,
+                                  )}
+                                </strong>
                               </div>
                               <div className="user-console-cell-item">
                                 <span>{text.tokens.table.hourly}</span>
@@ -2601,8 +2614,13 @@ export default function UserConsole(): JSX.Element {
                         <code>{item.tokenId}</code>
                       </header>
                       <div className="user-console-mobile-kv">
-                        <span>{text.tokens.table.any}</span>
-                        <strong>{formatQuotaPair(item.hourlyAnyUsed, item.hourlyAnyLimit)}</strong>
+                        <span>{formatRequestRateSummary(resolveRequestRate(item, 'token'), language)}</span>
+                        <strong>
+                          {formatQuotaPair(
+                            resolveRequestRate(item, 'token').used,
+                            resolveRequestRate(item, 'token').limit,
+                          )}
+                        </strong>
                       </div>
                       <div className="user-console-mobile-kv">
                         <span>{text.tokens.table.hourly}</span>
@@ -2688,10 +2706,12 @@ export default function UserConsole(): JSX.Element {
             </div>
             <div className="access-stats">
               <div className="access-stat quota-stat-card">
-                <div className="quota-stat-label">{text.dashboard.hourlyAny}</div>
+                <div className="quota-stat-label">
+                  {formatRequestRateSummary(resolveRequestRate(detail, 'token'), language)}
+                </div>
                 <div className="quota-stat-value">
-                  {formatNumber(detail?.hourlyAnyUsed ?? 0)}
-                  <span>/ {formatNumber(detail?.hourlyAnyLimit ?? 0)}</span>
+                  {formatNumber(resolveRequestRate(detail, 'token').used)}
+                  <span>/ {formatNumber(resolveRequestRate(detail, 'token').limit)}</span>
                 </div>
               </div>
               <div className="access-stat quota-stat-card">

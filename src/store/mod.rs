@@ -9074,6 +9074,24 @@ impl KeyStore {
         Ok(true)
     }
 
+    pub(crate) async fn update_account_business_quota_limits(
+        &self,
+        user_id: &str,
+        hourly_limit: i64,
+        daily_limit: i64,
+        monthly_limit: i64,
+    ) -> Result<bool, ProxyError> {
+        let current = self.ensure_account_quota_limits(user_id).await?;
+        self.update_account_quota_limits(
+            user_id,
+            current.hourly_any_limit,
+            hourly_limit,
+            daily_limit,
+            monthly_limit,
+        )
+        .await
+    }
+
     pub(crate) async fn backfill_account_quota_inherits_defaults_v1(
         &self,
     ) -> Result<(), ProxyError> {

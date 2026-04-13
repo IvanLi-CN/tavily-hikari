@@ -8642,11 +8642,6 @@ async fn hourly_any_request_limit_blocks_after_threshold() {
     let db_path = temp_db_path("any-limit-test");
     let db_str = db_path.to_string_lossy().to_string();
 
-    // Force hourly raw request limit to a small number for this test.
-    unsafe {
-        std::env::set_var("TOKEN_HOURLY_REQUEST_LIMIT", "2");
-    }
-
     let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
         .await
         .expect("proxy created");
@@ -8655,14 +8650,16 @@ async fn hourly_any_request_limit_blocks_after_threshold() {
         .await
         .expect("create token");
 
-    let hourly_limit = effective_token_hourly_request_limit();
+    let request_limit = request_rate_limit();
 
-    for _ in 0..hourly_limit {
+    for _ in 0..request_limit {
         let verdict = proxy
             .check_token_hourly_requests(&token.id)
             .await
             .expect("hourly-any check ok");
         assert!(verdict.allowed, "should be allowed within hourly-any limit");
+        assert_eq!(verdict.scope, RequestRateScope::Token);
+        assert_eq!(verdict.window_minutes, request_rate_limit_window_minutes());
     }
 
     let verdict = proxy
@@ -8673,11 +8670,139 @@ async fn hourly_any_request_limit_blocks_after_threshold() {
         !verdict.allowed,
         "expected hourly-any limit to block additional requests"
     );
-    assert_eq!(verdict.hourly_limit, hourly_limit);
+    assert_eq!(verdict.hourly_limit, request_limit);
+    assert_eq!(verdict.scope, RequestRateScope::Token);
+    assert_eq!(verdict.window_minutes, request_rate_limit_window_minutes());
+    assert!(
+        verdict.retry_after_seconds > 0,
+        "blocked verdict should expose retry-after"
+    );
 
-    unsafe {
-        std::env::remove_var("TOKEN_HOURLY_REQUEST_LIMIT");
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn hourly_any_request_limit_is_shared_across_bound_tokens_of_same_user() {
+    let db_path = temp_db_path("any-limit-bound-user-shared");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+
+    let user = proxy
+        .upsert_oauth_account(&OAuthAccountProfile {
+            provider: "linuxdo".to_string(),
+            provider_user_id: "any-limit-shared-user".to_string(),
+            username: Some("shared-user".to_string()),
+            name: Some("Shared User".to_string()),
+            avatar_template: None,
+            active: true,
+            trust_level: Some(2),
+            raw_payload_json: None,
+        })
+        .await
+        .expect("upsert user");
+    let primary_token = proxy
+        .ensure_user_token_binding(&user.user_id, Some("linuxdo:any-limit-primary"))
+        .await
+        .expect("bind primary token");
+    let secondary_seed = proxy
+        .create_access_token(Some("linuxdo:any-limit-secondary"))
+        .await
+        .expect("create secondary token");
+    let secondary_token = proxy
+        .ensure_user_token_binding_with_preferred(
+            &user.user_id,
+            Some("linuxdo:any-limit-secondary"),
+            Some(&secondary_seed.id),
+        )
+        .await
+        .expect("bind secondary token");
+
+    let request_limit = request_rate_limit();
+    for index in 0..request_limit {
+        let token_id = if index % 2 == 0 {
+            &primary_token.id
+        } else {
+            &secondary_token.id
+        };
+        let verdict = proxy
+            .check_token_hourly_requests(token_id)
+            .await
+            .expect("shared check ok");
+        assert!(verdict.allowed, "shared user window should allow request");
+        assert_eq!(verdict.scope, RequestRateScope::User);
     }
+
+    let blocked = proxy
+        .check_token_hourly_requests(&secondary_token.id)
+        .await
+        .expect("shared limit block");
+    assert!(
+        !blocked.allowed,
+        "same owner should share one limiter window"
+    );
+    assert_eq!(blocked.scope, RequestRateScope::User);
+    assert_eq!(blocked.hourly_limit, request_limit);
+    assert!(blocked.retry_after_seconds > 0);
+
+    let dashboard = proxy
+        .user_dashboard_summary(&user.user_id, None)
+        .await
+        .expect("shared user dashboard");
+    assert_eq!(dashboard.request_rate.scope, RequestRateScope::User);
+    assert_eq!(dashboard.request_rate.used, request_limit);
+    assert_eq!(dashboard.request_rate.limit, request_limit);
+    assert_eq!(
+        dashboard.request_rate.window_minutes,
+        request_rate_limit_window_minutes()
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn hourly_any_request_limit_keeps_unbound_tokens_isolated() {
+    let db_path = temp_db_path("any-limit-unbound-isolated");
+    let db_str = db_path.to_string_lossy().to_string();
+    let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
+        .await
+        .expect("proxy created");
+    let primary = proxy
+        .create_access_token(Some("unbound-primary"))
+        .await
+        .expect("primary token");
+    let secondary = proxy
+        .create_access_token(Some("unbound-secondary"))
+        .await
+        .expect("secondary token");
+
+    let request_limit = request_rate_limit();
+    for _ in 0..request_limit {
+        let verdict = proxy
+            .check_token_hourly_requests(&primary.id)
+            .await
+            .expect("primary check ok");
+        assert!(verdict.allowed);
+        assert_eq!(verdict.scope, RequestRateScope::Token);
+    }
+
+    let blocked = proxy
+        .check_token_hourly_requests(&primary.id)
+        .await
+        .expect("primary block");
+    assert!(!blocked.allowed);
+    assert_eq!(blocked.scope, RequestRateScope::Token);
+
+    let secondary_verdict = proxy
+        .check_token_hourly_requests(&secondary.id)
+        .await
+        .expect("secondary isolated check");
+    assert!(
+        secondary_verdict.allowed,
+        "unbound token should keep an independent limiter window"
+    );
+    assert_eq!(secondary_verdict.scope, RequestRateScope::Token);
 
     let _ = std::fs::remove_file(db_path);
 }
@@ -13166,8 +13291,13 @@ async fn block_all_user_tag_zeroes_effective_quota_and_blocks_account_usage() {
         .check_token_hourly_requests(&token.id)
         .await
         .expect("hourly-any verdict");
-    assert!(!hourly_any_verdict.allowed);
-    assert_eq!(hourly_any_verdict.hourly_limit, 0);
+    assert!(hourly_any_verdict.allowed);
+    assert_eq!(hourly_any_verdict.hourly_limit, request_rate_limit());
+    assert_eq!(
+        hourly_any_verdict.window_minutes,
+        request_rate_limit_window_minutes()
+    );
+    assert_eq!(hourly_any_verdict.scope, RequestRateScope::User);
 
     let quota_verdict = proxy
         .check_token_quota(&token.id)

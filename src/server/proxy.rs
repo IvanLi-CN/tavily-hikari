@@ -1637,7 +1637,8 @@ fn request_limit_exceeded_response(
 ) -> Result<Response<Body>, StatusCode> {
     let payload = json!({
         "error": "quota_exhausted",
-        "window": "hour",
+        "window": format!("{}m", verdict.window_minutes),
+        "requestRate": verdict.request_rate(),
         "hourlyAny": {
             "limit": verdict.hourly_limit,
             "used": verdict.hourly_used,
@@ -1647,6 +1648,7 @@ fn request_limit_exceeded_response(
     Response::builder()
         .status(StatusCode::TOO_MANY_REQUESTS)
         .header(CONTENT_TYPE, "application/json; charset=utf-8")
+        .header("Retry-After", verdict.retry_after_seconds.max(1).to_string())
         .body(Body::from(payload.to_string()))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
@@ -1682,8 +1684,11 @@ fn quota_exceeded_response(
 
 fn build_request_limit_error_message(verdict: &TokenHourlyRequestVerdict) -> String {
     format!(
-        "token hourly request limit exceeded (limit {}, used {})",
-        verdict.hourly_limit, verdict.hourly_used
+        "{} request rate limit exceeded on rolling {}m window (limit {}, used {})",
+        verdict.scope.as_str(),
+        verdict.window_minutes,
+        verdict.hourly_limit,
+        verdict.hourly_used
     )
 }
 

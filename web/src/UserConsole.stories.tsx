@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
-import type { Profile, UserDashboard, UserTokenSummary } from './api'
+import type { Profile, RequestRate, RequestRateScope, UserDashboard, UserTokenSummary } from './api'
 import UserConsole from './UserConsole'
 import {
   DropdownMenu,
@@ -51,9 +51,24 @@ const guideProofLabels = [
   { id: 'vscode', label: 'VS Code' },
 ] as const
 
+function createRequestRate(
+  used: number,
+  limit: number,
+  scope: RequestRateScope,
+  windowMinutes = 5,
+): RequestRate {
+  return {
+    used,
+    limit,
+    windowMinutes,
+    scope,
+  }
+}
+
 const dashboardSample: UserDashboard = {
-  hourlyAnyUsed: 126,
-  hourlyAnyLimit: 200,
+  requestRate: createRequestRate(58, 60, 'user'),
+  hourlyAnyUsed: 58,
+  hourlyAnyLimit: 60,
   quotaHourlyUsed: 82,
   quotaHourlyLimit: 100,
   quotaDailyUsed: 356,
@@ -71,8 +86,9 @@ const tokenSample: UserTokenSummary = {
   enabled: true,
   note: 'primary',
   lastUsedAt: 1_762_386_800,
-  hourlyAnyUsed: 126,
-  hourlyAnyLimit: 200,
+  requestRate: createRequestRate(58, 60, 'user'),
+  hourlyAnyUsed: 58,
+  hourlyAnyLimit: 60,
   quotaHourlyUsed: 82,
   quotaHourlyLimit: 100,
   quotaDailyUsed: 356,
@@ -89,8 +105,9 @@ const tokenSecondarySample: UserTokenSummary = {
   enabled: true,
   note: 'backup',
   lastUsedAt: 1_762_386_100,
-  hourlyAnyUsed: 28,
-  hourlyAnyLimit: 200,
+  requestRate: createRequestRate(58, 60, 'user'),
+  hourlyAnyUsed: 58,
+  hourlyAnyLimit: 60,
   quotaHourlyUsed: 12,
   quotaHourlyLimit: 100,
   quotaDailyUsed: 84,
@@ -104,7 +121,8 @@ const tokenSecondarySample: UserTokenSummary = {
 
 const tokenDetailSample: UserTokenSummary = {
   ...tokenSample,
-  hourlyAnyUsed: 131,
+  requestRate: createRequestRate(58, 60, 'user'),
+  hourlyAnyUsed: 58,
   quotaHourlyUsed: 88,
   quotaDailyUsed: 371,
   quotaMonthlyUsed: 4188,

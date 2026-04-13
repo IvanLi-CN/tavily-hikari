@@ -496,10 +496,13 @@ const ALLOWED_PREFIXES: &[&str] = &["x-mcp-", "x-tavily-", "tavily-"];
 pub const TOKEN_HOURLY_LIMIT: i64 = 100;
 pub const TOKEN_DAILY_LIMIT: i64 = 500;
 pub const TOKEN_MONTHLY_LIMIT: i64 = 5000;
-// Default per-token raw request limit (any request type) per hour.
-// This is enforced separately from the business quota above, and counts every
-// successful token-authenticated request regardless of MCP method.
+// Legacy per-token raw request limit defaults that still back stored quota rows and
+// deprecated read aliases. The active runtime request-rate limiter now uses a fixed
+// rolling 5-minute window and no longer reads these values.
 pub const TOKEN_HOURLY_REQUEST_LIMIT: i64 = 500;
+pub const REQUEST_RATE_LIMIT_WINDOW_MINUTES: i64 = 5;
+pub const REQUEST_RATE_LIMIT_WINDOW_SECS: i64 = REQUEST_RATE_LIMIT_WINDOW_MINUTES * SECS_PER_MINUTE;
+pub const REQUEST_RATE_LIMIT: i64 = 60;
 // Keep a request_id -> key affinity for Tavily research result polling.
 // This avoids switching keys between POST /research and GET /research/{request_id}.
 const RESEARCH_REQUEST_AFFINITY_TTL_SECS: i64 = 24 * 60 * 60;
@@ -538,6 +541,7 @@ const GRANULARITY_MINUTE: &str = "minute";
 const GRANULARITY_HOUR: &str = "hour";
 const GRANULARITY_DAY: &str = "day";
 // Per-token raw request counter (any request type), aggregated per minute.
+#[allow(dead_code)]
 const GRANULARITY_REQUEST_MINUTE: &str = "request_minute";
 const BUCKET_RETENTION_SECS: i64 = 2 * 24 * 3600; // 48h，足够覆盖 24h 窗口
 const CLEANUP_INTERVAL_SECS: i64 = 600;
@@ -687,6 +691,18 @@ pub fn effective_token_monthly_limit() -> i64 {
 /// Environment variable: `TOKEN_HOURLY_REQUEST_LIMIT` (must be a positive integer).
 pub fn effective_token_hourly_request_limit() -> i64 {
     token_limit_from_env("TOKEN_HOURLY_REQUEST_LIMIT", TOKEN_HOURLY_REQUEST_LIMIT)
+}
+
+pub fn request_rate_limit_window_minutes() -> i64 {
+    REQUEST_RATE_LIMIT_WINDOW_MINUTES
+}
+
+pub fn request_rate_limit_window_secs() -> i64 {
+    REQUEST_RATE_LIMIT_WINDOW_SECS
+}
+
+pub fn request_rate_limit() -> i64 {
+    REQUEST_RATE_LIMIT
 }
 
 #[derive(Debug, Clone)]

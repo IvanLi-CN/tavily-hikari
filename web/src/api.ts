@@ -1161,6 +1161,15 @@ export interface AdminQuotaLimitSet {
   inheritsDefaults: boolean
 }
 
+export type RequestRateScope = 'user' | 'token'
+
+export interface RequestRate {
+  used: number
+  limit: number
+  windowMinutes: number
+  scope: RequestRateScope
+}
+
 export interface AdminUserTag {
   id: string
   name: string
@@ -1211,6 +1220,7 @@ export interface AdminUserSummary {
   tokenCount: number
   apiKeyCount: number
   tags: AdminUserTagBinding[]
+  requestRate: RequestRate
   hourlyAnyUsed: number
   hourlyAnyLimit: number
   quotaHourlyUsed: number
@@ -1256,6 +1266,7 @@ export interface AdminUserTokenSummary {
   enabled: boolean
   note: string | null
   lastUsedAt: number | null
+  requestRate: RequestRate
   hourlyAnyUsed: number
   hourlyAnyLimit: number
   quotaHourlyUsed: number
@@ -1274,6 +1285,7 @@ export interface AdminUnboundTokenUsageSummary {
   enabled: boolean
   note: string | null
   group: string | null
+  requestRate: RequestRate
   hourlyAnyUsed: number
   hourlyAnyLimit: number
   quotaHourlyUsed: number
@@ -1299,7 +1311,7 @@ export interface AdminUserDetail extends AdminUserSummary {
 }
 
 export interface UpdateUserQuotaPayload {
-  hourlyAnyLimit: number
+  hourlyAnyLimit?: number
   hourlyLimit: number
   dailyLimit: number
   monthlyLimit: number
@@ -1367,6 +1379,7 @@ export async function postUserLogout(signal?: AbortSignal): Promise<void> {
 }
 
 export interface UserDashboard {
+  requestRate: RequestRate
   hourlyAnyUsed: number
   hourlyAnyLimit: number
   quotaHourlyUsed: number
@@ -1386,6 +1399,7 @@ export interface UserTokenSummary {
   enabled: boolean
   note: string | null
   lastUsedAt: number | null
+  requestRate: RequestRate
   hourlyAnyUsed: number
   hourlyAnyLimit: number
   quotaHourlyUsed: number

@@ -346,15 +346,7 @@ async fn tavily_http_research_result(
                             Some(&message),
                         )
                         .await;
-                    let payload = json!({
-                        "error": "quota_exhausted",
-                        "message": "hourly request limit reached for this token",
-                    });
-                    let resp = Response::builder()
-                        .status(StatusCode::TOO_MANY_REQUESTS)
-                        .header(CONTENT_TYPE, "application/json; charset=utf-8")
-                        .body(Body::from(payload.to_string()))
-                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                    let resp = request_limit_exceeded_response(&verdict)?;
                     return Ok(resp);
                 }
             }
@@ -689,15 +681,7 @@ async fn proxy_tavily_http_endpoint(
                             Some(&message),
                         )
                         .await;
-                    let payload = json!({
-                        "error": "quota_exhausted",
-                        "message": "hourly request limit reached for this token",
-                    });
-                    let resp = Response::builder()
-                        .status(StatusCode::TOO_MANY_REQUESTS)
-                        .header(CONTENT_TYPE, "application/json; charset=utf-8")
-                        .body(Body::from(payload.to_string()))
-                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                    let resp = request_limit_exceeded_response(&verdict)?;
                     return Ok(resp);
                 }
             }
