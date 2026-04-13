@@ -54,7 +54,7 @@ use reqwest::{
 use serde::Serialize;
 use serde_json::Value;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
-use sqlx::{Executor, QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
+use sqlx::{Executor, QueryBuilder, Sqlite, SqlitePool, Transaction};
 use thiserror::Error;
 use tokio::sync::{Mutex, Notify, RwLock};
 use url::form_urlencoded;
@@ -508,6 +508,15 @@ const MCP_PROXY_USER_AGENT: &str = "tavily-hikari-mcp-proxy/1.0";
 pub const MCP_SESSION_AFFINITY_KEY_COUNT_DEFAULT: i64 = 5;
 pub const MCP_SESSION_AFFINITY_KEY_COUNT_MIN: i64 = 1;
 pub const MCP_SESSION_AFFINITY_KEY_COUNT_MAX: i64 = 1_000;
+pub const REBALANCE_MCP_ENABLED_DEFAULT: bool = false;
+pub const REBALANCE_MCP_SESSION_PERCENT_DEFAULT: i64 = 100;
+pub const REBALANCE_MCP_SESSION_PERCENT_MIN: i64 = 0;
+pub const REBALANCE_MCP_SESSION_PERCENT_MAX: i64 = 100;
+pub const MCP_GATEWAY_MODE_UPSTREAM: &str = "upstream_mcp";
+pub const MCP_GATEWAY_MODE_REBALANCE: &str = "rebalance_http";
+pub const MCP_EXPERIMENT_VARIANT_CONTROL: &str = "control";
+pub const MCP_EXPERIMENT_VARIANT_REBALANCE: &str = "rebalance";
+pub const REBALANCE_MCP_HTTP_BACKOFF_SCOPE: &str = "rebalance_mcp_http";
 // Hard cap on the number of token→key affinity entries kept in memory to prevent
 // unbounded growth under churny traffic (many distinct tokens).
 const TOKEN_AFFINITY_MAX_ENTRIES: usize = 10_000;
@@ -568,6 +577,8 @@ const META_KEY_ACCOUNT_QUOTA_ZERO_BASE_CUTOVER_V1: &str = "account_quota_zero_ba
 const META_KEY_FORCE_USER_RELOGIN_V1: &str = "force_user_relogin_v1";
 const META_KEY_ALLOW_REGISTRATION_V1: &str = "allow_registration_v1";
 const META_KEY_MCP_SESSION_AFFINITY_KEY_COUNT_V1: &str = "mcp_session_affinity_key_count_v1";
+const META_KEY_REBALANCE_MCP_ENABLED_V1: &str = "rebalance_mcp_enabled_v1";
+const META_KEY_REBALANCE_MCP_SESSION_PERCENT_V1: &str = "rebalance_mcp_session_percent_v1";
 const META_KEY_LINUXDO_SYSTEM_TAG_DEFAULTS_V1: &str = "linuxdo_system_tag_defaults_v1";
 const META_KEY_LINUXDO_SYSTEM_TAG_DEFAULTS_TUPLE_V1: &str = "linuxdo_system_tag_defaults_tuple_v1";
 const META_KEY_REQUEST_KIND_CANONICAL_MIGRATION_V1_STATE: &str =

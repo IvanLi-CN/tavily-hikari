@@ -1,8 +1,8 @@
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::Body;
     use axum::Router;
+    use axum::body::Body;
     use axum::extract::{Form, Json, Query, State};
     use axum::http::{HeaderMap, Method, Uri};
     use axum::response::{IntoResponse, Response};
@@ -56,11 +56,7 @@ mod tests {
             .expect("connect to sqlite")
     }
 
-    async fn sqlite_column_exists(
-        pool: &sqlx::SqlitePool,
-        table: &str,
-        column: &str,
-    ) -> bool {
+    async fn sqlite_column_exists(pool: &sqlx::SqlitePool, table: &str, column: &str) -> bool {
         let sql = format!("SELECT 1 FROM pragma_table_info('{table}') WHERE name = ? LIMIT 1");
         sqlx::query_scalar::<_, i64>(&sql)
             .bind(column)
@@ -706,10 +702,7 @@ mod tests {
 
     async fn spawn_mock_mcp_upstream_for_session_headers(
         allowed_api_keys: Vec<String>,
-    ) -> (
-        SocketAddr,
-        Arc<Mutex<Vec<SessionHeaderCall>>>,
-    ) {
+    ) -> (SocketAddr, Arc<Mutex<Vec<SessionHeaderCall>>>) {
         spawn_mock_mcp_upstream_for_session_headers_with_initialize_delay(
             allowed_api_keys,
             Duration::from_millis(0),
@@ -720,10 +713,7 @@ mod tests {
     async fn spawn_mock_mcp_upstream_for_session_headers_with_initialize_delay(
         allowed_api_keys: Vec<String>,
         initialize_delay: Duration,
-    ) -> (
-        SocketAddr,
-        Arc<Mutex<Vec<SessionHeaderCall>>>,
-    ) {
+    ) -> (SocketAddr, Arc<Mutex<Vec<SessionHeaderCall>>>) {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let app = Router::new().route(
             "/mcp",
@@ -2879,6 +2869,90 @@ mod tests {
         addr
     }
 
+    #[derive(Debug, Clone)]
+    struct RecordedRebalanceGatewayCall {
+        path: String,
+        headers: HeaderMap,
+        body: Value,
+    }
+
+    type RecordedRebalanceGatewayCalls = Arc<Mutex<Vec<RecordedRebalanceGatewayCall>>>;
+
+    async fn spawn_rebalance_gateway_mock(
+        expected_api_key: String,
+        seen: RecordedRebalanceGatewayCalls,
+    ) -> SocketAddr {
+        let seen_for_mcp = seen.clone();
+        let seen_for_search = seen.clone();
+        let app = Router::new()
+            .route(
+                "/mcp",
+                post({
+                    move |headers: HeaderMap, Json(body): Json<Value>| {
+                        let seen = seen_for_mcp.clone();
+                        async move {
+                            seen.lock().expect("rebalance gateway mcp calls lock").push(
+                                RecordedRebalanceGatewayCall {
+                                    path: "/mcp".to_string(),
+                                    headers,
+                                    body,
+                                },
+                            );
+                            (
+                                StatusCode::OK,
+                                Json(json!({
+                                    "jsonrpc": "2.0",
+                                    "id": "unexpected-upstream-mcp",
+                                    "result": { "ok": true }
+                                })),
+                            )
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/search",
+                post({
+                    move |headers: HeaderMap, Json(body): Json<Value>| {
+                        let expected_api_key = expected_api_key.clone();
+                        let seen = seen_for_search.clone();
+                        async move {
+                            assert_upstream_json_auth(
+                                &headers,
+                                &body,
+                                &expected_api_key,
+                                "/search",
+                            );
+                            seen.lock()
+                                .expect("rebalance gateway search calls lock")
+                                .push(RecordedRebalanceGatewayCall {
+                                    path: "/search".to_string(),
+                                    headers: headers.clone(),
+                                    body: body.clone(),
+                                });
+                            (
+                                StatusCode::OK,
+                                Json(json!({
+                                    "status": 200,
+                                    "results": [],
+                                    "usage": { "credits": 1 }
+                                })),
+                            )
+                        }
+                    }
+                }),
+            );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+        addr
+    }
+
     async fn spawn_http_search_mock_with_usage(
         expected_api_key: String,
     ) -> (SocketAddr, Arc<AtomicUsize>) {
@@ -4049,7 +4123,9 @@ mod tests {
         let target = format!(
             "{}{}",
             state.upstream_base,
-            uri.path_and_query().map(|value| value.as_str()).unwrap_or("/")
+            uri.path_and_query()
+                .map(|value| value.as_str())
+                .unwrap_or("/")
         );
         let mut req = state.client.request(method, target);
         for (name, value) in &headers {
@@ -4181,7 +4257,10 @@ mod tests {
             .route("/api/keys/:id/logs/list", get(get_key_logs_list))
             .route("/api/keys/:id/logs/catalog", get(get_key_logs_catalog))
             .route("/api/keys/:id/logs/page", get(get_key_logs_page))
-            .route("/api/keys/:id/logs/:log_id/details", get(get_key_log_details))
+            .route(
+                "/api/keys/:id/logs/:log_id/details",
+                get(get_key_log_details),
+            )
             .route("/api/tokens/:id/logs/list", get(get_token_logs_list))
             .route("/api/tokens/:id/logs/catalog", get(get_token_logs_catalog))
             .route("/api/keys/batch", post(create_api_keys_batch))
@@ -4237,7 +4316,10 @@ mod tests {
             .route("/console", get(serve_console_index))
             .route("/console/*path", get(serve_console_index))
             .route("/registration-paused", get(serve_registration_paused_index))
-            .route("/auth/linuxdo", get(get_linuxdo_auth).post(post_linuxdo_auth))
+            .route(
+                "/auth/linuxdo",
+                get(get_linuxdo_auth).post(post_linuxdo_auth),
+            )
             .route("/auth/linuxdo/callback", get(get_linuxdo_callback))
             .route("/api/profile", get(get_profile))
             .route("/api/user/token", get(get_user_token))
@@ -4298,7 +4380,10 @@ mod tests {
         });
 
         let app = Router::new()
-            .route("/api/admin/registration", get(get_admin_registration_settings))
+            .route(
+                "/api/admin/registration",
+                get(get_admin_registration_settings),
+            )
             .route(
                 "/api/admin/registration",
                 patch(patch_admin_registration_settings),
@@ -4344,7 +4429,10 @@ mod tests {
             .route("/api/tokens/:id", get(get_token_detail))
             .route("/api/tokens/:id/logs", get(get_token_logs))
             .route("/api/tokens/:id/logs/page", get(get_token_logs_page))
-            .route("/api/tokens/:id/logs/:log_id/details", get(get_token_log_details))
+            .route(
+                "/api/tokens/:id/logs/:log_id/details",
+                get(get_token_log_details),
+            )
             .route("/api/tokens/:id/events", get(sse_token))
             .with_state(state);
 
@@ -4394,7 +4482,10 @@ mod tests {
         let app = Router::new()
             .route("/api/settings", get(get_settings))
             .route("/api/settings/system", put(put_system_settings))
-            .route("/api/settings/forward-proxy", put(put_forward_proxy_settings))
+            .route(
+                "/api/settings/forward-proxy",
+                put(put_forward_proxy_settings),
+            )
             .route(
                 "/api/settings/forward-proxy/validate",
                 post(post_forward_proxy_candidate_validation),
@@ -4407,7 +4498,10 @@ mod tests {
                 "/api/stats/forward-proxy/summary",
                 get(get_forward_proxy_dashboard_summary),
             )
-            .route("/api/stats/forward-proxy", get(get_forward_proxy_live_stats))
+            .route(
+                "/api/stats/forward-proxy",
+                get(get_forward_proxy_live_stats),
+            )
             .with_state(state);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -4659,7 +4753,8 @@ mod tests {
                                     (StatusCode::OK, Json(payload))
                                 }
                                 Some("refresh_token") => {
-                                    if let Some((status, payload)) = behavior.refresh_error.clone() {
+                                    if let Some((status, payload)) = behavior.refresh_error.clone()
+                                    {
                                         return (status, Json(payload));
                                     }
                                     let mut payload = json!({
@@ -4763,9 +4858,7 @@ mod tests {
         .expect("fetch linuxdo oauth account snapshot")
     }
 
-    async fn latest_scheduled_job(
-        pool: &sqlx::SqlitePool,
-    ) -> (String, String, Option<String>) {
+    async fn latest_scheduled_job(pool: &sqlx::SqlitePool) -> (String, String, Option<String>) {
         sqlx::query_as(
             r#"SELECT job_type, status, message
                FROM scheduled_jobs
@@ -4777,10 +4870,7 @@ mod tests {
         .expect("fetch latest scheduled job")
     }
 
-    async fn fetch_linuxdo_system_tag_keys(
-        pool: &sqlx::SqlitePool,
-        user_id: &str,
-    ) -> Vec<String> {
+    async fn fetch_linuxdo_system_tag_keys(pool: &sqlx::SqlitePool, user_id: &str) -> Vec<String> {
         sqlx::query_scalar(
             r#"SELECT ut.system_key
                FROM user_tag_bindings ub
@@ -4795,7 +4885,10 @@ mod tests {
         .expect("fetch linuxdo system tag keys")
     }
 
-    async fn login_builtin_admin_cookie(admin_addr: SocketAddr, password: &str) -> (Client, String) {
+    async fn login_builtin_admin_cookie(
+        admin_addr: SocketAddr,
+        password: &str,
+    ) -> (Client, String) {
         let client = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()
@@ -4825,8 +4918,8 @@ mod tests {
         assert!(!ciphertext.is_empty());
         assert!(!nonce.is_empty());
 
-        let decrypted =
-            decrypt_linuxdo_refresh_token(&cfg, &ciphertext, &nonce).expect("decrypt refresh token");
+        let decrypted = decrypt_linuxdo_refresh_token(&cfg, &ciphertext, &nonce)
+            .expect("decrypt refresh token");
         assert_eq!(decrypted, refresh_token);
     }
 
@@ -4876,28 +4969,29 @@ mod tests {
             .await
             .expect("proxy created");
 
-        let oauth_upstream = spawn_linuxdo_oauth_mock_server_with_behavior(LinuxDoOauthMockBehavior {
-            authorization_access_token: "callback-access-token".to_string(),
-            authorization_refresh_token: Some("callback-refresh-token".to_string()),
-            authorization_profile: json!({
-                "id": "linuxdo-callback-user",
-                "username": "linuxdo_callback_user",
-                "name": "LinuxDO Callback User",
-                "active": true,
-                "trust_level": 2
-            }),
-            refresh_access_token: "unused-refresh-access-token".to_string(),
-            refresh_refresh_token: Some("unused-rotated-refresh-token".to_string()),
-            refresh_profile: json!({
-                "id": "linuxdo-callback-user",
-                "username": "linuxdo_callback_user",
-                "name": "LinuxDO Callback User",
-                "active": true,
-                "trust_level": 2
-            }),
-            refresh_error: None,
-        })
-        .await;
+        let oauth_upstream =
+            spawn_linuxdo_oauth_mock_server_with_behavior(LinuxDoOauthMockBehavior {
+                authorization_access_token: "callback-access-token".to_string(),
+                authorization_refresh_token: Some("callback-refresh-token".to_string()),
+                authorization_profile: json!({
+                    "id": "linuxdo-callback-user",
+                    "username": "linuxdo_callback_user",
+                    "name": "LinuxDO Callback User",
+                    "active": true,
+                    "trust_level": 2
+                }),
+                refresh_access_token: "unused-refresh-access-token".to_string(),
+                refresh_refresh_token: Some("unused-rotated-refresh-token".to_string()),
+                refresh_profile: json!({
+                    "id": "linuxdo-callback-user",
+                    "username": "linuxdo_callback_user",
+                    "name": "LinuxDO Callback User",
+                    "active": true,
+                    "trust_level": 2
+                }),
+                refresh_error: None,
+            })
+            .await;
         let mut oauth_options = linuxdo_oauth_options_for_test();
         oauth_options.authorize_url = format!("http://{oauth_upstream}/oauth2/authorize");
         oauth_options.token_url = format!("http://{oauth_upstream}/oauth2/token");
@@ -4967,28 +5061,29 @@ mod tests {
             .await
             .expect("proxy created");
 
-        let oauth_upstream = spawn_linuxdo_oauth_mock_server_with_behavior(LinuxDoOauthMockBehavior {
-            authorization_access_token: "callback-access-token".to_string(),
-            authorization_refresh_token: Some("callback-refresh-token".to_string()),
-            authorization_profile: json!({
-                "id": "linuxdo-inactive-callback-user",
-                "username": "linuxdo_inactive_callback_user",
-                "name": "LinuxDO Inactive Callback User",
-                "active": false,
-                "trust_level": 2
-            }),
-            refresh_access_token: "unused-refresh-access-token".to_string(),
-            refresh_refresh_token: Some("unused-rotated-refresh-token".to_string()),
-            refresh_profile: json!({
-                "id": "linuxdo-inactive-callback-user",
-                "username": "linuxdo_inactive_callback_user",
-                "name": "LinuxDO Inactive Callback User",
-                "active": false,
-                "trust_level": 2
-            }),
-            refresh_error: None,
-        })
-        .await;
+        let oauth_upstream =
+            spawn_linuxdo_oauth_mock_server_with_behavior(LinuxDoOauthMockBehavior {
+                authorization_access_token: "callback-access-token".to_string(),
+                authorization_refresh_token: Some("callback-refresh-token".to_string()),
+                authorization_profile: json!({
+                    "id": "linuxdo-inactive-callback-user",
+                    "username": "linuxdo_inactive_callback_user",
+                    "name": "LinuxDO Inactive Callback User",
+                    "active": false,
+                    "trust_level": 2
+                }),
+                refresh_access_token: "unused-refresh-access-token".to_string(),
+                refresh_refresh_token: Some("unused-rotated-refresh-token".to_string()),
+                refresh_profile: json!({
+                    "id": "linuxdo-inactive-callback-user",
+                    "username": "linuxdo_inactive_callback_user",
+                    "name": "LinuxDO Inactive Callback User",
+                    "active": false,
+                    "trust_level": 2
+                }),
+                refresh_error: None,
+            })
+            .await;
         let mut oauth_options = linuxdo_oauth_options_for_test();
         oauth_options.authorize_url = format!("http://{oauth_upstream}/oauth2/authorize");
         oauth_options.token_url = format!("http://{oauth_upstream}/oauth2/token");
@@ -5076,28 +5171,29 @@ mod tests {
         let pool = connect_sqlite_test_pool(&db_str).await;
         install_refresh_token_write_failure_trigger(&pool).await;
 
-        let oauth_upstream = spawn_linuxdo_oauth_mock_server_with_behavior(LinuxDoOauthMockBehavior {
-            authorization_access_token: "callback-access-token".to_string(),
-            authorization_refresh_token: Some("callback-refresh-token".to_string()),
-            authorization_profile: json!({
-                "id": "linuxdo-callback-error-user",
-                "username": "linuxdo_callback_error_user",
-                "name": "LinuxDO Callback Error User",
-                "active": true,
-                "trust_level": 2
-            }),
-            refresh_access_token: "unused-refresh-access-token".to_string(),
-            refresh_refresh_token: Some("unused-rotated-refresh-token".to_string()),
-            refresh_profile: json!({
-                "id": "linuxdo-callback-error-user",
-                "username": "linuxdo_callback_error_user",
-                "name": "LinuxDO Callback Error User",
-                "active": true,
-                "trust_level": 2
-            }),
-            refresh_error: None,
-        })
-        .await;
+        let oauth_upstream =
+            spawn_linuxdo_oauth_mock_server_with_behavior(LinuxDoOauthMockBehavior {
+                authorization_access_token: "callback-access-token".to_string(),
+                authorization_refresh_token: Some("callback-refresh-token".to_string()),
+                authorization_profile: json!({
+                    "id": "linuxdo-callback-error-user",
+                    "username": "linuxdo_callback_error_user",
+                    "name": "LinuxDO Callback Error User",
+                    "active": true,
+                    "trust_level": 2
+                }),
+                refresh_access_token: "unused-refresh-access-token".to_string(),
+                refresh_refresh_token: Some("unused-rotated-refresh-token".to_string()),
+                refresh_profile: json!({
+                    "id": "linuxdo-callback-error-user",
+                    "username": "linuxdo_callback_error_user",
+                    "name": "LinuxDO Callback Error User",
+                    "active": true,
+                    "trust_level": 2
+                }),
+                refresh_error: None,
+            })
+            .await;
         let mut oauth_options = linuxdo_oauth_options_for_test();
         oauth_options.authorize_url = format!("http://{oauth_upstream}/oauth2/authorize");
         oauth_options.token_url = format!("http://{oauth_upstream}/oauth2/token");
@@ -5156,8 +5252,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn linuxdo_user_sync_job_refreshes_trust_level_and_keeps_old_refresh_token_when_provider_does_not_rotate_it(
-    ) {
+    async fn linuxdo_user_sync_job_refreshes_trust_level_and_keeps_old_refresh_token_when_provider_does_not_rotate_it()
+     {
         let db_path = temp_db_path("linuxdo-user-sync-success");
         let db_str = db_path.to_string_lossy().to_string();
         let proxy = TavilyProxy::with_endpoint(Vec::<String>::new(), DEFAULT_UPSTREAM, &db_str)
@@ -5176,12 +5272,10 @@ mod tests {
             })
             .await
             .expect("seed oauth account");
-        let (ciphertext, nonce) = encrypt_linuxdo_refresh_token(
-            &linuxdo_oauth_options_for_test(),
-            "seed-refresh-token",
-        )
-        .expect("encrypt refresh token")
-        .expect("encrypted refresh token");
+        let (ciphertext, nonce) =
+            encrypt_linuxdo_refresh_token(&linuxdo_oauth_options_for_test(), "seed-refresh-token")
+                .expect("encrypt refresh token")
+                .expect("encrypted refresh token");
         proxy
             .set_oauth_account_refresh_token("linuxdo", "linuxdo-sync-user", &ciphertext, &nonce)
             .await
@@ -5195,28 +5289,29 @@ mod tests {
             .await
             .expect("set fixed last_login_at");
 
-        let oauth_upstream = spawn_linuxdo_oauth_mock_server_with_behavior(LinuxDoOauthMockBehavior {
-            authorization_access_token: "unused-auth-access-token".to_string(),
-            authorization_refresh_token: Some("unused-auth-refresh-token".to_string()),
-            authorization_profile: json!({
-                "id": "linuxdo-sync-user",
-                "username": "linuxdo_sync",
-                "name": "LinuxDO Sync",
-                "active": true,
-                "trust_level": 1
-            }),
-            refresh_access_token: "sync-refresh-access-token".to_string(),
-            refresh_refresh_token: None,
-            refresh_profile: json!({
-                "id": "linuxdo-sync-user",
-                "username": "linuxdo_sync",
-                "name": "LinuxDO Sync Updated",
-                "active": true,
-                "trust_level": 4
-            }),
-            refresh_error: None,
-        })
-        .await;
+        let oauth_upstream =
+            spawn_linuxdo_oauth_mock_server_with_behavior(LinuxDoOauthMockBehavior {
+                authorization_access_token: "unused-auth-access-token".to_string(),
+                authorization_refresh_token: Some("unused-auth-refresh-token".to_string()),
+                authorization_profile: json!({
+                    "id": "linuxdo-sync-user",
+                    "username": "linuxdo_sync",
+                    "name": "LinuxDO Sync",
+                    "active": true,
+                    "trust_level": 1
+                }),
+                refresh_access_token: "sync-refresh-access-token".to_string(),
+                refresh_refresh_token: None,
+                refresh_profile: json!({
+                    "id": "linuxdo-sync-user",
+                    "username": "linuxdo_sync",
+                    "name": "LinuxDO Sync Updated",
+                    "active": true,
+                    "trust_level": 4
+                }),
+                refresh_error: None,
+            })
+            .await;
         let mut oauth_options = linuxdo_oauth_options_for_test();
         oauth_options.token_url = format!("http://{oauth_upstream}/oauth2/token");
         oauth_options.userinfo_url = format!("http://{oauth_upstream}/api/user");
@@ -5298,12 +5393,10 @@ mod tests {
                 .expect("validate active bound token"),
             "active LinuxDo users should keep their bound API token before sync deactivation"
         );
-        let (ciphertext, nonce) = encrypt_linuxdo_refresh_token(
-            &linuxdo_oauth_options_for_test(),
-            "seed-refresh-token",
-        )
-        .expect("encrypt refresh token")
-        .expect("encrypted refresh token");
+        let (ciphertext, nonce) =
+            encrypt_linuxdo_refresh_token(&linuxdo_oauth_options_for_test(), "seed-refresh-token")
+                .expect("encrypt refresh token")
+                .expect("encrypted refresh token");
         proxy
             .set_oauth_account_refresh_token(
                 "linuxdo",
@@ -5314,28 +5407,29 @@ mod tests {
             .await
             .expect("persist refresh token");
 
-        let oauth_upstream = spawn_linuxdo_oauth_mock_server_with_behavior(LinuxDoOauthMockBehavior {
-            authorization_access_token: "unused-auth-access-token".to_string(),
-            authorization_refresh_token: Some("unused-auth-refresh-token".to_string()),
-            authorization_profile: json!({
-                "id": "linuxdo-deactivated-user",
-                "username": "linuxdo_deactivated",
-                "name": "LinuxDO Deactivated",
-                "active": true,
-                "trust_level": 2
-            }),
-            refresh_access_token: "sync-refresh-access-token".to_string(),
-            refresh_refresh_token: None,
-            refresh_profile: json!({
-                "id": "linuxdo-deactivated-user",
-                "username": "linuxdo_deactivated",
-                "name": "LinuxDO Deactivated",
-                "active": false,
-                "trust_level": 2
-            }),
-            refresh_error: None,
-        })
-        .await;
+        let oauth_upstream =
+            spawn_linuxdo_oauth_mock_server_with_behavior(LinuxDoOauthMockBehavior {
+                authorization_access_token: "unused-auth-access-token".to_string(),
+                authorization_refresh_token: Some("unused-auth-refresh-token".to_string()),
+                authorization_profile: json!({
+                    "id": "linuxdo-deactivated-user",
+                    "username": "linuxdo_deactivated",
+                    "name": "LinuxDO Deactivated",
+                    "active": true,
+                    "trust_level": 2
+                }),
+                refresh_access_token: "sync-refresh-access-token".to_string(),
+                refresh_refresh_token: None,
+                refresh_profile: json!({
+                    "id": "linuxdo-deactivated-user",
+                    "username": "linuxdo_deactivated",
+                    "name": "LinuxDO Deactivated",
+                    "active": false,
+                    "trust_level": 2
+                }),
+                refresh_error: None,
+            })
+            .await;
         let mut oauth_options = linuxdo_oauth_options_for_test();
         oauth_options.token_url = format!("http://{oauth_upstream}/oauth2/token");
         oauth_options.userinfo_url = format!("http://{oauth_upstream}/api/user");
@@ -5414,28 +5508,29 @@ mod tests {
             .await
             .expect("persist refresh token");
 
-        let oauth_upstream = spawn_linuxdo_oauth_mock_server_with_behavior(LinuxDoOauthMockBehavior {
-            authorization_access_token: "unused-auth-access-token".to_string(),
-            authorization_refresh_token: Some("unused-auth-refresh-token".to_string()),
-            authorization_profile: json!({
-                "id": "linuxdo-invalid-grant-user",
-                "username": "linuxdo_invalid",
-                "name": "LinuxDO Invalid",
-                "active": true,
-                "trust_level": 2
-            }),
-            refresh_access_token: "unused-refresh-access-token".to_string(),
-            refresh_refresh_token: None,
-            refresh_profile: json!({
-                "id": "linuxdo-invalid-grant-user",
-                "username": "linuxdo_invalid",
-                "name": "LinuxDO Invalid Updated",
-                "active": true,
-                "trust_level": 4
-            }),
-            refresh_error: Some((StatusCode::BAD_REQUEST, json!({ "error": "invalid_grant" }))),
-        })
-        .await;
+        let oauth_upstream =
+            spawn_linuxdo_oauth_mock_server_with_behavior(LinuxDoOauthMockBehavior {
+                authorization_access_token: "unused-auth-access-token".to_string(),
+                authorization_refresh_token: Some("unused-auth-refresh-token".to_string()),
+                authorization_profile: json!({
+                    "id": "linuxdo-invalid-grant-user",
+                    "username": "linuxdo_invalid",
+                    "name": "LinuxDO Invalid",
+                    "active": true,
+                    "trust_level": 2
+                }),
+                refresh_access_token: "unused-refresh-access-token".to_string(),
+                refresh_refresh_token: None,
+                refresh_profile: json!({
+                    "id": "linuxdo-invalid-grant-user",
+                    "username": "linuxdo_invalid",
+                    "name": "LinuxDO Invalid Updated",
+                    "active": true,
+                    "trust_level": 4
+                }),
+                refresh_error: Some((StatusCode::BAD_REQUEST, json!({ "error": "invalid_grant" }))),
+            })
+            .await;
         let mut oauth_options = linuxdo_oauth_options_for_test();
         oauth_options.token_url = format!("http://{oauth_upstream}/oauth2/token");
         oauth_options.userinfo_url = format!("http://{oauth_upstream}/api/user");
@@ -5513,12 +5608,10 @@ mod tests {
                 .expect("validate active bound token"),
             "active LinuxDo users should keep their bound API token before sync deactivation"
         );
-        let (ciphertext, nonce) = encrypt_linuxdo_refresh_token(
-            &linuxdo_oauth_options_for_test(),
-            "seed-refresh-token",
-        )
-        .expect("encrypt refresh token")
-        .expect("encrypted refresh token");
+        let (ciphertext, nonce) =
+            encrypt_linuxdo_refresh_token(&linuxdo_oauth_options_for_test(), "seed-refresh-token")
+                .expect("encrypt refresh token")
+                .expect("encrypted refresh token");
         proxy
             .set_oauth_account_refresh_token(
                 "linuxdo",
@@ -5532,28 +5625,29 @@ mod tests {
         let pool = connect_sqlite_test_pool(&db_str).await;
         install_refresh_token_write_failure_trigger(&pool).await;
 
-        let oauth_upstream = spawn_linuxdo_oauth_mock_server_with_behavior(LinuxDoOauthMockBehavior {
-            authorization_access_token: "unused-auth-access-token".to_string(),
-            authorization_refresh_token: Some("unused-auth-refresh-token".to_string()),
-            authorization_profile: json!({
-                "id": "linuxdo-rotated-refresh-error-user",
-                "username": "linuxdo_rotated_error",
-                "name": "LinuxDO Rotated Error",
-                "active": true,
-                "trust_level": 1
-            }),
-            refresh_access_token: "sync-refresh-access-token".to_string(),
-            refresh_refresh_token: Some("rotated-refresh-token".to_string()),
-            refresh_profile: json!({
-                "id": "linuxdo-rotated-refresh-error-user",
-                "username": "linuxdo_rotated_error",
-                "name": "LinuxDO Rotated Error Updated",
-                "active": false,
-                "trust_level": 4
-            }),
-            refresh_error: None,
-        })
-        .await;
+        let oauth_upstream =
+            spawn_linuxdo_oauth_mock_server_with_behavior(LinuxDoOauthMockBehavior {
+                authorization_access_token: "unused-auth-access-token".to_string(),
+                authorization_refresh_token: Some("unused-auth-refresh-token".to_string()),
+                authorization_profile: json!({
+                    "id": "linuxdo-rotated-refresh-error-user",
+                    "username": "linuxdo_rotated_error",
+                    "name": "LinuxDO Rotated Error",
+                    "active": true,
+                    "trust_level": 1
+                }),
+                refresh_access_token: "sync-refresh-access-token".to_string(),
+                refresh_refresh_token: Some("rotated-refresh-token".to_string()),
+                refresh_profile: json!({
+                    "id": "linuxdo-rotated-refresh-error-user",
+                    "username": "linuxdo_rotated_error",
+                    "name": "LinuxDO Rotated Error Updated",
+                    "active": false,
+                    "trust_level": 4
+                }),
+                refresh_error: None,
+            })
+            .await;
         let mut oauth_options = linuxdo_oauth_options_for_test();
         oauth_options.token_url = format!("http://{oauth_upstream}/oauth2/token");
         oauth_options.userinfo_url = format!("http://{oauth_upstream}/api/user");
@@ -5573,8 +5667,7 @@ mod tests {
         run_linuxdo_user_status_sync_job(state.clone()).await;
 
         let (new_ciphertext, new_nonce, trust_level, attempted_at, success_at, sync_error) =
-            fetch_linuxdo_oauth_account_snapshot(&pool, "linuxdo-rotated-refresh-error-user")
-                .await;
+            fetch_linuxdo_oauth_account_snapshot(&pool, "linuxdo-rotated-refresh-error-user").await;
         assert_eq!(trust_level, Some(1));
         assert_eq!(new_ciphertext.as_deref(), Some(ciphertext.as_str()));
         assert_eq!(new_nonce.as_deref(), Some(nonce.as_str()));
@@ -5820,7 +5913,10 @@ mod tests {
 
         assert_eq!(resp.status(), reqwest::StatusCode::OK);
         let body: serde_json::Value = resp.json().await.expect("parse json body");
-        assert_eq!(body.get("status").and_then(|value| value.as_i64()), Some(200));
+        assert_eq!(
+            body.get("status").and_then(|value| value.as_i64()),
+            Some(200)
+        );
 
         let seen = seen.lock().expect("seen lock should not be poisoned");
         assert_eq!(seen.len(), 1);
@@ -5921,7 +6017,10 @@ mod tests {
         .fetch_optional(&pool)
         .await
         .expect("fetch token monthly quota");
-        assert_eq!(token_month.map(|(_, month_count)| month_count).unwrap_or(0), 0);
+        assert_eq!(
+            token_month.map(|(_, month_count)| month_count).unwrap_or(0),
+            0
+        );
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -6038,28 +6137,33 @@ mod tests {
         assert_eq!(resp.status(), reqwest::StatusCode::OK);
         let body: serde_json::Value = resp.json().await.expect("parse json body");
         assert_eq!(
-            body.pointer("/summary/requested").and_then(|value| value.as_u64()),
+            body.pointer("/summary/requested")
+                .and_then(|value| value.as_u64()),
             Some(2)
         );
         assert_eq!(
-            body.pointer("/summary/succeeded").and_then(|value| value.as_u64()),
+            body.pointer("/summary/succeeded")
+                .and_then(|value| value.as_u64()),
             Some(2)
         );
         assert_eq!(
-            body.pointer("/summary/failed").and_then(|value| value.as_u64()),
+            body.pointer("/summary/failed")
+                .and_then(|value| value.as_u64()),
             Some(0)
         );
 
-        let deleted_a: Option<i64> = sqlx::query_scalar("SELECT deleted_at FROM api_keys WHERE id = ?")
-            .bind(find_api_key_id(&rows, "tvly-delete-a"))
-            .fetch_one(&pool)
-            .await
-            .expect("fetch deleted_at for delete-a");
-        let deleted_b: Option<i64> = sqlx::query_scalar("SELECT deleted_at FROM api_keys WHERE id = ?")
-            .bind(find_api_key_id(&rows, "tvly-delete-b"))
-            .fetch_one(&pool)
-            .await
-            .expect("fetch deleted_at for delete-b");
+        let deleted_a: Option<i64> =
+            sqlx::query_scalar("SELECT deleted_at FROM api_keys WHERE id = ?")
+                .bind(find_api_key_id(&rows, "tvly-delete-a"))
+                .fetch_one(&pool)
+                .await
+                .expect("fetch deleted_at for delete-a");
+        let deleted_b: Option<i64> =
+            sqlx::query_scalar("SELECT deleted_at FROM api_keys WHERE id = ?")
+                .bind(find_api_key_id(&rows, "tvly-delete-b"))
+                .fetch_one(&pool)
+                .await
+                .expect("fetch deleted_at for delete-b");
         let keep_deleted_at: Option<i64> =
             sqlx::query_scalar("SELECT deleted_at FROM api_keys WHERE id = ?")
                 .bind(&keep_id)
@@ -6134,19 +6238,23 @@ mod tests {
         assert_eq!(resp.status(), reqwest::StatusCode::OK);
         let body: serde_json::Value = resp.json().await.expect("parse json body");
         assert_eq!(
-            body.pointer("/summary/requested").and_then(|value| value.as_u64()),
+            body.pointer("/summary/requested")
+                .and_then(|value| value.as_u64()),
             Some(2)
         );
         assert_eq!(
-            body.pointer("/summary/succeeded").and_then(|value| value.as_u64()),
+            body.pointer("/summary/succeeded")
+                .and_then(|value| value.as_u64()),
             Some(1)
         );
         assert_eq!(
-            body.pointer("/summary/skipped").and_then(|value| value.as_u64()),
+            body.pointer("/summary/skipped")
+                .and_then(|value| value.as_u64()),
             Some(1)
         );
         assert_eq!(
-            body.pointer("/summary/failed").and_then(|value| value.as_u64()),
+            body.pointer("/summary/failed")
+                .and_then(|value| value.as_u64()),
             Some(0)
         );
 
@@ -6281,19 +6389,27 @@ mod tests {
 
         for key_id in [&disabled_id, &exhausted_id, &quarantined_id] {
             let (_, _, quota_synced_at) = fetch_key_quota_snapshot(&pool, key_id).await;
-            assert!(quota_synced_at.is_some(), "quota should be synced for {key_id}");
+            assert!(
+                quota_synced_at.is_some(),
+                "quota should be synced for {key_id}"
+            );
             assert_eq!(fetch_key_quota_sample_count(&pool, key_id).await, 1);
         }
 
         let failing_resp = client
-            .post(format!("http://{}/api/keys/{}/sync-usage", addr, failing_id))
+            .post(format!(
+                "http://{}/api/keys/{}/sync-usage",
+                addr, failing_id
+            ))
             .header("x-forward-user", "admin")
             .send()
             .await
             .expect("failing manual sync request succeeds");
         assert_eq!(failing_resp.status(), reqwest::StatusCode::UNAUTHORIZED);
-        let failing_body: serde_json::Value =
-            failing_resp.json().await.expect("parse failing response body");
+        let failing_body: serde_json::Value = failing_resp
+            .json()
+            .await
+            .expect("parse failing response body");
         assert_eq!(
             failing_body.get("error").and_then(|value| value.as_str()),
             Some("usage_http")
@@ -6395,19 +6511,23 @@ mod tests {
         assert_eq!(resp.status(), reqwest::StatusCode::OK);
         let body: serde_json::Value = resp.json().await.expect("parse json body");
         assert_eq!(
-            body.pointer("/summary/requested").and_then(|value| value.as_u64()),
+            body.pointer("/summary/requested")
+                .and_then(|value| value.as_u64()),
             Some(5)
         );
         assert_eq!(
-            body.pointer("/summary/succeeded").and_then(|value| value.as_u64()),
+            body.pointer("/summary/succeeded")
+                .and_then(|value| value.as_u64()),
             Some(4)
         );
         assert_eq!(
-            body.pointer("/summary/failed").and_then(|value| value.as_u64()),
+            body.pointer("/summary/failed")
+                .and_then(|value| value.as_u64()),
             Some(1)
         );
         assert_eq!(
-            body.pointer("/summary/skipped").and_then(|value| value.as_u64()),
+            body.pointer("/summary/skipped")
+                .and_then(|value| value.as_u64()),
             Some(0)
         );
 
@@ -6438,7 +6558,10 @@ mod tests {
 
         for key_id in [&active_id, &disabled_id, &exhausted_id, &quarantined_id] {
             let (_, _, quota_synced_at) = fetch_key_quota_snapshot(&pool, key_id).await;
-            assert!(quota_synced_at.is_some(), "quota should be synced for {key_id}");
+            assert!(
+                quota_synced_at.is_some(),
+                "quota should be synced for {key_id}"
+            );
             assert_eq!(fetch_key_quota_sample_count(&pool, key_id).await, 1);
         }
 
@@ -6554,7 +6677,10 @@ mod tests {
 
         let refresh_event = events
             .iter()
-            .find(|event| event["type"].as_str() == Some("phase") && event["phaseKey"].as_str() == Some("refresh_ui"))
+            .find(|event| {
+                event["type"].as_str() == Some("phase")
+                    && event["phaseKey"].as_str() == Some("refresh_ui")
+            })
             .expect("refresh_ui phase event");
         assert_eq!(refresh_event["current"].as_u64(), Some(3));
 
@@ -6570,10 +6696,7 @@ mod tests {
             complete["payload"]["summary"]["succeeded"].as_u64(),
             Some(2)
         );
-        assert_eq!(
-            complete["payload"]["summary"]["failed"].as_u64(),
-            Some(1)
-        );
+        assert_eq!(complete["payload"]["summary"]["failed"].as_u64(), Some(1));
         assert_eq!(
             complete["payload"]["results"]
                 .as_array()
@@ -6718,15 +6841,21 @@ mod tests {
             Some("8.8.8.8")
         );
         assert_eq!(
-            results[0].get("registration_region").and_then(|v| v.as_str()),
+            results[0]
+                .get("registration_region")
+                .and_then(|v| v.as_str()),
             Some("US")
         );
         assert_eq!(
-            results[0].get("assigned_proxy_key").and_then(|v| v.as_str()),
+            results[0]
+                .get("assigned_proxy_key")
+                .and_then(|v| v.as_str()),
             Some("__direct__")
         );
         assert_eq!(
-            results[0].get("assigned_proxy_label").and_then(|v| v.as_str()),
+            results[0]
+                .get("assigned_proxy_label")
+                .and_then(|v| v.as_str()),
             Some("Direct")
         );
         assert_eq!(
@@ -6740,7 +6869,9 @@ mod tests {
             Some("1.1.1.1")
         );
         assert_eq!(
-            results[1].get("registration_region").and_then(|v| v.as_str()),
+            results[1]
+                .get("registration_region")
+                .and_then(|v| v.as_str()),
             Some("US Westfield (MA)")
         );
         assert_eq!(
@@ -6750,7 +6881,9 @@ mod tests {
             Some("other")
         );
         assert_eq!(
-            results[2].get("registration_region").and_then(|v| v.as_str()),
+            results[2]
+                .get("registration_region")
+                .and_then(|v| v.as_str()),
             Some("US")
         );
 
@@ -6772,15 +6905,18 @@ mod tests {
             spawn_usage_proxy_relay_server(format!("http://{usage_addr}"), relay_hits.clone())
                 .await;
         proxy
-            .update_forward_proxy_settings(ForwardProxySettings {
-                proxy_urls: vec![format!("http://{relay_addr}")],
-                subscription_urls: Vec::new(),
-                subscription_update_interval_secs: 3600,
-                insert_direct: false,
-            
-                egress_socks5_enabled: false,
-                egress_socks5_url: String::new(),
-            }, false)
+            .update_forward_proxy_settings(
+                ForwardProxySettings {
+                    proxy_urls: vec![format!("http://{relay_addr}")],
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: false,
+
+                    egress_socks5_enabled: false,
+                    egress_socks5_url: String::new(),
+                },
+                false,
+            )
             .await
             .expect("proxy settings updated");
         relay_hits.store(0, Ordering::SeqCst);
@@ -6828,13 +6964,12 @@ mod tests {
             .connect_with(options)
             .await
             .expect("open db pool");
-        let proxy_attempt_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM forward_proxy_attempts WHERE proxy_key = ?",
-        )
-        .bind(format!("http://{relay_addr}"))
-        .fetch_one(&pool)
-        .await
-        .expect("count proxy attempts");
+        let proxy_attempt_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM forward_proxy_attempts WHERE proxy_key = ?")
+                .bind(format!("http://{relay_addr}"))
+                .fetch_one(&pool)
+                .await
+                .expect("count proxy attempts");
         assert!(
             proxy_attempt_count > 0,
             "usage probe should record attempts against the selected forward proxy node"
@@ -7293,8 +7428,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn api_keys_batch_structured_items_persist_assigned_proxy_hint_without_registration_metadata(
-    ) {
+    async fn api_keys_batch_structured_items_persist_assigned_proxy_hint_without_registration_metadata()
+     {
         let db_path = temp_db_path("keys-batch-assigned-proxy-hint");
         let db_str = db_path.to_string_lossy().to_string();
 
@@ -7311,7 +7446,7 @@ mod tests {
                     subscription_urls: Vec::new(),
                     subscription_update_interval_secs: 3600,
                     insert_direct: false,
-                
+
                     egress_socks5_enabled: false,
                     egress_socks5_url: String::new(),
                 },
@@ -7374,7 +7509,10 @@ mod tests {
         .fetch_one(&pool)
         .await
         .expect("hint-only key exists");
-        assert!(row.0.is_none(), "hint-only batch import should not store registration_ip");
+        assert!(
+            row.0.is_none(),
+            "hint-only batch import should not store registration_ip"
+        );
         assert!(
             row.1.is_none(),
             "hint-only batch import should not fabricate registration_region"
@@ -7395,7 +7533,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn api_keys_batch_registration_metadata_does_not_eagerly_prewarm_forward_proxy_geo_cache() {
+    async fn api_keys_batch_registration_metadata_does_not_eagerly_prewarm_forward_proxy_geo_cache()
+    {
         let db_path = temp_db_path("keys-batch-registration-geo-warm");
         let db_str = db_path.to_string_lossy().to_string();
         let geo_addr = spawn_api_key_geo_mock_server().await;
@@ -7486,7 +7625,8 @@ mod tests {
             "ip=1.1.1.1
 loc=US
 colo=LAX
-".to_string(),
+"
+            .to_string(),
         )
         .await;
         let traced_proxy = format!("http://{traced_proxy_addr}");
@@ -7733,7 +7873,10 @@ colo=LAX
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        assert!(saw_job, "due GEO state should still trigger a refresh job promptly");
+        assert!(
+            saw_job,
+            "due GEO state should still trigger a refresh job promptly"
+        );
 
         tokio::time::sleep(Duration::from_millis(250)).await;
         handle.abort();
@@ -7762,7 +7905,8 @@ colo=LAX
             "ip=1.1.1.1
 loc=US
 colo=LAX
-".to_string(),
+"
+            .to_string(),
         )
         .await;
         let traced_proxy = format!("http://{traced_proxy_addr}");
@@ -7833,8 +7977,8 @@ colo=LAX
     }
 
     #[tokio::test]
-    async fn api_keys_batch_structured_items_ignore_stale_assigned_proxy_hint_without_registration_metadata(
-    ) {
+    async fn api_keys_batch_structured_items_ignore_stale_assigned_proxy_hint_without_registration_metadata()
+     {
         let db_path = temp_db_path("keys-batch-stale-assigned-proxy-hint");
         let db_str = db_path.to_string_lossy().to_string();
 
@@ -7851,7 +7995,7 @@ colo=LAX
                     subscription_urls: Vec::new(),
                     subscription_update_interval_secs: 3600,
                     insert_direct: false,
-                
+
                     egress_socks5_enabled: false,
                     egress_socks5_url: String::new(),
                 },
@@ -7924,8 +8068,8 @@ colo=LAX
     }
 
     #[tokio::test]
-    async fn api_keys_batch_structured_items_ignore_direct_assigned_proxy_hint_without_registration_metadata(
-    ) {
+    async fn api_keys_batch_structured_items_ignore_direct_assigned_proxy_hint_without_registration_metadata()
+     {
         let db_path = temp_db_path("keys-batch-direct-assigned-proxy-hint");
         let db_str = db_path.to_string_lossy().to_string();
 
@@ -8244,7 +8388,8 @@ colo=LAX
         assert_eq!(
             logged_in_profile.get("userAvatarUrl"),
             Some(&serde_json::Value::String(
-                "https://connect.linux.do/user_avatar/connect.linux.do/linuxdo_alice/96/1_2.png".to_string(),
+                "https://connect.linux.do/user_avatar/connect.linux.do/linuxdo_alice/96/1_2.png"
+                    .to_string(),
             ))
         );
 
@@ -8505,8 +8650,8 @@ colo=LAX
             .map(str::trim)
             .collect::<Vec<_>>()
             .join("\n");
-        let first_snapshot: serde_json::Value = serde_json::from_str(&first_snapshot_data)
-            .expect("decode first user token snapshot");
+        let first_snapshot: serde_json::Value =
+            serde_json::from_str(&first_snapshot_data).expect("decode first user token snapshot");
         assert_eq!(
             first_snapshot["token"]["tokenId"].as_str(),
             Some(bound_token.id.as_str())
@@ -9194,7 +9339,10 @@ colo=LAX
 
         let app = Router::new()
             .route("/", get(serve_index))
-            .route("/auth/linuxdo", get(get_linuxdo_auth).post(post_linuxdo_auth))
+            .route(
+                "/auth/linuxdo",
+                get(get_linuxdo_auth).post(post_linuxdo_auth),
+            )
             .route("/auth/linuxdo/callback", get(get_linuxdo_callback))
             .route("/api/profile", get(get_profile))
             .with_state(state);
@@ -9477,12 +9625,20 @@ colo=LAX
             binding_effect_summary: None,
             selection_effect_code: "none".to_string(),
             selection_effect_summary: None,
+            gateway_mode: None,
+            experiment_variant: None,
+            proxy_session_id: None,
+            routing_subject_hash: None,
+            upstream_operation: None,
+            fallback_reason: None,
             created_at: 1_700_000_000,
         };
         let view = PublicTokenLogView::from_record(record.clone(), UiLanguage::En);
 
         let json = serde_json::to_value(&view).expect("serialize public token log view");
-        let object = json.as_object().expect("public token log should serialize to object");
+        let object = json
+            .as_object()
+            .expect("public token log should serialize to object");
         assert!(object.get("failureKind").is_none());
         assert!(object.get("keyEffectCode").is_none());
         assert!(object.get("keyEffectSummary").is_none());
@@ -9497,7 +9653,10 @@ colo=LAX
         assert!(
             serde_json::to_value(&zh_view)
                 .ok()
-                .and_then(|value| value.get("errorMessage").and_then(|inner| inner.as_str()).map(str::to_string))
+                .and_then(|value| value
+                    .get("errorMessage")
+                    .and_then(|inner| inner.as_str())
+                    .map(str::to_string))
                 .is_some_and(|value| value.contains("建议：这是 Tavily 限流")),
         );
     }
@@ -9526,6 +9685,12 @@ colo=LAX
             binding_effect_summary: None,
             selection_effect_code: "none".to_string(),
             selection_effect_summary: None,
+            gateway_mode: None,
+            experiment_variant: None,
+            proxy_session_id: None,
+            routing_subject_hash: None,
+            upstream_operation: None,
+            fallback_reason: None,
             created_at: 1_700_000_002,
         };
         let public_view = PublicTokenLogView::from_record(token_record.clone(), UiLanguage::Zh);
@@ -9566,6 +9731,12 @@ colo=LAX
                 created_at: 1_700_000_003,
                 forwarded_headers: Vec::new(),
                 dropped_headers: Vec::new(),
+                gateway_mode: None,
+                experiment_variant: None,
+                proxy_session_id: None,
+                routing_subject_hash: None,
+                upstream_operation: None,
+                fallback_reason: None,
             },
             false,
         );
@@ -9597,17 +9768,27 @@ colo=LAX
             binding_effect_summary: None,
             selection_effect_code: "none".to_string(),
             selection_effect_summary: None,
+            gateway_mode: None,
+            experiment_variant: None,
+            proxy_session_id: None,
+            routing_subject_hash: None,
+            upstream_operation: None,
+            fallback_reason: None,
             created_at: 1_700_000_001,
         });
 
         let json = serde_json::to_value(&view).expect("serialize admin token log view");
-        let object = json.as_object().expect("admin token log should serialize to object");
+        let object = json
+            .as_object()
+            .expect("admin token log should serialize to object");
         assert_eq!(
             object.get("failure_kind").and_then(|value| value.as_str()),
             Some("upstream_account_deactivated_401"),
         );
         assert_eq!(
-            object.get("key_effect_code").and_then(|value| value.as_str()),
+            object
+                .get("key_effect_code")
+                .and_then(|value| value.as_str()),
             Some("quarantined"),
         );
         assert_eq!(
@@ -9854,7 +10035,11 @@ colo=LAX
 
         for (key_id, registration_ip, registration_region) in [
             (&alpha_active_id, Some("8.8.8.8"), Some("US")),
-            (&alpha_quarantined_id, Some("8.8.4.4"), Some("US Westfield (MA)")),
+            (
+                &alpha_quarantined_id,
+                Some("8.8.4.4"),
+                Some("US Westfield (MA)"),
+            ),
             (&beta_active_id, Some("8.8.8.8"), Some("US")),
             (&beta_disabled_id, Some("9.9.9.9"), None),
             (&ungrouped_exhausted_id, None, None),
@@ -10128,7 +10313,10 @@ colo=LAX
         );
 
         let detail_resp = client
-            .get(format!("http://{}/api/keys/{}", admin_addr, alpha_active_id))
+            .get(format!(
+                "http://{}/api/keys/{}",
+                admin_addr, alpha_active_id
+            ))
             .header(reqwest::header::COOKIE, admin_cookie.clone())
             .send()
             .await
@@ -10484,10 +10672,19 @@ colo=LAX
             "summary windows should exist"
         );
         assert!(body.get("siteStatus").is_some(), "site status should exist");
-        assert!(body.get("forwardProxy").is_some(), "forward proxy should exist");
+        assert!(
+            body.get("forwardProxy").is_some(),
+            "forward proxy should exist"
+        );
         assert!(body.get("trend").is_some(), "trend should exist");
-        assert!(body.get("hourlyRequestWindow").is_some(), "hourly request window should exist");
-        assert!(body.get("exhaustedKeys").is_some(), "exhausted keys should exist");
+        assert!(
+            body.get("hourlyRequestWindow").is_some(),
+            "hourly request window should exist"
+        );
+        assert!(
+            body.get("exhaustedKeys").is_some(),
+            "exhausted keys should exist"
+        );
         assert!(body.get("recentLogs").is_some(), "recent logs should exist");
         assert!(body.get("recentJobs").is_some(), "recent jobs should exist");
         assert!(
@@ -10498,8 +10695,14 @@ colo=LAX
             body.get("tokenCoverage").and_then(|value| value.as_str()),
             Some("truncated")
         );
-        assert!(body.get("keys").is_none(), "overview should not expose legacy keys alias");
-        assert!(body.get("logs").is_none(), "overview should not expose legacy logs alias");
+        assert!(
+            body.get("keys").is_none(),
+            "overview should not expose legacy keys alias"
+        );
+        assert!(
+            body.get("logs").is_none(),
+            "overview should not expose legacy logs alias"
+        );
         assert_eq!(
             body.pointer("/exhaustedKeys/0/id")
                 .and_then(|value| value.as_str()),
@@ -10541,13 +10744,19 @@ colo=LAX
         assert_eq!(
             body.pointer("/trend/request")
                 .and_then(|value| value.as_array())
-                .map(|values| values.iter().filter_map(|value| value.as_i64()).sum::<i64>()),
+                .map(|values| values
+                    .iter()
+                    .filter_map(|value| value.as_i64())
+                    .sum::<i64>()),
             Some(7)
         );
         assert_eq!(
             body.pointer("/trend/error")
                 .and_then(|value| value.as_array())
-                .map(|values| values.iter().filter_map(|value| value.as_i64()).sum::<i64>()),
+                .map(|values| values
+                    .iter()
+                    .filter_map(|value| value.as_i64())
+                    .sum::<i64>()),
             Some(3)
         );
         assert_eq!(
@@ -10629,8 +10838,14 @@ colo=LAX
             body.get("summaryWindows").is_some(),
             "summary windows should still exist"
         );
-        assert!(body.get("siteStatus").is_some(), "site status should still exist");
-        assert!(body.get("hourlyRequestWindow").is_some(), "hourly request window should still exist");
+        assert!(
+            body.get("siteStatus").is_some(),
+            "site status should still exist"
+        );
+        assert!(
+            body.get("hourlyRequestWindow").is_some(),
+            "hourly request window should still exist"
+        );
         assert_eq!(
             body.get("recentJobs")
                 .and_then(|value| value.as_array())
@@ -10964,7 +11179,9 @@ colo=LAX
         assert_eq!(resp.status(), reqwest::StatusCode::OK);
 
         let body: serde_json::Value = resp.json().await.expect("summary windows json");
-        let today_total = body.pointer("/today/total_requests").and_then(|v| v.as_i64());
+        let today_total = body
+            .pointer("/today/total_requests")
+            .and_then(|v| v.as_i64());
         let yesterday_total = body
             .pointer("/yesterday/total_requests")
             .and_then(|v| v.as_i64());
@@ -10979,9 +11196,14 @@ colo=LAX
                 "unexpected summary window totals: today={today_total:?} yesterday={yesterday_total:?}"
             ),
         }
-        let month_expected = if month_start <= yesterday_start { 14 } else { 10 };
+        let month_expected = if month_start <= yesterday_start {
+            14
+        } else {
+            10
+        };
         assert_eq!(
-            body.pointer("/month/total_requests").and_then(|v| v.as_i64()),
+            body.pointer("/month/total_requests")
+                .and_then(|v| v.as_i64()),
             Some(month_expected)
         );
         assert!(
@@ -11193,9 +11415,16 @@ colo=LAX
             .await
             .expect("unfiltered admin logs request");
         assert_eq!(unfiltered_resp.status(), reqwest::StatusCode::OK);
-        let unfiltered_body: serde_json::Value =
-            unfiltered_resp.json().await.expect("unfiltered admin logs json");
-        assert_eq!(unfiltered_body.get("total").and_then(|value| value.as_i64()), Some(6));
+        let unfiltered_body: serde_json::Value = unfiltered_resp
+            .json()
+            .await
+            .expect("unfiltered admin logs json");
+        assert_eq!(
+            unfiltered_body
+                .get("total")
+                .and_then(|value| value.as_i64()),
+            Some(6)
+        );
         let unfiltered_items = unfiltered_body
             .get("items")
             .and_then(|value| value.as_array())
@@ -11269,7 +11498,10 @@ colo=LAX
         assert_eq!(success_resp.status(), reqwest::StatusCode::OK);
         let success_body: serde_json::Value =
             success_resp.json().await.expect("filtered admin logs json");
-        assert_eq!(success_body.get("total").and_then(|value| value.as_i64()), Some(3));
+        assert_eq!(
+            success_body.get("total").and_then(|value| value.as_i64()),
+            Some(3)
+        );
         assert_eq!(
             success_body
                 .pointer("/items/0/auth_token_id")
@@ -11283,7 +11515,12 @@ colo=LAX
             Some("token-search-initialize")
         );
         assert_eq!(
-            success_body.get("items").and_then(|value| value.as_array()).and_then(|items| items.get(1)).and_then(|item| item.get("key_effect_code")).and_then(|value| value.as_str()),
+            success_body
+                .get("items")
+                .and_then(|value| value.as_array())
+                .and_then(|items| items.get(1))
+                .and_then(|item| item.get("key_effect_code"))
+                .and_then(|value| value.as_str()),
             Some("none")
         );
         assert!(
@@ -11296,7 +11533,12 @@ colo=LAX
             "success log should expose a null failure_kind field"
         );
         assert_eq!(
-            success_body.get("items").and_then(|value| value.as_array()).and_then(|items| items.get(1)).and_then(|item| item.get("operationalClass")).and_then(|value| value.as_str()),
+            success_body
+                .get("items")
+                .and_then(|value| value.as_array())
+                .and_then(|items| items.get(1))
+                .and_then(|item| item.get("operationalClass"))
+                .and_then(|value| value.as_str()),
             Some("success")
         );
         assert_eq!(
@@ -11318,7 +11560,10 @@ colo=LAX
         assert_eq!(neutral_resp.status(), reqwest::StatusCode::OK);
         let neutral_body: serde_json::Value =
             neutral_resp.json().await.expect("neutral admin logs json");
-        assert_eq!(neutral_body.get("total").and_then(|value| value.as_i64()), Some(2));
+        assert_eq!(
+            neutral_body.get("total").and_then(|value| value.as_i64()),
+            Some(2)
+        );
         assert_eq!(
             neutral_body
                 .pointer("/items/0/auth_token_id")
@@ -11342,8 +11587,7 @@ colo=LAX
                 .get("items")
                 .and_then(|value| value.as_array())
                 .is_some_and(|items| items.iter().all(|item| {
-                    item.get("auth_token_id")
-                        .and_then(|value| value.as_str())
+                    item.get("auth_token_id").and_then(|value| value.as_str())
                         != Some("token-search-initialize")
                 })),
             "billable MCP search rows must not leak into the neutral filter"
@@ -11353,8 +11597,7 @@ colo=LAX
                 .get("items")
                 .and_then(|value| value.as_array())
                 .is_some_and(|items| items.iter().all(|item| {
-                    item.get("auth_token_id")
-                        .and_then(|value| value.as_str())
+                    item.get("auth_token_id").and_then(|value| value.as_str())
                         != Some("token-batch-mixed")
                 })),
             "mixed MCP batches must not leak into the neutral filter"
@@ -11380,14 +11623,16 @@ colo=LAX
                 .and_then(|value| value.as_i64()),
             Some(2)
         );
-        assert!(neutral_result_body
-            .get("items")
-            .and_then(|value| value.as_array())
-            .is_some_and(|items| items.iter().any(|item| {
-                item.get("request_kind_key")
-                    .and_then(|value| value.as_str())
-                    == Some("mcp:session-delete-unsupported")
-            })));
+        assert!(
+            neutral_result_body
+                .get("items")
+                .and_then(|value| value.as_array())
+                .is_some_and(|items| items.iter().any(|item| {
+                    item.get("request_kind_key")
+                        .and_then(|value| value.as_str())
+                        == Some("mcp:session-delete-unsupported")
+                }))
+        );
         assert!(
             neutral_result_body
                 .get("items")
@@ -11417,14 +11662,16 @@ colo=LAX
             .json()
             .await
             .expect("error result admin logs json");
-        assert!(error_result_body
-            .get("items")
-            .and_then(|value| value.as_array())
-            .is_some_and(|items| items.iter().all(|item| {
-                item.get("request_kind_key")
-                    .and_then(|value| value.as_str())
-                    != Some("mcp:session-delete-unsupported")
-            })));
+        assert!(
+            error_result_body
+                .get("items")
+                .and_then(|value| value.as_array())
+                .is_some_and(|items| items.iter().all(|item| {
+                    item.get("request_kind_key")
+                        .and_then(|value| value.as_str())
+                        != Some("mcp:session-delete-unsupported")
+                }))
+        );
 
         let key_neutral_logs_resp = client
             .get(format!(
@@ -11465,9 +11712,14 @@ colo=LAX
             .await
             .expect("upstream admin logs request");
         assert_eq!(upstream_resp.status(), reqwest::StatusCode::OK);
-        let upstream_body: serde_json::Value =
-            upstream_resp.json().await.expect("upstream admin logs json");
-        assert_eq!(upstream_body.get("total").and_then(|value| value.as_i64()), Some(1));
+        let upstream_body: serde_json::Value = upstream_resp
+            .json()
+            .await
+            .expect("upstream admin logs json");
+        assert_eq!(
+            upstream_body.get("total").and_then(|value| value.as_i64()),
+            Some(1)
+        );
         assert_eq!(
             upstream_body
                 .pointer("/items/0/operationalClass")
@@ -11479,7 +11731,8 @@ colo=LAX
     }
 
     #[tokio::test]
-    async fn admin_logs_cursor_and_catalog_endpoints_expose_retention_without_blocking_page_counts() {
+    async fn admin_logs_cursor_and_catalog_endpoints_expose_retention_without_blocking_page_counts()
+    {
         let db_path = temp_db_path("admin-logs-cursor-catalog");
         let db_str = db_path.to_string_lossy().to_string();
         let proxy = TavilyProxy::with_endpoint(
@@ -11629,7 +11882,8 @@ colo=LAX
             .await
             .expect("key logs list");
         assert_eq!(key_list_resp.status(), reqwest::StatusCode::OK);
-        let key_list_body: serde_json::Value = key_list_resp.json().await.expect("key logs list json");
+        let key_list_body: serde_json::Value =
+            key_list_resp.json().await.expect("key logs list json");
         assert_eq!(
             key_list_body
                 .get("items")
@@ -11658,7 +11912,10 @@ colo=LAX
             .send()
             .await
             .expect("invalid key logs list");
-        assert_eq!(invalid_key_list_resp.status(), reqwest::StatusCode::BAD_REQUEST);
+        assert_eq!(
+            invalid_key_list_resp.status(),
+            reqwest::StatusCode::BAD_REQUEST
+        );
         let invalid_catalog_resp = client
             .get(format!(
                 "http://{}/api/logs/catalog?operational_class=definitely-not-valid",
@@ -11668,7 +11925,10 @@ colo=LAX
             .send()
             .await
             .expect("invalid request logs catalog");
-        assert_eq!(invalid_catalog_resp.status(), reqwest::StatusCode::BAD_REQUEST);
+        assert_eq!(
+            invalid_catalog_resp.status(),
+            reqwest::StatusCode::BAD_REQUEST
+        );
 
         let page_resp = client
             .get(format!("http://{}/api/logs/list?limit=2", admin_addr))
@@ -11682,7 +11942,10 @@ colo=LAX
             page_body.get("total").is_none(),
             "cursor endpoint should not expose total counts"
         );
-        assert_eq!(page_body.get("pageSize").and_then(|value| value.as_i64()), Some(2));
+        assert_eq!(
+            page_body.get("pageSize").and_then(|value| value.as_i64()),
+            Some(2)
+        );
         assert_eq!(
             page_body
                 .pointer("/items/0/auth_token_id")
@@ -11749,7 +12012,8 @@ colo=LAX
             .await
             .expect("request logs recovery page");
         assert_eq!(recovery_resp.status(), reqwest::StatusCode::OK);
-        let recovery_body: serde_json::Value = recovery_resp.json().await.expect("recovery page json");
+        let recovery_body: serde_json::Value =
+            recovery_resp.json().await.expect("recovery page json");
         assert_eq!(
             recovery_body
                 .get("items")
@@ -11758,11 +12022,15 @@ colo=LAX
             Some(0)
         );
         assert_eq!(
-            recovery_body.get("hasOlder").and_then(|value| value.as_bool()),
+            recovery_body
+                .get("hasOlder")
+                .and_then(|value| value.as_bool()),
             Some(false)
         );
         assert_eq!(
-            recovery_body.get("hasNewer").and_then(|value| value.as_bool()),
+            recovery_body
+                .get("hasNewer")
+                .and_then(|value| value.as_bool()),
             Some(true)
         );
         assert_eq!(
@@ -11784,9 +12052,10 @@ colo=LAX
             spawn_http_search_mock_with_usage(expected_api_key.to_string()).await;
         let upstream = format!("http://{upstream_addr}");
 
-        let proxy = TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
-            .await
-            .expect("proxy created");
+        let proxy =
+            TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
         let token = proxy
             .create_access_token(Some("catalog-scope"))
             .await
@@ -11822,8 +12091,10 @@ colo=LAX
             .await
             .expect("empty key catalog");
         assert_eq!(empty_key_catalog_resp.status(), reqwest::StatusCode::OK);
-        let empty_key_catalog: serde_json::Value =
-            empty_key_catalog_resp.json().await.expect("empty key catalog json");
+        let empty_key_catalog: serde_json::Value = empty_key_catalog_resp
+            .json()
+            .await
+            .expect("empty key catalog json");
         assert_eq!(
             empty_key_catalog
                 .pointer("/facets/tokens")
@@ -11882,7 +12153,8 @@ colo=LAX
             .await
             .expect("key catalog");
         assert_eq!(key_catalog_resp.status(), reqwest::StatusCode::OK);
-        let key_catalog: serde_json::Value = key_catalog_resp.json().await.expect("key catalog json");
+        let key_catalog: serde_json::Value =
+            key_catalog_resp.json().await.expect("key catalog json");
         assert_eq!(
             key_catalog
                 .get("retentionDays")
@@ -11924,7 +12196,10 @@ colo=LAX
             .send()
             .await
             .expect("invalid key catalog");
-        assert_eq!(invalid_key_catalog_resp.status(), reqwest::StatusCode::BAD_REQUEST);
+        assert_eq!(
+            invalid_key_catalog_resp.status(),
+            reqwest::StatusCode::BAD_REQUEST
+        );
 
         let token_catalog_resp = client
             .get(format!(
@@ -11939,10 +12214,8 @@ colo=LAX
             .await
             .expect("token catalog");
         assert_eq!(token_catalog_resp.status(), reqwest::StatusCode::OK);
-        let token_catalog: serde_json::Value = token_catalog_resp
-            .json()
-            .await
-            .expect("token catalog json");
+        let token_catalog: serde_json::Value =
+            token_catalog_resp.json().await.expect("token catalog json");
         assert_eq!(
             token_catalog
                 .pointer("/facets/keys/0/value")
@@ -11969,7 +12242,10 @@ colo=LAX
             .send()
             .await
             .expect("filtered token catalog");
-        assert_eq!(filtered_token_catalog_resp.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            filtered_token_catalog_resp.status(),
+            reqwest::StatusCode::OK
+        );
         let filtered_token_catalog: serde_json::Value = filtered_token_catalog_resp
             .json()
             .await
@@ -11998,7 +12274,10 @@ colo=LAX
             .send()
             .await
             .expect("invalid token catalog");
-        assert_eq!(invalid_token_catalog_resp.status(), reqwest::StatusCode::BAD_REQUEST);
+        assert_eq!(
+            invalid_token_catalog_resp.status(),
+            reqwest::StatusCode::BAD_REQUEST
+        );
 
         sqlx::query(
             r#"
@@ -12097,11 +12376,15 @@ colo=LAX
             Some(0)
         );
         assert_eq!(
-            token_recovery_body.get("hasOlder").and_then(|value| value.as_bool()),
+            token_recovery_body
+                .get("hasOlder")
+                .and_then(|value| value.as_bool()),
             Some(false)
         );
         assert_eq!(
-            token_recovery_body.get("hasNewer").and_then(|value| value.as_bool()),
+            token_recovery_body
+                .get("hasNewer")
+                .and_then(|value| value.as_bool()),
             Some(true)
         );
         assert_eq!(
@@ -12148,9 +12431,10 @@ colo=LAX
             spawn_http_search_mock_with_usage(expected_api_key.to_string()).await;
         let upstream = format!("http://{upstream_addr}");
 
-        let proxy = TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
-            .await
-            .expect("proxy created");
+        let proxy =
+            TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
         let token = proxy
             .create_access_token(Some("compound-effect-filters"))
             .await
@@ -12453,8 +12737,16 @@ colo=LAX
                 })
             })
             .expect("inserted admin log");
-        assert!(inserted_admin_log.get("request_body").is_some_and(|value| value.is_null()));
-        assert!(inserted_admin_log.get("response_body").is_some_and(|value| value.is_null()));
+        assert!(
+            inserted_admin_log
+                .get("request_body")
+                .is_some_and(|value| value.is_null())
+        );
+        assert!(
+            inserted_admin_log
+                .get("response_body")
+                .is_some_and(|value| value.is_null())
+        );
 
         let logs_with_bodies_resp = client
             .get(format!(
@@ -12541,8 +12833,16 @@ colo=LAX
                 })
             })
             .expect("inserted key log");
-        assert!(inserted_key_log.get("request_body").is_some_and(|value| value.is_null()));
-        assert!(inserted_key_log.get("response_body").is_some_and(|value| value.is_null()));
+        assert!(
+            inserted_key_log
+                .get("request_body")
+                .is_some_and(|value| value.is_null())
+        );
+        assert!(
+            inserted_key_log
+                .get("response_body")
+                .is_some_and(|value| value.is_null())
+        );
 
         let key_log_detail_resp = client
             .get(format!(
@@ -12697,8 +12997,7 @@ colo=LAX
         );
         assert!(
             success_items.iter().all(|item| {
-                item.get("auth_token_id")
-                    .and_then(|value| value.as_str())
+                item.get("auth_token_id").and_then(|value| value.as_str())
                     != Some("token-backfilled-neutral")
             }),
             "neutral canonical rows must not leak into the success filter"
@@ -12742,8 +13041,7 @@ colo=LAX
         );
         assert!(
             neutral_items.iter().all(|item| {
-                item.get("auth_token_id")
-                    .and_then(|value| value.as_str())
+                item.get("auth_token_id").and_then(|value| value.as_str())
                     != Some("token-backfilled-billable")
             }),
             "billable canonical rows must not leak into the neutral filter"
@@ -12865,13 +13163,12 @@ colo=LAX
             .await
             .expect("open upgraded db pool");
 
-        let created_at = sqlx::query_scalar::<_, i64>(
-            "SELECT created_at FROM api_keys WHERE id = ? LIMIT 1",
-        )
-        .bind("k123")
-        .fetch_one(&upgraded_pool)
-        .await
-        .expect("read created_at");
+        let created_at =
+            sqlx::query_scalar::<_, i64>("SELECT created_at FROM api_keys WHERE id = ? LIMIT 1")
+                .bind("k123")
+                .fetch_one(&upgraded_pool)
+                .await
+                .expect("read created_at");
 
         assert_eq!(created_at, 180);
 
@@ -12928,18 +13225,27 @@ colo=LAX
         let snapshot_json: serde_json::Value =
             serde_json::from_str(snapshot_line).expect("snapshot payload json");
 
-        assert!(snapshot_json.get("summary").is_some(), "summary should exist");
+        assert!(
+            snapshot_json.get("summary").is_some(),
+            "summary should exist"
+        );
         assert!(
             snapshot_json.get("summaryWindows").is_some(),
             "summaryWindows should exist"
         );
-        assert!(snapshot_json.get("siteStatus").is_some(), "siteStatus should exist");
+        assert!(
+            snapshot_json.get("siteStatus").is_some(),
+            "siteStatus should exist"
+        );
         assert!(
             snapshot_json.get("forwardProxy").is_some(),
             "forwardProxy should exist"
         );
         assert!(snapshot_json.get("trend").is_some(), "trend should exist");
-        assert!(snapshot_json.get("hourlyRequestWindow").is_some(), "hourly request window should exist");
+        assert!(
+            snapshot_json.get("hourlyRequestWindow").is_some(),
+            "hourly request window should exist"
+        );
         assert_eq!(
             snapshot_json
                 .pointer("/summaryWindows/month/new_keys")
@@ -13182,7 +13488,9 @@ colo=LAX
         .expect("read migrated request log");
         assert_eq!(request_row.try_get::<i64, _>("id").unwrap(), request_log_id);
         assert_eq!(
-            request_row.try_get::<Option<String>, _>("api_key_id").unwrap(),
+            request_row
+                .try_get::<Option<String>, _>("api_key_id")
+                .unwrap(),
             Some("k-legacy".to_string())
         );
         assert_eq!(
@@ -13693,7 +14001,10 @@ colo=LAX
         .fetch_one(&upgraded_pool)
         .await
         .expect("read api_key_id notnull");
-        assert_eq!(api_key_not_null, 0, "api_key_id should be nullable after migration");
+        assert_eq!(
+            api_key_not_null, 0,
+            "api_key_id should be nullable after migration"
+        );
         assert!(
             !sqlite_column_exists(&upgraded_pool, "request_logs", "legacy_request_kind_key").await,
             "request_logs should not re-add legacy_request_kind_key after rebuild"
@@ -13902,13 +14213,12 @@ colo=LAX
             .await
             .expect("open verify db pool");
 
-        let created_at = sqlx::query_scalar::<_, i64>(
-            "SELECT created_at FROM api_keys WHERE id = ? LIMIT 1",
-        )
-        .bind("k-once")
-        .fetch_one(&verify_pool)
-        .await
-        .expect("read created_at");
+        let created_at =
+            sqlx::query_scalar::<_, i64>("SELECT created_at FROM api_keys WHERE id = ? LIMIT 1")
+                .bind("k-once")
+                .fetch_one(&verify_pool)
+                .await
+                .expect("read created_at");
 
         assert_eq!(
             created_at, 0,
@@ -14243,7 +14553,11 @@ colo=LAX
                 };
                 let payload: serde_json::Value =
                     serde_json::from_str(data).expect("refreshed snapshot payload json");
-                if payload.get("tokenCoverage").and_then(|value| value.as_str()) == Some("error") {
+                if payload
+                    .get("tokenCoverage")
+                    .and_then(|value| value.as_str())
+                    == Some("error")
+                {
                     refreshed_snapshot = Some(payload);
                     break;
                 }
@@ -14426,7 +14740,11 @@ colo=LAX
             .expect("items is array");
         let default_ordered_user_ids: Vec<String> = items
             .iter()
-            .filter_map(|item| item.get("userId").and_then(|value| value.as_str()).map(str::to_string))
+            .filter_map(|item| {
+                item.get("userId")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string)
+            })
             .collect();
         let alice_item = items
             .iter()
@@ -14505,16 +14823,18 @@ colo=LAX
             .await
             .expect("order-only list request");
         assert_eq!(order_only_resp.status(), reqwest::StatusCode::OK);
-        let order_only_body: serde_json::Value = order_only_resp
-            .json()
-            .await
-            .expect("order-only list json");
+        let order_only_body: serde_json::Value =
+            order_only_resp.json().await.expect("order-only list json");
         let order_only_user_ids: Vec<String> = order_only_body
             .get("items")
             .and_then(|value| value.as_array())
             .expect("order-only items array")
             .iter()
-            .filter_map(|item| item.get("userId").and_then(|value| value.as_str()).map(str::to_string))
+            .filter_map(|item| {
+                item.get("userId")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string)
+            })
             .collect();
         assert_eq!(order_only_user_ids, default_ordered_user_ids);
 
@@ -15344,13 +15664,18 @@ colo=LAX
         let client = Client::new();
 
         let list_resp = client
-            .get(format!("http://{}/api/tokens/unbound-usage?page=1&per_page=20", addr))
+            .get(format!(
+                "http://{}/api/tokens/unbound-usage?page=1&per_page=20",
+                addr
+            ))
             .send()
             .await
             .expect("list unbound token usage request");
         assert_eq!(list_resp.status(), reqwest::StatusCode::OK);
-        let list_body: serde_json::Value =
-            list_resp.json().await.expect("list unbound token usage json");
+        let list_body: serde_json::Value = list_resp
+            .json()
+            .await
+            .expect("list unbound token usage json");
         let items = list_body
             .get("items")
             .and_then(|value| value.as_array())
@@ -15359,7 +15684,10 @@ colo=LAX
             .iter()
             .filter_map(|item| item.get("tokenId").and_then(|value| value.as_str()))
             .collect();
-        assert_eq!(list_body.get("total").and_then(|value| value.as_i64()), Some(3));
+        assert_eq!(
+            list_body.get("total").and_then(|value| value.as_i64()),
+            Some(3)
+        );
         assert!(ids.contains(&unbound_primary.id.as_str()));
         assert!(ids.contains(&grouped_unbound.id.as_str()));
         assert!(ids.contains(&never_used_unbound.id.as_str()));
@@ -15375,8 +15703,10 @@ colo=LAX
             .await
             .expect("search unbound token usage request");
         assert_eq!(search_resp.status(), reqwest::StatusCode::OK);
-        let search_body: serde_json::Value =
-            search_resp.json().await.expect("search unbound token usage json");
+        let search_body: serde_json::Value = search_resp
+            .json()
+            .await
+            .expect("search unbound token usage json");
         let search_items = search_body
             .get("items")
             .and_then(|value| value.as_array())
@@ -15404,8 +15734,10 @@ colo=LAX
             .await
             .expect("sort unbound token usage request");
         assert_eq!(sorted_resp.status(), reqwest::StatusCode::OK);
-        let sorted_body: serde_json::Value =
-            sorted_resp.json().await.expect("sort unbound token usage json");
+        let sorted_body: serde_json::Value = sorted_resp
+            .json()
+            .await
+            .expect("sort unbound token usage json");
         let sorted_items = sorted_body
             .get("items")
             .and_then(|value| value.as_array())
@@ -15514,14 +15846,22 @@ colo=LAX
             .await
             .expect("paged unbound token usage request");
         assert_eq!(paged_resp.status(), reqwest::StatusCode::OK);
-        let paged_body: serde_json::Value =
-            paged_resp.json().await.expect("paged unbound token usage json");
+        let paged_body: serde_json::Value = paged_resp
+            .json()
+            .await
+            .expect("paged unbound token usage json");
         let paged_items = paged_body
             .get("items")
             .and_then(|value| value.as_array())
             .expect("paged items array");
-        assert_eq!(paged_body.get("total").and_then(|value| value.as_i64()), Some(3));
-        assert_eq!(paged_body.get("page").and_then(|value| value.as_i64()), Some(2));
+        assert_eq!(
+            paged_body.get("total").and_then(|value| value.as_i64()),
+            Some(3)
+        );
+        assert_eq!(
+            paged_body.get("page").and_then(|value| value.as_i64()),
+            Some(2)
+        );
         assert_eq!(paged_items.len(), 1);
         assert_eq!(
             paged_items[0]
@@ -15540,9 +15880,14 @@ colo=LAX
             .await
             .expect("empty unbound token usage request");
         assert_eq!(empty_resp.status(), reqwest::StatusCode::OK);
-        let empty_body: serde_json::Value =
-            empty_resp.json().await.expect("empty unbound token usage json");
-        assert_eq!(empty_body.get("total").and_then(|value| value.as_i64()), Some(0));
+        let empty_body: serde_json::Value = empty_resp
+            .json()
+            .await
+            .expect("empty unbound token usage json");
+        assert_eq!(
+            empty_body.get("total").and_then(|value| value.as_i64()),
+            Some(0)
+        );
         assert!(
             empty_body
                 .get("items")
@@ -15896,7 +16241,9 @@ colo=LAX
             Some("non_billable")
         );
         assert_eq!(
-            session_delete_option.get("count").and_then(|value| value.as_i64()),
+            session_delete_option
+                .get("count")
+                .and_then(|value| value.as_i64()),
             Some(1)
         );
         let page_search_log = items
@@ -15982,8 +16329,10 @@ colo=LAX
             .await
             .expect("neutral token logs page request");
         assert_eq!(neutral_page_resp.status(), reqwest::StatusCode::OK);
-        let neutral_page_body: serde_json::Value =
-            neutral_page_resp.json().await.expect("neutral token logs page json");
+        let neutral_page_body: serde_json::Value = neutral_page_resp
+            .json()
+            .await
+            .expect("neutral token logs page json");
         let neutral_items = neutral_page_body
             .get("items")
             .and_then(|value| value.as_array())
@@ -15991,7 +16340,11 @@ colo=LAX
         assert_eq!(neutral_items.len(), 3);
         let neutral_kinds = neutral_items
             .iter()
-            .filter_map(|value| value.get("request_kind_key").and_then(|inner| inner.as_str()))
+            .filter_map(|value| {
+                value
+                    .get("request_kind_key")
+                    .and_then(|inner| inner.as_str())
+            })
             .collect::<Vec<_>>();
         assert!(neutral_kinds.contains(&"mcp:notifications/initialized"));
         assert!(neutral_kinds.contains(&"mcp:session-delete-unsupported"));
@@ -16016,21 +16369,19 @@ colo=LAX
             .expect("neutral result token logs items");
         assert_eq!(neutral_result_items.len(), 3);
         assert!(neutral_result_items.iter().any(|value| {
-            value
-                .get("request_kind_key")
-                .and_then(|kind| kind.as_str())
+            value.get("request_kind_key").and_then(|kind| kind.as_str())
                 == Some("mcp:session-delete-unsupported")
         }));
         assert!(
             neutral_result_items
                 .iter()
                 .find(|value| {
-                    value
-                        .get("request_kind_key")
-                        .and_then(|kind| kind.as_str())
+                    value.get("request_kind_key").and_then(|kind| kind.as_str())
                         == Some("mcp:session-delete-unsupported")
                 })
-                .and_then(|value| value.get("result_status").and_then(|status| status.as_str()))
+                .and_then(|value| value
+                    .get("result_status")
+                    .and_then(|status| status.as_str()))
                 == Some("neutral")
         );
 
@@ -16052,9 +16403,7 @@ colo=LAX
             .and_then(|value| value.as_array())
             .expect("error result token logs items");
         assert!(error_result_items.iter().all(|value| {
-            value
-                .get("request_kind_key")
-                .and_then(|kind| kind.as_str())
+            value.get("request_kind_key").and_then(|kind| kind.as_str())
                 != Some("mcp:session-delete-unsupported")
         }));
 
@@ -16324,8 +16673,16 @@ colo=LAX
                 })
             })
             .expect("inserted token page item");
-        assert!(page_item.get("request_body").is_some_and(|value| value.is_null()));
-        assert!(page_item.get("response_body").is_some_and(|value| value.is_null()));
+        assert!(
+            page_item
+                .get("request_body")
+                .is_some_and(|value| value.is_null())
+        );
+        assert!(
+            page_item
+                .get("response_body")
+                .is_some_and(|value| value.is_null())
+        );
 
         let detail_resp = client
             .get(format!(
@@ -16436,8 +16793,16 @@ colo=LAX
             .expect("token log detail");
         assert_eq!(detail_resp.status(), reqwest::StatusCode::OK);
         let detail_body: serde_json::Value = detail_resp.json().await.expect("token detail json");
-        assert!(detail_body.get("request_body").is_some_and(|value| value.is_null()));
-        assert!(detail_body.get("response_body").is_some_and(|value| value.is_null()));
+        assert!(
+            detail_body
+                .get("request_body")
+                .is_some_and(|value| value.is_null())
+        );
+        assert!(
+            detail_body
+                .get("response_body")
+                .is_some_and(|value| value.is_null())
+        );
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -16569,7 +16934,10 @@ colo=LAX
             .send()
             .await
             .expect("patch admin registration invalid admin request");
-        assert_eq!(invalid_admin_resp.status(), reqwest::StatusCode::BAD_REQUEST);
+        assert_eq!(
+            invalid_admin_resp.status(),
+            reqwest::StatusCode::BAD_REQUEST
+        );
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -19063,20 +19431,18 @@ colo=LAX
             .expect("request_id should exist")
             .to_string();
 
-        let request_key_id: String = sqlx::query_scalar(
-            "SELECT key_id FROM research_requests WHERE request_id = ? LIMIT 1",
-        )
-        .bind(&request_id)
-        .fetch_one(&pool)
-        .await
-        .expect("load research request affinity");
-        let other_key_id: String = sqlx::query_scalar(
-            "SELECT id FROM api_keys WHERE id != ? ORDER BY id ASC LIMIT 1",
-        )
-        .bind(&request_key_id)
-        .fetch_one(&pool)
-        .await
-        .expect("load alternate key id");
+        let request_key_id: String =
+            sqlx::query_scalar("SELECT key_id FROM research_requests WHERE request_id = ? LIMIT 1")
+                .bind(&request_id)
+                .fetch_one(&pool)
+                .await
+                .expect("load research request affinity");
+        let other_key_id: String =
+            sqlx::query_scalar("SELECT id FROM api_keys WHERE id != ? ORDER BY id ASC LIMIT 1")
+                .bind(&request_key_id)
+                .fetch_one(&pool)
+                .await
+                .expect("load alternate key id");
 
         let now = Utc::now().timestamp();
         sqlx::query(
@@ -19610,9 +19976,12 @@ colo=LAX
         let db_str = db_path.to_string_lossy().to_string();
 
         let hits = Arc::new(AtomicUsize::new(0));
-        let upstream_addr =
-            spawn_counted_fake_forward_proxy(StatusCode::OK, Duration::from_millis(0), hits.clone())
-                .await;
+        let upstream_addr = spawn_counted_fake_forward_proxy(
+            StatusCode::OK,
+            Duration::from_millis(0),
+            hits.clone(),
+        )
+        .await;
         let upstream = format!("http://{}", upstream_addr);
 
         let proxy = TavilyProxy::with_endpoint(
@@ -19627,7 +19996,8 @@ colo=LAX
             .await
             .expect("create access token");
 
-        let proxy_addr = spawn_proxy_server(proxy.clone(), "https://api.tavily.com".to_string()).await;
+        let proxy_addr =
+            spawn_proxy_server(proxy.clone(), "https://api.tavily.com".to_string()).await;
         let client = Client::new();
         let resp = client
             .post(format!(
@@ -19643,7 +20013,11 @@ colo=LAX
 
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
         assert_eq!(resp.text().await.expect("plain text body"), "Not Found");
-        assert_eq!(hits.load(Ordering::SeqCst), 0, "subpath reject must not hit upstream");
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            0,
+            "subpath reject must not hit upstream"
+        );
 
         let latest_token_log = proxy
             .token_recent_logs(&access_token.id, 1, None)
@@ -19698,17 +20072,23 @@ colo=LAX
         .await
         .expect("request log row");
         let request_log_id: i64 = request_row.try_get("id").expect("request log id");
-        let request_api_key_id: Option<String> =
-            request_row.try_get("api_key_id").expect("request api key id");
+        let request_api_key_id: Option<String> = request_row
+            .try_get("api_key_id")
+            .expect("request api key id");
         let request_auth_token_id: Option<String> = request_row
             .try_get("auth_token_id")
             .expect("request auth token id");
         let request_body: Vec<u8> = request_row.try_get("request_body").expect("request body");
         let response_body: Vec<u8> = request_row.try_get("response_body").expect("response body");
         assert_eq!(request_api_key_id, None);
-        assert_eq!(request_auth_token_id.as_deref(), Some(access_token.id.as_str()));
         assert_eq!(
-            request_row.try_get::<Option<i64>, _>("status_code").unwrap(),
+            request_auth_token_id.as_deref(),
+            Some(access_token.id.as_str())
+        );
+        assert_eq!(
+            request_row
+                .try_get::<Option<i64>, _>("status_code")
+                .unwrap(),
             Some(404)
         );
         assert_eq!(
@@ -19722,11 +20102,15 @@ colo=LAX
             "error"
         );
         assert_eq!(
-            request_row.try_get::<String, _>("request_kind_key").unwrap(),
+            request_row
+                .try_get::<String, _>("request_kind_key")
+                .unwrap(),
             "mcp:unsupported-path"
         );
         assert_eq!(
-            request_row.try_get::<String, _>("request_kind_label").unwrap(),
+            request_row
+                .try_get::<String, _>("request_kind_label")
+                .unwrap(),
             "MCP | unsupported path"
         );
         assert_eq!(
@@ -19755,7 +20139,9 @@ colo=LAX
         );
         assert_eq!(response_body, b"Not Found");
         assert_eq!(
-            request_row.try_get::<String, _>("forwarded_headers").unwrap(),
+            request_row
+                .try_get::<String, _>("forwarded_headers")
+                .unwrap(),
             "[]"
         );
         assert_eq!(
@@ -19805,7 +20191,10 @@ colo=LAX
             .peek_token_quota(&access_token.id)
             .await
             .expect("peek token quota");
-        assert_eq!(verdict.hourly_used, 0, "subpath rejects must not charge business quota");
+        assert_eq!(
+            verdict.hourly_used, 0,
+            "subpath rejects must not charge business quota"
+        );
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -19816,9 +20205,12 @@ colo=LAX
         let db_str = db_path.to_string_lossy().to_string();
 
         let hits = Arc::new(AtomicUsize::new(0));
-        let upstream_addr =
-            spawn_counted_fake_forward_proxy(StatusCode::OK, Duration::from_millis(0), hits.clone())
-                .await;
+        let upstream_addr = spawn_counted_fake_forward_proxy(
+            StatusCode::OK,
+            Duration::from_millis(0),
+            hits.clone(),
+        )
+        .await;
         let upstream = format!("http://{}", upstream_addr);
 
         let proxy = TavilyProxy::with_endpoint(
@@ -19865,7 +20257,11 @@ colo=LAX
                 .and_then(|value| value.as_str()),
             Some("invalid or disabled token")
         );
-        assert_eq!(hits.load(Ordering::SeqCst), 0, "401 rejects must not hit upstream");
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            0,
+            "401 rejects must not hit upstream"
+        );
 
         let pool = connect_sqlite_test_pool(&db_str).await;
         let request_log_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM request_logs")
@@ -19888,9 +20284,12 @@ colo=LAX
         let db_str = db_path.to_string_lossy().to_string();
 
         let hits = Arc::new(AtomicUsize::new(0));
-        let upstream_addr =
-            spawn_counted_fake_forward_proxy(StatusCode::OK, Duration::from_millis(0), hits.clone())
-                .await;
+        let upstream_addr = spawn_counted_fake_forward_proxy(
+            StatusCode::OK,
+            Duration::from_millis(0),
+            hits.clone(),
+        )
+        .await;
         let upstream = format!("http://{}", upstream_addr);
 
         let proxy = TavilyProxy::with_endpoint(
@@ -19900,8 +20299,8 @@ colo=LAX
         )
         .await
         .expect("proxy created");
-        let proxy_addr = spawn_proxy_server_with_dev(proxy, "https://api.tavily.com".to_string(), true)
-            .await;
+        let proxy_addr =
+            spawn_proxy_server_with_dev(proxy, "https://api.tavily.com".to_string(), true).await;
         let client = Client::new();
 
         let resp = client
@@ -19920,7 +20319,11 @@ colo=LAX
                 .and_then(|value| value.as_str()),
             Some("explicit_token_required")
         );
-        assert_eq!(hits.load(Ordering::SeqCst), 0, "401 rejects must not hit upstream");
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            0,
+            "401 rejects must not hit upstream"
+        );
 
         let pool = connect_sqlite_test_pool(&db_str).await;
         let request_log_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM request_logs")
@@ -19943,9 +20346,12 @@ colo=LAX
         let db_str = db_path.to_string_lossy().to_string();
 
         let hits = Arc::new(AtomicUsize::new(0));
-        let upstream_addr =
-            spawn_counted_fake_forward_proxy(StatusCode::OK, Duration::from_millis(0), hits.clone())
-                .await;
+        let upstream_addr = spawn_counted_fake_forward_proxy(
+            StatusCode::OK,
+            Duration::from_millis(0),
+            hits.clone(),
+        )
+        .await;
         let upstream = format!("http://{}", upstream_addr);
 
         let proxy = TavilyProxy::with_endpoint(
@@ -19960,11 +20366,15 @@ colo=LAX
             .await
             .expect("create access token");
 
-        let proxy_addr = spawn_proxy_server(proxy.clone(), "https://api.tavily.com".to_string()).await;
+        let proxy_addr =
+            spawn_proxy_server(proxy.clone(), "https://api.tavily.com".to_string()).await;
         let client = Client::new();
 
         let root_resp = client
-            .get(format!("http://{}/mcp?tavilyApiKey={}", proxy_addr, access_token.token))
+            .get(format!(
+                "http://{}/mcp?tavilyApiKey={}",
+                proxy_addr, access_token.token
+            ))
             .header("Accept", "text/event-stream")
             .send()
             .await
@@ -19981,8 +20391,15 @@ colo=LAX
             .await
             .expect("subpath sse request");
         assert_eq!(subpath_resp.status(), StatusCode::NOT_FOUND);
-        assert_eq!(subpath_resp.text().await.expect("subpath body"), "Not Found");
-        assert_eq!(hits.load(Ordering::SeqCst), 0, "SSE guard paths must stay local");
+        assert_eq!(
+            subpath_resp.text().await.expect("subpath body"),
+            "Not Found"
+        );
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            0,
+            "SSE guard paths must stay local"
+        );
 
         let latest_token_log = proxy
             .token_recent_logs(&access_token.id, 1, None)
@@ -20145,7 +20562,11 @@ colo=LAX
             delete_body.get("message").and_then(|value| value.as_str()),
             Some("Method Not Allowed: Session termination not supported")
         );
-        assert_eq!(hits.load(Ordering::SeqCst), 2, "delete must still hit upstream");
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            2,
+            "delete must still hit upstream"
+        );
 
         let latest_token_log = proxy
             .token_recent_logs(&access_token.id, 1, None)
@@ -21778,7 +22199,9 @@ colo=LAX
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let upstream_addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
-            axum::serve(listener, app.into_make_service()).await.unwrap();
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
         });
         let upstream = format!("http://{}", upstream_addr);
 
@@ -21888,7 +22311,9 @@ colo=LAX
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let upstream_addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
-            axum::serve(listener, app.into_make_service()).await.unwrap();
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
         });
         let upstream = format!("http://{}", upstream_addr);
 
@@ -23002,7 +23427,10 @@ colo=LAX
         assert_eq!(recorded.len(), 2, "expected initialize + tools/list");
         assert_eq!(recorded[0].method, "initialize");
         assert_eq!(recorded[0].protocol_version.as_deref(), Some("2025-03-26"));
-        assert!(!recorded[0].leaked_forwarded, "initialize should not leak forwarded headers");
+        assert!(
+            !recorded[0].leaked_forwarded,
+            "initialize should not leak forwarded headers"
+        );
         assert_eq!(
             recorded[0].user_agent.as_deref(),
             Some("tavily-hikari-mcp-proxy/1.0")
@@ -23011,7 +23439,10 @@ colo=LAX
         assert_eq!(recorded[1].session_id.as_deref(), Some("session-123"));
         assert_eq!(recorded[1].protocol_version.as_deref(), Some("2025-03-26"));
         assert_eq!(recorded[1].last_event_id.as_deref(), Some("resume-42"));
-        assert!(!recorded[1].leaked_forwarded, "tools/list should not leak forwarded headers");
+        assert!(
+            !recorded[1].leaked_forwarded,
+            "tools/list should not leak forwarded headers"
+        );
         assert_eq!(
             recorded[1].user_agent.as_deref(),
             Some("tavily-hikari-mcp-proxy/1.0")
@@ -23047,7 +23478,10 @@ colo=LAX
         let proxy_addr = spawn_proxy_server(proxy.clone(), upstream.clone()).await;
         let client = Client::new();
 
-        let owner_url = format!("http://{}/mcp?tavilyApiKey={}", proxy_addr, owner_token.token);
+        let owner_url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, owner_token.token
+        );
         let initialize = client
             .post(&owner_url)
             .header("content-type", "application/json")
@@ -23072,7 +23506,10 @@ colo=LAX
             .expect("proxy session id")
             .to_string();
 
-        let other_url = format!("http://{}/mcp?tavilyApiKey={}", proxy_addr, other_token.token);
+        let other_url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, other_token.token
+        );
         let rejected = client
             .post(&other_url)
             .header("content-type", "application/json")
@@ -23098,7 +23535,11 @@ colo=LAX
             .lock()
             .expect("session header calls lock poisoned")
             .clone();
-        assert_eq!(recorded.len(), 1, "cross-token reuse should be rejected locally");
+        assert_eq!(
+            recorded.len(),
+            1,
+            "cross-token reuse should be rejected locally"
+        );
         assert_eq!(recorded[0].method, "initialize");
 
         let _ = std::fs::remove_file(db_path);
@@ -23125,7 +23566,10 @@ colo=LAX
 
         let proxy_addr = spawn_proxy_server(proxy.clone(), upstream.clone()).await;
         let client = Client::new();
-        let url = format!("http://{}/mcp?tavilyApiKey={}", proxy_addr, access_token.token);
+        let url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, access_token.token
+        );
 
         let initialize = client
             .post(&url)
@@ -23236,7 +23680,10 @@ colo=LAX
 
         let proxy_addr = spawn_proxy_server(proxy.clone(), upstream.clone()).await;
         let client = Client::new();
-        let url = format!("http://{}/mcp?tavilyApiKey={}", proxy_addr, access_token.token);
+        let url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, access_token.token
+        );
 
         let initialize = client
             .post(&url)
@@ -23309,7 +23756,11 @@ colo=LAX
             .lock()
             .expect("session header calls lock poisoned")
             .clone();
-        assert_eq!(recorded.len(), 2, "exhausted pinned key should keep the session usable");
+        assert_eq!(
+            recorded.len(),
+            2,
+            "exhausted pinned key should keep the session usable"
+        );
         assert_eq!(recorded[0].method, "initialize");
         assert_eq!(recorded[1].method, "tools/list");
         assert_eq!(recorded[1].session_id.as_deref(), Some("session-123"));
@@ -23345,7 +23796,10 @@ colo=LAX
 
         let proxy_addr = spawn_proxy_server(proxy.clone(), upstream.clone()).await;
         let client = Client::new();
-        let url = format!("http://{}/mcp?tavilyApiKey={}", proxy_addr, access_token.token);
+        let url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, access_token.token
+        );
 
         let first_initialize = client
             .post(&url)
@@ -23423,7 +23877,10 @@ colo=LAX
         .fetch_one(&pool)
         .await
         .expect("new key id");
-        assert_ne!(old_key_id, new_key_id, "new initialize should select a different upstream key");
+        assert_ne!(
+            old_key_id, new_key_id,
+            "new initialize should select a different upstream key"
+        );
 
         let stale_follow_up = client
             .post(&url)
@@ -23450,7 +23907,11 @@ colo=LAX
             .lock()
             .expect("session header calls lock poisoned")
             .clone();
-        assert_eq!(recorded.len(), 2, "stale session should be rejected locally after rebind");
+        assert_eq!(
+            recorded.len(),
+            2,
+            "stale session should be rejected locally after rebind"
+        );
         assert_eq!(recorded[0].method, "initialize");
         assert_eq!(recorded[1].method, "initialize");
         assert_ne!(recorded[0].tavily_api_key, recorded[1].tavily_api_key);
@@ -23600,7 +24061,10 @@ colo=LAX
         .fetch_one(&pool)
         .await
         .expect("second key id");
-        assert_ne!(first_key_id, second_key_id, "affinity pool should spread the first two sessions");
+        assert_ne!(
+            first_key_id, second_key_id,
+            "affinity pool should spread the first two sessions"
+        );
 
         proxy
             .seed_user_primary_api_key_affinity_for_test(&user.user_id, &first_key_id)
@@ -23615,7 +24079,10 @@ colo=LAX
             .acquire_key_id_for_test(Some(&first_token.id))
             .await
             .expect("rebind primary key");
-        assert_ne!(rebound, first_key_id, "rebind should move away from the disabled key");
+        assert_ne!(
+            rebound, first_key_id,
+            "rebind should move away from the disabled key"
+        );
 
         let stale_follow_up = client
             .post(&first_url)
@@ -23667,7 +24134,10 @@ colo=LAX
         .fetch_one(&pool)
         .await
         .expect("second revoke reason");
-        assert_eq!(first_revoke_reason.as_deref(), Some("primary_api_key_rebound"));
+        assert_eq!(
+            first_revoke_reason.as_deref(),
+            Some("primary_api_key_rebound")
+        );
         assert_eq!(second_revoke_reason, None);
 
         let recorded = calls
@@ -23776,7 +24246,9 @@ colo=LAX
             right_digest.update(right_id.as_bytes());
             let right_score: [u8; 32] = right_digest.finalize().into();
 
-            right_score.cmp(&left_score).then_with(|| left_id.cmp(right_id))
+            right_score
+                .cmp(&left_score)
+                .then_with(|| left_id.cmp(right_id))
         });
         let ranked_secrets = ranked_keys
             .iter()
@@ -23886,19 +24358,36 @@ colo=LAX
             .lock()
             .expect("session header calls lock poisoned")
             .clone();
-        assert_eq!(recorded.len(), 4, "expected two initializes, one existing-session call, and one new initialize");
+        assert_eq!(
+            recorded.len(),
+            4,
+            "expected two initializes, one existing-session call, and one new initialize"
+        );
         assert_eq!(recorded[0].method, "initialize");
         assert_eq!(recorded[1].method, "initialize");
         assert_eq!(recorded[2].method, "tools/list");
         assert_eq!(recorded[3].method, "initialize");
-        assert_eq!(recorded[0].tavily_api_key.as_deref(), Some(top_one_key.as_str()));
-        assert_eq!(recorded[1].tavily_api_key.as_deref(), Some(second_pool_key.as_str()));
-        assert_eq!(recorded[2].tavily_api_key.as_deref(), Some(second_pool_key.as_str()));
-        assert_eq!(recorded[3].tavily_api_key.as_deref(), Some(top_one_key.as_str()));
+        assert_eq!(
+            recorded[0].tavily_api_key.as_deref(),
+            Some(top_one_key.as_str())
+        );
+        assert_eq!(
+            recorded[1].tavily_api_key.as_deref(),
+            Some(second_pool_key.as_str())
+        );
+        assert_eq!(
+            recorded[2].tavily_api_key.as_deref(),
+            Some(second_pool_key.as_str())
+        );
+        assert_eq!(
+            recorded[3].tavily_api_key.as_deref(),
+            Some(top_one_key.as_str())
+        );
         assert!(
-            recorded[..2]
-                .iter()
-                .all(|call| call.tavily_api_key.as_ref().is_some_and(|key| top_two_keys.contains(key))),
+            recorded[..2].iter().all(|call| call
+                .tavily_api_key
+                .as_ref()
+                .is_some_and(|key| top_two_keys.contains(key))),
             "new sessions should stay inside the stable top-2 pool"
         );
 
@@ -23974,7 +24463,9 @@ colo=LAX
             right_digest.update(right_id.as_bytes());
             let right_score: [u8; 32] = right_digest.finalize().into();
 
-            right_score.cmp(&left_score).then_with(|| left_id.cmp(right_id))
+            right_score
+                .cmp(&left_score)
+                .then_with(|| left_id.cmp(right_id))
         });
         let top_two_key_ids = ranked_keys
             .iter()
@@ -23989,7 +24480,10 @@ colo=LAX
 
         let proxy_addr = spawn_proxy_server(proxy.clone(), upstream.clone()).await;
         let client = Client::new();
-        let url = format!("http://{}/mcp?tavilyApiKey={}", proxy_addr, access_token.token);
+        let url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, access_token.token
+        );
         let request = |id: &str| {
             client
                 .post(&url)
@@ -24029,9 +24523,7 @@ colo=LAX
             .clone();
         assert_eq!(recorded.len(), 2, "expected two initialize calls");
         assert!(
-            recorded
-                .iter()
-                .all(|call| call.method == "initialize"),
+            recorded.iter().all(|call| call.method == "initialize"),
             "only initialize calls should be recorded",
         );
         assert!(
@@ -24043,8 +24535,7 @@ colo=LAX
             "concurrent initializes should stay inside the stable top-2 pool",
         );
         assert_ne!(
-            recorded[0].tavily_api_key,
-            recorded[1].tavily_api_key,
+            recorded[0].tavily_api_key, recorded[1].tavily_api_key,
             "serialized initialize scheduling should spread concurrent sessions across pool keys",
         );
 
@@ -24077,9 +24568,10 @@ colo=LAX
         let db_str = db_path.to_string_lossy().to_string();
         let upstream_addr = spawn_forward_proxy_probe_upstream().await;
         let upstream = format!("http://{}/mcp", upstream_addr);
-        let proxy = TavilyProxy::with_endpoint(vec!["tvly-mcp-session-gc".to_string()], &upstream, &db_str)
-            .await
-            .expect("proxy created");
+        let proxy =
+            TavilyProxy::with_endpoint(vec!["tvly-mcp-session-gc".to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
         let access_token = proxy
             .create_access_token(Some("mcp-session-gc"))
             .await
@@ -24100,20 +24592,8 @@ colo=LAX
         let now = Utc::now().timestamp();
         let retention_secs = 7 * 24 * 60 * 60;
 
-        for (
-            proxy_session_id,
-            expires_at,
-            revoked_at,
-            revoke_reason,
-            updated_at,
-        ) in [
-            (
-                "session-expired",
-                now - 60,
-                None,
-                None,
-                now - 60,
-            ),
+        for (proxy_session_id, expires_at, revoked_at, revoke_reason, updated_at) in [
+            ("session-expired", now - 60, None, None, now - 60),
             (
                 "session-revoked-old",
                 now + 3_600,
@@ -24121,13 +24601,7 @@ colo=LAX
                 Some("manual_cleanup"),
                 now - retention_secs - 1,
             ),
-            (
-                "session-active",
-                now + 3_600,
-                None,
-                None,
-                now,
-            ),
+            ("session-active", now + 3_600, None, None, now),
         ] {
             sqlx::query(
                 r#"INSERT INTO mcp_sessions (
@@ -24182,11 +24656,8 @@ colo=LAX
         let db_str = db_path.to_string_lossy().to_string();
         let expected_api_key = "tvly-mcp-follow-up-retry-after";
         let (upstream_addr, calls) =
-            spawn_mock_mcp_upstream_for_session_retry_after_once(
-                expected_api_key.to_string(),
-                1,
-            )
-            .await;
+            spawn_mock_mcp_upstream_for_session_retry_after_once(expected_api_key.to_string(), 1)
+                .await;
         let upstream = format!("http://{}", upstream_addr);
 
         let proxy =
@@ -24261,17 +24732,18 @@ colo=LAX
             .await
             .expect("tools/list request");
         assert_eq!(tools_list.status(), StatusCode::OK);
-        let tools_list_body: serde_json::Value = tools_list
-            .json()
-            .await
-            .expect("decode tools/list response");
+        let tools_list_body: serde_json::Value =
+            tools_list.json().await.expect("decode tools/list response");
         assert_eq!(
             tools_list_body["result"]["tools"].as_array().map(Vec::len),
             Some(1),
             "follow-up request should succeed after one Retry-After retry",
         );
 
-        let recorded = calls.lock().expect("retry-after calls lock poisoned").clone();
+        let recorded = calls
+            .lock()
+            .expect("retry-after calls lock poisoned")
+            .clone();
         let tools_list_calls = recorded
             .iter()
             .filter(|call| call.method == "tools/list")
@@ -24433,7 +24905,10 @@ colo=LAX
                 .send()
         };
 
-        let (first, second) = tokio::join!(send_tools_list("tools-serialize-1"), send_tools_list("tools-serialize-2"));
+        let (first, second) = tokio::join!(
+            send_tools_list("tools-serialize-1"),
+            send_tools_list("tools-serialize-2")
+        );
         assert_eq!(
             first.expect("first serialized tools/list").status(),
             StatusCode::OK
@@ -24554,7 +25029,11 @@ colo=LAX
             .lock()
             .expect("session header calls lock poisoned")
             .clone();
-        assert_eq!(recorded.len(), 3, "expected initialize + initialized + tools/list");
+        assert_eq!(
+            recorded.len(),
+            3,
+            "expected initialize + initialized + tools/list"
+        );
         assert_eq!(recorded[0].method, "initialize");
         assert_eq!(recorded[1].method, "notifications/initialized");
         assert_eq!(recorded[1].session_id.as_deref(), Some("session-123"));
@@ -24564,6 +25043,346 @@ colo=LAX
         assert_eq!(recorded[2].session_id.as_deref(), Some("session-123"));
         assert_eq!(recorded[2].protocol_version.as_deref(), Some("2025-03-26"));
         assert_eq!(recorded[2].last_event_id, None);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_initialize_rebalance_percent_100_uses_local_facade() {
+        let db_path = temp_db_path("mcp-rebalance-local-init");
+        let db_str = db_path.to_string_lossy().to_string();
+        let expected_api_key = "tvly-rebalance-local-init";
+        let seen: RecordedRebalanceGatewayCalls = Arc::new(Mutex::new(Vec::new()));
+        let upstream_addr =
+            spawn_rebalance_gateway_mock(expected_api_key.to_string(), seen.clone()).await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy =
+            TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
+        proxy
+            .set_system_settings(&tavily_hikari::SystemSettings {
+                mcp_session_affinity_key_count: 5,
+                rebalance_mcp_enabled: true,
+                rebalance_mcp_session_percent: 100,
+            })
+            .await
+            .expect("enable rebalance mcp");
+        let access_token = proxy
+            .create_access_token(Some("mcp-rebalance-local-init"))
+            .await
+            .expect("create access token");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), upstream.clone()).await;
+        let url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, access_token.token
+        );
+        let client = Client::new();
+
+        let initialize = client
+            .post(&url)
+            .header("accept", "application/json, text/event-stream")
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": "rebalance-init",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {},
+                    "clientInfo": { "name": "browser-probe", "version": "0.1.0" }
+                }
+            }))
+            .send()
+            .await
+            .expect("initialize request");
+        assert_eq!(initialize.status(), StatusCode::OK);
+        let proxy_session_id = initialize
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("initialize response should expose mcp-session-id")
+            .to_string();
+
+        let tools_list = client
+            .post(&url)
+            .header("accept", "application/json, text/event-stream")
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .header("mcp-session-id", proxy_session_id.as_str())
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": "rebalance-tools-list",
+                "method": "tools/list"
+            }))
+            .send()
+            .await
+            .expect("tools/list request");
+        assert_eq!(tools_list.status(), StatusCode::OK);
+        let body: Value = tools_list.json().await.expect("decode tools/list response");
+        assert_eq!(
+            body["result"]["tools"].as_array().map(Vec::len),
+            Some(5),
+            "rebalance tools/list should be served locally with five Tavily tools"
+        );
+
+        let recorded = seen
+            .lock()
+            .expect("rebalance gateway calls lock poisoned")
+            .clone();
+        assert!(
+            recorded.is_empty(),
+            "initialize + tools/list should stay local under rebalance mode"
+        );
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let row = sqlx::query(
+            r#"
+            SELECT gateway_mode, experiment_variant, upstream_session_id, upstream_key_id
+            FROM mcp_sessions
+            WHERE proxy_session_id = ?
+            LIMIT 1
+            "#,
+        )
+        .bind(&proxy_session_id)
+        .fetch_one(&pool)
+        .await
+        .expect("fetch rebalance mcp session");
+        assert_eq!(
+            row.try_get::<String, _>("gateway_mode").unwrap(),
+            tavily_hikari::MCP_GATEWAY_MODE_REBALANCE
+        );
+        assert_eq!(
+            row.try_get::<String, _>("experiment_variant").unwrap(),
+            tavily_hikari::MCP_EXPERIMENT_VARIANT_REBALANCE
+        );
+        assert_eq!(
+            row.try_get::<Option<String>, _>("upstream_session_id")
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            row.try_get::<Option<String>, _>("upstream_key_id").unwrap(),
+            None
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_rebalance_tools_call_search_uses_http_upstream_and_strict_headers() {
+        let db_path = temp_db_path("mcp-rebalance-search-http");
+        let db_str = db_path.to_string_lossy().to_string();
+        let expected_api_key = "tvly-rebalance-search-http";
+        let seen: RecordedRebalanceGatewayCalls = Arc::new(Mutex::new(Vec::new()));
+        let upstream_addr =
+            spawn_rebalance_gateway_mock(expected_api_key.to_string(), seen.clone()).await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy =
+            TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
+        proxy
+            .set_system_settings(&tavily_hikari::SystemSettings {
+                mcp_session_affinity_key_count: 5,
+                rebalance_mcp_enabled: true,
+                rebalance_mcp_session_percent: 100,
+            })
+            .await
+            .expect("enable rebalance mcp");
+        let access_token = proxy
+            .create_access_token(Some("mcp-rebalance-search-http"))
+            .await
+            .expect("create access token");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), upstream.clone()).await;
+        let url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, access_token.token
+        );
+        let client = Client::new();
+
+        let initialize = client
+            .post(&url)
+            .header("accept", "application/json, text/event-stream")
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": "rebalance-search-init",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {},
+                    "clientInfo": { "name": "browser-probe", "version": "0.1.0" }
+                }
+            }))
+            .send()
+            .await
+            .expect("initialize request");
+        let proxy_session_id = initialize
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("initialize response should expose mcp-session-id")
+            .to_string();
+
+        let search = client
+            .post(&url)
+            .header("accept", "application/json, text/event-stream")
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .header("mcp-session-id", proxy_session_id.as_str())
+            .header("x-forwarded-for", "198.51.100.1")
+            .header("cookie", "session=should-not-leak")
+            .header("sec-fetch-mode", "cors")
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": "rebalance-search-call",
+                "method": "tools/call",
+                "params": {
+                    "name": "tavily_search",
+                    "arguments": {
+                        "query": "rebalance strict header test",
+                        "search_depth": "basic"
+                    }
+                }
+            }))
+            .send()
+            .await
+            .expect("rebalance search request");
+        assert_eq!(search.status(), StatusCode::OK);
+        let body: Value = search.json().await.expect("decode rebalance search body");
+        assert_eq!(
+            body["result"]["structuredContent"]["usage"]["credits"].as_i64(),
+            Some(1)
+        );
+
+        let recorded = seen
+            .lock()
+            .expect("rebalance gateway calls lock poisoned")
+            .clone();
+        assert_eq!(
+            recorded.iter().filter(|call| call.path == "/mcp").count(),
+            0,
+            "rebalance search should not hit upstream /mcp"
+        );
+        let search_calls = recorded
+            .iter()
+            .filter(|call| call.path == "/search")
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(search_calls.len(), 1, "expected one upstream /search call");
+        let search_call = &search_calls[0];
+        assert!(
+            !search_call.headers.contains_key("mcp-session-id"),
+            "rebalance HTTP call must not forward mcp-session-id"
+        );
+        assert!(
+            !search_call.headers.contains_key("x-forwarded-for"),
+            "rebalance HTTP call must not leak x-forwarded-for"
+        );
+        assert!(
+            !search_call.headers.contains_key("cookie"),
+            "rebalance HTTP call must not leak cookies"
+        );
+        assert!(
+            !search_call.headers.contains_key("sec-fetch-mode"),
+            "rebalance HTTP call must not leak browser sec-* headers"
+        );
+        assert!(
+            search_call.headers.contains_key("authorization"),
+            "rebalance HTTP call must send Authorization"
+        );
+        assert!(
+            search_call.headers.contains_key("accept"),
+            "rebalance HTTP call must keep Accept"
+        );
+        assert!(
+            search_call.headers.contains_key("content-type"),
+            "rebalance HTTP call must keep Content-Type"
+        );
+        assert!(
+            search_call.headers.contains_key("user-agent"),
+            "rebalance HTTP call must inject a dedicated User-Agent"
+        );
+        assert_eq!(
+            search_call.body.get("query").and_then(Value::as_str),
+            Some("rebalance strict header test"),
+            "rebalance HTTP call should forward the Tavily tool payload as JSON"
+        );
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let request_row = sqlx::query(
+            r#"
+            SELECT gateway_mode, experiment_variant, proxy_session_id, upstream_operation
+            FROM request_logs
+            WHERE path = '/mcp'
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("fetch latest request log");
+        assert_eq!(
+            request_row.try_get::<String, _>("gateway_mode").unwrap(),
+            tavily_hikari::MCP_GATEWAY_MODE_REBALANCE
+        );
+        assert_eq!(
+            request_row
+                .try_get::<String, _>("experiment_variant")
+                .unwrap(),
+            tavily_hikari::MCP_EXPERIMENT_VARIANT_REBALANCE
+        );
+        assert_eq!(
+            request_row
+                .try_get::<String, _>("proxy_session_id")
+                .unwrap(),
+            proxy_session_id
+        );
+        assert_eq!(
+            request_row
+                .try_get::<String, _>("upstream_operation")
+                .unwrap(),
+            "http_search"
+        );
+
+        let token_row = sqlx::query(
+            r#"
+            SELECT gateway_mode, experiment_variant, proxy_session_id, upstream_operation
+            FROM auth_token_logs
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("fetch latest token log");
+        assert_eq!(
+            token_row.try_get::<String, _>("gateway_mode").unwrap(),
+            tavily_hikari::MCP_GATEWAY_MODE_REBALANCE
+        );
+        assert_eq!(
+            token_row
+                .try_get::<String, _>("experiment_variant")
+                .unwrap(),
+            tavily_hikari::MCP_EXPERIMENT_VARIANT_REBALANCE
+        );
+        assert_eq!(
+            token_row.try_get::<String, _>("proxy_session_id").unwrap(),
+            proxy_session_id
+        );
+        assert_eq!(
+            token_row
+                .try_get::<String, _>("upstream_operation")
+                .unwrap(),
+            "http_search"
+        );
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -24670,9 +25489,10 @@ colo=LAX
         let fake_proxy_addr = spawn_fake_forward_proxy(StatusCode::NOT_FOUND).await;
         let upstream = format!("http://{}/mcp", upstream_addr);
         let usage_base = format!("http://{}", upstream_addr);
-        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
-            .await
-            .expect("create proxy");
+        let proxy =
+            TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+                .await
+                .expect("create proxy");
         let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
 
         let client = Client::new();
@@ -24694,11 +25514,21 @@ colo=LAX
             settings_body["systemSettings"]["mcpSessionAffinityKeyCount"].as_i64(),
             Some(5)
         );
+        assert_eq!(
+            settings_body["systemSettings"]["rebalanceMcpEnabled"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            settings_body["systemSettings"]["rebalanceMcpSessionPercent"].as_i64(),
+            Some(100)
+        );
 
         let updated_system = client
             .put(format!("http://{addr}/api/settings/system"))
             .json(&serde_json::json!({
                 "mcpSessionAffinityKeyCount": 3,
+                "rebalanceMcpEnabled": true,
+                "rebalanceMcpSessionPercent": 35,
             }))
             .send()
             .await
@@ -24711,6 +25541,14 @@ colo=LAX
         assert_eq!(
             updated_system_body["mcpSessionAffinityKeyCount"].as_i64(),
             Some(3)
+        );
+        assert_eq!(
+            updated_system_body["rebalanceMcpEnabled"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            updated_system_body["rebalanceMcpSessionPercent"].as_i64(),
+            Some(35)
         );
 
         let persisted_settings = client
@@ -24726,6 +25564,14 @@ colo=LAX
         assert_eq!(
             persisted_settings_body["systemSettings"]["mcpSessionAffinityKeyCount"].as_i64(),
             Some(3)
+        );
+        assert_eq!(
+            persisted_settings_body["systemSettings"]["rebalanceMcpEnabled"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            persisted_settings_body["systemSettings"]["rebalanceMcpSessionPercent"].as_i64(),
+            Some(35)
         );
 
         let updated = client
@@ -24784,7 +25630,9 @@ colo=LAX
             .await
             .expect("decode dashboard summary");
         assert!(
-            summary_body["totalNodes"].as_i64().is_some_and(|value| value >= 1),
+            summary_body["totalNodes"]
+                .as_i64()
+                .is_some_and(|value| value >= 1),
             "dashboard summary should expose total node count",
         );
         assert!(
@@ -24804,9 +25652,10 @@ colo=LAX
         let upstream_addr = spawn_forward_proxy_probe_upstream().await;
         let upstream = format!("http://{}/mcp", upstream_addr);
         let usage_base = format!("http://{}", upstream_addr);
-        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
-            .await
-            .expect("create proxy");
+        let proxy =
+            TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+                .await
+                .expect("create proxy");
         let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
 
         let client = Client::new();
@@ -24830,6 +25679,41 @@ colo=LAX
     }
 
     #[tokio::test]
+    async fn admin_system_settings_reject_invalid_rebalance_percent() {
+        let db_path = temp_db_path("admin-system-settings-invalid-rebalance-percent");
+        let db_str = db_path.to_string_lossy().to_string();
+        let upstream_addr = spawn_forward_proxy_probe_upstream().await;
+        let upstream = format!("http://{}/mcp", upstream_addr);
+        let usage_base = format!("http://{}", upstream_addr);
+        let proxy =
+            TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+                .await
+                .expect("create proxy");
+        let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
+
+        let client = Client::new();
+        let response = client
+            .put(format!("http://{addr}/api/settings/system"))
+            .json(&serde_json::json!({
+                "mcpSessionAffinityKeyCount": 5,
+                "rebalanceMcpEnabled": true,
+                "rebalanceMcpSessionPercent": 101,
+            }))
+            .send()
+            .await
+            .expect("update invalid rebalance percent");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response.text().await.expect("invalid body");
+        assert!(
+            body.contains("rebalance_mcp_session_percent"),
+            "expected range validation error, got {body}"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn admin_forward_proxy_settings_and_stats_expose_persisted_geo_metadata() {
         let db_path = temp_db_path("admin-forward-proxy-geo-metadata");
         let db_str = db_path.to_string_lossy().to_string();
@@ -24844,9 +25728,10 @@ colo=LAX
             EnvVarGuard::set("API_KEY_IP_GEO_ORIGIN", &format!("http://{geo_addr}/geo"));
         let upstream = format!("http://{}/mcp", upstream_addr);
         let usage_base = format!("http://{}", upstream_addr);
-        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
-            .await
-            .expect("create proxy");
+        let proxy =
+            TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+                .await
+                .expect("create proxy");
         let addr = spawn_admin_forward_proxy_server_with_geo_origin(
             proxy,
             usage_base,
@@ -24912,9 +25797,10 @@ colo=LAX
         let fake_proxy_addr = spawn_fake_forward_proxy(StatusCode::NOT_FOUND).await;
         let upstream = format!("http://{}/mcp", upstream_addr);
         let usage_base = format!("http://{}", upstream_addr);
-        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
-            .await
-            .expect("create proxy");
+        let proxy =
+            TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+                .await
+                .expect("create proxy");
         let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
 
         let client = Client::new();
@@ -24950,9 +25836,10 @@ colo=LAX
         .await;
         let upstream = format!("http://{}/mcp", upstream_addr);
         let usage_base = format!("http://{}", upstream_addr);
-        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
-            .await
-            .expect("create proxy");
+        let proxy =
+            TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+                .await
+                .expect("create proxy");
         let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
 
         let client = Client::new();
@@ -24990,9 +25877,10 @@ colo=LAX
         let fake_proxy_addr = spawn_fake_forward_proxy(StatusCode::NOT_FOUND).await;
         let upstream = format!("http://{}/mcp", upstream_addr);
         let usage_base = format!("http://{}", upstream_addr);
-        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
-            .await
-            .expect("create proxy");
+        let proxy =
+            TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+                .await
+                .expect("create proxy");
         let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
 
         let client = Client::new();
@@ -25009,11 +25897,15 @@ colo=LAX
         assert_eq!(response.status(), StatusCode::OK);
         let body = response.text().await.expect("read sse body");
         assert!(
-            body.contains("\"type\":\"phase\",\"operation\":\"validate\",\"phaseKey\":\"parse_input\""),
+            body.contains(
+                "\"type\":\"phase\",\"operation\":\"validate\",\"phaseKey\":\"parse_input\""
+            ),
             "expected parse_input phase, got: {body}"
         );
         assert!(
-            body.contains("\"type\":\"phase\",\"operation\":\"validate\",\"phaseKey\":\"probe_nodes\""),
+            body.contains(
+                "\"type\":\"phase\",\"operation\":\"validate\",\"phaseKey\":\"probe_nodes\""
+            ),
             "expected probe_nodes phase, got: {body}"
         );
         assert!(
@@ -25034,16 +25926,14 @@ colo=LAX
         let db_str = db_path.to_string_lossy().to_string();
         let upstream_addr = spawn_forward_proxy_probe_upstream().await;
         let fake_proxy_addr = spawn_fake_forward_proxy(StatusCode::NOT_FOUND).await;
-        let subscription_addr = spawn_forward_proxy_subscription_server(format!(
-            "http://{}\n",
-            fake_proxy_addr
-        ))
-        .await;
+        let subscription_addr =
+            spawn_forward_proxy_subscription_server(format!("http://{}\n", fake_proxy_addr)).await;
         let upstream = format!("http://{}/mcp", upstream_addr);
         let usage_base = format!("http://{}", upstream_addr);
-        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
-            .await
-            .expect("create proxy");
+        let proxy =
+            TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+                .await
+                .expect("create proxy");
         let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
 
         let client = Client::new();
@@ -25074,16 +25964,14 @@ colo=LAX
         let db_str = db_path.to_string_lossy().to_string();
         let upstream_addr = spawn_forward_proxy_probe_upstream().await;
         let fake_proxy_addr = spawn_fake_forward_proxy_with_stalled_body(StatusCode::OK).await;
-        let subscription_addr = spawn_forward_proxy_subscription_server(format!(
-            "http://{}\n",
-            fake_proxy_addr
-        ))
-        .await;
+        let subscription_addr =
+            spawn_forward_proxy_subscription_server(format!("http://{}\n", fake_proxy_addr)).await;
         let upstream = format!("http://{}/mcp", upstream_addr);
         let usage_base = format!("http://{}", upstream_addr);
-        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
-            .await
-            .expect("create proxy");
+        let proxy =
+            TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+                .await
+                .expect("create proxy");
         let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
 
         let client = Client::builder()
@@ -25131,9 +26019,10 @@ colo=LAX
         .await;
         let upstream = format!("http://{}/mcp", upstream_addr);
         let usage_base = format!("http://{}", upstream_addr);
-        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
-            .await
-            .expect("create proxy");
+        let proxy =
+            TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+                .await
+                .expect("create proxy");
         let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
 
         let client = Client::new();
@@ -25154,10 +26043,20 @@ colo=LAX
         assert_eq!(body["ok"].as_bool(), Some(true));
         assert_eq!(body["discoveredNodes"].as_u64(), Some(2));
         let nodes = body["nodes"].as_array().expect("nodes array");
-        assert_eq!(nodes.len(), 2, "expected all probed nodes to be returned: {body}");
-        assert_eq!(nodes[0]["displayName"].as_str(), Some(failing_proxy_addr.to_string().as_str()));
+        assert_eq!(
+            nodes.len(),
+            2,
+            "expected all probed nodes to be returned: {body}"
+        );
+        assert_eq!(
+            nodes[0]["displayName"].as_str(),
+            Some(failing_proxy_addr.to_string().as_str())
+        );
         assert_eq!(nodes[0]["ok"].as_bool(), Some(false));
-        assert_eq!(nodes[1]["displayName"].as_str(), Some(healthy_proxy_addr.to_string().as_str()));
+        assert_eq!(
+            nodes[1]["displayName"].as_str(),
+            Some(healthy_proxy_addr.to_string().as_str())
+        );
         assert_eq!(nodes[1]["ok"].as_bool(), Some(true));
 
         let _ = std::fs::remove_file(db_path);
@@ -25177,9 +26076,10 @@ colo=LAX
         .await;
         let upstream = format!("http://{}/mcp", upstream_addr);
         let usage_base = format!("http://{}", upstream_addr);
-        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
-            .await
-            .expect("create proxy");
+        let proxy =
+            TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+                .await
+                .expect("create proxy");
         let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
 
         let client = Client::new();
@@ -25200,11 +26100,15 @@ colo=LAX
             "expected initial nodes event, got: {body}"
         );
         assert!(
-            body.contains("\"phaseKey\":\"probe_nodes\",\"label\":\"Probing nodes\",\"current\":1,\"total\":2"),
+            body.contains(
+                "\"phaseKey\":\"probe_nodes\",\"label\":\"Probing nodes\",\"current\":1,\"total\":2"
+            ),
             "expected first probe progress event, got: {body}"
         );
         assert!(
-            body.contains("\"phaseKey\":\"probe_nodes\",\"label\":\"Probing nodes\",\"current\":2,\"total\":2"),
+            body.contains(
+                "\"phaseKey\":\"probe_nodes\",\"label\":\"Probing nodes\",\"current\":2,\"total\":2"
+            ),
             "expected final probe progress event, got: {body}"
         );
         assert!(
@@ -25221,18 +26125,30 @@ colo=LAX
         let db_str = db_path.to_string_lossy().to_string();
         let upstream_addr = spawn_forward_proxy_probe_upstream().await;
         let hit_count = Arc::new(AtomicUsize::new(0));
-        let proxy_a =
-            spawn_counted_fake_forward_proxy(StatusCode::NOT_FOUND, Duration::from_millis(40), hit_count.clone())
-                .await;
-        let proxy_b =
-            spawn_counted_fake_forward_proxy(StatusCode::NOT_FOUND, Duration::from_millis(40), hit_count.clone())
-                .await;
-        let proxy_c =
-            spawn_counted_fake_forward_proxy(StatusCode::NOT_FOUND, Duration::from_millis(40), hit_count.clone())
-                .await;
-        let proxy_d =
-            spawn_counted_fake_forward_proxy(StatusCode::NOT_FOUND, Duration::from_millis(40), hit_count.clone())
-                .await;
+        let proxy_a = spawn_counted_fake_forward_proxy(
+            StatusCode::NOT_FOUND,
+            Duration::from_millis(40),
+            hit_count.clone(),
+        )
+        .await;
+        let proxy_b = spawn_counted_fake_forward_proxy(
+            StatusCode::NOT_FOUND,
+            Duration::from_millis(40),
+            hit_count.clone(),
+        )
+        .await;
+        let proxy_c = spawn_counted_fake_forward_proxy(
+            StatusCode::NOT_FOUND,
+            Duration::from_millis(40),
+            hit_count.clone(),
+        )
+        .await;
+        let proxy_d = spawn_counted_fake_forward_proxy(
+            StatusCode::NOT_FOUND,
+            Duration::from_millis(40),
+            hit_count.clone(),
+        )
+        .await;
         let subscription_addr = spawn_forward_proxy_subscription_server(format!(
             "http://{}\nhttp://{}\nhttp://{}\nhttp://{}\n",
             proxy_a, proxy_b, proxy_c, proxy_d
@@ -25240,9 +26156,10 @@ colo=LAX
         .await;
         let upstream = format!("http://{}/mcp", upstream_addr);
         let usage_base = format!("http://{}", upstream_addr);
-        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
-            .await
-            .expect("create proxy");
+        let proxy =
+            TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+                .await
+                .expect("create proxy");
         let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
 
         let client = Client::new();
@@ -25288,16 +26205,14 @@ colo=LAX
         let db_str = db_path.to_string_lossy().to_string();
         let upstream_addr = spawn_forward_proxy_probe_upstream().await;
         let fake_proxy_addr = spawn_fake_forward_proxy(StatusCode::INTERNAL_SERVER_ERROR).await;
-        let subscription_addr = spawn_forward_proxy_subscription_server(format!(
-            "http://{}\n",
-            fake_proxy_addr
-        ))
-        .await;
+        let subscription_addr =
+            spawn_forward_proxy_subscription_server(format!("http://{}\n", fake_proxy_addr)).await;
         let upstream = format!("http://{}/mcp", upstream_addr);
         let usage_base = format!("http://{}", upstream_addr);
-        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
-            .await
-            .expect("create proxy");
+        let proxy =
+            TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+                .await
+                .expect("create proxy");
         let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
 
         let client = Client::new();
@@ -25337,9 +26252,10 @@ colo=LAX
         let fake_proxy_addr = spawn_fake_forward_proxy(StatusCode::NOT_FOUND).await;
         let upstream = format!("http://{}/mcp", upstream_addr);
         let usage_base = format!("http://{}", upstream_addr);
-        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
-            .await
-            .expect("create proxy");
+        let proxy =
+            TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+                .await
+                .expect("create proxy");
         let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
 
         let client = Client::new();
@@ -25362,7 +26278,11 @@ colo=LAX
         assert_eq!(body["insertDirect"].as_bool(), Some(false));
         let nodes = body["nodes"].as_array().expect("nodes array");
         assert_eq!(nodes.len(), 1, "direct should not be injected");
-        assert!(nodes.iter().all(|node| node["key"].as_str() != Some("__direct__")));
+        assert!(
+            nodes
+                .iter()
+                .all(|node| node["key"].as_str() != Some("__direct__"))
+        );
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -25375,9 +26295,10 @@ colo=LAX
         let fake_proxy_addr = spawn_fake_forward_proxy(StatusCode::NOT_FOUND).await;
         let upstream = format!("http://{}/mcp", upstream_addr);
         let usage_base = format!("http://{}", upstream_addr);
-        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
-            .await
-            .expect("create proxy");
+        let proxy =
+            TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+                .await
+                .expect("create proxy");
         let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
 
         let client = Client::new();
@@ -25396,11 +26317,15 @@ colo=LAX
         assert_eq!(response.status(), StatusCode::OK);
         let body = response.text().await.expect("read sse body");
         assert!(
-            body.contains("\"type\":\"phase\",\"operation\":\"save\",\"phaseKey\":\"save_settings\""),
+            body.contains(
+                "\"type\":\"phase\",\"operation\":\"save\",\"phaseKey\":\"save_settings\""
+            ),
             "expected save_settings phase, got: {body}"
         );
         assert!(
-            body.contains("\"type\":\"phase\",\"operation\":\"save\",\"phaseKey\":\"bootstrap_probe\""),
+            body.contains(
+                "\"type\":\"phase\",\"operation\":\"save\",\"phaseKey\":\"bootstrap_probe\""
+            ),
             "expected bootstrap_probe phase, got: {body}"
         );
         assert!(
@@ -25419,9 +26344,10 @@ colo=LAX
         let fake_proxy_addr = spawn_fake_forward_proxy(StatusCode::NOT_FOUND).await;
         let upstream = format!("http://{}/mcp", upstream_addr);
         let usage_base = format!("http://{}", upstream_addr);
-        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
-            .await
-            .expect("create proxy");
+        let proxy =
+            TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+                .await
+                .expect("create proxy");
         let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
 
         let client = Client::new();
@@ -25487,9 +26413,10 @@ colo=LAX
             spawn_counted_forward_proxy_subscription_server(sub2_state, sub2_hits.clone()).await;
         let upstream = format!("http://{}/mcp", upstream_addr);
         let usage_base = format!("http://{}", upstream_addr);
-        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
-            .await
-            .expect("create proxy");
+        let proxy =
+            TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+                .await
+                .expect("create proxy");
         let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
 
         let client = Client::new();
@@ -25550,11 +26477,17 @@ colo=LAX
             .expect("decode stats");
         let nodes = body["nodes"].as_array().expect("stats nodes");
         assert!(
-            nodes.iter().any(|node| node["endpointUrl"].as_str() == Some(&format!("http://{sub1_proxy_addr}/"))),
+            nodes
+                .iter()
+                .any(|node| node["endpointUrl"].as_str()
+                    == Some(&format!("http://{sub1_proxy_addr}/"))),
             "first subscription node should remain active",
         );
         assert!(
-            nodes.iter().any(|node| node["endpointUrl"].as_str() == Some(&format!("http://{sub2_proxy_addr}/"))),
+            nodes
+                .iter()
+                .any(|node| node["endpointUrl"].as_str()
+                    == Some(&format!("http://{sub2_proxy_addr}/"))),
             "new subscription node should become active immediately",
         );
 
@@ -25585,9 +26518,10 @@ colo=LAX
         .await;
         let upstream = format!("http://{}/mcp", upstream_addr);
         let usage_base = format!("http://{}", upstream_addr);
-        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
-            .await
-            .expect("create proxy");
+        let proxy =
+            TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+                .await
+                .expect("create proxy");
         let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
 
         let client = Client::new();
@@ -25648,9 +26582,10 @@ colo=LAX
             spawn_counted_forward_proxy_subscription_server(sub2_state, sub2_hits.clone()).await;
         let upstream = format!("http://{}/mcp", upstream_addr);
         let usage_base = format!("http://{}", upstream_addr);
-        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
-            .await
-            .expect("create proxy");
+        let proxy =
+            TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+                .await
+                .expect("create proxy");
         let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
 
         let client = Client::new();
@@ -25699,11 +26634,17 @@ colo=LAX
             .expect("decode stats");
         let nodes = body["nodes"].as_array().expect("stats nodes");
         assert!(
-            nodes.iter().all(|node| node["endpointUrl"].as_str() != Some(&format!("http://{sub1_proxy_addr}/"))),
+            nodes
+                .iter()
+                .all(|node| node["endpointUrl"].as_str()
+                    != Some(&format!("http://{sub1_proxy_addr}/"))),
             "removed subscription nodes should disappear immediately",
         );
         assert!(
-            nodes.iter().any(|node| node["endpointUrl"].as_str() == Some(&format!("http://{sub2_proxy_addr}/"))),
+            nodes
+                .iter()
+                .any(|node| node["endpointUrl"].as_str()
+                    == Some(&format!("http://{sub2_proxy_addr}/"))),
             "unchanged subscription nodes should remain active",
         );
 
@@ -25741,9 +26682,10 @@ colo=LAX
         .await;
         let upstream = format!("http://{}/mcp", upstream_addr);
         let usage_base = format!("http://{}", upstream_addr);
-        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
-            .await
-            .expect("create proxy");
+        let proxy =
+            TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+                .await
+                .expect("create proxy");
         let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
 
         let client = Client::new();
@@ -25764,7 +26706,9 @@ colo=LAX
         assert_eq!(manual_proxy_hits.load(Ordering::SeqCst), 1);
 
         let response = client
-            .post(format!("http://{addr}/api/settings/forward-proxy/revalidate"))
+            .post(format!(
+                "http://{addr}/api/settings/forward-proxy/revalidate"
+            ))
             .header(reqwest::header::ACCEPT, "text/event-stream")
             .json(&serde_json::json!({}))
             .send()
@@ -25777,7 +26721,9 @@ colo=LAX
             "expected refresh_subscription phase, got: {body}"
         );
         assert!(
-            body.contains("\"type\":\"phase\",\"operation\":\"revalidate\",\"phaseKey\":\"probe_nodes\""),
+            body.contains(
+                "\"type\":\"phase\",\"operation\":\"revalidate\",\"phaseKey\":\"probe_nodes\""
+            ),
             "expected probe_nodes phase, got: {body}"
         );
         assert!(
@@ -25805,9 +26751,10 @@ colo=LAX
             spawn_mutable_forward_proxy_subscription_server(subscription_state.clone()).await;
         let upstream = format!("http://{}/mcp", upstream_addr);
         let usage_base = format!("http://{}", upstream_addr);
-        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
-            .await
-            .expect("create proxy");
+        let proxy =
+            TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+                .await
+                .expect("create proxy");
         let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
 
         let client = Client::new();
@@ -25852,11 +26799,17 @@ colo=LAX
             .expect("decode stats");
         let nodes = body["nodes"].as_array().expect("stats nodes");
         assert!(
-            nodes.iter()
-                .any(|node| node["endpointUrl"].as_str() == Some(&format!("http://{fake_proxy_addr}/"))),
+            nodes
+                .iter()
+                .any(|node| node["endpointUrl"].as_str()
+                    == Some(&format!("http://{fake_proxy_addr}/"))),
             "previously refreshed subscription node should remain active",
         );
-        assert!(nodes.iter().all(|node| node["key"].as_str() != Some("__direct__")));
+        assert!(
+            nodes
+                .iter()
+                .all(|node| node["key"].as_str() != Some("__direct__"))
+        );
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -25866,14 +26819,18 @@ colo=LAX
         let db_path = temp_db_path("admin-forward-proxy-subscription-save");
         let db_str = db_path.to_string_lossy().to_string();
         let upstream_addr = spawn_forward_proxy_probe_upstream().await;
-        let subscription_state = Arc::new(Mutex::new((StatusCode::INTERNAL_SERVER_ERROR, "boom".to_string())));
+        let subscription_state = Arc::new(Mutex::new((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "boom".to_string(),
+        )));
         let subscription_addr =
             spawn_mutable_forward_proxy_subscription_server(subscription_state.clone()).await;
         let upstream = format!("http://{}/mcp", upstream_addr);
         let usage_base = format!("http://{}", upstream_addr);
-        let proxy = TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
-            .await
-            .expect("create proxy");
+        let proxy =
+            TavilyProxy::with_endpoint::<Vec<String>, String>(Vec::new(), &upstream, &db_str)
+                .await
+                .expect("create proxy");
         let addr = spawn_admin_forward_proxy_server(proxy, usage_base, true).await;
 
         let client = Client::new();
@@ -25894,7 +26851,9 @@ colo=LAX
             .await
             .expect("decode response");
         assert_eq!(
-            body["subscriptionUrls"].as_array().map(|values| values.len()),
+            body["subscriptionUrls"]
+                .as_array()
+                .map(|values| values.len()),
             Some(1),
             "subscription setting should still persist",
         );
@@ -25911,7 +26870,9 @@ colo=LAX
             .expect("decode stats");
         let nodes = stats_body["nodes"].as_array().expect("stats nodes");
         assert!(
-            nodes.iter().any(|node| node["key"].as_str() == Some("__direct__")),
+            nodes
+                .iter()
+                .any(|node| node["key"].as_str() == Some("__direct__")),
             "direct fallback should remain available while subscription refresh is down",
         );
 
@@ -25924,24 +26885,28 @@ colo=LAX
         let db_str = db_path.to_string_lossy().to_string();
         let upstream_addr = spawn_forward_proxy_probe_upstream().await;
         let upstream = format!("http://{}/mcp", upstream_addr);
-        let proxy = TavilyProxy::with_endpoint(vec!["tvly-test-key".to_string()], &upstream, &db_str)
-            .await
-            .expect("create proxy");
+        let proxy =
+            TavilyProxy::with_endpoint(vec!["tvly-test-key".to_string()], &upstream, &db_str)
+                .await
+                .expect("create proxy");
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let dead_addr = listener.local_addr().unwrap();
         drop(listener);
 
         proxy
-            .update_forward_proxy_settings(tavily_hikari::ForwardProxySettings {
-                proxy_urls: vec![format!("http://{}", dead_addr)],
-                subscription_urls: Vec::new(),
-                subscription_update_interval_secs: 3600,
-                insert_direct: false,
-            
-                egress_socks5_enabled: false,
-                egress_socks5_url: String::new(),
-            }, false)
+            .update_forward_proxy_settings(
+                tavily_hikari::ForwardProxySettings {
+                    proxy_urls: vec![format!("http://{}", dead_addr)],
+                    subscription_urls: Vec::new(),
+                    subscription_update_interval_secs: 3600,
+                    insert_direct: false,
+
+                    egress_socks5_enabled: false,
+                    egress_socks5_url: String::new(),
+                },
+                false,
+            )
             .await
             .expect("disable direct fallback");
 

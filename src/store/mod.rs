@@ -2,6 +2,7 @@ use crate::analysis::*;
 use crate::models::*;
 use crate::tavily_proxy::QuotaSubjectDbLease;
 use crate::*;
+use sqlx::Row;
 
 pub(crate) fn is_transient_sqlite_write_error(err: &ProxyError) -> bool {
     let ProxyError::Database(db_err) = err else {
@@ -179,6 +180,12 @@ CREATE TABLE request_logs_new (
     binding_effect_summary TEXT,
     selection_effect_code TEXT NOT NULL DEFAULT 'none',
     selection_effect_summary TEXT,
+    gateway_mode TEXT,
+    experiment_variant TEXT,
+    proxy_session_id TEXT,
+    routing_subject_hash TEXT,
+    upstream_operation TEXT,
+    fallback_reason TEXT,
     request_body BLOB,
     response_body BLOB,
     forwarded_headers TEXT,
@@ -210,6 +217,12 @@ CREATE TABLE auth_token_logs_new (
     binding_effect_summary TEXT,
     selection_effect_code TEXT NOT NULL DEFAULT 'none',
     selection_effect_summary TEXT,
+    gateway_mode TEXT,
+    experiment_variant TEXT,
+    proxy_session_id TEXT,
+    routing_subject_hash TEXT,
+    upstream_operation TEXT,
+    fallback_reason TEXT,
     counts_business_quota INTEGER NOT NULL DEFAULT 1,
     business_credits INTEGER,
     billing_subject TEXT,
@@ -219,6 +232,16 @@ CREATE TABLE auth_token_logs_new (
     created_at INTEGER NOT NULL
 )
 "#;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct RequestLogDiagnosticMetadata {
+    gateway_mode: Option<String>,
+    experiment_variant: Option<String>,
+    proxy_session_id: Option<String>,
+    routing_subject_hash: Option<String>,
+    upstream_operation: Option<String>,
+    fallback_reason: Option<String>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RequestLogsRebuildMode {
@@ -1175,6 +1198,12 @@ impl KeyStore {
                 binding_effect_summary TEXT,
                 selection_effect_code TEXT NOT NULL DEFAULT 'none',
                 selection_effect_summary TEXT,
+                gateway_mode TEXT,
+                experiment_variant TEXT,
+                proxy_session_id TEXT,
+                routing_subject_hash TEXT,
+                upstream_operation TEXT,
+                fallback_reason TEXT,
                 request_body BLOB,
                 response_body BLOB,
                 forwarded_headers TEXT,
@@ -1654,12 +1683,17 @@ impl KeyStore {
             r#"
             CREATE TABLE IF NOT EXISTS mcp_sessions (
                 proxy_session_id TEXT PRIMARY KEY,
-                upstream_session_id TEXT NOT NULL,
-                upstream_key_id TEXT NOT NULL,
+                upstream_session_id TEXT,
+                upstream_key_id TEXT,
                 auth_token_id TEXT,
                 user_id TEXT,
                 protocol_version TEXT,
                 last_event_id TEXT,
+                gateway_mode TEXT NOT NULL DEFAULT 'upstream_mcp',
+                experiment_variant TEXT NOT NULL DEFAULT 'control',
+                ab_bucket INTEGER,
+                routing_subject_hash TEXT,
+                fallback_reason TEXT,
                 rate_limited_until INTEGER,
                 last_rate_limited_at INTEGER,
                 last_rate_limit_reason TEXT,
@@ -1696,30 +1730,7 @@ impl KeyStore {
         .execute(&self.pool)
         .await?;
 
-        if !self
-            .table_column_exists("mcp_sessions", "rate_limited_until")
-            .await?
-        {
-            sqlx::query("ALTER TABLE mcp_sessions ADD COLUMN rate_limited_until INTEGER")
-                .execute(&self.pool)
-                .await?;
-        }
-        if !self
-            .table_column_exists("mcp_sessions", "last_rate_limited_at")
-            .await?
-        {
-            sqlx::query("ALTER TABLE mcp_sessions ADD COLUMN last_rate_limited_at INTEGER")
-                .execute(&self.pool)
-                .await?;
-        }
-        if !self
-            .table_column_exists("mcp_sessions", "last_rate_limit_reason")
-            .await?
-        {
-            sqlx::query("ALTER TABLE mcp_sessions ADD COLUMN last_rate_limit_reason TEXT")
-                .execute(&self.pool)
-                .await?;
-        }
+        self.ensure_mcp_sessions_schema().await?;
 
         sqlx::query(
             r#"
@@ -1788,6 +1799,12 @@ impl KeyStore {
                 binding_effect_summary TEXT,
                 selection_effect_code TEXT NOT NULL DEFAULT 'none',
                 selection_effect_summary TEXT,
+                gateway_mode TEXT,
+                experiment_variant TEXT,
+                proxy_session_id TEXT,
+                routing_subject_hash TEXT,
+                upstream_operation TEXT,
+                fallback_reason TEXT,
                 counts_business_quota INTEGER NOT NULL DEFAULT 1,
                 business_credits INTEGER,
                 billing_subject TEXT,
@@ -1878,6 +1895,37 @@ impl KeyStore {
             sqlx::query("ALTER TABLE auth_token_logs ADD COLUMN selection_effect_summary TEXT")
                 .execute(&self.pool)
                 .await?;
+        }
+
+        for (column, sql) in [
+            (
+                "gateway_mode",
+                "ALTER TABLE auth_token_logs ADD COLUMN gateway_mode TEXT",
+            ),
+            (
+                "experiment_variant",
+                "ALTER TABLE auth_token_logs ADD COLUMN experiment_variant TEXT",
+            ),
+            (
+                "proxy_session_id",
+                "ALTER TABLE auth_token_logs ADD COLUMN proxy_session_id TEXT",
+            ),
+            (
+                "routing_subject_hash",
+                "ALTER TABLE auth_token_logs ADD COLUMN routing_subject_hash TEXT",
+            ),
+            (
+                "upstream_operation",
+                "ALTER TABLE auth_token_logs ADD COLUMN upstream_operation TEXT",
+            ),
+            (
+                "fallback_reason",
+                "ALTER TABLE auth_token_logs ADD COLUMN fallback_reason TEXT",
+            ),
+        ] {
+            if !self.table_column_exists("auth_token_logs", column).await? {
+                sqlx::query(sql).execute(&self.pool).await?;
+            }
         }
 
         request_kind_schema_changed |= self.ensure_auth_token_logs_request_kind_columns().await?;
@@ -4655,6 +4703,195 @@ impl KeyStore {
         Ok(not_null.unwrap_or_default() != 0)
     }
 
+    async fn ensure_mcp_sessions_schema(&self) -> Result<(), ProxyError> {
+        let needs_rebuild = self
+            .table_column_not_null("mcp_sessions", "upstream_session_id")
+            .await?
+            || self
+                .table_column_not_null("mcp_sessions", "upstream_key_id")
+                .await?;
+        if needs_rebuild {
+            self.rebuild_mcp_sessions_table().await?;
+        }
+
+        for (column, sql) in [
+            (
+                "gateway_mode",
+                "ALTER TABLE mcp_sessions ADD COLUMN gateway_mode TEXT NOT NULL DEFAULT 'upstream_mcp'",
+            ),
+            (
+                "experiment_variant",
+                "ALTER TABLE mcp_sessions ADD COLUMN experiment_variant TEXT NOT NULL DEFAULT 'control'",
+            ),
+            (
+                "ab_bucket",
+                "ALTER TABLE mcp_sessions ADD COLUMN ab_bucket INTEGER",
+            ),
+            (
+                "routing_subject_hash",
+                "ALTER TABLE mcp_sessions ADD COLUMN routing_subject_hash TEXT",
+            ),
+            (
+                "fallback_reason",
+                "ALTER TABLE mcp_sessions ADD COLUMN fallback_reason TEXT",
+            ),
+            (
+                "rate_limited_until",
+                "ALTER TABLE mcp_sessions ADD COLUMN rate_limited_until INTEGER",
+            ),
+            (
+                "last_rate_limited_at",
+                "ALTER TABLE mcp_sessions ADD COLUMN last_rate_limited_at INTEGER",
+            ),
+            (
+                "last_rate_limit_reason",
+                "ALTER TABLE mcp_sessions ADD COLUMN last_rate_limit_reason TEXT",
+            ),
+        ] {
+            if !self.table_column_exists("mcp_sessions", column).await? {
+                sqlx::query(sql).execute(&self.pool).await?;
+            }
+        }
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_mcp_sessions_user_active
+               ON mcp_sessions(user_id, revoked_at, expires_at DESC, updated_at DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_mcp_sessions_token_active
+               ON mcp_sessions(auth_token_id, revoked_at, expires_at DESC, updated_at DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_mcp_sessions_expires_at
+               ON mcp_sessions(expires_at, revoked_at)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn rebuild_mcp_sessions_table(&self) -> Result<(), ProxyError> {
+        let mut conn = self.pool.acquire().await?;
+        sqlx::query("PRAGMA foreign_keys = OFF")
+            .execute(&mut *conn)
+            .await?;
+
+        let rebuild_result = async {
+            sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
+            sqlx::query("DROP TABLE IF EXISTS mcp_sessions_new")
+                .execute(&mut *conn)
+                .await?;
+            sqlx::query(
+                r#"
+                CREATE TABLE mcp_sessions_new (
+                    proxy_session_id TEXT PRIMARY KEY,
+                    upstream_session_id TEXT,
+                    upstream_key_id TEXT,
+                    auth_token_id TEXT,
+                    user_id TEXT,
+                    protocol_version TEXT,
+                    last_event_id TEXT,
+                    gateway_mode TEXT NOT NULL DEFAULT 'upstream_mcp',
+                    experiment_variant TEXT NOT NULL DEFAULT 'control',
+                    ab_bucket INTEGER,
+                    routing_subject_hash TEXT,
+                    fallback_reason TEXT,
+                    rate_limited_until INTEGER,
+                    last_rate_limited_at INTEGER,
+                    last_rate_limit_reason TEXT,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    expires_at INTEGER NOT NULL,
+                    revoked_at INTEGER,
+                    revoke_reason TEXT,
+                    FOREIGN KEY (upstream_key_id) REFERENCES api_keys(id)
+                )
+                "#,
+            )
+            .execute(&mut *conn)
+            .await?;
+            sqlx::query(
+                r#"
+                INSERT INTO mcp_sessions_new (
+                    proxy_session_id,
+                    upstream_session_id,
+                    upstream_key_id,
+                    auth_token_id,
+                    user_id,
+                    protocol_version,
+                    last_event_id,
+                    gateway_mode,
+                    experiment_variant,
+                    ab_bucket,
+                    routing_subject_hash,
+                    fallback_reason,
+                    rate_limited_until,
+                    last_rate_limited_at,
+                    last_rate_limit_reason,
+                    created_at,
+                    updated_at,
+                    expires_at,
+                    revoked_at,
+                    revoke_reason
+                )
+                SELECT
+                    proxy_session_id,
+                    NULLIF(upstream_session_id, ''),
+                    NULLIF(upstream_key_id, ''),
+                    auth_token_id,
+                    user_id,
+                    protocol_version,
+                    last_event_id,
+                    'upstream_mcp',
+                    'control',
+                    NULL,
+                    NULL,
+                    NULL,
+                    rate_limited_until,
+                    last_rate_limited_at,
+                    last_rate_limit_reason,
+                    created_at,
+                    updated_at,
+                    expires_at,
+                    revoked_at,
+                    revoke_reason
+                FROM mcp_sessions
+                "#,
+            )
+            .execute(&mut *conn)
+            .await?;
+            sqlx::query("DROP TABLE mcp_sessions")
+                .execute(&mut *conn)
+                .await?;
+            sqlx::query("ALTER TABLE mcp_sessions_new RENAME TO mcp_sessions")
+                .execute(&mut *conn)
+                .await?;
+            sqlx::query("COMMIT").execute(&mut *conn).await?;
+            Ok::<(), ProxyError>(())
+        }
+        .await;
+
+        if rebuild_result.is_err() {
+            let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+        }
+
+        let reenable_result = sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&mut *conn)
+            .await;
+
+        match (rebuild_result, reenable_result) {
+            (Err(err), _) => Err(err),
+            (Ok(_), Err(err)) => Err(err.into()),
+            (Ok(_), Ok(_)) => Ok(()),
+        }
+    }
+
     async fn ensure_api_key_usage_bucket_request_value_columns(&self) -> Result<bool, ProxyError> {
         let mut schema_changed = false;
 
@@ -5786,6 +6023,37 @@ impl KeyStore {
                 .await?;
         }
 
+        for (column, sql) in [
+            (
+                "gateway_mode",
+                "ALTER TABLE request_logs ADD COLUMN gateway_mode TEXT",
+            ),
+            (
+                "experiment_variant",
+                "ALTER TABLE request_logs ADD COLUMN experiment_variant TEXT",
+            ),
+            (
+                "proxy_session_id",
+                "ALTER TABLE request_logs ADD COLUMN proxy_session_id TEXT",
+            ),
+            (
+                "routing_subject_hash",
+                "ALTER TABLE request_logs ADD COLUMN routing_subject_hash TEXT",
+            ),
+            (
+                "upstream_operation",
+                "ALTER TABLE request_logs ADD COLUMN upstream_operation TEXT",
+            ),
+            (
+                "fallback_reason",
+                "ALTER TABLE request_logs ADD COLUMN fallback_reason TEXT",
+            ),
+        ] {
+            if !self.request_logs_column_exists(column).await? {
+                sqlx::query(sql).execute(&self.pool).await?;
+            }
+        }
+
         let mut request_kind_schema_changed =
             self.ensure_request_logs_request_kind_columns().await?;
 
@@ -6059,6 +6327,8 @@ impl KeyStore {
                        business_credits, failure_kind, key_effect_code, key_effect_summary,
                 binding_effect_code, binding_effect_summary,
                 selection_effect_code, selection_effect_summary,
+                gateway_mode, experiment_variant, proxy_session_id, routing_subject_hash,
+                upstream_operation, fallback_reason,
                        request_body, response_body, created_at, forwarded_headers, dropped_headers
                 FROM request_logs
                 WHERE api_key_id = ? AND visibility = ? AND created_at >= ?
@@ -6080,6 +6350,8 @@ impl KeyStore {
                        business_credits, failure_kind, key_effect_code, key_effect_summary,
                 binding_effect_code, binding_effect_summary,
                 selection_effect_code, selection_effect_summary,
+                gateway_mode, experiment_variant, proxy_session_id, routing_subject_hash,
+                upstream_operation, fallback_reason,
                        request_body, response_body, created_at, forwarded_headers, dropped_headers
                 FROM request_logs
                 WHERE api_key_id = ? AND visibility = ?
@@ -8075,6 +8347,11 @@ impl KeyStore {
                 user_id,
                 protocol_version,
                 last_event_id,
+                gateway_mode,
+                experiment_variant,
+                ab_bucket,
+                routing_subject_hash,
+                fallback_reason,
                 rate_limited_until,
                 last_rate_limited_at,
                 last_rate_limit_reason,
@@ -8084,7 +8361,7 @@ impl KeyStore {
                 revoked_at,
                 revoke_reason
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(proxy_session_id) DO UPDATE SET
                 upstream_session_id = excluded.upstream_session_id,
                 upstream_key_id = excluded.upstream_key_id,
@@ -8092,6 +8369,11 @@ impl KeyStore {
                 user_id = excluded.user_id,
                 protocol_version = excluded.protocol_version,
                 last_event_id = excluded.last_event_id,
+                gateway_mode = excluded.gateway_mode,
+                experiment_variant = excluded.experiment_variant,
+                ab_bucket = excluded.ab_bucket,
+                routing_subject_hash = excluded.routing_subject_hash,
+                fallback_reason = excluded.fallback_reason,
                 rate_limited_until = excluded.rate_limited_until,
                 last_rate_limited_at = excluded.last_rate_limited_at,
                 last_rate_limit_reason = excluded.last_rate_limit_reason,
@@ -8102,12 +8384,17 @@ impl KeyStore {
             "#,
         )
         .bind(&binding.proxy_session_id)
-        .bind(&binding.upstream_session_id)
-        .bind(&binding.upstream_key_id)
+        .bind(binding.upstream_session_id.as_deref())
+        .bind(binding.upstream_key_id.as_deref())
         .bind(binding.auth_token_id.as_deref())
         .bind(binding.user_id.as_deref())
         .bind(binding.protocol_version.as_deref())
         .bind(binding.last_event_id.as_deref())
+        .bind(&binding.gateway_mode)
+        .bind(&binding.experiment_variant)
+        .bind(binding.ab_bucket)
+        .bind(binding.routing_subject_hash.as_deref())
+        .bind(binding.fallback_reason.as_deref())
         .bind(binding.rate_limited_until)
         .bind(binding.last_rate_limited_at)
         .bind(binding.last_rate_limit_reason.as_deref())
@@ -8126,26 +8413,7 @@ impl KeyStore {
         proxy_session_id: &str,
         now: i64,
     ) -> Result<Option<McpSessionBinding>, ProxyError> {
-        let row = sqlx::query_as::<
-            _,
-            (
-                String,
-                String,
-                String,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-                Option<i64>,
-                Option<i64>,
-                Option<String>,
-                i64,
-                i64,
-                i64,
-                Option<i64>,
-                Option<String>,
-            ),
-        >(
+        let row = sqlx::query(
             r#"
             SELECT
                 proxy_session_id,
@@ -8155,6 +8423,11 @@ impl KeyStore {
                 user_id,
                 protocol_version,
                 last_event_id,
+                gateway_mode,
+                experiment_variant,
+                ab_bucket,
+                routing_subject_hash,
+                fallback_reason,
                 rate_limited_until,
                 last_rate_limited_at,
                 last_rate_limit_reason,
@@ -8175,41 +8448,28 @@ impl KeyStore {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(
-            |(
-                proxy_session_id,
-                upstream_session_id,
-                upstream_key_id,
-                auth_token_id,
-                user_id,
-                protocol_version,
-                last_event_id,
-                rate_limited_until,
-                last_rate_limited_at,
-                last_rate_limit_reason,
-                created_at,
-                updated_at,
-                expires_at,
-                revoked_at,
-                revoke_reason,
-            )| McpSessionBinding {
-                proxy_session_id,
-                upstream_session_id,
-                upstream_key_id,
-                auth_token_id,
-                user_id,
-                protocol_version,
-                last_event_id,
-                rate_limited_until,
-                last_rate_limited_at,
-                last_rate_limit_reason,
-                created_at,
-                updated_at,
-                expires_at,
-                revoked_at,
-                revoke_reason,
-            },
-        ))
+        Ok(row.map(|row| McpSessionBinding {
+            proxy_session_id: row.get("proxy_session_id"),
+            upstream_session_id: row.get("upstream_session_id"),
+            upstream_key_id: row.get("upstream_key_id"),
+            auth_token_id: row.get("auth_token_id"),
+            user_id: row.get("user_id"),
+            protocol_version: row.get("protocol_version"),
+            last_event_id: row.get("last_event_id"),
+            gateway_mode: row.get("gateway_mode"),
+            experiment_variant: row.get("experiment_variant"),
+            ab_bucket: row.get("ab_bucket"),
+            routing_subject_hash: row.get("routing_subject_hash"),
+            fallback_reason: row.get("fallback_reason"),
+            rate_limited_until: row.get("rate_limited_until"),
+            last_rate_limited_at: row.get("last_rate_limited_at"),
+            last_rate_limit_reason: row.get("last_rate_limit_reason"),
+            created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
+            expires_at: row.get("expires_at"),
+            revoked_at: row.get("revoked_at"),
+            revoke_reason: row.get("revoke_reason"),
+        }))
     }
 
     pub(crate) async fn touch_mcp_session(
@@ -8321,6 +8581,36 @@ impl KeyStore {
         )
         .bind(upstream_session_id)
         .bind(protocol_version)
+        .bind(now)
+        .bind(expires_at)
+        .bind(proxy_session_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn update_mcp_session_rebalance_metadata(
+        &self,
+        proxy_session_id: &str,
+        routing_subject_hash: Option<&str>,
+        fallback_reason: Option<&str>,
+        now: i64,
+        expires_at: i64,
+    ) -> Result<(), ProxyError> {
+        sqlx::query(
+            r#"
+            UPDATE mcp_sessions
+            SET
+                routing_subject_hash = COALESCE(?, routing_subject_hash),
+                fallback_reason = COALESCE(?, fallback_reason),
+                updated_at = ?,
+                expires_at = ?
+            WHERE proxy_session_id = ?
+              AND revoked_at IS NULL
+            "#,
+        )
+        .bind(routing_subject_hash)
+        .bind(fallback_reason)
         .bind(now)
         .bind(expires_at)
         .bind(proxy_session_id)
@@ -9984,30 +10274,76 @@ impl KeyStore {
         let count = self
             .get_meta_i64(META_KEY_MCP_SESSION_AFFINITY_KEY_COUNT_V1)
             .await?
-            .unwrap_or(MCP_SESSION_AFFINITY_KEY_COUNT_DEFAULT);
-        Ok(SystemSettings {
-            mcp_session_affinity_key_count: count.clamp(
+            .unwrap_or(MCP_SESSION_AFFINITY_KEY_COUNT_DEFAULT)
+            .clamp(
                 MCP_SESSION_AFFINITY_KEY_COUNT_MIN,
                 MCP_SESSION_AFFINITY_KEY_COUNT_MAX,
-            ),
+            );
+        let rebalance_mcp_enabled = self
+            .get_meta_i64(META_KEY_REBALANCE_MCP_ENABLED_V1)
+            .await?
+            .unwrap_or(i64::from(REBALANCE_MCP_ENABLED_DEFAULT))
+            != 0;
+        let rebalance_mcp_session_percent = self
+            .get_meta_i64(META_KEY_REBALANCE_MCP_SESSION_PERCENT_V1)
+            .await?
+            .unwrap_or(REBALANCE_MCP_SESSION_PERCENT_DEFAULT)
+            .clamp(
+                REBALANCE_MCP_SESSION_PERCENT_MIN,
+                REBALANCE_MCP_SESSION_PERCENT_MAX,
+            );
+        Ok(SystemSettings {
+            mcp_session_affinity_key_count: count,
+            rebalance_mcp_enabled,
+            rebalance_mcp_session_percent,
         })
     }
 
-    pub(crate) async fn set_mcp_session_affinity_key_count(
+    pub(crate) async fn set_system_settings(
         &self,
-        count: i64,
+        settings: &SystemSettings,
     ) -> Result<SystemSettings, ProxyError> {
         if !(MCP_SESSION_AFFINITY_KEY_COUNT_MIN..=MCP_SESSION_AFFINITY_KEY_COUNT_MAX)
-            .contains(&count)
+            .contains(&settings.mcp_session_affinity_key_count)
         {
             return Err(ProxyError::Other(format!(
                 "mcp_session_affinity_key_count must be between {} and {}",
                 MCP_SESSION_AFFINITY_KEY_COUNT_MIN, MCP_SESSION_AFFINITY_KEY_COUNT_MAX,
             )));
         }
-        self.set_meta_i64(META_KEY_MCP_SESSION_AFFINITY_KEY_COUNT_V1, count)
-            .await?;
+        if !(REBALANCE_MCP_SESSION_PERCENT_MIN..=REBALANCE_MCP_SESSION_PERCENT_MAX)
+            .contains(&settings.rebalance_mcp_session_percent)
+        {
+            return Err(ProxyError::Other(format!(
+                "rebalance_mcp_session_percent must be between {} and {}",
+                REBALANCE_MCP_SESSION_PERCENT_MIN, REBALANCE_MCP_SESSION_PERCENT_MAX,
+            )));
+        }
+        self.set_meta_i64(
+            META_KEY_MCP_SESSION_AFFINITY_KEY_COUNT_V1,
+            settings.mcp_session_affinity_key_count,
+        )
+        .await?;
+        self.set_meta_i64(
+            META_KEY_REBALANCE_MCP_ENABLED_V1,
+            i64::from(settings.rebalance_mcp_enabled),
+        )
+        .await?;
+        self.set_meta_i64(
+            META_KEY_REBALANCE_MCP_SESSION_PERCENT_V1,
+            settings.rebalance_mcp_session_percent,
+        )
+        .await?;
         self.get_system_settings().await
+    }
+
+    pub(crate) async fn set_mcp_session_affinity_key_count(
+        &self,
+        count: i64,
+    ) -> Result<SystemSettings, ProxyError> {
+        let mut settings = self.get_system_settings().await?;
+        settings.mcp_session_affinity_key_count = count;
+        self.set_system_settings(&settings).await
     }
 
     pub(crate) async fn sync_linuxdo_system_tag_default_deltas_with_env(
@@ -11891,6 +12227,9 @@ impl KeyStore {
         let key_effect_summary = key_effect_summary.map(str::to_string);
         let binding_effect_summary = binding_effect_summary.map(str::to_string);
         let selection_effect_summary = selection_effect_summary.map(str::to_string);
+        let diagnostic_metadata = self
+            .resolve_request_log_diagnostic_metadata(request_log_id)
+            .await?;
         sqlx::query(
             r#"
             INSERT INTO auth_token_logs (
@@ -11899,8 +12238,10 @@ impl KeyStore {
                 result_status, error_message, failure_kind, key_effect_code, key_effect_summary,
                 binding_effect_code, binding_effect_summary,
                 selection_effect_code, selection_effect_summary,
+                gateway_mode, experiment_variant, proxy_session_id, routing_subject_hash,
+                upstream_operation, fallback_reason,
                 counts_business_quota, request_log_id, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(token_id)
@@ -11921,6 +12262,12 @@ impl KeyStore {
         .bind(binding_effect_summary)
         .bind(selection_effect_code)
         .bind(selection_effect_summary)
+        .bind(diagnostic_metadata.gateway_mode)
+        .bind(diagnostic_metadata.experiment_variant)
+        .bind(diagnostic_metadata.proxy_session_id)
+        .bind(diagnostic_metadata.routing_subject_hash)
+        .bind(diagnostic_metadata.upstream_operation)
+        .bind(diagnostic_metadata.fallback_reason)
         .bind(counts_business_quota)
         .bind(request_log_id)
         .bind(created_at)
@@ -11991,6 +12338,9 @@ impl KeyStore {
         let key_effect_summary = key_effect_summary.map(str::to_string);
         let binding_effect_summary = binding_effect_summary.map(str::to_string);
         let selection_effect_summary = selection_effect_summary.map(str::to_string);
+        let diagnostic_metadata = self
+            .resolve_request_log_diagnostic_metadata(request_log_id)
+            .await?;
         let log_id: i64 = sqlx::query_scalar(
             r#"
             INSERT INTO auth_token_logs (
@@ -12012,6 +12362,12 @@ impl KeyStore {
                 binding_effect_summary,
                 selection_effect_code,
                 selection_effect_summary,
+                gateway_mode,
+                experiment_variant,
+                proxy_session_id,
+                routing_subject_hash,
+                upstream_operation,
+                fallback_reason,
                 counts_business_quota,
                 business_credits,
                 billing_subject,
@@ -12019,7 +12375,7 @@ impl KeyStore {
                 api_key_id,
                 request_log_id,
                 created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
             "#,
         )
@@ -12041,6 +12397,12 @@ impl KeyStore {
         .bind(binding_effect_summary)
         .bind(selection_effect_code)
         .bind(selection_effect_summary)
+        .bind(diagnostic_metadata.gateway_mode)
+        .bind(diagnostic_metadata.experiment_variant)
+        .bind(diagnostic_metadata.proxy_session_id)
+        .bind(diagnostic_metadata.routing_subject_hash)
+        .bind(diagnostic_metadata.upstream_operation)
+        .bind(diagnostic_metadata.fallback_reason)
         .bind(counts_business_quota)
         .bind(business_credits)
         .bind(billing_subject)
@@ -12061,6 +12423,47 @@ impl KeyStore {
 
         self.invalidate_request_logs_catalog_cache().await;
         Ok(log_id)
+    }
+
+    async fn resolve_request_log_diagnostic_metadata(
+        &self,
+        request_log_id: Option<i64>,
+    ) -> Result<RequestLogDiagnosticMetadata, ProxyError> {
+        let Some(request_log_id) = request_log_id else {
+            return Ok(RequestLogDiagnosticMetadata::default());
+        };
+
+        let row = sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>)>(
+            r#"
+            SELECT gateway_mode, experiment_variant, proxy_session_id, routing_subject_hash, upstream_operation, fallback_reason
+            FROM request_logs
+            WHERE id = ?
+            LIMIT 1
+            "#,
+        )
+        .bind(request_log_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row
+            .map(
+                |(
+                    gateway_mode,
+                    experiment_variant,
+                    proxy_session_id,
+                    routing_subject_hash,
+                    upstream_operation,
+                    fallback_reason,
+                )| RequestLogDiagnosticMetadata {
+                    gateway_mode,
+                    experiment_variant,
+                    proxy_session_id,
+                    routing_subject_hash,
+                    upstream_operation,
+                    fallback_reason,
+                },
+            )
+            .unwrap_or_default())
     }
 
     async fn resolve_token_log_request_kind(
@@ -12518,7 +12921,9 @@ impl KeyStore {
                        request_kind_key, request_kind_label, request_kind_detail,
                        counts_business_quota, result_status, error_message, failure_kind, key_effect_code,
                        key_effect_summary, binding_effect_code, binding_effect_summary,
-                       selection_effect_code, selection_effect_summary, created_at
+                       selection_effect_code, selection_effect_summary,
+                       gateway_mode, experiment_variant, proxy_session_id, routing_subject_hash,
+                       upstream_operation, fallback_reason, created_at
                 FROM auth_token_logs
                 WHERE token_id = ? AND id < ?
                 ORDER BY created_at DESC, id DESC
@@ -12538,7 +12943,9 @@ impl KeyStore {
                        request_kind_key, request_kind_label, request_kind_detail,
                        counts_business_quota, result_status, error_message, failure_kind, key_effect_code,
                        key_effect_summary, binding_effect_code, binding_effect_summary,
-                       selection_effect_code, selection_effect_summary, created_at
+                       selection_effect_code, selection_effect_summary,
+                       gateway_mode, experiment_variant, proxy_session_id, routing_subject_hash,
+                       upstream_operation, fallback_reason, created_at
                 FROM auth_token_logs
                 WHERE token_id = ?
                 ORDER BY created_at DESC, id DESC
@@ -12682,6 +13089,12 @@ impl KeyStore {
             binding_effect_summary: row.try_get("binding_effect_summary")?,
             selection_effect_code: row.try_get("selection_effect_code")?,
             selection_effect_summary: row.try_get("selection_effect_summary")?,
+            gateway_mode: row.try_get("gateway_mode")?,
+            experiment_variant: row.try_get("experiment_variant")?,
+            proxy_session_id: row.try_get("proxy_session_id")?,
+            routing_subject_hash: row.try_get("routing_subject_hash")?,
+            upstream_operation: row.try_get("upstream_operation")?,
+            fallback_reason: row.try_get("fallback_reason")?,
             created_at: row.try_get("created_at")?,
         })
     }
@@ -12879,7 +13292,9 @@ impl KeyStore {
                    counts_business_quota,
                    result_status, error_message, failure_kind, key_effect_code,
                    key_effect_summary, binding_effect_code, binding_effect_summary,
-                   selection_effect_code, selection_effect_summary, created_at
+                   selection_effect_code, selection_effect_summary,
+                   gateway_mode, experiment_variant, proxy_session_id, routing_subject_hash,
+                   upstream_operation, fallback_reason, created_at
             FROM auth_token_logs
             WHERE token_id =
             "#
@@ -13115,7 +13530,9 @@ impl KeyStore {
                    counts_business_quota,
                    result_status, error_message, failure_kind, key_effect_code,
                    key_effect_summary, binding_effect_code, binding_effect_summary,
-                   selection_effect_code, selection_effect_summary, created_at
+                   selection_effect_code, selection_effect_summary,
+                   gateway_mode, experiment_variant, proxy_session_id, routing_subject_hash,
+                   upstream_operation, fallback_reason, created_at
             FROM auth_token_logs
             WHERE token_id =
             "#
@@ -14247,12 +14664,18 @@ impl KeyStore {
                 binding_effect_summary,
                 selection_effect_code,
                 selection_effect_summary,
+                gateway_mode,
+                experiment_variant,
+                proxy_session_id,
+                routing_subject_hash,
+                upstream_operation,
+                fallback_reason,
                 request_body,
                 response_body,
                 forwarded_headers,
                 dropped_headers,
                 created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
             "#,
         )
@@ -14276,6 +14699,12 @@ impl KeyStore {
         .bind(binding_effect_summary)
         .bind(entry.selection_effect_code)
         .bind(selection_effect_summary)
+        .bind(entry.gateway_mode)
+        .bind(entry.experiment_variant)
+        .bind(entry.proxy_session_id)
+        .bind(entry.routing_subject_hash)
+        .bind(entry.upstream_operation)
+        .bind(entry.fallback_reason)
         .bind(entry.request_body)
         .bind(entry.response_body)
         .bind(forwarded_json)
@@ -14921,6 +15350,12 @@ impl KeyStore {
                 binding_effect_summary,
                 selection_effect_code,
                 selection_effect_summary,
+                gateway_mode,
+                experiment_variant,
+                proxy_session_id,
+                routing_subject_hash,
+                upstream_operation,
+                fallback_reason,
                 request_body,
                 response_body,
                 forwarded_headers,
@@ -15062,6 +15497,12 @@ impl KeyStore {
             binding_effect_summary: row.try_get("binding_effect_summary")?,
             selection_effect_code: row.try_get("selection_effect_code")?,
             selection_effect_summary: row.try_get("selection_effect_summary")?,
+            gateway_mode: row.try_get("gateway_mode")?,
+            experiment_variant: row.try_get("experiment_variant")?,
+            proxy_session_id: row.try_get("proxy_session_id")?,
+            routing_subject_hash: row.try_get("routing_subject_hash")?,
+            upstream_operation: row.try_get("upstream_operation")?,
+            fallback_reason: row.try_get("fallback_reason")?,
             operational_class,
             request_body: request_body.unwrap_or_default(),
             response_body: response_body.unwrap_or_default(),
@@ -16001,6 +16442,12 @@ impl KeyStore {
                 binding_effect_summary,
                 selection_effect_code,
                 selection_effect_summary,
+                gateway_mode,
+                experiment_variant,
+                proxy_session_id,
+                routing_subject_hash,
+                upstream_operation,
+                fallback_reason,
                 NULL AS request_body,
                 NULL AS response_body,
                 forwarded_headers,
@@ -16237,6 +16684,12 @@ impl KeyStore {
                 binding_effect_summary,
                 selection_effect_code,
                 selection_effect_summary,
+                gateway_mode,
+                experiment_variant,
+                proxy_session_id,
+                routing_subject_hash,
+                upstream_operation,
+                fallback_reason,
                 request_body,
                 response_body,
                 forwarded_headers,

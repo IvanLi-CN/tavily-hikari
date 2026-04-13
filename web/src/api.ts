@@ -232,6 +232,12 @@ export interface RequestLog {
   binding_effect_summary?: string | null
   selection_effect_code?: string
   selection_effect_summary?: string | null
+  gateway_mode?: string | null
+  experiment_variant?: string | null
+  proxy_session_id?: string | null
+  routing_subject_hash?: string | null
+  upstream_operation?: string | null
+  fallback_reason?: string | null
   request_body: string | null
   response_body: string | null
   forwarded_headers: string[]
@@ -2478,6 +2484,8 @@ export interface ForwardProxySettings {
 
 export interface SystemSettings {
   mcpSessionAffinityKeyCount: number
+  rebalanceMcpEnabled: boolean
+  rebalanceMcpSessionPercent: number
 }
 
 export interface ForwardProxySettingsEnvelope {
@@ -2497,6 +2505,8 @@ export interface UpdateForwardProxySettingsPayload {
 
 export interface UpdateSystemSettingsPayload {
   mcpSessionAffinityKeyCount: number
+  rebalanceMcpEnabled: boolean
+  rebalanceMcpSessionPercent: number
 }
 
 export type ForwardProxyValidationKind = 'proxyUrl' | 'subscriptionUrl'
@@ -2570,6 +2580,8 @@ function createEmptyForwardProxySettings(): ForwardProxySettings {
 function createEmptySystemSettings(): SystemSettings {
   return {
     mcpSessionAffinityKeyCount: 5,
+    rebalanceMcpEnabled: false,
+    rebalanceMcpSessionPercent: 100,
   }
 }
 

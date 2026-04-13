@@ -11,7 +11,7 @@ use axum::{
     routing::{any, get, post},
 };
 use sha2::{Digest, Sha256};
-use sqlx::Connection;
+use sqlx::{Connection, Row};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -940,6 +940,12 @@ async fn successful_request_logs_do_not_backfill_failure_kind() {
             binding_effect_summary: None,
             selection_effect_code: KEY_EFFECT_NONE,
             selection_effect_summary: None,
+            gateway_mode: None,
+            experiment_variant: None,
+            proxy_session_id: None,
+            routing_subject_hash: None,
+            upstream_operation: None,
+            fallback_reason: None,
             forwarded_headers: &[],
             dropped_headers: &[],
         })

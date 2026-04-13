@@ -183,6 +183,23 @@ function keyEffectBadgeLabel(log: RequestLog, strings: AdminTranslations): strin
   return keyEffectLabel(log.key_effect_code, strings)
 }
 
+function isRebalanceGatewayLog(log: RequestLog): boolean {
+  return (log.gateway_mode ?? '').trim() === 'rebalance_http'
+}
+
+function RebalanceGatewayMarker(): JSX.Element {
+  return (
+    <span className="log-key-pill__marker" aria-hidden="true">
+      <svg viewBox="0 0 16 16" focusable="false">
+        <path
+          d="M5 2.75a1.75 1.75 0 1 1-1 3.18V11a1 1 0 0 0 1 1h4.18a1.75 1.75 0 1 1 0 1.5H5A2.5 2.5 0 0 1 2.5 11V5.93A1.75 1.75 0 0 1 5 2.75m6 0a1.75 1.75 0 1 1-1 3.18V8a1 1 0 0 1-1 1H6.5v-1.5H8.5V5.93A1.75 1.75 0 0 1 11 2.75"
+          fill="currentColor"
+        />
+      </svg>
+    </span>
+  )
+}
+
 function keyEffectBadgeCompactLabel(log: RequestLog, strings: AdminTranslations, language: Language): string {
   switch ((log.key_effect_code ?? '').trim()) {
     case 'quarantined':
@@ -635,6 +652,26 @@ function RecentRequestDetails({
         }
       : null,
   ].filter((entry): entry is { label: string; value: string } => entry != null)
+  const diagnosticEntries = [
+    log.gateway_mode
+      ? { label: strings.logDetails.gatewayMode, value: log.gateway_mode }
+      : null,
+    log.experiment_variant
+      ? { label: strings.logDetails.experimentVariant, value: log.experiment_variant }
+      : null,
+    log.proxy_session_id
+      ? { label: strings.logDetails.proxySessionId, value: log.proxy_session_id }
+      : null,
+    log.routing_subject_hash
+      ? { label: strings.logDetails.routingSubjectHash, value: log.routing_subject_hash }
+      : null,
+    log.upstream_operation
+      ? { label: strings.logDetails.upstreamOperation, value: log.upstream_operation }
+      : null,
+    log.fallback_reason
+      ? { label: strings.logDetails.fallbackReason, value: log.fallback_reason }
+      : null,
+  ].filter((entry): entry is { label: string; value: string } => entry != null)
 
   return (
     <div className="log-details-panel">
@@ -682,6 +719,14 @@ function RecentRequestDetails({
             </div>
           ))
         )}
+        {diagnosticEntries.map((entry) => (
+          <div key={entry.label}>
+            <span className="log-details-label">{entry.label}</span>
+            <span className="log-details-value">
+              <code>{entry.value}</code>
+            </span>
+          </div>
+        ))}
       </div>
       <div className="log-details-body">
         <div className="log-details-section">
@@ -1225,6 +1270,7 @@ export default function AdminRecentRequestsPanel({
               const requestKindLabel = log.request_kind_label ?? log.request_kind_key ?? strings.logs.errors.none
               const keyId = log.key_id?.trim() || null
               const tokenId = log.auth_token_id?.trim() || null
+              const isRebalanceGateway = isRebalanceGatewayLog(log)
               const timeLabel = formatTime(log.created_at)
               const timeDetailLabel = formatTimeDetail?.(log.created_at) ?? null
               const hasTimeBubble = Boolean(timeDetailLabel && timeDetailLabel !== timeLabel)
@@ -1265,9 +1311,23 @@ export default function AdminRecentRequestsPanel({
                         {keyId ? (
                           <button
                             type="button"
-                            className="link-button log-token-link log-key-link recent-requests-entity-link request-entity-button"
+                            className={[
+                              'link-button',
+                              'log-token-link',
+                              'log-key-link',
+                              'recent-requests-entity-link',
+                              'request-entity-button',
+                              'log-key-pill',
+                              isRebalanceGateway ? 'log-key-pill--rebalance' : '',
+                            ].filter(Boolean).join(' ')}
                             onClick={() => onOpenKey?.(keyId)}
                           >
+                            {isRebalanceGateway ? (
+                              <>
+                                <RebalanceGatewayMarker />
+                                <span className="sr-only">{strings.logDetails.gatewayMode}: {log.gateway_mode}</span>
+                              </>
+                            ) : null}
                             <code>{keyId}</code>
                           </button>
                         ) : (
@@ -1367,6 +1427,7 @@ export default function AdminRecentRequestsPanel({
                 : undefined)
             const keyId = log.key_id?.trim() || null
             const tokenId = log.auth_token_id?.trim() || null
+            const isRebalanceGateway = isRebalanceGatewayLog(log)
             return (
               <article key={log.id} className={mobileCardClassName}>
                 <div className={mobileKvClassName}>
@@ -1391,9 +1452,21 @@ export default function AdminRecentRequestsPanel({
                     {keyId ? (
                       <button
                         type="button"
-                        className="request-entity-button admin-mobile-request-entity-button log-key-link"
+                        className={[
+                          'request-entity-button',
+                          'admin-mobile-request-entity-button',
+                          'log-key-link',
+                          'log-key-pill',
+                          isRebalanceGateway ? 'log-key-pill--rebalance' : '',
+                        ].filter(Boolean).join(' ')}
                         onClick={() => onOpenKey?.(keyId)}
                       >
+                        {isRebalanceGateway ? (
+                          <>
+                            <RebalanceGatewayMarker />
+                            <span className="sr-only">{strings.logDetails.gatewayMode}: {log.gateway_mode}</span>
+                          </>
+                        ) : null}
                         <strong><code>{keyId}</code></strong>
                       </button>
                     ) : (

@@ -5,6 +5,8 @@ import { translations } from '../i18n'
 
 function SystemSettingsCanvas(props: {
   count?: number
+  rebalanceEnabled?: boolean
+  rebalancePercent?: number
   loadState?: 'initial_loading' | 'switch_loading' | 'refreshing' | 'ready' | 'error'
   error?: string | null
   saving?: boolean
@@ -14,7 +16,11 @@ function SystemSettingsCanvas(props: {
     <div style={{ maxWidth: 960, margin: '0 auto' }}>
       <SystemSettingsModule
         strings={translations.zh.admin.systemSettings}
-        settings={{ mcpSessionAffinityKeyCount: props.count ?? 5 }}
+        settings={{
+          mcpSessionAffinityKeyCount: props.count ?? 5,
+          rebalanceMcpEnabled: props.rebalanceEnabled ?? false,
+          rebalanceMcpSessionPercent: props.rebalancePercent ?? 100,
+        }}
         loadState={props.loadState ?? 'ready'}
         error={props.error ?? null}
         saving={props.saving ?? false}
@@ -32,13 +38,17 @@ const meta = {
     layout: 'padded',
     docs: {
       description: {
-        component: 'Admin-only MCP session affinity controls with immediate apply feedback.',
+        component: 'Admin-only MCP session affinity and Rebalance MCP controls with immediate apply feedback.',
       },
     },
   },
   args: {
     strings: translations.zh.admin.systemSettings,
-    settings: { mcpSessionAffinityKeyCount: 5 },
+    settings: {
+      mcpSessionAffinityKeyCount: 5,
+      rebalanceMcpEnabled: false,
+      rebalanceMcpSessionPercent: 100,
+    },
     loadState: 'ready',
     error: null,
     saving: false,
@@ -54,12 +64,20 @@ type Story = StoryObj<typeof meta>
 
 export const Default: Story = {}
 
+export const RebalanceEnabled: Story = {
+  render: () => <SystemSettingsCanvas rebalanceEnabled rebalancePercent={35} />,
+}
+
+export const RebalanceDisabledSliderLocked: Story = {
+  render: () => <SystemSettingsCanvas rebalanceEnabled={false} rebalancePercent={35} />,
+}
+
 export const Applying: Story = {
-  render: () => <SystemSettingsCanvas saving />,
+  render: () => <SystemSettingsCanvas rebalanceEnabled rebalancePercent={35} saving />,
 }
 
 export const ErrorState: Story = {
-  render: () => <SystemSettingsCanvas error="Failed to save system settings." />,
+  render: () => <SystemSettingsCanvas error="Failed to save system settings." rebalanceEnabled />,
 }
 
 export const HelpBubbleOpen: Story = {

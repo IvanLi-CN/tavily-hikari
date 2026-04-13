@@ -517,8 +517,15 @@ interface AdminTranslationsShape {
       countLabel: string
       countHint: string
       currentValue: string
+      rebalanceLabel: string
+      rebalanceHint: string
+      percentLabel: string
+      percentHint: string
+      percentDisabledHint: string
+      currentPercentValue: string
       applyScopeHint: string
       invalidCount: string
+      invalidPercent: string
       saveFailed: string
     }
     actions: {
@@ -1222,6 +1229,12 @@ interface AdminTranslationsShape {
     keyEffect: string
     bindingEffect: string
     selectionEffect: string
+    gatewayMode: string
+    experimentVariant: string
+    proxySessionId: string
+    routingSubjectHash: string
+    upstreamOperation: string
+    fallbackReason: string
     requestTypeDetail: string
     solution: string
     requestBody: string
@@ -1908,8 +1921,15 @@ export const translations: Record<Language, TranslationShape> = {
           countLabel: 'Affinity key count',
           countHint: 'Each user stays sticky to up to this many upstream keys. A stable top-N ranking keeps pool changes minimal when the count or available keys change.',
           currentValue: 'Current value: {count}',
+          rebalanceLabel: 'Enable Rebalance MCP',
+          rebalanceHint: 'Locally terminate MCP control-plane calls and fan Tavily tools out over the full healthy key pool.',
+          percentLabel: 'Rebalance session ratio',
+          percentHint: 'Controls what percentage of new MCP sessions enter the rebalance gateway path. Existing sessions keep their current mode.',
+          percentDisabledHint: 'Disabled while Rebalance MCP is off. The last saved percentage will be preserved for the next enable.',
+          currentPercentValue: 'Current ratio: {percent}%',
           applyScopeHint: 'Applies immediately to newly created MCP sessions only. Existing sessions keep their current upstream key.',
           invalidCount: 'Enter an integer between 1 and 1000.',
+          invalidPercent: 'Enter an integer between 0 and 100.',
           saveFailed: 'Failed to save system settings.',
         },
         actions: {
@@ -2647,6 +2667,12 @@ export const translations: Record<Language, TranslationShape> = {
         keyEffect: 'Key Effect',
         bindingEffect: 'Binding Effect',
         selectionEffect: 'Selection Effect',
+        gatewayMode: 'Gateway Mode',
+        experimentVariant: 'Experiment Variant',
+        proxySessionId: 'Proxy Session',
+        routingSubjectHash: 'Routing Subject Hash',
+        upstreamOperation: 'Upstream Operation',
+        fallbackReason: 'Fallback Reason',
         requestTypeDetail: 'Request Type Detail',
         solution: 'Suggested Handling',
         requestBody: 'Request Body',
@@ -3291,8 +3317,15 @@ export const translations: Record<Language, TranslationShape> = {
           countLabel: '亲和 key 数量',
           countHint: '每个用户最多亲和这么多个上游 key。数量或可用 key 变化时，会通过稳定 top-N 排序尽量减少迁移。',
           currentValue: '当前值：{count}',
+          rebalanceLabel: '启用 Rebalance MCP',
+          rebalanceHint: '在本地终止 MCP 控制面请求，并把 Tavily 工具调用分散到全量健康 key 池。',
+          percentLabel: 'Rebalance 会话比例',
+          percentHint: '控制新建 MCP session 中有多少比例走再均衡网关路径；已有 session 会保留当前模式。',
+          percentDisabledHint: 'Rebalance MCP 关闭时不可调整，但会保留上次保存的比例。',
+          currentPercentValue: '当前比例：{percent}%',
           applyScopeHint: '设置会立即作用于新创建的 MCP session；已有 session 会继续保持当前上游 key。',
           invalidCount: '请输入 1 到 1000 之间的整数。',
+          invalidPercent: '请输入 0 到 100 之间的整数。',
           saveFailed: '保存系统设置失败。',
         },
         actions: {
@@ -4030,6 +4063,12 @@ export const translations: Record<Language, TranslationShape> = {
         keyEffect: 'Key 影响',
         bindingEffect: '绑定效果',
         selectionEffect: '选路原因',
+        gatewayMode: '网关模式',
+        experimentVariant: '实验分组',
+        proxySessionId: '代理会话 ID',
+        routingSubjectHash: '路由主题哈希',
+        upstreamOperation: '上游操作',
+        fallbackReason: '回退原因',
         requestTypeDetail: '请求类型详情',
         solution: '建议处理',
         requestBody: '请求体',

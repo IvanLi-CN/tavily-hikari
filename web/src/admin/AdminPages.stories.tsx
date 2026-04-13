@@ -5888,7 +5888,11 @@ function SystemSettingsPageCanvas(): JSX.Element {
     <AdminPageFrame activeModule="system-settings">
       <SystemSettingsModule
         strings={admin.systemSettings}
-        settings={{ mcpSessionAffinityKeyCount: 5 }}
+        settings={{
+          mcpSessionAffinityKeyCount: 5,
+          rebalanceMcpEnabled: false,
+          rebalanceMcpSessionPercent: 100,
+        }}
         loadState="ready"
         error={null}
         saving={false}

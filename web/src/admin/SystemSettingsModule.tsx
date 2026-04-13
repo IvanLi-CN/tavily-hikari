@@ -7,6 +7,7 @@ import AdminLoadingRegion from '../components/AdminLoadingRegion'
 import { Icon } from '../lib/icons'
 import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
+import { Switch } from '../components/ui/switch'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../components/ui/tooltip'
 
 interface SystemSettingsModuleProps {
@@ -16,13 +17,19 @@ interface SystemSettingsModuleProps {
   error: string | null
   saving: boolean
   helpBubbleOpen?: boolean
-  onApply: (mcpSessionAffinityKeyCount: number) => Promise<void> | void
+  onApply: (settings: SystemSettings) => Promise<void> | void
 }
 
 function isValidCountDraft(value: string): value is `${number}` {
   if (!/^\d+$/.test(value)) return false
   const parsed = Number.parseInt(value, 10)
   return Number.isSafeInteger(parsed) && parsed >= 1 && parsed <= 1000
+}
+
+function isValidPercentDraft(value: string): value is `${number}` {
+  if (!/^\d+$/.test(value)) return false
+  const parsed = Number.parseInt(value, 10)
+  return Number.isSafeInteger(parsed) && parsed >= 0 && parsed <= 100
 }
 
 function SystemSettingsHelpBubble({
@@ -52,6 +59,8 @@ function SystemSettingsHelpBubble({
             <p>{strings.description}</p>
             <p>{strings.form.description}</p>
             <p>{strings.form.countHint}</p>
+            <p>{strings.form.rebalanceHint}</p>
+            <p>{strings.form.percentHint}</p>
             <p>{strings.form.applyScopeHint}</p>
           </div>
         </TooltipContent>
@@ -72,18 +81,42 @@ export default function SystemSettingsModule({
   const [draftCount, setDraftCount] = useState(() =>
     settings ? String(settings.mcpSessionAffinityKeyCount) : '',
   )
+  const [draftRebalanceEnabled, setDraftRebalanceEnabled] = useState(
+    settings?.rebalanceMcpEnabled ?? false,
+  )
+  const [draftPercent, setDraftPercent] = useState(() =>
+    settings ? String(settings.rebalanceMcpSessionPercent) : '100',
+  )
 
   useEffect(() => {
     setDraftCount(settings ? String(settings.mcpSessionAffinityKeyCount) : '')
-  }, [settings?.mcpSessionAffinityKeyCount])
+    setDraftRebalanceEnabled(settings?.rebalanceMcpEnabled ?? false)
+    setDraftPercent(settings ? String(settings.rebalanceMcpSessionPercent) : '100')
+  }, [
+    settings?.mcpSessionAffinityKeyCount,
+    settings?.rebalanceMcpEnabled,
+    settings?.rebalanceMcpSessionPercent,
+  ])
 
-  const normalizedDraft = draftCount.trim()
-  const parsedCount = isValidCountDraft(normalizedDraft)
-    ? Number.parseInt(normalizedDraft, 10)
+  const normalizedCount = draftCount.trim()
+  const normalizedPercent = draftPercent.trim()
+  const parsedCount = isValidCountDraft(normalizedCount) ? Number.parseInt(normalizedCount, 10) : null
+  const parsedPercent = isValidPercentDraft(normalizedPercent)
+    ? Number.parseInt(normalizedPercent, 10)
     : null
-  const changed = settings != null && parsedCount != null && parsedCount !== settings.mcpSessionAffinityKeyCount
+  const changed =
+    settings != null &&
+    parsedCount != null &&
+    parsedPercent != null &&
+    (parsedCount !== settings.mcpSessionAffinityKeyCount ||
+      draftRebalanceEnabled !== settings.rebalanceMcpEnabled ||
+      parsedPercent !== settings.rebalanceMcpSessionPercent)
   const inlineError =
-    normalizedDraft.length > 0 && parsedCount == null ? strings.form.invalidCount : error
+    normalizedCount.length > 0 && parsedCount == null
+      ? strings.form.invalidCount
+      : normalizedPercent.length > 0 && parsedPercent == null
+        ? strings.form.invalidPercent
+        : error
 
   return (
     <section className="surface panel">
@@ -97,23 +130,17 @@ export default function SystemSettingsModule({
         loadState={loadState}
         loadingLabel={strings.description}
         errorLabel={error ?? undefined}
-        minHeight={220}
+        minHeight={260}
       >
         <div
           className="rounded-2xl border border-border/60 bg-background/55 p-5 shadow-sm backdrop-blur"
-          style={{ display: 'grid', gap: 16 }}
+          style={{ display: 'grid', gap: 20 }}
         >
           <div>
             <h3 className="text-base font-semibold">{strings.form.title}</h3>
           </div>
 
-          <div
-            style={{
-              display: 'grid',
-              gap: 12,
-              gridTemplateColumns: 'minmax(220px, 320px)',
-            }}
-          >
+          <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'minmax(220px, 420px)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <label className="text-sm font-medium" htmlFor="system-settings-affinity-count">
                 {strings.form.countLabel}
@@ -137,6 +164,64 @@ export default function SystemSettingsModule({
                 {strings.form.currentValue.replace('{count}', String(settings.mcpSessionAffinityKeyCount))}
               </p>
             )}
+
+            <div className="mt-2 flex items-start justify-between gap-4 rounded-2xl border border-border/60 bg-background/70 px-4 py-3">
+              <div style={{ display: 'grid', gap: 4 }}>
+                <label className="text-sm font-medium" htmlFor="system-settings-rebalance-switch">
+                  {strings.form.rebalanceLabel}
+                </label>
+                <p className="text-xs text-muted-foreground">{strings.form.rebalanceHint}</p>
+              </div>
+              <Switch
+                aria-label={strings.form.rebalanceLabel}
+                id="system-settings-rebalance-switch"
+                checked={draftRebalanceEnabled}
+                onCheckedChange={setDraftRebalanceEnabled}
+                disabled={saving}
+              />
+            </div>
+
+            <div style={{ display: 'grid', gap: 8 }}>
+              <label className="text-sm font-medium" htmlFor="system-settings-rebalance-percent">
+                {strings.form.percentLabel}
+              </label>
+              <div className="grid gap-3 md:grid-cols-[minmax(0,1fr),96px] md:items-center">
+                <input
+                  id="system-settings-rebalance-percent"
+                  className="range"
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={parsedPercent ?? 0}
+                  disabled={saving || !draftRebalanceEnabled}
+                  onChange={(event) => setDraftPercent(event.target.value)}
+                  aria-label={strings.form.percentLabel}
+                />
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={draftPercent}
+                  disabled={saving || !draftRebalanceEnabled}
+                  onChange={(event) => setDraftPercent(event.target.value)}
+                  aria-invalid={inlineError ? true : undefined}
+                />
+              </div>
+              {settings && (
+                <p className="text-xs text-muted-foreground">
+                  {strings.form.currentPercentValue.replace(
+                    '{percent}',
+                    String(settings.rebalanceMcpSessionPercent),
+                  )}
+                </p>
+              )}
+              <p className="text-xs text-muted-foreground">
+                {draftRebalanceEnabled ? strings.form.percentHint : strings.form.percentDisabledHint}
+              </p>
+            </div>
           </div>
 
           {(inlineError || saving) && (
@@ -154,10 +239,14 @@ export default function SystemSettingsModule({
             <Button
               type="button"
               onClick={() => {
-                if (parsedCount == null || saving || !changed) return
-                void onApply(parsedCount)
+                if (parsedCount == null || parsedPercent == null || saving || !changed) return
+                void onApply({
+                  mcpSessionAffinityKeyCount: parsedCount,
+                  rebalanceMcpEnabled: draftRebalanceEnabled,
+                  rebalanceMcpSessionPercent: parsedPercent,
+                })
               }}
-              disabled={saving || !changed || parsedCount == null}
+              disabled={saving || !changed || parsedCount == null || parsedPercent == null}
               data-testid="system-settings-apply"
             >
               <Icon

@@ -858,6 +858,13 @@ impl TavilyProxy {
         self.key_store.get_system_settings().await
     }
 
+    pub async fn set_system_settings(
+        &self,
+        settings: &SystemSettings,
+    ) -> Result<SystemSettings, ProxyError> {
+        self.key_store.set_system_settings(settings).await
+    }
+
     pub async fn set_mcp_session_affinity_key_count(
         &self,
         count: i64,
@@ -4081,6 +4088,107 @@ impl TavilyProxy {
         Err(ProxyError::NoAvailableKeys)
     }
 
+    pub(crate) async fn acquire_key_for_rebalance_mcp_http_call(
+        &self,
+    ) -> Result<ApiKeyLease, ProxyError> {
+        let ranked = self.key_store.list_mcp_session_candidate_key_ids().await?;
+        if ranked.is_empty() {
+            return Err(ProxyError::NoAvailableKeys);
+        }
+
+        let now = Utc::now().timestamp();
+        let ordered = self
+            .build_rebalance_mcp_http_candidates(&ranked, now)
+            .await?;
+        for candidate in ordered {
+            if let Some(lease) = self
+                .key_store
+                .try_acquire_specific_key(&candidate.key_id)
+                .await?
+            {
+                return Ok(lease);
+            }
+        }
+
+        Err(ProxyError::NoAvailableKeys)
+    }
+
+    async fn build_rebalance_mcp_http_candidates(
+        &self,
+        ranked: &[String],
+        now: i64,
+    ) -> Result<Vec<HttpProjectAffinityCandidate>, ProxyError> {
+        let cooldowns = self
+            .key_store
+            .list_active_api_key_transient_backoffs(ranked, REBALANCE_MCP_HTTP_BACKOFF_SCOPE, now)
+            .await?;
+        let recent_rate_limited_counts = self
+            .key_store
+            .list_recent_rate_limited_request_counts_for_keys(
+                ranked,
+                now - HTTP_PROJECT_AFFINITY_RECENT_PRESSURE_WINDOW_SECS,
+            )
+            .await?;
+        let recent_billable_counts = self
+            .key_store
+            .list_recent_billable_request_counts_for_keys(
+                ranked,
+                now - HTTP_PROJECT_AFFINITY_RECENT_PRESSURE_WINDOW_SECS,
+            )
+            .await?;
+        let last_used_at = self.key_store.list_api_key_last_used_at(ranked).await?;
+
+        let mut candidates = ranked
+            .iter()
+            .enumerate()
+            .map(|(stable_rank_index, key_id)| HttpProjectAffinityCandidate {
+                key_id: key_id.clone(),
+                stable_rank_index,
+                cooldown_until: cooldowns.get(key_id).map(|state| state.cooldown_until),
+                recent_rate_limited_count: recent_rate_limited_counts
+                    .get(key_id)
+                    .copied()
+                    .unwrap_or(0),
+                recent_billable_request_count: recent_billable_counts
+                    .get(key_id)
+                    .copied()
+                    .unwrap_or(0),
+                last_used_at: last_used_at.get(key_id).copied().unwrap_or(0),
+            })
+            .collect::<Vec<_>>();
+        Self::order_http_project_affinity_candidates(&mut candidates);
+        Ok(candidates)
+    }
+
+    async fn maybe_arm_rebalance_mcp_http_backoff(
+        &self,
+        key_id: &str,
+        headers: &HeaderMap,
+        analysis: &AttemptAnalysis,
+    ) -> Result<bool, ProxyError> {
+        if analysis.failure_kind.as_deref() != Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429) {
+            return Ok(false);
+        }
+
+        let now = Utc::now().timestamp();
+        let retry_after_secs = Self::mcp_session_init_retry_after_secs(headers, now);
+        let cooldown_until = now + retry_after_secs;
+
+        Ok(self
+            .key_store
+            .arm_api_key_transient_backoff(ApiKeyTransientBackoffArm {
+                key_id,
+                scope: REBALANCE_MCP_HTTP_BACKOFF_SCOPE,
+                cooldown_until,
+                retry_after_secs,
+                reason_code: Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429),
+                source_request_log_id: None,
+                now,
+            })
+            .await?
+            .is_some())
+    }
+
     pub(crate) async fn acquire_key_for(
         &self,
         auth_token_id: Option<&str>,
@@ -4572,6 +4680,12 @@ impl TavilyProxy {
                         binding_effect_summary: None,
                         selection_effect_code: selection_effect.code.as_str(),
                         selection_effect_summary: selection_effect.summary.as_deref(),
+                        gateway_mode: None,
+                        experiment_variant: None,
+                        proxy_session_id: None,
+                        routing_subject_hash: None,
+                        upstream_operation: None,
+                        fallback_reason: None,
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
                     })
@@ -4629,6 +4743,12 @@ impl TavilyProxy {
                         binding_effect_summary: None,
                         selection_effect_code: KEY_EFFECT_NONE,
                         selection_effect_summary: None,
+                        gateway_mode: None,
+                        experiment_variant: None,
+                        proxy_session_id: None,
+                        routing_subject_hash: None,
+                        upstream_operation: None,
+                        fallback_reason: None,
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
                     })
@@ -4812,6 +4932,12 @@ impl TavilyProxy {
                         binding_effect_summary: http_project_binding_effect.summary.as_deref(),
                         selection_effect_code: http_project_selection_effect.code.as_str(),
                         selection_effect_summary: http_project_selection_effect.summary.as_deref(),
+                        gateway_mode: None,
+                        experiment_variant: None,
+                        proxy_session_id: None,
+                        routing_subject_hash: None,
+                        upstream_operation: None,
+                        fallback_reason: None,
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
                     })
@@ -4878,11 +5004,549 @@ impl TavilyProxy {
                         binding_effect_summary: None,
                         selection_effect_code: KEY_EFFECT_NONE,
                         selection_effect_summary: None,
+                        gateway_mode: None,
+                        experiment_variant: None,
+                        proxy_session_id: None,
+                        routing_subject_hash: None,
+                        upstream_operation: None,
+                        fallback_reason: None,
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
                     })
                     .await?;
                 Err(err)
+            }
+        }
+    }
+
+    fn build_rebalance_mcp_tool_result_body(
+        response_id: Option<&Value>,
+        upstream_status: StatusCode,
+        upstream_body: &[u8],
+        usage_credits_override: Option<i64>,
+    ) -> Vec<u8> {
+        let raw_text = String::from_utf8_lossy(upstream_body).into_owned();
+        let mut structured_content = match serde_json::from_slice::<Value>(upstream_body) {
+            Ok(Value::Object(map)) => Value::Object(map),
+            Ok(other) => serde_json::json!({ "data": other }),
+            Err(_) => serde_json::json!({
+                "raw_body": raw_text,
+            }),
+        };
+
+        if let Value::Object(ref mut map) = structured_content {
+            map.entry("status".to_string())
+                .or_insert(Value::from(i64::from(upstream_status.as_u16())));
+            if !upstream_status.is_success() {
+                map.entry("isError".to_string())
+                    .or_insert(Value::Bool(true));
+            }
+            if let Some(usage_credits) = usage_credits_override {
+                map.insert(
+                    "usage".to_string(),
+                    serde_json::json!({ "credits": usage_credits }),
+                );
+            }
+        }
+
+        let mut result = serde_json::Map::new();
+        result.insert("structuredContent".to_string(), structured_content);
+        if !raw_text.trim().is_empty() {
+            result.insert(
+                "content".to_string(),
+                serde_json::json!([{ "type": "text", "text": raw_text }]),
+            );
+        }
+
+        let mut envelope = serde_json::Map::new();
+        envelope.insert("jsonrpc".to_string(), Value::String("2.0".to_string()));
+        if let Some(id) = response_id {
+            envelope.insert("id".to_string(), id.clone());
+        }
+        envelope.insert("result".to_string(), Value::Object(result));
+
+        serde_json::to_vec(&Value::Object(envelope)).unwrap_or_else(|_| {
+            br#"{"jsonrpc":"2.0","result":{"structuredContent":{"status":500,"isError":true}}}"#
+                .to_vec()
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn proxy_rebalance_mcp_http_json_endpoint(
+        &self,
+        usage_base: &str,
+        upstream_path: &str,
+        auth_token_id: Option<&str>,
+        method: &Method,
+        display_path: &str,
+        original_request_body: &[u8],
+        original_headers: &HeaderMap,
+        response_id: Option<&Value>,
+        options: Value,
+        proxy_session_id: Option<&str>,
+        routing_subject_hash: Option<&str>,
+        upstream_operation: &str,
+    ) -> Result<ProxyResponse, ProxyError> {
+        let lease = self.acquire_key_for_rebalance_mcp_http_call().await?;
+
+        let base = Url::parse(usage_base).map_err(|source| ProxyError::InvalidEndpoint {
+            endpoint: usage_base.to_owned(),
+            source,
+        })?;
+        let url = build_path_prefixed_url(&base, upstream_path);
+        let sanitized_headers = sanitize_rebalance_mcp_http_headers_inner(original_headers);
+
+        let mut upstream_options = options;
+        if let Value::Object(ref mut map) = upstream_options {
+            let keys_to_remove: Vec<String> = map
+                .keys()
+                .filter(|key| key.eq_ignore_ascii_case("api_key"))
+                .cloned()
+                .collect();
+            for key in keys_to_remove {
+                map.remove(&key);
+            }
+            map.insert("api_key".to_string(), Value::String(lease.secret.clone()));
+            map.insert("include_usage".to_string(), Value::Bool(true));
+        } else {
+            let mut map = serde_json::Map::new();
+            map.insert("api_key".to_string(), Value::String(lease.secret.clone()));
+            map.insert("include_usage".to_string(), Value::Bool(true));
+            map.insert("payload".to_string(), upstream_options);
+            upstream_options = Value::Object(map);
+        }
+
+        let request_body = serde_json::to_vec(&upstream_options)
+            .map_err(|err| ProxyError::Other(err.to_string()))?;
+
+        let request_method = method.clone();
+        let request_url = url.clone();
+        let upstream_secret = lease.secret.clone();
+        let response = self
+            .send_with_forward_proxy(&lease.id, upstream_path.trim_start_matches('/'), |client| {
+                let mut builder = client.request(request_method.clone(), request_url.clone());
+                for (name, value) in sanitized_headers.headers.iter() {
+                    if name == HOST || name == CONTENT_LENGTH {
+                        continue;
+                    }
+                    builder = builder.header(name, value);
+                }
+                builder
+                    .header("Authorization", format!("Bearer {}", upstream_secret))
+                    .body(request_body.clone())
+            })
+            .await;
+
+        match response {
+            Ok((response, _relay_lease)) => {
+                let upstream_status = response.status();
+                let upstream_headers = response.headers().clone();
+                let upstream_body = response.bytes().await.map_err(ProxyError::Http)?;
+
+                let mut analysis = analyze_http_attempt(upstream_status, &upstream_body);
+                analysis.api_key_id = Some(lease.id.clone());
+                if analysis.failure_kind.is_none() && analysis.status == OUTCOME_ERROR {
+                    analysis.failure_kind = classify_failure_kind(
+                        display_path,
+                        Some(i64::from(upstream_status.as_u16())),
+                        analysis.tavily_status_code,
+                        None,
+                        &upstream_body,
+                    );
+                }
+
+                let key_effect = self
+                    .reconcile_key_health(&lease, display_path, &analysis, auth_token_id)
+                    .await?;
+                let armed_backoff = self
+                    .maybe_arm_rebalance_mcp_http_backoff(&lease.id, &upstream_headers, &analysis)
+                    .await?;
+                let response_body = Self::build_rebalance_mcp_tool_result_body(
+                    response_id,
+                    upstream_status,
+                    &upstream_body,
+                    None,
+                );
+                let mcp_analysis = analyze_mcp_attempt(StatusCode::OK, &response_body);
+                let request_log_id = self
+                    .key_store
+                    .log_attempt(AttemptLog {
+                        key_id: Some(&lease.id),
+                        auth_token_id,
+                        method,
+                        path: display_path,
+                        query: None,
+                        status: Some(StatusCode::OK),
+                        tavily_status_code: mcp_analysis.tavily_status_code,
+                        error: None,
+                        request_body: original_request_body,
+                        response_body: &response_body,
+                        outcome: mcp_analysis.status,
+                        failure_kind: mcp_analysis.failure_kind.as_deref(),
+                        key_effect_code: key_effect.code.as_str(),
+                        key_effect_summary: key_effect.summary.as_deref(),
+                        binding_effect_code: KEY_EFFECT_NONE,
+                        binding_effect_summary: None,
+                        selection_effect_code: KEY_EFFECT_NONE,
+                        selection_effect_summary: None,
+                        gateway_mode: Some(MCP_GATEWAY_MODE_REBALANCE),
+                        experiment_variant: Some(MCP_EXPERIMENT_VARIANT_REBALANCE),
+                        proxy_session_id,
+                        routing_subject_hash,
+                        upstream_operation: Some(upstream_operation),
+                        fallback_reason: None,
+                        forwarded_headers: &sanitized_headers.forwarded,
+                        dropped_headers: &sanitized_headers.dropped,
+                    })
+                    .await?;
+                if armed_backoff {
+                    self.key_store
+                        .set_api_key_transient_backoff_request_log_id(
+                            &lease.id,
+                            REBALANCE_MCP_HTTP_BACKOFF_SCOPE,
+                            request_log_id,
+                            Utc::now().timestamp(),
+                        )
+                        .await?;
+                }
+
+                let mut headers = HeaderMap::new();
+                headers.insert(
+                    reqwest::header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json; charset=utf-8"),
+                );
+
+                Ok(ProxyResponse {
+                    status: StatusCode::OK,
+                    headers,
+                    body: Bytes::from(response_body),
+                    api_key_id: Some(lease.id),
+                    request_log_id: Some(request_log_id),
+                    key_effect_code: key_effect.code,
+                    key_effect_summary: key_effect.summary,
+                    binding_effect_code: KEY_EFFECT_NONE.to_string(),
+                    binding_effect_summary: None,
+                    selection_effect_code: KEY_EFFECT_NONE.to_string(),
+                    selection_effect_summary: None,
+                })
+            }
+            Err(err) => {
+                log_proxy_error(&lease.secret, method, display_path, None, &err);
+                let response_body = br#"{"jsonrpc":"2.0","result":{"structuredContent":{"status":502,"isError":true}}}"#
+                    .to_vec();
+                let request_log_id = self
+                    .key_store
+                    .log_attempt(AttemptLog {
+                        key_id: Some(&lease.id),
+                        auth_token_id,
+                        method,
+                        path: display_path,
+                        query: None,
+                        status: Some(StatusCode::BAD_GATEWAY),
+                        tavily_status_code: Some(StatusCode::BAD_GATEWAY.as_u16() as i64),
+                        error: Some(&err.to_string()),
+                        request_body: original_request_body,
+                        response_body: &response_body,
+                        outcome: OUTCOME_ERROR,
+                        failure_kind: None,
+                        key_effect_code: KEY_EFFECT_NONE,
+                        key_effect_summary: None,
+                        binding_effect_code: KEY_EFFECT_NONE,
+                        binding_effect_summary: None,
+                        selection_effect_code: KEY_EFFECT_NONE,
+                        selection_effect_summary: None,
+                        gateway_mode: Some(MCP_GATEWAY_MODE_REBALANCE),
+                        experiment_variant: Some(MCP_EXPERIMENT_VARIANT_REBALANCE),
+                        proxy_session_id,
+                        routing_subject_hash,
+                        upstream_operation: Some(upstream_operation),
+                        fallback_reason: Some("upstream_http_error"),
+                        forwarded_headers: &sanitized_headers.forwarded,
+                        dropped_headers: &sanitized_headers.dropped,
+                    })
+                    .await?;
+                let mut headers = HeaderMap::new();
+                headers.insert(
+                    reqwest::header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json; charset=utf-8"),
+                );
+                Ok(ProxyResponse {
+                    status: StatusCode::BAD_GATEWAY,
+                    headers,
+                    body: Bytes::from(response_body),
+                    api_key_id: Some(lease.id),
+                    request_log_id: Some(request_log_id),
+                    key_effect_code: KEY_EFFECT_NONE.to_string(),
+                    key_effect_summary: None,
+                    binding_effect_code: KEY_EFFECT_NONE.to_string(),
+                    binding_effect_summary: None,
+                    selection_effect_code: KEY_EFFECT_NONE.to_string(),
+                    selection_effect_summary: None,
+                })
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn proxy_rebalance_mcp_http_research_with_usage_diff(
+        &self,
+        usage_base: &str,
+        auth_token_id: Option<&str>,
+        method: &Method,
+        display_path: &str,
+        original_request_body: &[u8],
+        original_headers: &HeaderMap,
+        response_id: Option<&Value>,
+        options: Value,
+        proxy_session_id: Option<&str>,
+        routing_subject_hash: Option<&str>,
+        upstream_operation: &str,
+    ) -> Result<ProxyResponse, ProxyError> {
+        let lease = self.acquire_key_for_rebalance_mcp_http_call().await?;
+        let _key_guard = self.lock_research_key_usage(&lease.id).await?;
+
+        let before_usage = match self
+            .fetch_research_usage_for_secret_with_retries(
+                &lease.secret,
+                usage_base,
+                Some(&lease.id),
+                "research_usage_before",
+            )
+            .await
+        {
+            Ok(usage) => usage,
+            Err(err) => {
+                self.maybe_quarantine_usage_error(&lease.id, "/mcp#research_usage", &err)
+                    .await?;
+                return Err(err);
+            }
+        };
+
+        let base = Url::parse(usage_base).map_err(|source| ProxyError::InvalidEndpoint {
+            endpoint: usage_base.to_owned(),
+            source,
+        })?;
+        let url = build_path_prefixed_url(&base, "/research");
+        let sanitized_headers = sanitize_rebalance_mcp_http_headers_inner(original_headers);
+
+        let mut upstream_options = options;
+        if let Value::Object(ref mut map) = upstream_options {
+            let keys_to_remove: Vec<String> = map
+                .keys()
+                .filter(|key| key.eq_ignore_ascii_case("api_key"))
+                .cloned()
+                .collect();
+            for key in keys_to_remove {
+                map.remove(&key);
+            }
+            map.insert("api_key".to_string(), Value::String(lease.secret.clone()));
+        } else {
+            let mut map = serde_json::Map::new();
+            map.insert("api_key".to_string(), Value::String(lease.secret.clone()));
+            map.insert("payload".to_string(), upstream_options);
+            upstream_options = Value::Object(map);
+        }
+
+        let request_body = serde_json::to_vec(&upstream_options)
+            .map_err(|err| ProxyError::Other(err.to_string()))?;
+
+        let request_method = method.clone();
+        let request_url = url.clone();
+        let upstream_secret = lease.secret.clone();
+        let response = self
+            .send_with_forward_proxy(&lease.id, "research", |client| {
+                let mut builder = client.request(request_method.clone(), request_url.clone());
+                for (name, value) in sanitized_headers.headers.iter() {
+                    if name == HOST || name == CONTENT_LENGTH {
+                        continue;
+                    }
+                    builder = builder.header(name, value);
+                }
+                builder
+                    .header("Authorization", format!("Bearer {}", upstream_secret))
+                    .body(request_body.clone())
+            })
+            .await;
+
+        match response {
+            Ok((response, _relay_lease)) => {
+                let upstream_status = response.status();
+                let upstream_headers = response.headers().clone();
+                let upstream_body = response.bytes().await.map_err(ProxyError::Http)?;
+
+                let mut analysis = analyze_http_attempt(upstream_status, &upstream_body);
+                analysis.api_key_id = Some(lease.id.clone());
+                if analysis.failure_kind.is_none() && analysis.status == OUTCOME_ERROR {
+                    analysis.failure_kind = classify_failure_kind(
+                        display_path,
+                        Some(i64::from(upstream_status.as_u16())),
+                        analysis.tavily_status_code,
+                        None,
+                        &upstream_body,
+                    );
+                }
+                if upstream_status.is_success()
+                    && let Some(request_id) = extract_research_request_id(&upstream_body)
+                    && let Some(token_id) = auth_token_id
+                {
+                    self.record_research_request_affinity(&request_id, &lease.id, token_id)
+                        .await?;
+                }
+
+                let key_effect = self
+                    .reconcile_key_health(&lease, display_path, &analysis, auth_token_id)
+                    .await?;
+                let armed_backoff = self
+                    .maybe_arm_rebalance_mcp_http_backoff(&lease.id, &upstream_headers, &analysis)
+                    .await?;
+
+                let after_usage = match self
+                    .fetch_research_usage_for_secret_with_retries(
+                        &lease.secret,
+                        usage_base,
+                        Some(&lease.id),
+                        "research_usage_after",
+                    )
+                    .await
+                {
+                    Ok(usage) => Some(usage),
+                    Err(err) => {
+                        self.maybe_quarantine_usage_error(
+                            &lease.id,
+                            "/mcp#research_usage_after",
+                            &err,
+                        )
+                        .await?;
+                        None
+                    }
+                };
+                let usage_delta = match after_usage {
+                    Some(after) if after >= before_usage => Some(after - before_usage),
+                    _ => None,
+                };
+
+                let response_body = Self::build_rebalance_mcp_tool_result_body(
+                    response_id,
+                    upstream_status,
+                    &upstream_body,
+                    usage_delta,
+                );
+                let mcp_analysis = analyze_mcp_attempt(StatusCode::OK, &response_body);
+                let request_log_id = self
+                    .key_store
+                    .log_attempt(AttemptLog {
+                        key_id: Some(&lease.id),
+                        auth_token_id,
+                        method,
+                        path: display_path,
+                        query: None,
+                        status: Some(StatusCode::OK),
+                        tavily_status_code: mcp_analysis.tavily_status_code,
+                        error: None,
+                        request_body: original_request_body,
+                        response_body: &response_body,
+                        outcome: mcp_analysis.status,
+                        failure_kind: mcp_analysis.failure_kind.as_deref(),
+                        key_effect_code: key_effect.code.as_str(),
+                        key_effect_summary: key_effect.summary.as_deref(),
+                        binding_effect_code: KEY_EFFECT_NONE,
+                        binding_effect_summary: None,
+                        selection_effect_code: KEY_EFFECT_NONE,
+                        selection_effect_summary: None,
+                        gateway_mode: Some(MCP_GATEWAY_MODE_REBALANCE),
+                        experiment_variant: Some(MCP_EXPERIMENT_VARIANT_REBALANCE),
+                        proxy_session_id,
+                        routing_subject_hash,
+                        upstream_operation: Some(upstream_operation),
+                        fallback_reason: None,
+                        forwarded_headers: &sanitized_headers.forwarded,
+                        dropped_headers: &sanitized_headers.dropped,
+                    })
+                    .await?;
+                if armed_backoff {
+                    self.key_store
+                        .set_api_key_transient_backoff_request_log_id(
+                            &lease.id,
+                            REBALANCE_MCP_HTTP_BACKOFF_SCOPE,
+                            request_log_id,
+                            Utc::now().timestamp(),
+                        )
+                        .await?;
+                }
+
+                let mut headers = HeaderMap::new();
+                headers.insert(
+                    reqwest::header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json; charset=utf-8"),
+                );
+
+                Ok(ProxyResponse {
+                    status: StatusCode::OK,
+                    headers,
+                    body: Bytes::from(response_body),
+                    api_key_id: Some(lease.id),
+                    request_log_id: Some(request_log_id),
+                    key_effect_code: key_effect.code,
+                    key_effect_summary: key_effect.summary,
+                    binding_effect_code: KEY_EFFECT_NONE.to_string(),
+                    binding_effect_summary: None,
+                    selection_effect_code: KEY_EFFECT_NONE.to_string(),
+                    selection_effect_summary: None,
+                })
+            }
+            Err(err) => {
+                log_proxy_error(&lease.secret, method, display_path, None, &err);
+                let response_body = br#"{"jsonrpc":"2.0","result":{"structuredContent":{"status":502,"isError":true}}}"#
+                    .to_vec();
+                let request_log_id = self
+                    .key_store
+                    .log_attempt(AttemptLog {
+                        key_id: Some(&lease.id),
+                        auth_token_id,
+                        method,
+                        path: display_path,
+                        query: None,
+                        status: Some(StatusCode::BAD_GATEWAY),
+                        tavily_status_code: Some(StatusCode::BAD_GATEWAY.as_u16() as i64),
+                        error: Some(&err.to_string()),
+                        request_body: original_request_body,
+                        response_body: &response_body,
+                        outcome: OUTCOME_ERROR,
+                        failure_kind: None,
+                        key_effect_code: KEY_EFFECT_NONE,
+                        key_effect_summary: None,
+                        binding_effect_code: KEY_EFFECT_NONE,
+                        binding_effect_summary: None,
+                        selection_effect_code: KEY_EFFECT_NONE,
+                        selection_effect_summary: None,
+                        gateway_mode: Some(MCP_GATEWAY_MODE_REBALANCE),
+                        experiment_variant: Some(MCP_EXPERIMENT_VARIANT_REBALANCE),
+                        proxy_session_id,
+                        routing_subject_hash,
+                        upstream_operation: Some(upstream_operation),
+                        fallback_reason: Some("upstream_http_error"),
+                        forwarded_headers: &sanitized_headers.forwarded,
+                        dropped_headers: &sanitized_headers.dropped,
+                    })
+                    .await?;
+                let mut headers = HeaderMap::new();
+                headers.insert(
+                    reqwest::header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json; charset=utf-8"),
+                );
+                Ok(ProxyResponse {
+                    status: StatusCode::BAD_GATEWAY,
+                    headers,
+                    body: Bytes::from(response_body),
+                    api_key_id: Some(lease.id),
+                    request_log_id: Some(request_log_id),
+                    key_effect_code: KEY_EFFECT_NONE.to_string(),
+                    key_effect_summary: None,
+                    binding_effect_code: KEY_EFFECT_NONE.to_string(),
+                    binding_effect_summary: None,
+                    selection_effect_code: KEY_EFFECT_NONE.to_string(),
+                    selection_effect_summary: None,
+                })
             }
         }
     }
@@ -5072,6 +5736,12 @@ impl TavilyProxy {
                         binding_effect_summary: http_project_binding_effect.summary.as_deref(),
                         selection_effect_code: http_project_selection_effect.code.as_str(),
                         selection_effect_summary: http_project_selection_effect.summary.as_deref(),
+                        gateway_mode: None,
+                        experiment_variant: None,
+                        proxy_session_id: None,
+                        routing_subject_hash: None,
+                        upstream_operation: None,
+                        fallback_reason: None,
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
                     })
@@ -5164,6 +5834,12 @@ impl TavilyProxy {
                         binding_effect_summary: None,
                         selection_effect_code: KEY_EFFECT_NONE,
                         selection_effect_summary: None,
+                        gateway_mode: None,
+                        experiment_variant: None,
+                        proxy_session_id: None,
+                        routing_subject_hash: None,
+                        upstream_operation: None,
+                        fallback_reason: None,
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
                     })
@@ -5280,6 +5956,12 @@ impl TavilyProxy {
                         binding_effect_summary: None,
                         selection_effect_code: KEY_EFFECT_NONE,
                         selection_effect_summary: None,
+                        gateway_mode: None,
+                        experiment_variant: None,
+                        proxy_session_id: None,
+                        routing_subject_hash: None,
+                        upstream_operation: None,
+                        fallback_reason: None,
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
                     })
@@ -5336,6 +6018,12 @@ impl TavilyProxy {
                         binding_effect_summary: None,
                         selection_effect_code: KEY_EFFECT_NONE,
                         selection_effect_summary: None,
+                        gateway_mode: None,
+                        experiment_variant: None,
+                        proxy_session_id: None,
+                        routing_subject_hash: None,
+                        upstream_operation: None,
+                        fallback_reason: None,
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
                     })
@@ -6674,6 +7362,51 @@ impl TavilyProxy {
         forwarded_headers: &[String],
         dropped_headers: &[String],
     ) -> Result<i64, ProxyError> {
+        self.record_local_request_log_without_key_with_diagnostics(
+            auth_token_id,
+            method,
+            path,
+            query,
+            http_status,
+            mcp_status,
+            request_body,
+            response_body,
+            result_status,
+            failure_kind,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            forwarded_headers,
+            dropped_headers,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_local_request_log_without_key_with_diagnostics(
+        &self,
+        auth_token_id: Option<&str>,
+        method: &Method,
+        path: &str,
+        query: Option<&str>,
+        http_status: StatusCode,
+        mcp_status: Option<i64>,
+        request_body: &[u8],
+        response_body: &[u8],
+        result_status: &str,
+        failure_kind: Option<&str>,
+        gateway_mode: Option<&str>,
+        experiment_variant: Option<&str>,
+        proxy_session_id: Option<&str>,
+        routing_subject_hash: Option<&str>,
+        upstream_operation: Option<&str>,
+        fallback_reason: Option<&str>,
+        forwarded_headers: &[String],
+        dropped_headers: &[String],
+    ) -> Result<i64, ProxyError> {
         self.key_store
             .log_attempt(AttemptLog {
                 key_id: None,
@@ -6694,9 +7427,83 @@ impl TavilyProxy {
                 binding_effect_summary: None,
                 selection_effect_code: KEY_EFFECT_NONE,
                 selection_effect_summary: None,
+                gateway_mode,
+                experiment_variant,
+                proxy_session_id,
+                routing_subject_hash,
+                upstream_operation,
+                fallback_reason,
                 forwarded_headers,
                 dropped_headers,
             })
+            .await
+    }
+
+    pub async fn create_or_replace_mcp_session_binding(
+        &self,
+        binding: &McpSessionBinding,
+    ) -> Result<(), ProxyError> {
+        self.key_store.create_or_replace_mcp_session(binding).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_or_replace_mcp_session_record(
+        &self,
+        proxy_session_id: &str,
+        upstream_session_id: Option<&str>,
+        upstream_key_id: Option<&str>,
+        auth_token_id: Option<&str>,
+        user_id: Option<&str>,
+        protocol_version: Option<&str>,
+        last_event_id: Option<&str>,
+        gateway_mode: &str,
+        experiment_variant: &str,
+        ab_bucket: Option<i64>,
+        routing_subject_hash: Option<&str>,
+        fallback_reason: Option<&str>,
+    ) -> Result<(), ProxyError> {
+        let now = Utc::now().timestamp();
+        self.key_store
+            .create_or_replace_mcp_session(&McpSessionBinding {
+                proxy_session_id: proxy_session_id.to_string(),
+                upstream_session_id: upstream_session_id.map(str::to_string),
+                upstream_key_id: upstream_key_id.map(str::to_string),
+                auth_token_id: auth_token_id.map(str::to_string),
+                user_id: user_id.map(str::to_string),
+                protocol_version: protocol_version.map(str::to_string),
+                last_event_id: last_event_id.map(str::to_string),
+                gateway_mode: gateway_mode.to_string(),
+                experiment_variant: experiment_variant.to_string(),
+                ab_bucket,
+                routing_subject_hash: routing_subject_hash.map(str::to_string),
+                fallback_reason: fallback_reason.map(str::to_string),
+                rate_limited_until: None,
+                last_rate_limited_at: None,
+                last_rate_limit_reason: None,
+                created_at: now,
+                updated_at: now,
+                expires_at: now + MCP_SESSION_RETENTION_SECS,
+                revoked_at: None,
+                revoke_reason: None,
+            })
+            .await
+    }
+
+    pub async fn update_mcp_session_rebalance_metadata(
+        &self,
+        proxy_session_id: &str,
+        routing_subject_hash: Option<&str>,
+        fallback_reason: Option<&str>,
+    ) -> Result<(), ProxyError> {
+        let now = Utc::now().timestamp();
+        self.key_store
+            .update_mcp_session_rebalance_metadata(
+                proxy_session_id,
+                routing_subject_hash,
+                fallback_reason,
+                now,
+                now + MCP_SESSION_RETENTION_SECS,
+            )
             .await
     }
 
@@ -8104,12 +8911,17 @@ impl TavilyProxy {
         self.key_store
             .create_or_replace_mcp_session(&McpSessionBinding {
                 proxy_session_id: proxy_session_id.clone(),
-                upstream_session_id: upstream_session_id.to_string(),
-                upstream_key_id: upstream_key_id.to_string(),
+                upstream_session_id: Some(upstream_session_id.to_string()),
+                upstream_key_id: Some(upstream_key_id.to_string()),
                 auth_token_id: auth_token_id.map(str::to_string),
                 user_id: user_id.map(str::to_string),
                 protocol_version: protocol_version.map(str::to_string),
                 last_event_id: last_event_id.map(str::to_string),
+                gateway_mode: MCP_GATEWAY_MODE_UPSTREAM.to_string(),
+                experiment_variant: MCP_EXPERIMENT_VARIANT_CONTROL.to_string(),
+                ab_bucket: None,
+                routing_subject_hash: None,
+                fallback_reason: None,
                 rate_limited_until: None,
                 last_rate_limited_at: None,
                 last_rate_limit_reason: None,

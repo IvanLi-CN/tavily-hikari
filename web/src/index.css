@@ -5211,16 +5211,49 @@ table {
 
 /* token leaderboard styles consolidated near dedicated section below */
 
-.admin-logs-table .log-key-pill {
+.log-key-pill {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 2px 12px;
+  gap: 8px;
+  padding: 3px 24px 3px 12px;
   border-radius: 999px;
-  background: hsl(var(--accent) / 0.14);
+  border: 1px solid hsl(var(--border) / 0.72);
+  background: hsl(var(--accent) / 0.12);
   color: hsl(var(--foreground));
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
   font-size: 0.95rem;
+  transition:
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    background-color 180ms ease;
+}
+
+.log-key-pill--rebalance {
+  background:
+    linear-gradient(180deg, hsl(var(--accent) / 0.2), hsl(var(--accent) / 0.12));
+  border-color: hsl(var(--ring) / 0.45);
+  box-shadow:
+    inset 0 0 0 1px hsl(var(--ring) / 0.42),
+    0 0 0 1px hsl(var(--accent) / 0.18);
+}
+
+.log-key-pill__marker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  border: 1px solid hsl(var(--ring) / 0.42);
+  background: linear-gradient(180deg, hsl(var(--accent) / 0.32), hsl(var(--accent) / 0.2));
+  color: hsl(var(--foreground));
+  flex-shrink: 0;
+}
+
+.log-key-pill__marker svg {
+  width: 11px;
+  height: 11px;
+  display: block;
 }
 
 .request-entity-button {
@@ -5228,11 +5261,22 @@ table {
   cursor: pointer;
 }
 
-.admin-logs-table .log-key-pill code {
-  color: inherit;
+.request-entity-button.log-key-pill {
+  border: 1px solid hsl(var(--border) / 0.72);
 }
 
-.admin-mobile-request-entity-button {
+.request-entity-button.log-key-pill--rebalance {
+  border-color: hsl(var(--ring) / 0.45);
+}
+
+.log-key-pill code {
+  color: inherit;
+  display: inline-flex;
+  align-items: center;
+  padding-right: 6px;
+}
+
+.admin-mobile-request-entity-button:not(.log-key-pill) {
   padding: 0;
   background: transparent;
   color: inherit;
