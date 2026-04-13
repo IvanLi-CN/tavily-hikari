@@ -669,6 +669,14 @@ struct ForwardProxySettingsUpdatePayload {
 #[serde(rename_all = "camelCase")]
 struct SystemSettingsUpdatePayload {
     mcp_session_affinity_key_count: i64,
+    #[serde(default)]
+    rebalance_mcp_enabled: bool,
+    #[serde(default = "default_rebalance_mcp_session_percent")]
+    rebalance_mcp_session_percent: i64,
+}
+
+fn default_rebalance_mcp_session_percent() -> i64 {
+    tavily_hikari::REBALANCE_MCP_SESSION_PERCENT_DEFAULT
 }
 
 #[derive(Debug, Deserialize, Clone, Copy)]
@@ -839,18 +847,22 @@ async fn put_system_settings(
 
     state
         .proxy
-        .set_mcp_session_affinity_key_count(payload.mcp_session_affinity_key_count)
+        .set_system_settings(&tavily_hikari::SystemSettings {
+            mcp_session_affinity_key_count: payload.mcp_session_affinity_key_count,
+            rebalance_mcp_enabled: payload.rebalance_mcp_enabled,
+            rebalance_mcp_session_percent: payload.rebalance_mcp_session_percent,
+        })
         .await
         .map(Json)
         .map_err(|err| {
             eprintln!("update system settings error: {err}");
-            if err
-                .to_string()
-                .contains("mcp_session_affinity_key_count must be between")
+            let message = err.to_string();
+            if message.contains("mcp_session_affinity_key_count must be between")
+                || message.contains("rebalance_mcp_session_percent must be between")
             {
-                (StatusCode::BAD_REQUEST, err.to_string())
+                (StatusCode::BAD_REQUEST, message)
             } else {
-                (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+                (StatusCode::INTERNAL_SERVER_ERROR, message)
             }
         })
 }

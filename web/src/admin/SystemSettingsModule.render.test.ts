@@ -12,7 +12,11 @@ describe('SystemSettingsModule rendering', () => {
     const markup = renderToStaticMarkup(
       createElement(SystemSettingsModule, {
         strings,
-        settings: { mcpSessionAffinityKeyCount: 5 },
+        settings: {
+          mcpSessionAffinityKeyCount: 5,
+          rebalanceMcpEnabled: false,
+          rebalanceMcpSessionPercent: 100,
+        },
         loadState: 'ready',
         error: null,
         saving: false,
@@ -24,9 +28,11 @@ describe('SystemSettingsModule rendering', () => {
     expect(markup).toContain(strings.helpLabel)
     expect(markup.match(/system-settings-help-trigger/g)?.length).toBe(1)
     expect(markup).toContain(strings.form.currentValue.replace('{count}', '5'))
+    expect(markup).toContain(strings.form.currentPercentValue.replace('{percent}', '100'))
     expect(markup).not.toContain(strings.description)
     expect(markup).not.toContain(strings.form.description)
     expect(markup).not.toContain(strings.form.countHint)
+    expect(markup).not.toContain(strings.form.percentHint)
     expect(markup).not.toContain(strings.form.applyScopeHint)
   })
 
@@ -34,7 +40,11 @@ describe('SystemSettingsModule rendering', () => {
     const markup = renderToStaticMarkup(
       createElement(SystemSettingsModule, {
         strings,
-        settings: { mcpSessionAffinityKeyCount: 5 },
+        settings: {
+          mcpSessionAffinityKeyCount: 5,
+          rebalanceMcpEnabled: true,
+          rebalanceMcpSessionPercent: 35,
+        },
         loadState: 'ready',
         error: null,
         saving: true,
@@ -44,5 +54,24 @@ describe('SystemSettingsModule rendering', () => {
 
     expect(markup).toContain(strings.actions.applying)
     expect(markup).toContain('icon-spin')
+  })
+
+  it('shows the locked hint when rebalance is disabled', () => {
+    const markup = renderToStaticMarkup(
+      createElement(SystemSettingsModule, {
+        strings,
+        settings: {
+          mcpSessionAffinityKeyCount: 5,
+          rebalanceMcpEnabled: false,
+          rebalanceMcpSessionPercent: 35,
+        },
+        loadState: 'ready',
+        error: null,
+        saving: false,
+        onApply: () => {},
+      }),
+    )
+
+    expect(markup).toContain(strings.form.percentDisabledHint)
   })
 })

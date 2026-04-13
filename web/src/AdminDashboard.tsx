@@ -1098,6 +1098,23 @@ function tokenOwnerSecondary(owner: AuthToken['owner']): string | null {
   return `@${owner.username}`
 }
 
+function isRebalanceGatewayLog(log: RequestLog): boolean {
+  return (log.gateway_mode ?? '').trim() === 'rebalance_http'
+}
+
+function RebalanceGatewayMarker(): JSX.Element {
+  return (
+    <span className="log-key-pill__marker" aria-hidden="true">
+      <svg viewBox="0 0 16 16" focusable="false">
+        <path
+          d="M5 2.75a1.75 1.75 0 1 1-1 3.18V11a1 1 0 0 0 1 1h4.18a1.75 1.75 0 1 1 0 1.5H5A2.5 2.5 0 0 1 2.5 11V5.93A1.75 1.75 0 0 1 5 2.75m6 0a1.75 1.75 0 1 1-1 3.18V8a1 1 0 0 1-1 1H6.5v-1.5H8.5V5.93A1.75 1.75 0 0 1 11 2.75"
+          fill="currentColor"
+        />
+      </svg>
+    </span>
+  )
+}
+
 function TokenOwnerValue({
   owner,
   emptyLabel,
@@ -5568,11 +5585,11 @@ function AdminDashboard(): JSX.Element {
       setRegistrationSettingsSaving(false)
     }
   }
-  const saveSystemSettings = useCallback(async (mcpSessionAffinityKeyCount: number) => {
+  const saveSystemSettings = useCallback(async (payload: SystemSettings) => {
     setSystemSettingsSaving(true)
     setSystemSettingsError(null)
     try {
-      const nextSettings = await updateSystemSettings({ mcpSessionAffinityKeyCount })
+      const nextSettings = await updateSystemSettings(payload)
       setSystemSettings(nextSettings)
       setSystemSettingsLoadState('ready')
       setLastUpdated(new Date())
@@ -11049,6 +11066,7 @@ interface LogRowProps {
 function LogRow({ log, expanded, onToggle, strings, language, onOpenKey, onOpenToken }: LogRowProps): JSX.Element {
   const requestButtonLabel = expanded ? strings.logs.toggles.hide : strings.logs.toggles.show
   const tokenId = log.auth_token_id ?? null
+  const isRebalanceGateway = isRebalanceGatewayLog(log)
   const timeLabel = formatClockTime(log.created_at)
   const timeDetail =
     log.created_at != null
@@ -11077,7 +11095,7 @@ function LogRow({ log, expanded, onToggle, strings, language, onOpenKey, onOpenT
         <td>
           <button
             type="button"
-            className="log-key-pill request-entity-button"
+            className={`log-key-pill request-entity-button${isRebalanceGateway ? ' log-key-pill--rebalance' : ''}`}
             title={strings.keys.actions.details}
             aria-label={strings.keys.actions.details}
             onClick={() => {
@@ -11085,6 +11103,12 @@ function LogRow({ log, expanded, onToggle, strings, language, onOpenKey, onOpenT
               onOpenKey?.(log.key_id)
             }}
           >
+            {isRebalanceGateway ? (
+              <>
+                <RebalanceGatewayMarker />
+                <span className="sr-only">{strings.logDetails.gatewayMode}: {log.gateway_mode}</span>
+              </>
+            ) : null}
             <code>{log.key_id}</code>
           </button>
         </td>

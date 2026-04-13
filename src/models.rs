@@ -27,6 +27,12 @@ pub(crate) struct AttemptLog<'a> {
     pub(crate) binding_effect_summary: Option<&'a str>,
     pub(crate) selection_effect_code: &'a str,
     pub(crate) selection_effect_summary: Option<&'a str>,
+    pub(crate) gateway_mode: Option<&'a str>,
+    pub(crate) experiment_variant: Option<&'a str>,
+    pub(crate) proxy_session_id: Option<&'a str>,
+    pub(crate) routing_subject_hash: Option<&'a str>,
+    pub(crate) upstream_operation: Option<&'a str>,
+    pub(crate) fallback_reason: Option<&'a str>,
     pub(crate) forwarded_headers: &'a [String],
     pub(crate) dropped_headers: &'a [String],
 }
@@ -474,12 +480,17 @@ pub(crate) struct HttpProjectAffinityContext {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpSessionBinding {
     pub proxy_session_id: String,
-    pub upstream_session_id: String,
-    pub upstream_key_id: String,
+    pub upstream_session_id: Option<String>,
+    pub upstream_key_id: Option<String>,
     pub auth_token_id: Option<String>,
     pub user_id: Option<String>,
     pub protocol_version: Option<String>,
     pub last_event_id: Option<String>,
+    pub gateway_mode: String,
+    pub experiment_variant: String,
+    pub ab_bucket: Option<i64>,
+    pub routing_subject_hash: Option<String>,
+    pub fallback_reason: Option<String>,
     pub rate_limited_until: Option<i64>,
     pub last_rate_limited_at: Option<i64>,
     pub last_rate_limit_reason: Option<String>,
@@ -494,6 +505,8 @@ pub struct McpSessionBinding {
 #[serde(rename_all = "camelCase")]
 pub struct SystemSettings {
     pub mcp_session_affinity_key_count: i64,
+    pub rebalance_mcp_enabled: bool,
+    pub rebalance_mcp_session_percent: i64,
 }
 
 /// 单条请求日志记录的关键信息。
@@ -522,6 +535,12 @@ pub struct RequestLogRecord {
     pub binding_effect_summary: Option<String>,
     pub selection_effect_code: String,
     pub selection_effect_summary: Option<String>,
+    pub gateway_mode: Option<String>,
+    pub experiment_variant: Option<String>,
+    pub proxy_session_id: Option<String>,
+    pub routing_subject_hash: Option<String>,
+    pub upstream_operation: Option<String>,
+    pub fallback_reason: Option<String>,
     pub operational_class: String,
     pub request_body: Vec<u8>,
     pub response_body: Vec<u8>,
@@ -1053,6 +1072,12 @@ pub struct TokenLogRecord {
     pub binding_effect_summary: Option<String>,
     pub selection_effect_code: String,
     pub selection_effect_summary: Option<String>,
+    pub gateway_mode: Option<String>,
+    pub experiment_variant: Option<String>,
+    pub proxy_session_id: Option<String>,
+    pub routing_subject_hash: Option<String>,
+    pub upstream_operation: Option<String>,
+    pub fallback_reason: Option<String>,
     pub created_at: i64,
 }
 

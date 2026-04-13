@@ -5,12 +5,14 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import meta, * as systemSettingsStories from './SystemSettingsModule.stories'
 
 describe('SystemSettingsModule Storybook proofs', () => {
-  it('keeps the default, applying, error, and help-bubble stories available', () => {
+  it('keeps the default, rebalance toggle, applying, error, and help-bubble stories available', () => {
     expect(meta).toMatchObject({
       title: 'Admin/SystemSettingsModule',
     })
 
     expect(systemSettingsStories.Default).toMatchObject({})
+    expect(systemSettingsStories.RebalanceEnabled).toMatchObject({})
+    expect(systemSettingsStories.RebalanceDisabledSliderLocked).toMatchObject({})
     expect(systemSettingsStories.Applying).toMatchObject({})
     expect(systemSettingsStories.ErrorState).toMatchObject({})
     expect(systemSettingsStories.HelpBubbleOpen).toMatchObject({})

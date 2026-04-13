@@ -196,8 +196,8 @@ async fn proxy_mcp_follow_up_with_retry(
     let waited_before_send = wait_for_mcp_session_retry_window(state, proxy_session_id).await?;
     let mut first_response = state.proxy.proxy_request(proxy_request.clone()).await?;
     let first_analysis = analyze_mcp_attempt(first_response.status, &first_response.body);
-    let first_rate_limited = first_analysis.failure_kind.as_deref()
-        == Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429_CODE);
+    let first_rate_limited =
+        first_analysis.failure_kind.as_deref() == Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429_CODE);
 
     if !first_rate_limited {
         if waited_before_send {
@@ -214,7 +214,10 @@ async fn proxy_mcp_follow_up_with_retry(
                 Some(KEY_EFFECT_MCP_SESSION_RETRY_WAITED_SUMMARY),
             );
         }
-        let _ = state.proxy.clear_mcp_session_rate_limit(proxy_session_id).await;
+        let _ = state
+            .proxy
+            .clear_mcp_session_rate_limit(proxy_session_id)
+            .await;
         return Ok(first_response);
     }
 
@@ -254,8 +257,7 @@ async fn proxy_mcp_follow_up_with_retry(
     );
 
     let retry_analysis = analyze_mcp_attempt(retry_response.status, &retry_response.body);
-    if retry_analysis.failure_kind.as_deref() == Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429_CODE)
-    {
+    if retry_analysis.failure_kind.as_deref() == Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429_CODE) {
         let now = Utc::now().timestamp();
         let retry_after_secs = mcp_session_retry_after_secs(&retry_response.headers, now);
         let rate_limited_until = now + retry_after_secs;
@@ -268,7 +270,10 @@ async fn proxy_mcp_follow_up_with_retry(
             )
             .await?;
     } else {
-        let _ = state.proxy.clear_mcp_session_rate_limit(proxy_session_id).await;
+        let _ = state
+            .proxy
+            .clear_mcp_session_rate_limit(proxy_session_id)
+            .await;
     }
 
     Ok(retry_response)
@@ -351,10 +356,12 @@ async fn authenticate_request_token(
     let Some(token_resolution) =
         resolve_request_token(state.dev_open_admin, vec![header_token, query_token])
     else {
-        return Err(
-            missing_token_response()
-                .unwrap_or_else(|status| Response::builder().status(status).body(Body::empty()).unwrap()),
-        );
+        return Err(missing_token_response().unwrap_or_else(|status| {
+            Response::builder()
+                .status(status)
+                .body(Body::empty())
+                .unwrap()
+        }));
     };
 
     let valid = if token_resolution.using_dev_open_admin_fallback {
@@ -373,10 +380,12 @@ async fn authenticate_request_token(
     };
 
     if !valid {
-        return Err(
-            invalid_token_response()
-                .unwrap_or_else(|status| Response::builder().status(status).body(Body::empty()).unwrap()),
-        );
+        return Err(invalid_token_response().unwrap_or_else(|status| {
+            Response::builder()
+                .status(status)
+                .body(Body::empty())
+                .unwrap()
+        }));
     }
 
     Ok(AuthenticatedRequestToken {
@@ -474,6 +483,664 @@ fn mcp_response_requires_reconnect(status: StatusCode, body: &[u8]) -> bool {
         || lower.contains("session expired")
 }
 
+const REBALANCE_MCP_PROTOCOL_VERSION_DEFAULT: &str = "2025-03-26";
+const REBALANCE_MCP_SERVER_NAME: &str = "tavily-hikari-rebalance-mcp";
+
+fn normalize_rebalance_tavily_tool_name(tool: &str) -> Option<&'static str> {
+    match tool.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+        "tavily-search" => Some("search"),
+        "tavily-extract" => Some("extract"),
+        "tavily-crawl" => Some("crawl"),
+        "tavily-map" => Some("map"),
+        "tavily-research" => Some("research"),
+        _ => None,
+    }
+}
+
+fn stable_rebalance_bucket(proxy_session_id: &str) -> i64 {
+    let digest = Sha256::digest(proxy_session_id.as_bytes());
+    let bucket_seed = u64::from_be_bytes([
+        digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
+    ]);
+    (bucket_seed % 100) as i64
+}
+
+fn hash_routing_subject(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let digest = Sha256::digest(trimmed.as_bytes());
+    Some(
+        digest[..8]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>(),
+    )
+}
+
+fn build_rebalance_mcp_success_body(response_id: Option<&Value>, result: Value) -> Vec<u8> {
+    let mut envelope = serde_json::Map::new();
+    envelope.insert("jsonrpc".to_string(), Value::String("2.0".to_string()));
+    if let Some(id) = response_id {
+        envelope.insert("id".to_string(), id.clone());
+    }
+    envelope.insert("result".to_string(), result);
+    serde_json::to_vec(&Value::Object(envelope))
+        .unwrap_or_else(|_| br#"{"jsonrpc":"2.0","result":{"isError":true,"status":500}}"#.to_vec())
+}
+
+fn build_rebalance_mcp_error_body(
+    response_id: Option<&Value>,
+    code: i64,
+    message: &str,
+) -> Vec<u8> {
+    let mut envelope = serde_json::Map::new();
+    envelope.insert("jsonrpc".to_string(), Value::String("2.0".to_string()));
+    if let Some(id) = response_id {
+        envelope.insert("id".to_string(), id.clone());
+    } else {
+        envelope.insert("id".to_string(), Value::Null);
+    }
+    envelope.insert(
+        "error".to_string(),
+        json!({
+            "code": code,
+            "message": message,
+        }),
+    );
+    serde_json::to_vec(&Value::Object(envelope)).unwrap_or_else(|_| {
+        br#"{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"internal error"}}"#
+            .to_vec()
+    })
+}
+
+fn build_rebalance_mcp_initialize_body(
+    response_id: Option<&Value>,
+    protocol_version: &str,
+) -> Vec<u8> {
+    build_rebalance_mcp_success_body(
+        response_id,
+        json!({
+            "protocolVersion": protocol_version,
+            "capabilities": {
+                "tools": {
+                    "listChanged": false
+                }
+            },
+            "serverInfo": {
+                "name": REBALANCE_MCP_SERVER_NAME,
+                "version": env!("CARGO_PKG_VERSION")
+            }
+        }),
+    )
+}
+
+fn rebalance_mcp_tools_descriptor() -> Vec<Value> {
+    vec![
+        json!({
+            "name": "tavily_search",
+            "description": "Search the web with Tavily",
+            "inputSchema": { "type": "object", "additionalProperties": true }
+        }),
+        json!({
+            "name": "tavily_extract",
+            "description": "Extract page content with Tavily",
+            "inputSchema": { "type": "object", "additionalProperties": true }
+        }),
+        json!({
+            "name": "tavily_crawl",
+            "description": "Crawl a site with Tavily",
+            "inputSchema": { "type": "object", "additionalProperties": true }
+        }),
+        json!({
+            "name": "tavily_map",
+            "description": "Map a site with Tavily",
+            "inputSchema": { "type": "object", "additionalProperties": true }
+        }),
+        json!({
+            "name": "tavily_research",
+            "description": "Run Tavily research",
+            "inputSchema": { "type": "object", "additionalProperties": true }
+        }),
+    ]
+}
+
+fn build_rebalance_mcp_tools_list_body(response_id: Option<&Value>) -> Vec<u8> {
+    build_rebalance_mcp_success_body(
+        response_id,
+        json!({
+            "tools": rebalance_mcp_tools_descriptor(),
+        }),
+    )
+}
+
+fn build_rebalance_mcp_ping_body(response_id: Option<&Value>) -> Vec<u8> {
+    build_rebalance_mcp_success_body(response_id, json!({}))
+}
+
+fn rebalance_initialize_protocol_version(
+    request: &Value,
+    incoming_protocol_version: Option<&str>,
+) -> String {
+    request
+        .get("params")
+        .and_then(|params| params.get("protocolVersion"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or(incoming_protocol_version)
+        .unwrap_or(REBALANCE_MCP_PROTOCOL_VERSION_DEFAULT)
+        .to_string()
+}
+
+fn proxy_response_with_json_body(
+    status: StatusCode,
+    body: Vec<u8>,
+    request_log_id: Option<i64>,
+) -> ProxyResponse {
+    let mut headers = ReqHeaderMap::new();
+    if !body.is_empty() {
+        headers.insert(
+            CONTENT_TYPE,
+            ReqHeaderValue::from_static("application/json; charset=utf-8"),
+        );
+    }
+    ProxyResponse {
+        status,
+        headers: headers.clone(),
+        body: Bytes::from(body),
+        api_key_id: None,
+        request_log_id,
+        key_effect_code: "none".to_string(),
+        key_effect_summary: None,
+        binding_effect_code: "none".to_string(),
+        binding_effect_summary: None,
+        selection_effect_code: "none".to_string(),
+        selection_effect_summary: None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn log_rebalance_local_control_plane_response(
+    state: &Arc<AppState>,
+    token_id: Option<&str>,
+    method: &Method,
+    path: &str,
+    request_body: &[u8],
+    response_status: StatusCode,
+    response_body: &[u8],
+    proxy_session_id: Option<&str>,
+    routing_subject_hash: Option<&str>,
+    fallback_reason: Option<&str>,
+) -> Option<i64> {
+    let analysis = analyze_mcp_attempt(response_status, response_body);
+    let empty_headers: [String; 0] = [];
+    match state
+        .proxy
+        .record_local_request_log_without_key_with_diagnostics(
+            token_id,
+            method,
+            path,
+            None,
+            response_status,
+            analysis.tavily_status_code,
+            request_body,
+            response_body,
+            analysis.status,
+            analysis.failure_kind.as_deref(),
+            Some(tavily_hikari::MCP_GATEWAY_MODE_REBALANCE),
+            Some(tavily_hikari::MCP_EXPERIMENT_VARIANT_REBALANCE),
+            proxy_session_id,
+            routing_subject_hash,
+            Some("mcp"),
+            fallback_reason,
+            &empty_headers,
+            &empty_headers,
+        )
+        .await
+    {
+        Ok(log_id) => Some(log_id),
+        Err(err) => {
+            eprintln!("local rebalance MCP request_log failed for {path}: {err}");
+            None
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_rebalance_mcp_single_message(
+    state: &Arc<AppState>,
+    method: &Method,
+    path: &str,
+    headers: &ReqHeaderMap,
+    message: &Value,
+    message_body: &[u8],
+    token_id: Option<&str>,
+    proxy_session_id: Option<&str>,
+    incoming_protocol_version: Option<&str>,
+    routing_subject_hash: Option<&str>,
+) -> Result<ProxyResponse, StatusCode> {
+    let response_id = message.get("id").filter(|value| !value.is_null());
+    let method_name = message
+        .get("method")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    let Some(method_name) = method_name else {
+        let body = build_rebalance_mcp_error_body(response_id, -32600, "Invalid JSON-RPC request");
+        let request_log_id = log_rebalance_local_control_plane_response(
+            state,
+            token_id,
+            method,
+            path,
+            message_body,
+            StatusCode::BAD_REQUEST,
+            &body,
+            proxy_session_id,
+            routing_subject_hash,
+            Some("invalid_jsonrpc_request"),
+        )
+        .await;
+        return Ok(proxy_response_with_json_body(
+            StatusCode::BAD_REQUEST,
+            body,
+            request_log_id,
+        ));
+    };
+
+    match method_name {
+        "initialize" => {
+            let protocol_version =
+                rebalance_initialize_protocol_version(message, incoming_protocol_version);
+            let body = build_rebalance_mcp_initialize_body(response_id, &protocol_version);
+            let request_log_id = log_rebalance_local_control_plane_response(
+                state,
+                token_id,
+                method,
+                path,
+                message_body,
+                StatusCode::OK,
+                &body,
+                proxy_session_id,
+                routing_subject_hash,
+                None,
+            )
+            .await;
+            Ok(proxy_response_with_json_body(
+                StatusCode::OK,
+                body,
+                request_log_id,
+            ))
+        }
+        "notifications/initialized" => {
+            let body = Vec::new();
+            let request_log_id = log_rebalance_local_control_plane_response(
+                state,
+                token_id,
+                method,
+                path,
+                message_body,
+                StatusCode::ACCEPTED,
+                &body,
+                proxy_session_id,
+                routing_subject_hash,
+                None,
+            )
+            .await;
+            Ok(proxy_response_with_json_body(
+                StatusCode::ACCEPTED,
+                body,
+                request_log_id,
+            ))
+        }
+        "ping" => {
+            let body = build_rebalance_mcp_ping_body(response_id);
+            let request_log_id = log_rebalance_local_control_plane_response(
+                state,
+                token_id,
+                method,
+                path,
+                message_body,
+                StatusCode::OK,
+                &body,
+                proxy_session_id,
+                routing_subject_hash,
+                None,
+            )
+            .await;
+            Ok(proxy_response_with_json_body(
+                StatusCode::OK,
+                body,
+                request_log_id,
+            ))
+        }
+        "tools/list" => {
+            let body = build_rebalance_mcp_tools_list_body(response_id);
+            let request_log_id = log_rebalance_local_control_plane_response(
+                state,
+                token_id,
+                method,
+                path,
+                message_body,
+                StatusCode::OK,
+                &body,
+                proxy_session_id,
+                routing_subject_hash,
+                None,
+            )
+            .await;
+            Ok(proxy_response_with_json_body(
+                StatusCode::OK,
+                body,
+                request_log_id,
+            ))
+        }
+        "tools/call" => {
+            let params = message.get("params").and_then(Value::as_object);
+            let Some(params) = params else {
+                let body = build_rebalance_mcp_error_body(
+                    response_id,
+                    -32602,
+                    "Invalid tools/call params",
+                );
+                let request_log_id = log_rebalance_local_control_plane_response(
+                    state,
+                    token_id,
+                    method,
+                    path,
+                    message_body,
+                    StatusCode::BAD_REQUEST,
+                    &body,
+                    proxy_session_id,
+                    routing_subject_hash,
+                    Some("invalid_tool_params"),
+                )
+                .await;
+                return Ok(proxy_response_with_json_body(
+                    StatusCode::BAD_REQUEST,
+                    body,
+                    request_log_id,
+                ));
+            };
+            let tool_name = params
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let Some(tool) = normalize_rebalance_tavily_tool_name(tool_name) else {
+                let body = build_rebalance_mcp_error_body(response_id, -32601, "Unknown tool");
+                let request_log_id = log_rebalance_local_control_plane_response(
+                    state,
+                    token_id,
+                    method,
+                    path,
+                    message_body,
+                    StatusCode::NOT_FOUND,
+                    &body,
+                    proxy_session_id,
+                    routing_subject_hash,
+                    Some("unknown_tool"),
+                )
+                .await;
+                return Ok(proxy_response_with_json_body(
+                    StatusCode::NOT_FOUND,
+                    body,
+                    request_log_id,
+                ));
+            };
+            let options = params.get("arguments").cloned().unwrap_or(Value::Null);
+            match tool {
+                "search" => state
+                    .proxy
+                    .proxy_rebalance_mcp_http_json_endpoint(
+                        &state.usage_base,
+                        "/search",
+                        token_id,
+                        method,
+                        path,
+                        message_body,
+                        headers,
+                        response_id,
+                        options,
+                        proxy_session_id,
+                        routing_subject_hash,
+                        "http_search",
+                    )
+                    .await
+                    .map_err(|_| StatusCode::BAD_GATEWAY),
+                "extract" => state
+                    .proxy
+                    .proxy_rebalance_mcp_http_json_endpoint(
+                        &state.usage_base,
+                        "/extract",
+                        token_id,
+                        method,
+                        path,
+                        message_body,
+                        headers,
+                        response_id,
+                        options,
+                        proxy_session_id,
+                        routing_subject_hash,
+                        "http_extract",
+                    )
+                    .await
+                    .map_err(|_| StatusCode::BAD_GATEWAY),
+                "crawl" => state
+                    .proxy
+                    .proxy_rebalance_mcp_http_json_endpoint(
+                        &state.usage_base,
+                        "/crawl",
+                        token_id,
+                        method,
+                        path,
+                        message_body,
+                        headers,
+                        response_id,
+                        options,
+                        proxy_session_id,
+                        routing_subject_hash,
+                        "http_crawl",
+                    )
+                    .await
+                    .map_err(|_| StatusCode::BAD_GATEWAY),
+                "map" => state
+                    .proxy
+                    .proxy_rebalance_mcp_http_json_endpoint(
+                        &state.usage_base,
+                        "/map",
+                        token_id,
+                        method,
+                        path,
+                        message_body,
+                        headers,
+                        response_id,
+                        options,
+                        proxy_session_id,
+                        routing_subject_hash,
+                        "http_map",
+                    )
+                    .await
+                    .map_err(|_| StatusCode::BAD_GATEWAY),
+                "research" => state
+                    .proxy
+                    .proxy_rebalance_mcp_http_research_with_usage_diff(
+                        &state.usage_base,
+                        token_id,
+                        method,
+                        path,
+                        message_body,
+                        headers,
+                        response_id,
+                        options,
+                        proxy_session_id,
+                        routing_subject_hash,
+                        "http_research",
+                    )
+                    .await
+                    .map_err(|_| StatusCode::BAD_GATEWAY),
+                _ => unreachable!(),
+            }
+        }
+        _ if method_name.starts_with("notifications/") => {
+            let body = Vec::new();
+            let request_log_id = log_rebalance_local_control_plane_response(
+                state,
+                token_id,
+                method,
+                path,
+                message_body,
+                StatusCode::ACCEPTED,
+                &body,
+                proxy_session_id,
+                routing_subject_hash,
+                None,
+            )
+            .await;
+            Ok(proxy_response_with_json_body(
+                StatusCode::ACCEPTED,
+                body,
+                request_log_id,
+            ))
+        }
+        _ => {
+            let body = build_rebalance_mcp_error_body(response_id, -32601, "Method not found");
+            let request_log_id = log_rebalance_local_control_plane_response(
+                state,
+                token_id,
+                method,
+                path,
+                message_body,
+                StatusCode::NOT_FOUND,
+                &body,
+                proxy_session_id,
+                routing_subject_hash,
+                Some("method_not_found"),
+            )
+            .await;
+            Ok(proxy_response_with_json_body(
+                StatusCode::NOT_FOUND,
+                body,
+                request_log_id,
+            ))
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_rebalance_mcp_request_body(
+    state: &Arc<AppState>,
+    method: &Method,
+    path: &str,
+    headers: &ReqHeaderMap,
+    body_bytes: &[u8],
+    token_id: Option<&str>,
+    proxy_session_id: Option<&str>,
+    incoming_protocol_version: Option<&str>,
+    routing_subject_hash: Option<&str>,
+) -> Result<ProxyResponse, StatusCode> {
+    let parsed =
+        serde_json::from_slice::<Value>(body_bytes).map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    match parsed {
+        Value::Object(_) => {
+            handle_rebalance_mcp_single_message(
+                state,
+                method,
+                path,
+                headers,
+                &parsed,
+                body_bytes,
+                token_id,
+                proxy_session_id,
+                incoming_protocol_version,
+                routing_subject_hash,
+            )
+            .await
+        }
+        Value::Array(items) => {
+            let mut responses: Vec<Value> = Vec::new();
+            let mut last_response: Option<ProxyResponse> = None;
+
+            for item in items {
+                let item_body = serde_json::to_vec(&item).map_err(|_| StatusCode::BAD_REQUEST)?;
+                let response = handle_rebalance_mcp_single_message(
+                    state,
+                    method,
+                    path,
+                    headers,
+                    &item,
+                    &item_body,
+                    token_id,
+                    proxy_session_id,
+                    incoming_protocol_version,
+                    routing_subject_hash,
+                )
+                .await?;
+
+                if !response.body.is_empty()
+                    && let Ok(value) = serde_json::from_slice::<Value>(&response.body)
+                {
+                    responses.push(value);
+                }
+                last_response = Some(response);
+            }
+
+            if responses.is_empty() {
+                let request_log_id = last_response
+                    .as_ref()
+                    .and_then(|response| response.request_log_id);
+                return Ok(proxy_response_with_json_body(
+                    StatusCode::ACCEPTED,
+                    Vec::new(),
+                    request_log_id,
+                ));
+            }
+
+            let mut aggregated = proxy_response_with_json_body(
+                StatusCode::OK,
+                serde_json::to_vec(&Value::Array(responses))
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+                last_response
+                    .as_ref()
+                    .and_then(|response| response.request_log_id),
+            );
+            if let Some(last_response) = last_response {
+                aggregated.api_key_id = last_response.api_key_id;
+                aggregated.key_effect_code = last_response.key_effect_code;
+                aggregated.key_effect_summary = last_response.key_effect_summary;
+                aggregated.binding_effect_code = last_response.binding_effect_code;
+                aggregated.binding_effect_summary = last_response.binding_effect_summary;
+                aggregated.selection_effect_code = last_response.selection_effect_code;
+                aggregated.selection_effect_summary = last_response.selection_effect_summary;
+            }
+            Ok(aggregated)
+        }
+        _ => {
+            let body = build_rebalance_mcp_error_body(None, -32600, "Invalid JSON-RPC request");
+            let request_log_id = log_rebalance_local_control_plane_response(
+                state,
+                token_id,
+                method,
+                path,
+                body_bytes,
+                StatusCode::BAD_REQUEST,
+                &body,
+                proxy_session_id,
+                routing_subject_hash,
+                Some("invalid_jsonrpc_request"),
+            )
+            .await;
+            Ok(proxy_response_with_json_body(
+                StatusCode::BAD_REQUEST,
+                body,
+                request_log_id,
+            ))
+        }
+    }
+}
+
 async fn mcp_subpath_reject_handler(
     State(state): State<Arc<AppState>>,
     req: Request<Body>,
@@ -482,7 +1149,8 @@ async fn mcp_subpath_reject_handler(
     let method = parts.method.clone();
     let path = parts.uri.path().to_owned();
     let (query, query_token) = extract_token_from_query(parts.uri.query());
-    let authenticated = match authenticate_request_token(&state, &parts.headers, query_token).await {
+    let authenticated = match authenticate_request_token(&state, &parts.headers, query_token).await
+    {
         Ok(authenticated) => authenticated,
         Err(response) => return Ok(response),
     };
@@ -575,7 +1243,8 @@ async fn proxy_handler(
         return Ok(response);
     }
 
-    let authenticated = match authenticate_request_token(&state, &parts.headers, query_token).await {
+    let authenticated = match authenticate_request_token(&state, &parts.headers, query_token).await
+    {
         Ok(authenticated) => authenticated,
         Err(response) => return Ok(response),
     };
@@ -596,7 +1265,8 @@ async fn proxy_handler(
             "MCP requests must provide an explicit token when --dev-open-admin is enabled.",
         );
     }
-    let is_mcp_initialize = is_mcp_request && mcp_request_contains_method(&body_bytes, "initialize");
+    let is_mcp_initialize =
+        is_mcp_request && mcp_request_contains_method(&body_bytes, "initialize");
     let incoming_proxy_session_id = if is_mcp_request {
         header_string(&headers, "mcp-session-id")
     } else {
@@ -625,25 +1295,36 @@ async fn proxy_handler(
     } else {
         None
     };
-    let mcp_session_request_guard = if let Some(proxy_session_id) = incoming_proxy_session_id.as_deref()
-    {
-        let guard = state
-            .proxy
-            .lock_mcp_session_request(proxy_session_id)
-            .await
-            .map_err(|err| {
-                eprintln!("mcp session request lock failed: {err}");
+    let mcp_session_request_guard =
+        if let Some(proxy_session_id) = incoming_proxy_session_id.as_deref() {
+            let guard = state
+                .proxy
+                .lock_mcp_session_request(proxy_session_id)
+                .await
+                .map_err(|err| {
+                    eprintln!("mcp session request lock failed: {err}");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?;
+            guard.ensure_live().map_err(|err| {
+                eprintln!("mcp session request lock lost before upstream follow-up: {err}");
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
-        guard.ensure_live().map_err(|err| {
-            eprintln!("mcp session request lock lost before upstream follow-up: {err}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-        Some(guard)
+            Some(guard)
+        } else {
+            None
+        };
+    let mut pinned_api_key_id: Option<String> = None;
+    let mut active_mcp_session: Option<tavily_hikari::McpSessionBinding> = None;
+    let mut active_mcp_gateway_mode = tavily_hikari::MCP_GATEWAY_MODE_UPSTREAM.to_string();
+    let mut active_mcp_experiment_variant =
+        tavily_hikari::MCP_EXPERIMENT_VARIANT_CONTROL.to_string();
+    let rebalance_routing_subject_hash = if is_mcp_request && !using_dev_open_admin_fallback {
+        extract_http_project_id(&parts.headers)
+            .as_deref()
+            .and_then(hash_routing_subject)
     } else {
         None
     };
-    let mut pinned_api_key_id: Option<String> = None;
     if let Some(proxy_session_id) = incoming_proxy_session_id.as_deref() {
         let session = state
             .proxy
@@ -667,11 +1348,8 @@ async fn proxy_handler(
             );
         }
 
-        headers.insert(
-            HeaderName::from_static("mcp-session-id"),
-            ReqHeaderValue::from_str(&session.upstream_session_id)
-                .map_err(|_| StatusCode::BAD_REQUEST)?,
-        );
+        active_mcp_gateway_mode = session.gateway_mode.clone();
+        active_mcp_experiment_variant = session.experiment_variant.clone();
 
         let effective_protocol_version = incoming_protocol_version
             .clone()
@@ -679,12 +1357,33 @@ async fn proxy_handler(
         if let Some(protocol_version) = effective_protocol_version.as_deref() {
             headers.insert(
                 HeaderName::from_static("mcp-protocol-version"),
-                ReqHeaderValue::from_str(protocol_version)
-                    .map_err(|_| StatusCode::BAD_REQUEST)?,
+                ReqHeaderValue::from_str(protocol_version).map_err(|_| StatusCode::BAD_REQUEST)?,
             );
         }
 
-        pinned_api_key_id = Some(session.upstream_key_id.clone());
+        if session.gateway_mode == tavily_hikari::MCP_GATEWAY_MODE_UPSTREAM {
+            let Some(upstream_session_id) = session.upstream_session_id.as_deref() else {
+                return mcp_session_response(
+                    StatusCode::CONFLICT,
+                    "session_unavailable",
+                    "MCP session is unavailable, please reconnect to initialize a new session.",
+                );
+            };
+            headers.insert(
+                HeaderName::from_static("mcp-session-id"),
+                ReqHeaderValue::from_str(upstream_session_id)
+                    .map_err(|_| StatusCode::BAD_REQUEST)?,
+            );
+            let Some(upstream_key_id) = session.upstream_key_id.clone() else {
+                return mcp_session_response(
+                    StatusCode::CONFLICT,
+                    "session_unavailable",
+                    "MCP session is unavailable, please reconnect to initialize a new session.",
+                );
+            };
+            pinned_api_key_id = Some(upstream_key_id);
+        }
+        active_mcp_session = Some(session);
     }
     let request_kind = classify_token_request_kind(&path, Some(body_bytes.as_ref()));
     let is_mcp_delete_root_request = is_mcp_session_delete_request(&method, &path);
@@ -715,21 +1414,21 @@ async fn proxy_handler(
         } else {
             match serde_json::from_slice::<Value>(&body_bytes) {
                 Ok(mut value) => {
-                // Default to billable unless we can *prove* it's a non-billable control plane call.
-                let mut any_billable = false;
-                let mut any_lockable = false;
-                let mut all_non_billable = true;
-                let mut reserved_billable_total = 0i64;
-                let mut expected_search_total = 0i64;
+                    // Default to billable unless we can *prove* it's a non-billable control plane call.
+                    let mut any_billable = false;
+                    let mut any_lockable = false;
+                    let mut all_non_billable = true;
+                    let mut reserved_billable_total = 0i64;
+                    let mut expected_search_total = 0i64;
 
-                let is_non_billable_method = |method: &str| {
-                    matches!(method, "initialize" | "ping" | "tools/list")
-                        || method.starts_with("resources/")
-                        || method.starts_with("prompts/")
-                        || method.starts_with("notifications/")
-                };
+                    let is_non_billable_method = |method: &str| {
+                        matches!(method, "initialize" | "ping" | "tools/list")
+                            || method.starts_with("resources/")
+                            || method.starts_with("prompts/")
+                            || method.starts_with("notifications/")
+                    };
 
-                let handle_tool_call = |map: &mut serde_json::Map<String, Value>,
+                    let handle_tool_call = |map: &mut serde_json::Map<String, Value>,
                                         any_billable: &mut bool,
                                         any_lockable: &mut bool,
                                         all_non_billable: &mut bool,
@@ -889,63 +1588,9 @@ async fn proxy_handler(
                     }
                 };
 
-                match value {
-                    Value::Object(ref mut map) => {
-                        let method = map.get("method").and_then(|v| v.as_str()).unwrap_or("");
-                        let non_billable = is_non_billable_method(method);
-                        if !non_billable {
-                            all_non_billable = false;
-                        }
-
-                        if method == "tools/call" {
-                            handle_tool_call(
-                                map,
-                                &mut any_billable,
-                                &mut any_lockable,
-                                &mut all_non_billable,
-                                &mut reserved_billable_total,
-                                &mut expected_search_total,
-                                &mut billable_mcp_ids,
-                                &mut billable_search_mcp_ids,
-                                &mut has_billable_mcp_without_id,
-                                &mut has_search_mcp_without_id,
-                                &mut missing_usage_fallback_credits_by_id,
-                                &mut missing_usage_fallback_credits_without_id_total,
-                                &mut expected_search_credits_by_id,
-                                &mut expected_search_credits_without_id_total,
-                            );
-                        } else if !non_billable {
-                            // Unknown object-shaped method: treat as billable (safe default).
-                            any_billable = true;
-                            any_lockable = true;
-                        }
-                    }
-                    Value::Array(ref mut items) => {
-                        // JSON-RPC batch: only treat as non-billable if *every* item is provably
-                        // a control-plane method or a non-Tavily tool call.
-                        let mut seen_ids: HashSet<String> = HashSet::new();
-                        for item in items.iter_mut() {
-                            let Some(map) = item.as_object_mut() else {
-                                // Positional/batch junk: billable safe default.
-                                any_billable = true;
-                                any_lockable = true;
-                                all_non_billable = false;
-                                continue;
-                            };
-
-                            if map
-                                .get("id")
-                                .filter(|v| !v.is_null())
-                                .map(|v| v.to_string())
-                                .is_some_and(|id_key| !seen_ids.insert(id_key))
-                            {
-                                invalid_mcp_request_message.get_or_insert_with(|| {
-                                    "duplicate JSON-RPC id in batch".to_string()
-                                });
-                            }
-
-                            let method =
-                                map.get("method").and_then(|v| v.as_str()).unwrap_or("");
+                    match value {
+                        Value::Object(ref mut map) => {
+                            let method = map.get("method").and_then(|v| v.as_str()).unwrap_or("");
                             let non_billable = is_non_billable_method(method);
                             if !non_billable {
                                 all_non_billable = false;
@@ -969,28 +1614,81 @@ async fn proxy_handler(
                                     &mut expected_search_credits_without_id_total,
                                 );
                             } else if !non_billable {
+                                // Unknown object-shaped method: treat as billable (safe default).
                                 any_billable = true;
                                 any_lockable = true;
                             }
                         }
-                    }
-                    _ => {
-                        // Unknown / non-object: treat as billable to avoid bypass.
-                        any_billable = true;
-                        any_lockable = true;
-                        all_non_billable = false;
-                    }
-                }
+                        Value::Array(ref mut items) => {
+                            // JSON-RPC batch: only treat as non-billable if *every* item is provably
+                            // a control-plane method or a non-Tavily tool call.
+                            let mut seen_ids: HashSet<String> = HashSet::new();
+                            for item in items.iter_mut() {
+                                let Some(map) = item.as_object_mut() else {
+                                    // Positional/batch junk: billable safe default.
+                                    any_billable = true;
+                                    any_lockable = true;
+                                    all_non_billable = false;
+                                    continue;
+                                };
 
-                billable_flag = any_billable && !all_non_billable;
-                lockable_tool = any_lockable && billable_flag;
-                if reserved_billable_total > 0 {
-                    reserved_billable_credits = Some(reserved_billable_total);
-                }
-                if expected_search_total > 0 {
-                    expected_search_credits = Some(expected_search_total);
-                }
+                                if map
+                                    .get("id")
+                                    .filter(|v| !v.is_null())
+                                    .map(|v| v.to_string())
+                                    .is_some_and(|id_key| !seen_ids.insert(id_key))
+                                {
+                                    invalid_mcp_request_message.get_or_insert_with(|| {
+                                        "duplicate JSON-RPC id in batch".to_string()
+                                    });
+                                }
 
+                                let method =
+                                    map.get("method").and_then(|v| v.as_str()).unwrap_or("");
+                                let non_billable = is_non_billable_method(method);
+                                if !non_billable {
+                                    all_non_billable = false;
+                                }
+
+                                if method == "tools/call" {
+                                    handle_tool_call(
+                                        map,
+                                        &mut any_billable,
+                                        &mut any_lockable,
+                                        &mut all_non_billable,
+                                        &mut reserved_billable_total,
+                                        &mut expected_search_total,
+                                        &mut billable_mcp_ids,
+                                        &mut billable_search_mcp_ids,
+                                        &mut has_billable_mcp_without_id,
+                                        &mut has_search_mcp_without_id,
+                                        &mut missing_usage_fallback_credits_by_id,
+                                        &mut missing_usage_fallback_credits_without_id_total,
+                                        &mut expected_search_credits_by_id,
+                                        &mut expected_search_credits_without_id_total,
+                                    );
+                                } else if !non_billable {
+                                    any_billable = true;
+                                    any_lockable = true;
+                                }
+                            }
+                        }
+                        _ => {
+                            // Unknown / non-object: treat as billable to avoid bypass.
+                            any_billable = true;
+                            any_lockable = true;
+                            all_non_billable = false;
+                        }
+                    }
+
+                    billable_flag = any_billable && !all_non_billable;
+                    lockable_tool = any_lockable && billable_flag;
+                    if reserved_billable_total > 0 {
+                        reserved_billable_credits = Some(reserved_billable_total);
+                    }
+                    if expected_search_total > 0 {
+                        expected_search_credits = Some(expected_search_total);
+                    }
                 }
                 Err(_) => {
                     // Non-JSON / unparseable: treat as billable to avoid bypass.
@@ -1005,7 +1703,7 @@ async fn proxy_handler(
         method: method.clone(),
         path: path.clone(),
         query: query.clone(),
-        headers,
+        headers: headers.clone(),
         body: forwarded_body.clone(),
         auth_token_id: token_id.clone(),
         pinned_api_key_id,
@@ -1019,16 +1717,10 @@ async fn proxy_handler(
         && invalid_mcp_request_message.is_none()
         && let Some(tid) = token_id.as_deref()
     {
-        Some(
-            state
-                .proxy
-                .lock_token_billing(tid)
-                .await
-                .map_err(|err| {
-                    eprintln!("token billing lock failed: {err}");
-                    StatusCode::INTERNAL_SERVER_ERROR
-                })?,
-        )
+        Some(state.proxy.lock_token_billing(tid).await.map_err(|err| {
+            eprintln!("token billing lock failed: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?)
     } else {
         None
     };
@@ -1077,10 +1769,7 @@ async fn proxy_handler(
         }
 
         // Reject billable MCP calls that cannot be safely attributed/billed.
-        if billable_flag
-            && invalid_mcp_request_message.is_some()
-            && path.starts_with("/mcp")
-        {
+        if billable_flag && invalid_mcp_request_message.is_some() && path.starts_with("/mcp") {
             let message = invalid_mcp_request_message
                 .clone()
                 .unwrap_or_else(|| "invalid MCP request".to_string());
@@ -1131,7 +1820,8 @@ async fn proxy_handler(
                         };
 
                         if blocked {
-                            let message = build_quota_error_message(&verdict, reserved_billable_credits);
+                            let message =
+                                build_quota_error_message(&verdict, reserved_billable_credits);
                             let _ = state
                                 .proxy
                                 .record_token_attempt_with_kind(
@@ -1147,7 +1837,8 @@ async fn proxy_handler(
                                     &request_kind,
                                 )
                                 .await;
-                            let response = quota_exceeded_response(&verdict, reserved_billable_credits)?;
+                            let response =
+                                quota_exceeded_response(&verdict, reserved_billable_credits)?;
                             return Ok(response);
                         }
                     }
@@ -1161,26 +1852,25 @@ async fn proxy_handler(
         }
     }
 
-    let mcp_session_init_guard =
-        if is_mcp_initialize && incoming_proxy_session_id.is_none() {
-            let guard = state
-                .proxy
-                .lock_mcp_session_init(token_id.as_deref(), token_user_id.as_deref())
-                .await
-                .map_err(|err| {
-                    eprintln!("mcp session init lock failed: {err}");
-                    StatusCode::INTERNAL_SERVER_ERROR
-                })?;
-            if let Some(guard) = guard.as_ref() {
-                guard.ensure_live().map_err(|err| {
-                    eprintln!("mcp session init lock lost before upstream initialize: {err}");
-                    StatusCode::INTERNAL_SERVER_ERROR
-                })?;
-            }
-            guard
-        } else {
-            None
-        };
+    let mcp_session_init_guard = if is_mcp_initialize && incoming_proxy_session_id.is_none() {
+        let guard = state
+            .proxy
+            .lock_mcp_session_init(token_id.as_deref(), token_user_id.as_deref())
+            .await
+            .map_err(|err| {
+                eprintln!("mcp session init lock failed: {err}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        if let Some(guard) = guard.as_ref() {
+            guard.ensure_live().map_err(|err| {
+                eprintln!("mcp session init lock lost before upstream initialize: {err}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        }
+        guard
+    } else {
+        None
+    };
 
     if let Some(guard) = mcp_session_request_guard.as_ref() {
         guard.ensure_live().map_err(|err| {
@@ -1189,7 +1879,91 @@ async fn proxy_handler(
         })?;
     }
 
-    let proxy_result = if let Some(proxy_session_id) = incoming_proxy_session_id.as_deref() {
+    let mut planned_initialize_proxy_session_id: Option<String> = None;
+    let mut planned_initialize_ab_bucket: Option<i64> = None;
+    let mut planned_initialize_gateway_mode = active_mcp_gateway_mode.clone();
+    let mut planned_initialize_experiment_variant = active_mcp_experiment_variant.clone();
+    if is_mcp_initialize && incoming_proxy_session_id.is_none() {
+        let settings = state
+            .proxy
+            .get_system_settings()
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let proxy_session_id = nanoid::nanoid!(24);
+        let ab_bucket = stable_rebalance_bucket(&proxy_session_id);
+        let use_rebalance = settings.rebalance_mcp_enabled
+            && settings.rebalance_mcp_session_percent > 0
+            && ab_bucket < settings.rebalance_mcp_session_percent;
+        planned_initialize_proxy_session_id = Some(proxy_session_id);
+        planned_initialize_ab_bucket = Some(ab_bucket);
+        planned_initialize_gateway_mode = if use_rebalance {
+            tavily_hikari::MCP_GATEWAY_MODE_REBALANCE.to_string()
+        } else {
+            tavily_hikari::MCP_GATEWAY_MODE_UPSTREAM.to_string()
+        };
+        planned_initialize_experiment_variant = if use_rebalance {
+            tavily_hikari::MCP_EXPERIMENT_VARIANT_REBALANCE.to_string()
+        } else {
+            tavily_hikari::MCP_EXPERIMENT_VARIANT_CONTROL.to_string()
+        };
+    }
+
+    let proxy_result = if incoming_proxy_session_id.is_none()
+        && is_mcp_initialize
+        && planned_initialize_gateway_mode == tavily_hikari::MCP_GATEWAY_MODE_REBALANCE
+    {
+        match handle_rebalance_mcp_request_body(
+            &state,
+            &method,
+            &path,
+            &headers,
+            &body_bytes,
+            token_id.as_deref(),
+            planned_initialize_proxy_session_id.as_deref(),
+            incoming_protocol_version.as_deref(),
+            rebalance_routing_subject_hash.as_deref(),
+        )
+        .await
+        {
+            Ok(response) => Ok(response),
+            Err(status) => {
+                let payload =
+                    build_rebalance_mcp_error_body(None, -32600, "Invalid JSON-RPC request");
+                let response = Response::builder()
+                    .status(status)
+                    .header(CONTENT_TYPE, "application/json; charset=utf-8")
+                    .body(Body::from(payload))
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                return Ok(response);
+            }
+        }
+    } else if active_mcp_gateway_mode == tavily_hikari::MCP_GATEWAY_MODE_REBALANCE {
+        match handle_rebalance_mcp_request_body(
+            &state,
+            &method,
+            &path,
+            &headers,
+            &body_bytes,
+            token_id.as_deref(),
+            incoming_proxy_session_id.as_deref(),
+            incoming_protocol_version.as_deref(),
+            rebalance_routing_subject_hash.as_deref(),
+        )
+        .await
+        {
+            Ok(response) => Ok(response),
+            Err(status) => {
+                let payload =
+                    build_rebalance_mcp_error_body(None, -32600, "Invalid JSON-RPC request");
+                let response = Response::builder()
+                    .status(status)
+                    .header(CONTENT_TYPE, "application/json; charset=utf-8")
+                    .body(Body::from(payload))
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                return Ok(response);
+            }
+        }
+    } else if let Some(proxy_session_id) = incoming_proxy_session_id.as_deref() {
         proxy_mcp_follow_up_with_retry(&state, proxy_session_id, proxy_request).await
     } else {
         state.proxy.proxy_request(proxy_request).await
@@ -1199,7 +1973,52 @@ async fn proxy_handler(
         Ok(mut resp) => {
             if is_mcp_request {
                 if let Some(proxy_session_id) = incoming_proxy_session_id.as_deref() {
-                    if mcp_response_requires_reconnect(resp.status, &resp.body) {
+                    if active_mcp_gateway_mode == tavily_hikari::MCP_GATEWAY_MODE_REBALANCE {
+                        let response_protocol_version = resp
+                            .headers
+                            .get("mcp-protocol-version")
+                            .and_then(|value| value.to_str().ok())
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .map(str::to_string);
+                        let _ = state
+                            .proxy
+                            .touch_mcp_session(
+                                proxy_session_id,
+                                response_protocol_version
+                                    .as_deref()
+                                    .or(incoming_protocol_version.as_deref()),
+                                incoming_last_event_id.as_deref(),
+                            )
+                            .await;
+                        if rebalance_routing_subject_hash.is_some() {
+                            let _ = state
+                                .proxy
+                                .update_mcp_session_rebalance_metadata(
+                                    proxy_session_id,
+                                    rebalance_routing_subject_hash.as_deref(),
+                                    None,
+                                )
+                                .await;
+                        }
+                        if let Ok(proxy_header) = ReqHeaderValue::from_str(proxy_session_id) {
+                            resp.headers
+                                .insert(HeaderName::from_static("mcp-session-id"), proxy_header);
+                        }
+                        if !resp.headers.contains_key("mcp-protocol-version") {
+                            let protocol_version = response_protocol_version
+                                .as_deref()
+                                .or(incoming_protocol_version.as_deref())
+                                .or(active_mcp_session
+                                    .as_ref()
+                                    .and_then(|session| session.protocol_version.as_deref()))
+                                .unwrap_or(REBALANCE_MCP_PROTOCOL_VERSION_DEFAULT);
+                            if let Ok(value) = ReqHeaderValue::from_str(protocol_version) {
+                                resp.headers
+                                    .insert(HeaderName::from_static("mcp-protocol-version"), value);
+                            }
+                        }
+                    } else if mcp_response_requires_reconnect(resp.status, &resp.body) {
                         let _ = state
                             .proxy
                             .revoke_mcp_session(proxy_session_id, "upstream_session_invalid")
@@ -1250,8 +2069,10 @@ async fn proxy_handler(
                                 )
                                 .await;
                             if let Ok(proxy_header) = ReqHeaderValue::from_str(proxy_session_id) {
-                                resp.headers
-                                    .insert(HeaderName::from_static("mcp-session-id"), proxy_header);
+                                resp.headers.insert(
+                                    HeaderName::from_static("mcp-session-id"),
+                                    proxy_header,
+                                );
                             }
                         }
                     }
@@ -1262,33 +2083,79 @@ async fn proxy_handler(
                             StatusCode::INTERNAL_SERVER_ERROR
                         })?;
                     }
-                    let upstream_session_id = resp
-                        .headers
-                        .get("mcp-session-id")
-                        .and_then(|value| value.to_str().ok())
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(str::to_string);
-                    if let (Some(upstream_session_id), Some(upstream_key_id)) =
-                        (upstream_session_id.as_deref(), resp.api_key_id.as_deref())
+                    let proxy_session_id = planned_initialize_proxy_session_id
+                        .as_deref()
+                        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+                    if planned_initialize_gateway_mode == tavily_hikari::MCP_GATEWAY_MODE_REBALANCE
                     {
-                        let proxy_session_id = state
+                        let protocol_version = incoming_protocol_version
+                            .as_deref()
+                            .unwrap_or(REBALANCE_MCP_PROTOCOL_VERSION_DEFAULT);
+                        state
                             .proxy
-                            .create_mcp_session(
-                                upstream_session_id,
-                                upstream_key_id,
+                            .create_or_replace_mcp_session_record(
+                                proxy_session_id,
+                                None,
+                                None,
                                 token_id.as_deref(),
                                 token_user_id.as_deref(),
-                                incoming_protocol_version.as_deref(),
+                                Some(protocol_version),
                                 incoming_last_event_id.as_deref(),
+                                &planned_initialize_gateway_mode,
+                                &planned_initialize_experiment_variant,
+                                planned_initialize_ab_bucket,
+                                rebalance_routing_subject_hash.as_deref(),
+                                None,
                             )
                             .await
                             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
                         resp.headers.insert(
                             HeaderName::from_static("mcp-session-id"),
-                            ReqHeaderValue::from_str(&proxy_session_id)
+                            ReqHeaderValue::from_str(proxy_session_id)
                                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
                         );
+                        if !resp.headers.contains_key("mcp-protocol-version") {
+                            resp.headers.insert(
+                                HeaderName::from_static("mcp-protocol-version"),
+                                ReqHeaderValue::from_str(protocol_version)
+                                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+                            );
+                        }
+                    } else {
+                        let upstream_session_id = resp
+                            .headers
+                            .get("mcp-session-id")
+                            .and_then(|value| value.to_str().ok())
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .map(str::to_string);
+                        if let (Some(upstream_session_id), Some(upstream_key_id)) =
+                            (upstream_session_id.as_deref(), resp.api_key_id.as_deref())
+                        {
+                            state
+                                .proxy
+                                .create_or_replace_mcp_session_record(
+                                    proxy_session_id,
+                                    Some(upstream_session_id),
+                                    Some(upstream_key_id),
+                                    token_id.as_deref(),
+                                    token_user_id.as_deref(),
+                                    incoming_protocol_version.as_deref(),
+                                    incoming_last_event_id.as_deref(),
+                                    &planned_initialize_gateway_mode,
+                                    &planned_initialize_experiment_variant,
+                                    planned_initialize_ab_bucket,
+                                    rebalance_routing_subject_hash.as_deref(),
+                                    None,
+                                )
+                                .await
+                                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                            resp.headers.insert(
+                                HeaderName::from_static("mcp-session-id"),
+                                ReqHeaderValue::from_str(proxy_session_id)
+                                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+                            );
+                        }
                     }
                 }
             }
@@ -1458,8 +2325,7 @@ async fn proxy_handler(
                                     resp.request_log_id,
                                 )
                                 .await
-                        }
-                        {
+                        } {
                             Ok(log_id) => {
                                 attempt_logged = true;
                                 let lock_lost_msg = token_billing_guard
@@ -1479,29 +2345,31 @@ async fn proxy_handler(
                                     billing_error = Some(msg);
                                 } else {
                                     match state.proxy.settle_pending_billing_attempt(log_id).await {
-                                    Ok(PendingBillingSettleOutcome::Charged)
-                                    | Ok(PendingBillingSettleOutcome::AlreadySettled) => {}
-                                    Ok(PendingBillingSettleOutcome::RetryLater) => {
-                                        let msg = format!(
-                                            "charge_token_quota delayed for {path}: pending billing claim miss; will retry"
-                                        );
-                                        eprintln!("{msg}");
-                                        let _ = state
-                                            .proxy
-                                            .annotate_pending_billing_attempt(log_id, &msg)
-                                            .await;
-                                        billing_error = Some(msg);
+                                        Ok(PendingBillingSettleOutcome::Charged)
+                                        | Ok(PendingBillingSettleOutcome::AlreadySettled) => {}
+                                        Ok(PendingBillingSettleOutcome::RetryLater) => {
+                                            let msg = format!(
+                                                "charge_token_quota delayed for {path}: pending billing claim miss; will retry"
+                                            );
+                                            eprintln!("{msg}");
+                                            let _ = state
+                                                .proxy
+                                                .annotate_pending_billing_attempt(log_id, &msg)
+                                                .await;
+                                            billing_error = Some(msg);
+                                        }
+                                        Err(err) => {
+                                            let msg = format!(
+                                                "charge_token_quota failed for {path}: {err}"
+                                            );
+                                            eprintln!("{msg}");
+                                            let _ = state
+                                                .proxy
+                                                .annotate_pending_billing_attempt(log_id, &msg)
+                                                .await;
+                                            billing_error = Some(msg);
+                                        }
                                     }
-                                    Err(err) => {
-                                        let msg = format!("charge_token_quota failed for {path}: {err}");
-                                        eprintln!("{msg}");
-                                        let _ = state
-                                            .proxy
-                                            .annotate_pending_billing_attempt(log_id, &msg)
-                                            .await;
-                                        billing_error = Some(msg);
-                                    }
-                                }
                                 }
                             }
                             Err(err) => {
@@ -1700,7 +2568,10 @@ fn build_quota_error_message(verdict: &TokenQuotaVerdict, projected_delta: Optio
 }
 
 fn quota_window_stats(verdict: &TokenQuotaVerdict, projected_delta: i64) -> (i64, i64) {
-    match verdict.window_name_for_delta(projected_delta).unwrap_or("hour") {
+    match verdict
+        .window_name_for_delta(projected_delta)
+        .unwrap_or("hour")
+    {
         "month" => (verdict.monthly_limit, verdict.monthly_used),
         "day" => (verdict.daily_limit, verdict.daily_used),
         _ => (verdict.hourly_limit, verdict.hourly_used),
@@ -1805,6 +2676,12 @@ impl RequestLogView {
             binding_effect_summary: record.binding_effect_summary,
             selection_effect_code: record.selection_effect_code,
             selection_effect_summary: record.selection_effect_summary,
+            gateway_mode: record.gateway_mode,
+            experiment_variant: record.experiment_variant,
+            proxy_session_id: record.proxy_session_id,
+            routing_subject_hash: record.routing_subject_hash,
+            upstream_operation: record.upstream_operation,
+            fallback_reason: record.fallback_reason,
             request_body: include_bodies
                 .then(|| decode_body(&record.request_body))
                 .flatten(),
@@ -1860,6 +2737,12 @@ impl RequestLogView {
             binding_effect_summary: record.binding_effect_summary,
             selection_effect_code: record.selection_effect_code,
             selection_effect_summary: record.selection_effect_summary,
+            gateway_mode: record.gateway_mode,
+            experiment_variant: record.experiment_variant,
+            proxy_session_id: record.proxy_session_id,
+            routing_subject_hash: record.routing_subject_hash,
+            upstream_operation: record.upstream_operation,
+            fallback_reason: record.fallback_reason,
             request_body: None,
             response_body: None,
             forwarded_headers: Vec::new(),

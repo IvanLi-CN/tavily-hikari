@@ -444,6 +444,38 @@ pub(crate) fn sanitize_headers_inner(
     }
 }
 
+pub(crate) fn sanitize_rebalance_mcp_http_headers_inner(headers: &HeaderMap) -> SanitizedHeaders {
+    const ALLOWED_HEADERS: &[&str] = &["accept", "content-type"];
+
+    let mut sanitized = HeaderMap::new();
+    let mut forwarded = Vec::new();
+    let mut dropped = Vec::new();
+
+    for (name, value) in headers.iter() {
+        let key = name.as_str().to_ascii_lowercase();
+        if ALLOWED_HEADERS.iter().any(|allowed| key == *allowed) {
+            sanitized.insert(name.clone(), value.clone());
+            forwarded.push(key);
+        } else {
+            dropped.push(key);
+        }
+    }
+
+    sanitized.insert(
+        reqwest::header::USER_AGENT,
+        HeaderValue::from_static(MCP_PROXY_USER_AGENT),
+    );
+    if !forwarded.iter().any(|name| name == "user-agent") {
+        forwarded.push("user-agent".to_string());
+    }
+
+    SanitizedHeaders {
+        headers: sanitized,
+        forwarded,
+        dropped,
+    }
+}
+
 pub(crate) fn sanitize_mcp_headers_inner(headers: &HeaderMap) -> SanitizedHeaders {
     const MCP_ALLOWED_HEADERS: &[&str] = &[
         "accept",
