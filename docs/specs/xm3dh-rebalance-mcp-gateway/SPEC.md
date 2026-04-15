@@ -4,7 +4,7 @@
 
 - Status: 进行中（快车道）
 - Created: 2026-04-13
-- Last: 2026-04-13
+- Last: 2026-04-15
 
 ## 背景 / 问题陈述
 
@@ -22,7 +22,7 @@
   - `rebalanceMcpEnabled`
   - `rebalanceMcpSessionPercent`
 - `/mcp initialize` 按会话级 A/B 固化 `control` 或 `rebalance`；已有会话不随设置变更漂移。
-- `rebalance` 模式下，本地处理 `initialize / ping / tools/list / notifications/* / tools/call`。
+- `rebalance` 模式下，本地处理 `initialize / ping / tools/list / prompts/list / resources/list / resources/templates/list / notifications/* / tools/call`。
 - `search / extract / crawl / map` 使用全量候选 key 排序，优先级固定为：active cooldown → 最近 60 秒 429 次数 → 最近 60 秒 billable 压力 → `last_used_at` LRU → stable rank。
 - `research` 继续保留 usage-diff 计费与 request-id 亲和模型，但改为通过本地 gateway 包装为 MCP JSON-RPC 响应。
 - 收紧 Rebalance HTTP 头白名单，只发送必要头字段。
@@ -99,7 +99,7 @@
   - `tavily_map`
   - `tavily_research`
 - `tools/call` 同时接受 underscore 与 hyphen 工具名别名。
-- `initialize / ping / tools/list / notifications/*` 本地处理。
+- `initialize / ping / tools/list / prompts/list / resources/list / resources/templates/list / notifications/*` 本地处理。
 - `tools/call`：
   - `search / extract / crawl / map` → HTTP full-pool 选 key，不做同请求自动重试。
   - `research` → 保留 usage-diff 计费，并把 usage delta 回填到 MCP `structuredContent.usage.credits`。
@@ -154,6 +154,10 @@
   When 请求成功
   Then MCP 返回体必须包含 `structuredContent.usage.credits`，其值来自 research `/usage` 差分。
 
+- Given Rebalance 会话收到 `prompts/list`、`resources/list` 或 `resources/templates/list`
+  When 客户端执行控制面探测
+  Then gateway 必须本地返回 `200 success` 与空列表结果，且不命中 upstream `/mcp`。
+
 - Given 管理员查看请求详情
   When 请求来自 control 或 rebalance 路径
   Then 必须可直接看到 gateway mode、variant、proxy session、routing hash、upstream operation、fallback reason。
@@ -206,6 +210,10 @@
   evidence_note: 请求详情稳定展示了 gateway mode、experiment variant、proxy session id、routing subject hash、upstream operation、fallback reason，以及最终版 Key 路由标记样式。
 
   ![Request log diagnostics gallery](./assets/request-log-diagnostics.png)
+
+## Change log
+
+- 2026-04-15：补平 Rebalance MCP 的 `prompts/list`、`resources/list`、`resources/templates/list` 本地空结果协议兼容，并让 control MCP 请求日志稳定落盘 `gateway_mode` / `experiment_variant` / `proxy_session_id` / `upstream_operation`。
 
 ## 实现里程碑（Milestones / Delivery checklist）
 

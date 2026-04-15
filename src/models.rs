@@ -48,6 +48,12 @@ pub struct ProxyRequest {
     pub auth_token_id: Option<String>,
     pub pinned_api_key_id: Option<String>,
     pub prefer_mcp_session_affinity: bool,
+    pub gateway_mode: Option<String>,
+    pub experiment_variant: Option<String>,
+    pub proxy_session_id: Option<String>,
+    pub routing_subject_hash: Option<String>,
+    pub upstream_operation: Option<String>,
+    pub fallback_reason: Option<String>,
 }
 
 /// 透传响应。

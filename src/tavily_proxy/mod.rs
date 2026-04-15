@@ -4649,6 +4649,20 @@ impl TavilyProxy {
         drop(url.query_pairs_mut());
 
         let sanitized_headers = self.sanitize_headers(&request.headers, &request.path);
+        let gateway_mode = request.gateway_mode.as_deref().or_else(|| {
+            request
+                .path
+                .starts_with("/mcp")
+                .then_some(MCP_GATEWAY_MODE_UPSTREAM)
+        });
+        let experiment_variant = request
+            .experiment_variant
+            .as_deref()
+            .or_else(|| gateway_mode.map(|_| MCP_EXPERIMENT_VARIANT_CONTROL));
+        let upstream_operation = request
+            .upstream_operation
+            .as_deref()
+            .or_else(|| request.path.starts_with("/mcp").then_some("mcp"));
         let request_method = request.method.clone();
         let request_body = request.body.clone();
         let request_url = url.clone();
@@ -4721,12 +4735,12 @@ impl TavilyProxy {
                         binding_effect_summary: None,
                         selection_effect_code: selection_effect.code.as_str(),
                         selection_effect_summary: selection_effect.summary.as_deref(),
-                        gateway_mode: None,
-                        experiment_variant: None,
-                        proxy_session_id: None,
-                        routing_subject_hash: None,
-                        upstream_operation: None,
-                        fallback_reason: None,
+                        gateway_mode,
+                        experiment_variant,
+                        proxy_session_id: request.proxy_session_id.as_deref(),
+                        routing_subject_hash: request.routing_subject_hash.as_deref(),
+                        upstream_operation,
+                        fallback_reason: request.fallback_reason.as_deref(),
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
                     })
@@ -4784,12 +4798,12 @@ impl TavilyProxy {
                         binding_effect_summary: None,
                         selection_effect_code: KEY_EFFECT_NONE,
                         selection_effect_summary: None,
-                        gateway_mode: None,
-                        experiment_variant: None,
-                        proxy_session_id: None,
-                        routing_subject_hash: None,
-                        upstream_operation: None,
-                        fallback_reason: None,
+                        gateway_mode,
+                        experiment_variant,
+                        proxy_session_id: request.proxy_session_id.as_deref(),
+                        routing_subject_hash: request.routing_subject_hash.as_deref(),
+                        upstream_operation,
+                        fallback_reason: request.fallback_reason.as_deref(),
                         forwarded_headers: &sanitized_headers.forwarded,
                         dropped_headers: &sanitized_headers.dropped,
                     })

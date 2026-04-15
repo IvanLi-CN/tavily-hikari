@@ -566,7 +566,11 @@ fn build_rebalance_mcp_initialize_body(
             "capabilities": {
                 "tools": {
                     "listChanged": false
-                }
+                },
+                "prompts": {
+                    "listChanged": false
+                },
+                "resources": {}
             },
             "serverInfo": {
                 "name": REBALANCE_MCP_SERVER_NAME,
@@ -611,6 +615,33 @@ fn build_rebalance_mcp_tools_list_body(response_id: Option<&Value>) -> Vec<u8> {
         response_id,
         json!({
             "tools": rebalance_mcp_tools_descriptor(),
+        }),
+    )
+}
+
+fn build_rebalance_mcp_prompts_list_body(response_id: Option<&Value>) -> Vec<u8> {
+    build_rebalance_mcp_success_body(
+        response_id,
+        json!({
+            "prompts": [],
+        }),
+    )
+}
+
+fn build_rebalance_mcp_resources_list_body(response_id: Option<&Value>) -> Vec<u8> {
+    build_rebalance_mcp_success_body(
+        response_id,
+        json!({
+            "resources": [],
+        }),
+    )
+}
+
+fn build_rebalance_mcp_resource_templates_list_body(response_id: Option<&Value>) -> Vec<u8> {
+    build_rebalance_mcp_success_body(
+        response_id,
+        json!({
+            "resourceTemplates": [],
         }),
     )
 }
@@ -818,6 +849,69 @@ async fn handle_rebalance_mcp_single_message(
         }
         "tools/list" => {
             let body = build_rebalance_mcp_tools_list_body(response_id);
+            let request_log_id = log_rebalance_local_control_plane_response(
+                state,
+                token_id,
+                method,
+                path,
+                message_body,
+                StatusCode::OK,
+                &body,
+                proxy_session_id,
+                routing_subject_hash,
+                None,
+            )
+            .await;
+            Ok(proxy_response_with_json_body(
+                StatusCode::OK,
+                body,
+                request_log_id,
+            ))
+        }
+        "prompts/list" => {
+            let body = build_rebalance_mcp_prompts_list_body(response_id);
+            let request_log_id = log_rebalance_local_control_plane_response(
+                state,
+                token_id,
+                method,
+                path,
+                message_body,
+                StatusCode::OK,
+                &body,
+                proxy_session_id,
+                routing_subject_hash,
+                None,
+            )
+            .await;
+            Ok(proxy_response_with_json_body(
+                StatusCode::OK,
+                body,
+                request_log_id,
+            ))
+        }
+        "resources/list" => {
+            let body = build_rebalance_mcp_resources_list_body(response_id);
+            let request_log_id = log_rebalance_local_control_plane_response(
+                state,
+                token_id,
+                method,
+                path,
+                message_body,
+                StatusCode::OK,
+                &body,
+                proxy_session_id,
+                routing_subject_hash,
+                None,
+            )
+            .await;
+            Ok(proxy_response_with_json_body(
+                StatusCode::OK,
+                body,
+                request_log_id,
+            ))
+        }
+        "resources/templates/list" => {
+            let body = build_rebalance_mcp_resource_templates_list_body(response_id);
             let request_log_id = log_rebalance_local_control_plane_response(
                 state,
                 token_id,
@@ -1699,17 +1793,6 @@ async fn proxy_handler(
         }
     }
 
-    let proxy_request = ProxyRequest {
-        method: method.clone(),
-        path: path.clone(),
-        query: query.clone(),
-        headers: headers.clone(),
-        body: forwarded_body.clone(),
-        auth_token_id: token_id.clone(),
-        pinned_api_key_id,
-        prefer_mcp_session_affinity: is_mcp_initialize && incoming_proxy_session_id.is_none(),
-    };
-
     // Serialize per-token billable tool calls to keep `peek -> upstream -> charge` consistent.
     let token_billing_guard = if !using_dev_open_admin_fallback
         && billable_flag
@@ -1907,6 +1990,44 @@ async fn proxy_handler(
             tavily_hikari::MCP_EXPERIMENT_VARIANT_CONTROL.to_string()
         };
     }
+
+    let control_gateway_mode = (is_mcp_request
+        && planned_initialize_gateway_mode == tavily_hikari::MCP_GATEWAY_MODE_UPSTREAM
+        && active_mcp_gateway_mode == tavily_hikari::MCP_GATEWAY_MODE_UPSTREAM)
+        .then(|| tavily_hikari::MCP_GATEWAY_MODE_UPSTREAM.to_string());
+    let control_experiment_variant = control_gateway_mode
+        .as_ref()
+        .map(|_| tavily_hikari::MCP_EXPERIMENT_VARIANT_CONTROL.to_string());
+    let control_proxy_session_id = if is_mcp_request {
+        incoming_proxy_session_id
+            .clone()
+            .or_else(|| planned_initialize_proxy_session_id.clone())
+    } else {
+        None
+    };
+    let control_routing_subject_hash = if is_mcp_request {
+        rebalance_routing_subject_hash.clone()
+    } else {
+        None
+    };
+    let control_upstream_operation = is_mcp_request.then(|| "mcp".to_string());
+
+    let proxy_request = ProxyRequest {
+        method: method.clone(),
+        path: path.clone(),
+        query: query.clone(),
+        headers: headers.clone(),
+        body: forwarded_body.clone(),
+        auth_token_id: token_id.clone(),
+        pinned_api_key_id,
+        prefer_mcp_session_affinity: is_mcp_initialize && incoming_proxy_session_id.is_none(),
+        gateway_mode: control_gateway_mode,
+        experiment_variant: control_experiment_variant,
+        proxy_session_id: control_proxy_session_id,
+        routing_subject_hash: control_routing_subject_hash,
+        upstream_operation: control_upstream_operation,
+        fallback_reason: None,
+    };
 
     let proxy_result = if incoming_proxy_session_id.is_none()
         && is_mcp_initialize

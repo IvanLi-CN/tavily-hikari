@@ -1038,6 +1038,12 @@ async fn user_tokens_share_persistent_primary_key_affinity_after_restart() {
         auth_token_id: Some(token_id.to_string()),
         prefer_mcp_session_affinity: false,
         pinned_api_key_id: None,
+        gateway_mode: None,
+        experiment_variant: None,
+        proxy_session_id: None,
+        routing_subject_hash: None,
+        upstream_operation: None,
+        fallback_reason: None,
     };
 
     let first = proxy
@@ -1160,6 +1166,12 @@ async fn token_primary_rebind_falls_back_to_exhausted_key_when_no_other_active_k
         auth_token_id: Some(token.id.clone()),
         prefer_mcp_session_affinity: false,
         pinned_api_key_id: None,
+        gateway_mode: None,
+        experiment_variant: None,
+        proxy_session_id: None,
+        routing_subject_hash: None,
+        upstream_operation: None,
+        fallback_reason: None,
     };
 
     let first = proxy
@@ -5942,6 +5954,12 @@ async fn proxy_request_quarantines_key_on_mcp_unauthorized() {
         auth_token_id: Some("tok1".to_string()),
         prefer_mcp_session_affinity: false,
         pinned_api_key_id: None,
+        gateway_mode: None,
+        experiment_variant: None,
+        proxy_session_id: None,
+        routing_subject_hash: None,
+        upstream_operation: None,
+        fallback_reason: None,
     };
 
     let response = proxy.proxy_request(request).await.expect("proxy response");
@@ -6002,6 +6020,12 @@ async fn proxy_request_quarantines_key_on_mcp_error_body_without_http_status() {
         auth_token_id: Some("tok1".to_string()),
         prefer_mcp_session_affinity: false,
         pinned_api_key_id: None,
+        gateway_mode: None,
+        experiment_variant: None,
+        proxy_session_id: None,
+        routing_subject_hash: None,
+        upstream_operation: None,
+        fallback_reason: None,
     };
 
     let response = proxy.proxy_request(request).await.expect("proxy response");

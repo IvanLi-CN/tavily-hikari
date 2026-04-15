@@ -23622,6 +23622,145 @@ colo=LAX
     }
 
     #[tokio::test]
+    async fn mcp_control_logs_record_gateway_diagnostics() {
+        let db_path = temp_db_path("mcp-control-log-diagnostics");
+        let db_str = db_path.to_string_lossy().to_string();
+
+        let expected_api_key = "tvly-mcp-control-log-diagnostics";
+        let (upstream_addr, calls) =
+            spawn_mock_mcp_upstream_for_session_headers(vec![expected_api_key.to_string()]).await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy =
+            TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
+
+        let access_token = proxy
+            .create_access_token(Some("mcp-control-log-diagnostics"))
+            .await
+            .expect("create access token");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), upstream.clone()).await;
+        let url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, access_token.token
+        );
+        let client = Client::new();
+
+        let initialize = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "diag-init",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {}
+                }
+            }))
+            .send()
+            .await
+            .expect("initialize request");
+        assert!(initialize.status().is_success());
+        let proxy_session_id = initialize
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("proxy session id")
+            .to_string();
+
+        let tools_list = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .header("mcp-session-id", &proxy_session_id)
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "diag-tools",
+                "method": "tools/list"
+            }))
+            .send()
+            .await
+            .expect("tools/list request");
+        assert!(tools_list.status().is_success());
+
+        let recorded = calls
+            .lock()
+            .expect("session header calls lock poisoned")
+            .clone();
+        assert_eq!(recorded.len(), 2, "expected initialize + tools/list upstream hits");
+
+        let pool = connect_sqlite_test_pool(&db_str).await;
+        let request_rows = sqlx::query(
+            r#"
+            SELECT gateway_mode, experiment_variant, proxy_session_id, upstream_operation
+            FROM request_logs
+            WHERE path = '/mcp'
+            ORDER BY id ASC
+            "#,
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("fetch request diagnostics rows");
+        assert_eq!(request_rows.len(), 2, "expected initialize + follow-up request logs");
+        for row in &request_rows {
+            assert_eq!(
+                row.try_get::<String, _>("gateway_mode").unwrap(),
+                tavily_hikari::MCP_GATEWAY_MODE_UPSTREAM
+            );
+            assert_eq!(
+                row.try_get::<String, _>("experiment_variant").unwrap(),
+                tavily_hikari::MCP_EXPERIMENT_VARIANT_CONTROL
+            );
+            assert_eq!(
+                row.try_get::<String, _>("proxy_session_id").unwrap(),
+                proxy_session_id
+            );
+            assert_eq!(
+                row.try_get::<String, _>("upstream_operation").unwrap(),
+                "mcp"
+            );
+        }
+
+        let token_rows = sqlx::query(
+            r#"
+            SELECT gateway_mode, experiment_variant, proxy_session_id, upstream_operation
+            FROM auth_token_logs
+            WHERE token_id = ?
+            ORDER BY id ASC
+            "#,
+        )
+        .bind(&access_token.id)
+        .fetch_all(&pool)
+        .await
+        .expect("fetch token diagnostics rows");
+        assert_eq!(token_rows.len(), 2, "expected initialize + follow-up token logs");
+        for row in &token_rows {
+            assert_eq!(
+                row.try_get::<String, _>("gateway_mode").unwrap(),
+                tavily_hikari::MCP_GATEWAY_MODE_UPSTREAM
+            );
+            assert_eq!(
+                row.try_get::<String, _>("experiment_variant").unwrap(),
+                tavily_hikari::MCP_EXPERIMENT_VARIANT_CONTROL
+            );
+            assert_eq!(
+                row.try_get::<String, _>("proxy_session_id").unwrap(),
+                proxy_session_id
+            );
+            assert_eq!(
+                row.try_get::<String, _>("upstream_operation").unwrap(),
+                "mcp"
+            );
+        }
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn mcp_session_cannot_be_reused_by_another_token() {
         let db_path = temp_db_path("mcp-session-cross-token");
         let db_str = db_path.to_string_lossy().to_string();
@@ -25276,6 +25415,21 @@ colo=LAX
             .and_then(|value| value.to_str().ok())
             .expect("initialize response should expose mcp-session-id")
             .to_string();
+        let initialize_body: Value = initialize
+            .json()
+            .await
+            .expect("decode rebalance initialize response");
+        assert_eq!(
+            initialize_body["result"]["capabilities"]["prompts"]["listChanged"].as_bool(),
+            Some(false),
+            "rebalance initialize should advertise prompts/list parity"
+        );
+        assert!(
+            initialize_body["result"]["capabilities"]
+                .get("resources")
+                .is_some(),
+            "rebalance initialize should advertise resources parity"
+        );
 
         let tools_list = client
             .post(&url)
@@ -25337,6 +25491,117 @@ colo=LAX
         assert_eq!(
             row.try_get::<Option<String>, _>("upstream_key_id").unwrap(),
             None
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_rebalance_control_plane_lists_stay_local_and_return_empty_results() {
+        let db_path = temp_db_path("mcp-rebalance-control-plane-parity");
+        let db_str = db_path.to_string_lossy().to_string();
+        let expected_api_key = "tvly-rebalance-control-plane-parity";
+        let seen: RecordedRebalanceGatewayCalls = Arc::new(Mutex::new(Vec::new()));
+        let upstream_addr =
+            spawn_rebalance_gateway_mock(expected_api_key.to_string(), seen.clone()).await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy =
+            TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
+        proxy
+            .set_system_settings(&tavily_hikari::SystemSettings {
+                mcp_session_affinity_key_count: 5,
+                rebalance_mcp_enabled: true,
+                rebalance_mcp_session_percent: 100,
+            })
+            .await
+            .expect("enable rebalance mcp");
+        let access_token = proxy
+            .create_access_token(Some("mcp-rebalance-control-plane-parity"))
+            .await
+            .expect("create access token");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), upstream.clone()).await;
+        let url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, access_token.token
+        );
+        let client = Client::new();
+
+        let initialize = client
+            .post(&url)
+            .header("accept", "application/json, text/event-stream")
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": "rebalance-parity-init",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {},
+                    "clientInfo": { "name": "browser-probe", "version": "0.1.0" }
+                }
+            }))
+            .send()
+            .await
+            .expect("initialize request");
+        assert_eq!(initialize.status(), StatusCode::OK);
+        let proxy_session_id = initialize
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("initialize response should expose mcp-session-id")
+            .to_string();
+
+        for (method_name, response_id, expected_field) in [
+            ("prompts/list", "rebalance-prompts-list", "prompts"),
+            ("resources/list", "rebalance-resources-list", "resources"),
+            (
+                "resources/templates/list",
+                "rebalance-resource-templates-list",
+                "resourceTemplates",
+            ),
+        ] {
+            let response = client
+                .post(&url)
+                .header("accept", "application/json, text/event-stream")
+                .header("content-type", "application/json")
+                .header("mcp-protocol-version", "2025-03-26")
+                .header("mcp-session-id", proxy_session_id.as_str())
+                .json(&json!({
+                    "jsonrpc": "2.0",
+                    "id": response_id,
+                    "method": method_name,
+                }))
+                .send()
+                .await
+                .unwrap_or_else(|err| panic!("{method_name} request failed: {err}"));
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "{method_name} should succeed under rebalance parity"
+            );
+            let body: Value = response
+                .json()
+                .await
+                .unwrap_or_else(|err| panic!("decode {method_name} response: {err}"));
+            assert_eq!(
+                body["result"][expected_field].as_array().map(Vec::len),
+                Some(0),
+                "{method_name} should return an empty {expected_field} list"
+            );
+        }
+
+        let recorded = seen
+            .lock()
+            .expect("rebalance gateway calls lock poisoned")
+            .clone();
+        assert!(
+            recorded.is_empty(),
+            "initialize + prompts/resources parity methods should stay local under rebalance mode"
         );
 
         let _ = std::fs::remove_file(db_path);
@@ -27090,6 +27355,12 @@ colo=LAX
                 auth_token_id: None,
                 prefer_mcp_session_affinity: false,
                 pinned_api_key_id: None,
+                gateway_mode: None,
+                experiment_variant: None,
+                proxy_session_id: None,
+                routing_subject_hash: None,
+                upstream_operation: None,
+                fallback_reason: None,
             })
             .await;
 
