@@ -403,23 +403,141 @@ fn header_string(headers: &ReqHeaderMap, name: &'static str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn mcp_request_contains_method(body: &[u8], needle: &str) -> bool {
-    let Ok(value) = serde_json::from_slice::<Value>(body) else {
-        return false;
-    };
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum McpJsonRpcMessageKind {
+    Request,
+    Notification,
+    Response,
+    Invalid,
+}
 
-    let matches_method = |value: &Value| {
-        value
-            .get("method")
-            .and_then(|method| method.as_str())
-            .is_some_and(|method| method == needle)
-    };
+#[derive(Debug, Clone, Default)]
+struct McpJsonRpcBodySummary {
+    contains_initialize: bool,
+    request_count: usize,
+    notification_count: usize,
+    response_count: usize,
+    invalid_count: usize,
+    explicit_jsonrpc_follow_up_count: usize,
+    is_batch: bool,
+    is_empty_batch: bool,
+}
 
-    match value {
-        Value::Object(_) => matches_method(&value),
-        Value::Array(items) => items.iter().any(matches_method),
-        _ => false,
+impl McpJsonRpcBodySummary {
+    fn requires_session_header(&self) -> bool {
+        self.explicit_jsonrpc_follow_up_count > 0
     }
+
+    fn is_single_response(&self) -> bool {
+        !self.is_batch
+            && self.response_count == 1
+            && self.request_count == 0
+            && self.notification_count == 0
+            && self.invalid_count == 0
+    }
+
+    fn is_response_only_batch(&self) -> bool {
+        self.is_batch
+            && self.response_count > 0
+            && self.request_count == 0
+            && self.notification_count == 0
+            && self.invalid_count == 0
+    }
+}
+
+fn classify_mcp_jsonrpc_message(value: &Value) -> McpJsonRpcMessageKind {
+    let Some(map) = value.as_object() else {
+        return McpJsonRpcMessageKind::Invalid;
+    };
+
+    let explicit_jsonrpc = match map.get("jsonrpc") {
+        Some(Value::String(version)) if version == "2.0" => true,
+        Some(_) => return McpJsonRpcMessageKind::Invalid,
+        None => false,
+    };
+    let has_method = map
+        .get("method")
+        .and_then(Value::as_str)
+        .is_some_and(|method| !method.trim().is_empty());
+    let has_id = map.contains_key("id");
+    let id_is_non_null = map.get("id").is_some_and(|id| !id.is_null());
+    let has_result = map.contains_key("result");
+    let has_error = map.contains_key("error");
+
+    if has_method {
+        return if explicit_jsonrpc {
+            if has_id && id_is_non_null {
+                McpJsonRpcMessageKind::Request
+            } else if !has_id {
+                McpJsonRpcMessageKind::Notification
+            } else {
+                McpJsonRpcMessageKind::Invalid
+            }
+        } else {
+            McpJsonRpcMessageKind::Request
+        };
+    }
+
+    if has_id && (has_result || has_error) {
+        return McpJsonRpcMessageKind::Response;
+    }
+
+    McpJsonRpcMessageKind::Invalid
+}
+
+fn summarize_mcp_jsonrpc_body(body: &[u8]) -> Result<McpJsonRpcBodySummary, serde_json::Error> {
+    let parsed = serde_json::from_slice::<Value>(body)?;
+    let mut summary = McpJsonRpcBodySummary::default();
+
+    let mut record = |item: &Value| {
+        let explicit_jsonrpc = item
+            .get("jsonrpc")
+            .and_then(Value::as_str)
+            .is_some_and(|version| version == "2.0");
+        let method_name = item
+            .get("method")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|method| !method.is_empty());
+        let requires_session_header =
+            explicit_jsonrpc && method_name.is_some_and(|method| method != "initialize");
+        match classify_mcp_jsonrpc_message(item) {
+            McpJsonRpcMessageKind::Request => {
+                summary.request_count += 1;
+                summary.contains_initialize |= method_name.is_some_and(|method| method == "initialize");
+                if requires_session_header {
+                    summary.explicit_jsonrpc_follow_up_count += 1;
+                }
+            }
+            McpJsonRpcMessageKind::Notification => {
+                summary.notification_count += 1;
+                if requires_session_header {
+                    summary.explicit_jsonrpc_follow_up_count += 1;
+                }
+            }
+            McpJsonRpcMessageKind::Response => {
+                summary.response_count += 1;
+            }
+            McpJsonRpcMessageKind::Invalid => summary.invalid_count += 1,
+        }
+    };
+
+    match parsed {
+        Value::Object(_) => record(&parsed),
+        Value::Array(items) => {
+            summary.is_batch = true;
+            if items.is_empty() {
+                summary.is_empty_batch = true;
+            } else {
+                for item in &items {
+                    record(item);
+                }
+            }
+        }
+        _ => summary.invalid_count += 1,
+    }
+
+    Ok(summary)
 }
 
 fn is_mcp_session_delete_request(method: &Method, path: &str) -> bool {
@@ -526,8 +644,10 @@ fn build_rebalance_mcp_success_body(response_id: Option<&Value>, result: Value) 
         envelope.insert("id".to_string(), id.clone());
     }
     envelope.insert("result".to_string(), result);
-    serde_json::to_vec(&Value::Object(envelope))
-        .unwrap_or_else(|_| br#"{"jsonrpc":"2.0","result":{"isError":true,"status":500}}"#.to_vec())
+    serde_json::to_vec(&Value::Object(envelope)).unwrap_or_else(|_| {
+        br#"{"jsonrpc":"2.0","result":{"content":[],"isError":true,"structuredContent":{"status":500}}}"#
+            .to_vec()
+    })
 }
 
 fn build_rebalance_mcp_error_body(
@@ -553,6 +673,91 @@ fn build_rebalance_mcp_error_body(
         br#"{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"internal error"}}"#
             .to_vec()
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn build_and_log_local_mcp_protocol_response(
+    state: &Arc<AppState>,
+    token_id: Option<&str>,
+    method: &Method,
+    path: &str,
+    query: Option<&str>,
+    request_body: &[u8],
+    response_status: StatusCode,
+    response_body: &[u8],
+    failure_kind: Option<&str>,
+    gateway_mode: Option<&str>,
+    experiment_variant: Option<&str>,
+    proxy_session_id: Option<&str>,
+    routing_subject_hash: Option<&str>,
+    upstream_operation: Option<&str>,
+    fallback_reason: Option<&str>,
+) -> Result<Response<Body>, StatusCode> {
+    let analysis = analyze_mcp_attempt(response_status, response_body);
+    let request_kind = classify_token_request_kind(path, Some(request_body));
+    let empty_headers: [String; 0] = [];
+    let request_log_id = match state
+        .proxy
+        .record_local_request_log_without_key_with_diagnostics(
+            token_id,
+            method,
+            path,
+            query,
+            response_status,
+            analysis.tavily_status_code,
+            request_body,
+            response_body,
+            analysis.status,
+            failure_kind.or(analysis.failure_kind.as_deref()),
+            gateway_mode,
+            experiment_variant,
+            proxy_session_id,
+            routing_subject_hash,
+            upstream_operation,
+            fallback_reason,
+            &empty_headers,
+            &empty_headers,
+        )
+        .await
+    {
+        Ok(log_id) => Some(log_id),
+        Err(err) => {
+            eprintln!("local MCP protocol request_log failed for {path}: {err}");
+            None
+        }
+    };
+
+    if let Some(token_id) = token_id {
+        let _ = state
+            .proxy
+            .record_token_attempt_with_kind_request_log_metadata(
+                token_id,
+                method,
+                path,
+                query,
+                Some(response_status.as_u16() as i64),
+                analysis.tavily_status_code,
+                false,
+                analysis.status,
+                None,
+                &request_kind,
+                failure_kind.or(analysis.failure_kind.as_deref()),
+                Some("none"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                request_log_id,
+            )
+            .await;
+    }
+
+    Response::builder()
+        .status(response_status)
+        .header(CONTENT_TYPE, "application/json; charset=utf-8")
+        .body(Body::from(response_body.to_vec()))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 fn build_rebalance_mcp_initialize_body(
@@ -760,7 +965,7 @@ async fn handle_rebalance_mcp_single_message(
         .filter(|value| !value.is_empty());
 
     let Some(method_name) = method_name else {
-        let body = build_rebalance_mcp_error_body(response_id, -32600, "Invalid JSON-RPC request");
+        let body = build_rebalance_mcp_error_body(response_id, -32600, "Invalid Request");
         let request_log_id = log_rebalance_local_control_plane_response(
             state,
             token_id,
@@ -1134,8 +1339,8 @@ async fn handle_rebalance_mcp_request_body(
     incoming_protocol_version: Option<&str>,
     routing_subject_hash: Option<&str>,
 ) -> Result<ProxyResponse, StatusCode> {
-    let parsed =
-        serde_json::from_slice::<Value>(body_bytes).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let parsed = serde_json::from_slice::<Value>(body_bytes).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let summary = summarize_mcp_jsonrpc_body(body_bytes).map_err(|_| StatusCode::BAD_REQUEST)?;
 
     match parsed {
         Value::Object(_) => {
@@ -1154,6 +1359,28 @@ async fn handle_rebalance_mcp_request_body(
             .await
         }
         Value::Array(items) => {
+            if summary.is_empty_batch || summary.is_response_only_batch() {
+                let body = build_rebalance_mcp_error_body(None, -32600, "Invalid Request");
+                let request_log_id = log_rebalance_local_control_plane_response(
+                    state,
+                    token_id,
+                    method,
+                    path,
+                    body_bytes,
+                    StatusCode::BAD_REQUEST,
+                    &body,
+                    proxy_session_id,
+                    routing_subject_hash,
+                    Some("invalid_jsonrpc_request"),
+                )
+                .await;
+                return Ok(proxy_response_with_json_body(
+                    StatusCode::BAD_REQUEST,
+                    body,
+                    request_log_id,
+                ));
+            }
+
             let mut responses: Vec<Value> = Vec::new();
             let mut last_response: Option<ProxyResponse> = None;
 
@@ -1212,7 +1439,7 @@ async fn handle_rebalance_mcp_request_body(
             Ok(aggregated)
         }
         _ => {
-            let body = build_rebalance_mcp_error_body(None, -32600, "Invalid JSON-RPC request");
+            let body = build_rebalance_mcp_error_body(None, -32600, "Invalid Request");
             let request_log_id = log_rebalance_local_control_plane_response(
                 state,
                 token_id,
@@ -1352,6 +1579,7 @@ async fn proxy_handler(
         .await
         .map_err(|_| StatusCode::BAD_REQUEST)?;
     let is_mcp_request = path.starts_with("/mcp");
+    let is_mcp_delete_root_request = is_mcp_session_delete_request(&method, &path);
     if is_mcp_request && using_dev_open_admin_fallback {
         return mcp_session_response(
             StatusCode::UNAUTHORIZED,
@@ -1359,8 +1587,15 @@ async fn proxy_handler(
             "MCP requests must provide an explicit token when --dev-open-admin is enabled.",
         );
     }
-    let is_mcp_initialize =
-        is_mcp_request && mcp_request_contains_method(&body_bytes, "initialize");
+    let mcp_body_summary = if is_mcp_request && !is_mcp_delete_root_request {
+        Some(summarize_mcp_jsonrpc_body(&body_bytes))
+    } else {
+        None
+    };
+    let is_mcp_initialize = mcp_body_summary
+        .as_ref()
+        .and_then(|summary| summary.as_ref().ok())
+        .is_some_and(|summary| summary.contains_initialize);
     let incoming_proxy_session_id = if is_mcp_request {
         header_string(&headers, "mcp-session-id")
     } else {
@@ -1376,6 +1611,201 @@ async fn proxy_handler(
     } else {
         None
     };
+    if is_mcp_request && !is_mcp_delete_root_request {
+        match mcp_body_summary.as_ref().expect("mcp body summary must exist") {
+            Err(_) => {
+                let response_body =
+                    build_rebalance_mcp_error_body(None, -32700, "Parse error");
+                return build_and_log_local_mcp_protocol_response(
+                    &state,
+                    token_id.as_deref(),
+                    &method,
+                    &path,
+                    query.as_deref(),
+                    &body_bytes,
+                    StatusCode::BAD_REQUEST,
+                    &response_body,
+                    Some("invalid_jsonrpc_request"),
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some("mcp"),
+                    Some("parse_error"),
+                )
+                .await;
+            }
+            Ok(summary) if summary.is_empty_batch => {
+                let response_body =
+                    build_rebalance_mcp_error_body(None, -32600, "Invalid Request");
+                return build_and_log_local_mcp_protocol_response(
+                    &state,
+                    token_id.as_deref(),
+                    &method,
+                    &path,
+                    query.as_deref(),
+                    &body_bytes,
+                    StatusCode::BAD_REQUEST,
+                    &response_body,
+                    Some("invalid_jsonrpc_request"),
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some("mcp"),
+                    Some("empty_batch"),
+                )
+                .await;
+            }
+            Ok(summary)
+                if summary.is_response_only_batch()
+                    || (!summary.is_batch && summary.invalid_count > 0) =>
+            {
+                let response_body =
+                    build_rebalance_mcp_error_body(None, -32600, "Invalid Request");
+                return build_and_log_local_mcp_protocol_response(
+                    &state,
+                    token_id.as_deref(),
+                    &method,
+                    &path,
+                    query.as_deref(),
+                    &body_bytes,
+                    StatusCode::BAD_REQUEST,
+                    &response_body,
+                    Some("invalid_jsonrpc_request"),
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some("mcp"),
+                    Some("invalid_request"),
+                )
+                .await;
+            }
+            Ok(summary)
+                if summary.is_single_response() && incoming_proxy_session_id.is_none() =>
+            {
+                let response_body = mcp_session_body(
+                    "session_required",
+                    "MCP requests after initialize must include mcp-session-id.",
+                );
+                return build_and_log_local_mcp_protocol_response(
+                    &state,
+                    token_id.as_deref(),
+                    &method,
+                    &path,
+                    query.as_deref(),
+                    &body_bytes,
+                    StatusCode::BAD_REQUEST,
+                    &response_body,
+                    Some("invalid_jsonrpc_request"),
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some("mcp"),
+                    Some("missing_session_id"),
+                )
+                .await;
+            }
+            Ok(summary)
+                if summary.is_single_response() && incoming_proxy_session_id.is_some() =>
+            {
+                let proxy_session_id = incoming_proxy_session_id
+                    .as_deref()
+                    .expect("response-only branch requires session id");
+                if state
+                    .proxy
+                    .get_active_mcp_session(proxy_session_id)
+                    .await
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+                    .is_none()
+                {
+                    let response_body = mcp_session_body(
+                        "session_unavailable",
+                        "MCP session is unavailable, please reconnect to initialize a new session.",
+                    );
+                    return build_and_log_local_mcp_protocol_response(
+                        &state,
+                        token_id.as_deref(),
+                        &method,
+                        &path,
+                        query.as_deref(),
+                        &body_bytes,
+                        StatusCode::NOT_FOUND,
+                        &response_body,
+                        Some("session_unavailable"),
+                        None,
+                        None,
+                        Some(proxy_session_id),
+                        None,
+                        Some("mcp"),
+                        Some("response_session_unavailable"),
+                    )
+                    .await;
+                }
+                let response_body = Vec::new();
+                return build_and_log_local_mcp_protocol_response(
+                    &state,
+                    token_id.as_deref(),
+                    &method,
+                    &path,
+                    query.as_deref(),
+                    &body_bytes,
+                    StatusCode::ACCEPTED,
+                    &response_body,
+                    None,
+                    None,
+                    None,
+                    Some(proxy_session_id),
+                    None,
+                    Some("mcp"),
+                    Some("response_accepted"),
+                )
+                .await;
+            }
+            Ok(summary)
+                if !summary.contains_initialize
+                    && summary.requires_session_header()
+                    && incoming_proxy_session_id.is_none() =>
+            {
+                let requires_session = if let Some(token_id) = token_id.as_deref() {
+                    state
+                        .proxy
+                        .token_has_active_mcp_session(token_id)
+                        .await
+                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+                } else {
+                    false
+                };
+                if requires_session {
+                    let response_body = mcp_session_body(
+                        "session_required",
+                        "MCP requests after initialize must include mcp-session-id.",
+                    );
+                    return build_and_log_local_mcp_protocol_response(
+                        &state,
+                        token_id.as_deref(),
+                        &method,
+                        &path,
+                        query.as_deref(),
+                        &body_bytes,
+                        StatusCode::BAD_REQUEST,
+                        &response_body,
+                        Some("invalid_jsonrpc_request"),
+                        None,
+                        None,
+                        None,
+                        None,
+                        Some("mcp"),
+                        Some("missing_session_id"),
+                    )
+                    .await;
+                }
+            }
+            _ => {}
+        }
+    }
     let token_user_id = if is_mcp_request {
         if let Some(token_id) = token_id.as_deref() {
             state
@@ -1428,7 +1858,7 @@ async fn proxy_handler(
 
         let Some(session) = session else {
             return mcp_session_response(
-                StatusCode::CONFLICT,
+                StatusCode::NOT_FOUND,
                 "session_unavailable",
                 "MCP session is unavailable, please reconnect to initialize a new session.",
             );
@@ -1458,7 +1888,7 @@ async fn proxy_handler(
         if session.gateway_mode == tavily_hikari::MCP_GATEWAY_MODE_UPSTREAM {
             let Some(upstream_session_id) = session.upstream_session_id.as_deref() else {
                 return mcp_session_response(
-                    StatusCode::CONFLICT,
+                    StatusCode::NOT_FOUND,
                     "session_unavailable",
                     "MCP session is unavailable, please reconnect to initialize a new session.",
                 );
@@ -1470,7 +1900,7 @@ async fn proxy_handler(
             );
             let Some(upstream_key_id) = session.upstream_key_id.clone() else {
                 return mcp_session_response(
-                    StatusCode::CONFLICT,
+                    StatusCode::NOT_FOUND,
                     "session_unavailable",
                     "MCP session is unavailable, please reconnect to initialize a new session.",
                 );
@@ -1480,7 +1910,6 @@ async fn proxy_handler(
         active_mcp_session = Some(session);
     }
     let request_kind = classify_token_request_kind(&path, Some(body_bytes.as_ref()));
-    let is_mcp_delete_root_request = is_mcp_session_delete_request(&method, &path);
 
     // Billing plan (1:1 upstream credits):
     // - Non-business whitelist methods are ignored by business quota.
@@ -2048,8 +2477,7 @@ async fn proxy_handler(
         {
             Ok(response) => Ok(response),
             Err(status) => {
-                let payload =
-                    build_rebalance_mcp_error_body(None, -32600, "Invalid JSON-RPC request");
+                let payload = build_rebalance_mcp_error_body(None, -32700, "Parse error");
                 let response = Response::builder()
                     .status(status)
                     .header(CONTENT_TYPE, "application/json; charset=utf-8")
@@ -2074,8 +2502,7 @@ async fn proxy_handler(
         {
             Ok(response) => Ok(response),
             Err(status) => {
-                let payload =
-                    build_rebalance_mcp_error_body(None, -32600, "Invalid JSON-RPC request");
+                let payload = build_rebalance_mcp_error_body(None, -32700, "Parse error");
                 let response = Response::builder()
                     .status(status)
                     .header(CONTENT_TYPE, "application/json; charset=utf-8")
@@ -2144,7 +2571,7 @@ async fn proxy_handler(
                             .proxy
                             .revoke_mcp_session(proxy_session_id, "upstream_session_invalid")
                             .await;
-                        resp.status = StatusCode::CONFLICT;
+                        resp.status = StatusCode::NOT_FOUND;
                         resp.headers = ReqHeaderMap::new();
                         resp.headers.insert(
                             CONTENT_TYPE,
@@ -2569,7 +2996,7 @@ async fn proxy_handler(
                     .revoke_mcp_session(proxy_session_id, "pinned_key_unavailable")
                     .await;
                 return mcp_session_response(
-                    StatusCode::CONFLICT,
+                    StatusCode::NOT_FOUND,
                     "session_unavailable",
                     "The pinned MCP session key is unavailable. Please reconnect.",
                 );

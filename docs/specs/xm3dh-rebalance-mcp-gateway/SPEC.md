@@ -100,9 +100,17 @@
   - `tavily_research`
 - `tools/call` 同时接受 underscore 与 hyphen 工具名别名。
 - `initialize / ping / tools/list / prompts/list / resources/list / resources/templates/list / notifications/*` 本地处理。
+- Rebalance `tools/call` 返回的 MCP `CallToolResult` 必须始终携带顶层 `content` 数组；工具执行失败使用顶层 `result.isError=true`，而不是把 `isError` 塞进 `structuredContent`。
 - `tools/call`：
   - `search / extract / crawl / map` → HTTP full-pool 选 key，不做同请求自动重试。
   - `research` → 保留 usage-diff 计费，并把 usage delta 回填到 MCP `structuredContent.usage.credits`。
+- `/mcp` 的本地协议拦截要求：
+  - 非法 JSON → `-32700 Parse error`
+  - 空 batch `[]` → 单个 `-32600 Invalid Request`
+  - 单条 notification → `202` 空 body
+  - response-only batch → 本地 `400` 拒绝，不伪造成 JSON-RPC 结果数组
+  - initialize 之后缺失 `mcp-session-id` 的 follow-up 请求 → 本地 `400`
+  - 无效 / 已撤销 / 失效 session 的 follow-up 请求 → `404 Not Found`
 
 ### Rebalance HTTP headers
 
@@ -157,6 +165,22 @@
 - Given Rebalance 会话收到 `prompts/list`、`resources/list` 或 `resources/templates/list`
   When 客户端执行控制面探测
   Then gateway 必须本地返回 `200 success` 与空列表结果，且不命中 upstream `/mcp`。
+
+- Given Rebalance 工具调用命中上游 4xx/5xx 或本地 502 fallback
+  When gateway 组装 `CallToolResult`
+  Then 返回体必须包含顶层 `result.content`，并在工具执行失败时设置顶层 `result.isError=true`，而 `structuredContent` 仅保留结构化字段与状态信息。
+
+- Given `/mcp` 收到非法 JSON、空 batch `[]` 或 response-only batch
+  When gateway 在本地完成协议校验
+  Then 非法 JSON 返回 `-32700 Parse error`，空 batch / response-only batch 返回 `-32600 Invalid Request`，且这些请求都不得命中 upstream。
+
+- Given initialize 之后的 `/mcp` follow-up 请求缺少 `mcp-session-id`
+  When 请求进入 gateway
+  Then gateway 必须本地返回 `400`，提示 session header 必填，并且不命中 upstream。
+
+- Given 已存在的 proxy session 已失效、被撤销、或其上游 session 已不可用
+  When 客户端继续携带旧 `mcp-session-id` 发 follow-up
+  Then gateway 必须返回 `404 Not Found` 与 `session_unavailable` 语义化 body，不再返回 `409 Conflict`。
 
 - Given 管理员查看请求详情
   When 请求来自 control 或 rebalance 路径

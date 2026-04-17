@@ -5089,13 +5089,12 @@ impl TavilyProxy {
             }),
         };
 
+        let mut is_error = !upstream_status.is_success();
         if let Value::Object(ref mut map) = structured_content {
             map.entry("status".to_string())
                 .or_insert(Value::from(i64::from(upstream_status.as_u16())));
-            if !upstream_status.is_success() {
-                map.entry("isError".to_string())
-                    .or_insert(Value::Bool(true));
-            }
+            is_error |= map.get("isError").and_then(Value::as_bool).unwrap_or(false);
+            map.remove("isError");
             if let Some(usage_credits) = usage_credits_override {
                 map.insert(
                     "usage".to_string(),
@@ -5105,12 +5104,16 @@ impl TavilyProxy {
         }
 
         let mut result = serde_json::Map::new();
+        result.insert("content".to_string(), Value::Array(Vec::new()));
         result.insert("structuredContent".to_string(), structured_content);
         if !raw_text.trim().is_empty() {
             result.insert(
                 "content".to_string(),
                 serde_json::json!([{ "type": "text", "text": raw_text }]),
             );
+        }
+        if is_error {
+            result.insert("isError".to_string(), Value::Bool(true));
         }
 
         let mut envelope = serde_json::Map::new();
@@ -5121,7 +5124,7 @@ impl TavilyProxy {
         envelope.insert("result".to_string(), Value::Object(result));
 
         serde_json::to_vec(&Value::Object(envelope)).unwrap_or_else(|_| {
-            br#"{"jsonrpc":"2.0","result":{"structuredContent":{"status":500,"isError":true}}}"#
+            br#"{"jsonrpc":"2.0","result":{"content":[],"isError":true,"structuredContent":{"status":500}}}"#
                 .to_vec()
         })
     }
@@ -5287,8 +5290,13 @@ impl TavilyProxy {
             }
             Err(err) => {
                 log_proxy_error(&lease.secret, method, display_path, None, &err);
-                let response_body = br#"{"jsonrpc":"2.0","result":{"structuredContent":{"status":502,"isError":true}}}"#
-                    .to_vec();
+                let response_body = Self::build_rebalance_mcp_tool_result_body(
+                    response_id,
+                    StatusCode::BAD_GATEWAY,
+                    err.to_string().as_bytes(),
+                    None,
+                );
+                let mcp_analysis = analyze_mcp_attempt(StatusCode::OK, &response_body);
                 let request_log_id = self
                     .key_store
                     .log_attempt(AttemptLog {
@@ -5297,13 +5305,13 @@ impl TavilyProxy {
                         method,
                         path: display_path,
                         query: None,
-                        status: Some(StatusCode::BAD_GATEWAY),
-                        tavily_status_code: Some(StatusCode::BAD_GATEWAY.as_u16() as i64),
+                        status: Some(StatusCode::OK),
+                        tavily_status_code: mcp_analysis.tavily_status_code,
                         error: Some(&err.to_string()),
                         request_body: original_request_body,
                         response_body: &response_body,
-                        outcome: OUTCOME_ERROR,
-                        failure_kind: None,
+                        outcome: mcp_analysis.status,
+                        failure_kind: mcp_analysis.failure_kind.as_deref(),
                         key_effect_code: KEY_EFFECT_NONE,
                         key_effect_summary: None,
                         binding_effect_code: KEY_EFFECT_NONE,
@@ -5326,7 +5334,7 @@ impl TavilyProxy {
                     HeaderValue::from_static("application/json; charset=utf-8"),
                 );
                 Ok(ProxyResponse {
-                    status: StatusCode::BAD_GATEWAY,
+                    status: StatusCode::OK,
                     headers,
                     body: Bytes::from(response_body),
                     api_key_id: Some(lease.id),
@@ -5551,8 +5559,13 @@ impl TavilyProxy {
             }
             Err(err) => {
                 log_proxy_error(&lease.secret, method, display_path, None, &err);
-                let response_body = br#"{"jsonrpc":"2.0","result":{"structuredContent":{"status":502,"isError":true}}}"#
-                    .to_vec();
+                let response_body = Self::build_rebalance_mcp_tool_result_body(
+                    response_id,
+                    StatusCode::BAD_GATEWAY,
+                    err.to_string().as_bytes(),
+                    None,
+                );
+                let mcp_analysis = analyze_mcp_attempt(StatusCode::OK, &response_body);
                 let request_log_id = self
                     .key_store
                     .log_attempt(AttemptLog {
@@ -5561,13 +5574,13 @@ impl TavilyProxy {
                         method,
                         path: display_path,
                         query: None,
-                        status: Some(StatusCode::BAD_GATEWAY),
-                        tavily_status_code: Some(StatusCode::BAD_GATEWAY.as_u16() as i64),
+                        status: Some(StatusCode::OK),
+                        tavily_status_code: mcp_analysis.tavily_status_code,
                         error: Some(&err.to_string()),
                         request_body: original_request_body,
                         response_body: &response_body,
-                        outcome: OUTCOME_ERROR,
-                        failure_kind: None,
+                        outcome: mcp_analysis.status,
+                        failure_kind: mcp_analysis.failure_kind.as_deref(),
                         key_effect_code: KEY_EFFECT_NONE,
                         key_effect_summary: None,
                         binding_effect_code: KEY_EFFECT_NONE,
@@ -5590,7 +5603,7 @@ impl TavilyProxy {
                     HeaderValue::from_static("application/json; charset=utf-8"),
                 );
                 Ok(ProxyResponse {
-                    status: StatusCode::BAD_GATEWAY,
+                    status: StatusCode::OK,
                     headers,
                     body: Bytes::from(response_body),
                     api_key_id: Some(lease.id),
@@ -8988,6 +9001,12 @@ impl TavilyProxy {
     ) -> Result<Option<McpSessionBinding>, ProxyError> {
         self.key_store
             .get_active_mcp_session(proxy_session_id, Utc::now().timestamp())
+            .await
+    }
+
+    pub async fn token_has_active_mcp_session(&self, token_id: &str) -> Result<bool, ProxyError> {
+        self.key_store
+            .has_active_mcp_sessions_for_token(token_id, Utc::now().timestamp())
             .await
     }
 

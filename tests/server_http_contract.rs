@@ -120,6 +120,35 @@ async fn wait_for_health_ready(port: u16) -> bool {
     false
 }
 
+async fn initialize_mcp_session(client: &Client, mcp_url: &str, token: &str) -> String {
+    let initialize = client
+        .post(mcp_url)
+        .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(
+            axum::http::header::ACCEPT,
+            "application/json, text/event-stream",
+        )
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "contract-initialize",
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {}
+            }
+        }))
+        .send()
+        .await
+        .expect("mcp initialize request");
+    assert_eq!(initialize.status(), reqwest::StatusCode::OK);
+    initialize
+        .headers()
+        .get("mcp-session-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+        .expect("initialize should return mcp-session-id")
+}
+
 fn spawn_backend_process_with_urls(
     port: u16,
     upstream: &str,
@@ -354,6 +383,22 @@ async fn spawn_mock_mcp_probe_upstream_at_route(
                     calls.lock().expect("mcp probe calls lock poisoned").push(method.clone());
 
                     match method.as_str() {
+                        "initialize" => (
+                            StatusCode::OK,
+                            [
+                                ("mcp-session-id", "upstream-probe-session"),
+                                ("mcp-protocol-version", "2025-03-26"),
+                            ],
+                            axum::Json(serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": body.get("id").cloned().unwrap_or_else(|| serde_json::json!("probe-initialize")),
+                                "result": {
+                                    "protocolVersion": "2025-03-26",
+                                    "capabilities": {}
+                                }
+                            })),
+                        )
+                            .into_response(),
                         "ping" => (
                             StatusCode::OK,
                             axum::Json(serde_json::json!({
@@ -431,6 +476,22 @@ async fn spawn_mock_mcp_tools_contract_upstream(
                     calls.lock().expect("mcp tools contract calls lock poisoned").push(method.clone());
 
                     match method.as_str() {
+                        "initialize" => (
+                            StatusCode::OK,
+                            [
+                                ("mcp-session-id", "upstream-tools-session"),
+                                ("mcp-protocol-version", "2025-03-26"),
+                            ],
+                            axum::Json(serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": body.get("id").cloned().unwrap_or_else(|| serde_json::json!("probe-initialize")),
+                                "result": {
+                                    "protocolVersion": "2025-03-26",
+                                    "capabilities": {}
+                                }
+                            })),
+                        )
+                            .into_response(),
                         "tools/list" => (
                             StatusCode::OK,
                             axum::Json(serde_json::json!({
@@ -883,6 +944,7 @@ async fn mcp_probe_requests_with_authorization_header_reach_upstream() {
     let client = Client::new();
     let token = "th-zjvc-abcdefghijkl";
     let mcp_url = format!("http://127.0.0.1:{port}/mcp");
+    let session_id = initialize_mcp_session(&client, &mcp_url, token).await;
 
     let ping = client
         .post(&mcp_url)
@@ -891,6 +953,7 @@ async fn mcp_probe_requests_with_authorization_header_reach_upstream() {
             axum::http::header::ACCEPT,
             "application/json, text/event-stream",
         )
+        .header("mcp-session-id", session_id.as_str())
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
             "id": "probe-ping",
@@ -909,6 +972,7 @@ async fn mcp_probe_requests_with_authorization_header_reach_upstream() {
             axum::http::header::ACCEPT,
             "application/json, text/event-stream",
         )
+        .header("mcp-session-id", session_id.as_str())
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
             "id": "probe-tools-list",
@@ -935,7 +999,11 @@ async fn mcp_probe_requests_with_authorization_header_reach_upstream() {
     let upstream_calls = calls.lock().expect("mcp probe calls lock poisoned").clone();
     assert_eq!(
         upstream_calls,
-        vec!["ping".to_string(), "tools/list".to_string()]
+        vec![
+            "initialize".to_string(),
+            "ping".to_string(),
+            "tools/list".to_string(),
+        ]
     );
 }
 
@@ -955,6 +1023,7 @@ async fn mcp_probe_requests_preserve_prefixed_upstream_path() {
     let client = Client::new();
     let token = "th-zjvc-abcdefghijkl";
     let mcp_url = format!("http://127.0.0.1:{port}/mcp");
+    let session_id = initialize_mcp_session(&client, &mcp_url, token).await;
 
     let ping = client
         .post(&mcp_url)
@@ -963,6 +1032,7 @@ async fn mcp_probe_requests_preserve_prefixed_upstream_path() {
             axum::http::header::ACCEPT,
             "application/json, text/event-stream",
         )
+        .header("mcp-session-id", session_id.as_str())
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
             "id": "probe-ping",
@@ -978,7 +1048,10 @@ async fn mcp_probe_requests_preserve_prefixed_upstream_path() {
         .lock()
         .expect("mcp prefixed calls lock poisoned")
         .clone();
-    assert_eq!(upstream_calls, vec!["ping".to_string()]);
+    assert_eq!(
+        upstream_calls,
+        vec!["initialize".to_string(), "ping".to_string()]
+    );
 }
 
 #[tokio::test]
@@ -1003,10 +1076,12 @@ async fn mcp_tools_list_advertised_tools_can_all_be_called_via_authorization_hea
     let client = Client::new();
     let token = "th-zjvc-abcdefghijkl";
     let mcp_url = format!("http://127.0.0.1:{port}/mcp");
+    let session_id = initialize_mcp_session(&client, &mcp_url, token).await;
 
     let tools_list = client
         .post(&mcp_url)
         .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"))
+        .header("mcp-session-id", session_id.as_str())
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
             "id": "probe-tools-list",
@@ -1058,6 +1133,7 @@ async fn mcp_tools_list_advertised_tools_can_all_be_called_via_authorization_hea
         let response = client
             .post(&mcp_url)
             .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"))
+            .header("mcp-session-id", session_id.as_str())
             .json(&serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": format!("call-{tool_name}"),
@@ -1116,10 +1192,12 @@ async fn mcp_tools_list_legacy_underscore_tools_still_apply_supported_tavily_met
     let client = Client::new();
     let token = "th-zjvc-abcdefghijkl";
     let mcp_url = format!("http://127.0.0.1:{port}/mcp");
+    let session_id = initialize_mcp_session(&client, &mcp_url, token).await;
 
     let tools_list = client
         .post(&mcp_url)
         .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"))
+        .header("mcp-session-id", session_id.as_str())
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
             "id": "probe-tools-list",
@@ -1171,6 +1249,7 @@ async fn mcp_tools_list_legacy_underscore_tools_still_apply_supported_tavily_met
         let response = client
             .post(&mcp_url)
             .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"))
+            .header("mcp-session-id", session_id.as_str())
             .json(&serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": format!("call-{tool_name}"),
