@@ -2954,6 +2954,50 @@ mod tests {
         addr
     }
 
+    async fn spawn_rebalance_gateway_http_error_mock(
+        expected_api_key: String,
+        seen: RecordedRebalanceGatewayCalls,
+        status: StatusCode,
+        body: Value,
+    ) -> SocketAddr {
+        let seen_for_search = seen.clone();
+        let app = Router::new().route(
+            "/search",
+            post({
+                move |headers: HeaderMap, Json(request_body): Json<Value>| {
+                    let expected_api_key = expected_api_key.clone();
+                    let seen = seen_for_search.clone();
+                    let response_body = body.clone();
+                    async move {
+                        assert_upstream_json_auth(
+                            &headers,
+                            &request_body,
+                            &expected_api_key,
+                            "/search",
+                        );
+                        seen.lock()
+                            .expect("rebalance gateway error calls lock")
+                            .push(RecordedRebalanceGatewayCall {
+                                path: "/search".to_string(),
+                                headers: headers.clone(),
+                                body: request_body.clone(),
+                            });
+                        (status, Json(response_body))
+                    }
+                }
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+        addr
+    }
+
     async fn spawn_http_search_mock_with_usage(
         expected_api_key: String,
     ) -> (SocketAddr, Arc<AtomicUsize>) {
@@ -20165,7 +20209,15 @@ colo=LAX
         );
         let resp = client
             .post(url)
-            .body("{}")
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "query-token-init",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {}
+                }
+            }))
             .send()
             .await
             .expect("request to proxy succeeds");
@@ -23974,7 +24026,7 @@ colo=LAX
             .await
             .expect("follow-up request");
 
-        assert_eq!(follow_up.status(), reqwest::StatusCode::CONFLICT);
+        assert_eq!(follow_up.status(), reqwest::StatusCode::NOT_FOUND);
         let body: Value = follow_up.json().await.expect("parse reconnect body");
         assert_eq!(
             body.get("error").and_then(|value| value.as_str()),
@@ -24244,7 +24296,7 @@ colo=LAX
             .await
             .expect("stale follow-up");
 
-        assert_eq!(stale_follow_up.status(), reqwest::StatusCode::CONFLICT);
+        assert_eq!(stale_follow_up.status(), reqwest::StatusCode::NOT_FOUND);
         let stale_body: Value = stale_follow_up.json().await.expect("parse stale body");
         assert_eq!(
             stale_body.get("error").and_then(|value| value.as_str()),
@@ -24445,7 +24497,7 @@ colo=LAX
             .send()
             .await
             .expect("stale follow-up");
-        assert_eq!(stale_follow_up.status(), reqwest::StatusCode::CONFLICT);
+        assert_eq!(stale_follow_up.status(), reqwest::StatusCode::NOT_FOUND);
 
         let healthy_follow_up = client
             .post(&second_url)
@@ -25856,6 +25908,561 @@ colo=LAX
                 .try_get::<String, _>("upstream_operation")
                 .unwrap(),
             "http_search"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_rebalance_tool_errors_use_top_level_is_error_and_content_array() {
+        let db_path = temp_db_path("mcp-rebalance-search-http-error");
+        let db_str = db_path.to_string_lossy().to_string();
+        let expected_api_key = "tvly-rebalance-search-http-error";
+        let seen: RecordedRebalanceGatewayCalls = Arc::new(Mutex::new(Vec::new()));
+        let upstream_addr = spawn_rebalance_gateway_http_error_mock(
+            expected_api_key.to_string(),
+            seen,
+            StatusCode::BAD_REQUEST,
+            json!({
+                "status": 400,
+                "detail": "bad query"
+            }),
+        )
+        .await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy =
+            TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
+        proxy
+            .set_system_settings(&tavily_hikari::SystemSettings {
+                mcp_session_affinity_key_count: 5,
+                rebalance_mcp_enabled: true,
+                rebalance_mcp_session_percent: 100,
+            })
+            .await
+            .expect("enable rebalance mcp");
+        let access_token = proxy
+            .create_access_token(Some("mcp-rebalance-search-http-error"))
+            .await
+            .expect("create access token");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), upstream.clone()).await;
+        let url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, access_token.token
+        );
+        let client = Client::new();
+
+        let initialize = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": "rebalance-error-init",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {}
+                }
+            }))
+            .send()
+            .await
+            .expect("initialize request");
+        assert_eq!(initialize.status(), StatusCode::OK);
+        let proxy_session_id = initialize
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("initialize response should expose mcp-session-id")
+            .to_string();
+
+        let search = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .header("mcp-session-id", proxy_session_id.as_str())
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": "rebalance-search-error",
+                "method": "tools/call",
+                "params": {
+                    "name": "tavily_search",
+                    "arguments": {
+                        "query": "bad input"
+                    }
+                }
+            }))
+            .send()
+            .await
+            .expect("rebalance search request");
+        assert_eq!(search.status(), StatusCode::OK);
+        let body: Value = search
+            .json()
+            .await
+            .expect("decode rebalance error response");
+        assert_eq!(body["result"]["isError"].as_bool(), Some(true));
+        assert!(
+            body["result"]["content"].is_array(),
+            "rebalance error responses must keep a top-level content array"
+        );
+        assert_eq!(
+            body["result"]["structuredContent"]["isError"].as_bool(),
+            None,
+            "isError must not be nested inside structuredContent"
+        );
+        assert_eq!(
+            body["result"]["structuredContent"]["status"].as_i64(),
+            Some(400)
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_rebalance_parse_error_returns_jsonrpc_parse_error() {
+        let db_path = temp_db_path("mcp-rebalance-parse-error");
+        let db_str = db_path.to_string_lossy().to_string();
+        let expected_api_key = "tvly-rebalance-parse-error";
+        let seen: RecordedRebalanceGatewayCalls = Arc::new(Mutex::new(Vec::new()));
+        let upstream_addr =
+            spawn_rebalance_gateway_mock(expected_api_key.to_string(), seen.clone()).await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy =
+            TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
+        proxy
+            .set_system_settings(&tavily_hikari::SystemSettings {
+                mcp_session_affinity_key_count: 5,
+                rebalance_mcp_enabled: true,
+                rebalance_mcp_session_percent: 100,
+            })
+            .await
+            .expect("enable rebalance mcp");
+        let access_token = proxy
+            .create_access_token(Some("mcp-rebalance-parse-error"))
+            .await
+            .expect("create access token");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), upstream.clone()).await;
+        let url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, access_token.token
+        );
+        let client = Client::new();
+
+        let response = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .body("{")
+            .send()
+            .await
+            .expect("parse-error request");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body: Value = response.json().await.expect("decode parse-error body");
+        assert_eq!(body["error"]["code"].as_i64(), Some(-32700));
+        assert_eq!(body["error"]["message"].as_str(), Some("Parse error"));
+
+        let recorded = seen
+            .lock()
+            .expect("rebalance gateway calls lock poisoned")
+            .clone();
+        assert!(
+            recorded.is_empty(),
+            "parse errors must be rejected locally before any upstream hit"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_rebalance_empty_batch_returns_invalid_request() {
+        let db_path = temp_db_path("mcp-rebalance-empty-batch");
+        let db_str = db_path.to_string_lossy().to_string();
+        let expected_api_key = "tvly-rebalance-empty-batch";
+        let seen: RecordedRebalanceGatewayCalls = Arc::new(Mutex::new(Vec::new()));
+        let upstream_addr =
+            spawn_rebalance_gateway_mock(expected_api_key.to_string(), seen.clone()).await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy =
+            TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
+        proxy
+            .set_system_settings(&tavily_hikari::SystemSettings {
+                mcp_session_affinity_key_count: 5,
+                rebalance_mcp_enabled: true,
+                rebalance_mcp_session_percent: 100,
+            })
+            .await
+            .expect("enable rebalance mcp");
+        let access_token = proxy
+            .create_access_token(Some("mcp-rebalance-empty-batch"))
+            .await
+            .expect("create access token");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), upstream.clone()).await;
+        let url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, access_token.token
+        );
+        let client = Client::new();
+
+        let response = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .json(&json!([]))
+            .send()
+            .await
+            .expect("empty-batch request");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body: Value = response.json().await.expect("decode empty-batch body");
+        assert_eq!(body["error"]["code"].as_i64(), Some(-32600));
+        assert_eq!(body["error"]["message"].as_str(), Some("Invalid Request"));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_rebalance_response_only_batch_is_rejected_locally() {
+        let db_path = temp_db_path("mcp-rebalance-response-only-batch");
+        let db_str = db_path.to_string_lossy().to_string();
+        let expected_api_key = "tvly-rebalance-response-only-batch";
+        let seen: RecordedRebalanceGatewayCalls = Arc::new(Mutex::new(Vec::new()));
+        let upstream_addr =
+            spawn_rebalance_gateway_mock(expected_api_key.to_string(), seen.clone()).await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy =
+            TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
+        proxy
+            .set_system_settings(&tavily_hikari::SystemSettings {
+                mcp_session_affinity_key_count: 5,
+                rebalance_mcp_enabled: true,
+                rebalance_mcp_session_percent: 100,
+            })
+            .await
+            .expect("enable rebalance mcp");
+        let access_token = proxy
+            .create_access_token(Some("mcp-rebalance-response-only-batch"))
+            .await
+            .expect("create access token");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), upstream.clone()).await;
+        let url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, access_token.token
+        );
+        let client = Client::new();
+
+        let initialize = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": "rebalance-response-only-init",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {}
+                }
+            }))
+            .send()
+            .await
+            .expect("initialize request");
+        assert_eq!(initialize.status(), StatusCode::OK);
+        let proxy_session_id = initialize
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("initialize response should expose mcp-session-id")
+            .to_string();
+
+        let response = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .header("mcp-session-id", proxy_session_id.as_str())
+            .json(&json!([
+                {
+                    "jsonrpc": "2.0",
+                    "id": "server-request-1",
+                    "result": { "ok": true }
+                }
+            ]))
+            .send()
+            .await
+            .expect("response-only batch request");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body: Value = response
+            .json()
+            .await
+            .expect("decode response-only batch body");
+        assert_eq!(body["error"]["code"].as_i64(), Some(-32600));
+
+        let recorded = seen
+            .lock()
+            .expect("rebalance gateway calls lock poisoned")
+            .clone();
+        assert!(
+            recorded.is_empty(),
+            "response-only batches must be rejected locally"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_tools_call_follow_up_without_session_header_is_rejected_locally() {
+        let db_path = temp_db_path("mcp-tools-call-follow-up-missing-session-id");
+        let db_str = db_path.to_string_lossy().to_string();
+        let expected_api_key = "tvly-mcp-tools-call-follow-up-missing-session-id";
+        let (upstream_addr, calls) =
+            spawn_mock_mcp_upstream_for_session_headers(vec![expected_api_key.to_string()]).await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy =
+            TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
+        let access_token = proxy
+            .create_access_token(Some("mcp-tools-call-follow-up-missing-session-id"))
+            .await
+            .expect("create access token");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), upstream.clone()).await;
+        let client = Client::new();
+        let url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, access_token.token
+        );
+
+        let initialize = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "init-tools-call-missing-session-id",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {}
+                }
+            }))
+            .send()
+            .await
+            .expect("initialize request");
+        assert_eq!(initialize.status(), StatusCode::OK);
+
+        let rejected = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "tools-call-missing-session-id",
+                "method": "tools/call",
+                "params": {
+                    "name": "tavily-search",
+                    "arguments": {
+                        "query": "missing session id follow-up",
+                        "search_depth": "basic"
+                    }
+                }
+            }))
+            .send()
+            .await
+            .expect("tools/call follow-up without session id");
+        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+        let body: Value = rejected
+            .json()
+            .await
+            .expect("parse missing-session-id tools/call body");
+        assert_eq!(
+            body.get("error").and_then(|value| value.as_str()),
+            Some("session_required")
+        );
+
+        let recorded = calls
+            .lock()
+            .expect("session header calls lock poisoned")
+            .clone();
+        assert_eq!(
+            recorded.len(),
+            1,
+            "missing-session-id tools/call follow-up should be rejected locally"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_response_only_follow_up_with_revoked_session_returns_not_found() {
+        let db_path = temp_db_path("mcp-response-only-revoked-session");
+        let db_str = db_path.to_string_lossy().to_string();
+        let expected_api_key = "tvly-mcp-response-only-revoked-session";
+        let upstream_addr = spawn_mock_upstream(expected_api_key.to_string()).await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy = TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+            .await
+            .expect("proxy created");
+        let mut settings = proxy
+            .get_system_settings()
+            .await
+            .expect("load system settings");
+        settings.rebalance_mcp_enabled = true;
+        settings.rebalance_mcp_session_percent = 100;
+        proxy
+            .set_system_settings(&settings)
+            .await
+            .expect("enable rebalance session routing");
+        let access_token = proxy
+            .create_access_token(Some("mcp-response-only-revoked-session"))
+            .await
+            .expect("create access token");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), upstream.clone()).await;
+        let client = Client::new();
+        let url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, access_token.token
+        );
+
+        let initialize = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "init-revoked-response-only",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {}
+                }
+            }))
+            .send()
+            .await
+            .expect("initialize request");
+        assert_eq!(initialize.status(), StatusCode::OK);
+        let proxy_session_id = initialize
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string)
+            .expect("initialize should return mcp-session-id");
+
+        proxy
+            .revoke_mcp_session(&proxy_session_id, "test_revoked")
+            .await
+            .expect("revoke session");
+
+        let response_only = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .header("mcp-session-id", proxy_session_id.as_str())
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "server-request-1",
+                "result": { "ok": true }
+            }))
+            .send()
+            .await
+            .expect("response-only request");
+        assert_eq!(response_only.status(), StatusCode::NOT_FOUND);
+        let body: Value = response_only
+            .json()
+            .await
+            .expect("parse response-only revoked-session body");
+        assert_eq!(
+            body.get("error").and_then(|value| value.as_str()),
+            Some("session_unavailable")
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_follow_up_without_session_header_is_rejected_locally() {
+        let db_path = temp_db_path("mcp-follow-up-missing-session-id");
+        let db_str = db_path.to_string_lossy().to_string();
+        let expected_api_key = "tvly-mcp-follow-up-missing-session-id";
+        let (upstream_addr, calls) =
+            spawn_mock_mcp_upstream_for_session_headers(vec![expected_api_key.to_string()]).await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy =
+            TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
+        let access_token = proxy
+            .create_access_token(Some("mcp-follow-up-missing-session-id"))
+            .await
+            .expect("create access token");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), upstream.clone()).await;
+        let client = Client::new();
+        let url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, access_token.token
+        );
+
+        let initialize = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "init-missing-session-id",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {}
+                }
+            }))
+            .send()
+            .await
+            .expect("initialize request");
+        assert_eq!(initialize.status(), StatusCode::OK);
+
+        let rejected = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "tools-missing-session-id",
+                "method": "tools/list"
+            }))
+            .send()
+            .await
+            .expect("follow-up request without session id");
+        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+        let body: Value = rejected.json().await.expect("parse missing-session-id body");
+        assert_eq!(
+            body.get("error").and_then(|value| value.as_str()),
+            Some("session_required")
+        );
+
+        let recorded = calls
+            .lock()
+            .expect("session header calls lock poisoned")
+            .clone();
+        assert_eq!(
+            recorded.len(),
+            1,
+            "missing-session-id follow-up should be rejected locally"
         );
 
         let _ = std::fs::remove_file(db_path);

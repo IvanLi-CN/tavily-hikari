@@ -9289,6 +9289,28 @@ impl KeyStore {
             .await
     }
 
+    pub(crate) async fn has_active_mcp_sessions_for_token(
+        &self,
+        token_id: &str,
+        now: i64,
+    ) -> Result<bool, ProxyError> {
+        let exists = sqlx::query_scalar::<_, i64>(
+            r#"SELECT EXISTS(
+                   SELECT 1
+                     FROM mcp_sessions
+                    WHERE auth_token_id = ?
+                      AND revoked_at IS NULL
+                      AND expires_at > ?
+                    LIMIT 1
+               )"#,
+        )
+        .bind(token_id)
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(exists != 0)
+    }
+
     pub(crate) async fn list_active_api_key_transient_backoffs(
         &self,
         key_ids: &[String],
