@@ -51,6 +51,7 @@ fn add_summary_window_metrics(target: &mut SummaryWindowMetrics, delta: &Summary
     target.upstream_exhausted_key_count += delta.upstream_exhausted_key_count;
     target.new_keys += delta.new_keys;
     target.new_quarantines += delta.new_quarantines;
+    target.quota_charge.local_estimated_credits += delta.quota_charge.local_estimated_credits;
 }
 
 fn subtract_summary_window_metrics(
@@ -84,7 +85,52 @@ fn subtract_summary_window_metrics(
         new_quarantines: total
             .new_quarantines
             .saturating_sub(subtract.new_quarantines),
-        quota_charge: SummaryQuotaCharge::default(),
+        quota_charge: SummaryQuotaCharge {
+            local_estimated_credits: total
+                .quota_charge
+                .local_estimated_credits
+                .saturating_sub(subtract.quota_charge.local_estimated_credits),
+            ..SummaryQuotaCharge::default()
+        },
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct DashboardRequestRollupCounts {
+    total_requests: i64,
+    success_count: i64,
+    error_count: i64,
+    quota_exhausted_count: i64,
+    valuable_success_count: i64,
+    valuable_failure_count: i64,
+    valuable_failure_429_count: i64,
+    other_success_count: i64,
+    other_failure_count: i64,
+    unknown_count: i64,
+    mcp_non_billable: i64,
+    mcp_billable: i64,
+    api_non_billable: i64,
+    api_billable: i64,
+    local_estimated_credits: i64,
+}
+
+impl DashboardRequestRollupCounts {
+    fn add(&mut self, delta: Self) {
+        self.total_requests += delta.total_requests;
+        self.success_count += delta.success_count;
+        self.error_count += delta.error_count;
+        self.quota_exhausted_count += delta.quota_exhausted_count;
+        self.valuable_success_count += delta.valuable_success_count;
+        self.valuable_failure_count += delta.valuable_failure_count;
+        self.valuable_failure_429_count += delta.valuable_failure_429_count;
+        self.other_success_count += delta.other_success_count;
+        self.other_failure_count += delta.other_failure_count;
+        self.unknown_count += delta.unknown_count;
+        self.mcp_non_billable += delta.mcp_non_billable;
+        self.mcp_billable += delta.mcp_billable;
+        self.api_non_billable += delta.api_non_billable;
+        self.api_billable += delta.api_billable;
+        self.local_estimated_credits += delta.local_estimated_credits;
     }
 }
 
@@ -1283,6 +1329,7 @@ impl KeyStore {
                 quota_exhausted_count INTEGER NOT NULL,
                 valuable_success_count INTEGER NOT NULL DEFAULT 0,
                 valuable_failure_count INTEGER NOT NULL DEFAULT 0,
+                valuable_failure_429_count INTEGER NOT NULL DEFAULT 0,
                 other_success_count INTEGER NOT NULL DEFAULT 0,
                 other_failure_count INTEGER NOT NULL DEFAULT 0,
                 unknown_count INTEGER NOT NULL DEFAULT 0,
@@ -1302,6 +1349,45 @@ impl KeyStore {
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_api_key_usage_buckets_time
                ON api_key_usage_buckets(bucket_start DESC)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS dashboard_request_rollup_buckets (
+                bucket_start INTEGER NOT NULL,
+                bucket_secs INTEGER NOT NULL,
+                total_requests INTEGER NOT NULL,
+                success_count INTEGER NOT NULL,
+                error_count INTEGER NOT NULL,
+                quota_exhausted_count INTEGER NOT NULL,
+                valuable_success_count INTEGER NOT NULL DEFAULT 0,
+                valuable_failure_count INTEGER NOT NULL DEFAULT 0,
+                valuable_failure_429_count INTEGER NOT NULL DEFAULT 0,
+                other_success_count INTEGER NOT NULL DEFAULT 0,
+                other_failure_count INTEGER NOT NULL DEFAULT 0,
+                unknown_count INTEGER NOT NULL DEFAULT 0,
+                mcp_non_billable INTEGER NOT NULL DEFAULT 0,
+                mcp_billable INTEGER NOT NULL DEFAULT 0,
+                api_non_billable INTEGER NOT NULL DEFAULT 0,
+                api_billable INTEGER NOT NULL DEFAULT 0,
+                local_estimated_credits INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (bucket_start, bucket_secs)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        let dashboard_request_rollup_buckets_schema_changed = self
+            .ensure_dashboard_request_rollup_bucket_columns()
+            .await?;
+
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_dashboard_request_rollup_buckets_scope_time
+               ON dashboard_request_rollup_buckets(bucket_secs, bucket_start DESC)"#,
         )
         .execute(&self.pool)
         .await?;
@@ -2320,6 +2406,21 @@ impl KeyStore {
                 .await?;
         }
 
+        if dashboard_request_rollup_buckets_schema_changed {
+            self.set_meta_i64(META_KEY_DASHBOARD_REQUEST_ROLLUP_BUCKETS_V1_DONE, 0)
+                .await?;
+        }
+
+        if self
+            .get_meta_i64(META_KEY_DASHBOARD_REQUEST_ROLLUP_BUCKETS_V1_DONE)
+            .await?
+            != Some(1)
+        {
+            self.rebuild_dashboard_request_rollup_buckets().await?;
+            self.set_meta_i64(META_KEY_DASHBOARD_REQUEST_ROLLUP_BUCKETS_V1_DONE, 1)
+                .await?;
+        }
+
         // After ensuring schemas, run the data consistency migration at most once.
         // Older versions incremented auth_tokens.total_requests during validation; this
         // migration reconciles those counters using auth_token_logs, then marks itself
@@ -3111,6 +3212,430 @@ impl KeyStore {
 
         if let Some(key) = current_key.as_deref() {
             flush_bucket(&mut tx, now_ts, key, current_bucket_start, counts).await?;
+        }
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    fn dashboard_rollup_counts_for_request(
+        request_kind_key: &str,
+        body: Option<&[u8]>,
+        outcome: &str,
+        failure_kind: Option<&str>,
+        local_estimated_credits: i64,
+    ) -> DashboardRequestRollupCounts {
+        let mut counts = DashboardRequestRollupCounts {
+            total_requests: 1,
+            local_estimated_credits: local_estimated_credits.max(0),
+            ..DashboardRequestRollupCounts::default()
+        };
+
+        match outcome {
+            OUTCOME_SUCCESS => counts.success_count = 1,
+            OUTCOME_ERROR => counts.error_count = 1,
+            OUTCOME_QUOTA_EXHAUSTED => counts.quota_exhausted_count = 1,
+            _ => {}
+        }
+
+        match request_value_bucket_for_request_log(request_kind_key, body) {
+            RequestValueBucket::Valuable => match outcome {
+                OUTCOME_SUCCESS => counts.valuable_success_count = 1,
+                OUTCOME_ERROR | OUTCOME_QUOTA_EXHAUSTED => {
+                    counts.valuable_failure_count = 1;
+                    if failure_kind == Some(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429) {
+                        counts.valuable_failure_429_count = 1;
+                    }
+                }
+                _ => {}
+            },
+            RequestValueBucket::Other => match outcome {
+                OUTCOME_SUCCESS => counts.other_success_count = 1,
+                OUTCOME_ERROR | OUTCOME_QUOTA_EXHAUSTED => counts.other_failure_count = 1,
+                _ => {}
+            },
+            RequestValueBucket::Unknown => counts.unknown_count = 1,
+        }
+
+        match (
+            token_request_kind_protocol_group(request_kind_key),
+            token_request_kind_billing_group_for_request_log(request_kind_key, body),
+        ) {
+            ("mcp", "non_billable") => counts.mcp_non_billable = 1,
+            ("mcp", "billable") => counts.mcp_billable = 1,
+            ("api", "non_billable") => counts.api_non_billable = 1,
+            _ => counts.api_billable = 1,
+        }
+
+        counts
+    }
+
+    async fn upsert_dashboard_request_rollup_bucket(
+        tx: &mut Transaction<'_, Sqlite>,
+        bucket_start: i64,
+        bucket_secs: i64,
+        counts: DashboardRequestRollupCounts,
+        updated_at: i64,
+    ) -> Result<(), ProxyError> {
+        if counts.total_requests <= 0 && counts.local_estimated_credits <= 0 {
+            return Ok(());
+        }
+
+        sqlx::query(
+            r#"
+            INSERT INTO dashboard_request_rollup_buckets (
+                bucket_start,
+                bucket_secs,
+                total_requests,
+                success_count,
+                error_count,
+                quota_exhausted_count,
+                valuable_success_count,
+                valuable_failure_count,
+                valuable_failure_429_count,
+                other_success_count,
+                other_failure_count,
+                unknown_count,
+                mcp_non_billable,
+                mcp_billable,
+                api_non_billable,
+                api_billable,
+                local_estimated_credits,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(bucket_start, bucket_secs)
+            DO UPDATE SET
+                total_requests = dashboard_request_rollup_buckets.total_requests + excluded.total_requests,
+                success_count = dashboard_request_rollup_buckets.success_count + excluded.success_count,
+                error_count = dashboard_request_rollup_buckets.error_count + excluded.error_count,
+                quota_exhausted_count = dashboard_request_rollup_buckets.quota_exhausted_count + excluded.quota_exhausted_count,
+                valuable_success_count = dashboard_request_rollup_buckets.valuable_success_count + excluded.valuable_success_count,
+                valuable_failure_count = dashboard_request_rollup_buckets.valuable_failure_count + excluded.valuable_failure_count,
+                valuable_failure_429_count = dashboard_request_rollup_buckets.valuable_failure_429_count + excluded.valuable_failure_429_count,
+                other_success_count = dashboard_request_rollup_buckets.other_success_count + excluded.other_success_count,
+                other_failure_count = dashboard_request_rollup_buckets.other_failure_count + excluded.other_failure_count,
+                unknown_count = dashboard_request_rollup_buckets.unknown_count + excluded.unknown_count,
+                mcp_non_billable = dashboard_request_rollup_buckets.mcp_non_billable + excluded.mcp_non_billable,
+                mcp_billable = dashboard_request_rollup_buckets.mcp_billable + excluded.mcp_billable,
+                api_non_billable = dashboard_request_rollup_buckets.api_non_billable + excluded.api_non_billable,
+                api_billable = dashboard_request_rollup_buckets.api_billable + excluded.api_billable,
+                local_estimated_credits = dashboard_request_rollup_buckets.local_estimated_credits + excluded.local_estimated_credits,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(bucket_start)
+        .bind(bucket_secs)
+        .bind(counts.total_requests)
+        .bind(counts.success_count)
+        .bind(counts.error_count)
+        .bind(counts.quota_exhausted_count)
+        .bind(counts.valuable_success_count)
+        .bind(counts.valuable_failure_count)
+        .bind(counts.valuable_failure_429_count)
+        .bind(counts.other_success_count)
+        .bind(counts.other_failure_count)
+        .bind(counts.unknown_count)
+        .bind(counts.mcp_non_billable)
+        .bind(counts.mcp_billable)
+        .bind(counts.api_non_billable)
+        .bind(counts.api_billable)
+        .bind(counts.local_estimated_credits)
+        .bind(updated_at)
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn rebuild_dashboard_request_rollup_buckets(&self) -> Result<(), ProxyError> {
+        self.rebuild_dashboard_request_rollup_buckets_window(None, None)
+            .await
+    }
+
+    pub(crate) async fn rebuild_dashboard_request_rollup_buckets_window(
+        &self,
+        start: Option<i64>,
+        end: Option<i64>,
+    ) -> Result<(), ProxyError> {
+        let now_ts = Utc::now().timestamp();
+        let mut tx = self.pool.begin().await?;
+
+        match (start, end) {
+            (Some(start), Some(end)) if start < end => {
+                let minute_start = start.div_euclid(SECS_PER_MINUTE) * SECS_PER_MINUTE;
+                let minute_end = (end.saturating_sub(1)).div_euclid(SECS_PER_MINUTE)
+                    * SECS_PER_MINUTE
+                    + SECS_PER_MINUTE;
+                let day_start = local_day_bucket_start_utc_ts(start);
+                let day_end = next_local_day_start_utc_ts(local_day_bucket_start_utc_ts(
+                    end.saturating_sub(1),
+                ));
+                sqlx::query(
+                    r#"
+                    DELETE FROM dashboard_request_rollup_buckets
+                    WHERE (bucket_secs = 60 AND bucket_start >= ? AND bucket_start < ?)
+                       OR (bucket_secs = 86400 AND bucket_start >= ? AND bucket_start < ?)
+                    "#,
+                )
+                .bind(minute_start)
+                .bind(minute_end)
+                .bind(day_start)
+                .bind(day_end)
+                .execute(&mut *tx)
+                .await?;
+
+                {
+                    let mut read_conn = self.pool.acquire().await?;
+                    let mut rows = sqlx::query(
+                        r#"
+                        SELECT created_at, result_status, failure_kind, request_kind_key, request_body, path, business_credits
+                        FROM request_logs
+                        WHERE visibility = ?
+                          AND created_at >= ?
+                          AND created_at < ?
+                        ORDER BY created_at ASC, id ASC
+                        "#,
+                    )
+                    .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+                    .bind(minute_start)
+                    .bind(minute_end)
+                    .fetch(&mut *read_conn);
+
+                    let mut current_bucket_start: Option<i64> = None;
+                    let mut counts = DashboardRequestRollupCounts::default();
+                    while let Some(row) = rows.try_next().await? {
+                        let created_at: i64 = row.try_get("created_at")?;
+                        let result_status: String = row.try_get("result_status")?;
+                        let failure_kind: Option<String> = row.try_get("failure_kind")?;
+                        let stored_request_kind_key: Option<String> =
+                            row.try_get("request_kind_key")?;
+                        let request_body: Option<Vec<u8>> = row.try_get("request_body")?;
+                        let path: String = row.try_get("path")?;
+                        let business_credits: Option<i64> = row.try_get("business_credits")?;
+                        let bucket_start = created_at.div_euclid(SECS_PER_MINUTE) * SECS_PER_MINUTE;
+
+                        if current_bucket_start != Some(bucket_start) {
+                            if let Some(previous_bucket_start) = current_bucket_start {
+                                Self::upsert_dashboard_request_rollup_bucket(
+                                    &mut tx,
+                                    previous_bucket_start,
+                                    SECS_PER_MINUTE,
+                                    counts,
+                                    now_ts,
+                                )
+                                .await?;
+                            }
+                            current_bucket_start = Some(bucket_start);
+                            counts = DashboardRequestRollupCounts::default();
+                        }
+
+                        let request_kind_key = canonicalize_request_log_request_kind(
+                            &path,
+                            request_body.as_deref(),
+                            stored_request_kind_key,
+                            None,
+                            None,
+                        )
+                        .key;
+                        counts.add(Self::dashboard_rollup_counts_for_request(
+                            &request_kind_key,
+                            request_body.as_deref(),
+                            &result_status,
+                            failure_kind.as_deref(),
+                            business_credits.unwrap_or_default(),
+                        ));
+                    }
+
+                    if let Some(bucket_start) = current_bucket_start {
+                        Self::upsert_dashboard_request_rollup_bucket(
+                            &mut tx,
+                            bucket_start,
+                            SECS_PER_MINUTE,
+                            counts,
+                            now_ts,
+                        )
+                        .await?;
+                    }
+                }
+
+                {
+                    let mut read_conn = self.pool.acquire().await?;
+                    let mut rows = sqlx::query(
+                        r#"
+                        SELECT created_at, result_status, failure_kind, request_kind_key, request_body, path, business_credits
+                        FROM request_logs
+                        WHERE visibility = ?
+                          AND created_at >= ?
+                          AND created_at < ?
+                        ORDER BY created_at ASC, id ASC
+                        "#,
+                    )
+                    .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+                    .bind(day_start)
+                    .bind(day_end)
+                    .fetch(&mut *read_conn);
+
+                    let mut current_bucket_start: Option<i64> = None;
+                    let mut counts = DashboardRequestRollupCounts::default();
+                    while let Some(row) = rows.try_next().await? {
+                        let created_at: i64 = row.try_get("created_at")?;
+                        let result_status: String = row.try_get("result_status")?;
+                        let failure_kind: Option<String> = row.try_get("failure_kind")?;
+                        let stored_request_kind_key: Option<String> =
+                            row.try_get("request_kind_key")?;
+                        let request_body: Option<Vec<u8>> = row.try_get("request_body")?;
+                        let path: String = row.try_get("path")?;
+                        let business_credits: Option<i64> = row.try_get("business_credits")?;
+                        let bucket_start = local_day_bucket_start_utc_ts(created_at);
+
+                        if current_bucket_start != Some(bucket_start) {
+                            if let Some(previous_bucket_start) = current_bucket_start {
+                                Self::upsert_dashboard_request_rollup_bucket(
+                                    &mut tx,
+                                    previous_bucket_start,
+                                    SECS_PER_DAY,
+                                    counts,
+                                    now_ts,
+                                )
+                                .await?;
+                            }
+                            current_bucket_start = Some(bucket_start);
+                            counts = DashboardRequestRollupCounts::default();
+                        }
+
+                        let request_kind_key = canonicalize_request_log_request_kind(
+                            &path,
+                            request_body.as_deref(),
+                            stored_request_kind_key,
+                            None,
+                            None,
+                        )
+                        .key;
+                        counts.add(Self::dashboard_rollup_counts_for_request(
+                            &request_kind_key,
+                            request_body.as_deref(),
+                            &result_status,
+                            failure_kind.as_deref(),
+                            business_credits.unwrap_or_default(),
+                        ));
+                    }
+
+                    if let Some(bucket_start) = current_bucket_start {
+                        Self::upsert_dashboard_request_rollup_bucket(
+                            &mut tx,
+                            bucket_start,
+                            SECS_PER_DAY,
+                            counts,
+                            now_ts,
+                        )
+                        .await?;
+                    }
+                }
+            }
+            (Some(_), Some(_)) => return Ok(()),
+            _ => {
+                sqlx::query("DELETE FROM dashboard_request_rollup_buckets")
+                    .execute(&mut *tx)
+                    .await?;
+                let mut read_conn = self.pool.acquire().await?;
+                let mut rows = sqlx::query(
+                    r#"
+                    SELECT created_at, result_status, failure_kind, request_kind_key, request_body, path, business_credits
+                    FROM request_logs
+                    WHERE visibility = ?
+                    ORDER BY created_at ASC, id ASC
+                    "#,
+                )
+                .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+                .fetch(&mut *read_conn);
+
+                let mut current_minute_bucket_start: Option<i64> = None;
+                let mut current_day_bucket_start: Option<i64> = None;
+                let mut minute_counts = DashboardRequestRollupCounts::default();
+                let mut day_counts = DashboardRequestRollupCounts::default();
+
+                while let Some(row) = rows.try_next().await? {
+                    let created_at: i64 = row.try_get("created_at")?;
+                    let result_status: String = row.try_get("result_status")?;
+                    let failure_kind: Option<String> = row.try_get("failure_kind")?;
+                    let stored_request_kind_key: Option<String> =
+                        row.try_get("request_kind_key")?;
+                    let request_body: Option<Vec<u8>> = row.try_get("request_body")?;
+                    let path: String = row.try_get("path")?;
+                    let business_credits: Option<i64> = row.try_get("business_credits")?;
+                    let minute_bucket_start =
+                        created_at.div_euclid(SECS_PER_MINUTE) * SECS_PER_MINUTE;
+                    let day_bucket_start = local_day_bucket_start_utc_ts(created_at);
+
+                    if current_minute_bucket_start != Some(minute_bucket_start) {
+                        if let Some(bucket_start) = current_minute_bucket_start {
+                            Self::upsert_dashboard_request_rollup_bucket(
+                                &mut tx,
+                                bucket_start,
+                                SECS_PER_MINUTE,
+                                minute_counts,
+                                now_ts,
+                            )
+                            .await?;
+                        }
+                        current_minute_bucket_start = Some(minute_bucket_start);
+                        minute_counts = DashboardRequestRollupCounts::default();
+                    }
+
+                    if current_day_bucket_start != Some(day_bucket_start) {
+                        if let Some(bucket_start) = current_day_bucket_start {
+                            Self::upsert_dashboard_request_rollup_bucket(
+                                &mut tx,
+                                bucket_start,
+                                SECS_PER_DAY,
+                                day_counts,
+                                now_ts,
+                            )
+                            .await?;
+                        }
+                        current_day_bucket_start = Some(day_bucket_start);
+                        day_counts = DashboardRequestRollupCounts::default();
+                    }
+
+                    let request_kind_key = canonicalize_request_log_request_kind(
+                        &path,
+                        request_body.as_deref(),
+                        stored_request_kind_key,
+                        None,
+                        None,
+                    )
+                    .key;
+                    let delta = Self::dashboard_rollup_counts_for_request(
+                        &request_kind_key,
+                        request_body.as_deref(),
+                        &result_status,
+                        failure_kind.as_deref(),
+                        business_credits.unwrap_or_default(),
+                    );
+                    minute_counts.add(delta);
+                    day_counts.add(delta);
+                }
+
+                if let Some(bucket_start) = current_minute_bucket_start {
+                    Self::upsert_dashboard_request_rollup_bucket(
+                        &mut tx,
+                        bucket_start,
+                        SECS_PER_MINUTE,
+                        minute_counts,
+                        now_ts,
+                    )
+                    .await?;
+                }
+                if let Some(bucket_start) = current_day_bucket_start {
+                    Self::upsert_dashboard_request_rollup_bucket(
+                        &mut tx,
+                        bucket_start,
+                        SECS_PER_DAY,
+                        day_counts,
+                        now_ts,
+                    )
+                    .await?;
+                }
+            }
         }
 
         tx.commit().await?;
@@ -4908,6 +5433,26 @@ impl KeyStore {
             {
                 sqlx::query(&format!(
                     "ALTER TABLE api_key_usage_buckets ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"
+                ))
+                .execute(&self.pool)
+                .await?;
+                schema_changed = true;
+            }
+        }
+
+        Ok(schema_changed)
+    }
+
+    async fn ensure_dashboard_request_rollup_bucket_columns(&self) -> Result<bool, ProxyError> {
+        let mut schema_changed = false;
+
+        for column in ["valuable_failure_429_count"] {
+            if !self
+                .table_column_exists("dashboard_request_rollup_buckets", column)
+                .await?
+            {
+                sqlx::query(&format!(
+                    "ALTER TABLE dashboard_request_rollup_buckets ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"
                 ))
                 .execute(&self.pool)
                 .await?;
@@ -12634,20 +13179,6 @@ impl KeyStore {
             return Ok(PendingBillingSettleOutcome::Charged);
         }
 
-        if let Some(request_log_id) = request_log_id {
-            sqlx::query(
-                r#"
-                UPDATE request_logs
-                SET business_credits = ?
-                WHERE id = ?
-                "#,
-            )
-            .bind(credits)
-            .bind(request_log_id)
-            .execute(&mut *tx)
-            .await?;
-        }
-
         let Some(billing_subject) = billing_subject else {
             tx.rollback().await.ok();
             return Err(ProxyError::QuotaDataMissing {
@@ -12663,6 +13194,41 @@ impl KeyStore {
         let minute_bucket = charge_ts - (charge_ts % SECS_PER_MINUTE);
         let day_bucket = local_day_bucket_start_utc_ts(charge_ts);
         let month_start = start_of_month(charge_time).timestamp();
+
+        if let Some(request_log_id) = request_log_id {
+            sqlx::query(
+                r#"
+                UPDATE request_logs
+                SET business_credits = ?
+                WHERE id = ?
+                "#,
+            )
+            .bind(credits)
+            .bind(request_log_id)
+            .execute(&mut *tx)
+            .await?;
+
+            let credit_counts = DashboardRequestRollupCounts {
+                local_estimated_credits: credits,
+                ..DashboardRequestRollupCounts::default()
+            };
+            Self::upsert_dashboard_request_rollup_bucket(
+                &mut tx,
+                minute_bucket,
+                SECS_PER_MINUTE,
+                credit_counts,
+                charge_ts,
+            )
+            .await?;
+            Self::upsert_dashboard_request_rollup_bucket(
+                &mut tx,
+                day_bucket,
+                SECS_PER_DAY,
+                credit_counts,
+                charge_ts,
+            )
+            .await?;
+        }
 
         if let Some(user_id) = billing_subject.strip_prefix("account:") {
             sqlx::query(
@@ -14656,6 +15222,14 @@ impl KeyStore {
             },
             RequestValueBucket::Unknown => (0_i64, 0_i64, 0_i64, 0_i64, 1_i64),
         };
+        let dashboard_rollup_counts = Self::dashboard_rollup_counts_for_request(
+            &request_kind.key,
+            Some(entry.request_body),
+            entry.outcome,
+            failure_kind.as_deref(),
+            0,
+        );
+        let minute_bucket_start = created_at.div_euclid(SECS_PER_MINUTE) * SECS_PER_MINUTE;
 
         let mut tx = self.pool.begin().await?;
 
@@ -14780,6 +15354,23 @@ impl KeyStore {
             .execute(&mut *tx)
             .await?;
         }
+
+        Self::upsert_dashboard_request_rollup_bucket(
+            &mut tx,
+            minute_bucket_start,
+            SECS_PER_MINUTE,
+            dashboard_rollup_counts,
+            created_at,
+        )
+        .await?;
+        Self::upsert_dashboard_request_rollup_bucket(
+            &mut tx,
+            bucket_start,
+            SECS_PER_DAY,
+            dashboard_rollup_counts,
+            created_at,
+        )
+        .await?;
 
         tx.commit().await?;
         self.invalidate_request_logs_catalog_cache().await;
@@ -17494,25 +18085,6 @@ impl KeyStore {
         })
     }
 
-    async fn fetch_visible_request_log_floor_since_tx(
-        tx: &mut Transaction<'_, Sqlite>,
-        since: i64,
-    ) -> Result<Option<i64>, ProxyError> {
-        sqlx::query_scalar::<_, Option<i64>>(
-            r#"
-            SELECT MIN(created_at)
-            FROM request_logs
-            WHERE visibility = ?
-              AND created_at >= ?
-            "#,
-        )
-        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-        .bind(since)
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(ProxyError::Database)
-    }
-
     async fn fetch_api_key_usage_bucket_window_metrics(
         &self,
         bucket_start_at_least: i64,
@@ -17561,144 +18133,6 @@ impl KeyStore {
             )
             .bind(bucket_start_at_least)
             .fetch_one(&self.pool)
-            .await?
-        };
-
-        Ok(SummaryWindowMetrics {
-            total_requests: row.try_get("total_requests")?,
-            success_count: row.try_get("success_count")?,
-            error_count: row.try_get("error_count")?,
-            quota_exhausted_count: row.try_get("quota_exhausted_count")?,
-            valuable_success_count: row.try_get("valuable_success_count")?,
-            valuable_failure_count: row.try_get("valuable_failure_count")?,
-            other_success_count: row.try_get("other_success_count")?,
-            other_failure_count: row.try_get("other_failure_count")?,
-            unknown_count: row.try_get("unknown_count")?,
-            upstream_exhausted_key_count: 0,
-            new_keys: 0,
-            new_quarantines: 0,
-            quota_charge: SummaryQuotaCharge::default(),
-        })
-    }
-
-    async fn fetch_visible_request_log_window_metrics_tx(
-        tx: &mut Transaction<'_, Sqlite>,
-        start: i64,
-        end: i64,
-    ) -> Result<SummaryWindowMetrics, ProxyError> {
-        if start >= end {
-            return Ok(SummaryWindowMetrics::default());
-        }
-
-        let request_kind_sql =
-            request_log_request_kind_key_sql("path", "request_body", "request_kind_key");
-        let request_value_bucket_case_sql =
-            request_value_bucket_sql(&request_kind_sql, "request_body");
-        let query = format!(
-            r#"
-            WITH scoped_logs AS (
-                SELECT
-                    result_status,
-                    ({request_value_bucket_case_sql}) AS request_value_bucket
-                FROM request_logs
-                WHERE visibility = ?
-                  AND created_at >= ?
-                  AND created_at < ?
-            )
-            SELECT
-                COUNT(*) AS total_requests,
-                COALESCE(SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END), 0) AS success_count,
-                COALESCE(SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END), 0) AS error_count,
-                COALESCE(SUM(CASE WHEN result_status = ? THEN 1 ELSE 0 END), 0) AS quota_exhausted_count,
-                COALESCE(SUM(CASE WHEN request_value_bucket = 'valuable' AND result_status = ? THEN 1 ELSE 0 END), 0) AS valuable_success_count,
-                COALESCE(SUM(CASE WHEN request_value_bucket = 'valuable' AND result_status IN (?, ?) THEN 1 ELSE 0 END), 0) AS valuable_failure_count,
-                COALESCE(SUM(CASE WHEN request_value_bucket = 'other' AND result_status = ? THEN 1 ELSE 0 END), 0) AS other_success_count,
-                COALESCE(SUM(CASE WHEN request_value_bucket = 'other' AND result_status IN (?, ?) THEN 1 ELSE 0 END), 0) AS other_failure_count,
-                COALESCE(SUM(CASE WHEN request_value_bucket = 'unknown' THEN 1 ELSE 0 END), 0) AS unknown_count
-            FROM scoped_logs
-            "#,
-        );
-        let row = sqlx::query(&query)
-            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-            .bind(start)
-            .bind(end)
-            .bind(OUTCOME_SUCCESS)
-            .bind(OUTCOME_ERROR)
-            .bind(OUTCOME_QUOTA_EXHAUSTED)
-            .bind(OUTCOME_SUCCESS)
-            .bind(OUTCOME_ERROR)
-            .bind(OUTCOME_QUOTA_EXHAUSTED)
-            .bind(OUTCOME_SUCCESS)
-            .bind(OUTCOME_ERROR)
-            .bind(OUTCOME_QUOTA_EXHAUSTED)
-            .fetch_one(&mut **tx)
-            .await?;
-
-        Ok(SummaryWindowMetrics {
-            total_requests: row.try_get("total_requests")?,
-            success_count: row.try_get("success_count")?,
-            error_count: row.try_get("error_count")?,
-            quota_exhausted_count: row.try_get("quota_exhausted_count")?,
-            valuable_success_count: row.try_get("valuable_success_count")?,
-            valuable_failure_count: row.try_get("valuable_failure_count")?,
-            other_success_count: row.try_get("other_success_count")?,
-            other_failure_count: row.try_get("other_failure_count")?,
-            unknown_count: row.try_get("unknown_count")?,
-            upstream_exhausted_key_count: 0,
-            new_keys: 0,
-            new_quarantines: 0,
-            quota_charge: SummaryQuotaCharge::default(),
-        })
-    }
-
-    async fn fetch_api_key_usage_bucket_window_metrics_tx(
-        tx: &mut Transaction<'_, Sqlite>,
-        bucket_start_at_least: i64,
-        bucket_start_before: Option<i64>,
-    ) -> Result<SummaryWindowMetrics, ProxyError> {
-        let row = if let Some(bucket_start_before) = bucket_start_before {
-            sqlx::query(
-                r#"
-                SELECT
-                    COALESCE(SUM(total_requests), 0) AS total_requests,
-                    COALESCE(SUM(success_count), 0) AS success_count,
-                    COALESCE(SUM(error_count), 0) AS error_count,
-                    COALESCE(SUM(quota_exhausted_count), 0) AS quota_exhausted_count,
-                    COALESCE(SUM(valuable_success_count), 0) AS valuable_success_count,
-                    COALESCE(SUM(valuable_failure_count), 0) AS valuable_failure_count,
-                    COALESCE(SUM(other_success_count), 0) AS other_success_count,
-                    COALESCE(SUM(other_failure_count), 0) AS other_failure_count,
-                    COALESCE(SUM(unknown_count), 0) AS unknown_count
-                FROM api_key_usage_buckets
-                WHERE bucket_secs = 86400
-                  AND bucket_start >= ?
-                  AND bucket_start < ?
-                "#,
-            )
-            .bind(bucket_start_at_least)
-            .bind(bucket_start_before)
-            .fetch_one(&mut **tx)
-            .await?
-        } else {
-            sqlx::query(
-                r#"
-                SELECT
-                    COALESCE(SUM(total_requests), 0) AS total_requests,
-                    COALESCE(SUM(success_count), 0) AS success_count,
-                    COALESCE(SUM(error_count), 0) AS error_count,
-                    COALESCE(SUM(quota_exhausted_count), 0) AS quota_exhausted_count,
-                    COALESCE(SUM(valuable_success_count), 0) AS valuable_success_count,
-                    COALESCE(SUM(valuable_failure_count), 0) AS valuable_failure_count,
-                    COALESCE(SUM(other_success_count), 0) AS other_success_count,
-                    COALESCE(SUM(other_failure_count), 0) AS other_failure_count,
-                    COALESCE(SUM(unknown_count), 0) AS unknown_count
-                FROM api_key_usage_buckets
-                WHERE bucket_secs = 86400
-                  AND bucket_start >= ?
-                "#,
-            )
-            .bind(bucket_start_at_least)
-            .fetch_one(&mut **tx)
             .await?
         };
 
@@ -17775,60 +18209,131 @@ impl KeyStore {
         Ok(backfill)
     }
 
-    async fn fetch_utc_month_gap_bucket_metrics_tx(
+    async fn fetch_dashboard_rollup_window_metrics_tx(
+        tx: &mut Transaction<'_, Sqlite>,
+        bucket_secs: i64,
+        bucket_start_at_least: i64,
+        bucket_start_before: Option<i64>,
+    ) -> Result<SummaryWindowMetrics, ProxyError> {
+        let row = if let Some(bucket_start_before) = bucket_start_before {
+            sqlx::query(
+                r#"
+                SELECT
+                    COALESCE(SUM(total_requests), 0) AS total_requests,
+                    COALESCE(SUM(success_count), 0) AS success_count,
+                    COALESCE(SUM(error_count), 0) AS error_count,
+                    COALESCE(SUM(quota_exhausted_count), 0) AS quota_exhausted_count,
+                    COALESCE(SUM(valuable_success_count), 0) AS valuable_success_count,
+                    COALESCE(SUM(valuable_failure_count), 0) AS valuable_failure_count,
+                    COALESCE(SUM(other_success_count), 0) AS other_success_count,
+                    COALESCE(SUM(other_failure_count), 0) AS other_failure_count,
+                    COALESCE(SUM(unknown_count), 0) AS unknown_count,
+                    COALESCE(SUM(local_estimated_credits), 0) AS local_estimated_credits
+                FROM dashboard_request_rollup_buckets
+                WHERE bucket_secs = ?
+                  AND bucket_start >= ?
+                  AND bucket_start < ?
+                "#,
+            )
+            .bind(bucket_secs)
+            .bind(bucket_start_at_least)
+            .bind(bucket_start_before)
+            .fetch_one(&mut **tx)
+            .await?
+        } else {
+            sqlx::query(
+                r#"
+                SELECT
+                    COALESCE(SUM(total_requests), 0) AS total_requests,
+                    COALESCE(SUM(success_count), 0) AS success_count,
+                    COALESCE(SUM(error_count), 0) AS error_count,
+                    COALESCE(SUM(quota_exhausted_count), 0) AS quota_exhausted_count,
+                    COALESCE(SUM(valuable_success_count), 0) AS valuable_success_count,
+                    COALESCE(SUM(valuable_failure_count), 0) AS valuable_failure_count,
+                    COALESCE(SUM(other_success_count), 0) AS other_success_count,
+                    COALESCE(SUM(other_failure_count), 0) AS other_failure_count,
+                    COALESCE(SUM(unknown_count), 0) AS unknown_count,
+                    COALESCE(SUM(local_estimated_credits), 0) AS local_estimated_credits
+                FROM dashboard_request_rollup_buckets
+                WHERE bucket_secs = ?
+                  AND bucket_start >= ?
+                "#,
+            )
+            .bind(bucket_secs)
+            .bind(bucket_start_at_least)
+            .fetch_one(&mut **tx)
+            .await?
+        };
+
+        Ok(SummaryWindowMetrics {
+            total_requests: row.try_get("total_requests")?,
+            success_count: row.try_get("success_count")?,
+            error_count: row.try_get("error_count")?,
+            quota_exhausted_count: row.try_get("quota_exhausted_count")?,
+            valuable_success_count: row.try_get("valuable_success_count")?,
+            valuable_failure_count: row.try_get("valuable_failure_count")?,
+            other_success_count: row.try_get("other_success_count")?,
+            other_failure_count: row.try_get("other_failure_count")?,
+            unknown_count: row.try_get("unknown_count")?,
+            upstream_exhausted_key_count: 0,
+            new_keys: 0,
+            new_quarantines: 0,
+            quota_charge: SummaryQuotaCharge {
+                local_estimated_credits: row.try_get("local_estimated_credits")?,
+                ..SummaryQuotaCharge::default()
+            },
+        })
+    }
+
+    async fn fetch_dashboard_rollup_month_metrics_tx(
         tx: &mut Transaction<'_, Sqlite>,
         month_start: i64,
-        month_request_log_floor: Option<i64>,
-        gap_fallback_end: i64,
+        today_start: i64,
+        today_end: i64,
     ) -> Result<SummaryWindowMetrics, ProxyError> {
-        let gap_end = match month_request_log_floor {
-            Some(floor) if floor > month_start => floor,
-            Some(_) => return Ok(SummaryWindowMetrics::default()),
-            None => gap_fallback_end,
-        };
-        if gap_end <= month_start {
-            return Ok(SummaryWindowMetrics::default());
-        }
-
-        let first_bucket_start = local_day_bucket_start_utc_ts(month_start);
-        let first_exact_bucket_start = if first_bucket_start == month_start {
+        let mut month_metrics = SummaryWindowMetrics::default();
+        let month_partial_bucket_start = local_day_bucket_start_utc_ts(month_start);
+        let month_full_day_start = if month_partial_bucket_start == month_start {
             month_start
         } else {
-            next_local_day_start_utc_ts(first_bucket_start)
+            next_local_day_start_utc_ts(month_partial_bucket_start)
         };
-        let last_gap_bucket_start = local_day_bucket_start_utc_ts(gap_end);
-
-        let mut backfill = SummaryWindowMetrics::default();
-        if first_exact_bucket_start < last_gap_bucket_start {
+        if month_start < month_full_day_start.min(today_start) {
             add_summary_window_metrics(
-                &mut backfill,
-                &Self::fetch_api_key_usage_bucket_window_metrics_tx(
+                &mut month_metrics,
+                &Self::fetch_dashboard_rollup_window_metrics_tx(
                     tx,
-                    first_exact_bucket_start,
-                    Some(last_gap_bucket_start),
+                    SECS_PER_MINUTE,
+                    month_start,
+                    Some(month_full_day_start.min(today_start)),
                 )
                 .await?,
             );
         }
-
-        if gap_end > last_gap_bucket_start && last_gap_bucket_start >= month_start {
-            let last_gap_bucket_end = next_local_day_start_utc_ts(last_gap_bucket_start);
-            let full_day_bucket = Self::fetch_api_key_usage_bucket_window_metrics_tx(
-                tx,
-                last_gap_bucket_start,
-                Some(last_gap_bucket_end),
-            )
-            .await?;
-            let retained_tail =
-                Self::fetch_visible_request_log_window_metrics_tx(tx, gap_end, last_gap_bucket_end)
-                    .await?;
+        if month_full_day_start < today_start {
             add_summary_window_metrics(
-                &mut backfill,
-                &subtract_summary_window_metrics(&full_day_bucket, &retained_tail),
+                &mut month_metrics,
+                &Self::fetch_dashboard_rollup_window_metrics_tx(
+                    tx,
+                    SECS_PER_DAY,
+                    month_full_day_start,
+                    Some(today_start),
+                )
+                .await?,
             );
         }
+        add_summary_window_metrics(
+            &mut month_metrics,
+            &Self::fetch_dashboard_rollup_window_metrics_tx(
+                tx,
+                SECS_PER_MINUTE,
+                today_start,
+                Some(today_end),
+            )
+            .await?,
+        );
 
-        Ok(backfill)
+        Ok(month_metrics)
     }
 
     pub(crate) async fn fetch_summary_windows(
@@ -17838,119 +18343,42 @@ impl KeyStore {
         yesterday_start: i64,
         yesterday_end: i64,
         month_start: i64,
+        month_quota_charge_start: i64,
     ) -> Result<SummaryWindows, ProxyError> {
         let mut tx = self.pool.begin().await?;
-        let upstream_exhausted_floor = yesterday_start.min(month_start);
-        let sample_window_start = yesterday_start.min(month_start);
+        let sample_window_start = yesterday_start.min(month_quota_charge_start);
         let now_ts = today_end.saturating_sub(1);
         let hot_active_since = now_ts.saturating_sub(2 * 60 * 60);
         let hot_stale_before = now_ts.saturating_sub(15 * 60);
         let cold_stale_before = now_ts.saturating_sub(24 * 60 * 60);
-        let request_kind_sql =
-            request_log_request_kind_key_sql("path", "request_body", "request_kind_key");
-        let request_value_bucket_case_sql =
-            request_value_bucket_sql(&request_kind_sql, "request_body");
-        let window_query = format!(
-            r#"
-            WITH scoped_logs AS (
-                SELECT
-                    created_at,
-                    result_status,
-                    COALESCE(business_credits, 0) AS business_credits,
-                    ({request_value_bucket_case_sql}) AS request_value_bucket
-                FROM request_logs
-                WHERE visibility = ?
-                  AND created_at >= ?
-                  AND created_at < ?
-            )
-            SELECT
-                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? THEN 1 ELSE 0 END), 0) AS today_total_requests,
-                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS today_success_count,
-                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS today_error_count,
-                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS today_quota_exhausted_count,
-                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND request_value_bucket = 'valuable' AND result_status = ? THEN 1 ELSE 0 END), 0) AS today_valuable_success_count,
-                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND request_value_bucket = 'valuable' AND result_status IN (?, ?) THEN 1 ELSE 0 END), 0) AS today_valuable_failure_count,
-                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND request_value_bucket = 'other' AND result_status = ? THEN 1 ELSE 0 END), 0) AS today_other_success_count,
-                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND request_value_bucket = 'other' AND result_status IN (?, ?) THEN 1 ELSE 0 END), 0) AS today_other_failure_count,
-                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND request_value_bucket = 'unknown' THEN 1 ELSE 0 END), 0) AS today_unknown_count,
-                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? THEN business_credits ELSE 0 END), 0) AS today_local_estimated_credits,
-                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? THEN 1 ELSE 0 END), 0) AS yesterday_total_requests,
-                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS yesterday_success_count,
-                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS yesterday_error_count,
-                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS yesterday_quota_exhausted_count,
-                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND request_value_bucket = 'valuable' AND result_status = ? THEN 1 ELSE 0 END), 0) AS yesterday_valuable_success_count,
-                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND request_value_bucket = 'valuable' AND result_status IN (?, ?) THEN 1 ELSE 0 END), 0) AS yesterday_valuable_failure_count,
-                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND request_value_bucket = 'other' AND result_status = ? THEN 1 ELSE 0 END), 0) AS yesterday_other_success_count,
-                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND request_value_bucket = 'other' AND result_status IN (?, ?) THEN 1 ELSE 0 END), 0) AS yesterday_other_failure_count,
-                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? AND request_value_bucket = 'unknown' THEN 1 ELSE 0 END), 0) AS yesterday_unknown_count,
-                COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? THEN business_credits ELSE 0 END), 0) AS yesterday_local_estimated_credits
-            FROM scoped_logs
-            "#,
-        );
-        let window_row = sqlx::query(&window_query)
-            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-            .bind(yesterday_start)
-            .bind(today_end)
-            .bind(today_start)
-            .bind(today_end)
-            .bind(today_start)
-            .bind(today_end)
-            .bind(OUTCOME_SUCCESS)
-            .bind(today_start)
-            .bind(today_end)
-            .bind(OUTCOME_ERROR)
-            .bind(today_start)
-            .bind(today_end)
-            .bind(OUTCOME_QUOTA_EXHAUSTED)
-            .bind(today_start)
-            .bind(today_end)
-            .bind(OUTCOME_SUCCESS)
-            .bind(today_start)
-            .bind(today_end)
-            .bind(OUTCOME_ERROR)
-            .bind(OUTCOME_QUOTA_EXHAUSTED)
-            .bind(today_start)
-            .bind(today_end)
-            .bind(OUTCOME_SUCCESS)
-            .bind(today_start)
-            .bind(today_end)
-            .bind(OUTCOME_ERROR)
-            .bind(OUTCOME_QUOTA_EXHAUSTED)
-            .bind(today_start)
-            .bind(today_end)
-            .bind(today_start)
-            .bind(today_end)
-            .bind(yesterday_start)
-            .bind(yesterday_end)
-            .bind(yesterday_start)
-            .bind(yesterday_end)
-            .bind(OUTCOME_SUCCESS)
-            .bind(yesterday_start)
-            .bind(yesterday_end)
-            .bind(OUTCOME_ERROR)
-            .bind(yesterday_start)
-            .bind(yesterday_end)
-            .bind(OUTCOME_QUOTA_EXHAUSTED)
-            .bind(yesterday_start)
-            .bind(yesterday_end)
-            .bind(OUTCOME_SUCCESS)
-            .bind(yesterday_start)
-            .bind(yesterday_end)
-            .bind(OUTCOME_ERROR)
-            .bind(OUTCOME_QUOTA_EXHAUSTED)
-            .bind(yesterday_start)
-            .bind(yesterday_end)
-            .bind(OUTCOME_SUCCESS)
-            .bind(yesterday_start)
-            .bind(yesterday_end)
-            .bind(OUTCOME_ERROR)
-            .bind(OUTCOME_QUOTA_EXHAUSTED)
-            .bind(yesterday_start)
-            .bind(yesterday_end)
-            .bind(yesterday_start)
-            .bind(yesterday_end)
-            .fetch_one(&mut *tx)
-            .await?;
+        let today_metrics = Self::fetch_dashboard_rollup_window_metrics_tx(
+            &mut tx,
+            SECS_PER_MINUTE,
+            today_start,
+            Some(today_end),
+        )
+        .await?;
+        let yesterday_metrics = Self::fetch_dashboard_rollup_window_metrics_tx(
+            &mut tx,
+            SECS_PER_MINUTE,
+            yesterday_start,
+            Some(yesterday_end),
+        )
+        .await?;
+        let month_metrics = Self::fetch_dashboard_rollup_month_metrics_tx(
+            &mut tx,
+            month_start,
+            today_start,
+            today_end,
+        )
+        .await?;
+        let month_charge_metrics = Self::fetch_dashboard_rollup_month_metrics_tx(
+            &mut tx,
+            month_quota_charge_start,
+            today_start,
+            today_end,
+        )
+        .await?;
 
         let lifecycle_row = sqlx::query(
             r#"
@@ -17975,68 +18403,10 @@ impl KeyStore {
         .bind(MAINTENANCE_SOURCE_SYSTEM)
         .bind(MAINTENANCE_OP_AUTO_MARK_EXHAUSTED)
         .bind(OUTCOME_QUOTA_EXHAUSTED)
-        .bind(upstream_exhausted_floor)
+        .bind(yesterday_start.min(month_start))
         .bind(today_end)
         .fetch_one(&mut *tx)
         .await?;
-
-        let month_request_log_floor =
-            Self::fetch_visible_request_log_floor_since_tx(&mut tx, month_start).await?;
-        let bucket_month_metrics = Self::fetch_utc_month_gap_bucket_metrics_tx(
-            &mut tx,
-            month_start,
-            month_request_log_floor,
-            Utc::now().timestamp(),
-        )
-        .await?;
-
-        let month_query = format!(
-            r#"
-            WITH scoped_logs AS (
-                SELECT
-                    created_at,
-                    result_status,
-                    ({request_value_bucket_case_sql}) AS request_value_bucket
-                FROM request_logs
-                WHERE visibility = ?
-                  AND created_at >= ?
-            )
-            SELECT
-                COALESCE(SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END), 0) AS month_total_requests,
-                COALESCE(SUM(CASE WHEN created_at >= ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS month_success_count,
-                COALESCE(SUM(CASE WHEN created_at >= ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS month_error_count,
-                COALESCE(SUM(CASE WHEN created_at >= ? AND result_status = ? THEN 1 ELSE 0 END), 0) AS month_quota_exhausted_count,
-                COALESCE(SUM(CASE WHEN created_at >= ? AND request_value_bucket = 'valuable' AND result_status = ? THEN 1 ELSE 0 END), 0) AS month_valuable_success_count,
-                COALESCE(SUM(CASE WHEN created_at >= ? AND request_value_bucket = 'valuable' AND result_status IN (?, ?) THEN 1 ELSE 0 END), 0) AS month_valuable_failure_count,
-                COALESCE(SUM(CASE WHEN created_at >= ? AND request_value_bucket = 'other' AND result_status = ? THEN 1 ELSE 0 END), 0) AS month_other_success_count,
-                COALESCE(SUM(CASE WHEN created_at >= ? AND request_value_bucket = 'other' AND result_status IN (?, ?) THEN 1 ELSE 0 END), 0) AS month_other_failure_count,
-                COALESCE(SUM(CASE WHEN created_at >= ? AND request_value_bucket = 'unknown' THEN 1 ELSE 0 END), 0) AS month_unknown_count
-            FROM scoped_logs
-            "#,
-        );
-        let month_row = sqlx::query(&month_query)
-            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-            .bind(month_start)
-            .bind(month_start)
-            .bind(month_start)
-            .bind(OUTCOME_SUCCESS)
-            .bind(month_start)
-            .bind(OUTCOME_ERROR)
-            .bind(month_start)
-            .bind(OUTCOME_QUOTA_EXHAUSTED)
-            .bind(month_start)
-            .bind(OUTCOME_SUCCESS)
-            .bind(month_start)
-            .bind(OUTCOME_ERROR)
-            .bind(OUTCOME_QUOTA_EXHAUSTED)
-            .bind(month_start)
-            .bind(OUTCOME_SUCCESS)
-            .bind(month_start)
-            .bind(OUTCOME_ERROR)
-            .bind(OUTCOME_QUOTA_EXHAUSTED)
-            .bind(month_start)
-            .fetch_one(&mut *tx)
-            .await?;
 
         let month_lifecycle_row = sqlx::query(
             r#"
@@ -18055,21 +18425,6 @@ impl KeyStore {
         )
         .bind(month_start)
         .bind(month_start)
-        .fetch_one(&mut *tx)
-        .await?;
-
-        let month_local_estimated_credits: i64 = sqlx::query_scalar(
-            r#"
-            SELECT COALESCE(SUM(COALESCE(business_credits, 0)), 0)
-            FROM request_logs
-            WHERE visibility = ?
-              AND created_at >= ?
-              AND created_at < ?
-            "#,
-        )
-        .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-        .bind(month_start)
-        .bind(today_end)
         .fetch_one(&mut *tx)
         .await?;
 
@@ -18139,25 +18494,6 @@ impl KeyStore {
         .fetch_one(&mut *tx)
         .await?;
 
-        let month_total_requests = bucket_month_metrics.total_requests
-            + month_row.try_get::<i64, _>("month_total_requests")?;
-        let month_success_count = bucket_month_metrics.success_count
-            + month_row.try_get::<i64, _>("month_success_count")?;
-        let month_error_count =
-            bucket_month_metrics.error_count + month_row.try_get::<i64, _>("month_error_count")?;
-        let month_quota_exhausted_count = bucket_month_metrics.quota_exhausted_count
-            + month_row.try_get::<i64, _>("month_quota_exhausted_count")?;
-        let month_valuable_success_count = bucket_month_metrics.valuable_success_count
-            + month_row.try_get::<i64, _>("month_valuable_success_count")?;
-        let month_valuable_failure_count = bucket_month_metrics.valuable_failure_count
-            + month_row.try_get::<i64, _>("month_valuable_failure_count")?;
-        let month_other_success_count = bucket_month_metrics.other_success_count
-            + month_row.try_get::<i64, _>("month_other_success_count")?;
-        let month_other_failure_count = bucket_month_metrics.other_failure_count
-            + month_row.try_get::<i64, _>("month_other_failure_count")?;
-        let month_unknown_count = bucket_month_metrics.unknown_count
-            + month_row.try_get::<i64, _>("month_unknown_count")?;
-
         tx.commit().await?;
 
         let mut today_charge = QuotaChargeAccumulator::default();
@@ -18184,7 +18520,7 @@ impl KeyStore {
                 .map(|previous| (previous.quota_remaining - sample.quota_remaining).max(0))
                 .unwrap_or(0);
 
-            if sample.captured_at >= month_start && sample.captured_at < today_end {
+            if sample.captured_at >= month_quota_charge_start && sample.captured_at < today_end {
                 month_charge.upstream_actual_credits += delta;
                 month_sampled_keys.insert(key_id.clone());
                 if month_charge
@@ -18230,71 +18566,44 @@ impl KeyStore {
 
         Ok(SummaryWindows {
             today: SummaryWindowMetrics {
-                total_requests: window_row.try_get("today_total_requests")?,
-                success_count: window_row.try_get("today_success_count")?,
-                error_count: window_row.try_get("today_error_count")?,
-                quota_exhausted_count: window_row.try_get("today_quota_exhausted_count")?,
-                valuable_success_count: window_row.try_get("today_valuable_success_count")?,
-                valuable_failure_count: window_row.try_get("today_valuable_failure_count")?,
-                other_success_count: window_row.try_get("today_other_success_count")?,
-                other_failure_count: window_row.try_get("today_other_failure_count")?,
-                unknown_count: window_row.try_get("today_unknown_count")?,
                 upstream_exhausted_key_count: lifecycle_row
                     .try_get("today_upstream_exhausted_key_count")?,
-                new_keys: 0,
-                new_quarantines: 0,
                 quota_charge: SummaryQuotaCharge {
-                    local_estimated_credits: window_row.try_get("today_local_estimated_credits")?,
                     upstream_actual_credits: today_charge.upstream_actual_credits,
                     sampled_key_count: today_charge.sampled_key_count,
                     stale_key_count: today_charge.stale_key_count,
                     latest_sync_at: today_charge.latest_sync_at,
+                    ..today_metrics.quota_charge
                 },
+                ..today_metrics
             },
             yesterday: SummaryWindowMetrics {
-                total_requests: window_row.try_get("yesterday_total_requests")?,
-                success_count: window_row.try_get("yesterday_success_count")?,
-                error_count: window_row.try_get("yesterday_error_count")?,
-                quota_exhausted_count: window_row.try_get("yesterday_quota_exhausted_count")?,
-                valuable_success_count: window_row.try_get("yesterday_valuable_success_count")?,
-                valuable_failure_count: window_row.try_get("yesterday_valuable_failure_count")?,
-                other_success_count: window_row.try_get("yesterday_other_success_count")?,
-                other_failure_count: window_row.try_get("yesterday_other_failure_count")?,
-                unknown_count: window_row.try_get("yesterday_unknown_count")?,
                 upstream_exhausted_key_count: lifecycle_row
                     .try_get("yesterday_upstream_exhausted_key_count")?,
-                new_keys: 0,
-                new_quarantines: 0,
                 quota_charge: SummaryQuotaCharge {
-                    local_estimated_credits: window_row
-                        .try_get("yesterday_local_estimated_credits")?,
                     upstream_actual_credits: yesterday_charge.upstream_actual_credits,
                     sampled_key_count: yesterday_charge.sampled_key_count,
                     stale_key_count: yesterday_charge.stale_key_count,
                     latest_sync_at: yesterday_charge.latest_sync_at,
+                    ..yesterday_metrics.quota_charge
                 },
+                ..yesterday_metrics
             },
             month: SummaryWindowMetrics {
-                total_requests: month_total_requests,
-                success_count: month_success_count,
-                error_count: month_error_count,
-                quota_exhausted_count: month_quota_exhausted_count,
-                valuable_success_count: month_valuable_success_count,
-                valuable_failure_count: month_valuable_failure_count,
-                other_success_count: month_other_success_count,
-                other_failure_count: month_other_failure_count,
-                unknown_count: month_unknown_count,
                 upstream_exhausted_key_count: lifecycle_row
                     .try_get("month_upstream_exhausted_key_count")?,
                 new_keys: month_lifecycle_row.try_get("month_new_keys")?,
                 new_quarantines: month_lifecycle_row.try_get("month_new_quarantines")?,
                 quota_charge: SummaryQuotaCharge {
-                    local_estimated_credits: month_local_estimated_credits,
+                    local_estimated_credits: month_charge_metrics
+                        .quota_charge
+                        .local_estimated_credits,
                     upstream_actual_credits: month_charge.upstream_actual_credits,
                     sampled_key_count: month_charge.sampled_key_count,
                     stale_key_count: month_charge.stale_key_count,
                     latest_sync_at: month_charge.latest_sync_at,
                 },
+                ..month_metrics
             },
         })
     }
@@ -18315,72 +18624,46 @@ impl KeyStore {
             });
         }
 
-        let series_start =
-            current_hour_start.saturating_sub(bucket_seconds.saturating_mul(retained_buckets));
-        let request_kind_sql =
-            request_log_request_kind_key_sql("path", "request_body", "request_kind_key");
-        let request_value_bucket_case_sql =
-            request_value_bucket_sql(&request_kind_sql, "request_body");
-        let counts_business_quota_sql =
-            request_log_counts_business_quota_sql(&request_kind_sql, "request_body");
-        let request_kind_protocol_group_sql = format!(
-            "CASE WHEN LOWER(TRIM(COALESCE({request_kind_sql}, ''))) LIKE 'mcp:%' THEN 'mcp' ELSE 'api' END"
-        );
-        let request_kind_non_billable_mcp_sql =
-            token_request_kind_non_billable_mcp_sql(&request_kind_sql);
-        let request_kind_billing_group_sql = format!(
-            "
-            CASE
-                WHEN LOWER(TRIM(COALESCE({request_kind_sql}, ''))) IN (
-                    'api:research-result',
-                    'api:usage',
-                    'api:unknown-path'
-                ) THEN 'non_billable'
-                WHEN LOWER(TRIM(COALESCE({request_kind_sql}, ''))) = 'mcp:batch'
-                    AND {counts_business_quota_sql} = 0
-                    THEN 'non_billable'
-                WHEN {request_kind_non_billable_mcp_sql} THEN 'non_billable'
-                ELSE 'billable'
-            END
-            "
-        );
-        let query = format!(
+        let series_start = current_hour_start
+            .saturating_sub(bucket_seconds.saturating_mul(retained_buckets.saturating_sub(1)));
+        let range_end = current_hour_start.saturating_add(bucket_seconds);
+        let hour_alignment_offset = current_hour_start.rem_euclid(bucket_seconds);
+        let rows = sqlx::query(
             r#"
             WITH RECURSIVE hour_series(bucket_start) AS (
                 SELECT ? AS bucket_start
                 UNION ALL
                 SELECT bucket_start + ?
                 FROM hour_series
-                WHERE bucket_start + ? < ?
-            ),
-            scoped_logs AS (
-                SELECT
-                    (created_at / ?) * ? AS bucket_start,
-                    result_status,
-                    COALESCE(failure_kind, '') AS failure_kind,
-                    ({request_value_bucket_case_sql}) AS request_value_bucket,
-                    {request_kind_protocol_group_sql} AS request_kind_protocol_group,
-                    {request_kind_billing_group_sql} AS request_kind_billing_group
-                FROM request_logs
-                WHERE visibility = ?
-                  AND created_at >= ?
-                  AND created_at < ?
+                WHERE bucket_start + ? <= ?
             ),
             aggregated AS (
                 SELECT
-                    bucket_start,
-                    COALESCE(SUM(CASE WHEN request_value_bucket = 'other' AND result_status = ? THEN 1 ELSE 0 END), 0) AS secondary_success,
-                    COALESCE(SUM(CASE WHEN request_value_bucket = 'valuable' AND result_status = ? THEN 1 ELSE 0 END), 0) AS primary_success,
-                    COALESCE(SUM(CASE WHEN request_value_bucket = 'other' AND result_status IN (?, ?) THEN 1 ELSE 0 END), 0) AS secondary_failure,
-                    COALESCE(SUM(CASE WHEN request_value_bucket = 'valuable' AND result_status IN (?, ?) AND failure_kind = ? THEN 1 ELSE 0 END), 0) AS primary_failure_429,
-                    COALESCE(SUM(CASE WHEN request_value_bucket = 'valuable' AND result_status IN (?, ?) AND failure_kind <> ? THEN 1 ELSE 0 END), 0) AS primary_failure_other,
-                    COALESCE(SUM(CASE WHEN request_value_bucket = 'unknown' THEN 1 ELSE 0 END), 0) AS unknown_count,
-                    COALESCE(SUM(CASE WHEN request_kind_protocol_group = 'mcp' AND request_kind_billing_group = 'non_billable' THEN 1 ELSE 0 END), 0) AS mcp_non_billable,
-                    COALESCE(SUM(CASE WHEN request_kind_protocol_group = 'mcp' AND request_kind_billing_group = 'billable' THEN 1 ELSE 0 END), 0) AS mcp_billable,
-                    COALESCE(SUM(CASE WHEN request_kind_protocol_group = 'api' AND request_kind_billing_group = 'non_billable' THEN 1 ELSE 0 END), 0) AS api_non_billable,
-                    COALESCE(SUM(CASE WHEN request_kind_protocol_group = 'api' AND request_kind_billing_group = 'billable' THEN 1 ELSE 0 END), 0) AS api_billable
-                FROM scoped_logs
-                GROUP BY bucket_start
+                    ((bucket_start - ?) / ?) * ? + ? AS hour_bucket_start,
+                    COALESCE(SUM(other_success_count), 0) AS secondary_success,
+                    COALESCE(SUM(valuable_success_count), 0) AS primary_success,
+                    COALESCE(SUM(other_failure_count), 0) AS secondary_failure,
+                    COALESCE(SUM(valuable_failure_429_count), 0) AS primary_failure_429,
+                    COALESCE(
+                        SUM(
+                            CASE
+                                WHEN valuable_failure_count > valuable_failure_429_count
+                                    THEN valuable_failure_count - valuable_failure_429_count
+                                ELSE 0
+                            END
+                        ),
+                        0
+                    ) AS primary_failure_other,
+                    COALESCE(SUM(unknown_count), 0) AS unknown_count,
+                    COALESCE(SUM(mcp_non_billable), 0) AS mcp_non_billable,
+                    COALESCE(SUM(mcp_billable), 0) AS mcp_billable,
+                    COALESCE(SUM(api_non_billable), 0) AS api_non_billable,
+                    COALESCE(SUM(api_billable), 0) AS api_billable
+                FROM dashboard_request_rollup_buckets
+                WHERE bucket_secs = ?
+                  AND bucket_start >= ?
+                  AND bucket_start < ?
+                GROUP BY hour_bucket_start
             )
             SELECT
                 hour_series.bucket_start,
@@ -18395,33 +18678,23 @@ impl KeyStore {
                 COALESCE(aggregated.api_non_billable, 0) AS api_non_billable,
                 COALESCE(aggregated.api_billable, 0) AS api_billable
             FROM hour_series
-            LEFT JOIN aggregated ON aggregated.bucket_start = hour_series.bucket_start
+            LEFT JOIN aggregated ON aggregated.hour_bucket_start = hour_series.bucket_start
             ORDER BY hour_series.bucket_start ASC
             "#,
-        );
-
-        let rows = sqlx::query(&query)
-            .bind(series_start)
-            .bind(bucket_seconds)
-            .bind(bucket_seconds)
-            .bind(current_hour_start)
-            .bind(bucket_seconds)
-            .bind(bucket_seconds)
-            .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
-            .bind(series_start)
-            .bind(current_hour_start)
-            .bind(OUTCOME_SUCCESS)
-            .bind(OUTCOME_SUCCESS)
-            .bind(OUTCOME_ERROR)
-            .bind(OUTCOME_QUOTA_EXHAUSTED)
-            .bind(OUTCOME_ERROR)
-            .bind(OUTCOME_QUOTA_EXHAUSTED)
-            .bind(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429)
-            .bind(OUTCOME_ERROR)
-            .bind(OUTCOME_QUOTA_EXHAUSTED)
-            .bind(FAILURE_KIND_UPSTREAM_RATE_LIMITED_429)
-            .fetch_all(&self.pool)
-            .await?;
+        )
+        .bind(series_start)
+        .bind(bucket_seconds)
+        .bind(bucket_seconds)
+        .bind(current_hour_start)
+        .bind(hour_alignment_offset)
+        .bind(bucket_seconds)
+        .bind(bucket_seconds)
+        .bind(hour_alignment_offset)
+        .bind(SECS_PER_MINUTE)
+        .bind(series_start)
+        .bind(range_end)
+        .fetch_all(&self.pool)
+        .await?;
 
         let buckets = rows
             .into_iter()

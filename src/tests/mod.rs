@@ -6583,6 +6583,52 @@ async fn insert_summary_window_bucket(
     .expect("insert summary window bucket");
 }
 
+async fn insert_dashboard_summary_rollup_day_bucket(
+    proxy: &TavilyProxy,
+    bucket_start: i64,
+    total_requests: i64,
+    success_count: i64,
+    error_count: i64,
+    quota_exhausted_count: i64,
+) {
+    sqlx::query(
+        r#"
+        INSERT INTO dashboard_request_rollup_buckets (
+            bucket_start,
+            bucket_secs,
+            total_requests,
+            success_count,
+            error_count,
+            quota_exhausted_count,
+            valuable_success_count,
+            valuable_failure_count,
+            valuable_failure_429_count,
+            other_success_count,
+            other_failure_count,
+            unknown_count,
+            mcp_non_billable,
+            mcp_billable,
+            api_non_billable,
+            api_billable,
+            local_estimated_credits,
+            updated_at
+        ) VALUES (?, 86400, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0, 0, ?, 0, ?)
+        "#,
+    )
+    .bind(bucket_start)
+    .bind(total_requests)
+    .bind(success_count)
+    .bind(error_count)
+    .bind(quota_exhausted_count)
+    .bind(success_count)
+    .bind(error_count + quota_exhausted_count)
+    .bind(total_requests)
+    .bind(bucket_start + 60)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert dashboard summary rollup day bucket");
+}
+
 async fn insert_summary_window_logs(
     proxy: &TavilyProxy,
     key_id: &str,
@@ -6639,6 +6685,15 @@ async fn insert_summary_window_logs_with_visibility(
         .await
         .expect("insert summary window log");
     }
+
+    proxy
+        .key_store
+        .rebuild_dashboard_request_rollup_buckets_window(
+            Some(created_at),
+            Some(created_at + count as i64),
+        )
+        .await
+        .expect("rebuild dashboard rollup after summary log seed");
 }
 
 #[derive(Clone)]
@@ -6711,6 +6766,15 @@ async fn insert_dashboard_hourly_log(
     .execute(&proxy.key_store.pool)
     .await
     .expect("insert dashboard hourly log");
+
+    proxy
+        .key_store
+        .rebuild_dashboard_request_rollup_buckets_window(
+            Some(seed.created_at),
+            Some(seed.created_at + 1),
+        )
+        .await
+        .expect("rebuild dashboard rollup after hourly log seed");
 }
 
 async fn insert_summary_window_charged_logs(
@@ -6752,6 +6816,15 @@ async fn insert_summary_window_charged_logs(
         .await
         .expect("insert summary window charged log");
     }
+
+    proxy
+        .key_store
+        .rebuild_dashboard_request_rollup_buckets_window(
+            Some(created_at),
+            Some(created_at + count as i64),
+        )
+        .await
+        .expect("rebuild dashboard rollup after charged log seed");
 }
 
 async fn insert_summary_window_maintenance_record(
@@ -6865,9 +6938,7 @@ async fn summary_windows_split_today_yesterday_and_month() {
     let today_start = start_of_local_day_utc_ts(now);
     let yesterday_start = previous_local_day_start_utc_ts(now);
     let yesterday_same_time = previous_local_same_time_utc_ts(now);
-    let month_start = start_of_month(now.with_timezone(&Utc)).timestamp();
-    let previous_month_start =
-        start_of_month(now.with_timezone(&Utc) - chrono::Duration::days(32)).timestamp();
+    let local_month_start = start_of_local_month_utc_ts(now);
 
     insert_summary_window_logs(&proxy, &key_id, today_start + 60, OUTCOME_SUCCESS, 9).await;
     insert_summary_window_logs(&proxy, &key_id, today_start + 3600, OUTCOME_ERROR, 2).await;
@@ -6898,8 +6969,6 @@ async fn summary_windows_split_today_yesterday_and_month() {
     )
     .await;
 
-    insert_summary_window_bucket(&proxy, &key_id, today_start, 12, 9, 2, 1).await;
-    insert_summary_window_bucket(&proxy, &key_id, yesterday_start, 10, 8, 1, 1).await;
     let mut expected_month = SummaryWindowMetrics {
         total_requests: 12,
         success_count: 9,
@@ -6913,7 +6982,7 @@ async fn summary_windows_split_today_yesterday_and_month() {
         ..SummaryWindowMetrics::default()
     };
     expected_month.quota_charge.stale_key_count = 1;
-    if yesterday_start >= month_start {
+    if yesterday_start >= local_month_start {
         expected_month.total_requests += 7;
         expected_month.success_count += 5;
         expected_month.error_count += 1;
@@ -6921,20 +6990,19 @@ async fn summary_windows_split_today_yesterday_and_month() {
         expected_month.valuable_success_count += 5;
         expected_month.valuable_failure_count += 2;
     }
-    if yesterday_same_time + 60 >= month_start {
+    if yesterday_same_time + 60 >= local_month_start {
         expected_month.total_requests += 3;
         expected_month.success_count += 3;
         expected_month.valuable_success_count += 3;
     }
-    if local_day_bucket_start_utc_ts(month_start) == month_start {
+    if local_month_start < today_start {
         expected_month.total_requests += 3;
         expected_month.success_count += 2;
         expected_month.error_count += 1;
         expected_month.valuable_success_count += 2;
         expected_month.valuable_failure_count += 1;
+        insert_dashboard_summary_rollup_day_bucket(&proxy, local_month_start, 3, 2, 1, 0).await;
     }
-    insert_summary_window_bucket(&proxy, &key_id, month_start, 3, 2, 1, 0).await;
-    insert_summary_window_bucket(&proxy, &key_id, previous_month_start, 99, 80, 10, 9).await;
 
     let summary = proxy
         .summary_windows_at(now)
@@ -6979,8 +7047,8 @@ async fn summary_windows_split_today_yesterday_and_month() {
 }
 
 #[tokio::test]
-async fn summary_windows_month_uses_utc_boundary() {
-    let db_path = temp_db_path("summary-windows-utc-month");
+async fn summary_windows_month_counts_follow_server_timezone_boundary() {
+    let db_path = temp_db_path("summary-windows-local-month");
     let db_str = db_path.to_string_lossy().to_string();
 
     let proxy = TavilyProxy::with_endpoint(
@@ -7001,29 +7069,45 @@ async fn summary_windows_month_uses_utc_boundary() {
         .id;
 
     let utc_now = Utc::now();
-    let month_start = start_of_month(utc_now).timestamp();
+    let utc_month_start = start_of_month(utc_now).timestamp();
     let local_month_start = start_of_local_month_utc_ts(utc_now.with_timezone(&Local));
-    if month_start == local_month_start {
+    if utc_month_start == local_month_start {
         return;
     }
 
-    let boundary_ts = month_start.max(local_month_start);
-    let month_only_ts = boundary_ts + 120;
-    let local_only_ts = boundary_ts - 120;
+    let boundary_ts = utc_month_start.max(local_month_start);
+    let local_month_only_ts = boundary_ts - 120;
+    let utc_month_only_ts = boundary_ts + 120;
 
-    insert_summary_window_logs(&proxy, &key_id, month_only_ts, OUTCOME_SUCCESS, 5).await;
-    insert_summary_window_logs(&proxy, &key_id, month_only_ts + 30, OUTCOME_ERROR, 2).await;
-    insert_summary_window_logs(&proxy, &key_id, local_only_ts, OUTCOME_SUCCESS, 9).await;
-    insert_summary_window_logs(&proxy, &key_id, local_only_ts + 30, OUTCOME_ERROR, 2).await;
+    insert_summary_window_logs(&proxy, &key_id, local_month_only_ts, OUTCOME_SUCCESS, 9).await;
+    insert_summary_window_logs(&proxy, &key_id, local_month_only_ts + 30, OUTCOME_ERROR, 2).await;
+    insert_summary_window_logs(&proxy, &key_id, utc_month_only_ts, OUTCOME_SUCCESS, 5).await;
+    insert_summary_window_logs(&proxy, &key_id, utc_month_only_ts + 30, OUTCOME_ERROR, 2).await;
 
     let summary = proxy
         .summary_windows_at(utc_now.with_timezone(&Local))
         .await
         .expect("summary windows");
 
-    assert_eq!(summary.month.total_requests, 7);
-    assert_eq!(summary.month.success_count, 5);
-    assert_eq!(summary.month.error_count, 2);
+    let expected_total = if local_month_start < utc_month_start {
+        18
+    } else {
+        7
+    };
+    let expected_success = if local_month_start < utc_month_start {
+        14
+    } else {
+        5
+    };
+    let expected_error = if local_month_start < utc_month_start {
+        4
+    } else {
+        2
+    };
+
+    assert_eq!(summary.month.total_requests, expected_total);
+    assert_eq!(summary.month.success_count, expected_success);
+    assert_eq!(summary.month.error_count, expected_error);
 }
 
 #[tokio::test]
@@ -7422,7 +7506,8 @@ async fn summary_windows_include_quota_charge_estimates_and_sample_diffs() {
     let today_start = start_of_local_day_utc_ts(now);
     let yesterday_start = previous_local_day_start_utc_ts(now);
     let yesterday_same_time = previous_local_same_time_utc_ts(now);
-    let month_start = start_of_local_month_utc_ts(now);
+    let local_month_start = start_of_local_month_utc_ts(now);
+    let utc_month_start = start_of_month(now.with_timezone(&Utc)).timestamp();
     let now_ts = now.with_timezone(&Utc).timestamp();
 
     sqlx::query("UPDATE api_keys SET last_used_at = ?, quota_synced_at = ? WHERE id = ?")
@@ -7472,15 +7557,20 @@ async fn summary_windows_include_quota_charge_estimates_and_sample_diffs() {
         .await
         .expect("summary windows");
 
-    let expected_month_local = if month_start <= yesterday_start {
+    let expected_month_local = if utc_month_start <= yesterday_start {
         15
     } else {
         10
     };
-    let expected_month_upstream = if month_start <= yesterday_start {
+    let expected_month_upstream = if utc_month_start <= yesterday_start {
         45
     } else {
         25
+    };
+    let expected_month_total = if local_month_start <= yesterday_start {
+        3
+    } else {
+        2
     };
 
     assert_eq!(summary.today.quota_charge.local_estimated_credits, 10);
@@ -7506,6 +7596,8 @@ async fn summary_windows_include_quota_charge_estimates_and_sample_diffs() {
     );
     assert_eq!(summary.month.quota_charge.sampled_key_count, 1);
     assert_eq!(summary.month.quota_charge.stale_key_count, 1);
+    assert_eq!(summary.month.total_requests, expected_month_total);
+    assert_eq!(summary.month.success_count, expected_month_total);
 
     // The same-time window should end before the sample inserted at the current day's midday.
     assert!(
@@ -7564,6 +7656,7 @@ async fn summary_windows_month_bucket_fallback_skips_unaligned_first_local_day_b
             previous_local_day_start_utc_ts(now),
             previous_local_same_time_utc_ts(now).saturating_add(1),
             month_start,
+            month_start,
         )
         .await
         .expect("summary windows");
@@ -7577,7 +7670,7 @@ async fn summary_windows_month_bucket_fallback_skips_unaligned_first_local_day_b
 }
 
 #[tokio::test]
-async fn summary_windows_month_falls_back_to_usage_buckets_for_partial_gap_before_logs_resume() {
+async fn summary_windows_month_reads_dashboard_rollup_day_buckets_for_historical_days() {
     let db_path = temp_db_path("summary-windows-month-bucket-partial-gap-fallback");
     let db_str = db_path.to_string_lossy().to_string();
 
@@ -7588,15 +7681,6 @@ async fn summary_windows_month_falls_back_to_usage_buckets_for_partial_gap_befor
     )
     .await
     .expect("proxy created");
-
-    let key_id = proxy
-        .list_api_key_metrics()
-        .await
-        .expect("list key metrics")
-        .into_iter()
-        .next()
-        .expect("seeded key")
-        .id;
 
     let month_start = (Utc::now() - chrono::Duration::days(10))
         .date_naive()
@@ -7611,14 +7695,10 @@ async fn summary_windows_month_falls_back_to_usage_buckets_for_partial_gap_befor
         next_local_day_start_utc_ts(first_bucket_start)
     };
     let partial_bucket_start = next_local_day_start_utc_ts(first_full_bucket_start);
-    let partial_bucket_end = next_local_day_start_utc_ts(partial_bucket_start);
-    let partial_gap_end = partial_bucket_start + ((partial_bucket_end - partial_bucket_start) / 2);
     let now = Local::now();
 
-    insert_summary_window_bucket(&proxy, &key_id, first_full_bucket_start, 10, 7, 2, 1).await;
-    insert_summary_window_bucket(&proxy, &key_id, partial_bucket_start, 8, 6, 1, 1).await;
-    insert_summary_window_logs(&proxy, &key_id, partial_gap_end, OUTCOME_SUCCESS, 3).await;
-    insert_summary_window_logs(&proxy, &key_id, partial_gap_end + 300, OUTCOME_ERROR, 1).await;
+    insert_dashboard_summary_rollup_day_bucket(&proxy, first_full_bucket_start, 10, 7, 2, 1).await;
+    insert_dashboard_summary_rollup_day_bucket(&proxy, partial_bucket_start, 8, 6, 1, 1).await;
 
     let summary = proxy
         .key_store
@@ -7627,6 +7707,7 @@ async fn summary_windows_month_falls_back_to_usage_buckets_for_partial_gap_befor
             now.with_timezone(&Utc).timestamp().saturating_add(1),
             previous_local_day_start_utc_ts(now),
             previous_local_same_time_utc_ts(now).saturating_add(1),
+            month_start,
             month_start,
         )
         .await
@@ -7753,7 +7834,7 @@ async fn summary_windows_return_zero_for_empty_yesterday_bucket() {
 }
 
 #[tokio::test]
-async fn dashboard_hourly_request_window_returns_49_complete_utc_hours_with_zero_fill() {
+async fn dashboard_hourly_request_window_returns_49_hours_including_current_hour_with_zero_fill() {
     let db_path = temp_db_path("dashboard-hourly-request-window");
     let db_str = db_path.to_string_lossy().to_string();
 
@@ -7774,12 +7855,12 @@ async fn dashboard_hourly_request_window_returns_49_complete_utc_hours_with_zero
         .expect("seeded key")
         .id;
 
-    let current_hour_start = Utc
-        .with_ymd_and_hms(2026, 4, 7, 12, 0, 0)
+    let evaluation_time = Utc
+        .with_ymd_and_hms(2026, 4, 7, 12, 10, 0)
         .single()
-        .expect("valid utc hour")
-        .timestamp();
-    let visible_bucket_start = current_hour_start - 3600;
+        .expect("valid utc evaluation time");
+    let current_hour_start = start_of_local_hour_utc_ts(evaluation_time.with_timezone(&Local));
+    let visible_bucket_start = current_hour_start;
     let previous_day_same_hour_start = visible_bucket_start - 24 * 3600;
 
     insert_dashboard_hourly_log(
@@ -7919,11 +8000,7 @@ async fn dashboard_hourly_request_window_returns_49_complete_utc_hours_with_zero
     .await;
 
     let window = proxy
-        .dashboard_hourly_request_window_at(
-            Utc.timestamp_opt(current_hour_start + 600, 0)
-                .single()
-                .expect("window evaluation time"),
-        )
+        .dashboard_hourly_request_window_at(evaluation_time)
         .await
         .expect("hourly request window");
 
@@ -7933,11 +8010,11 @@ async fn dashboard_hourly_request_window_returns_49_complete_utc_hours_with_zero
     assert_eq!(window.buckets.len(), 49);
     assert_eq!(
         window.buckets.first().map(|bucket| bucket.bucket_start),
-        Some(current_hour_start - 49 * 3600)
+        Some(current_hour_start - 48 * 3600)
     );
     assert_eq!(
         window.buckets.last().map(|bucket| bucket.bucket_start),
-        Some(visible_bucket_start)
+        Some(current_hour_start)
     );
 
     let zero_bucket = window
@@ -7952,9 +8029,9 @@ async fn dashboard_hourly_request_window_returns_49_complete_utc_hours_with_zero
         .buckets
         .iter()
         .find(|bucket| bucket.bucket_start == visible_bucket_start)
-        .expect("latest completed bucket");
+        .expect("latest in-progress bucket");
     assert_eq!(latest_bucket.secondary_success, 2);
-    assert_eq!(latest_bucket.primary_success, 1);
+    assert_eq!(latest_bucket.primary_success, 2);
     assert_eq!(latest_bucket.secondary_failure, 1);
     assert_eq!(latest_bucket.primary_failure_429, 1);
     assert_eq!(latest_bucket.primary_failure_other, 1);
@@ -7962,7 +8039,7 @@ async fn dashboard_hourly_request_window_returns_49_complete_utc_hours_with_zero
     assert_eq!(latest_bucket.mcp_non_billable, 2);
     assert_eq!(latest_bucket.mcp_billable, 1);
     assert_eq!(latest_bucket.api_non_billable, 2);
-    assert_eq!(latest_bucket.api_billable, 2);
+    assert_eq!(latest_bucket.api_billable, 3);
 
     let _ = std::fs::remove_file(db_path);
 }
@@ -7989,12 +8066,12 @@ async fn dashboard_hourly_request_window_classifies_non_billable_mcp_batch_from_
         .expect("seeded key")
         .id;
 
-    let current_hour_start = Utc
-        .with_ymd_and_hms(2026, 4, 7, 12, 0, 0)
+    let evaluation_time = Utc
+        .with_ymd_and_hms(2026, 4, 7, 12, 2, 0)
         .single()
-        .expect("valid utc hour")
-        .timestamp();
-    let visible_bucket_start = current_hour_start - 3600;
+        .expect("valid utc evaluation time");
+    let current_hour_start = start_of_local_hour_utc_ts(evaluation_time.with_timezone(&Local));
+    let visible_bucket_start = current_hour_start;
 
     insert_dashboard_hourly_log(
         &proxy,
@@ -8013,11 +8090,7 @@ async fn dashboard_hourly_request_window_classifies_non_billable_mcp_batch_from_
     .await;
 
     let window = proxy
-        .dashboard_hourly_request_window_at(
-            Utc.timestamp_opt(current_hour_start + 120, 0)
-                .single()
-                .expect("window evaluation time"),
-        )
+        .dashboard_hourly_request_window_at(evaluation_time)
         .await
         .expect("hourly request window");
 
@@ -8025,10 +8098,136 @@ async fn dashboard_hourly_request_window_classifies_non_billable_mcp_batch_from_
         .buckets
         .iter()
         .find(|bucket| bucket.bucket_start == visible_bucket_start)
-        .expect("latest completed bucket");
+        .expect("latest in-progress bucket");
     assert_eq!(latest_bucket.secondary_success, 1);
     assert_eq!(latest_bucket.mcp_non_billable, 1);
     assert_eq!(latest_bucket.mcp_billable, 0);
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[tokio::test]
+async fn dashboard_rollup_bounded_rebuild_is_idempotent() {
+    let db_path = temp_db_path("dashboard-rollup-bounded-rebuild");
+    let db_str = db_path.to_string_lossy().to_string();
+
+    let proxy = TavilyProxy::with_endpoint(
+        vec!["tvly-dashboard-rollup-bounded".to_string()],
+        DEFAULT_UPSTREAM,
+        &db_str,
+    )
+    .await
+    .expect("proxy created");
+
+    let key_id = proxy
+        .list_api_key_metrics()
+        .await
+        .expect("list key metrics")
+        .into_iter()
+        .next()
+        .expect("seeded key")
+        .id;
+
+    let created_at = Utc
+        .with_ymd_and_hms(2026, 4, 7, 12, 34, 56)
+        .single()
+        .expect("valid timestamp")
+        .timestamp();
+
+    sqlx::query(
+        r#"
+        INSERT INTO request_logs (
+            api_key_id,
+            auth_token_id,
+            method,
+            path,
+            query,
+            status_code,
+            tavily_status_code,
+            error_message,
+            result_status,
+            request_kind_key,
+            request_kind_label,
+            request_body,
+            response_body,
+            forwarded_headers,
+            dropped_headers,
+            visibility,
+            created_at
+        ) VALUES (?, NULL, 'GET', '/api/tavily/search', NULL, 200, 200, NULL, 'success', 'api:search', 'API | search', NULL, NULL, '[]', '[]', ?, ?)
+        "#,
+    )
+    .bind(&key_id)
+    .bind(REQUEST_LOG_VISIBILITY_VISIBLE)
+    .bind(created_at)
+    .execute(&proxy.key_store.pool)
+    .await
+    .expect("insert request log");
+
+    proxy
+        .key_store
+        .rebuild_dashboard_request_rollup_buckets_window(Some(created_at), Some(created_at + 1))
+        .await
+        .expect("first bounded rebuild");
+    proxy
+        .key_store
+        .rebuild_dashboard_request_rollup_buckets_window(Some(created_at), Some(created_at + 1))
+        .await
+        .expect("second bounded rebuild");
+
+    let minute_bucket = sqlx::query(
+        r#"
+        SELECT total_requests, success_count, api_billable
+        FROM dashboard_request_rollup_buckets
+        WHERE bucket_secs = 60 AND bucket_start = ?
+        "#,
+    )
+    .bind(created_at.div_euclid(60) * 60)
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("minute bucket");
+    assert_eq!(
+        minute_bucket
+            .try_get::<i64, _>("total_requests")
+            .expect("minute total"),
+        1
+    );
+    assert_eq!(
+        minute_bucket
+            .try_get::<i64, _>("success_count")
+            .expect("minute success"),
+        1
+    );
+    assert_eq!(
+        minute_bucket
+            .try_get::<i64, _>("api_billable")
+            .expect("minute api billable"),
+        1
+    );
+
+    let day_bucket = sqlx::query(
+        r#"
+        SELECT total_requests, success_count
+        FROM dashboard_request_rollup_buckets
+        WHERE bucket_secs = 86400 AND bucket_start = ?
+        "#,
+    )
+    .bind(local_day_bucket_start_utc_ts(created_at))
+    .fetch_one(&proxy.key_store.pool)
+    .await
+    .expect("day bucket");
+    assert_eq!(
+        day_bucket
+            .try_get::<i64, _>("total_requests")
+            .expect("day total"),
+        1
+    );
+    assert_eq!(
+        day_bucket
+            .try_get::<i64, _>("success_count")
+            .expect("day success"),
+        1
+    );
 
     let _ = std::fs::remove_file(db_path);
 }

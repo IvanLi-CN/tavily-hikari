@@ -24,6 +24,15 @@ describe('dashboardHourlyCharts helpers', () => {
     expect(getVisibleHourlyBuckets(window)).toHaveLength(25)
     expect(getVisibleHourlyBuckets(window)[0]?.bucketStart).toBe(window.buckets[24]?.bucketStart)
     expect(getVisibleHourlyBuckets(window).at(-1)?.bucketStart).toBe(window.buckets.at(-1)?.bucketStart)
+    expect(window.buckets[0]?.bucketStart).toBe(window.buckets.at(-1)!.bucketStart - 48 * 3600)
+  })
+
+  it('anchors the latest bucket to the current hour instead of the previous closed hour', () => {
+    const currentHourStart = Date.UTC(2026, 3, 7, 12, 0, 0) / 1000
+    const window = buildDashboardHourlyRequestWindowFixture({ currentHourStart })
+
+    expect(window.buckets.at(-1)?.bucketStart).toBe(currentHourStart)
+    expect(getVisibleHourlyBuckets(window).at(-1)?.bucketStart).toBe(currentHourStart)
   })
 
   it('computes yesterday deltas from aligned hourly buckets', () => {

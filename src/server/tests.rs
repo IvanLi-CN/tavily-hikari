@@ -11121,6 +11121,45 @@ colo=LAX
         .await
         .expect("insert summary window logs");
 
+        let today_minute_bucket = today_log_start.div_euclid(60) * 60;
+        let yesterday_minute_bucket = yesterday_log_start.div_euclid(60) * 60;
+        sqlx::query(
+            r#"
+            INSERT INTO dashboard_request_rollup_buckets (
+                bucket_start,
+                bucket_secs,
+                total_requests,
+                success_count,
+                error_count,
+                quota_exhausted_count,
+                valuable_success_count,
+                valuable_failure_count,
+                valuable_failure_429_count,
+                other_success_count,
+                other_failure_count,
+                unknown_count,
+                mcp_non_billable,
+                mcp_billable,
+                api_non_billable,
+                api_billable,
+                local_estimated_credits,
+                updated_at
+            ) VALUES
+                (?, 60, 10, 8, 1, 1, 8, 2, 0, 0, 0, 0, 0, 0, 0, 10, 0, ?),
+                (?, 60, 4, 3, 1, 0, 3, 1, 0, 0, 0, 0, 0, 0, 0, 4, 0, ?),
+                (?, 86400, 4, 3, 1, 0, 3, 1, 0, 0, 0, 0, 0, 0, 0, 4, 0, ?)
+            "#,
+        )
+        .bind(today_minute_bucket)
+        .bind(today_minute_bucket + 59)
+        .bind(yesterday_minute_bucket)
+        .bind(yesterday_minute_bucket + 59)
+        .bind(yesterday_start)
+        .bind(yesterday_start + 59)
+        .execute(&pool)
+        .await
+        .expect("insert dashboard rollup buckets");
+
         sqlx::query(
             r#"
             INSERT INTO api_key_quarantines (

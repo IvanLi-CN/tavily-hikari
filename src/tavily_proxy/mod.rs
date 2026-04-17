@@ -8803,7 +8803,7 @@ impl TavilyProxy {
 
     /// Admin dashboard period summary windows based on server-local day/month boundaries.
     pub async fn summary_windows(&self) -> Result<SummaryWindows, ProxyError> {
-        const SUMMARY_WINDOWS_CACHE_TTL: Duration = Duration::from_secs(2);
+        const SUMMARY_WINDOWS_CACHE_TTL: Duration = Duration::from_secs(0);
 
         loop {
             let waiter = {
@@ -8845,7 +8845,7 @@ impl TavilyProxy {
     pub async fn dashboard_hourly_request_window(
         &self,
     ) -> Result<DashboardHourlyRequestWindow, ProxyError> {
-        const DASHBOARD_HOURLY_REQUEST_WINDOW_CACHE_TTL: Duration = Duration::from_secs(2);
+        const DASHBOARD_HOURLY_REQUEST_WINDOW_CACHE_TTL: Duration = Duration::from_secs(0);
 
         loop {
             let waiter = {
@@ -8894,10 +8894,7 @@ impl TavilyProxy {
         const DASHBOARD_HOURLY_VISIBLE_BUCKETS: i64 = 25;
         const DASHBOARD_HOURLY_RETAINED_BUCKETS: i64 = 49;
 
-        let current_hour_start = now
-            .timestamp()
-            .div_euclid(DASHBOARD_HOURLY_BUCKET_SECS)
-            .saturating_mul(DASHBOARD_HOURLY_BUCKET_SECS);
+        let current_hour_start = start_of_local_hour_utc_ts(now.with_timezone(&Local));
 
         self.key_store
             .fetch_dashboard_hourly_request_window(
@@ -8915,7 +8912,8 @@ impl TavilyProxy {
     ) -> Result<SummaryWindows, ProxyError> {
         let today_start = start_of_local_day_utc_ts(now);
         let yesterday_start = previous_local_day_start_utc_ts(now);
-        let month_start = start_of_month(now.with_timezone(&Utc)).timestamp();
+        let month_start = start_of_local_month_utc_ts(now);
+        let month_quota_charge_start = start_of_month(now.with_timezone(&Utc)).timestamp();
         let today_end = now.with_timezone(&Utc).timestamp().saturating_add(1);
         let yesterday_same_time_end = previous_local_same_time_utc_ts(now).saturating_add(1);
 
@@ -8926,6 +8924,7 @@ impl TavilyProxy {
                 yesterday_start,
                 yesterday_same_time_end,
                 month_start,
+                month_quota_charge_start,
             )
             .await
     }

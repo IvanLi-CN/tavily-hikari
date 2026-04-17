@@ -4,7 +4,7 @@
 
 - Status: 已完成
 - Created: 2026-04-07
-- Last: 2026-04-12
+- Last: 2026-04-17
 
 ## 背景
 
@@ -15,7 +15,7 @@
 ## Goals
 
 - 在管理员仪表盘现有 `Traffic Trends` 区域内，用单一 stacked bar 图表面板替换旧 sparkline。
-- 后端统一返回最近 49 个 **UTC 整点已封口小时桶**，前端默认展示最近 25 个小时桶，并将横轴标签按浏览器本地时间渲染，同时支持与昨日同小时做 signed delta 对比。
+- 后端统一返回最近 49 个**服务器时区对齐**的小时桶，并保证**最新一桶就是当前服务器时区小时进行中**；前端默认展示近 24 小时的 25 个小时桶，并将横轴标签按浏览器本地时间渲染，同时支持与昨日同小时做 signed delta 对比。
 - 图表固定支持 4 种视图：
   - 调用结果
   - 调用类型
@@ -36,7 +36,7 @@
 - `bucketSeconds = 3600`
 - `visibleBuckets = 25`
 - `retainedBuckets = 49`
-- `buckets[]` 按时间升序排列，且每个 bucket 都是完整的 UTC 小时：
+- `buckets[]` 按时间升序排列，最新一桶允许是“当前服务器时区小时进行中”：
   - `bucketStart`
   - `secondarySuccess`
   - `primarySuccess`
@@ -62,8 +62,8 @@
 ## 统计口径
 
 - 小时桶窗口：
-  - 以 `floor(now_utc / 3600) * 3600` 作为当前未封口小时起点
-  - 返回 `[currentHourStart - 49h, currentHourStart)` 的 49 个完整小时
+  - 以**服务器时区当前整点**作为当前未封口小时起点，并将该整点换算成 UTC epoch `bucketStart`
+  - 返回 `[currentHourStart - 48h, currentHourStart]` 的 49 个小时桶，其中最后一桶就是当前小时
   - 无日志的小时必须零填
 - “主要 / 次要”直接复用现有 `request_value_bucket`：
   - `valuable -> primary`
@@ -83,6 +83,7 @@
   - `apiBillable`
 - 与昨日对比：
   - 对最近 25 个小时中的每个当前 bucket，取 `bucketStart - 24h` 的 bucket 做差
+  - 当前小时不做分钟截断，直接对比“昨日同小时整桶”
   - delta 图 Y 轴允许正负值
 
 ## 展示约束
@@ -94,14 +95,15 @@
 - 前两个绝对图默认全选全部 series。
 - 前两个图使用多选显示/隐藏；后两个 delta 图使用单选，并额外提供 `全部`。
 - 前端需要记忆上次选中的图表模式与 series 组合，并在下次重新打开管理台时恢复。
-- 小时桶统计口径继续按 UTC 封口，但横轴日期/时间标签改为按浏览器本地时间显示，避免运维将本地当前时间与图表窗口误读为不一致。
+- 小时桶统计口径改为按**服务器时区**对齐，但 UI 文案必须明确表达“近 24 小时（共 25 组，含当前小时）”，横轴日期/时间标签按浏览器本地时间显示。
 - API / MCP 配色必须复用请求记录界面的语义色族；结果图复用 success / warning / destructive / neutral 语义，不新造一套与现有 UI 脱节的颜色体系。
 
 ## 验收标准
 
-- 管理员仪表盘首页能直接看到最近 25 个小时桶的 stacked bar 图表，不再显示旧 sparkline 卡片。
+- 管理员仪表盘首页能直接看到近 24 小时（共 25 组，含当前小时）的 stacked bar 图表，不再显示旧 sparkline 卡片。
 - `/api/dashboard/overview` 与 `/api/events` snapshot 都包含 `hourlyRequestWindow`，且 dashboard 切到该路由后可实时刷新。
-- 小时桶严格按 UTC 整点封口，不包含当前未封口小时；横轴标签则按浏览器本地时间展示同一批 bucket。
+- `hourlyRequestWindow.retainedBuckets = 49`、`visibleBuckets = 25` 保持不变，且最新一桶必须等于 `currentHourStart`。
+- 小时桶最后一组必须是当前服务器时区小时进行中；横轴标签则按浏览器本地时间展示同一批 bucket。
 - 结果图与类型图的默认堆叠顺序、默认可见系列、delta 行为与本 spec 一致。
 - 管理台重新打开后，会恢复上一次选中的图表模式与 series 显示状态。
 - 当所有可见系列被隐藏时，图表区域显示明确 empty state，而不是坏图或空白画布。
@@ -117,16 +119,16 @@
 
 ## 风险与假设
 
-- 假设最近 49 小时的 dashboard 查询直接扫 `request_logs` 仍可接受；如性能不足，后续再评估小时级物化桶，但这不属于本轮 scope。
+- 小时图读路径依赖 `dashboard_request_rollup_buckets(bucket_secs=60)`；若后续扩展更多 breakdown，需继续保持 rollup 写入与 bounded rebuild 的幂等性。
 - 风险：如果 admin SSE 的变更签名没有覆盖小时锚点，整点切换时图表可能在“无新日志”场景下停留旧窗口。
-- 风险：`mcp:batch` 的计费/非计费判定依赖 request body 解析，SQL 统计必须复用现有 canonicalization 规则，否则会和请求日志页面口径漂移。
+- 风险：`mcp:batch` 的计费/非计费判定依赖 request body 解析；rollup 写入与 rebuild 必须复用现有 canonicalization 规则，否则会和请求日志页面口径漂移。
 
 ## Visual Evidence
 
 - source_type: storybook_canvas
   story_id_or_title: `admin-components-dashboardoverview--default`
   state: `results`
-  evidence_note: 验证绝对“调用结果”图默认全选全部结果 series，数据仍按 UTC 已封口小时桶聚合，但横轴标签已切到本地时间。
+  evidence_note: 验证绝对“调用结果”图默认全选全部结果 series，数据覆盖近 24 小时共 25 组且含当前小时，横轴标签按本地时间显示。
   image:
   ![管理员仪表盘小时图表：调用结果](./assets/dashboard-hourly-results.png)
 

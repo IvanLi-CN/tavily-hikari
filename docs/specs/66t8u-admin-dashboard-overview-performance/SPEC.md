@@ -4,20 +4,21 @@
 
 - Status: 已实现（待审查）
 - Created: 2026-04-06
-- Last: 2026-04-06
+- Last: 2026-04-17
 
 ## 背景
 
 - 当前 `/admin/dashboard` 首屏会并行触发 `loadData()` 与 dashboard 专用 overview 请求，两条链路都会拉 `summary`，同时还会连带触发 token page、token groups、recent logs、jobs 等额外请求。
 - admin SSE `snapshot` 与首屏 HTTP bootstrap 维护了两套相近但不一致的数据拼装逻辑，既增加后端重复查询，也让前端在同一时间窗口里处理多份重叠数据。
-- `/api/summary/windows` 需要扫描 `request_logs` 与配额样本；在 dashboard 首屏、SSE `compute_signatures()` 与 `snapshot` 生成阶段重复执行时，会放大停顿感和后台压力。
+- `/api/summary/windows` 需要扫描 `request_logs` 与配额样本；在 dashboard 首屏、SSE `compute_signatures()` 与 `snapshot` 生成阶段重复执行时，会放大停顿感和后台压力。随着日志增长，这条路径已经成为 dashboard 首屏的主要瓶颈。
 - dashboard 可见风险区实际只展示前 5 项，但后端此前仍会为 dashboard 拉分页 keys、分页 logs、facets 与更多不需要的全量数据。
 
 ## Goals
 
 - 新增 dashboard 专用轻量聚合接口，首屏只请求一份最小可用 overview 快照。
 - 让 admin SSE `snapshot` 与 overview HTTP 复用同一套 payload 构造逻辑，减少重复查询与字段漂移。
-- 为 `summary_windows` 增加 2 秒进程内共享缓存，覆盖 dashboard 首屏、SSE 签名与 SSE 快照三条路径。
+- 将 dashboard 期间摘要改为读取专用 rollup 表，避免再对 `request_logs` 做大范围实时聚合。
+- 让 dashboard 小时图与 `summary_windows` 共用近实时 rollup 数据源，保证当前小时写入后无需等待后台 job 即可反映到 overview 与 SSE snapshot。
 - 将 dashboard 风险区所需的 `exhausted keys / recent logs / recent jobs / disabled tokens` 改为后端轻量子集查询，不再走分页 + facets + 全量 token 扫描。
 - 保持 dashboard 可见功能和核心数据口径不变：期间摘要、当前状态、风险观察、近期请求、近期任务都继续可用。
 
@@ -25,7 +26,8 @@
 
 - 不修改 `/api/summary`、`/api/jobs`、`/api/logs`、`/api/keys` 现有对其它页面的语义。
 - 不调整 dashboard 卡片视觉结构、文案层级或风险排序逻辑。
-- 不引入新的数据库 schema 迁移，也不改变 `summary_windows` 的统计 SQL 口径。
+- 不修改 `/api/dashboard/overview`、admin SSE `snapshot` 的外部返回 shape。
+- 不改变 `summary_windows` 的业务口径；仅将数据来源从原始 `request_logs` 扫描切到 dashboard 专用 rollup。
 
 ## 接口与数据契约
 
@@ -89,14 +91,18 @@
 - SSE 正常可用时，dashboard 活态增量更新只依赖 `snapshot`；不得再保留独立的 30 秒 dashboard signals polling。
 - SSE 断线或 degraded 后，fallback polling 只能刷新 shell data + overview，不得回退到 `loadData()` 与 `loadDashboardOverview()` 双通路并发。
 - 手动刷新 dashboard 时，也只能触发 shell data + overview 的一次刷新。
+- `summary_windows` 与 `hourlyRequestWindow` 必须在日志写入的同一事务路径内保持近实时更新；不得依赖单独的异步 materialize job 才能看到当前小时变化。
+- `summaryWindows.month` 的**次数类指标**按服务器时区自然月统计；仅 `quota_charge`（本月积分消耗）继续按 UTC 自然月统计，避免与现有积分审计口径漂移。
 
 ## 性能约束
 
-- `summary_windows` 缓存 TTL 固定为 2 秒，适用于：
-  - `GET /api/summary/windows`
-  - `GET /api/dashboard/overview`
-  - SSE `compute_signatures()`
-  - SSE `build_snapshot_event()`
+- 新增内部表 `dashboard_request_rollup_buckets`：
+  - 主键 `(bucket_start, bucket_secs)`
+  - `bucket_secs=60` 用于 UTC 分钟桶
+  - `bucket_secs=86400` 用于本地日桶
+  - 字段至少覆盖 `total/success/error/quota_exhausted`、`valuable/other/unknown` 分类、`mcp/api × billable/non_billable` 分类、`local_estimated_credits`、`updated_at`
+- `summary_windows` 与 `hourlyRequestWindow` 读路径必须优先查 rollup，不再重扫 `request_logs`。
+- dashboard overview / snapshot 对这两块数据不再使用 2 秒 TTL 缓存；当前小时写入后下一次请求或 snapshot 必须直接可见。
 - dashboard HTTP / SSE overview 逻辑不得再触发：
   - logs facets 聚合
   - keys 分页 facets 聚合
@@ -111,8 +117,9 @@
 - 当禁用 token 数量超过 5 条时，`tokenCoverage = truncated` 且响应只返回前 5 条。
 - admin SSE `snapshot` 继续刷新 dashboard 所需字段，但 `keys` / `logs` 兼容别名只承载轻量子集。
 - dashboard 首屏不再重复触发 summary/bootstrap 双重加载。
+- 新写入一条 request log 后，不等待后台 job，`summaryWindows.today` 与 `summaryWindows.month` 的请求计数和 `local_estimated_credits` 即可反映到 overview / snapshot。
 - SSE 正常时，dashboard 不再维持旧的 30 秒 signals polling；SSE 断线后 fallback polling 只刷新 shell data + overview。
-- `cargo test`、`cargo clippy -- -D warnings`、`cd web && bun test src/api.test.ts`、`cd web && bun run build`、`cd web && bun run build-storybook` 通过。
+- `cargo test`、`cargo clippy -- -D warnings`、`cd web && bun test src/api.test.ts src/admin/dashboardHourlyCharts.test.ts`、`cd web && bun run build`、`cd web && bun run build-storybook` 通过。
 
 ## 当前验证记录
 
@@ -131,7 +138,7 @@
 ## 实现里程碑
 
 - [x] M1: 新增 dashboard 专用 overview 接口并抽出共享 payload 组装逻辑
-- [x] M2: 为 `summary_windows` 引入 2 秒 TTL 共享缓存
+- [x] M2: 新增 dashboard 专用 rollup 表，并将 `summary_windows` / 小时图切到 rollup 读路径
 - [x] M3: dashboard 风险区改走轻量子集查询与 SSE snapshot 复用
 - [x] M4: 前端 dashboard 首屏加载去重，移除旧的 signals polling
 - [x] M5: Storybook/mock 视觉证据补齐
@@ -139,7 +146,7 @@
 
 ## 风险与开放点
 
-- 本次优化不改变 `summary_windows` SQL 口径，因此在极端大库场景下，2 秒缓存只能削峰，不能替代更长期的预聚合。
+- 本次优化引入 dashboard 专用 rollup 表，后续若要扩展更多 dashboard 维度，需继续维持写入同事务 upsert 与 bounded rebuild 的幂等性。
 - `snapshot` 仍保留兼容别名 `keys` / `logs`；若后续确认没有其它消费者，可再做一次协议瘦身。
 - dashboard 现有 Storybook 证据主要证明 UI 结构保留，不直接证明网络负载下降；性能收益仍以接口去重、payload 收缩与查询复用为主。
 
@@ -153,3 +160,4 @@
 
 - 2026-04-06: 初始化 spec，冻结 dashboard overview 轻量聚合接口、SSE payload 复用、`summary_windows` TTL 缓存与前端 dashboard bootstrap 去重的执行合同。
 - 2026-04-06: 完成 dashboard overview 聚合接口、SSE snapshot 复用、轻量风险区查询与前端 dashboard route 去重；随后将 SSE 签名轮询进一步收敛为最小触发查询，并补齐 Storybook 静态预览证据。
+- 2026-04-17: 将 `summary_windows` 与 dashboard 小时图切到 `dashboard_request_rollup_buckets`，移除 2 秒 freshness 缓存依赖，确保当前小时与本地估算额度可近实时出现在 overview / snapshot。

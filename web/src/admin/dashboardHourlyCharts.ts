@@ -276,7 +276,7 @@ export function buildDashboardHourlyRequestWindowFixture({
   retainedBuckets?: number
   mapBucket?: (args: { index: number; bucketStart: number; bucket: DashboardHourlyRequestBucket }) => Partial<DashboardHourlyRequestBucket>
 } = {}): DashboardHourlyRequestWindow {
-  const seriesStart = currentHourStart - bucketSeconds * retainedBuckets
+  const seriesStart = currentHourStart - bucketSeconds * (retainedBuckets - 1)
   const buckets: DashboardHourlyRequestBucket[] = Array.from({ length: retainedBuckets }, (_, index) => {
     const bucketStart = seriesStart + index * bucketSeconds
     const base = index + 1

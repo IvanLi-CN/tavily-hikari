@@ -1,5 +1,6 @@
 use crate::store::*;
 use crate::*;
+use chrono::Timelike;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug)]
@@ -1932,6 +1933,14 @@ pub(crate) fn local_naive_datetime_utc_ts(
 
 pub(crate) fn start_of_local_day_utc_ts(now: chrono::DateTime<Local>) -> i64 {
     local_date_start_utc_ts(now.date_naive(), now)
+}
+
+pub(crate) fn start_of_local_hour_utc_ts(now: chrono::DateTime<Local>) -> i64 {
+    let naive = now
+        .date_naive()
+        .and_hms_opt(now.hour(), 0, 0)
+        .expect("valid start of local hour");
+    local_naive_datetime_utc_ts(naive, now)
 }
 
 pub(crate) fn previous_local_day_start_utc_ts(now: chrono::DateTime<Local>) -> i64 {
