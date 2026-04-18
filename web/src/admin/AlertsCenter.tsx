@@ -489,6 +489,7 @@ export default function AlertsCenter({
       <section className="surface panel alerts-center-panel">
         <div className="alerts-center-toolbar">
           <SegmentedTabs<AlertsCenterView>
+            className="alerts-center-tabs"
             value={view}
             onChange={(nextView) => onNavigate(alertsPath({ view: nextView, type, since, until, userId, tokenId, keyId, requestKinds }))}
             options={[

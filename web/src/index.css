@@ -3588,6 +3588,12 @@ button:disabled {
   gap: 16px;
 }
 
+.alerts-center-tabs {
+  justify-self: start;
+  width: fit-content;
+  max-width: 100%;
+}
+
 .alerts-center-filters {
   display: grid;
   gap: 12px;
