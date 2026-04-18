@@ -3618,6 +3618,10 @@ button:disabled {
   align-items: flex-end;
 }
 
+.alerts-center-table-shell {
+  margin-top: 12px;
+}
+
 .alerts-center-request-kinds-trigger {
   width: 100%;
   justify-content: space-between;

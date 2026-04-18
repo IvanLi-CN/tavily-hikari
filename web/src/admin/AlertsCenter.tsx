@@ -630,7 +630,12 @@ export default function AlertsCenter({
 
         <AdminLoadingRegion loadState={catalogLoadState} loadingLabel={copy.title} errorLabel={catalogError}>
           {view === 'events' ? (
-            <AdminTableShell loadState={listLoadState} loadingLabel={copy.title} errorLabel={listError}>
+            <AdminTableShell
+              className="alerts-center-table-shell"
+              loadState={listLoadState}
+              loadingLabel={copy.title}
+              errorLabel={listError}
+            >
               <TableHeader>
                 <TableRow>
                   <TableHead>{copy.table.events.time}</TableHead>
@@ -712,7 +717,12 @@ export default function AlertsCenter({
               </TableBody>
             </AdminTableShell>
           ) : (
-            <AdminTableShell loadState={listLoadState} loadingLabel={copy.title} errorLabel={listError}>
+            <AdminTableShell
+              className="alerts-center-table-shell"
+              loadState={listLoadState}
+              loadingLabel={copy.title}
+              errorLabel={listError}
+            >
               <TableHeader>
                 <TableRow>
                   <TableHead>{copy.table.groups.time}</TableHead>
