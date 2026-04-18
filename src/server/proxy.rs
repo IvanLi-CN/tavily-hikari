@@ -745,6 +745,10 @@ fn validate_rebalance_mcp_tool_arguments(
     Ok(arguments.clone())
 }
 
+fn rebalance_mcp_tool_usage_metered(tool: &RebalanceMcpToolDefinition) -> bool {
+    matches!(tool.upstream_tool, "search" | "extract" | "crawl" | "map")
+}
+
 fn stable_rebalance_bucket(proxy_session_id: &str) -> i64 {
     let digest = Sha256::digest(proxy_session_id.as_bytes());
     let bucket_seed = u64::from_be_bytes([
@@ -2045,6 +2049,39 @@ async fn proxy_handler(
         }
         active_mcp_session = Some(session);
     }
+    let mut planned_initialize_proxy_session_id: Option<String> = None;
+    let mut planned_initialize_ab_bucket: Option<i64> = None;
+    let mut planned_initialize_gateway_mode = active_mcp_gateway_mode.clone();
+    let mut planned_initialize_experiment_variant = active_mcp_experiment_variant.clone();
+    if is_mcp_initialize && incoming_proxy_session_id.is_none() {
+        let settings = state
+            .proxy
+            .get_system_settings()
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let proxy_session_id = nanoid::nanoid!(24);
+        let ab_bucket = stable_rebalance_bucket(&proxy_session_id);
+        let use_rebalance = settings.rebalance_mcp_enabled
+            && settings.rebalance_mcp_session_percent > 0
+            && ab_bucket < settings.rebalance_mcp_session_percent;
+        planned_initialize_proxy_session_id = Some(proxy_session_id);
+        planned_initialize_ab_bucket = Some(ab_bucket);
+        planned_initialize_gateway_mode = if use_rebalance {
+            tavily_hikari::MCP_GATEWAY_MODE_REBALANCE.to_string()
+        } else {
+            tavily_hikari::MCP_GATEWAY_MODE_UPSTREAM.to_string()
+        };
+        planned_initialize_experiment_variant = if use_rebalance {
+            tavily_hikari::MCP_EXPERIMENT_VARIANT_REBALANCE.to_string()
+        } else {
+            tavily_hikari::MCP_EXPERIMENT_VARIANT_CONTROL.to_string()
+        };
+    }
+    let rebalance_mcp_facade_active = is_mcp_request
+        && (active_mcp_gateway_mode == tavily_hikari::MCP_GATEWAY_MODE_REBALANCE
+            || (incoming_proxy_session_id.is_none()
+                && is_mcp_initialize
+                && planned_initialize_gateway_mode == tavily_hikari::MCP_GATEWAY_MODE_REBALANCE));
     let request_kind = classify_token_request_kind(&path, Some(body_bytes.as_ref()));
 
     // Billing plan (1:1 upstream credits):
@@ -2088,19 +2125,19 @@ async fn proxy_handler(
                     };
 
                     let handle_tool_call = |map: &mut serde_json::Map<String, Value>,
-                                        any_billable: &mut bool,
-                                        any_lockable: &mut bool,
-                                        all_non_billable: &mut bool,
-                                        reserved_billable_total: &mut i64,
-                                        expected_search_total: &mut i64,
-                                        billable_mcp_ids: &mut HashSet<String>,
-                                        billable_search_mcp_ids: &mut HashSet<String>,
-                                        has_billable_mcp_without_id: &mut bool,
-                                        has_search_mcp_without_id: &mut bool,
-                                        missing_usage_fallback_credits_by_id: &mut HashMap<String, i64>,
-                                        missing_usage_fallback_credits_without_id_total: &mut i64,
-                                        expected_search_credits_by_id: &mut HashMap<String, i64>,
-                                        expected_search_credits_without_id_total: &mut i64| {
+                                            any_billable: &mut bool,
+                                            any_lockable: &mut bool,
+                                            all_non_billable: &mut bool,
+                                            reserved_billable_total: &mut i64,
+                                            expected_search_total: &mut i64,
+                                            billable_mcp_ids: &mut HashSet<String>,
+                                            billable_search_mcp_ids: &mut HashSet<String>,
+                                            has_billable_mcp_without_id: &mut bool,
+                                            has_search_mcp_without_id: &mut bool,
+                                            missing_usage_fallback_credits_by_id: &mut HashMap<String, i64>,
+                                            missing_usage_fallback_credits_without_id_total: &mut i64,
+                                            expected_search_credits_by_id: &mut HashMap<String, i64>,
+                                            expected_search_credits_without_id_total: &mut i64| {
                     // tools/call is treated as billable by default unless we can prove it's
                     // a non-Tavily tool call (name does not start with `tavily-`).
                     *any_lockable = true;
@@ -2118,20 +2155,53 @@ async fn proxy_handler(
                             .trim()
                             .to_string();
 
-                        let normalized_tool = tool.to_ascii_lowercase().replace('_', "-");
-                        let usage_metered_tool = matches!(
-                            normalized_tool.as_str(),
-                            "tavily-search" | "tavily-extract" | "tavily-crawl" | "tavily-map"
-                        );
-                        let reserved_billable_tool = matches!(
-                            normalized_tool.as_str(),
-                            "tavily-search"
-                                | "tavily-extract"
-                                | "tavily-crawl"
-                                | "tavily-map"
-                                | "tavily-research"
-                        );
-                        let is_tavily_tool = normalized_tool.starts_with("tavily-");
+                        let rebalance_tool_definition = rebalance_mcp_facade_active
+                            .then(|| rebalance_mcp_tool_definition_by_name(&tool))
+                            .flatten();
+                        let (normalized_tool, usage_metered_tool, reserved_billable_tool, is_tavily_tool) =
+                            if let Some(rebalance_tool) = rebalance_tool_definition {
+                                if validate_rebalance_mcp_tool_arguments(
+                                    rebalance_tool,
+                                    params.get("arguments"),
+                                )
+                                .is_err()
+                                {
+                                    return;
+                                }
+                                (
+                                    rebalance_tool.hyphen_name.to_string(),
+                                    rebalance_mcp_tool_usage_metered(rebalance_tool),
+                                    true,
+                                    true,
+                                )
+                            } else {
+                                if rebalance_mcp_facade_active {
+                                    return;
+                                }
+                                let normalized_tool = tool.to_ascii_lowercase().replace('_', "-");
+                                let usage_metered_tool = matches!(
+                                    normalized_tool.as_str(),
+                                    "tavily-search"
+                                        | "tavily-extract"
+                                        | "tavily-crawl"
+                                        | "tavily-map"
+                                );
+                                let reserved_billable_tool = matches!(
+                                    normalized_tool.as_str(),
+                                    "tavily-search"
+                                        | "tavily-extract"
+                                        | "tavily-crawl"
+                                        | "tavily-map"
+                                        | "tavily-research"
+                                );
+                                let is_tavily_tool = normalized_tool.starts_with("tavily-");
+                                (
+                                    normalized_tool,
+                                    usage_metered_tool,
+                                    reserved_billable_tool,
+                                    is_tavily_tool,
+                                )
+                            };
 
                         if reserved_billable_tool || is_tavily_tool {
                             *any_billable = true;
@@ -2525,35 +2595,6 @@ async fn proxy_handler(
             eprintln!("mcp session request lock lost before upstream send: {err}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
-    }
-
-    let mut planned_initialize_proxy_session_id: Option<String> = None;
-    let mut planned_initialize_ab_bucket: Option<i64> = None;
-    let mut planned_initialize_gateway_mode = active_mcp_gateway_mode.clone();
-    let mut planned_initialize_experiment_variant = active_mcp_experiment_variant.clone();
-    if is_mcp_initialize && incoming_proxy_session_id.is_none() {
-        let settings = state
-            .proxy
-            .get_system_settings()
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        let proxy_session_id = nanoid::nanoid!(24);
-        let ab_bucket = stable_rebalance_bucket(&proxy_session_id);
-        let use_rebalance = settings.rebalance_mcp_enabled
-            && settings.rebalance_mcp_session_percent > 0
-            && ab_bucket < settings.rebalance_mcp_session_percent;
-        planned_initialize_proxy_session_id = Some(proxy_session_id);
-        planned_initialize_ab_bucket = Some(ab_bucket);
-        planned_initialize_gateway_mode = if use_rebalance {
-            tavily_hikari::MCP_GATEWAY_MODE_REBALANCE.to_string()
-        } else {
-            tavily_hikari::MCP_GATEWAY_MODE_UPSTREAM.to_string()
-        };
-        planned_initialize_experiment_variant = if use_rebalance {
-            tavily_hikari::MCP_EXPERIMENT_VARIANT_REBALANCE.to_string()
-        } else {
-            tavily_hikari::MCP_EXPERIMENT_VARIANT_CONTROL.to_string()
-        };
     }
 
     let control_gateway_mode = (is_mcp_request

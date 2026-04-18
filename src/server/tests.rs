@@ -26221,6 +26221,254 @@ colo=LAX
     }
 
     #[tokio::test]
+    async fn mcp_rebalance_invalid_arguments_bypass_business_quota_precheck() {
+        let db_path = temp_db_path("mcp-rebalance-invalid-tool-arguments-quota");
+        let db_str = db_path.to_string_lossy().to_string();
+        let _hourly_business_guard = EnvVarGuard::set("TOKEN_HOURLY_LIMIT", "1");
+        let expected_api_key = "tvly-rebalance-invalid-tool-arguments-quota";
+        let seen: RecordedRebalanceGatewayCalls = Arc::new(Mutex::new(Vec::new()));
+        let upstream_addr =
+            spawn_rebalance_gateway_mock(expected_api_key.to_string(), seen.clone()).await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy =
+            TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
+        proxy
+            .set_system_settings(&tavily_hikari::SystemSettings {
+                mcp_session_affinity_key_count: 5,
+                rebalance_mcp_enabled: true,
+                rebalance_mcp_session_percent: 100,
+            })
+            .await
+            .expect("enable rebalance mcp");
+        let access_token = proxy
+            .create_access_token(Some("mcp-rebalance-invalid-tool-arguments-quota"))
+            .await
+            .expect("create access token");
+
+        let hourly_limit = effective_token_hourly_limit();
+        for _ in 0..=hourly_limit {
+            let _ = proxy
+                .check_token_quota(&access_token.id)
+                .await
+                .expect("quota check ok");
+        }
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), upstream.clone()).await;
+        let url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, access_token.token
+        );
+        let client = Client::new();
+
+        let initialize = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": "rebalance-invalid-quota-init",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {}
+                }
+            }))
+            .send()
+            .await
+            .expect("initialize request");
+        assert_eq!(initialize.status(), StatusCode::OK);
+        let proxy_session_id = initialize
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("initialize response should expose mcp-session-id")
+            .to_string();
+
+        let response = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .header("mcp-session-id", proxy_session_id.as_str())
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": "rebalance-invalid-quota-call",
+                "method": "tools/call",
+                "params": {
+                    "name": "tavily_search",
+                    "arguments": {}
+                }
+            }))
+            .send()
+            .await
+            .expect("invalid rebalance search request");
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "invalid rebalance arguments should win over business quota prechecks"
+        );
+        let body: Value = response
+            .json()
+            .await
+            .expect("decode invalid rebalance quota body");
+        assert_eq!(body["error"]["code"].as_i64(), Some(-32602));
+
+        let recorded = seen
+            .lock()
+            .expect("rebalance gateway calls lock poisoned")
+            .clone();
+        assert!(
+            recorded.is_empty(),
+            "quota-exhausted invalid rebalance call should still stay local"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_rebalance_mixed_batch_ignores_invalid_items_in_reserved_credit_precheck() {
+        let db_path = temp_db_path("mcp-rebalance-mixed-batch-invalid-precheck");
+        let db_str = db_path.to_string_lossy().to_string();
+        let _hourly_business_guard = EnvVarGuard::set("TOKEN_HOURLY_LIMIT", "1");
+        let expected_api_key = "tvly-rebalance-mixed-batch-invalid-precheck";
+        let seen: RecordedRebalanceGatewayCalls = Arc::new(Mutex::new(Vec::new()));
+        let upstream_addr =
+            spawn_rebalance_gateway_mock(expected_api_key.to_string(), seen.clone()).await;
+        let upstream = format!("http://{}", upstream_addr);
+
+        let proxy =
+            TavilyProxy::with_endpoint(vec![expected_api_key.to_string()], &upstream, &db_str)
+                .await
+                .expect("proxy created");
+        proxy
+            .set_system_settings(&tavily_hikari::SystemSettings {
+                mcp_session_affinity_key_count: 5,
+                rebalance_mcp_enabled: true,
+                rebalance_mcp_session_percent: 100,
+            })
+            .await
+            .expect("enable rebalance mcp");
+        let access_token = proxy
+            .create_access_token(Some("mcp-rebalance-mixed-batch-invalid-precheck"))
+            .await
+            .expect("create access token");
+
+        let proxy_addr = spawn_proxy_server(proxy.clone(), upstream.clone()).await;
+        let url = format!(
+            "http://{}/mcp?tavilyApiKey={}",
+            proxy_addr, access_token.token
+        );
+        let client = Client::new();
+
+        let initialize = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": "rebalance-mixed-batch-init",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {}
+                }
+            }))
+            .send()
+            .await
+            .expect("initialize request");
+        assert_eq!(initialize.status(), StatusCode::OK);
+        let proxy_session_id = initialize
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("initialize response should expose mcp-session-id")
+            .to_string();
+
+        let response = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-03-26")
+            .header("mcp-session-id", proxy_session_id.as_str())
+            .json(&json!([
+                {
+                    "jsonrpc": "2.0",
+                    "id": "invalid-crawl",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "tavily_crawl",
+                        "arguments": {}
+                    }
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "id": "valid-search",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "tavily_search",
+                        "arguments": {
+                            "query": "mixed batch valid search",
+                            "search_depth": "basic"
+                        }
+                    }
+                }
+            ]))
+            .send()
+            .await
+            .expect("mixed rebalance batch request");
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "invalid rebalance batch items should not inflate reserved-credit quota prechecks"
+        );
+        let body: Value = response
+            .json()
+            .await
+            .expect("decode mixed rebalance batch body");
+        let results = body
+            .as_array()
+            .expect("mixed rebalance batch should return a JSON-RPC response array");
+        let by_id = results
+            .iter()
+            .filter_map(|item| {
+                let id = item.get("id")?;
+                Some((id.to_string(), item))
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(
+            by_id.get("\"invalid-crawl\"")
+                .and_then(|item| item.get("error"))
+                .and_then(|error| error.get("code"))
+                .and_then(Value::as_i64),
+            Some(-32602),
+            "invalid rebalance batch item should return local Invalid params"
+        );
+        assert_eq!(
+            by_id.get("\"valid-search\"")
+                .and_then(|item| item.get("result"))
+                .and_then(|result| result.get("structuredContent"))
+                .and_then(|content| content.get("usage"))
+                .and_then(|usage| usage.get("credits"))
+                .and_then(Value::as_i64),
+            Some(1),
+            "valid rebalance batch item should still execute and preserve billed usage"
+        );
+
+        let recorded = seen
+            .lock()
+            .expect("rebalance gateway calls lock poisoned")
+            .clone();
+        assert_eq!(
+            recorded.iter().filter(|call| call.path == "/search").count(),
+            1,
+            "only the valid rebalance search batch item should hit Tavily HTTP"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
     async fn mcp_rebalance_tools_call_accepts_hyphen_aliases() {
         let db_path = temp_db_path("mcp-rebalance-hyphen-tool-alias");
         let db_str = db_path.to_string_lossy().to_string();

@@ -111,7 +111,7 @@
 - `tools/call`：
   - `search / extract / crawl / map` → HTTP full-pool 选 key，不做同请求自动重试。
   - `research` → 保留 usage-diff 计费，并把 usage delta 回填到 MCP `structuredContent.usage.credits`。
-  - 对 Tavily 工具的 `arguments` 必须先做本地最小合同校验：顶层必须是 object，且必填字段存在并满足基础类型；不满足时返回本地 JSON-RPC `-32602 Invalid params`，不得继续命中下游 Tavily HTTP。
+  - 对 Tavily 工具的 `arguments` 必须先做本地最小合同校验：顶层必须是 object，且必填字段存在并满足基础类型；不满足时返回本地 JSON-RPC `-32602 Invalid params`，不得继续命中下游 Tavily HTTP，也不得被 reserved-credit / business quota 预检抢先改写成 `429`。
 - `/mcp` 的本地协议拦截要求：
   - 非法 JSON → `-32700 Parse error`
   - 空 batch `[]` → 单个 `-32600 Invalid Request`
