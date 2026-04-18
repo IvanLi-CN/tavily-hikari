@@ -98,12 +98,20 @@
   - `tavily_crawl`
   - `tavily_map`
   - `tavily_research`
+- `tools/list` 广播的 5 个 Tavily 工具必须带显式 `inputSchema`，并至少覆盖当前 Tavily HTTP contract 的必填字段：
+  - `tavily_search` → `query: string`
+  - `tavily_extract` → `urls: string | string[]`
+  - `tavily_crawl` → `url: string`
+  - `tavily_map` → `url: string`
+  - `tavily_research` → `input: string`
+- Rebalance tool surface 必须由单一 canonical schema registry 驱动；`tools/list` 广播与 `tools/call` 参数校验不得维护两份互相漂移的真相源。
 - `tools/call` 同时接受 underscore 与 hyphen 工具名别名。
 - `initialize / ping / tools/list / prompts/list / resources/list / resources/templates/list / notifications/*` 本地处理。
 - Rebalance `tools/call` 返回的 MCP `CallToolResult` 必须始终携带顶层 `content` 数组；工具执行失败使用顶层 `result.isError=true`，而不是把 `isError` 塞进 `structuredContent`。
 - `tools/call`：
   - `search / extract / crawl / map` → HTTP full-pool 选 key，不做同请求自动重试。
   - `research` → 保留 usage-diff 计费，并把 usage delta 回填到 MCP `structuredContent.usage.credits`。
+  - 对 Tavily 工具的 `arguments` 必须先做本地最小合同校验：顶层必须是 object，且必填字段存在并满足基础类型；不满足时返回本地 JSON-RPC `-32602 Invalid params`，不得继续命中下游 Tavily HTTP，也不得被 reserved-credit / business quota 预检抢先改写成 `429`。
 - `/mcp` 的本地协议拦截要求：
   - 非法 JSON → `-32700 Parse error`
   - 空 batch `[]` → 单个 `-32600 Invalid Request`
@@ -162,6 +170,10 @@
   When 请求成功
   Then MCP 返回体必须包含 `structuredContent.usage.credits`，其值来自 research `/usage` 差分。
 
+- Given Rebalance 会话收到 `tools/list`
+  When 客户端读取 Tavily tool descriptors
+  Then 5 个工具都必须带显式 `inputSchema` 与 required 字段，且字段口径与当前 Tavily HTTP contract 一致。
+
 - Given Rebalance 会话收到 `prompts/list`、`resources/list` 或 `resources/templates/list`
   When 客户端执行控制面探测
   Then gateway 必须本地返回 `200 success` 与空列表结果，且不命中 upstream `/mcp`。
@@ -173,6 +185,10 @@
 - Given `/mcp` 收到非法 JSON、空 batch `[]` 或 response-only batch
   When gateway 在本地完成协议校验
   Then 非法 JSON 返回 `-32700 Parse error`，空 batch / response-only batch 返回 `-32600 Invalid Request`，且这些请求都不得命中 upstream。
+
+- Given Rebalance Tavily 工具调用缺少 `arguments`、`arguments` 不是 object、或缺少当前工具的必填字段
+  When 请求进入 gateway
+  Then gateway 必须本地返回 JSON-RPC `-32602 Invalid params`，并且不命中下游 Tavily HTTP。
 
 - Given initialize 之后的 `/mcp` follow-up 请求缺少 `mcp-session-id`
   When 请求进入 gateway
