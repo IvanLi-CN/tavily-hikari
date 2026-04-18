@@ -219,11 +219,11 @@
 ## Visual Evidence
 
 - Storybook 受控渲染：
-  - `admin-components-alertscenter--groups-view`：聚合告警 Tab、共享筛选栏、分页与请求类型筛选。
+  - `admin-components-alertscenter--groups-view`：聚合告警 Tab 宽度已收敛到内容宽度，筛选栏恢复两行布局，并保留表单与表格之间的垂直间距。
 
     ![告警中心 Storybook 受控渲染](assets/alerts-center-story.png)
 
-  - `admin-components-dashboardoverview--zh-dark-evidence`：24h 告警摘要卡、四类计数、Top groups 与跳转 CTA。
+  - `admin-components-dashboardoverview--zh-dark-evidence`：24h 告警摘要卡、四类计数、高频告警主体与进入告警中心 CTA。
 
     ![仪表盘 24h 告警摘要 Storybook 受控渲染](assets/dashboard-alerts-summary-story.png)
 
